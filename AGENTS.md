@@ -275,10 +275,10 @@ procedure — `perf-tuning-a-model`.
   families emit a bare `{"name":…,"arguments":…}` object, so the generic
   parser tries `tools::ParseBareToolCallJson` after `tools::ParseToolCallsText`;
   do NOT add a "native" renderer for a fallback family without re-verifying that
-  round-trip. **Granite-4.2's tool round-trip (`test_granite_dense_selfcheck`)
-  regressed when the offline block-scale encoder switched to full E4M3
-  (mantissa) and is accepted RED** — see `docs/OPEN_TASKS.md` §N; do not
-  "fix" it by weakening the assertion or reverting the codec. Entry points: the per-family
+  round-trip. (Granite-4.2's tool round-trip regressed when the offline
+  block-scale encoder switched to full E4M3, then recovered after the
+  2026-10-07 E4M3FN subnormal alignment — `test_granite_dense_selfcheck` passes;
+  see `docs/open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md`.) Entry points: the per-family
   `BuildConversationInputIds`/`ParseToolCalls` virtuals. `apps/lsxcli/` — CLI client
   (`--model`, `--info`, `--infofull`).
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`

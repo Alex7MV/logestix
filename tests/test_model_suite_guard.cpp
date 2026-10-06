@@ -869,7 +869,9 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "nemotron-3.5-lightning-30b-a3b:fsi",
         // FSI/CODE/DET capture is unresolved for the pre-quantized source (HF
         // transformers cannot load a ModelOpt checkpoint without
-        // compressed_tensors); declared debt, see docs/OPEN_TASKS.md section M.
+        // compressed_tensors; the dequantized 30B reference does not answer
+        // these synthetic prompts); declared debt, see
+        // docs/open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md.
         "nemotron-3.5-lightning-30b-a3b-nvfp4:code",
         "nemotron-3.5-lightning-30b-a3b-nvfp4:det",
         "nemotron-3.5-lightning-30b-a3b-nvfp4:fsi",
