@@ -60,16 +60,19 @@ value(b) = 2^(e-7) * (1 + m/8)     e = (b>>3)&0xF, m = b&0x7
 
 | condition | decode |
 |---|---|
-| `e == 0` | `0.0` — **field-zero contract kept**, no subnormals |
+| `e == 0` | `m * 2^-9` — **subnormal** (`0x00 -> 0`) — see the 2026-10-07 addendum |
 | `1 <= e <= 15`, `m <= 6`, and not `(e==15 && m==7)` | `2^(e-7)*(1+m/8)` |
 | `e == 15 && m == 7` (`0x7F`, reserved NaN) | NaN — **never emitted** |
 
-Range: min normal `2^-6` (`0x08`), max finite `448` (`0x7E`).
+Range: min subnormal `2^-9` (`0x01`), min normal `2^-6` (`0x08`), max finite
+`448` (`0x7E`).
 
 Encode `FloatToE4m3(s)` (RNE, ties-to-even):
 
 1. `s == 0` (or negative/NaN) → `0x00`.
-2. clamp `s` to `[2^-6, 448]`; values below `2^-6` → `0x08`, above `448` → `0x7E`.
+2. below `2^-6`: round RNE on the `2^-9` subnormal grid, `m==8` carrying up to
+   the min normal `0x08`; below half the min subnormal (`2^-10`) → `0x00`;
+   above `448` → `0x7E`.
 3. take the binade exponent `E` of the value and the E4M3 mantissa
    `me = round_nearest_even(mantissa_fraction * 8)`; a carry `me==8` becomes
    `me=0, E++`.
@@ -185,5 +188,22 @@ After the `fast` label is green:
   re-recorded; the golden *tokens* are gated by SelfCheck/FSI/CODE/DET.
 - **Encoder boundary**: the `0x7F` NaN slot must be unreachable; covered by the
   exhaustive encode test.
-- **Subnormals**: encode clamps below `2^-6`, decode maps `e==0` to 0; covered by
-  the field-zero test.
+- **Subnormals**: the original design mapped `e==0` to 0; superseded by the
+  2026-10-07 addendum below (E4M3FN subnormals), covered by the exhaustive
+  `0x00..0x07` decode + RNE encode + bit-7-mask tests.
+
+## 10. Addendum 2026-10-07 — E4M3FN subnormals (supersedes the field-zero contract)
+
+A scan of the real `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` checkpoint
+(5 935 `F8_E4M3` `*.weight_scale` tensors, 1 886 631 936 scale bytes) found
+**2 995 063 positive subnormal bytes** (`0x01..0x07`) and zero sign-bit / zero
+`0x7F` bytes. The ModelOpt source therefore uses the E4M3FN subnormal range, and
+the §3 “`e==0 -> 0`” contract silently zeroed those blocks. The canonical codec
+now decodes the **complete E4M3FN value table** over the valid domain
+`0x00..0x7F` (`e==0 -> m*2^-9`), encodes RNE on the subnormal grid, and masks
+bit 7 (the reserved sign bit of the unsigned `float_ue4m3_t` hardware scale) —
+bit-identical to `cuda_fp8` / `torch.float8_e4m3fn`. Backward compatible: no
+existing byte changes value except `e==0, m!=0`, which no logestix-converted tree
+emits (`FloatToE4m3` never produces it). The Nemotron dequant kernel was
+simplified to call this canonical codec (its private `E4m3Full` / `E2m1` copies
+are gone).

@@ -12,8 +12,11 @@
 // stayed correct. Immediates have no global storage, so no cross-TU aliasing
 // is possible.
 //
-// Bit-exactness: E4M3ScaleToFloat decodes the full unsigned E4M3 block scale
-// (e4==0 -> 0.0, else 2^(e-7)*(1+m/8)) via nvfp4_scale.h::E4m3ToFloat.
+// Bit-exactness: E4M3ScaleToFloat decodes the complete unsigned E4M3 block
+// scale via nvfp4_scale.h::E4m3ToFloat — normals 2^(e-7)*(1+m/8) AND the
+// e4==0 subnormals m*2^-9, matching cuda_fp8/torch.float8_e4m3fn over the
+// valid scale domain 0x00..0x7F (bit 7 is the reserved sign bit of the
+// unsigned hardware scale type and is masked).
 #pragma once
 
 #include <cstdint>

@@ -1,10 +1,25 @@
-// nvfp4_scale.h — canonical full unsigned-E4M3 (UE4M3) block-scale codecs.
+// nvfp4_scale.h — canonical unsigned-E4M3 (UE4M3) block-scale codecs.
 // Single textual source shared by the offline converter (schema.cpp), the
 // runtime act-quant kernels (lsx_tc_gemm.cu + the family inference TUs) and
-// the test host references. Semantics: value = 2^(e-7)*(1+m/8), RNE encode,
-// e4 field 0 -> 0 (no subnormals), 0x7F reserved. Header-only, CUDA-free,
-// safe to include from non-CUDA TUs. Decode must stay in sync with
-// nvfp4_codec.h E4M3ScaleToFloat (the CUDA-TU delegate).
+// the test host references. Header-only, CUDA-free, safe to include from
+// non-CUDA TUs. Decode must stay in sync with nvfp4_codec.h
+// E4M3ScaleToFloat (the CUDA-TU delegate).
+//
+// Semantics: the COMPLETE OCP/NVIDIA E4M3 (E4M3FN) value table over the valid
+// scale domain (bit 7 clear) —
+//   * e4 = (b>>3) & 0xF, m = b & 0x7;
+//   * e4 >= 1 : value = 2^(e-7)*(1+m/8);
+//   * e4 == 0 : SUBNORMAL value = m * 2^-9 (0x00 -> 0) — the block scales of
+//     the pre-quantized ModelOpt W4A16_NVFP4 checkpoints (e.g.
+//     NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) legitimately use these
+//     bytes, so decoding them as 0 loses real blocks;
+//   * encode is round-to-nearest-even, INCLUDING the subnormal grid, so
+//     decode(encode(x)) is the nearest representable value for every x;
+//   * 0x7F (e4==15, m==7) is the reserved NaN slot and is never emitted.
+// Over 0x00..0x7F this is bit-identical to cuda_fp8 / torch.float8_e4m3fn, so
+// a source block-scale byte decodes exactly as NVIDIA's decoder reads it.
+// Bit 7 is the reserved sign bit of the unsigned hardware scale type
+// (`float_ue4m3_t`); the encoder never sets it and the decoder masks it.
 #pragma once
 
 #include <cstdint>
@@ -19,11 +34,13 @@
 namespace lsxcommon {
 namespace nvfp4 {
 
-// Encode s >= 0 as the nearest unsigned E4M3 (UE4M3) byte, ties-to-even.
-// Layout value = 2^(e-7)*(1+m/8), e=(b>>3)&0xF, m=b&0x7. s==0 (or negative/
-// NaN) -> 0x00; s < 2^-6 -> 0x08 (min normal; no subnormals); s > 448 ->
-// 0x7E (max finite). The reserved NaN slot 0x7F is never emitted. Pure
-// integer arithmetic so host and device are bit-identical by construction.
+// Encode s >= 0 as the nearest E4M3FN byte, ties-to-even. Layout e=(b>>3)&0xF,
+// m=b&0x7: e>=1 -> 2^(e-7)*(1+m/8); e==0 -> subnormal m*2^-9. s==0 (or
+// negative/NaN) -> 0x00; s in the subnormal range rounds on the 2^-9 grid
+// (m==8 carries up to the min normal 0x08); s > 448 -> 0x7E (max finite). The
+// reserved NaN slot 0x7F is never emitted. Host and device are bit-identical:
+// the normal path is pure integer arithmetic and the subnormal path is a
+// single IEEE multiply plus an integer RNE.
 LSX_NVFP4_SCALE_HD inline uint8_t FloatToE4m3(float s)
 {
     if (!(s > 0.0f)) return 0x00;          // 0, -0, negative, NaN
@@ -31,9 +48,19 @@ LSX_NVFP4_SCALE_HD inline uint8_t FloatToE4m3(float s)
     std::memcpy(&bits, &s, sizeof(bits));
     const uint32_t exp8 = (bits >> 23) & 0xFFu;
     if (exp8 == 0xFFu) return 0x7E;        // Inf -> max finite
-    if (exp8 == 0u) return 0x08;           // float subnormal -> min normal
+    if (exp8 < 121u) {                     // s < 2^-6, or a float subnormal
+        // E4M3FN subnormal range (e4 field 0): nearest value on the 2^-9 grid,
+        // ties-to-even; m == 8 carries into the min normal 0x08 = 2^-6. Below
+        // half the smallest subnormal (2^-10) the value rounds to 0x00.
+        const float t = s * 512.0f;        // s / 2^-9
+        int m = static_cast<int>(t);       // t >= 0, truncation is floor
+        const float frac = t - static_cast<float>(m);
+        if (frac > 0.5f || (frac == 0.5f && (m & 1))) ++m;
+        if (m <= 0) return 0x00;
+        if (m >= 8) return 0x08;
+        return static_cast<uint8_t>(m);
+    }
     const int e = static_cast<int>(exp8) - 127;  // floor exponent
-    if (e < -6) return 0x08;
     if (e > 8) return 0x7E;
     const uint32_t mant = bits & 0x7FFFFFu;
     const uint32_t q = mant >> 20;         // top 3 bits = E4M3 mantissa
@@ -49,14 +76,16 @@ LSX_NVFP4_SCALE_HD inline uint8_t FloatToE4m3(float s)
     return static_cast<uint8_t>((E << 3) | me);
 }
 
-// Decode one block-scale byte: e4 field 0 -> 0.0f (field-zero contract,
-// no subnormals); else 2^(e-7)*(1+m/8), exact in fp32. 0x7F (reserved,
-// never emitted) -> NaN. mantissa==0 bytes reproduce the old pow2 decode
-// bit-for-bit, so every existing converted tree is unchanged.
+// Decode one block-scale byte: e4 == 0 -> the E4M3FN SUBNORMAL m * 2^-9
+// (0x00 -> 0.0f); else 2^(e-7)*(1+m/8), exact in fp32. 0x7F (reserved, never
+// emitted) -> NaN. Bit 7 is the reserved sign bit of the unsigned UE4M3
+// hardware scale type and is masked off, so a byte with bit 7 set decodes by
+// its low 7 bits. Over 0x00..0x7F this is bit-identical to
+// cuda_fp8 / torch.float8_e4m3fn, so a pre-quantized ModelOpt W4A16_NVFP4
+// block scale decodes exactly as NVIDIA reads it (subnormals included).
 LSX_NVFP4_SCALE_HD inline float E4m3ToFloat(uint8_t b)
 {
     const uint32_t e = (b >> 3) & 0xFu;
-    if (e == 0u) return 0.0f;
     const uint32_t m = b & 0x7u;
     if (e == 15u && m == 7u) {
         const uint32_t nan_bits = 0x7FC00000u;
@@ -64,6 +93,7 @@ LSX_NVFP4_SCALE_HD inline float E4m3ToFloat(uint8_t b)
         std::memcpy(&nan_v, &nan_bits, sizeof(nan_v));
         return nan_v;
     }
+    if (e == 0u) return static_cast<float>(m) * 0.001953125f;  // m * 2^-9
     const uint32_t bits = ((e + 120u) << 23) | (m << 20);
     float v;
     std::memcpy(&v, &bits, sizeof(v));

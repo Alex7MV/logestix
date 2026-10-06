@@ -28,12 +28,12 @@ constexpr float kE2M1TestTable[16] = {
    -0.0f,-0.5f,-1.0f,-1.5f,-2.0f,-3.0f,-4.0f,-6.0f
 };
 
-// Bit-exact host replica of nvfp4_codec.h's E4M3ScaleToFloat: full unsigned
-// E4M3: e4 == 0 -> 0.0f, else 2^(e-7)*(1+m/8); 0x7F reserved -> NaN.
+// Bit-exact host replica of nvfp4_codec.h's E4M3ScaleToFloat: complete E4M3FN
+// over the valid domain 0x00..0x7F (bit 7 masked): e4==0 -> subnormal m*2^-9;
+// else 2^(e-7)*(1+m/8); 0x7F reserved -> NaN.
 float E4M3ScaleToFloatHost(uint8_t e4m3)
 {
     const uint32_t e = (e4m3 >> 3) & 0x0Fu;
-    if (e == 0) return 0.0f;
     const uint32_t m = e4m3 & 0x7u;
     if (e == 15u && m == 7u) {
         uint32_t nb = 0x7FC00000u;
@@ -41,6 +41,7 @@ float E4M3ScaleToFloatHost(uint8_t e4m3)
         std::memcpy(&f, &nb, sizeof(f));
         return f;
     }
+    if (e == 0) return static_cast<float>(m) * 0.001953125f;  // m * 2^-9
     uint32_t bits = ((e + 120u) << 23) | (m << 20);
     float out;
     std::memcpy(&out, &bits, sizeof(out));
@@ -69,22 +70,35 @@ void HostRefNvfp4Gemm(const __half *x, const uint8_t *packed, const uint8_t *sca
 
 }  // namespace
 
-// Regression: full-E4M3 scale decode must test the e4 FIELD, not the whole
-// byte. Bytes with sign/mantissa bits set but a zero exponent field
-// (0x80..0x87) decode to exactly 0 — the contract shared by nvfp4_codec.h
-// E4M3ScaleToFloat and nvfp4_scale.h E4m3ToFloat. A whole-byte zero check
-// instead decodes 0x82 as 2^-7, silently corrupting every GEMM whose stored
-// scale pattern contains such bytes.
-TEST_CASE("full-E4M3 scale decode is field-zero based", "[qwen][gemm][nvfp4][regression]")
+// Regression: the scale decode follows the COMPLETE E4M3FN value table over
+// the valid domain 0x00..0x7F (bit 7 is the reserved sign bit of the unsigned
+// hardware scale type and is masked). In particular e4 == 0 is the SUBNORMAL
+// range (m*2^-9), not zero — the source ModelOpt W4A16_NVFP4 block scales use
+// those bytes. Both nvfp4_codec.h E4M3ScaleToFloat and nvfp4_scale.h
+// E4m3ToFloat implement this single table.
+TEST_CASE("full-E4M3 scale decode follows the E4M3FN table",
+          "[qwen][gemm][nvfp4][regression]")
 {
     using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
     using lsxcommon::nvfp4::E4m3ToFloat;
 
-    // Zero exponent field -> exactly zero, regardless of sign/mantissa bits.
-    for (uint8_t b : {0x00, 0x01, 0x03, 0x07, 0x80, 0x81, 0x82, 0x84, 0x87}) {
+    // 0x00 (and its bit-7 image 0x80) decode to exactly 0.
+    for (uint8_t b : {0x00, 0x80}) {
         INFO("byte=0x" << std::hex << int(b) << std::dec);
         CHECK(E4M3ScaleToFloat(b) == 0.0f);
         CHECK(E4m3ToFloat(b) == 0.0f);
+    }
+    // e4 == 0 with a non-zero mantissa is a subnormal m*2^-9; bit 7 is masked,
+    // so 0x80|b decodes exactly like b.
+    const struct { uint8_t b; float v; } subnormals[] = {
+        {0x01, 0.001953125f}, {0x03, 0.005859375f}, {0x07, 0.013671875f},
+        {0x81, 0.001953125f}, {0x82, 0.00390625f}, {0x84, 0.0078125f},
+        {0x87, 0.013671875f},
+    };
+    for (const auto &c : subnormals) {
+        INFO("byte=0x" << std::hex << int(c.b) << std::dec);
+        CHECK(E4M3ScaleToFloat(c.b) == c.v);
+        CHECK(E4m3ToFloat(c.b) == c.v);
     }
     // Canonical powers of two remain exact (and both decoders agree).
     const struct { uint8_t b; float v; } cases[] = {

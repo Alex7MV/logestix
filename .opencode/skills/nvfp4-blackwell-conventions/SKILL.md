@@ -39,16 +39,20 @@ attribution, budget tests, baselines) is the `perf-tuning-a-model` skill.
   the activation quantizer are shared contracts; changing codec semantics
   (e.g. the e4-field zero check, the E4M3 encode rounding) requires updating
   the NVIDIA mirror **and** a regression test in the same change.
-- The NVFP4 block scale is **full unsigned E4M3 (UE4M3)** — the hardware-native
-  `.ue4m3` scale operand of the Blackwell `mma ... kind::mxf4nvf4.block_scale`
-  path (PTX §9.7.17.10). Semantics: `value = 2^(e-7)*(1+m/8)`,
-  `e=(b>>3)&0xF`, `m=b&0x7`; `e==0 -> 0` (field-zero contract, no subnormals);
-  `0x7F` reserved (NaN) and never emitted; max finite `0x7E = 448`.
-  Canonical codecs: `nvfp4_scale.h::FloatToE4m3` (RNE encode, integer-only so
-  host and device are bit-identical) and `E4m3ToFloat` (the device delegate is
-  `nvfp4_codec.h::E4M3ScaleToFloat`). This replaced the old power-of-two-only
-  deviation: a `mantissa==0` byte decodes bit-identically, so existing trees
-  are unchanged, but new encodings carry the mantissa.
+- The NVFP4 block scale is the **complete E4M3FN value table** over the valid
+  unsigned domain (bit 7 clear) — the hardware-native `.ue4m3` scale operand
+  of the Blackwell `mma ... kind::mxf4nvf4.block_scale` path (PTX §9.7.17.10).
+  Semantics: `e=(b>>3)&0xF`, `m=b&0x7`; `e>=1 -> 2^(e-7)*(1+m/8)`;
+  `e==0 -> m*2^-9` (**subnormal**, `0x00 -> 0`); `0x7F` reserved (NaN) and
+  never emitted; max finite `0x7E = 448`. Over `0x00..0x7F` this is
+  bit-identical to `cuda_fp8`/`torch.float8_e4m3fn`, so pre-quantized ModelOpt
+  W4A16_NVFP4 block scales (which use subnormals — ~3M bytes in
+  NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) decode exactly as NVIDIA reads
+  them. Canonical codecs: `nvfp4_scale.h::FloatToE4m3` (RNE encode on the
+  normal AND subnormal grid) and `E4m3ToFloat` (the device delegate is
+  `nvfp4_codec.h::E4M3ScaleToFloat`). Historical deviations — do not
+  reintroduce: pow2-only decode (dropped the mantissa), and an `e==0 -> 0`
+  decode (dropped the subnormal blocks).
 - Where each piece lives (`libs/lsxcommon/src/`): `nvfp4_codec.h` — the
   `__host__ __device__` E2M1 nibble decode (branchless immediates, never a
   `__constant__` LUT: a header-defined array is merged across object

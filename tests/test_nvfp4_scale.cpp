@@ -1,6 +1,9 @@
-// test_nvfp4_scale.cpp — canonical full-E4M3 (UE4M3) NVFP4 block-scale codec.
-// Contract: value = 2^(e-7)*(1+m/8); e=(b>>3)&0xF, m=b&0x7;
-// e==0 -> 0 (no subnormals); 0x7F reserved (NaN) never emitted.
+// test_nvfp4_scale.cpp — canonical E4M3FN (UE4M3) NVFP4 block-scale codec.
+// Contract over the valid scale domain 0x00..0x7F, bit-identical to
+// cuda_fp8 / torch.float8_e4m3fn:
+//   e=(b>>3)&0xF, m=b&0x7; e>=1 -> 2^(e-7)*(1+m/8);
+//   e==0 -> SUBNORMAL m*2^-9 (0x00 -> 0); 0x7F reserved (NaN) never emitted;
+//   bit 7 (reserved sign bit of the unsigned hardware scale) is masked.
 #include "nvfp4_scale.h"
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
@@ -15,7 +18,8 @@ float RefDecode(uint8_t b)
 {
     const int e = (b >> 3) & 0xF;
     const int m = b & 0x7;
-    if (e == 0) return 0.0f;
+    if (e == 0)
+        return std::ldexp(static_cast<float>(m), -9);  // subnormal m * 2^-9
     if (e == 15 && m == 7) return std::nanf("");
     return std::ldexp(1.0f + static_cast<float>(m) / 8.0f, e - 7);
 }
@@ -53,8 +57,13 @@ TEST_CASE("full-E4M3 encode: RNE points and clamps",
     CHECK(FloatToE4m3(0.0f) == 0x00);
     CHECK(FloatToE4m3(-0.0f) == 0x00);
     CHECK(FloatToE4m3(std::nanf("")) == 0x00);
-    CHECK(FloatToE4m3(1e-45f) == 0x08);          // float subnormal -> min normal
-    CHECK(FloatToE4m3(0.0078125f) == 0x08);      // 2^-7 clamps up to 2^-6
+    CHECK(FloatToE4m3(1e-45f) == 0x00);          // below half the min subnormal
+    CHECK(FloatToE4m3(0.0009765625f) == 0x00);   // 2^-10: tie -> even -> 0x00
+    CHECK(FloatToE4m3(0.001953125f) == 0x01);    // 2^-9 = min subnormal
+    CHECK(FloatToE4m3(0.0029296875f) == 0x02);   // 3*2^-10: tie -> even -> 0x02
+    CHECK(FloatToE4m3(0.013671875f) == 0x07);    // 7*2^-9 = max subnormal
+    CHECK(FloatToE4m3(0.0146484375f) == 0x08);   // 7.5*2^-9: carry to min normal
+    CHECK(FloatToE4m3(0.0078125f) == 0x04);      // 2^-7 = 4*2^-9 subnormal
     CHECK(FloatToE4m3(0.015625f) == 0x08);       // 2^-6
     CHECK(FloatToE4m3(1.0f) == 0x38);
     CHECK(FloatToE4m3(3.0f) == 0x44);            // was 0x48 under pow2
@@ -85,10 +94,17 @@ TEST_CASE("full-E4M3: pow2 bytes are bit-identical to the old codec",
         CHECK(b == static_cast<uint8_t>(e << 3));
         CHECK(SameBits(lsxcommon::nvfp4::E4m3ToFloat(b), v));
     }
-    // Field-zero contract: 0x00..0x07 and 0x80..0x87 all decode to 0.
+    // Subnormal contract: 0x00..0x07 decode to m*2^-9 (not 0), matching the
+    // source ModelOpt W4A16_NVFP4 block scales.
+    for (int b = 0; b <= 7; ++b) {
+        const float want = std::ldexp(static_cast<float>(b), -9);
+        CHECK(SameBits(lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(b)),
+                       want));
+    }
+    // Bit 7 is the reserved sign bit of the unsigned hardware scale type and
+    // is masked: 0x80|b decodes exactly like b.
     for (int b = 0; b <= 7; ++b)
-        CHECK(lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(b)) == 0.0f);
-    for (int b = 0x80; b <= 0x87; ++b)
-        CHECK(lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(b)) == 0.0f);
+        CHECK(lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(0x80 | b)) ==
+              lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(b)));
     CHECK(FloatToE4m3(3.0f) != 0x00);            // sanity: encoder live
 }

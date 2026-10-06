@@ -217,9 +217,10 @@ TEST_CASE("e2m1 encode ties: tie-up and nearest both replicated", "[lsxk][quant]
     }
 }
 
-// ── Coverage: full unsigned-E4M3 scale ENCODER edge classes ─────────────────
-// Contract: value = 2^(e-7)*(1+m/8); RNE (ties-to-even); e4 field 0 -> 0 (no
-// subnormals); 0x7F reserved (never emitted); max finite 0x7E = 448.
+// ── Coverage: E4M3FN scale ENCODER edge classes ────────────────────────────
+// Contract (valid domain 0x00..0x7F, bit-identical to torch.float8_e4m3fn):
+// e>=1 -> 2^(e-7)*(1+m/8); e==0 -> SUBNORMAL m*2^-9; RNE (ties-to-even);
+// 0x7F reserved (never emitted); max finite 0x7E = 448.
 TEST_CASE("FloatToE4m3 edge classes, identity and RNE property",
           "[lsxk][quant][scale]")
 {
@@ -230,10 +231,16 @@ TEST_CASE("FloatToE4m3 edge classes, identity and RNE property",
     REQUIRE(FloatToE4m3(0.0f) == 0x00);
     REQUIRE(FloatToE4m3(-0.0f) == 0x00);
 
-    // Float subnormals and values below 2^-6 clamp to the min normal 2^-6.
-    REQUIRE(FloatToE4m3(1e-45f) == 0x08);
-    REQUIRE(FloatToE4m3(1e-40f) == 0x08);
-    REQUIRE(FloatToE4m3(0.0078125f) == 0x08);   // 2^-7
+    // Subnormal range: RNE on the 2^-9 grid; below half the min subnormal
+    // (2^-10) the value rounds to zero, and 7.5*2^-9 carries to the min normal.
+    REQUIRE(FloatToE4m3(1e-45f) == 0x00);
+    REQUIRE(FloatToE4m3(1e-40f) == 0x00);
+    REQUIRE(FloatToE4m3(0.0009765625f) == 0x00);   // 2^-10 tie -> even
+    REQUIRE(FloatToE4m3(0.001953125f) == 0x01);    // 2^-9
+    REQUIRE(FloatToE4m3(0.0029296875f) == 0x02);   // 3*2^-10 tie -> even
+    REQUIRE(FloatToE4m3(0.013671875f) == 0x07);    // 7*2^-9
+    REQUIRE(FloatToE4m3(0.0146484375f) == 0x08);   // 7.5*2^-9 -> min normal
+    REQUIRE(FloatToE4m3(0.0078125f) == 0x04);   // 2^-7 = 4*2^-9 subnormal
 
     // Exact powers of two map onto themselves (2^-6 .. 2^8; 2^8 is now exact).
     const struct { float v; uint8_t b; } pow2[] = {
@@ -273,15 +280,18 @@ TEST_CASE("FloatToE4m3 edge classes, identity and RNE property",
             const uint8_t b = FloatToE4m3(s);
             INFO("s=" << s << " byte=0x" << std::hex << int(b) << std::dec);
             REQUIRE(b != 0x7F);
-            REQUIRE(((b >> 3) & 0x0F) >= 1);
             const float d = E4m3ToFloat(b);
-            if (s < 0.015625f) {
-                REQUIRE(d == 0.015625f);                 // 2^-6 floor
-            } else if (s > 448.0f) {
+            if (s > 448.0f) {
                 REQUIRE(d == 448.0f);                    // 448 ceiling
-            } else {
+            } else if (s >= 0.015625f) {
+                REQUIRE(((b >> 3) & 0x0F) >= 1);         // normal range
                 REQUIRE(d > 0.0f);
                 REQUIRE(std::fabs(d - s) <= s * 0.0625f); // <= 1/16 relative
+            } else {
+                // Subnormal range: e4 field 0, absolute error <= half the
+                // 2^-9 subnormal step; below 2^-10 the value flushes to 0.
+                REQUIRE(((b >> 3) & 0x0F) == 0);
+                REQUIRE(std::fabs(d - s) <= 0.0009765625f);  // <= 2^-10
             }
         }
     }

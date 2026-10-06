@@ -681,12 +681,15 @@ __device__ __forceinline__ void dequant_row(Nvfp4RowView w, int row,
             continue;
         }
         const uint8_t sb = scales[c >> 4];
-        // E4M3 exponent-form scale byte (converter layout): e4 = sb >> 3,
-        // scale = 2^(e4-7)*(1+m/8), 0 when e4 == 0. Matches E4M3ScaleToFloat (full unsigned E4M3).
+        // E4M3FN block-scale byte (converter layout): e4 = sb >> 3, m = sb & 0x7;
+        // scale = 2^(e4-7)*(1+m/8) for e4 >= 1, and the e4 == 0 SUBNORMAL
+        // m*2^-9. Bit 7 is the reserved sign bit of the unsigned UE4M3 hardware
+        // scale and is masked. Matches nvfp4_codec.h::E4M3ScaleToFloat.
         const uint32_t e4 = (sb >> 3) & 0x0Fu;
         const float scale =
-            e4 == 0 ? 0.0f
-                    : __int_as_float(static_cast<int>(((e4 + 120u) << 23) | ((sb & 0x7u) << 20)));
+            e4 == 0
+                ? static_cast<float>(sb & 0x7u) * 0.001953125f
+                : __int_as_float(static_cast<int>(((e4 + 120u) << 23) | ((sb & 0x7u) << 20)));
         out[c] = v * scale * w.global_scale;
     }
 }
@@ -728,8 +731,9 @@ __global__ void ple_row_proj_kernel(Nvfp4RowView w,
             const uint8_t sb = scales[c >> 4];
             const uint32_t e4 = (sb >> 3) & 0x0Fu;
             const float scale =
-                e4 == 0 ? 0.0f
-                        : __int_as_float(static_cast<int>(((e4 + 120u) << 23) | ((sb & 0x7u) << 20)));
+                e4 == 0
+                    ? static_cast<float>(sb & 0x7u) * 0.001953125f
+                    : __int_as_float(static_cast<int>(((e4 + 120u) << 23) | ((sb & 0x7u) << 20)));
             dv = v * scale * w.global_scale;
         }
         acc += static_cast<double>(dv) * d_emb_row[c];

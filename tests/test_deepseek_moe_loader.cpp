@@ -107,13 +107,20 @@ TEST_CASE("float_to_e4m3 handles subnormals safely", "[deepseek][schema][e4m3]")
         CHECK(lsxcommon::float_to_e4m3(0.0f) == 0);
         CHECK(lsxcommon::e4m3_to_float(0) == 0.0f);
     }
-    SECTION("subnormal (exp8=0) returns 0x08 (min E4M3 normal)") {
+    SECTION("values below half the min subnormal round to zero") {
+        // E4M3FN (matching cuda_fp8 / torch.float8_e4m3fn): the smallest
+        // subnormal is 2^-9, so anything below 2^-10 rounds to 0x00.
         float tiny = 1.4e-45f;
         uint8_t e4 = lsxcommon::float_to_e4m3(tiny);
-        CHECK(e4 == 0x08);
-        float decoded = lsxcommon::e4m3_to_float(e4);
-        CHECK(decoded > 0.0f);
-        CHECK(decoded == 0x1.0p-6f);
+        CHECK(e4 == 0x00);
+        CHECK(lsxcommon::e4m3_to_float(e4) == 0.0f);
+    }
+    SECTION("E4M3 subnormal range round-trips") {
+        CHECK(lsxcommon::float_to_e4m3(0x1.0p-9f) == 0x01);  // 2^-9
+        CHECK(lsxcommon::float_to_e4m3(0x1.0p-7f) == 0x04);  // 2^-7 = 4*2^-9
+        CHECK(lsxcommon::float_to_e4m3(0x1.0p-10f) == 0x00); // 2^-10 ties to 0
+        CHECK(lsxcommon::e4m3_to_float(0x01) == 0x1.0p-9f);
+        CHECK(lsxcommon::e4m3_to_float(0x04) == 0x1.0p-7f);
     }
     SECTION("normal powers of 2 encode correctly") {
         CHECK(lsxcommon::float_to_e4m3(0.0625f) == 0x18);
@@ -136,7 +143,8 @@ TEST_CASE("float_to_e4m3 handles subnormals safely", "[deepseek][schema][e4m3]")
             uint8_t e4 = lsxcommon::float_to_e4m3(v);
             float dec = lsxcommon::e4m3_to_float(e4);
             CHECK(dec >= 0.0f);
-            if (v != 0.0f) CHECK(dec > 0.0f);
+            // Values at/below half the min subnormal (2^-10) round to zero.
+            if (v > 0x1.0p-10f) CHECK(dec > 0.0f);
         }
     }
 }
