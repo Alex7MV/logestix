@@ -526,6 +526,38 @@ separated the two states here.
 
 Reverted; the verified split-only port stands and the tree is green.
 
+## J. gemma FSI/CODE goldens captured; both gates RED on real divergences (2026-10-06)
+
+gemma had **no** FSI or CODE golden, so both stages were silently SKIPping and the family
+was effectively held up only by SelfCheck and DET. Now captured from the source
+safetensors (they run locally: `Gemma4ForConditionalGeneration`, bf16, transformers
+5.15.1), so they are model-defined goldens, not template-derived.
+
+Both gates run, and both fail — for **different** reasons:
+
+- **FSI-TEST-01** — semantic. Source: `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`, the
+  correct annuity-due answer. Converted: `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`, the
+  prompt's own template line, missing the trailing `exp(r)`. Clean and correctly
+  extracted, so it is a real behavioural difference, not a harness artifact. FSI-02/03 pass.
+- **CODE-TEST-02** — syntactic, and the gate working as designed. Source:
+  `m=l+((h-l)/2)`; converted: `m=(l+(h-l)/2)`. Algebraically identical; CODE applies no
+  canonicalization precisely so that this fails. CODE-01/03 pass.
+
+**Neither is the port.** Reverting `gemma_moe_inference.cu` to its pre-port state at
+`7810383` reproduces 5 passed / 1 failed on both gates, byte for byte. Both are
+NVFP4-vs-bf16 differences on borderline greedy decisions.
+
+Left red deliberately. Two things are *not* acceptable fixes here: writing the template's
+answer into the golden (that deletes the model-defined rule and makes the gate vacuous),
+and adding algebraic comparison to CODE (that deletes the reason CODE exists). Both
+findings are written up in `docs/FSI_SELFCHECK_FINDINGS.md` and
+`docs/CODE_SELFCHECK_FINDINGS.md`.
+
+Worth noting what this costs: gemma was previously *appearing* green on 4 stages while two
+of them never executed. A SKIP is not a pass, and a missing golden is indistinguishable
+from a passing one in the ctest summary. Every other family's `det` golden exists and
+gemma's did not, which is why this gap survived — the absence is now closed.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency
