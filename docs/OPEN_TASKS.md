@@ -710,6 +710,57 @@ Remaining, in order:
 requantizes through `quantize_tensor_gpu`; that costs ~11 % vs the source and is
 the accepted price of the pow2-only block scale.
 
+## N. Granite-4.2-30B tool round-trip regressed by the full-E4M3 encoder — **accepted 2026-10-06**
+
+Re-converting granite-4.2-30b with the full unsigned-E4M3 block-scale encoder
+(section L) makes `test_granite_dense_selfcheck`'s end-to-end tool round-trip
+fail: the model no longer emits a parseable tool call (it reasons in prose, or
+degenerates). Paris SelfCheck / FSI / DET still pass. The regression is
+**accepted, not fixed** — the encoder is intentional.
+
+Attribution (measured on the RTX 5090 host, real weights):
+
+| offline weight encoder | runtime act-quant | tool round-trip |
+|---|---|---|
+| pow2 (pre-E4M3) | E4M3 | **pass** (`get_weather` called) |
+| full E4M3, RNE | E4M3 | fail |
+| full E4M3, ceil | E4M3 | fail |
+
+So the trigger is specifically the **offline weight encoding carrying the
+mantissa**; the E4M3 runtime act-quant and the E4M3 decoder are both fine (the
+pow2 tree above still ran E4M3 act-quant and passed). The E4M3 weights are
+*better* by weight relative L2 (~9.5 % vs ~11.5 % on every sampled tensor), so
+this is a chaotic greedy-decision flip, not a codec defect.
+
+Things excluded during the investigation:
+
+- **Not framing/tokenization.** Feeding the exact HF `apply_chat_template`
+  token ids (315, native ChatML + tools) to the converted model still
+  degenerates. The logestix rendered prompt text matches HF byte-for-byte; the
+  logestix tokenizer segments it slightly differently (274–279 vs 298–315) but
+  the ids round-trip to the same text.
+- **Not the numeric mode.** Fails at both `kAuto` (TC) and `kOff` (scalar).
+- **Not the runtime act-quant.** See table.
+- **Not the generic-vs-native renderer.** The native `<tool_call>` XML framing
+  (granite's own `chat_template.jinja`) degenerates worse than the generic
+  Hermes fallback; both fail.
+
+Consequences and the accepted position:
+
+- `test_granite_dense_selfcheck` tool round-trip stays **RED** on real weights
+  (the same disposition as the gemma FSI/CODE gates in section J). Do not
+  "fix" it by loosening the assertion or by reverting the codec.
+- The general BF16→NVFP4 accuracy gain from the mantissa stays in place; the
+  cost is this one model's tool-calling trajectory.
+- The decoder half of the transition remains backward-compatible; a `mantissa
+  == 0` byte decodes bit-identically, so pre-E4M3 trees are unaffected.
+
+If revisited, the one lead that was not exhausted: feed the **source BF16**
+granite the identical tool prompt (HF) to establish the reference call, then
+diff the converted logits at the decision step to see whether the E4M3 tree is
+further from BF16 than the pow2 tree on the tool head (a specific tensor, e.g.
+the gate/embedding, could be the flip point).
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency

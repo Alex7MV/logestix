@@ -272,11 +272,13 @@ procedure — `perf-tuning-a-model`.
   are the control ids 11/12, so the parse splices them from the ids -
   `xing_moe_tool_format.{h,cpp}`, real-weight verified), with a generic Hermes
   fallback elsewhere. The fallback
-  families emit a bare `{"name":…,"arguments":…}` object (Granite-4.2 is
-  verified on real weights — `test_granite_dense_selfcheck`), so the generic
+  families emit a bare `{"name":…,"arguments":…}` object, so the generic
   parser tries `tools::ParseBareToolCallJson` after `tools::ParseToolCallsText`;
   do NOT add a "native" renderer for a fallback family without re-verifying that
-  round-trip. Entry points: the per-family
+  round-trip. **Granite-4.2's tool round-trip (`test_granite_dense_selfcheck`)
+  regressed when the offline block-scale encoder switched to full E4M3
+  (mantissa) and is accepted RED** — see `docs/OPEN_TASKS.md` §N; do not
+  "fix" it by weakening the assertion or reverting the codec. Entry points: the per-family
   `BuildConversationInputIds`/`ParseToolCalls` virtuals. `apps/lsxcli/` — CLI client
   (`--model`, `--info`, `--infofull`).
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`

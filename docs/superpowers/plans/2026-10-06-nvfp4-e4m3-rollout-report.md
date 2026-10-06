@@ -62,6 +62,17 @@ The selfcheck hash moved (the `kAuto` TC act-quant now uses RNE full E4M3);
 `tests/perf/perf_baselines.json` stores t/s, not logits hashes, so there is no
 recorded hash to update there.
 
+## 2b. Known accepted regression — granite-4.2-30B tool round-trip
+
+Re-converting granite-4.2-30b with the full-E4M3 encoder makes the end-to-end
+tool round-trip in `test_granite_dense_selfcheck` fail (the model stops emitting
+a parseable call). Paris/FSI/DET still pass. This is **accepted** — the encoder
+is intentional. Attribution: pow2 encoder passes; full-E4M3 RNE and ceil both
+fail; the E4M3 runtime act-quant and decoder are fine. The E4M3 weights are
+better by weight L2 (~9.5% vs ~11.5%), so it is a greedy-decision flip, not a
+codec defect. Full detail and the excluded hypotheses are in
+`docs/OPEN_TASKS.md` §N.
+
 ## 3. Re-conversion matrix (vault sources, ascending size)
 
 Every family must be re-converted for the E4M3 encoder to take effect. One GPU
