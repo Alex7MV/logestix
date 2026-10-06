@@ -771,13 +771,23 @@ Remaining, in order:
 6. **Real-weight run.** Convert the 20.08 GiB / 52-shard vault checkpoint
    (~17.5 GiB arrow) and pass SelfCheck on real weights before the goldens above
    mean anything. Nothing has exercised the full converted model yet.
-7. **FSI/CODE/DET golden capture is unresolved.** HF transformers cannot load the
-   ModelOpt-quantized checkpoint (no `compressed_tensors` module: "Unknown
-   quantization type, got modelopt"), so the usual "capture from source
-   safetensors" path does not run as-is. Options: dequantize to BF16 locally and
-   capture from that, or declare the three goldens as `kGoldenDebt` with the
-   reason recorded. Decide before step 5, because it determines whether those
-   tests can ever assert.
+7. **FSI/CODE/DET golden capture — attempted 2026-10-07, still debt.** HF
+   transformers cannot load the ModelOpt checkpoint directly ("Unknown
+   quantization type, got modelopt"), so I dequantized the source to a bf16
+   `NemotronHForCausalLM` (61 GiB) and ran the capture tools against it. Two
+   blockers, both empirical:
+   - `accelerate` `device_map="auto"` offload corrupts this custom hybrid
+     (Mamba-2 selective-scan + MoE) — the model emits repetition loops; a plain
+     CPU run is pathologically slow for a 30B model here.
+   - more fundamentally, the source reference loops/degenerates on all three
+     synthetic prompt sets (FSI/CODE/DET) in every framing (thinking on/off/raw
+     prompt), so no canonical answer can be extracted. The converted logestix
+     model *does* reason coherently on the same FSI-01 prompt, so a golden
+     captured from the source cannot be produced (and capturing from the
+     converted tree would make the gate circular).
+   The three goldens stay in `kGoldenDebt` (same as the BF16 sibling). Revisit
+   on a machine with enough VRAM to run the 30B bf16 reference without offload,
+   or with a working ModelOpt loader.
 
 **Do not** byte-pass the source NVFP4 blocks to the repo decoder — measured
 29.9 % relative L2 (section L). The converter dequantizes with full E4M3 and
