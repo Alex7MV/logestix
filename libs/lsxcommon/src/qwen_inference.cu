@@ -303,13 +303,22 @@ cudaError_t RunQwenFullAttnKernel(
 // vs legacy, binding run-to-run determinism).
 // q . k_row over `hd` halves, in ASCENDING d with a PLAIN `+=`.
 //
-// The plain `+=` is load-bearing, not laziness: this TU is compiled -fmad=false, and
-// a vectorised form that used __fmaf_rn or reordered the adds would change the
-// contraction behaviour. Ascending d keeps the per-element order identical.
+// Ascending d with a plain `+=` keeps the per-element order identical to the scalar
+// form, which is the part that is guaranteed.
 //
-// The 8-byte load (two __half2) replaces one 2-byte load per iteration: the scalar
-// loop held a single K row in flight per thread, which is what Xing's float4 change
-// fixed for +6.5% end to end. Requires hd % 8 == 0; scalar otherwise.
+// NOT guaranteed by a flag: this object library is compiled WITHOUT -fmad=false
+// (libs/lsxcommon/CMakeLists.txt, "qwen dense on" - FMA contraction is ENABLED, and
+// the file's own policy note says "DO NOT rely on contraction in any new kernel"). So
+// bit-identity rests on the scalar and vector forms contracting the same way under the
+// current compiler, not on a flag forbidding otherwise. That is EMPIRICAL: it is what
+// test_qwen_moe_{selfcheck,fsi,code,det}_selfcheck verify on real weights, and they are
+// the arbiter - do not relax them on the strength of this comment. A change of
+// optimisation level or toolkit could break parity here, and the gates would catch it.
+//
+// The load: TWO 4-byte __half2 loads per iteration replace four 2-byte loads - the
+// scalar loop held a single K row in flight per thread, which is what Xing's float4
+// change fixed for +6.5% end to end. qrow is deliberately left scalar (it is shared
+// across the block, so it is already hot in L1). Scalar fallback for hd % 8 != 0.
 //
 // SPLIT KERNEL ONLY, deliberately. Vectorising the non-split kernel as well BREAKS
 // parity (test_qwen_moe_{fsi,code,det}_selfcheck all fail on Qwen3.5-35B-A3B), even

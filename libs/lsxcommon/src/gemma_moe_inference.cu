@@ -425,8 +425,13 @@ constexpr int kGemmaSplitChunk = 128;
 
 // q . k_row over `hd` bf16, in ASCENDING d with a PLAIN `+=`.
 //
-// Plain `+=` is load-bearing: this TU is -fmad=false, so contraction behaviour is part
-// of the numeric contract. Ascending d keeps the per-element order identical.
+// Ascending d with a plain `+=` keeps the per-element order identical to the scalar
+// form; that part is guaranteed.
+//
+// Bit-identity itself is EMPIRICAL, not flag-guaranteed: this object library is built
+// without -fmad=false, so FMA contraction is enabled and this form relies on the scalar
+// and vector versions contracting alike under the current compiler. The real-weight
+// golden gates are the arbiter - see the qwen sibling for the full note.
 //
 // One 4-byte __nv_bfloat162 load per iteration replaces two 2-byte loads: the scalar
 // loop held a single K row in flight per thread. Same change as qwen's split kernel
