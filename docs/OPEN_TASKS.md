@@ -466,6 +466,30 @@ else".
 Not done here: an unmeasured kernel change is not a result, and neither is an
 unmeasured failure. This entry is the failure and the narrowing plan.
 
+## H. AliceAI-80B: the qwen port does not reach it (2026-10-06)
+
+Asked to port Alice. It needs no port of its own and cannot take the qwen one:
+`RunAliceGatedAttentionCore` calls **`qwen::RunQwenFullAttnKernel`**, which launches
+`full_attn_softmax_kernel` — the **non-split** kernel, i.e. exactly the one the qwen
+port deliberately left scalar because vectorising it fails
+`test_qwen_moe_{fsi,code,det}_selfcheck`. Alice is 12 gated-attention layers of 48
+(the other 36 are KDA recurrence, which has no score dot at all), and it takes the
+non-split path, so the shipped split-kernel win never reaches it.
+
+Alice baseline for the record: **21.1 t/s** at max-gen 2048 (AOCC).
+
+So the options are (a) leave it — the reachable variant is the one with a proven parity
+break, and with 12 of 48 layers carrying attention the ceiling is small; (b) solve the
+non-split parity break first, which is still unexplained and would then benefit qwen's
+and gemma's short-context paths too, not just Alice. (b) is the better lever if the
+non-split path is ever worth attacking, and it is a strictly bigger prize than Alice
+alone.
+
+This is the fourth family where the filter paid off: routing the request through "what
+fraction of the decode wall does the score phase actually own, and which kernel variant
+does this family reach" answered the question before any code was written. Three of the
+four earlier lookalikes (deepseek, mimo, gigachat) would have been wasted work.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency
