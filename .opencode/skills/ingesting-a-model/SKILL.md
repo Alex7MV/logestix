@@ -301,9 +301,17 @@ An ingested model is **not done** without it.
   the source safetensors, committed golden, separate
   `test_<family>_fsi_selfcheck` target, suite-guard `fsi` row):
   **REQUIRED SUB-SKILL** `fsi-selfcheck`.
-- Add the perf baseline: an entry in `tests/perf/perf_baselines.json` plus a
-  `test_perf_baseline_<model>` target (label `perf`), and record the measured
-  t/s. Add **both** — a JSON entry without a target is an unguarded baseline.
+- Add the perf baseline — **three** things, not two: an entry in
+  `tests/perf/perf_baselines.json`, a `TEST_CASE("perf baseline: <model_type>")`
+  in `tests/test_perf_baseline.cpp`, **and** an
+  `add_test(NAME test_perf_baseline_<model> COMMAND test_perf_baseline "perf
+  baseline: <model_type>")` in `tests/CMakeLists.txt` with label `perf` and
+  `SKIP_RETURN_CODE 4`. `test_perf_baseline_logic` machine-enforces the pairing in
+  both directions, so a missing `add_test` fails the fast suite even though a
+  bare `TEST_CASE` looks like coverage when you read the source and is invisible
+  in ctest. Measure by running the target, not by editing the JSON: only that path
+  captures `ttft_ms` and the NVML power samples. `xing`, `mimo` and `alice` shipped
+  without the `add_test` and `ctest -L perf` ran 16 of 19 families unnoticed.
 - The determinism/correctness discipline these tests implement (bit-exact vs
   tolerance class, canonical-length validation, revert-on-red-determinism,
   `SKIP_RETURN_CODE 4`) is `Verifying a numeric change` in
@@ -367,7 +375,9 @@ without updating them fails CI.
       The verdict (target name, or "generic") is written into the tool-verdict
       table of `test_model_suite_guard.cpp` in the same commit.
 - [ ] `test_<model>_selfcheck.cpp` ≥3 cycles, bit-exact, `SKIP_RETURN_CODE 4`.
-- [ ] perf entry in `tests/perf/perf_baselines.json` + `test_perf_baseline_<model>`.
+- [ ] perf entry in `tests/perf/perf_baselines.json` + `TEST_CASE` in
+      `test_perf_baseline.cpp` + `add_test` target in `tests/CMakeLists.txt` (label
+      `perf`, `SKIP_RETURN_CODE 4`).
 - [ ] All four guard registries above updated.
 - [ ] `AGENTS.md` Structure section gets the new files; `test_model_suite_guard`
       and `test_code_naming_guard` green.

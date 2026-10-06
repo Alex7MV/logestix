@@ -131,10 +131,26 @@ kernels beat guessing.
 
 ## Step 7 — record
 
-Both halves are machine-bound: `test_perf_baseline_logic` fails if a
-`perf_baselines.json` entry has no measuring `TEST_CASE` in
-`tests/test_perf_baseline.cpp` (an entry without a target is an unguarded
-baseline). Add the JSON entry and the case in the same commit.
+Both halves are machine-bound, in **both** directions:
+`test_perf_baseline_logic` fails if a `perf_baselines.json` entry has no measuring
+`TEST_CASE` in `tests/test_perf_baseline.cpp` (an entry without a target is an
+unguarded baseline) **and** if a `TEST_CASE("perf baseline: ...")` has no
+`add_test(NAME test_perf_baseline_* COMMAND test_perf_baseline "<that case>")` in
+`tests/CMakeLists.txt`. Add the JSON entry, the case **and** the `add_test` in the
+same commit.
+
+The second direction is not redundant. A `TEST_CASE` with no `add_test` looks like
+coverage when you read the source and like absence when you read ctest, and nothing
+contradicts the other view — `xing`, `mimo` and `alice` sat that way for a long time,
+so `ctest -L perf` ran 16 of 19 families while the JSON kept xing's and alice's rows
+looking maintained. Those two had been recorded by running the binary directly, which
+works because Catch2 executes every `TEST_CASE` in a binary regardless of ctest
+registration — so the row exists and no `ctest -L perf` run will ever maintain or
+challenge it. `mimo` had never been measured at all.
+
+Note also that a baseline row measured by hand is not the same as a row measured by
+the test: only the test path captures `ttft_ms` and the NVML power samples, and a row
+edited by hand cannot supply them honestly.
 
 - `tests/perf/perf_baselines.json`: `tokens_per_sec`, `max_gen`, `gen_tokens`,
   `date`, `prompt`, plus the recorded evidence `ttft_ms`, `avg_power_w`,

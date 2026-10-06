@@ -60,6 +60,51 @@ cmake --build build/linux-release-znver4-aocc -j 160
 ctest --test-dir build/linux-release-znver4-aocc
 ```
 
+### AOCC: two flags the tree needs on CMake 4.2 + Arrow 25.0.1
+
+Configuring this tree with the command above **fails at the Generate step** on
+CMake 4.2:
+
+```
+The install of the arrow_shared target requires changing an RPATH from the build
+tree, but this is not supported with the Ninja generator unless on an ELF-based
+or XCOFF-based platform.
+```
+
+This is not caused by any project change — it reproduces on a pristine
+`tests/CMakeLists.txt`. Two additions make the tree generate, build and run:
+
+```bash
+AR=$PWD/build/linux-release-znver4-aocc/_deps/arrow-build/release
+cmake ... -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH="$AR" \
+          -DCMAKE_CXX_FLAGS_RELEASE="-DNDEBUG"
+```
+
+Both are load-bearing, and dropping either fails differently:
+
+- **`BUILD_WITH_INSTALL_RPATH=ON` alone is a trap.** It fixes the Generate step but
+  the binaries then cannot load `libarrow.so.2500` / `libarrow_cuda.so.2500`
+  (`error while loading shared libraries`) — the build-tree RPATH that used to point
+  at `_deps/arrow-build/release` is gone. Hence the explicit `CMAKE_INSTALL_RPATH`
+  pointing at that same directory. Verify with
+  `ldd <binary> | grep -c "not found"` → must be `0`; a green build and a green
+  ctest are not proof, because the failure is a loader error at exec time.
+- **`CMAKE_CXX_FLAGS_RELEASE` is empty in this tree's cache**, not the CMake default
+  `-O3 -DNDEBUG`. Left empty, `test_perf_baseline` compiles without `NDEBUG` and its
+  own Release guard makes every perf test `SKIP` with *"perf baseline requires a
+  Release build (NDEBUG)"* — which reads like "no weights in the vault" and is not.
+  Pass `-DNDEBUG` only (not `-O3 -DNDEBUG`): `-O3` and `-flto=thin` are appended
+  separately by the `lsx_tune` path, and overwriting the whole variable fights it.
+  Note AOCC clang 17 warns `Unsupported lto mode -flto=thin, falling back to
+  -flto=full`; that is expected.
+
+Also: `-DCMAKE_C_COMPILER` must be **omitted** for this tree. Passing a bad path
+poisons the cache with `CMAKE_C_COMPILER:UNINITIALIZED` and CMake then loses the ELF
+platform detection that the Arrow RPATH check depends on, which surfaces as the same
+confusing RPATH error one step later. Point only `CMAKE_CXX_COMPILER` and
+`CMAKE_CUDA_HOST_COMPILER` at AOCC; `AOCC` lives in `~/projects/amd/`, **not** in
+`$HOME` — a `$HOME/aocc-compiler-5.2.0` path does not exist.
+
 This tree (`build/linux-release-znver4-aocc`) is the perf reference. AOCC/Clang
 specifics (`-flto=thin` fallback, the abseil format-checker patch) are in
 `cuda-cmake-build-gotchas`.

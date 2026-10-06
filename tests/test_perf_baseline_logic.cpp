@@ -375,3 +375,51 @@ TEST_CASE("perf registry: every baseline entry has a measuring TEST_CASE",
     INFO("perf registry drift:\n" << joined);
     REQUIRE(orphans.empty());
 }
+
+TEST_CASE("perf registry: every perf TEST_CASE has a registered ctest target",
+          "[perf_baseline][guard]")
+{
+    // The case above is one-directional: a JSON entry with no TEST_CASE fails, but
+    // a TEST_CASE with no add_test passed silently. That is how xing, mimo and
+    // alice ended up with TEST_CASEs but no ctest wiring - `ctest -L perf` ran 16
+    // of 19 families and nobody noticed, while xing's and alice's baselines in the
+    // JSON kept looking maintained. Xing and alice had been recorded by invoking
+    // the binary directly (Catch2 runs every TEST_CASE in the binary); mimo had
+    // never been measured at all.
+    //
+    // A TEST_CASE without a target is worse than no test: it reads as coverage in
+    // the source and as absence in ctest, and neither view contradicts the other.
+    const std::string root = LSX_SOURCE_DIR;
+    const std::string test_src =
+        ReadAll(root + "/tests/test_perf_baseline.cpp");
+    const std::string cmake_src =
+        ReadAll(root + "/tests/CMakeLists.txt");
+
+    // Every `add_test(NAME test_perf_baseline_<name> ... COMMAND test_perf_baseline
+    // "<case name>")` in the CMake file. The COMMAND argument is the TEST_CASE
+    // filter string, which is what actually ties the two together - matching on
+    // the target NAME alone would only re-derive the model list.
+    static const std::regex wired_re(R"(add_test\(NAME\s+test_perf_baseline_\S+\s*\n?[^)]*?COMMAND\s+test_perf_baseline\s+"([^"]+))");
+    std::set<std::string> wired;
+    std::smatch m;
+    auto begin = cmake_src.cbegin();
+    while (std::regex_search(begin, cmake_src.cend(), m, wired_re)) {
+        wired.insert(m[1].str());
+        begin = m.suffix().first;
+    }
+
+    static const std::regex case_re(R"(TEST_CASE\(\s*"([^"]+))");
+    std::vector<std::string> unwired;
+    begin = test_src.cbegin();
+    while (std::regex_search(begin, test_src.cend(), m, case_re)) {
+        const std::string name = m[1].str();
+        if (name.rfind("perf baseline:", 0) == 0 && wired.count(name) == 0)
+            unwired.push_back(name);
+        begin = m.suffix().first;
+    }
+
+    std::string joined;
+    for (const auto &x : unwired) joined += "TEST_CASE with no ctest target: " + x + "\n";
+    INFO("perf target drift:\n" << joined);
+    REQUIRE(unwired.empty());
+}

@@ -2191,6 +2191,41 @@ set_tests_properties(test_perf_baseline_phi_4 PROPERTIES
 set_tests_properties(test_perf_baseline_phi_4
     PROPERTIES LABELS perf)
 
+# ── Xing / MiMo / Alice perf baselines ───────────────────────────────────
+# These three TEST_CASEs existed in test_perf_baseline.cpp but had no add_test,
+# so `ctest -L perf` never ran them. Xing and Alice baselines were only ever
+# recorded by invoking the binary directly (Catch2 runs every TEST_CASE in the
+# binary), which is why they looked maintained while having no ctest wiring at
+# all; MiMo had never been measured. A baseline with no target is a baseline that
+# silently rots - the same trap as a missing golden, and the guard that enforces
+# per-family test wiring does not cover the perf label.
+add_test(NAME test_perf_baseline_xing_4_0_29b_a4b
+         COMMAND test_perf_baseline "perf baseline: xing4.0-29b-a4b")
+set_tests_properties(test_perf_baseline_xing_4_0_29b_a4b PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Xing4.0-29B-A4B")
+set_tests_properties(test_perf_baseline_xing_4_0_29b_a4b
+    PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_mimo_v2_6_flash_rl
+         COMMAND test_perf_baseline "perf baseline: mimo-v2.6-flash-rl")
+set_tests_properties(test_perf_baseline_mimo_v2_6_flash_rl PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=MiMo-V2.6-Flash-RL")
+set_tests_properties(test_perf_baseline_mimo_v2_6_flash_rl
+    PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_alice_foundation_80b_a3b
+         COMMAND test_perf_baseline "perf baseline: alice-foundation-80b-a3b")
+set_tests_properties(test_perf_baseline_alice_foundation_80b_a3b PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=AliceAI-Foundation-80B-A3B-Base")
+set_tests_properties(test_perf_baseline_alice_foundation_80b_a3b
+    PROPERTIES LABELS perf)
+
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
 target_include_directories(test_deepseek_nvfp4_repack PRIVATE

@@ -306,7 +306,7 @@ PRODUCTION code and must stay unset in a real run:
 | variable | meaning |
 |---|---|
 | `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1` | relax the frozen-geometry gates for converter/loader/model fixtures (31 targets set it) |
-| `LSX_PERF_VAULT_SUBDIR=<subdir>` | vault subdir per `test_perf_baseline_*` target (16 targets) |
+| `LSX_PERF_VAULT_SUBDIR=<subdir>` | vault subdir per `test_perf_baseline_*` target (19 targets) |
 | `LSX_TEST_NEMOTRON_ROOT=<dir>` | vault path for the nemotron selfcheck |
 
 **Operator-supplied — the real-weight suites `SKIP` until you set these:**
