@@ -299,14 +299,19 @@ bool NemotronModelBase::BuildPromptInputIds(const ArrowTokenizerDb &tok,
                                             std::string_view raw_prompt,
                                             std::vector<int32_t> &out_ids) const
 {
-    // Single-turn native frame, same shape as RenderNemotronConversation
-    // emits for a one-message conversation (verified against the checkpoint's
-    // chat_template.jinja: bare role word + "\n", generation prompt opens
-    // <think>). A chat model must never see an unframed prompt.
-    const std::string frame = absl::StrCat("user\n", raw_prompt,
-                                           "\nassistant\n<think>\n");
-    if (AppendQwenChatIds(tok, frame, out_ids)) return true;
-    return prompt::EncodeRawPrompt(tok, frame, out_ids);
+    // A chat model must never see an unframed prompt. Render the single turn
+    // through the SAME native template the conversation path uses (the
+    // checkpoint's chat_template.jinja: `<|im_start|>role\n…<|im_end|>`, with
+    // the generation prompt opening `<think>`), NOT a bare role-word frame -
+    // the latter does not match the checkpoint and degrades generation.
+    ChatConversation conv;
+    conv.messages.push_back({"user", std::string(raw_prompt), "", {}});
+    std::string frame;
+    if (RenderNemotronConversation(conv, frame)) {
+        if (AppendQwenChatIds(tok, frame, out_ids)) return true;
+        return prompt::EncodeRawPrompt(tok, frame, out_ids);
+    }
+    return false;
 }
 
 // ── Nemotron-3.5 ChatML/XML tool format ─────────────────────────────────────

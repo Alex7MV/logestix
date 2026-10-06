@@ -190,9 +190,10 @@ TEST_CASE("nemotron single-prompt framing uses the native chat template",
     REQUIRE(framing_probe.BuildPromptInputIds(db, kPrompt, ids));
     REQUIRE(!ids.empty());
 
-    // Round-trip the ids: the frame must be exactly the native single turn.
-    const std::string expected = std::string("user\n") + kPrompt +
-                                 "\nassistant\n<think>\n";
+    // Round-trip the ids: the frame must be exactly the native single turn
+    // (the checkpoint's chat_template.jinja uses <|im_start|> ChatML blocks).
+    const std::string expected = std::string("<|im_start|>user\n") + kPrompt +
+                                 "<|im_end|>\n<|im_start|>assistant\n<think>\n";
     const std::string decoded = runtime::DecodeGeneratedText(db, ids);
     INFO("decoded frame: [" << decoded << "]");
     REQUIRE(decoded == expected);

@@ -676,8 +676,17 @@ verified field-by-field; the only difference is that the source is *pre-quantize
 Design: `docs/superpowers/specs/2026-10-06-nemotron-3.5-lightning-nvfp4-ingestion-design.md`.
 The codec finding this surfaced is section **L** above.
 
-**Status update 2026-10-07: stages 3–8 landed and green; the real-weight
-SelfCheck is RED on a runtime bug in the shared Nemotron family (see below).**
+**Status update 2026-10-07 (resolved): stages 3–8 landed and green; the
+real-weight SelfCheck passes (3/3 cycles, top-1 "Paris").** The blocker was a
+shared-loader dtype bug: the NVFP4 tree stores the router `gate.weight` as
+**F32** (ModelOpt left it high-precision) while the BF16 sibling's tree stores
+it BF16, and `LoadNemotronWeights` uploaded it with `CvKind::kBf16ToHalf`
+unconditionally — so the router read F32 bytes as BF16 and every MoE layer
+selected/gated experts from garbage. Fixed by picking the upload path from the
+tensor's stored `dtype` (`kF32ToHalf` for F32). The single-prompt framing was
+also corrected to render the checkpoint's native `<|im_start|>…<|im_end|>`
+ChatML frame instead of a bare role-word frame. Bisection method and the
+(non-)conversion evidence are recorded below.
 
 Landed since the note below: the `NemotronNvfp4Model` class on a refactored
 `NemotronModelBase` (shared lifecycle/generation contour), factory
@@ -689,7 +698,8 @@ previously-red guard tests are now green). The 52-shard source was converted
 in place (`logestix/`, 18 GiB; 52 layers, 128 experts, 270 MTP tensors cut,
 12 FP8 KV scales dropped, 355 pinned tensors).
 
-**Real-weight validation is RED — but NOT the conversion.** The converted
+**The conversion was never the problem** (the failure had two independent
+causes: this loader dtype bug, and the shared-code framing). The converted
 weights were verified numerically against the source, tensor class by tensor
 class (host reference, `torch.float8_e4m3fn` semantics):
 
@@ -702,13 +712,15 @@ class (host reference, `torch.float8_e4m3fn` semantics):
 | norms/conv/A_log/D/dt_bias/router/embeddings | raw byte compare | byte-identical |
 
 The block-scale codec is bit-identical to the source (see section L, and the
-2026-10-07 note). **The failure is in the shared Nemotron forward pass.** A
-`transformers` `NemotronHForCausalLM` reference (5.15.1, weights dequantized
-from the same source) produces, for the selfcheck prompt, top-5
-`[the, Paris, a, \n, one]` and greedy ` the city of Paris.`; the logestix model
-produces top-5 `[the, 1, France, …, a]` and **echoes the prompt**
-(` the capital of France…`). The first token coincidentally matches, so the
-SelfCheck (which only inspects the first 1–2 tokens) is not a sufficient gate.
+2026-10-07 note). The failure localised to the shared `NemotronForwardToken`
+path. A `transformers` `NemotronHForCausalLM` reference (5.15.1, weights
+dequantized from the same source) initially produced, for the selfcheck prompt,
+top-5 `[the, Paris, a, \n, one]` and greedy ` the city of Paris.` while the
+logestix model echoed the prompt (` the capital of France…`); feeding the
+reference the **converted** weights instead produced ` Paris…`, which ruled out
+the conversion and pointed at the loader. Per-layer hidden-state bisection then
+showed layer 0 (mamba) matching to <0.8% and layer 1 (the first MoE) diverging
+by >25% — the router.
 
 Two harness defects were found alongside the runtime bug (neither is the root
 cause): the selfcheck feeds `arrow_tokenizer_encode("The capital of France is")`

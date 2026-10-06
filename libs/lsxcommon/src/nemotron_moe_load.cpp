@@ -408,7 +408,15 @@ bool LoadNemotronWeights(const std::string &model_path,
                 return false;
             }
         } else {  // moe
-            if (!UploadOne(raw_suffix("mixer.gate.weight"), CvKind::kBf16ToHalf,
+            // The router weight is BF16 in the BF16-distribution sibling's
+            // tree but F32 in the pre-quantized NVFP4 tree (ModelOpt leaves the
+            // router high-precision). Pick the upload path from the stored
+            // dtype: an F32 record read as BF16 would upload garbage.
+            const TensorView *gate = raw_suffix("mixer.gate.weight");
+            const CvKind gate_kind = (gate && gate->dtype == "F32")
+                                         ? CvKind::kF32ToHalf
+                                         : CvKind::kBf16ToHalf;
+            if (!UploadOne(gate, gate_kind,
                            reinterpret_cast<void **>(&lw.d_router), "router",
                            stream, ring, acc, error) ||
                 !UploadOne(raw_suffix("mixer.gate.e_score_correction_bias"),
