@@ -215,6 +215,28 @@ endif()
 
 add_test(NAME test_deepseek_moe_loader COMMAND test_deepseek_moe_loader)
 
+# ── Canonical NVFP4 full-E4M3 block-scale codec (model-neutral, host) ──
+add_executable(test_nvfp4_scale test_nvfp4_scale.cpp)
+target_link_libraries(test_nvfp4_scale PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nvfp4_scale PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+if(WIN32)
+    add_custom_command(TARGET test_nvfp4_scale POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nvfp4_scale>"
+    )
+    add_custom_command(TARGET test_nvfp4_scale POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_nvfp4_scale>"
+    )
+endif()
+
+add_test(NAME test_nvfp4_scale COMMAND test_nvfp4_scale)
+set_tests_properties(test_nvfp4_scale PROPERTIES LABELS fast)
+
 # ── DeepSeek-V4-Flash model lifecycle-stage test (host-only):
 #    classification of the converted layout (detect_model_type / factory) +
 #    topology contract (load_topology) on a synthetic logestix fixture.
@@ -5232,6 +5254,46 @@ add_test(NAME test_nemotron_moe_convert COMMAND test_nemotron_moe_convert)
 set_tests_properties(test_nemotron_moe_convert PROPERTIES
     TIMEOUT 120
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# test_nemotron_moe_nvfp4_convert — pre-quantized (ModelOpt) source layout:
+# NVFP4 routed/shared experts + lm_head, per-tensor FP8 mamba in/out_proj,
+# BF16 attention with FP8 KV-cache scales, F32 router, MTP ballast.
+add_executable(test_nemotron_moe_nvfp4_convert
+               test_nemotron_moe_nvfp4_convert.cpp)
+target_link_libraries(test_nemotron_moe_nvfp4_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_nvfp4_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_nemotron_moe_nvfp4_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_convert>"
+    )
+    add_custom_command(TARGET test_nemotron_moe_nvfp4_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_convert>"
+    )
+endif()
+add_test(NAME test_nemotron_moe_nvfp4_convert
+         COMMAND test_nemotron_moe_nvfp4_convert)
+set_tests_properties(test_nemotron_moe_nvfp4_convert PROPERTIES
+    TIMEOUT 120
+    LABELS convert
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# test_nemotron_moe_nvfp4_loader — the pre-quantized distribution's own frozen
+# passport: geometry, the stop SET, and the model-name cross-load guard.
+add_executable(test_nemotron_moe_nvfp4_loader
+               test_nemotron_moe_nvfp4_loader.cpp)
+target_link_libraries(test_nemotron_moe_nvfp4_loader PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_nvfp4_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_nemotron_moe_nvfp4_loader
+         COMMAND test_nemotron_moe_nvfp4_loader)
+set_tests_properties(test_nemotron_moe_nvfp4_loader PROPERTIES LABELS fast)
 
 add_executable(test_nemotron_moe_loader test_nemotron_moe_loader.cpp)
 target_link_libraries(test_nemotron_moe_loader PRIVATE

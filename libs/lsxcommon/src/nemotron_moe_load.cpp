@@ -96,8 +96,28 @@ bool LoadNemotronIndex(const std::string &model_path, NemotronIndex &out,
     get_i(root, "shared_expert_intermediate_size",
           out.shared_expert_intermediate_size);
     get_i(root, "bos_token_id", out.bos_token_id);
-    get_i(root, "eos_token_id", out.eos_token_id);
     get_i(root, "pad_token_id", out.pad_token_id);
+    get_i(root, "fp8_kv_scales_dropped", out.fp8_kv_scales_dropped);
+    // eos_token_id is an int for the BF16 sibling and a LIST for the pre-quantized
+    // distribution ([2, 11]); both spellings have to load.
+    {
+        simdjson::ondemand::value eos;
+        if (root["eos_token_id"].get(eos) == simdjson::SUCCESS) {
+            if (auto arr = eos.get_array(); arr.error() == simdjson::SUCCESS) {
+                for (auto e : arr.value()) {
+                    int64_t v;
+                    if (e.get_int64().get(v) == simdjson::SUCCESS)
+                        out.eos_token_ids.push_back(static_cast<int>(v));
+                }
+            } else {
+                int64_t v;
+                if (eos.get_int64().get(v) == simdjson::SUCCESS)
+                    out.eos_token_ids.push_back(static_cast<int>(v));
+            }
+        }
+    }
+    if (!out.eos_token_ids.empty())
+        out.eos_token_id = out.eos_token_ids.front();
     get_i(root, "total_pinned_tensors", out.total_pinned_tensors);
 
     double rd;

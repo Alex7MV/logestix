@@ -101,7 +101,7 @@ __global__ void Nvfp4DequantKernel(const uint8_t* __restrict__ packed,
 
 // NOTE: a historical frexp-based pow2 encoder (clamped e4<=15, doubling the
 // scale on exact powers of two) was removed -- use the canonical
-// lsxcommon/nvfp4_scale.h FloatToE4m3P2 everywhere.
+// lsxcommon/nvfp4_scale.h FloatToE4m3 everywhere.
 
 // ── E2M1 encode (two documented tie flavors) ────────────────────────────────
 

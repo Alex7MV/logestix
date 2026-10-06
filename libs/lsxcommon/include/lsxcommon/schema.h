@@ -237,8 +237,10 @@ ReadRecordBatchFromFile(const std::filesystem::path &path);
 constexpr int kArrowAlignment = 256;
 constexpr int kNVFP4BlockSize = 16;
 
-uint8_t float_to_e4m3_p2(float s);
-float e4m3_p2_to_float(uint8_t e4m3);
+// Canonical full unsigned-E4M3 (UE4M3) NVFP4 block-scale codec:
+// value = 2^(e-7)*(1+m/8), e=(b>>3)&0xF, m=b&0x7; e==0 -> 0 (no subnormals).
+uint8_t float_to_e4m3(float s);
+float e4m3_to_float(uint8_t e4m3);
 
 struct VocabRow {
     int32_t token_id = 0;

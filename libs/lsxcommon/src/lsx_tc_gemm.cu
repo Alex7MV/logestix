@@ -36,7 +36,7 @@ std::atomic<int> g_lsx_splitk_grid_min{96};
 namespace {
 
 // Block-scale and E2M1 encode primitives are the shared canonical codecs:
-// lsxcommon::nvfp4::FloatToE4m3P2 (nvfp4_scale.h, ceil pow2-E4M3) and
+// lsxcommon::nvfp4::FloatToE4m3 (nvfp4_scale.h, full unsigned-E4M3, RNE) and
 // lsxcommon::kernels::QuantizeE2m1TieUp (lsx_kernels_quant.cuh).
 using lsxcommon::kernels::QuantizeE2m1TieUp;
 
@@ -63,7 +63,7 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
     // i.e. fp16 activations above ~768 clip one octave earlier than the
     // historical frexp encode — required canonical parity, do not "fix".
     const uint8_t sb =
-        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+        lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
     scales[blk] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
@@ -807,7 +807,7 @@ __global__ void ActQuantBf16Kernel(const __nv_bfloat16 *__restrict__ x,
         absmax = fmaxf(absmax, v);
     }
     const uint8_t sb =
-        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+        lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
     scales[blk] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;

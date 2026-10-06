@@ -956,7 +956,7 @@ KimiTcScratchLayout LayoutKimiTcScratch(void *base, int sk)
 }
 
 // Slot-major swiglu + NVFP4 quant over the fp16 w13 batch output. Same
-// per-16 codec as the weight side: FloatToE4m3P2 + QuantizeE2m1TieUp;
+// per-16 codec as the weight side: FloatToE4m3 + QuantizeE2m1TieUp;
 // sigmoid uses precise fdiv/fadd/exp (no __expf) for deterministic ties.
 __global__ void kimi_tc_swiglu_quant_kernel(
     const __half *__restrict__ ygu, int k_slots, int I,
@@ -985,7 +985,7 @@ __global__ void kimi_tc_swiglu_quant_kernel(
         absmax = fmaxf(absmax, fabsf(vals[i]));
     }
     const uint8_t sb =
-        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+        lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
     scales[g] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;

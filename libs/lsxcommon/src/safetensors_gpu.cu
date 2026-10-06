@@ -173,7 +173,7 @@ int64_t dtype_byte_size(int dc)
 }
 
 // NOTE: E4M3 block-scale encode/decode intentionally delegate to the
-// canonical lsxcommon::float_to_e4m3_p2 / lsxcommon::e4m3_p2_to_float
+// canonical lsxcommon::float_to_e4m3 / lsxcommon::e4m3_to_float
 // (schema.h) instead of a local reimplementation. A previous local copy
 // here used floor-rounding (via std::frexp) instead of ceiling-rounding,
 // which systematically underestimated the largest weight in every
@@ -332,12 +332,12 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
             float s = (max_val == 0.0f)
                 ? (1.0f / 128.0f)
                 : (max_val / global_max_abs);
-            uint8_t e4 = lsxcommon::float_to_e4m3_p2(s);
+            uint8_t e4 = lsxcommon::float_to_e4m3(s);
             scales_e4m3[static_cast<std::size_t>(i)] = e4;
             // Device-side block scales feed the quantizer, which divides by the
             // full scale product (e4m3 * global_scale) — matching the dequant.
             host_block_scales[static_cast<std::size_t>(i)] =
-                lsxcommon::e4m3_p2_to_float(e4) * global_scale;
+                lsxcommon::e4m3_to_float(e4) * global_scale;
         }
 
         // Upload float scales to device (async)

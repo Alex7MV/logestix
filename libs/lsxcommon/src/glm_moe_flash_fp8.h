@@ -3,7 +3,7 @@
 // Host-reference FP8(blockwise 128x128 scale_inv) -> NVFP4 requant.
 // Bit-compatible with the GPU converter path (safetensors_gpu.cu
 // quantize_tensor_gpu): identical E2M1 nearest tie flavor, pow2-E4M3
-// per-16 block scales (ceil, FloatToE4m3P2), and the
+// per-16 block scales (ceil, FloatToE4m3), and the
 // global_scale = global_max_abs / 6 convention
 // (dequant = E2M1 * e4m3_p2 * global_scale).
 //

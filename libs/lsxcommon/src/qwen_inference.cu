@@ -609,7 +609,7 @@ __global__ void qwen_swiglu_kernel(const __half *a, const __half *b,
 // Emits the fp16 output AND its quantized form so the following down-GEMM
 // skips the standalone ActQuant pass. Quantization is byte-identical to
 // ActQuantKernel: values are rounded to half BEFORE encoding (same
-// round-trip), same canonical FloatToE4m3P2 / tie-up chain.
+// round-trip), same canonical FloatToE4m3 / tie-up chain.
 __global__ void qwen_swiglu_quant_kernel(const __half *__restrict__ a,
                                          const __half *__restrict__ b,
                                          __half *__restrict__ y,
@@ -634,7 +634,7 @@ __global__ void qwen_swiglu_quant_kernel(const __half *__restrict__ a,
     }
 
     const uint8_t sb =
-        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+        lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
     scales[base / 16] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
@@ -1019,7 +1019,7 @@ __global__ void qwen_swiglu_precise_quant_kernel(
     }
 
     const uint8_t sb =
-        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+        lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
     scales[base / 16] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;

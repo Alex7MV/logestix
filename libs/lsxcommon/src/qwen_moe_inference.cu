@@ -788,7 +788,7 @@ __global__ void moe_swiglu_quant_batch_kernel(const __half *__restrict__ ygu,
         absmax = fmaxf(absmax, fabsf(vals[i]));
     }
     const uint8_t sb =
-        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+        lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
     scales[g] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;

@@ -30,17 +30,17 @@ namespace lsxcommon {
 // that out-of-bounds vector reads (e.g., uint4 loads in CUDA kernels) stay within
 // the allocation. The `raw_values()` pointer from UInt8Array is at least 64-byte aligned.
 
-// float <-> E4M3_P2 scalar conversion (used by the per-block E4M3 quantizer).
+// Full unsigned-E4M3 (UE4M3) scalar codec for the per-block NVFP4 quantizer.
 // Implementation lives in the shared nvfp4_scale.h (single source for host
 // converter and device act-quant kernels).
-uint8_t float_to_e4m3_p2(float s)
+uint8_t float_to_e4m3(float s)
 {
-    return nvfp4::FloatToE4m3P2(s);
+    return nvfp4::FloatToE4m3(s);
 }
 
-float e4m3_p2_to_float(uint8_t e4m3)
+float e4m3_to_float(uint8_t e4m3)
 {
-    return nvfp4::E4m3P2ToFloat(e4m3);
+    return nvfp4::E4m3ToFloat(e4m3);
 }
 
 namespace {

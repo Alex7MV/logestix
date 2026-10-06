@@ -682,11 +682,11 @@ __device__ __forceinline__ void dequant_row(Nvfp4RowView w, int row,
         }
         const uint8_t sb = scales[c >> 4];
         // E4M3 exponent-form scale byte (converter layout): e4 = sb >> 3,
-        // scale = 2^(e4 - 7), 0 when e4 == 0. Matches E4M3ScaleToFloat.
+        // scale = 2^(e4-7)*(1+m/8), 0 when e4 == 0. Matches E4M3ScaleToFloat (full unsigned E4M3).
         const uint32_t e4 = (sb >> 3) & 0x0Fu;
         const float scale =
             e4 == 0 ? 0.0f
-                    : __int_as_float(static_cast<int>((e4 + 120u) << 23));
+                    : __int_as_float(static_cast<int>(((e4 + 120u) << 23) | ((sb & 0x7u) << 20)));
         out[c] = v * scale * w.global_scale;
     }
 }
@@ -729,7 +729,7 @@ __global__ void ple_row_proj_kernel(Nvfp4RowView w,
             const uint32_t e4 = (sb >> 3) & 0x0Fu;
             const float scale =
                 e4 == 0 ? 0.0f
-                        : __int_as_float(static_cast<int>((e4 + 120u) << 23));
+                        : __int_as_float(static_cast<int>(((e4 + 120u) << 23) | ((sb & 0x7u) << 20)));
             dv = v * scale * w.global_scale;
         }
         acc += static_cast<double>(dv) * d_emb_row[c];

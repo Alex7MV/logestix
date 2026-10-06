@@ -28,13 +28,20 @@ constexpr float kE2M1TestTable[16] = {
    -0.0f,-0.5f,-1.0f,-1.5f,-2.0f,-3.0f,-4.0f,-6.0f
 };
 
-// Bit-exact host replica of nvfp4_codec.h's E4M3ScaleToFloat:
-// e4 == 0 -> 0.0f, else (e4+120)<<23 as a float.
+// Bit-exact host replica of nvfp4_codec.h's E4M3ScaleToFloat: full unsigned
+// E4M3: e4 == 0 -> 0.0f, else 2^(e-7)*(1+m/8); 0x7F reserved -> NaN.
 float E4M3ScaleToFloatHost(uint8_t e4m3)
 {
-    const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
-    if (e4 == 0) return 0.0f;
-    uint32_t bits = (e4 + 120u) << 23;
+    const uint32_t e = (e4m3 >> 3) & 0x0Fu;
+    if (e == 0) return 0.0f;
+    const uint32_t m = e4m3 & 0x7u;
+    if (e == 15u && m == 7u) {
+        uint32_t nb = 0x7FC00000u;
+        float f;
+        std::memcpy(&f, &nb, sizeof(f));
+        return f;
+    }
+    uint32_t bits = ((e + 120u) << 23) | (m << 20);
     float out;
     std::memcpy(&out, &bits, sizeof(out));
     return out;
@@ -62,33 +69,37 @@ void HostRefNvfp4Gemm(const __half *x, const uint8_t *packed, const uint8_t *sca
 
 }  // namespace
 
-// Regression: pow2-E4M3 scale decode must test the e4 FIELD, not the whole
+// Regression: full-E4M3 scale decode must test the e4 FIELD, not the whole
 // byte. Bytes with sign/mantissa bits set but a zero exponent field
 // (0x80..0x87) decode to exactly 0 — the contract shared by nvfp4_codec.h
-// E4M3ScaleToFloat and nvfp4_scale.h E4m3P2ToFloat. A whole-byte zero check
+// E4M3ScaleToFloat and nvfp4_scale.h E4m3ToFloat. A whole-byte zero check
 // instead decodes 0x82 as 2^-7, silently corrupting every GEMM whose stored
 // scale pattern contains such bytes.
-TEST_CASE("pow2-E4M3 scale decode is field-zero based", "[qwen][gemm][nvfp4][regression]")
+TEST_CASE("full-E4M3 scale decode is field-zero based", "[qwen][gemm][nvfp4][regression]")
 {
     using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
-    using lsxcommon::nvfp4::E4m3P2ToFloat;
+    using lsxcommon::nvfp4::E4m3ToFloat;
 
     // Zero exponent field -> exactly zero, regardless of sign/mantissa bits.
     for (uint8_t b : {0x00, 0x01, 0x03, 0x07, 0x80, 0x81, 0x82, 0x84, 0x87}) {
         INFO("byte=0x" << std::hex << int(b) << std::dec);
         CHECK(E4M3ScaleToFloat(b) == 0.0f);
-        CHECK(E4m3P2ToFloat(b) == 0.0f);
+        CHECK(E4m3ToFloat(b) == 0.0f);
     }
     // Canonical powers of two remain exact (and both decoders agree).
     const struct { uint8_t b; float v; } cases[] = {
         {0x08, 0.015625f}, {0x38, 1.0f}, {0x40, 2.0f},
-        {0x78, 256.0f}, {0x88, 0.015625f}, {0xf0, 128.0f}, {0xff, 256.0f},
+        {0x78, 256.0f}, {0x88, 0.015625f}, {0xf0, 128.0f},
     };
     for (const auto& c : cases) {
         INFO("byte=0x" << std::hex << int(c.b) << std::dec);
         CHECK(E4M3ScaleToFloat(c.b) == c.v);
-        CHECK(E4m3P2ToFloat(c.b) == c.v);
+        CHECK(E4m3ToFloat(c.b) == c.v);
     }
+    // The reserved NaN slot decodes to NaN on both (never emitted by the
+    // encoder; under the retired pow2 codec 0xFF read as 256).
+    CHECK(std::isnan(E4M3ScaleToFloat(0xFF)));
+    CHECK(std::isnan(E4m3ToFloat(0x7F)));
 }
 
 TEST_CASE("RunQwenNvfp4Gemm matches host reference (small-K, tile path)", "[qwen][gemm][nvfp4]")
@@ -332,7 +343,7 @@ TEST_CASE("RunQwenSwigluQuant matches swiglu+ActQuant byte-for-byte",
                 vals[i] = __half2float(hv);
                 absmax = std::fmax(absmax, std::fabs(vals[i]));
             }
-            const uint8_t sb = lsxcommon::nvfp4::FloatToE4m3P2(absmax *
+            const uint8_t sb = lsxcommon::nvfp4::FloatToE4m3(absmax *
                                                                (1.0f / 6.0f));
             if (sb != s1[g]) ++mism_s;
             const float inv_s = E4M3ScaleToFloatHost(sb);

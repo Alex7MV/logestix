@@ -12,11 +12,13 @@
 // stayed correct. Immediates have no global storage, so no cross-TU aliasing
 // is possible.
 //
-// Bit-exactness: E4M3ScaleToFloat uses `e4==0 -> 0.0`, else (e4+120)<<23.
+// Bit-exactness: E4M3ScaleToFloat decodes the full unsigned E4M3 block scale
+// (e4==0 -> 0.0, else 2^(e-7)*(1+m/8)) via nvfp4_scale.h::E4m3ToFloat.
 #pragma once
 
 #include <cstdint>
 #include <cuda_runtime.h>
+#include "nvfp4_scale.h"
 
 namespace lsxcommon {
 namespace gpu {
@@ -42,16 +44,12 @@ __host__ __device__ __forceinline__ float E2M1Value(int nib)
     return (nib & 8) ? -v : v;
 }
 
-// E4M3 power-of-2 block scale (only exponent bits used). e4==0 -> 0.0;
-// else 2^(e4-7) reconstructed bit-wise as (e4+120)<<23.
+// Full unsigned-E4M3 block scale (mantissa-aware). Delegates to the single
+// canonical codec in nvfp4_scale.h: e4==0 -> 0.0, else 2^(e-7)*(1+m/8).
+// mantissa==0 bytes reproduce the old pow2 decode bit-for-bit.
 __host__ __device__ __forceinline__ float E4M3ScaleToFloat(uint8_t e4m3)
 {
-    const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
-    if (e4 == 0) return 0.0f;
-    const uint32_t bits = (e4 + 120u) << 23;
-    float v;
-    memcpy(&v, &bits, sizeof(v));
-    return v;
+    return ::lsxcommon::nvfp4::E4m3ToFloat(e4m3);
 }
 
 } // namespace nvfp4

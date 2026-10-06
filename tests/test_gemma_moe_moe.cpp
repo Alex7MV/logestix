@@ -407,7 +407,15 @@ TEST_CASE("gemma dense MLP NVFP4 GEMV chain parity vs host reference",
     auto e4m3 = [](uint8_t b) {
         int exp = (b >> 3) & 0xF;
         if (exp == 0) return 0.0f;
-        uint32_t bits = static_cast<uint32_t>(exp + 120) << 23;
+        int m = b & 0x7;
+        if (exp == 15 && m == 7) {
+            uint32_t nb = 0x7FC00000u;
+            float f;
+            std::memcpy(&f, &nb, 4);
+            return f;
+        }
+        uint32_t bits = (static_cast<uint32_t>(exp + 120) << 23) |
+                        (static_cast<uint32_t>(m) << 20);
         float v;
         std::memcpy(&v, &bits, 4);
         return v;

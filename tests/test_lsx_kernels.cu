@@ -217,53 +217,51 @@ TEST_CASE("e2m1 encode ties: tie-up and nearest both replicated", "[lsxk][quant]
     }
 }
 
-// ── Coverage: pow2-E4M3 scale ENCODER edge classes (docs §1 deviation) ──────
-// Reference: nvidia-cuda-docs MCP (see docs/NVIDIA_DOCS.md) — ceil-rounding pow2-only
-// payload, e4 clamped to [1,14], exact powers of two map onto themselves,
-// subnormals clamp to the minimum normal scale 2^-6 (byte 0x08).
-TEST_CASE("FloatToE4m3P2 edge classes, identity and ceil property",
+// ── Coverage: full unsigned-E4M3 scale ENCODER edge classes ─────────────────
+// Contract: value = 2^(e-7)*(1+m/8); RNE (ties-to-even); e4 field 0 -> 0 (no
+// subnormals); 0x7F reserved (never emitted); max finite 0x7E = 448.
+TEST_CASE("FloatToE4m3 edge classes, identity and RNE property",
           "[lsxk][quant][scale]")
 {
-    using lsxcommon::nvfp4::FloatToE4m3P2;
-    using lsxcommon::nvfp4::E4m3P2ToFloat;
+    using lsxcommon::nvfp4::FloatToE4m3;
+    using lsxcommon::nvfp4::E4m3ToFloat;
 
     // Zero (incl. -0) -> reserved zero byte 0x00.
-    REQUIRE(FloatToE4m3P2(0.0f) == 0x00);
-    REQUIRE(FloatToE4m3P2(-0.0f) == 0x00);
+    REQUIRE(FloatToE4m3(0.0f) == 0x00);
+    REQUIRE(FloatToE4m3(-0.0f) == 0x00);
 
-    // Float subnormals clamp to the minimum normal scale 2^-6 (byte 0x08).
-    REQUIRE(FloatToE4m3P2(1e-45f) == 0x08);
-    REQUIRE(FloatToE4m3P2(1e-40f) == 0x08);
-    // Normal values below 2^-6 also clamp to 2^-6 (e4 floor 1).
-    REQUIRE(FloatToE4m3P2(0.0078125f) == 0x08);   // 2^-7
+    // Float subnormals and values below 2^-6 clamp to the min normal 2^-6.
+    REQUIRE(FloatToE4m3(1e-45f) == 0x08);
+    REQUIRE(FloatToE4m3(1e-40f) == 0x08);
+    REQUIRE(FloatToE4m3(0.0078125f) == 0x08);   // 2^-7
 
-    // Exact powers of two map onto themselves (2^-6 .. 2^7).
+    // Exact powers of two map onto themselves (2^-6 .. 2^8; 2^8 is now exact).
     const struct { float v; uint8_t b; } pow2[] = {
         {0.015625f, 0x08}, {0.125f, 0x20}, {1.0f, 0x38},
-        {2.0f, 0x40}, {64.0f, 0x68}, {128.0f, 0x70},
+        {2.0f, 0x40}, {64.0f, 0x68}, {128.0f, 0x70}, {256.0f, 0x78},
     };
     for (const auto& c : pow2) {
         INFO("v=" << c.v);
-        REQUIRE(FloatToE4m3P2(c.v) == c.b);
-        REQUIRE(E4m3P2ToFloat(c.b) == c.v);   // identity
+        REQUIRE(FloatToE4m3(c.v) == c.b);
+        REQUIRE(E4m3ToFloat(c.b) == c.v);   // identity
     }
 
-    // Ceil rounding: smallest power of two >= s.
-    REQUIRE(FloatToE4m3P2(0.1f) == 0x20);    // -> 2^-3
-    REQUIRE(FloatToE4m3P2(1.5f) == 0x40);    // -> 2^1
-    REQUIRE(FloatToE4m3P2(6.5f) == 0x50);    // -> 2^3
-    REQUIRE(FloatToE4m3P2(300.0f) == 0x70);  // > 2^7 band -> ceiling clamp
+    // RNE rounding (nearest, ties-to-even).
+    REQUIRE(FloatToE4m3(0.1f) == 0x1D);     // 2^-4 * 1.625
+    REQUIRE(FloatToE4m3(1.5f) == 0x3C);
+    REQUIRE(FloatToE4m3(3.0f) == 0x44);     // was 0x48 under ceil-pow2
+    REQUIRE(FloatToE4m3(6.5f) == 0x4D);
+    REQUIRE(FloatToE4m3(300.0f) == 0x79);
 
-    // e4 clamps to 14 (max scale 2^7); never enters the E4M3 NaN slot.
-    REQUIRE(FloatToE4m3P2(256.0f) == 0x70);
-    REQUIRE(FloatToE4m3P2(1e30f) == 0x70);
+    // Max finite 0x7E = 448; never enters the 0x7F NaN slot.
+    REQUIRE(FloatToE4m3(448.0f) == 0x7E);
+    REQUIRE(FloatToE4m3(449.0f) == 0x7E);
+    REQUIRE(FloatToE4m3(1e30f) == 0x7E);
 
-    // Property sweep: every finite positive input yields a pow2 scale that
-    // never saturates (decoded >= s inside the representable band; decoded/2
-    // < s), and the clamp band edges behave exactly as documented.
+    // Property sweep: every finite positive input yields a normalized byte
+    // that stays within half a representable step of the input and never
+    // hits the NaN slot.
     uint32_t st = 20260910u;
-    // Normals only via the exponent field (e in [-126, 127]); float
-    // subnormals are covered by the explicit clamp cases above.
     for (int e = -126; e <= 127; ++e) {
         for (int mi = 0; mi < 4; ++mi) {
             const uint32_t mant = (mi == 0) ? 0u
@@ -272,27 +270,55 @@ TEST_CASE("FloatToE4m3P2 edge classes, identity and ceil property",
             const uint32_t bits = (static_cast<uint32_t>(e + 127) << 23) | mant;
             float s;
             std::memcpy(&s, &bits, sizeof(s));
-            const uint8_t b = FloatToE4m3P2(s);
-            const float d = E4m3P2ToFloat(b);
-            // Decoded scale is a power of two (mantissa field empty) or the
-            // reserved zero (only for s == 0, impossible in this sweep).
+            const uint8_t b = FloatToE4m3(s);
             INFO("s=" << s << " byte=0x" << std::hex << int(b) << std::dec);
-            REQUIRE(b != 0x00);
+            REQUIRE(b != 0x7F);
             REQUIRE(((b >> 3) & 0x0F) >= 1);
-            REQUIRE(((b >> 3) & 0x0F) <= 14);
-            REQUIRE((b & 0x07) == 0);
-            const uint32_t dbits = [&] { uint32_t x; std::memcpy(&x, &d, sizeof(x)); return x; }();
-            REQUIRE((dbits & 0x7FFFFFu) == 0);   // pow2 payload
-            if (s <= 128.0f && s >= 0.015625f) {
-                REQUIRE(d >= s);
-                REQUIRE(d < 2.0f * s);   // ceil, not round-up-two
-            } else if (s < 0.015625f) {
-                REQUIRE(d == 0.015625f);   // 2^-6 floor
+            const float d = E4m3ToFloat(b);
+            if (s < 0.015625f) {
+                REQUIRE(d == 0.015625f);                 // 2^-6 floor
+            } else if (s > 448.0f) {
+                REQUIRE(d == 448.0f);                    // 448 ceiling
             } else {
-                REQUIRE(d == 128.0f);      // 2^7 ceiling
+                REQUIRE(d > 0.0f);
+                REQUIRE(std::fabs(d - s) <= s * 0.0625f); // <= 1/16 relative
             }
         }
     }
+}
+
+__global__ void decode_e4m3_scales_kernel(const uint8_t* in, float* out, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = lsxcommon::gpu::nvfp4::E4M3ScaleToFloat(in[i]);
+}
+
+TEST_CASE("E4M3ScaleToFloat device parity, all 128 positive bytes",
+          "[lsxk][quant][scale]")
+{
+    std::vector<uint8_t> h_in(128);
+    for (int i = 0; i < 128; ++i) h_in[i] = static_cast<uint8_t>(i);
+    uint8_t* d_in = nullptr;
+    float* d_out = nullptr;
+    RequireCudaOk(cudaMalloc(&d_in, 128));
+    RequireCudaOk(cudaMalloc(&d_out, 128 * sizeof(float)));
+    RequireCudaOk(cudaMemcpy(d_in, h_in.data(), 128, cudaMemcpyHostToDevice));
+    decode_e4m3_scales_kernel<<<1, 128>>>(d_in, d_out, 128);
+    RequireCudaOk(cudaDeviceSynchronize());
+    std::vector<float> h_out(128);
+    RequireCudaOk(cudaMemcpy(h_out.data(), d_out, 128 * sizeof(float),
+                             cudaMemcpyDeviceToHost));
+    for (int i = 0; i < 128; ++i) {
+        const float want =
+            lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(i));
+        uint32_t a, b;
+        std::memcpy(&a, &h_out[i], 4);
+        std::memcpy(&b, &want, 4);
+        INFO("byte=0x" << std::hex << i);
+        if (std::isnan(want)) CHECK(std::isnan(h_out[i])); else CHECK(a == b);
+    }
+    cudaFree(d_in);
+    cudaFree(d_out);
 }
 
 // Coverage: the clamped E8M0 decode flavor used by the routed-expert FFN

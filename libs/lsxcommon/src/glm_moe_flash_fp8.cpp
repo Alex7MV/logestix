@@ -103,7 +103,7 @@ FlashNvfp4Blob RequantFp8ToNvfp4Host(const void *fp8_data,
         const float max_val = block_max[blk];
         const float s =
             (max_val == 0.0f) ? (1.0f / 128.0f) : (max_val / global_max_abs);
-        out.scales[blk] = lsxcommon::nvfp4::FloatToE4m3P2(s);
+        out.scales[blk] = lsxcommon::nvfp4::FloatToE4m3(s);
     }
 
     // Quantize + pack: q = E2M1(x / (e4m3_p2(byte) * global_scale)).
@@ -115,7 +115,7 @@ FlashNvfp4Blob RequantFp8ToNvfp4Host(const void *fp8_data,
                                   + c / 128];
         const int blk = static_cast<int>(i / 16);
         const float s =
-            lsxcommon::nvfp4::E4m3P2ToFloat(out.scales[blk])
+            lsxcommon::nvfp4::E4m3ToFloat(out.scales[blk])
             * out.global_scale;
         const uint8_t nib = QuantizeE2m1NearestHost(v / s);
         if (i % 2 == 0) out.packed[i / 2] = nib;

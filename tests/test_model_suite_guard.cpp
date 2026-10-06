@@ -853,7 +853,6 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "ornith-1.5-35b-a3b:code",
         "ornith-1.5-35b-a3b:det",
         "ornith-1.5-35b-a3b:fsi",
-        "qwen3.5-9b:fsi",
     };
 
     const fs::path root(LSX_SOURCE_DIR);

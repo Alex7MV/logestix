@@ -27,12 +27,20 @@ constexpr float kE2M1[16] = {
    -0.0f,-0.5f,-1.0f,-1.5f,-2.0f,-3.0f,-4.0f,-6.0f
 };
 
-// Bit-exact host replica of nvfp4_codec.h's E4M3ScaleToFloat (e4-field zero).
+// Bit-exact host replica of nvfp4_codec.h's E4M3ScaleToFloat: full unsigned
+// E4M3, e4-field zero -> 0, else 2^(e-7)*(1+m/8); 0x7F reserved -> NaN.
 float ScaleHost(uint8_t e4m3)
 {
-    const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
-    if (e4 == 0) return 0.0f;
-    uint32_t bits = (e4 + 120u) << 23;
+    const uint32_t e = (e4m3 >> 3) & 0x0Fu;
+    if (e == 0) return 0.0f;
+    const uint32_t m = e4m3 & 0x7u;
+    if (e == 15u && m == 7u) {
+        uint32_t nb = 0x7FC00000u;
+        float f;
+        std::memcpy(&f, &nb, sizeof(f));
+        return f;
+    }
+    uint32_t bits = ((e + 120u) << 23) | (m << 20);
     float out;
     std::memcpy(&out, &bits, sizeof(out));
     return out;

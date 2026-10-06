@@ -37,19 +37,29 @@ attribution, budget tests, baselines) is the `perf-tuning-a-model` skill.
 - Norms and biases are never quantized — they stay FP16/BF16.
 - The weight codec (E2M1 nibbles + per-16 E4M3 scales + `global_scale`) and
   the activation quantizer are shared contracts; changing codec semantics
-  (e.g. a zero-check on the e4 field, ceil-rounding of the pow2 E4M3 scale)
-  requires updating the NVIDIA mirror **and** a regression test in the same
-  change.
+  (e.g. the e4-field zero check, the E4M3 encode rounding) requires updating
+  the NVIDIA mirror **and** a regression test in the same change.
+- The NVFP4 block scale is **full unsigned E4M3 (UE4M3)** — the hardware-native
+  `.ue4m3` scale operand of the Blackwell `mma ... kind::mxf4nvf4.block_scale`
+  path (PTX §9.7.17.10). Semantics: `value = 2^(e-7)*(1+m/8)`,
+  `e=(b>>3)&0xF`, `m=b&0x7`; `e==0 -> 0` (field-zero contract, no subnormals);
+  `0x7F` reserved (NaN) and never emitted; max finite `0x7E = 448`.
+  Canonical codecs: `nvfp4_scale.h::FloatToE4m3` (RNE encode, integer-only so
+  host and device are bit-identical) and `E4m3ToFloat` (the device delegate is
+  `nvfp4_codec.h::E4M3ScaleToFloat`). This replaced the old power-of-two-only
+  deviation: a `mantissa==0` byte decodes bit-identically, so existing trees
+  are unchanged, but new encodings carry the mantissa.
 - Where each piece lives (`libs/lsxcommon/src/`): `nvfp4_codec.h` — the
   `__host__ __device__` E2M1 nibble decode (branchless immediates, never a
   `__constant__` LUT: a header-defined array is merged across object
-  libraries and a TU can read another model's copy) and the pow2 E4M3 scale
-  decode; `nvfp4_scale.h` — the host/device pair `FloatToE4m3P2` /
-  `E4m3P2ToFloat` plus the E8M0→E4M3 pair remap;
-  `lsx_kernels_quant.cuh` — the FULL E4M3 decode (`F8E4m3ToFloat`, for genuine
+  libraries and a TU can read another model's copy) and the
+  `E4M3ScaleToFloat` delegate; `nvfp4_scale.h` — the host/device pair
+  `FloatToE4m3` / `E4m3ToFloat` plus the E8M0→E4M3 pair remap (E8M0 is an
+  exact power of two, so the pair helper stays mantissa-0 by construction);
+  `lsx_kernels_quant.cuh` — the signed FP8 decode (`F8E4m3ToFloat`, for genuine
   FP8 tensors) and the E2M1 encode flavors. The two E4M3 flavors are **not**
-  interchangeable: pow2 scales use `nvfp4_codec`/`nvfp4_scale`, real FP8 data
-  uses `F8E4m3ToFloat`.
+  interchangeable: NVFP4 block scales are unsigned via
+  `nvfp4_codec`/`nvfp4_scale`; real signed FP8 data uses `F8E4m3ToFloat`.
 - Model-neutral device helpers that families alias rather than copy:
   `lsx_device_math.h` (`ExpfGlibc`/`RsqrtfGlibc`, aliased by
   `glm_moe_device_math.h`) and `lsx_reduce.cuh` (`BlockMaxShfl`, aliased by

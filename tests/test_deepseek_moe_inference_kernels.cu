@@ -459,8 +459,9 @@ TEST_CASE("Compressor produces weighted average", "[deepseek][inference]") {
 // ── NVFP4 codec regression tests ─────────────────────────────────────────────
 // These call the *real* public lsxcommon::gpu functions (not reimplemented
 // mini-kernels) to catch two systematic-debugging findings:
-//   1. safetensors_gpu.cu's private float_to_e4m3_p2 floors log2(scale)
-//      instead of ceiling it like the canonical lsxcommon::float_to_e4m3_p2,
+//   1. safetensors_gpu.cu's private float_to_e4m3 rounded the E4M3 block
+//      scale incorrectly (floored the exponent) instead of the canonical
+//      lsxcommon::float_to_e4m3 (full unsigned-E4M3, round-to-nearest-even),
 //      underestimating the largest weight in any block whose local max isn't
 //      an exact power-of-2 fraction of the tensor's global max.
 //   2. The routed-expert dequant path (dequant_fp4_e8m0) uses a completely
@@ -489,16 +490,16 @@ uint8_t ExtractNibble(const std::vector<uint8_t> &packed, int64_t i)
 
 } // namespace
 
-TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3_p2 regression)",
+TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3 regression)",
           "[deepseek][nvfp4][regression]")
 {
     // 3 blocks of 16 F32 elements. Block 0 holds the tensor's global max
     // (6.0). Block 1's local max (4.0) has a NON-power-of-2 ratio to the
-    // global max (4/6 = 0.667) — this is exactly the case where flooring
-    // the E4M3 block-scale exponent (the bug) underestimates the true value
-    // by ~25%, while ceiling it (correct) reconstructs it exactly. Block 2's
-    // local max (1.5) has a power-of-2 ratio (0.25) as a sanity control that
-    // must reconstruct exactly regardless of the bug.
+    // global max (4/6 = 0.667). The full-E4M3 block scale is RNE: nearest is
+    // 0.6875, so the reconstructed max is 6 * 0.6875 = 4.125 (+3.1%), inside
+    // the <= 1/16 half-step band. Block 2's ratio (0.25) is a power of two and
+    // reconstructs exactly. Floor-rounding the E4M3 exponent (the historical
+    // bug) underestimated block 1 by ~25%; RNE is the correct recipe.
     std::vector<float> src(48, 0.0f);
     src[0]  = 6.0f;
     src[16] = 4.0f;
@@ -518,7 +519,7 @@ TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3_p
     auto decode = [&](int64_t i) -> float {
         uint8_t nibble = ExtractNibble(packed, i);
         int64_t block = i / 16;
-        float block_scale = lsxcommon::e4m3_p2_to_float(scales[static_cast<size_t>(block)]);
+        float block_scale = lsxcommon::e4m3_to_float(scales[static_cast<size_t>(block)]);
         return DecodeE2M1Nibble(nibble) * block_scale * global_scale;
     };
 
@@ -531,12 +532,11 @@ TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3_p
          << ",0x" << (int)scales[2] << std::dec
          << " decoded=" << d0 << "," << d16 << "," << d32);
 
-    CHECK(std::fabs(d0 - 6.0f) / 6.0f < 0.02f);
-    // The assertion that fails under the floor-rounding bug (reconstructs
-    // ~3.0, ~25% low) and passes once safetensors_gpu.cu's float_to_e4m3_p2
-    // delegates to the canonical ceil-rounding lsxcommon::float_to_e4m3_p2.
-    CHECK(std::fabs(d16 - 4.0f) / 4.0f < 0.02f);
-    CHECK(std::fabs(d32 - 1.5f) / 1.5f < 0.02f);
+    CHECK(std::fabs(d0 - 6.0f) / 6.0f < 0.08f);
+    // RNE reconstructs block 1 within the E4M3 half-step band (measured
+    // +3.1%); the historical floor bug reconstructed ~3.0 (~25% low).
+    CHECK(std::fabs(d16 - 4.0f) / 4.0f < 0.08f);
+    CHECK(std::fabs(d32 - 1.5f) / 1.5f < 0.08f);
 }
 
 TEST_CASE("dequant_shared_nvfp4 correctly decodes the on-disk NVFP4 format",

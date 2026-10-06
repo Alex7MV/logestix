@@ -13,7 +13,7 @@ namespace lsx_tc {
 
 // Quantize FP16 activations to NVFP4 (per-16 E4M3 power-of-2 scale +
 // E2M1 nibble pairs), matching the repo's canonical weight-side codec
-// (schema.h float_to_e4m3_p2 / nvfp4_codec.h decode). Output layouts:
+// (schema.h float_to_e4m3 / nvfp4_codec.h decode). Output layouts:
 // d_packed [seq, K/2] row-major nibble pairs (low nibble = even k),
 // d_scales [seq, K/16] row-major, one byte per 16-element block.
 // Buffers must be preallocated by the caller (device memory).

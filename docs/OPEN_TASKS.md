@@ -586,6 +586,130 @@ that it can no longer be invisible.
 whole family, which is worth noticing: a family can look fully wired across all four
 parity stages and still have a hole in one of them.
 
+## L. NVFP4 block scale: logestix stores power-of-two, the checkpoints store full E4M3 (2026-10-06)
+
+> **Status update 2026-10-06: codec DONE; rollout pending.** The decoder now
+> decodes all 3 mantissa bits and the encoder writes full unsigned E4M3
+> (`FloatToE4m3`/`E4m3ToFloat`, RNE), backward-compatibly. Implemented + tested
+> (`test_nvfp4_scale` exhaustive decode, `test_lsx_kernels` device parity, all
+> codec/kernel suites green; `fast` 88/91 with the 3 reds being the paused
+> Nemotron-NVFP4 registrations). End-to-end validated on a re-converted
+> Qwen3.5-9B (Paris selfcheck, CODE, DET pass). The remaining work is
+> operational: re-convert the vault families so the encoder change takes effect.
+> See `docs/superpowers/plans/2026-10-06-nvfp4-e4m3-rollout-report.md`.
+
+Surfaced by ingesting `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4`, the first
+vault checkpoint whose weights are *already* NVFP4 (ModelOpt 0.44.0rc5,
+`W4A16_NVFP4`, group 16) rather than BF16.
+
+Everything in the two encodings matches — `U8` two E2M1 nibbles per byte with the
+even element in the low nibble, one scale per 16 along K, an `F32` per-tensor
+global scale. **The only difference is the block scale:**
+
+- **source**: the COMPLETE OCP E4M3FN, i.e. 3 mantissa bits in play;
+- **logestix**: `nvfp4_scale.h::FloatToE4m3P2` writes `e4 << 3` (mantissa always 0)
+  and `E4m3P2ToFloat` reads only `(byte>>3)&0xF`, i.e. the scale is rounded **up to
+  the next power of two** and decodes as `2^(e4-7)`.
+
+This is a deliberate, documented deviation (`docs/NVIDIA_DOCS_NVFP4_MEMORY.md` §1:
+exact pow2 identity, no saturation, one numeric class across all 17 families), and
+the source format is in fact the **hardware-native** one — Blackwell
+`tcgen05.mma` with `kind::mxf4nvf4` takes a **UE4M3** scale factor at
+`.block16`. So logestix is the less accurate of the two, knowingly.
+
+**Measured on the real vault** (`backbone.layers.1.mixer.experts.0.down_proj`,
+311 808 blocks): the source mantissa uses **all 8 values {0..7}** and the e4 field
+spans 10..15; forcing it into the pow2 window (e4 11..15, where 15 is logestix's
+E4M3 NaN exclusion) **inflates the block scale by 1.33x median / 1.78x tail**
+— up to 77.8 % of weight error on a block.
+
+Consequences, both measured:
+
+| handling of the source block scales | relative L2 vs the source dequant |
+|---|---|
+| byte passthrough into the logestix decoder | **29.9 %** |
+| dequantize with full E4M3, then requantize via `quantize_tensor_gpu` | **10.9 / 11.2 / 11.8 %** (three expert tensors) |
+
+A passthrough is therefore forbidden, and the converter pays ~11 % for every
+already-quantized source. That is the price the logestix flavor charges a
+checkpoint whose authors used the hardware format.
+
+**Task — teach the decoder the E4M3 mantissa.** The fix is *backward compatible*:
+a pow2 byte has `mantissa == 0`, so a full-E4M3 decode returns **bit-identical**
+values for all 17 existing families. Nothing is re-baselined and no golden moves;
+only the encode side stops discarding information.
+
+- change `nvfp4_scale.h` / `nvfp4_codec.h` so the block scale decodes all 3
+  mantissa bits (keep the pow2 *encoder* only if a caller needs a pow2-only
+  flavor — no current one does);
+- check the TC GEMM scale packing (`lsx_tc_gemm.cu`, the
+  `repack_e8m0_ue4m3_kernel` path in `shared_experts.cu`) — the hardware already
+  wants UE4M3, so this side should get *more* accurate, not less;
+- **pin the zero-scale semantics**: the zero test stays on the e4 FIELD
+  (`(byte >> 3) & 0xF == 0`), never the whole byte — see the regression note in
+  `NVIDIA_DOCS_NVFP4_MEMORY.md` §1;
+- then re-measure: with a mantissa-aware decoder the converter can pass the source
+  blocks straight through, and the ~11 % requantization loss for pre-quantized
+  sources goes to zero.
+
+Blast radius: the model-neutral `lsx_nvfp4` layer plus the TC scale packing, i.e.
+everything. That is why it is filed here rather than done opportunistically — it
+wants its own numeric-conformance pass (bit-exact against a host reference, and
+a re-run of the `fast` label before any perf claim moves).
+
+## M. NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 — finish the ingestion (2026-10-06)
+
+Branch `feat/model-Nemotron3.5-nvfp4-ingest`. This is a **sibling variant** of the
+already-ingested BF16 `nemotron-3.5-lightning-30b-a3b` (identical frozen geometry,
+verified field-by-field; the only difference is that the source is *pre-quantized*).
+Design: `docs/superpowers/specs/2026-10-06-nemotron-3.5-lightning-nvfp4-ingestion-design.md`.
+The codec finding this surfaced is section **L** above.
+
+**Status: stages 1–2 done and green; stage 3 half-landed; stages 3–8 still open.**
+Landed so far: converter + full-E4M3/FP8 dequant kernels
+(`nemotron_moe_nvfp4_convert.*`, `nemotron_moe_nvfp4_dequant.{h,cu}`) with
+`test_nemotron_moe_nvfp4_convert` passing; loader
+(`nemotron_moe_nvfp4_load.{h,cpp}`) with `test_nemotron_moe_nvfp4_loader` passing;
+variant passport `nemotron_moe_nvfp4_constants.h`; the shared rank-0
+`TensorInfo::numel()` fix in `converter.cpp`; the index reader's int-or-array eos
+(`eos_token_ids`, scalar `eos_token_id = front()` = 2, second stop id 11).
+
+Remaining, in order:
+
+1. **Stage 3 registration.** `NemotronNvfp4Model` (`kType =
+   "nemotron-3.5-lightning-30b-a3b-nvfp4"`) in `model_registry.cpp`; the model
+   test (`test_nemotron_moe_nvfp4_model`, `inference`) driving the parent's
+   loader/kernels/expert cache.
+2. **All four guard registries in the SAME commit as the files they police**
+   (Model Ingestion Protocol step 8):
+   `SchemeRegex()` variant token `nvfp4` (`test_code_naming_guard`);
+   `kPassports` row → `nemotron_moe_nvfp4_constants.h` / ns
+   `lsxcommon::nemotron_nvfp4::frozen` (own namespace — the parent's is not
+   reusable); `kLifecycle` row; `Suites()` + tool-verdict rows and the
+   `kGoldenDebt` rows (`test_model_suite_guard` / `test_model_independence_guard`).
+3. **Stage 1 pipeline flag** `--nemotron-nvfp4` in `apps/lsxforge/src/main.cpp`
+   (the converter TU is written; only the CLI entry point is missing).
+4. **Stage 4b** reuses the parent's Qwen-style XML render/parse verbatim — record
+   the tool-verdict row only.
+5. **Stage 8 tests** not yet written: `test_nemotron_moe_nvfp4_selfcheck` and the
+   `{fsi,code,det}` variants (`SKIP_RETURN_CODE 4`), plus
+   `test_perf_baseline_nemotron_nvfp4` + `perf_baselines.json` entry.
+6. **Real-weight run.** Convert the 20.08 GiB / 52-shard vault checkpoint
+   (~17.5 GiB arrow) and pass SelfCheck on real weights before the goldens above
+   mean anything. Nothing has exercised the full converted model yet.
+7. **FSI/CODE/DET golden capture is unresolved.** HF transformers cannot load the
+   ModelOpt-quantized checkpoint (no `compressed_tensors` module: "Unknown
+   quantization type, got modelopt"), so the usual "capture from source
+   safetensors" path does not run as-is. Options: dequantize to BF16 locally and
+   capture from that, or declare the three goldens as `kGoldenDebt` with the
+   reason recorded. Decide before step 5, because it determines whether those
+   tests can ever assert.
+
+**Do not** byte-pass the source NVFP4 blocks to the repo decoder — measured
+29.9 % relative L2 (section L). The converter dequantizes with full E4M3 and
+requantizes through `quantize_tensor_gpu`; that costs ~11 % vs the source and is
+the accepted price of the pow2-only block scale.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency

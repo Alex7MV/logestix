@@ -53,7 +53,7 @@ inline std::vector<float> HostActQuantDequant(const std::vector<__half> &hx)
         for (int j = 0; j < 16; ++j)
             absmax = std::max(absmax, std::abs(__half2float(hx[b + j])));
         const uint8_t sb =
-            absmax > 0.f ? lsxcommon::nvfp4::FloatToE4m3P2(absmax / 6.0f)
+            absmax > 0.f ? lsxcommon::nvfp4::FloatToE4m3(absmax / 6.0f)
                          : uint8_t{0};
         const float s = E4M3ScaleToFloat(sb);
         for (int j = 0; j < 16; ++j)
@@ -479,7 +479,7 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
 
 
 
-TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
+TEST_CASE("actquant scale parity with canonical float_to_e4m3",
           "[tc][actquant][regression]")
 {
     int dev = 0;
@@ -489,10 +489,8 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
     if (prop.major != 12) SKIP("requires Blackwell sm_120");
 
     // Contract (lsx_tc_gemm.h / ActQuantKernel comments): the per-16 block
-    // scale must byte-match the canonical lsxcommon::float_to_e4m3_p2
-    // (ceil exponent rounding). A frexp-based encode without the
-    // exact-power-of-two check doubles the scale whenever absmax/6 IS a
-    // power of two, wasting one bit of E2M1 dynamic range.
+    // scale must byte-match the canonical lsxcommon::float_to_e4m3
+    // (full unsigned-E4M3, round-to-nearest-even).
     const float absmax_cases[5] = {6.0f, 12.0f, 3.0f, 5.7f, 2.4f};
 
     // Quantize one 16-element block on device; yields the scale byte and
@@ -527,9 +525,9 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
 
         INFO("absmax=" << am << " got=0x" << std::hex << int(sb) << std::dec
              << " want=0x"
-             << int(lsxcommon::float_to_e4m3_p2(am_h / 6.0f)));
+             << int(lsxcommon::float_to_e4m3(am_h / 6.0f)));
         // Byte parity with the canonical pow2-E4M3 encoder.
-        CHECK(sb == lsxcommon::float_to_e4m3_p2(am_h / 6.0f));
+        CHECK(sb == lsxcommon::float_to_e4m3(am_h / 6.0f));
 
         // Element 0 packs into the low nibble of byte 0; with a ceil-rounded
         // scale the block max snaps within the inherent NVFP4 level error
@@ -1143,8 +1141,14 @@ TEST_CASE("decode kernel column-response map", "[tc][gemm][calib2]")
     std::string dmp = "COLMAP:";
     for (int c = 0; c < 16; ++c) dmp += " " + std::to_string(__half2float(hy[c]));
     WARN(dmp);
+    // The engine act-quantizes x (all 1.0) with a full-E4M3 RNE scale, so the
+    // host truth is the same quantize-dequant the kernel performs, not 1.0.
+    const float ascale =
+        E4M3ScaleToFloat(lsxcommon::float_to_e4m3(1.0f / 6.0f));
+    const float act_deq =
+        E2M1Value(QuantizeE2m1TieUp(1.0f / ascale)) * ascale;
     for (int c = 0; c < N; ++c)
-        CHECK(std::abs(__half2float(hy[c]) - 1.0f) <= 1e-3f);
+        CHECK(std::abs(__half2float(hy[c]) - act_deq) <= 1e-3f);
     cudaFree(dx); cudaFree(dy); cudaFree(dp); cudaFree(ds);
     cudaFree(wp); cudaFree(ws);
 }
@@ -1184,7 +1188,7 @@ TEST_CASE("act quant byte-exact vs host model at seq1/K256", "[tc][actquant][k25
         for (int j = 0; j < 16; ++j)
             absmax = std::max(absmax, std::abs(__half2float(hx[b * 16 + j])));
         const uint8_t sb_want =
-            absmax > 0.f ? lsxcommon::nvfp4::FloatToE4m3P2(absmax / 6.0f)
+            absmax > 0.f ? lsxcommon::nvfp4::FloatToE4m3(absmax / 6.0f)
                          : uint8_t{0};
         INFO("block " << b << " sb want=" << int(sb_want)
                       << " got=" << int(hs[b]));

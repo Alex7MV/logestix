@@ -178,9 +178,9 @@ TEST_CASE("ParseFlashConfig: real checkpoint text_config")
     REQUIRE(top.pad_id == 154820);
 }
 
-TEST_CASE("RequantFp8ToNvfp4Host: pow2-scale NVFP4 convention parity")
+TEST_CASE("RequantFp8ToNvfp4Host: full-E4M3-scale NVFP4 convention parity")
 {
-    using lsxcommon::nvfp4::E4m3P2ToFloat;
+    using lsxcommon::nvfp4::E4m3ToFloat;
     // 16x16 FP8 block: all 0x38 (E4M3 = 1.0: exp field 7, bias 7) with one
     // 128-grid scale 2.0. Dequantized source = 2.0 for every element.
     std::vector<uint8_t> fp8(256, 0x38);
@@ -191,7 +191,7 @@ TEST_CASE("RequantFp8ToNvfp4Host: pow2-scale NVFP4 convention parity")
     REQUIRE(blob.packed.size() == 128);  // 256 nibbles / 2
     REQUIRE(blob.scales.size() == 16);   // 256 / 16-element blocks
     // Per-block scale byte: pow2 ceil of (block_max / global_max).
-    // block_max = global_max = 2.0 -> ratio 1.0 -> FloatToE4m3P2(1.0)
+    // block_max = global_max = 2.0 -> ratio 1.0 -> FloatToE4m3(1.0)
     // = 2^0 -> e4 field 7 -> byte 0x38.
     for (uint8_t s : blob.scales) REQUIRE(s == 0x38);
     // global_scale = global_max_abs / 6 == 2/6 == 1/3.
@@ -203,7 +203,7 @@ TEST_CASE("RequantFp8ToNvfp4Host: pow2-scale NVFP4 convention parity")
         REQUIRE(lo == 0x07);  // magnitude 7 = 6.0, positive
         REQUIRE(hi == 0x07);
     }
-    const float deq = 6.0f * E4m3P2ToFloat(0x38) * blob.global_scale;
+    const float deq = 6.0f * E4m3ToFloat(0x38) * blob.global_scale;
     REQUIRE(std::fabs(deq - 2.0f) < 1e-6f);
 }
 
@@ -244,7 +244,7 @@ TEST_CASE("RequantFp8ToNvfp4Host: mixed magnitudes + zero block")
         const uint8_t byte = blob.packed[i / 2];
         const uint8_t nib = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
         const int blk = i / 16;
-        const float s = lsxcommon::nvfp4::E4m3P2ToFloat(blob.scales[blk])
+        const float s = lsxcommon::nvfp4::E4m3ToFloat(blob.scales[blk])
                       * blob.global_scale;
         const float deq = e2m1_value(nib) * s;
         const float tol = std::max(std::fabs(src) * (2.0f / 6.0f), 1e-6f);

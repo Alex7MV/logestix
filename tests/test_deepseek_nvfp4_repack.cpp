@@ -23,7 +23,7 @@
 namespace {
 
 // Host decode of the target pow2-E4M3 payload — matches the runtime
-// gpu::nvfp4::E4M3ScaleToFloat (nvfp4_codec.h) / E4m3P2ToFloat semantics:
+// gpu::nvfp4::E4M3ScaleToFloat (nvfp4_codec.h) / E4m3ToFloat semantics:
 // decode depends on the e4 field only, e4 == 0 decodes to 0.
 float Pow2E4m3Decode(uint8_t b)
 {

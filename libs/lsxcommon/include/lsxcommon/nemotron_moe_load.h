@@ -39,9 +39,20 @@ struct NemotronIndex {
     int shared_expert_intermediate_size = 0;
     bool experts_no_gate = false;
     int bos_token_id = -1;
+    // `eos_token_id` is the PRIMARY stop; `eos_token_ids` is the full set. The
+    // BF16 sibling writes a bare int (one stop). NVIDIA-Nemotron-3.5-Lightning-
+    // 30B-A3B-NVFP4's generation_config.json declares [2, 11] - id 11 is a real
+    // second stop - so a reader that keeps only the scalar runs past the model's
+    // own stop and generates garbage after it. The scalar is kept for the
+    // sibling's single-id readers and is always eos_token_ids.front().
     int eos_token_id = -1;
+    std::vector<int> eos_token_ids;
     int pad_token_id = -1;
     int mtp_tensors = 0;
+    // Pre-quantized distributions carry FP8 KV-cache scales next to the attention
+    // k/v projections. They are NOT weight dequant factors and the converter
+    // counts them as consumed; recorded so the accounting is visible in the index.
+    int fp8_kv_scales_dropped = 0;
     int total_pinned_tensors = 0;
     VramProfile vram;
 };

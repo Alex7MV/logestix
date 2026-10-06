@@ -31,6 +31,8 @@ add_library(lsxcommon STATIC
     src/gemma_base_model.cpp
     src/gemma_moe_model.cpp
     src/nemotron_moe_convert.cpp
+    src/nemotron_moe_nvfp4_convert.cpp
+    src/nemotron_moe_nvfp4_load.cpp
     src/nemotron_moe_load.cpp
     src/nemotron_moe_expert_cache.cpp
     src/nemotron_moe_model.cpp
@@ -483,6 +485,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
 # -fmad=false: bit-exact against the host reference (protocol invariant).
 add_library(lsxcommon_nemotron_cu OBJECT
     src/nemotron_moe_kernels.cu
+    src/nemotron_moe_nvfp4_dequant.cu
     src/nemotron_moe_inference_attn.cu
     src/nemotron_moe_inference_pipeline.cu
 )

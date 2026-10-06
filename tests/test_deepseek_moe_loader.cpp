@@ -101,40 +101,40 @@ TEST_CASE("Loader round-trip with synthetic PackedExpert", "[deepseek][loader]")
     fs::remove(path);
 }
 
-TEST_CASE("float_to_e4m3_p2 handles subnormals safely", "[deepseek][schema][e4m3]")
+TEST_CASE("float_to_e4m3 handles subnormals safely", "[deepseek][schema][e4m3]")
 {
     SECTION("zero returns 0") {
-        CHECK(lsxcommon::float_to_e4m3_p2(0.0f) == 0);
-        CHECK(lsxcommon::e4m3_p2_to_float(0) == 0.0f);
+        CHECK(lsxcommon::float_to_e4m3(0.0f) == 0);
+        CHECK(lsxcommon::e4m3_to_float(0) == 0.0f);
     }
     SECTION("subnormal (exp8=0) returns 0x08 (min E4M3 normal)") {
         float tiny = 1.4e-45f;
-        uint8_t e4 = lsxcommon::float_to_e4m3_p2(tiny);
+        uint8_t e4 = lsxcommon::float_to_e4m3(tiny);
         CHECK(e4 == 0x08);
-        float decoded = lsxcommon::e4m3_p2_to_float(e4);
+        float decoded = lsxcommon::e4m3_to_float(e4);
         CHECK(decoded > 0.0f);
         CHECK(decoded == 0x1.0p-6f);
     }
     SECTION("normal powers of 2 encode correctly") {
-        CHECK(lsxcommon::float_to_e4m3_p2(0.0625f) == 0x18);
-        CHECK(lsxcommon::float_to_e4m3_p2(0.125f)  == 0x20);
-        CHECK(lsxcommon::float_to_e4m3_p2(0.25f)   == 0x28);
-        CHECK(lsxcommon::float_to_e4m3_p2(0.5f)    == 0x30);
-        CHECK(lsxcommon::float_to_e4m3_p2(1.0f)    == 0x38);
-        CHECK(lsxcommon::float_to_e4m3_p2(2.0f)    == 0x40);
-        CHECK(lsxcommon::float_to_e4m3_p2(4.0f)    == 0x48);
-        CHECK(lsxcommon::float_to_e4m3_p2(8.0f)    == 0x50);
+        CHECK(lsxcommon::float_to_e4m3(0.0625f) == 0x18);
+        CHECK(lsxcommon::float_to_e4m3(0.125f)  == 0x20);
+        CHECK(lsxcommon::float_to_e4m3(0.25f)   == 0x28);
+        CHECK(lsxcommon::float_to_e4m3(0.5f)    == 0x30);
+        CHECK(lsxcommon::float_to_e4m3(1.0f)    == 0x38);
+        CHECK(lsxcommon::float_to_e4m3(2.0f)    == 0x40);
+        CHECK(lsxcommon::float_to_e4m3(4.0f)    == 0x48);
+        CHECK(lsxcommon::float_to_e4m3(8.0f)    == 0x50);
     }
-    SECTION("non-power-of-2 rounds up") {
-        uint8_t e4 = lsxcommon::float_to_e4m3_p2(3.0f);
-        CHECK(e4 == 0x48);
-        CHECK(lsxcommon::e4m3_p2_to_float(e4) == 4.0f);
+    SECTION("non-power-of-2 rounds to nearest") {
+        uint8_t e4 = lsxcommon::float_to_e4m3(3.0f);
+        CHECK(e4 == 0x44);
+        CHECK(lsxcommon::e4m3_to_float(e4) == 3.0f);
     }
     SECTION("decode matches encode round-trip") {
         float vals[] = {0.0f, 1.0e-10f, 1.0e-40f, 0.1f, 0.5f, 1.0f, 10.0f, 100.0f};
         for (float v : vals) {
-            uint8_t e4 = lsxcommon::float_to_e4m3_p2(v);
-            float dec = lsxcommon::e4m3_p2_to_float(e4);
+            uint8_t e4 = lsxcommon::float_to_e4m3(v);
+            float dec = lsxcommon::e4m3_to_float(e4);
             CHECK(dec >= 0.0f);
             if (v != 0.0f) CHECK(dec > 0.0f);
         }

@@ -331,7 +331,12 @@ SafetensorsModel::Shard read_safetensors_file(const std::string &path)
 
 int64_t TensorInfo::numel() const
 {
-    if (shape.empty()) return 0;
+    // An EMPTY shape list is a RANK-0 scalar, not an absent tensor: the
+    // safetensors spec stores `[]` for a single value, and ModelOpt writes its
+    // per-tensor `weight_scale` / `weight_scale_2` exactly that way (verified in
+    // the NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 vault). Returning 0 here
+    // made byte_size() 0, so every rank-0 scale read back as an empty buffer and
+    // the converter rejected the tensor as "inconsistent companion sizes".
     int64_t n = 1;
     for (auto d : shape) n *= d;
     return n;
