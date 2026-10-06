@@ -490,6 +490,42 @@ fraction of the decode wall does the score phase actually own, and which kernel 
 does this family reach" answered the question before any code was written. Three of the
 four earlier lookalikes (deepseek, mimo, gigachat) would have been wasted work.
 
+## I. The non-split parity break: a compiler decision, not an arithmetic one (2026-10-06)
+
+Went after it and got the boundary. It stands, and the record now says why it is hard:
+
+- Row addressing in `full_attn_softmax_kernel` is **identical in form** to the split
+  kernel's (`kbase + j*kv_heads*head_dim`, `q + (t*heads + h)*head_dim`), so
+  alignment and structure are both ruled out as causes.
+- The dot is the same helper, the same ascending order, the same plain `+=`, and it is
+  bit-identical in the split kernel. Nothing in the arithmetic differs.
+- On a **verified-fresh** binary the vectorised non-split kernel fails
+  `test_qwen_moe_{fsi,code,det}_selfcheck`, and passes with the scalar one.
+
+So the difference is what the **compiler** does, not what the code says. The only
+mechanism available is FMA contraction, and the plausible story is that the scalar
+non-split loop contracts and the vector form does not (or vice versa) - both are
+allowed, nothing forbids either, and this library has `-fmad` ON. That would also
+explain why the split kernel is unaffected.
+
+The fix, if it is ever worth taking, follows from the FMA policy note: explicit
+`__fmaf_rn` in BOTH forms makes them flag-independent and equal to each other. But
+that is only worth doing if the result is also compared against the CURRENT scalar
+output, because making both forms non-contracting is itself a change unless the scalar
+loop turns out not to contract today. That comparison has not been made, so the break
+remains unexplained.
+
+**The trap, recorded because it produced a wrong conclusion here.** Partway through,
+FSI reported PASS with the non-split kernel vectorised. It was a **stale binary**: the
+`.cu` had failed to compile (a cross-namespace forward declaration - the helper lives
+in `lsxcommon::qwen` while the non-split kernel is inside an anonymous namespace, so
+they are distinct entities and it failed as "more than one instantiation"), the build
+stopped, and the previous split-only binary ran instead. Counting `error:` in build
+output is not the same as the binary being current; comparing mtime is what finally
+separated the two states here.
+
+Reverted; the verified split-only port stands and the tree is green.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency
