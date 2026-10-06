@@ -317,6 +317,215 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Parity is unaffected: SelfCheck Paris and the FSI/CODE/DET gates pass at
   `kOff`, so this is pure throughput work.
 
+## F. Decode throughput ramp over a session (2026-10-05) — no ramp on Xing
+
+An operator's separate observation was that throughput sometimes *grows* during
+inference. Measured on the production numeric class (default per-GPU policy,
+`tests/test_xing_warmup_ramp.cpp`, host-timestamped token callback):
+
+| horizon | Q1 (first quarter) | median | Q4 (last quarter) | Q4/Q1 |
+|---|---|---|---|---|
+| max-gen 2048 | 147.1 t/s | - | 107.5 t/s | **0.73** |
+| max-gen 4096 | 142.0 t/s | - | 82.1 t/s | **0.58** |
+
+So on Xing-4.0 throughput **FALLS** by 27% (2048) and 42% (4096) across a session,
+and falls harder at the longer horizon. There is no warm-up ramp: the shape is the
+context effect, and Q1 sitting ABOVE the session average (147 vs 127 t/s at 2048) is
+why a single average hides a 27-42% spread.
+
+Two consequences worth keeping:
+
+1. **If a ramp was observed, it was a different family or configuration.** The most
+   likely mechanism is the opposite of what "ramp" suggests: Xing replays its decode
+   step from a CUDA graph, which removes per-step launch overhead, so Xing has little
+   warm-up to have. A family without graph replay would show more. Worth identifying
+   which family showed growth before concluding anything general.
+2. **An average over a long horizon is dominated by the slow tail.** "3-5% at the 4096
+   horizon" measured as one average is mostly a statement about the regime where the
+   KV read is past L2. That is the regime the float4 score-phase change already
+   improved (+12.5% at 8191), and it is where any further work should be aimed.
+
+Method notes, both learned the hard way: the measurement must run ONE horizon per
+process (two resident Xing instances need ~30 GiB and the second expert-slab
+allocation OOMs on a 32 GiB card, and destroying the first model does not return the
+memory within the process), and it must NOT pin `FastMathMode::kOff` — that measures
+the legacy bit-exact path at 20 t/s, a ramp that never happens in production.
+
+## G. Attention score dot products: who already vectorised (2026-10-05)
+
+Audited before porting Xing's float4 score change, because the first candidate turned
+out to be the wrong one:
+
+| family | score dot product |
+|---|---|
+| xing | float4 (done 2026-10-05, +6.5% E2E) |
+| **phi, granite** | **already `__half2` + two accumulator chains**, with a comment citing the QK critical path |
+| qwen (+ornith), gemma | **scalar**, `dot += half2float(q[d]) * half2float(k[d])` per element |
+| deepseek, mimo, gigachat | scalar (no `half2` anywhere in the file) |
+
+So the port list is **6 families, not 8**, and phi/granite would have been wasted
+work - their split kernel (the live decode path) is already vectorised, and only the
+short-context non-split kernel was scalar.
+
+The scalar families are the same shape as Xing's was: one 2-byte load per iteration
+over `head_dim` with a serial accumulation, one K row in flight per thread. phi also
+records the structural reason to expect the same win there: its own comment says the
+single 128-deep FMA chain was the QK critical path, and its KV read is 26.5% of the
+decode wall at ctx 2048.
+
+**RESOLVED for the split kernel (+4.3% / +4.9%, bit-identical).** The alignment
+hypothesis is dead — a runtime assert on the row pointer never fired, which is
+expected: the port changes how a row is READ and moves no pointer, so alignment is
+identical to the passing version and could not have been the cause. The real cause
+was item 3: the golden gates exercise the **non-split** kernel, because SelfCheck
+prompts are short enough that `splits` collapses to one chunk. Vectorising that kernel
+breaks parity; vectorising the split kernel does not. The two are not
+interchangeable, and the short-context one is deliberately left scalar.
+
+  Qwen3.5-35B-A3B (AOCC perf tree)   base      split-kernel port
+    max-gen 2048                   162.3        169.3 t/s  (+4.3%)
+    max-gen 4096                   162.1        170.0 t/s  (+4.9%)
+
+  All four real-weight gates pass (SelfCheck x3 Paris, FSI, CODE, DET). Bit-identical.
+
+**STILL BLOCKED: the non-split kernel, in all six families.**
+qwen and gemma accumulate with a plain `+=`, not `__fmaf_rn`, and the repo builds
+bit-exact TUs with `-fmad=false`. The first thing tried was a vectorised dot that kept
+the plain `+=` per element and the ascending d order - and it still broke parity:
+`test_qwen_moe_{fsi,code,det}_selfcheck` all fail on Qwen3.5-35B-A3B with the change
+and all pass without it (verified by stashing). So "just keep the `+=` and the order"
+is NOT sufficient, which corrects the caution recorded above - it was a hypothesis,
+not a known-safe recipe.
+
+Not root-caused. The candidates that remain, in the order I would check them:
+1. **Alignment.** The 8-byte path assumes each K row starts 8-byte aligned because a
+   row offset is a multiple of `head_dim` halves. That holds only if `head_dim % 8 == 0`
+   for the model actually loaded; if it does not, the guard falls back to scalar and
+   the change is a no-op - so the fact that parity broke says the vector path WAS
+   taken, which makes an unaligned `reinterpret_cast<const __half2*>` worth ruling out
+   first by asserting the pointer alignment at runtime.
+2. **Contraction under the vector form.** `-fmad=false` forbids fusing `a += b*c`, but
+   it does not by itself forbid the compiler from changing how the 8-byte load feeds
+   the dependency chain. The scalar chain is 1 FMA deep per element; the vector form
+   has four independent products per iteration, and whether that stays bit-identical
+   is an empirical question, not a spec question.
+3. **Which kernel is actually live for these prompts.** SelfCheck uses short prompts,
+   where `splits` collapses to one chunk - so the golden gates may be exercising the
+   NON-split kernel, not the split one. Both were changed in the same commit, which
+   would confound the result.
+
+So the split kernel is ported and shipped; what is left is the non-split kernel, whose
+parity break is a separate and unexplained problem. It is also the low-value half: it
+is the short-context path, so it does not carry the decode throughput that motivates
+the port. It probably reads the same rows with a different accumulation shape, but
+that was not established.
+
+**RESULT so far, and a correction to the audit that produced this list.** Shipped:
+qwen (+4.3% / +4.9%) and gemma (+3.0%), both bit-identical. But two of the three
+remaining families do NOT have the pattern this port targets, and my audit inferred
+"scalar means needs port" from a grep that could only see the absence of `half2`:
+
+| family | score structure | port applies? |
+|---|---|---|
+| **deepseek** | thread-per-DIMENSION: `for t { for d = tid; d < kHD; d += kThreads }`, warp-coalesced, no per-row serial dot | **no** - there is no serial row walk to vectorise |
+| **mimo** | stages q and k into SHARED memory first, dots from smem | **different structure** - the lever would be the global->shared staging, not the dot |
+| **gigachat** | thread-per-position serial float dot over `qk` (the pattern) | **yes** |
+
+So the real list was 3 families, not 6: qwen, gemma, gigachat. deepseek needs nothing
+of this kind, and mimo needs a different change entirely.
+
+**gigachat: bit-identical, and worth NOTHING.** The model WAS on this host — an earlier
+note said otherwise because the vault glob was case-sensitive and `*igachat*` does not
+match `GigaChat`. With the model found: SelfCheck Paris x3 passes and, since
+FSI/CODE/DET goldens were never captured for gigachat (they SKIP by design, unrelated to
+any change), bit-identity was proven by the SelfCheck `logits_hash` — **identical,
+`9b46473108d82b99`, base and ported**. So the port is correct.
+
+And it buys nothing:
+
+  GigaChat3.5-432B-A28B, AOCC perf tree, max-gen 2048
+    base 11.0  ->  ported 11.0 t/s
+
+Zero. The port is kept because it is bit-identical, strictly fewer load instructions
+and zero-risk, but it is **NOT counted as a win** and must not be cited as one. The
+reason is the same structural point as deepseek and mimo, one step further: gigachat's
+attention reads an MLA latent (kv_lora + rope), so the score dot is short, and at
+11 t/s the step is ~91 ms dominated by routed-expert GEMVs. The score phase is simply
+not where gigachat's time goes. This is the third family in a row where "the pattern
+looks right" did not predict the payoff — what predicted it was the fraction of decode
+wall the score phase actually occupies.
+
+Final port ledger: **qwen +4.8%, gemma +3.0%, gigachat 0%**. deepseek and mimo do not
+have the pattern; phi and granite already had it.
+
+The audit lesson: `grep -c half2` is not a classification. Two of the three families it
+flagged have a different blocking structure, and reading the loop shape - not the
+absence of a token - is what distinguishes "needs this port" from "needs something
+else".
+
+Not done here: an unmeasured kernel change is not a result, and neither is an
+unmeasured failure. This entry is the failure and the narrowing plan.
+
+## H. AliceAI-80B: the qwen port does not reach it (2026-10-06)
+
+Asked to port Alice. It needs no port of its own and cannot take the qwen one:
+`RunAliceGatedAttentionCore` calls **`qwen::RunQwenFullAttnKernel`**, which launches
+`full_attn_softmax_kernel` — the **non-split** kernel, i.e. exactly the one the qwen
+port deliberately left scalar because vectorising it fails
+`test_qwen_moe_{fsi,code,det}_selfcheck`. Alice is 12 gated-attention layers of 48
+(the other 36 are KDA recurrence, which has no score dot at all), and it takes the
+non-split path, so the shipped split-kernel win never reaches it.
+
+Alice baseline for the record: **21.1 t/s** at max-gen 2048 (AOCC).
+
+So the options are (a) leave it — the reachable variant is the one with a proven parity
+break, and with 12 of 48 layers carrying attention the ceiling is small; (b) solve the
+non-split parity break first, which is still unexplained and would then benefit qwen's
+and gemma's short-context paths too, not just Alice. (b) is the better lever if the
+non-split path is ever worth attacking, and it is a strictly bigger prize than Alice
+alone.
+
+This is the fourth family where the filter paid off: routing the request through "what
+fraction of the decode wall does the score phase actually own, and which kernel variant
+does this family reach" answered the question before any code was written. Three of the
+four earlier lookalikes (deepseek, mimo, gigachat) would have been wasted work.
+
+## I. The non-split parity break: a compiler decision, not an arithmetic one (2026-10-06)
+
+Went after it and got the boundary. It stands, and the record now says why it is hard:
+
+- Row addressing in `full_attn_softmax_kernel` is **identical in form** to the split
+  kernel's (`kbase + j*kv_heads*head_dim`, `q + (t*heads + h)*head_dim`), so
+  alignment and structure are both ruled out as causes.
+- The dot is the same helper, the same ascending order, the same plain `+=`, and it is
+  bit-identical in the split kernel. Nothing in the arithmetic differs.
+- On a **verified-fresh** binary the vectorised non-split kernel fails
+  `test_qwen_moe_{fsi,code,det}_selfcheck`, and passes with the scalar one.
+
+So the difference is what the **compiler** does, not what the code says. The only
+mechanism available is FMA contraction, and the plausible story is that the scalar
+non-split loop contracts and the vector form does not (or vice versa) - both are
+allowed, nothing forbids either, and this library has `-fmad` ON. That would also
+explain why the split kernel is unaffected.
+
+The fix, if it is ever worth taking, follows from the FMA policy note: explicit
+`__fmaf_rn` in BOTH forms makes them flag-independent and equal to each other. But
+that is only worth doing if the result is also compared against the CURRENT scalar
+output, because making both forms non-contracting is itself a change unless the scalar
+loop turns out not to contract today. That comparison has not been made, so the break
+remains unexplained.
+
+**The trap, recorded because it produced a wrong conclusion here.** Partway through,
+FSI reported PASS with the non-split kernel vectorised. It was a **stale binary**: the
+`.cu` had failed to compile (a cross-namespace forward declaration - the helper lives
+in `lsxcommon::qwen` while the non-split kernel is inside an anonymous namespace, so
+they are distinct entities and it failed as "more than one instantiation"), the build
+stopped, and the previous split-only binary ran instead. Counting `error:` in build
+output is not the same as the binary being current; comparing mtime is what finally
+separated the two states here.
+
+Reverted; the verified split-only port stands and the tree is green.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency

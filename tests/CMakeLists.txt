@@ -1296,6 +1296,18 @@ target_link_libraries(test_xing_kv_layout_parity PRIVATE lsxcommon Catch2::Catch
 # The fixture is a synthetic converted checkpoint: no 16 GiB resident model, and it
 # needs the synthetic-geometry escape hatch (a RUNTIME env var, per
 # synthetic_geometry.h - not a compile definition).
+# Warm-up ramp measurement. Reports the SHAPE of per-token throughput over a
+# session; asserts nothing about its value, because a warm-up shape is a property
+# of the box (clock policy, driver, power state) and a budget taken from one box
+# would flake on another.
+add_executable(test_xing_warmup_ramp test_xing_warmup_ramp.cpp)
+target_link_libraries(test_xing_warmup_ramp PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_xing_warmup_ramp COMMAND test_xing_warmup_ramp)
+set_tests_properties(test_xing_warmup_ramp PROPERTIES LABELS perf)
+set_tests_properties(test_xing_warmup_ramp PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_xing_warmup_ramp PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_xing_warmup_ramp PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 add_test(NAME test_xing_kv_layout_parity COMMAND test_xing_kv_layout_parity)
 set_tests_properties(test_xing_kv_layout_parity PROPERTIES LABELS fast)
 set_tests_properties(test_xing_kv_layout_parity PROPERTIES SKIP_RETURN_CODE 4)

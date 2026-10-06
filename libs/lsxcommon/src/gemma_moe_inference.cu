@@ -423,6 +423,45 @@ namespace {
 // the determinism contract.
 constexpr int kGemmaSplitChunk = 128;
 
+// q . k_row over `hd` bf16, in ASCENDING d with a PLAIN `+=`.
+//
+// Ascending d with a plain `+=` keeps the per-element order identical to the scalar
+// form; that part is guaranteed.
+//
+// Bit-identity itself is EMPIRICAL, not flag-guaranteed: this object library is built
+// without -fmad=false, so FMA contraction is enabled and this form relies on the scalar
+// and vector versions contracting alike under the current compiler. The real-weight
+// golden gates are the arbiter - see the qwen sibling for the full note.
+//
+// One 4-byte __nv_bfloat162 load per iteration replaces two 2-byte loads: the scalar
+// loop held a single K row in flight per thread. Same change as qwen's split kernel
+// (+4.3% / +4.9% there), and the same discipline - SPLIT KERNEL ONLY. Vectorising
+// gemma_attention_kernel breaks the golden gates, which is what those gates are for.
+//
+// Requires head_dim even (a row offset is a multiple of head_dim bf16, so an even
+// head_dim gives a 4-byte-aligned row); scalar otherwise.
+__device__ __forceinline__ float GemmaBf16DotRow(const __nv_bfloat16 *__restrict__ qrow,
+                                                 const __nv_bfloat16 *__restrict__ krow,
+                                                 int hd)
+{
+    float dot = 0.f;
+    if ((hd & 1) == 0)
+    {
+        const __nv_bfloat162 *k2 = reinterpret_cast<const __nv_bfloat162 *>(krow);
+        const __nv_bfloat162 *q2 = reinterpret_cast<const __nv_bfloat162 *>(qrow);
+        for (int j = 0; j < (hd >> 1); ++j)
+        {
+            const float2 f = __bfloat1622float2(k2[j]);
+            dot += __bfloat162float(q2[j].x) * f.x;
+            dot += __bfloat162float(q2[j].y) * f.y;
+        }
+        return dot;
+    }
+    for (int d = 0; d < hd; ++d)
+        dot += __bfloat162float(qrow[d]) * __bfloat162float(krow[d]);
+    return dot;
+}
+
 __global__ void gemma_split_kv_partials_kernel(
     const __nv_bfloat16 *__restrict__ q, const __nv_bfloat16 *__restrict__ k,
     const __nv_bfloat16 *__restrict__ v, float *__restrict__ d_part,
@@ -455,9 +494,7 @@ __global__ void gemma_split_kv_partials_kernel(
     for (int j = threadIdx.x; j < rows; j += threads) {
         const __nv_bfloat16 *krow =
             kbase_p + static_cast<int64_t>(begin + j) * kv_heads * head_dim;
-        float dot = 0.f;
-        for (int d = 0; d < head_dim; ++d)
-            dot += __bfloat162float(qrow[d]) * __bfloat162float(krow[d]);
+        const float dot = GemmaBf16DotRow(qrow, krow, head_dim);
         slogits[j] = dot * scale;
     }
     __syncthreads();

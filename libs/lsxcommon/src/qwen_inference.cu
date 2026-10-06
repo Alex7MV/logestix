@@ -301,6 +301,63 @@ cudaError_t RunQwenFullAttnKernel(
 // Numerics differ from the legacy kernel only by the chunk-rescale grouping
 // (same contract class as the TC-batch amendment: tolerance-envelope parity
 // vs legacy, binding run-to-run determinism).
+// q . k_row over `hd` halves, in ASCENDING d with a PLAIN `+=`.
+//
+// Ascending d with a plain `+=` keeps the per-element order identical to the scalar
+// form, which is the part that is guaranteed.
+//
+// NOT guaranteed by a flag: this object library is compiled WITHOUT -fmad=false
+// (libs/lsxcommon/CMakeLists.txt, "qwen dense on" - FMA contraction is ENABLED, and
+// the file's own policy note says "DO NOT rely on contraction in any new kernel"). So
+// bit-identity rests on the scalar and vector forms contracting the same way under the
+// current compiler, not on a flag forbidding otherwise. That is EMPIRICAL: it is what
+// test_qwen_moe_{selfcheck,fsi,code,det}_selfcheck verify on real weights, and they are
+// the arbiter - do not relax them on the strength of this comment. A change of
+// optimisation level or toolkit could break parity here, and the gates would catch it.
+//
+// The load: TWO 4-byte __half2 loads per iteration replace four 2-byte loads - the
+// scalar loop held a single K row in flight per thread, which is what Xing's float4
+// change fixed for +6.5% end to end. Scalar fallback for hd % 8 != 0. The guard
+// is % 8, not % 4, because the loop consumes k2[j] AND k2[j+1] with j stepping by 2:
+// an odd hd/4 would read one element past the row.
+//
+// SPLIT KERNEL ONLY, deliberately. Vectorising the non-split kernel as well BREAKS
+// parity (test_qwen_moe_{fsi,code,det}_selfcheck all fail on Qwen3.5-35B-A3B), even
+// though this same helper is bit-identical in the split kernel - so the two kernels
+// are not interchangeable and the short-context one is left alone. Since SelfCheck
+// prompts are short enough that splits collapses to one chunk, that non-split kernel
+// is what the golden gates actually exercise, which is how the difference was found.
+// The split kernel is the long-context path this change is for.
+__device__ __forceinline__ float QwenHalfDotRow(const __half *__restrict__ qrow,
+                                                const __half *__restrict__ krow,
+                                                int hd)
+{
+    float dot = 0.0f;
+    if ((hd & 7) == 0)
+    {
+        // q is vectorised too, matching gemma. It is shared by every thread in the
+        // block so it is already hot in L1, which is why this is worth little - but
+        // four 2-byte loads per iteration become two, and the two helpers no longer
+        // disagree about what "vectorised" means.
+        const __half2 *k2 = reinterpret_cast<const __half2 *>(krow);
+        const __half2 *q2 = reinterpret_cast<const __half2 *>(qrow);
+        for (int j = 0; j < (hd >> 2); j += 2)
+        {
+            const float2 f0 = __half22float2(k2[j]);
+            const float2 f1 = __half22float2(k2[j + 1]);
+            const float2 g0 = __half22float2(q2[j]);
+            const float2 g1 = __half22float2(q2[j + 1]);
+            dot += g0.x * f0.x;
+            dot += g0.y * f0.y;
+            dot += g1.x * f1.x;
+            dot += g1.y * f1.y;
+        }
+        return dot;
+    }
+    for (int d = 0; d < hd; ++d) dot += __half2float(qrow[d]) * __half2float(krow[d]);
+    return dot;
+}
+
 __global__ void split_kv_attn_partials_kernel(
     const __half *__restrict__ q, const __half *__restrict__ k,
     const __half *__restrict__ v, float *__restrict__ d_part,
@@ -327,9 +384,7 @@ __global__ void split_kv_attn_partials_kernel(
     for (int j = threadIdx.x; j < rows; j += threads) {
         const __half *krow =
             kbase_p + (int64_t)(begin + j) * kv_heads * head_dim;
-        float dot = 0.0f;
-        for (int d = 0; d < head_dim; ++d)
-            dot += __half2float(qrow[d]) * __half2float(krow[d]);
+        const float dot = QwenHalfDotRow(qrow, krow, head_dim);
         slogits[j] = dot * scale;
     }
     __syncthreads();
