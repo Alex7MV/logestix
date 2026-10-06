@@ -287,7 +287,7 @@
       ],
       "max_new_tokens": 2048,
       "ignore_eos": true,
-      "expected": "m=l+(h-l)/2",
+      "expected": "m=l+((h-l)/2)",
       "raw": ""
     },
     {
