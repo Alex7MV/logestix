@@ -237,3 +237,26 @@ canonical answer exactly. **CODE-TEST-02 divergence:** the model emits
 `m=l+(h-l)/2` vs the prompt-template `m=l+((h-l)/2)` — algebraically
 equivalent, syntactically different; the golden `expected` was reconciled to
 the model's answer (regression gate). All three PASS.
+
+## gemma-4-26b-a4b-it — captured, and the exact-match gate doing its job
+
+Source runs locally (`Gemma4ForConditionalGeneration`, bf16, transformers 5.15.1); capture
+used `--device-map auto` because 26B bf16 is ~52 GB against a 32 GB card. `chat_template.jinja`
+loaded as required.
+
+The source answers with its own spelling, which is what the golden records:
+
+| case | source answer | converted answer | |
+|---|---|---|---|
+| CODE-TEST-01 `json` | `{"root":{"nodes":{"leaf":true}}}` | same | pass |
+| CODE-TEST-02 `assignment` | `m=l+((h-l)/2)` | `m=(l+(h-l)/2)` | **fail** |
+| CODE-TEST-03 `regex` | `\b[0-9A-F]{4}\b` | same | pass |
+
+CODE-TEST-02 is the canonical illustration of why this gate applies **no** algebraic
+canonicalization: the two forms are equal, and a syntactically different answer is a
+failure on purpose. Relaxing it to an algebraic comparison would delete the gate's entire
+reason to exist.
+
+Not caused by the attention score-dot port — reverting `gemma_moe_inference.cu` to its
+pre-port state at `7810383` reproduces 5 passed / 1 failed exactly. It is an
+NVFP4-vs-bf16 difference on a borderline greedy decision, and it stands as a red gate.

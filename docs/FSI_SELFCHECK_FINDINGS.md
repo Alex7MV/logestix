@@ -501,3 +501,47 @@ the ZWSP form yields six ordinary pieces (`[612, 127643, 9621, 34, 4039, 124430]
 not `[11]`. The codec therefore looks up and renders the plain form; re-encoding
 upstream's own template output reproduces the marker ids. A test asserts both
 facts against the exported vocabulary.
+
+## gemma-4-26b-a4b-it — captured from the source safetensors, and one real divergence
+
+`Gemma4ForConditionalGeneration` / bf16 / `Gemma4Config` in transformers 5.15.1, so the
+source **runs locally** and the golden is model-defined, not template-derived. Capture
+needed `--device-map auto`: 26B bf16 is ~52 GB against a 32 GB RTX 5090, so the experts
+stay offloaded to CPU and generation is PCIe-bound (minutes per case). `chat_template.jinja`
+was required and loaded — without it the raw body is encoded and the answers come back
+malformed.
+
+The source model does **not** answer with the prompt's template formulas, which is the
+point of the gate:
+
+| case | template | source (golden) |
+|---|---|---|
+| FSI-TEST-01 | `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` | `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)` |
+| FSI-TEST-02 | `(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C` | same, canonicalized |
+| FSI-TEST-03 | `Drawdown>Threshold` | same |
+
+FSI-TEST-01 is the annuity-**due** case: the trailing `*exp(r)` is the correct answer and
+the template's line is missing it.
+
+**The converted model fails FSI-TEST-01, and it fails on the template's formula:**
+
+```
+source  raw: PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)
+converted raw: PV=CF*((1-exp(-r*n))/(1-exp(-r)))
+```
+
+This is a real behavioural divergence, not a harness artifact — the extracted answer is
+clean and balanced, so `ExtractFsiFormula` worked; the converted model simply picked the
+plainer formula. FSI-TEST-02 and FSI-TEST-03 pass.
+
+**Not caused by the attention score-dot port.** Re-ran both gates at `7810383` with
+`libs/lsxcommon/src/gemma_moe_inference.cu` reverted to its pre-port state: identical
+results, 5 passed / 1 failed each. So it is an NVFP4-vs-bf16 quantization difference on a
+borderline greedy decision, exactly the class FSI exists to surface, and it predates the
+perf work. Open, not masked — the gate stays red.
+
+**Co-existing CODE divergence, different in kind.** `tests/fixtures/code/gemma-4-26b-a4b-it.json`
+captured the same way. CODE-TEST-01 and CODE-TEST-03 match; CODE-TEST-02 fails with
+`m=(l+(h-l)/2)` against the source's `m=l+((h-l)/2)`. The two are algebraically identical
+and CODE applies **no** canonicalization by design, so this is the intended strictness
+firing rather than a defect. Recorded in `docs/CODE_SELFCHECK_FINDINGS.md`.
