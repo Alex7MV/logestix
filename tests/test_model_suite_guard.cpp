@@ -98,7 +98,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_glm_moe_prefill_seqp"}},
           {"selfcheck", {"test_glm_moe_selfcheck"}},
           {"fsi", {"test_glm_moe_fsi_selfcheck"}},
-          {"code", {"test_glm_moe_code_selfcheck"}}, {"det", {"test_glm_moe_det_selfcheck"}}}},
+          {"code", {"test_glm_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_glm_5_2"}},
+          {"det", {"test_glm_moe_det_selfcheck"}}}},
         {"glm-5.3-flash",
          {{"convert", {"test_glm_moe_flash_convert"}},
           {"load", {"test_glm_moe_flash_loader"}},
@@ -107,7 +108,8 @@ const std::vector<SuiteSpec> &Suites()
           {"kernels", {"test_glm_moe_flash_kernels"}},
           {"selfcheck", {"test_glm_moe_flash_selfcheck"}},
           {"fsi", {"test_glm_moe_flash_fsi_selfcheck"}},
-          {"code", {"test_glm_moe_flash_code_selfcheck"}}, {"det", {"test_glm_moe_flash_det_selfcheck"}}}},
+          {"code", {"test_glm_moe_flash_code_selfcheck"}}, {"perf", {"test_perf_baseline_glm_5_3_flash"}},
+          {"det", {"test_glm_moe_flash_det_selfcheck"}}}},
         // No convert stage by design: DeepSeek-V4-Flash ingests a
         // pre-converted logestix layout (no converter exists in the repo);
         // classification/topology of that layout is the model stage.
@@ -124,7 +126,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_deepseek_moe_moe", "test_deepseek_moe_norm_kernels"}},
           {"selfcheck", {"test_deepseek_moe_selfcheck"}},
           {"fsi", {"test_deepseek_moe_fsi_selfcheck"}},
-          {"code", {"test_deepseek_moe_code_selfcheck"}}, {"det", {"test_deepseek_moe_det_selfcheck"}}}},
+          {"code", {"test_deepseek_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_deepseek_v4_flash"}},
+          {"det", {"test_deepseek_moe_det_selfcheck"}}}},
         {"deepseek-v4.1-flash",
          {{"convert", {"test_deepseek_moe_v41_convert"}},
           {"load",
@@ -137,7 +140,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_deepseek_moe_v41_pipeline"}},
           {"selfcheck", {"test_deepseek_moe_v41_selfcheck"}},
           {"fsi", {"test_deepseek_moe_v41_fsi_selfcheck"}},
-          {"code", {"test_deepseek_moe_v41_code_selfcheck"}}, {"det", {"test_deepseek_moe_v41_det_selfcheck"}}}},
+          {"code", {"test_deepseek_moe_v41_code_selfcheck"}}, {"perf", {"test_perf_baseline_deepseek_v41_flash"}},
+          {"det", {"test_deepseek_moe_v41_det_selfcheck"}}}},
         {"qwen3.5-9b",
          {{"convert",
            {"test_qwen_dense_convert", "test_qwen_dense_converter_integrity"}},
@@ -153,7 +157,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_qwen_dense_kv_parity"}},
           {"selfcheck", {"test_qwen_dense_selfcheck"}},
           {"fsi", {"test_qwen_dense_fsi_selfcheck"}},
-          {"code", {"test_qwen_dense_code_selfcheck"}}, {"det", {"test_qwen_dense_det_selfcheck"}}}},
+          {"code", {"test_qwen_dense_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_5_9b"}},
+          {"det", {"test_qwen_dense_det_selfcheck"}}}},
         // qwen3.8-27b shares the dense convert/load/kernels pipeline with
         // qwen3.5-9b (QwenBaseModel); its own stages are model+selfcheck.
         {"qwen3.8-27b",
@@ -165,7 +170,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_qwen_nvfp4_tile_gemm"}},
           {"selfcheck", {"test_qwen_dense_27b_selfcheck"}},
           {"fsi", {"test_qwen_dense_27b_fsi_selfcheck"}},
-          {"code", {"test_qwen_dense_27b_code_selfcheck"}}, {"det", {"test_qwen_dense_27b_det_selfcheck"}}}},
+          {"code", {"test_qwen_dense_27b_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_8_27b"}},
+          {"det", {"test_qwen_dense_27b_det_selfcheck"}}}},
         {"qwen3.5-35b-a3b",
          {{"convert", {"test_qwen_moe_convert"}},
           {"load", {"test_qwen_moe_loader"}},
@@ -173,7 +179,8 @@ const std::vector<SuiteSpec> &Suites()
           {"kernels", {"test_qwen_moe_kernels"}},
           {"selfcheck", {"test_qwen_moe_selfcheck"}},
           {"fsi", {"test_qwen_moe_fsi_selfcheck"}},
-          {"code", {"test_qwen_moe_code_selfcheck"}}, {"det", {"test_qwen_moe_det_selfcheck"}}}},
+          {"code", {"test_qwen_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_5_35b_a3b"}},
+          {"det", {"test_qwen_moe_det_selfcheck"}}}},
         // qwen3.6 shares loader + kernels with qwen3.5-35b (QwenMoeModelBase).
         {"qwen3.6-35b-a3b",
          {{"convert", {"test_qwen_moe_36_convert"}},
@@ -182,7 +189,8 @@ const std::vector<SuiteSpec> &Suites()
           {"kernels", {"test_qwen_moe_kernels"}},
           {"selfcheck", {"test_qwen_moe_36_selfcheck"}},
           {"fsi", {"test_qwen_moe_36_fsi_selfcheck"}},
-          {"code", {"test_qwen_moe_36_code_selfcheck"}}, {"det", {"test_qwen_moe_36_det_selfcheck"}}}},
+          {"code", {"test_qwen_moe_36_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_6_35b_a3b"}},
+          {"det", {"test_qwen_moe_36_det_selfcheck"}}}},
         {"ornith-1.5-35b-a3b",
          {{"convert", {"test_ornith_moe_convert"}},
           {"load", {"test_ornith_moe_loader"}},
@@ -190,7 +198,8 @@ const std::vector<SuiteSpec> &Suites()
           {"kernels", {"test_ornith_moe_kernels"}},
           {"selfcheck", {"test_ornith_moe_selfcheck"}},
           {"fsi", {"test_ornith_moe_fsi_selfcheck"}},
-          {"code", {"test_ornith_moe_code_selfcheck"}}, {"det", {"test_ornith_moe_det_selfcheck"}}}},
+          {"code", {"test_ornith_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_ornith"}},
+          {"det", {"test_ornith_moe_det_selfcheck"}}}},
         {"qwen3.8-flash-next",
          {{"convert", {"test_qwen_moe_exp_convert"}},
           {"load", {"test_qwen_moe_exp_loader"}},
@@ -198,7 +207,8 @@ const std::vector<SuiteSpec> &Suites()
           {"kernels", {"test_qwen_moe_exp_kernels"}},
           {"selfcheck", {"test_qwen_moe_exp_selfcheck"}},
           {"fsi", {"test_qwen_moe_exp_fsi_selfcheck"}},
-          {"code", {"test_qwen_moe_exp_code_selfcheck"}}, {"det", {"test_qwen_moe_exp_det_selfcheck"}}}},
+          {"code", {"test_qwen_moe_exp_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_8_flash_next"}},
+          {"det", {"test_qwen_moe_exp_det_selfcheck"}}}},
         {"gemma-4-26b-a4b-it",
          {{"convert", {"test_gemma_moe_convert"}},
           {"load", {"test_gemma_moe_loader"}},
@@ -210,7 +220,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_gemma_moe_attn", "test_gemma_moe_moe"}},
           {"selfcheck", {"test_gemma_moe_selfcheck"}},
           {"fsi", {"test_gemma_moe_fsi_selfcheck"}},
-          {"code", {"test_gemma_moe_code_selfcheck"}}, {"det", {"test_gemma_moe_det_selfcheck"}}}},
+          {"code", {"test_gemma_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_gemma_4_26b_a4b_it"}},
+          {"det", {"test_gemma_moe_det_selfcheck"}}}},
         {"kimi-k2.7-code",
          {{"convert", {"test_kimi_moe_convert"}},
           {"load",
@@ -224,7 +235,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_kimi_moe_tc_batch", "test_kimi_moe_tc_diag"}},
           {"selfcheck", {"test_kimi_moe_selfcheck"}},
           {"fsi", {"test_kimi_moe_fsi_selfcheck"}},
-          {"code", {"test_kimi_moe_code_selfcheck"}}, {"det", {"test_kimi_moe_det_selfcheck"}}}},
+          {"code", {"test_kimi_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_kimi_k2_7_code"}},
+          {"det", {"test_kimi_moe_det_selfcheck"}}}},
         {"nemotron-3.5-lightning-30b-a3b",
          {{"convert", {"test_nemotron_moe_convert"}},
           {"load",
@@ -235,7 +247,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_nemotron_session"}},
           {"selfcheck", {"test_nemotron_moe_selfcheck"}},
           {"fsi", {"test_nemotron_moe_fsi_selfcheck"}},
-          {"code", {"test_nemotron_moe_code_selfcheck"}}, {"det", {"test_nemotron_moe_det_selfcheck"}}}},
+          {"code", {"test_nemotron_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_nemotron"}},
+          {"det", {"test_nemotron_moe_det_selfcheck"}}}},
         {"gigachat3.5-432b-a28b-reasoning",
          {{"convert", {"test_gigachat_moe_convert"}},
           {"load",
@@ -249,7 +262,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_gigachat_moe_math"}},
           {"selfcheck", {"test_gigachat_moe_selfcheck"}},
           {"fsi", {"test_gigachat_moe_fsi_selfcheck"}},
-          {"code", {"test_gigachat_moe_code_selfcheck"}}, {"det", {"test_gigachat_moe_det_selfcheck"}}}},
+          {"code", {"test_gigachat_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_gigachat"}},
+          {"det", {"test_gigachat_moe_det_selfcheck"}}}},
         {"granite-4.2-30b",
          {{"convert", {"test_granite_dense_convert"}},
           {"load", {"test_granite_dense_loader"}},
@@ -257,7 +271,8 @@ const std::vector<SuiteSpec> &Suites()
           {"kernels", {"test_granite_dense_kernels"}},
           {"selfcheck", {"test_granite_dense_selfcheck"}},
           {"fsi", {"test_granite_dense_fsi_selfcheck"}},
-          {"code", {"test_granite_dense_code_selfcheck"}}, {"det", {"test_granite_dense_det_selfcheck"}}}},
+          {"code", {"test_granite_dense_code_selfcheck"}}, {"perf", {"test_perf_baseline_granite_4_2_30b"}},
+          {"det", {"test_granite_dense_det_selfcheck"}}}},
         {"mimo-v2.6-flash-rl",
          {{"convert", {"test_mimo_moe_convert"}},
           {"load",
@@ -267,7 +282,8 @@ const std::vector<SuiteSpec> &Suites()
           {"kernels", {"test_mimo_moe_kernels", "test_mimo_moe_dequant"}},
           {"selfcheck", {"test_mimo_moe_selfcheck"}},
           {"fsi", {"test_mimo_moe_fsi_selfcheck"}},
-          {"code", {"test_mimo_moe_code_selfcheck"}}, {"det", {"test_mimo_moe_det_selfcheck"}}}},
+          {"code", {"test_mimo_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_mimo_v2_6_flash_rl"}},
+          {"det", {"test_mimo_moe_det_selfcheck"}}}},
         {"phi-4",
          {{"convert", {"test_phi_dense_convert"}},
           {"load", {"test_phi_dense_loader"}},
@@ -276,6 +292,7 @@ const std::vector<SuiteSpec> &Suites()
           {"selfcheck", {"test_phi_dense_selfcheck"}},
           {"fsi", {"test_phi_dense_fsi_selfcheck"}},
           {"code", {"test_phi_dense_code_selfcheck"}},
+          {"perf", {"test_perf_baseline_phi_4"}},
           {"det", {"test_phi_dense_det_selfcheck"}}}},
         {"xing4.0-29b-a4b",
          {{"convert", {"test_xing_moe_convert"}},
@@ -285,6 +302,7 @@ const std::vector<SuiteSpec> &Suites()
           {"selfcheck", {"test_xing_moe_selfcheck"}},
           {"fsi", {"test_xing_moe_fsi_selfcheck"}},
           {"code", {"test_xing_moe_code_selfcheck"}},
+          {"perf", {"test_perf_baseline_xing_4_0_29b_a4b"}},
           {"det", {"test_xing_moe_det_selfcheck"}}}},
         {"alice-foundation-80b-a3b",
          {{"convert", {"test_alice_moe_convert"}},
@@ -294,6 +312,7 @@ const std::vector<SuiteSpec> &Suites()
           {"selfcheck", {"test_alice_moe_selfcheck"}},
           {"fsi", {"test_alice_moe_fsi_selfcheck"}},
           {"code", {"test_alice_moe_code_selfcheck"}},
+          {"perf", {"test_perf_baseline_alice_foundation_80b_a3b"}},
           {"det", {"test_alice_moe_det_selfcheck"}}}},
     };
     return v;
@@ -757,7 +776,7 @@ TEST_CASE("suite guard: every suite row declares the full stage set",
     // dropped "model" stayed green forever.
     static const std::vector<const char *> kRequired = {
         "convert", "load", "model", "kernels",
-        "selfcheck", "fsi", "code", "det"};
+        "selfcheck", "fsi", "code", "det", "perf"};
     // DeepSeek-V4-Flash has no converter in the repo by design (it ingests a
     // pre-converted logestix layout), so "convert" is exempt for that row only.
     static const std::set<std::string> kConvertExempt = {"deepseek-v4-flash"};
@@ -779,4 +798,117 @@ TEST_CASE("suite guard: every suite row declares the full stage set",
     for (const auto &s : missing) joined += s + "\n";
     INFO("incomplete suite rows:\n" << joined);
     CHECK(missing.empty());
+}
+
+// ── Golden coverage: a selfcheck stage that SKIPs is not coverage ────────
+//
+// The fsi/code/det stages are three target families that SKIP whenever their golden
+// file is absent (real weights or golden missing -> SKIP, exit 4). A SKIP is
+// indistinguishable from a pass in the ctest summary, so a stage can be fully
+// wired - target registered, SKIP_RETURN_CODE 4 set, suite-guard row present - and
+// still never execute a single assertion. gemma-4-26b-a4b-it sat exactly there:
+// its det golden existed and its fsi/code goldens did not, so two of four parity
+// stages were reporting SUCCESS while doing nothing, and nothing in the tree
+// noticed. Nine families are still in that state.
+//
+// Nothing cross-referenced the suite rows against tests/fixtures/{fsi,code,det},
+// so this closes that. The debt below is declared rather than tolerated: a family
+// with no golden FAILS unless it is listed here, which makes "add a model and forget
+// the goldens" impossible to do quietly, and makes the remaining gaps enumerable
+// from the test output instead of only from a human diffing two directories.
+//
+// Two directions, because either one alone leaves a hole:
+//   - undeclared gap  -> FAIL. A new family must ship its goldens or declare debt.
+//   - stale debt row  -> FAIL. A debt entry whose golden now exists must be deleted,
+//     so the list cannot outlive the problem and quietly rot.
+TEST_CASE("suite guard: every parity golden is present or declared as debt",
+          "[guard]")
+{
+    static const std::vector<const char *> kGoldenStages = {"fsi", "code", "det"};
+    // Declared debt, as "<model>:<stage>". Every entry is a real gap; keeping the
+    // list here rather than inferring it means the test output names what is
+    // missing instead of merely counting what is present.
+    static const std::set<std::string> kGoldenDebt = {
+        "deepseek-v4-flash:code",
+        "deepseek-v4-flash:det",
+        "deepseek-v4-flash:fsi",
+        "deepseek-v4.1-flash:code",
+        "deepseek-v4.1-flash:fsi",
+        "gigachat3.5-432b-a28b-reasoning:code",
+        "gigachat3.5-432b-a28b-reasoning:det",
+        "gigachat3.5-432b-a28b-reasoning:fsi",
+        "glm-5.2:code",
+        "glm-5.2:det",
+        "glm-5.2:fsi",
+        "granite-4.2-30b:code",
+        "kimi-k2.7-code:code",
+        "kimi-k2.7-code:det",
+        "kimi-k2.7-code:fsi",
+        "mimo-v2.6-flash-rl:code",
+        "mimo-v2.6-flash-rl:det",
+        "mimo-v2.6-flash-rl:fsi",
+        "nemotron-3.5-lightning-30b-a3b:code",
+        "nemotron-3.5-lightning-30b-a3b:det",
+        "nemotron-3.5-lightning-30b-a3b:fsi",
+        "ornith-1.5-35b-a3b:code",
+        "ornith-1.5-35b-a3b:det",
+        "ornith-1.5-35b-a3b:fsi",
+        "qwen3.5-9b:fsi",
+    };
+
+    const fs::path root(LSX_SOURCE_DIR);
+    const std::vector<SuiteSpec> suites = Suites();
+
+    // The rows a stage is claimed for. A stage absent from a row is a separate
+    // guard's business (kRequired above); here we only ask about the goldens of
+    // the rows that DO claim the stage, so this test cannot double-report.
+    std::vector<std::string> undeclared_gap;
+    std::vector<std::string> stale_debt;
+    std::set<std::string> seen_debt;
+
+    for (const auto &s : suites)
+    {
+        std::set<std::string> stages;
+        for (const auto &st : s.stages) stages.insert(st.stage);
+        for (const auto *g : kGoldenStages)
+        {
+            if (!stages.count(g)) continue;
+            const std::string key = std::string(s.model) + ":" + g;
+            const bool present = fs::exists(root / "tests" / "fixtures" / g /
+                                            (std::string(s.model) + ".json"));
+            if (present)
+            {
+                if (kGoldenDebt.count(key)) stale_debt.push_back(key);
+                continue;
+            }
+            if (kGoldenDebt.count(key))
+            {
+                seen_debt.insert(key);
+                continue;
+            }
+            undeclared_gap.push_back(key);
+        }
+    }
+
+    std::string a, b;
+    for (const auto &x : undeclared_gap)
+        a += "golden missing and NOT declared as debt (add the golden, or add \"" +
+             x + "\" to kGoldenDebt): " + x + "\n";
+    for (const auto &x : stale_debt)
+        b += "debt row whose golden now exists - delete \"" + x +
+             "\" from kGoldenDebt: " + x + "\n";
+    INFO("undeclared golden gaps:\n" << a);
+    INFO("stale debt rows:\n" << b);
+    CHECK(undeclared_gap.empty());
+    CHECK(stale_debt.empty());
+
+    // A debt row for a model or stage that no longer exists is dead weight that
+    // hides a rename; catching it here keeps the list honest rather than letting
+    // it accumulate.
+    std::vector<std::string> unknown_debt;
+    for (const auto &d : kGoldenDebt)
+        if (!seen_debt.count(d)) unknown_debt.push_back(d);
+    for (const auto &x : unknown_debt)
+        INFO("debt row matching no live gap: " << x);
+    CHECK(unknown_debt.empty());
 }
