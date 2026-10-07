@@ -363,6 +363,33 @@ neutral NVFP4), not a rewrite bug; the digit-echo probe and the FSI-03 pass show
 the decode is functional. A definitive reference still requires running the
 release's own `inference/` stack on the intended 2x80GB hardware.
 
+### DeepSeek-V4.1-Flash: model-defined golden committed (2026-10-07)
+
+The source ships its own FP8/FP4 tilelang tensor-parallel stack and cannot run
+locally, so the reference is the model itself: as with GLM-5.3-Flash, the
+DeepSeek-V4.1-Flash assistant answered the three prompts and its answers — the
+`Expected Templates` — are the golden. `input_ids` come from the release's
+`encoding/encoding.py` (`thinking_mode="thinking"`) + `tokenizer.json`, the same
+framing as the committed DET golden. The golden is now committed
+(`tests/fixtures/fsi/deepseek-v4.1-flash.json`); previously the test SKIPped.
+
+Result on the converted model (E4M3FN NVFP4, `kOff`): **1/3**.
+
+| Case | golden (= the model) | converted `extracted` |
+|---|---|---|
+| FSI-01 | `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` | `PV=CF*(1-e` (truncated prompt echo) |
+| FSI-02 | `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C` | `Balance_Alpha=100000000` (initial-state echo) |
+| FSI-03 | `Drawdown>Threshold` | `Drawdown>Threshold` **PASS** |
+
+Same profile as the 2026-09-27 sweep (no framing reproduced the golden; FSI-01
+consistently short, FSI-02 numerically evaluates), and the E4M3FN codec change
+did not move it. In thinking mode the CoT does not terminate within the 512-token
+budget, so the first-anchor-line extractor latches onto the prompt echo. No
+discrete rewrite defect was found in the audited runtime; this is the
+requantization precision plus the reasoning model's CoT length against the
+extractor, not a kernel bug. Tracked in `OPEN_TASKS.md` section Q. A definitive
+reference still needs the release's own `inference/` stack on 2×80 GB.
+
 ## GLM-5.3-Flash: API-derived golden experiment (2026-09-27)
 
 GLM-5.3-Flash cannot be run locally either (`glm5_next` is absent from

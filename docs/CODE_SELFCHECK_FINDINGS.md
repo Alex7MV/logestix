@@ -89,6 +89,31 @@ Greedy decoding answers all three CODE prompts exactly.
 A golden is committed only for a family whose converted model passes (same
 discipline as FSISelfCheck). The divergences below are recorded here, not masked.
 
+### DeepSeek-V4.1-Flash — model-defined golden committed, 2/3 (2026-10-07)
+
+A deliberate deviation from the "commit only if the converted model passes" rule
+above: the DeepSeek-V4.1-Flash source is unrunnable (own FP8/FP4 tilelang
+stack), so — as with FSI and GLM-5.3-Flash — the model itself is the reference.
+The DeepSeek-V4.1-Flash assistant answered the three CODE prompts (answers = the
+`Expected Templates`); `input_ids` from the release's `encoding/encoding.py`
+(`thinking_mode="thinking"`). The golden is committed
+(`tests/fixtures/code/deepseek-v4.1-flash.json`) and the gate now runs RED
+(previously SKIP); tracked in `OPEN_TASKS.md` section Q.
+
+Converted model (`kOff`): **2/3**.
+
+| Case | golden (= the model) | converted `extracted` |
+|---|---|---|
+| CODE-01 | `{"root":{"nodes":{"leaf":true}}}` | *(empty)* |
+| CODE-02 | `m=l+((h-l)/2)` | `m=l+((h-l)/2)` **PASS** |
+| CODE-03 | `\b[0-9A-F]{4}\b` | `\b[0-9A-F]{4}\b` **PASS** |
+
+CODE-01 is a reasoning-level divergence (unlike granite's composite-token argmax
+flip): in its CoT the converted model declares the balanced template "invalid",
+miscounts the braces, and then emits an object missing its final `}` — the JSON
+extractor finds nothing. The model's own reasoning states the (incorrect)
+miscount, so it is not a decode/off-by-one artifact.
+
 ### granite-4.2-30b — CODE-TEST-01 (json)
 
 Both source and converted wrap the answer in a short chain-of-thought. The

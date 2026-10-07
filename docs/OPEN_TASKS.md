@@ -644,6 +644,37 @@ conversion of the same tree (or the `glm5_next` source if it ever becomes
 loadable) to confirm the pre-codec tree answered and the flip is purely the
 offline encoder.
 
+## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
+
+The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
+stack (target 2×80 GB) and cannot run locally, so FSI/CODE had always SKIPped.
+Following the GLM-5.3-Flash method the model itself supplies the reference: the
+DeepSeek-V4.1-Flash assistant answered the prompts (answers = the
+`Expected Templates`) and those answers plus `encoding/encoding.py` thinking
+framing are committed as the goldens
+(`tests/fixtures/{fsi,code}/deepseek-v4.1-flash.json`). Both tests now RUN
+instead of SKIP (a deliberate deviation from "commit only if the converted model
+passes").
+
+Both are RED on the E4M3FN NVFP4 conversion (`kOff`):
+
+- **FSI 1/3** — FSI-01: the thinking CoT does not finish within the 512-token
+  budget, so the first-anchor-line extractor latches onto the truncated prompt
+  echo `PV=CF*(1-e`; FSI-02 yields the initial-state echo
+  `Balance_Alpha=100000000`; FSI-03 passes.
+- **CODE 2/3** — CODE-01: the model's CoT declares the balanced template
+  `{"root":{"nodes":{"leaf":true}}}` "invalid", miscounts the braces, and emits
+  an object missing its final `}` (extractor empty); CODE-02/03 pass.
+
+This is the `numeric-contract.md` §6 class (a reasoning/requantization divergence
+below the format error), not a discrete kernel defect — the same profile as the
+2026-09-27 sweep, unchanged by the E4M3FN codec.
+
+**Next step:** obtain a hardware-faithful reference from the release's own
+`inference/` stack on 2×80 GB; if any case is a genuine converted-model
+regression rather than a budget/extractor artifact, raise the precision of the
+responsible tensor and re-convert.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency
