@@ -2,7 +2,7 @@
   "format": "logestix-code-golden",
   "version": 1,
   "model_type": "deepseek-v4.1-flash",
-  "source": "model-defined (the DeepSeek-V4.1-Flash assistant answered the prompts; the answers equal the Expected Templates. Source ships its own FP8/FP4 tilelang stack and is unrunnable locally, so the assistant is the reference)",
+  "source": "prompt-template (deepseek-v4.1-flash source not runnable locally) — captured with tools/code_capture.py --template-golden: the source ships its own FP8/FP4 tilelang stack (2x80 GB target) and cannot be executed here, so `expected` is the prompt's Expected Template and `raw` is empty. NOT a model-defined golden: no source model ever ran, so this gate pins the CONVERTED path only and says nothing about source parity.",
   "runtime": "encoding/encoding.py + tokenizer.json (transformers 5.15.1); verified on lsxcommon kOff",
   "prompts": [
     {

@@ -12,6 +12,7 @@
 #include <random>
 #include <cstring>
 #include <vector>
+#include "lsxcommon/schema.h"
 
 namespace {
 
@@ -29,12 +30,11 @@ float Frand(int seed, int i)
     return (static_cast<float>(v % 20001) - 10000.0f) / 10000.0f;
 }
 
-// Canonical E4M3 block-scale decode (matches nvfp4_codec::E4M3ScaleToFloat).
+// Canonical E4M3 block-scale decode — the single-source codec, never a local
+// copy (a pow2/field-zero replica silently diverges from the runtime).
 float HostE4M3(uint8_t b)
 {
-    const uint8_t e4 = (b >> 3) & 0x0F;
-    if (e4 == 0) return 0.0f;
-    return std::ldexp(1.0f, static_cast<int>(e4) - 7);
+    return lsxcommon::e4m3_to_float(b);
 }
 
 // Encodes a power-of-two scale 2^e as an E4M3 block-scale byte.

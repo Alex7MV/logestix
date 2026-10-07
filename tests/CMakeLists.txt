@@ -220,6 +220,11 @@ add_executable(test_nvfp4_scale test_nvfp4_scale.cpp)
 target_link_libraries(test_nvfp4_scale PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nvfp4_scale PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+# The single-source guard below scans tests/ for local re-implementations of
+# the block-scale codec, so it needs the repo root.
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_NVFP4)
+target_compile_definitions(test_nvfp4_scale
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_NVFP4}\"")
 
 if(WIN32)
     add_custom_command(TARGET test_nvfp4_scale POST_BUILD

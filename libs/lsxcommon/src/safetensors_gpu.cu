@@ -59,10 +59,6 @@ __device__ float dev_bf16_to_float(const uint8_t *p)
     return v;
 }
 
-// Decode semantics per cuda_fp8.hpp __nv_cvt_fp8_to_halfraw (__NV_E4M3):
-// 0x7F/0xFF -> canonical NaN, e == 0 && m != 0 -> subnormal m*2^-9.
-
-
 __device__ float dev_i8_to_float(uint8_t b)
 {
     return static_cast<float>(static_cast<int8_t>(b));
@@ -143,8 +139,24 @@ __global__ void quantize_pack_perblock_kernel(const float *__restrict__ input,
     float s0 = block_scales[blk0];
     float s1 = block_scales[blk1];
 
-    uint8_t lo = dev_quantize_nvfp4(input[i] / s0);
-    uint8_t hi = (i + 1 < n) ? dev_quantize_nvfp4(input[i + 1] / s1) : 0;
+    // A block scale of exactly zero is the reserved 0x00 E4M3 byte. Since the
+    // codec became the complete E4M3FN table, float_to_e4m3 can emit it for a
+    // NON-ZERO block: the stored scale is normalized against the tensor's
+    // global max, so a block more than 1024x below that max rounds off the
+    // bottom of the grid (previously it clamped up to the min normal).
+    //
+    // Dividing by it yields +-inf, and the nibble then depends on how the level
+    // search treats a non-finite input — with the current strict `<` it lands
+    // on zero (a flush, which is the intended outcome), but a `<=` or the
+    // QuantizeE2m1TieUp flavor would select the 6.0 level and turn a ~1e-3
+    // block into maximum-magnitude garbage. Short-circuit here so the flush is
+    // structural instead of a side effect of a comparison operator.
+    // Pinned by test_deepseek_moe_inference_kernels.cu "NVFP4 offline
+    // quantize flushes a below-grid block instead of poisoning it".
+    uint8_t lo = s0 > 0.0f ? dev_quantize_nvfp4(input[i] / s0) : 0;
+    uint8_t hi = (i + 1 < n)
+                     ? (s1 > 0.0f ? dev_quantize_nvfp4(input[i + 1] / s1) : 0)
+                     : 0;
     output[i / 2] = (hi << 4) | lo;
 }
 

@@ -301,9 +301,11 @@ bool NemotronModelBase::BuildPromptInputIds(const ArrowTokenizerDb &tok,
 {
     // A chat model must never see an unframed prompt. Render the single turn
     // through the SAME native template the conversation path uses (the
-    // checkpoint's chat_template.jinja: `<|im_start|>role\n…<|im_end|>`, with
-    // the generation prompt opening `<think>`), NOT a bare role-word frame -
-    // the latter does not match the checkpoint and degrades generation.
+    // checkpoint's chat_template.jinja: an always-present leading system turn,
+    // then `<|im_start|>role\n…<|im_end|>`, with the generation prompt opening
+    // `<think>`). No system message is injected here: the template renders an
+    // EMPTY system turn when the caller supplies none, and that is the frame
+    // the checkpoint was trained on.
     ChatConversation conv;
     conv.messages.push_back({"user", std::string(raw_prompt), "", {}});
     std::string frame;
@@ -454,22 +456,25 @@ bool NemotronModelBase::RenderNemotronConversation(const ChatConversation &conv,
     const bool first_system =
         !conv.messages.empty() && conv.messages[0].role == "system";
     const bool has_tools = !conv.tools.empty();
-    if (first_system || has_tools) {
-        out += "<|im_start|>system\n";
-        if (first_system) out += esc(conv.messages[0].content);
-        if (has_tools) {
-            if (first_system && !conv.messages[0].content.empty())
-                out += "\n\n";
-            out +=
-                "# Tools\n\nYou have access to the following functions:\n\n"
-                "<tools>";
-            for (const ToolSpec &t : conv.tools)
-                out += RenderToolDeclaration(t);
-            out += "\n</tools>";
-            out += kNemotronToolInstructions;
-        }
-        out += "<|im_end|>\n";
+    // The checkpoint's chat_template.jinja assigns `system_message = ""` when
+    // messages[0] is not a system turn and then branches on
+    // `system_message is defined`, which is therefore ALWAYS true. The frame
+    // ALWAYS opens with a system turn — empty when the caller supplied none.
+    // Gating this on `first_system || has_tools` produced a frame that opens at
+    // the user turn, which the checkpoint never sees.
+    out += "<|im_start|>system\n";
+    if (first_system) out += esc(conv.messages[0].content);
+    if (has_tools) {
+        if (first_system && !conv.messages[0].content.empty()) out += "\n\n";
+        out +=
+            "# Tools\n\nYou have access to the following functions:\n\n"
+            "<tools>";
+        for (const ToolSpec &t : conv.tools)
+            out += RenderToolDeclaration(t);
+        out += "\n</tools>";
+        out += kNemotronToolInstructions;
     }
+    out += "<|im_end|>\n";
 
     simdjson::dom::parser parser;
     bool in_tool_turn = false;

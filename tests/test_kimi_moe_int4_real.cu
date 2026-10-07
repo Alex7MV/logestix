@@ -19,6 +19,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "lsxcommon/schema.h"
 
 namespace {
 
@@ -181,10 +182,9 @@ TEST_CASE("Kimi INT4->NVFP4 conversion matches source nibble order",
         std::memcpy(&f, &u, sizeof(f));
         return f;
     };
+    // Canonical block-scale decode (single source nvfp4_scale.h).
     auto e4m3 = [](uint8_t b) -> float {
-        const uint8_t e4 = (b >> 3) & 0x0F;
-        if (!e4) return 0.f;
-        return std::ldexp(1.0f, static_cast<int>(e4) - 7);
+        return lsxcommon::e4m3_to_float(b);
     };
     const size_t sample_stride = 97;
     std::vector<double> nv, src_lo, src_hi;

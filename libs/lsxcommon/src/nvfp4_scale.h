@@ -70,7 +70,9 @@ LSX_NVFP4_SCALE_HD inline uint8_t FloatToE4m3(float s)
     if (rem > half || (rem == half && (me & 1))) ++me;  // RNE
     int E = e + 7;
     if (me == 8) { me = 0; ++E; }          // carry into the exponent
-    if (E < 1) return 0x08;
+    // E >= 1 always: this branch is only reached for exp8 >= 121 (s >= 2^-6),
+    // so e >= -6 and E = e + 7 >= 1. The old `if (E < 1) return 0x08;` clamp
+    // became unreachable when the subnormal range moved below the normal path.
     if (E > 15) return 0x7E;
     if (E == 15 && me > 6) return 0x7E;    // cannot reach the 0x7F NaN slot
     return static_cast<uint8_t>((E << 3) | me);

@@ -48,8 +48,14 @@ __host__ __device__ __forceinline__ float E2M1Value(int nib)
 }
 
 // Full unsigned-E4M3 block scale (mantissa-aware). Delegates to the single
-// canonical codec in nvfp4_scale.h: e4==0 -> 0.0, else 2^(e-7)*(1+m/8).
-// mantissa==0 bytes reproduce the old pow2 decode bit-for-bit.
+// canonical codec in nvfp4_scale.h: the COMPLETE E4M3FN value table — e4 >= 1
+// gives 2^(e-7)*(1+m/8), e4 == 0 gives the SUBNORMAL m*2^-9 (0x00 -> 0), and
+// 0x7F stays the reserved NaN. Never re-implement this table locally; a
+// hand-copied host reference is how a family silently diverges from the
+// runtime. Hardware parity (sm_120a mma.sync ... block_scale .ue4m3 decodes
+// 0x01..0x07 as m*2^-9, not 0) is pinned by
+// tests/test_blackwell_tc_mma.cu "sm_120a nvfp4 mma decodes subnormal UE4M3
+// scale bytes as m*2^-9".
 __host__ __device__ __forceinline__ float E4M3ScaleToFloat(uint8_t e4m3)
 {
     return ::lsxcommon::nvfp4::E4m3ToFloat(e4m3);

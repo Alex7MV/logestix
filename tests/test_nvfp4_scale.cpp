@@ -9,7 +9,19 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <regex>
+#include <set>
+#include <string>
 #include <vector>
+
+#ifndef LSX_SOURCE_DIR
+#define LSX_SOURCE_DIR "."
+#endif
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -107,4 +119,78 @@ TEST_CASE("full-E4M3: pow2 bytes are bit-identical to the old codec",
         CHECK(lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(0x80 | b)) ==
               lsxcommon::nvfp4::E4m3ToFloat(static_cast<uint8_t>(b)));
     CHECK(FloatToE4m3(3.0f) != 0x00);            // sanity: encoder live
+}
+
+// ── Single-source guard: no test re-implements the block-scale decode ───────
+//
+// The block-scale codec is single-source (nvfp4_scale.h) precisely because the
+// value table is subtle — a mantissa bit dropped, or `e == 0` mapped to zero
+// instead of the subnormal m*2^-9, is a silent numerical change in whichever
+// test happens to carry a stale copy. The E4M3FN alignment had exactly that:
+// a dozen host references in tests/ still carried the retired field-zero /
+// pow2-only contract while the runtime had moved on.
+//
+// A test that genuinely needs an INDEPENDENT oracle (this file's RefDecode,
+// the nemotron converter's reference) is not a violation — independence is the
+// point there. What is forbidden is a second copy that claims to mirror the
+// runtime decoder, because that is what silently diverges. The discriminator
+// used here is the signed/unsigned split: the unsigned block-scale type has NO
+// sign bit, so a replica that extracts one is decoding a different format
+// (signed F8_E4M3) and is legitimately separate.
+TEST_CASE("no test re-implements the unsigned NVFP4 block-scale decode",
+          "[nvfp4][codec][guard]")
+{
+    // Files whose `(b >> 3) & 0xF` exponent extraction decodes a SIGNED
+    // F8_E4M3 tensor (they extract `(b >> 7) & 1`), or is an intentional
+    // independent oracle for the codec itself.
+    static const std::set<std::string> kAllowed = {
+        // Signed F8_E4M3 weight tensors — a different type from the unsigned
+        // UE4M3 block scale, with a real sign bit.
+        "test_deepseek_moe_moe.cu",
+        "test_deepseek_moe_v41_dequant.cu",
+        "test_gigachat_moe_kernels.cpp",
+        "test_mimo_moe_dequant.cpp",
+        // Deliberately independent oracles for the codec under test.
+        "test_nvfp4_scale.cpp",
+        "test_nemotron_moe_nvfp4_convert.cpp",
+        // pow2-only payload by construction: E8m0ToE4m3Pow2Pair emits
+        // (e4 << 3), so the mantissa is always 0 and the pow2 and full-E4M3
+        // decodes agree on every byte this file can see.
+        "test_deepseek_moe_moe.cu",
+        "test_deepseek_nvfp4_repack.cpp",
+    };
+
+    const fs::path dir(LSX_SOURCE_DIR "/tests");
+    std::vector<std::string> offenders;
+    for (const auto &e : fs::directory_iterator(dir)) {
+        if (e.path().extension() != ".cu" && e.path().extension() != ".cpp")
+            continue;
+        const std::string name = e.path().filename().string();
+        if (kAllowed.count(name)) continue;
+
+        std::ifstream in(e.path());
+        if (!in.good()) continue;
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+
+        // Extracts an E4M3 exponent field...
+        const bool extracts_exp =
+            std::regex_search(text, std::regex(R"(\(\s*\w+\s*>>\s*3\s*\)\s*&\s*0x0?F\s*)"));
+        if (!extracts_exp) continue;
+        // ...but is NOT calling the canonical codec (either the public
+        // lsxcommon::e4m3_to_float wrapper or nvfp4_scale.h's E4m3ToFloat),
+        // and takes no sign bit (so it is not a signed F8_E4M3 replica either).
+        const bool canonical = text.find("E4m3ToFloat") != std::string::npos ||
+                              text.find("e4m3_to_float") != std::string::npos;
+        const bool signed_fp8 =
+            std::regex_search(text, std::regex(R"(\(\s*\w+\s*>>\s*7\s*\)\s*&\s*1\s*)"));
+        if (canonical || signed_fp8) continue;
+
+        offenders.push_back(name);
+    }
+
+    for (const auto &x : offenders)
+        WARN("stale local E4M3 block-scale decode in tests/" << x
+              << " - call lsxcommon::nvfp4::E4m3ToFloat instead");
+    CHECK(offenders.empty());
 }

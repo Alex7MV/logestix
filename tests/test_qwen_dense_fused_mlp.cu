@@ -13,6 +13,7 @@
 
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/schema.h"
 
 namespace {
 
@@ -32,8 +33,9 @@ void FillNvfp4(lsxcommon::qwen::QwenNvfp4Weight &w, int K, int N,
     cudaMemcpy((void*)w.d_scales, sc.data(), sc.size(), cudaMemcpyHostToDevice);
 }
 
-// Host replica of the shared NVFP4 decode (nvfp4_codec.h): E4M3 power-of-2
-// block scale (e4==0 -> 0.0, else bitcast((e4+120)<<23)) and the E2M1 nibble
+// Host reference for the shared NVFP4 decode: the canonical E4M3FN block
+// scale (lsxcommon::e4m3_to_float, single source nvfp4_scale.h — it used to
+// be a local power-of-2 replica) and the E2M1 nibble
 // table. Weight packed layout is [N-output, K-input] row-major: element
 // e = n*K + k lives at byte e>>1 (low nibble if even, high if odd); the E4M3
 // scale is per-16 elements (e>>4).
@@ -42,12 +44,10 @@ const float kHostE2M1[16] = {
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
+// Canonical block-scale decode (complete E4M3FN, single source nvfp4_scale.h).
 float HostE4M3Scale(uint8_t u)
 {
-    const uint32_t e4 = (u >> 3) & 0x0Fu;
-    if (e4 == 0) return 0.0f;
-    uint32_t bits = (e4 + 120u) << 23;
-    float f; std::memcpy(&f, &bits, sizeof(f)); return f;
+    return lsxcommon::e4m3_to_float(u);
 }
 
 double HostDeqW(const std::vector<uint8_t> &pk, const std::vector<uint8_t> &sc,

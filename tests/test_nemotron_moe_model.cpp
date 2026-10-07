@@ -169,9 +169,16 @@ TEST_CASE("nemotron single-prompt framing uses the native chat template",
           "[nemotron][fast][prompt_framing]")
 {
     // A chat model must never see an unframed prompt: the single-prompt path
-    // (lsxbenchmark --run, lsxfabric --testprompt) must emit the same frame as
-    // the conversation renderer — bare role word + "\n", generation prompt
-    // opening <think> (verified against the checkpoint's chat_template.jinja).
+    // (lsxbenchmark --run, lsxfabric --testprompt) must emit exactly what the
+    // checkpoint's chat_template.jinja renders.
+    //
+    // The template assigns `system_message = ""` when messages[0] is not a
+    // system turn and then tests `system_message is defined` — which is
+    // therefore ALWAYS true — so the rendered frame opens with an EMPTY system
+    // turn even when the caller supplied none. Rendering without it produces a
+    // frame the checkpoint never sees; that divergence is the one that made
+    // Ornith-1.5 collapse into repetition (see the 2026-10-07 framing fix).
+    // Verified by rendering the vault's chat_template.jinja directly.
     SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     const auto src = nemotrontest::MakeTempDir("nm_frame_src");
     const auto dst = nemotrontest::MakeTempDir("nm_frame_dst");
@@ -190,10 +197,13 @@ TEST_CASE("nemotron single-prompt framing uses the native chat template",
     REQUIRE(framing_probe.BuildPromptInputIds(db, kPrompt, ids));
     REQUIRE(!ids.empty());
 
-    // Round-trip the ids: the frame must be exactly the native single turn
-    // (the checkpoint's chat_template.jinja uses <|im_start|> ChatML blocks).
-    const std::string expected = std::string("<|im_start|>user\n") + kPrompt +
-                                 "<|im_end|>\n<|im_start|>assistant\n<think>\n";
+    // Round-trip the ids: the frame must be byte-identical to the template's
+    // render of a single user message (empty leading system turn + the
+    // generation prompt opening <think>).
+    const std::string expected =
+        "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n" +
+        std::string(kPrompt) +
+        "<|im_end|>\n<|im_start|>assistant\n<think>\n";
     const std::string decoded = runtime::DecodeGeneratedText(db, ids);
     INFO("decoded frame: [" << decoded << "]");
     REQUIRE(decoded == expected);

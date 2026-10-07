@@ -25,9 +25,10 @@ namespace gpu {
 namespace {
 
 // ── FP8 device helpers (mirror safetensors_gpu.cu) ───────────────────────────
-
-// Decode semantics per cuda_fp8.hpp __nv_cvt_fp8_to_halfraw (__NV_E4M3):
-// 0x7F/0xFF -> canonical NaN, e == 0 && m != 0 -> subnormal m*2^-9.
+// The signed F8_E4M3 decode lives once in lsx_kernels_quant.cuh
+// ::F8E4m3ToFloat; the unsigned NVFP4 block scale is the separate
+// nvfp4_scale.h::E4m3ToFloat. The two differ in signedness and are not
+// interchangeable.
 
 
 // ── KV act_quant (FP8_E4M3 inplace, block_size=64) ───────────────────────────

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/schema.h"
 
 namespace lsx_nvfp4 = lsxcommon::lsx_nvfp4;
 
@@ -27,23 +28,12 @@ constexpr float kE2M1[16] = {
    -0.0f,-0.5f,-1.0f,-1.5f,-2.0f,-3.0f,-4.0f,-6.0f
 };
 
-// Bit-exact host replica of nvfp4_codec.h's E4M3ScaleToFloat: full unsigned
-// E4M3, e4-field zero -> 0, else 2^(e-7)*(1+m/8); 0x7F reserved -> NaN.
+// The canonical block-scale decoder itself — this host reference used to be a
+// hand-copied replica, which is how it drifted onto the retired field-zero
+// contract while the runtime moved to E4M3FN subnormals.
 float ScaleHost(uint8_t e4m3)
 {
-    const uint32_t e = (e4m3 >> 3) & 0x0Fu;
-    if (e == 0) return 0.0f;
-    const uint32_t m = e4m3 & 0x7u;
-    if (e == 15u && m == 7u) {
-        uint32_t nb = 0x7FC00000u;
-        float f;
-        std::memcpy(&f, &nb, sizeof(f));
-        return f;
-    }
-    uint32_t bits = ((e + 120u) << 23) | (m << 20);
-    float out;
-    std::memcpy(&out, &bits, sizeof(out));
-    return out;
+    return lsxcommon::e4m3_to_float(e4m3);
 }
 
 // Plain per-element host reference (legacy-kernel order, full FP32 math).
@@ -215,9 +205,17 @@ TEST_CASE("Legacy dispatch branch (N<8, K<16) parity incl. acc=true",
         REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
         const auto hy = b.Read(b.dy);
         for (int i = 0; i < c.seq * c.N; ++i) {
+            // The kernel's output type is __half, so the host reference must be
+            // rounded through the SAME type before comparison. A flat 1e-3
+            // absolute tolerance is below half a FP16 ULP for any |y| >= ~2.6
+            // (ULP is 2^(e-10); at |y| in [4,8) it is 3.9e-3, so half a ULP is
+            // 1.95e-3) — no correct implementation can meet it there, and the
+            // comparison ends up judging the FP16 store rather than the kernel.
+            const float refh = __half2float(__float2half(ref[i]));
             INFO("case=" << c.seq << "x" << c.K << "x" << c.N
-                 << " acc=" << c.acc << " i=" << i);
-            CHECK(std::abs(__half2float(hy[i]) - ref[i]) < 1e-3f);
+                 << " acc=" << c.acc << " i=" << i
+                 << " hw=" << __half2float(hy[i]) << " ref_h=" << refh);
+            CHECK(__half2float(hy[i]) == refh);
         }
         b.Free();
     }

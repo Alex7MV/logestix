@@ -241,6 +241,7 @@ TEST_CASE("router top-k matches host replica", "[ornith-moe-router]")
 
 #include "test_ornith_moe_fixture.h"
 #include "lsxcommon/ornith_moe_load.h"
+#include "lsxcommon/schema.h"
 
 namespace {
 
@@ -255,14 +256,11 @@ float HostDequantNibble(int nib)
     return (nib & 8) ? -v : v;
 }
 
+// Canonical block-scale decode (complete E4M3FN, single source nvfp4_scale.h).
+// This replica dropped the mantissa entirely; the runtime does not.
 float HostE4M3Scale(uint8_t e4m3)
 {
-    const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
-    if (e4 == 0) return 0.0f;
-    uint32_t bits = (e4 + 120u) << 23;
-    float f;
-    std::memcpy(&f, &bits, 4);
-    return f;
+    return lsxcommon::e4m3_to_float(e4m3);
 }
 
 } // namespace

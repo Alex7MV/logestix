@@ -13,6 +13,7 @@
 #include "lsxcommon/gemma_moe_inference.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/safetensors_gpu.h"
+#include "lsxcommon/schema.h"
 
 namespace {
 
@@ -404,21 +405,11 @@ TEST_CASE("gemma dense MLP NVFP4 GEMV chain parity vs host reference",
                                     -4.f, -6.f};
         return t[nib & 0xF];
     };
+    // Canonical block-scale decode (complete E4M3FN, single source
+    // nvfp4_scale.h) — this replica mapped e4 == 0 to zero, dropping the
+    // subnormal range the runtime now decodes.
     auto e4m3 = [](uint8_t b) {
-        int exp = (b >> 3) & 0xF;
-        if (exp == 0) return 0.0f;
-        int m = b & 0x7;
-        if (exp == 15 && m == 7) {
-            uint32_t nb = 0x7FC00000u;
-            float f;
-            std::memcpy(&f, &nb, 4);
-            return f;
-        }
-        uint32_t bits = (static_cast<uint32_t>(exp + 120) << 23) |
-                        (static_cast<uint32_t>(m) << 20);
-        float v;
-        std::memcpy(&v, &bits, 4);
-        return v;
+        return lsxcommon::e4m3_to_float(b);
     };
     auto row_dot = [&](const std::vector<uint8_t> &packed,
                        const std::vector<uint8_t> &scales, float gs,

@@ -934,3 +934,79 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         INFO("debt row matching no live gap: " << x);
     CHECK(unknown_debt.empty());
 }
+
+// ── Golden provenance: never sell a template golden as model-defined ────────
+//
+// `tools/{fsi,code,det}_capture.py` has two capture modes, and the golden's
+// `source` field records which one ran. A genuine capture runs the SOURCE
+// safetensors and records the model's decoded output in each case's `raw`, and
+// writes the source it ran as a BARE path (`/mnt/llm_models/models/…`). The
+// `--template-golden` stopgap, for a source that cannot run locally, records
+// the prompt's Expected Template as `expected`, leaves `raw` empty, and says so
+// with a `prompt-template (…)` / `template-derived (…)` prefix.
+//
+// The parity gate is only evidence of anything if its provenance is honest. A
+// template golden labelled as a model-defined one tells an auditor that the
+// SOURCE model's own answer was captured when no model ever ran — the exact
+// claim the FSI/CODE/DET stages exist to establish. The debt registry cannot
+// catch it either: it only asks whether the golden FILE exists, so a committed
+// golden satisfies "present or declared debt" whether or not it passes.
+//
+// The discriminator is `raw`, and it holds across the whole tree: every genuine
+// capture carries non-empty `raw` for every case, and every template golden has
+// `raw` empty throughout. (A real capture may legitimately AGREE with the
+// Expected Template — granite's FSI golden does — so agreement with the prompt
+// set is NOT evidence either way; only `raw` is.)
+TEST_CASE("suite guard: a golden with no captured raw declares a template source",
+          "[guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    std::vector<std::string> mislabelled;
+
+    for (const char *stage : {"fsi", "code", "det"})
+    {
+        const fs::path dir = root / "tests" / "fixtures" / stage;
+        if (!fs::exists(dir)) continue;
+        for (const auto &e : fs::directory_iterator(dir))
+        {
+            if (e.path().extension() != ".json") continue;
+            std::ifstream in(e.path());
+            REQUIRE(in.good());
+            const std::string text((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+
+            std::smatch src;
+            // Custom raw-string delimiter: the pattern contains `*)"` , which
+            // would otherwise close a plain R"( ... )" literal early.
+            const bool has_src = std::regex_search(
+                text, src,
+                std::regex(R"RX("source"\s*:\s*"((?:[^"\\]|\\.)*)")RX"));
+            REQUIRE(has_src);
+            const std::string source = src[1].str();
+
+            // Every `"raw"` key present, and how many of them are empty.
+            const std::regex raw_key(R"("raw"\s*:)");
+            const std::regex raw_empty(R"("raw"\s*:\s*"")");
+            const int total = std::distance(
+                std::sregex_iterator(text.begin(), text.end(), raw_key),
+                std::sregex_iterator());
+            const int empty = std::distance(
+                std::sregex_iterator(text.begin(), text.end(), raw_empty),
+                std::sregex_iterator());
+            if (total == 0 || empty != total) continue;  // a real capture
+
+            const bool declared_template =
+                source.rfind("prompt-template", 0) == 0 ||
+                source.rfind("template-derived", 0) == 0;
+            if (!declared_template)
+                mislabelled.push_back(
+                    std::string(stage) + "/" + e.path().filename().string() +
+                    " has an empty raw in every case (a --template-golden "
+                    "capture) but its source does not declare one: \"" +
+                    source.substr(0, 80) + "\"");
+        }
+    }
+
+    for (const auto &x : mislabelled) WARN("mislabelled golden: " << x);
+    CHECK(mislabelled.empty());
+}

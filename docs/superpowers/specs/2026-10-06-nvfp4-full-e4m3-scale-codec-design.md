@@ -202,8 +202,39 @@ the §3 “`e==0 -> 0`” contract silently zeroed those blocks. The canonical c
 now decodes the **complete E4M3FN value table** over the valid domain
 `0x00..0x7F` (`e==0 -> m*2^-9`), encodes RNE on the subnormal grid, and masks
 bit 7 (the reserved sign bit of the unsigned `float_ue4m3_t` hardware scale) —
-bit-identical to `cuda_fp8` / `torch.float8_e4m3fn`. Backward compatible: no
-existing byte changes value except `e==0, m!=0`, which no logestix-converted tree
-emits (`FloatToE4m3` never produces it). The Nemotron dequant kernel was
-simplified to call this canonical codec (its private `E4m3Full` / `E2m1` copies
-are gone).
+bit-identical to `cuda_fp8` / `torch.float8_e4m3fn`. The Nemotron dequant
+kernel was simplified to call this canonical codec (its private `E4m3Full` /
+`E2M1` copies are gone).
+
+**Correction (2026-10-07 review).** An earlier revision of this addendum
+claimed the change was backward compatible because `FloatToE4m3` "never
+produces" `e==0, m!=0`. That was wrong — the new encoder **does** emit the
+subnormal grid, and must, so that a small `absmax/6` is representable instead of
+being clamped up to the min normal. Two consequences were left unrecorded:
+
+1. **Re-conversion is not a no-op.** Every block whose `absmax/6` falls below
+   `2^-6` now stores a different scale byte than under the clamp, so a tree
+   converted before this change is not byte-comparable with one converted after
+   it. The observable effect is a small, legitimate shift in greedy decoding —
+   the cause of the `alice` CODE-TEST-02, `granite-4.2-30b` tool round-trip and
+   `phi-4` DET-TEST-02 records.
+2. **A zero scale byte became reachable.** A block whose `absmax/6` is below
+   `2^-10` now encodes to the reserved `0x00`. In the offline converter
+   (`safetensors_gpu.cu`) that byte became the stored block scale, and
+   `quantize_pack_perblock_kernel` divides by it. The block survived only
+   because `QuantizeE2m1Nearest` selects a level with a strict `<`, which no
+   finite level beats against `inf`; a `<=` or the `QuantizeE2m1TieUp` flavor
+   emits the `6.0` level instead. Now short-circuited explicitly and pinned by
+   `test_deepseek_moe_inference_kernels.cu` "NVFP4 offline quantize flushes a
+   below-grid block instead of poisoning it". Measured reachability on real
+   weights is low: 0 of 177 111 040 blocks across 28 phi-4 weight tensors fall
+   below the grid.
+
+Measured on real hardware (RTX 5090, sm_120a, `mma.sync … kind::mxf4nvf4
+.block_scale .scale_vec::4X … .ue4m3`): the tensor core decodes `0x01..0x07` as
+`m*2^-9`, matching the canonical table exactly, so the host reference and the
+MMA path agree. Pinned by `test_blackwell_tc_mma.cu` "sm_120a nvfp4 mma decodes
+subnormal UE4M3 scale bytes as m*2^-9". The same measurement over 162 140 160
+real scale bytes found 1.0938 % subnormal, zero `0x08`, zero sign-bit and zero
+`0x7F` bytes — the source never uses the min normal at all.
+

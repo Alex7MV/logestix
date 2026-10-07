@@ -26,6 +26,7 @@
 
 #include "lsxcommon/glm_moe_inference.h"
 #include "lsxcommon/glm_moe_load.h"
+#include "lsxcommon/schema.h"
 
 using lsxcommon::glm::GlmPinnedWeights;
 using lsxcommon::glm::GlmExpertTables;
@@ -190,8 +191,9 @@ inline float DequantValue(const std::vector<uint8_t> &packed,
                           const std::vector<uint8_t> &scales, float gs, int64_t i)
 {
     const uint8_t sb = scales[static_cast<size_t>(i / lsxcommon::glm::kGlmNvfp4Block)];
-    const int      e4 = (sb >> 3) & 0x0F;
-    const float    sc = (sb == 0) ? 0.0f : std::ldexp(1.0f, e4 - 7);
+    // Canonical block-scale decode (complete E4M3FN; public wrapper of
+    // nvfp4_scale.h) — never a local pow2/field-zero copy.
+    const float    sc = lsxcommon::e4m3_to_float(sb);
     const uint8_t  b   = packed[static_cast<size_t>(i >> 1)];
     const uint8_t  nib = (i & 1) ? static_cast<uint8_t>(b >> 4)
                                  : static_cast<uint8_t>(b & 0x0Fu);

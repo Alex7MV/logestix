@@ -348,6 +348,52 @@ TEST_CASE("sm_120a nvfp4 block-scaled mma full-matrix verification",
     }
 }
 
+TEST_CASE("sm_120a nvfp4 mma decodes subnormal UE4M3 scale bytes as m*2^-9",
+          "[tc][mma][scale]")
+{
+    // The repo's canonical codec (nvfp4_scale.h::E4m3ToFloat) decodes the
+    // COMPLETE E4M3FN table, i.e. an e4 field of 0 with a non-zero mantissa is
+    // the SUBNORMAL m*2^-9, not zero. That is the claim the whole E4M3FN
+    // alignment rests on: a source block scale carrying such a byte must reach
+    // the tensor core with its magnitude intact.
+    //
+    // It is a claim about the HARDWARE, and no existing test probed it: the
+    // calibration sweep only visits {0x00, 0x08, 0x10, ... }, i.e. never the
+    // subnormal bytes. If the mma flushed e4==0 to zero, every host-side
+    // reference (the GEMV path, the act-quant host models) would silently
+    // disagree with the tensor-core path and the whole suite would stay green.
+    // Measured on real data: 1.09% of the Nemotron-NVFP4 source scale bytes are
+    // subnormal and 0x08 never occurs at all, so this is not a corner.
+    //
+    // D = 64 (K) * f(SFA) * f(SFB); every e2m1 element is the 1.0 code and SFB
+    // is pinned to 0x38 (= 1.0), so D[0][0] / 64 IS f(SFA).
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    for (int sb = 0x00; sb <= 0x08; ++sb) {
+        CalibInput f = BaseOnes();          // SFB stays 0x38 = 1.0 on both sides
+        for (int l = 0; l < 32; ++l)
+            f.sfa[l] = 0x01010101u * static_cast<uint32_t>(sb);
+        std::vector<float> out(16 * 8);
+        RunProbe(f, out);
+
+        const float want = E4M3ScaleToFloat(static_cast<uint8_t>(sb));
+        const float got = out[0] / 64.0f;   // hardware's own decode of the byte
+        INFO("scale byte=0x" << std::hex << sb << std::dec
+                             << " hardware=" << got << " repo=" << want);
+        if (want == 0.0f) {
+            CHECK(got == 0.0f);
+        } else {
+            // Exact: both the mma product and m*2^-9 are representable, so any
+            // departure is a real decode difference, not rounding.
+            CHECK(got == want);
+        }
+    }
+}
+
 TEST_CASE("sm_120a nvfp4 mma SFA single-byte position map",
           "[tc][mma][sfamap]")
 {

@@ -539,6 +539,67 @@ TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3 r
     CHECK(std::fabs(d32 - 1.5f) / 1.5f < 0.08f);
 }
 
+TEST_CASE("NVFP4 offline quantize flushes a below-grid block instead of poisoning it",
+          "[deepseek][nvfp4][regression]")
+{
+    // Since the codec became the COMPLETE E4M3FN table, float_to_e4m3 emits
+    // 0x00 for any input below 2^-10 (previously it clamped up to the min
+    // normal 0x08). The converter stores block scales normalized against the
+    // tensor's global max, so a block whose local max is more than 1024x below
+    // the global max now lands on a ZERO scale — and quantize_pack_perblock_
+    // kernel divides the elements by that scale.
+    //
+    // The divide yields inf, and the nibbles came out zero only because
+    // QuantizeE2M1Nearest selects a level with a STRICT `<`, which no finite
+    // level can beat against inf. Flip that to `<=` (or route the converter
+    // through the QuantizeE2m1TieUp flavor the runtime uses) and the same inf
+    // selects the 6.0 level: a block of maximum-magnitude garbage where the
+    // source block was ~1e-3 of the tensor. Correctness of a whole quantized
+    // tensor would hinge on one comparison operator in another header.
+    //
+    // Measured reachability on real weights is low (0 of 177,111,040 blocks
+    // across 28 phi-4 weight tensors fall below the grid), so this pins an
+    // invariant rather than repairing observed corruption — which is exactly
+    // why it needs pinning.
+    std::vector<float> src(32, 0.0f);
+    src[0] = 6.0f;    // block 0 carries the tensor global max
+    src[16] = 1.0e-3f;  // block 1: ratio 1.67e-4 < 2^-10 -> scale byte 0x00
+
+    std::vector<uint8_t> raw(src.size() * sizeof(float));
+    std::memcpy(raw.data(), src.data(), raw.size());
+
+    std::vector<uint8_t> packed, scales;
+    float global_scale = 0.0f;
+    REQUIRE(lsxcommon::gpu::quantize_tensor_gpu(
+        raw.data(), static_cast<int64_t>(src.size()), "F32",
+        nullptr, {}, {}, packed, scales, global_scale));
+    REQUIRE(scales.size() == 2);
+
+    INFO("global_scale=" << global_scale
+                         << " scales=0x" << std::hex << (int)scales[0] << ",0x"
+                         << (int)scales[1] << std::dec);
+
+    // Block 0 is the reference: it must still quantize normally, proving the
+    // tiny block did not corrupt the tensor-wide scale.
+    CHECK(scales[0] != 0x00);
+    CHECK(std::fabs(DecodeE2M1Nibble(ExtractNibble(packed, 0)) *
+                        lsxcommon::e4m3_to_float(scales[0]) * global_scale -
+                    6.0f) < 0.5f);
+
+    // Block 1 is below the E4M3 grid: the scale byte is the reserved zero and
+    // the whole block must be flushed to zero nibbles.
+    CHECK(scales[1] == 0x00);
+    for (int64_t i = 16; i < 32; ++i) {
+        const uint8_t nibble = ExtractNibble(packed, i);
+        INFO("block 1 element " << i << " nibble=0x" << std::hex << (int)nibble
+                                << std::dec);
+        // Never the sign bit and never the 6.0 magnitude: an inf that escaped
+        // into the level search would land on exactly 0x7 / 0xF.
+        CHECK((nibble & 0x8u) == 0u);
+        CHECK((nibble & 0x7u) != 7u);
+    }
+}
+
 TEST_CASE("dequant_shared_nvfp4 correctly decodes the on-disk NVFP4 format",
           "[deepseek][nvfp4][regression]")
 {
