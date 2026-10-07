@@ -99,7 +99,7 @@ atomics in the reduce path, unseeded stochastic ops.
   tolerance; (b) the quality harness (A/B eval, e.g. GSM8K/MMLU subset) within
   the declared delta; (c) a perf baseline entry.
 - A quality harness does not yet exist; building it is the precondition for
-  promoting any C-fast path (see §6).
+  promoting any C-fast path (see §7).
 
 ## 5. Worked example (why this document exists)
 
@@ -117,7 +117,57 @@ atomics in the reduce path, unseeded stochastic ops.
   deterministic, device-independent and golden-token-correct (its own path then
   is the reference); **C-fast** otherwise.
 
-## 6. Open operator decisions
+## 6. Conversion parity vs the source artifact (offline quantization)
+
+Runtime reproducibility (§1) is about *the same artifact* producing the same
+output. A separate question is whether the converted artifact reproduces the
+**source** model's output — the question the FSI/CODE/DET gates probe. This
+section fixes how to classify the answer so it is not re-litigated per model.
+
+**Two guarantees, not one.**
+
+- **Artifact determinism** — same converted model + same prompt ⇒ byte-identical
+  output. Holds by construction (fixed offline conversion, R3 runtime); DET
+  verifies it. A divergence here is a bug.
+- **Source parity** — converted model's greedy token equals the source model's.
+  **Not guaranteed by quantization; bounded only by the format's error.** The
+  gates go red where that bound is exceeded at the decision margin.
+
+**Mechanism.** Converting a BF16/FP8 source to NVFP4 re-rounds every weight by up
+to half an E2M1 ulp and re-encodes the block scales to E4M3. At a token where the
+source's top-2 logits sit within the per-block error, the quantization noise
+decides the argmax. This is not a codec defect: the E4M3FN codec is verified
+bit-identical to `cuda_fp8` / `torch.float8_e4m3fn`.
+
+**Correction taxonomy — by cause, not by symptom:**
+
+1. **Codec / encoder bug** ⇒ fix the codec. (Granite's tool round-trip recovered
+   exactly this way after the E4M3FN subnormal alignment.)
+2. **Near-tie below the format noise floor** ⇒ no codec change recovers it. The
+   only levers are *precision allocation*, not corrections: (a) take the
+   responsible tensor out of NVFP4 (router / embed / lm_head / norms / small
+   projections — the pattern already used by `alice` and `xing`), or (b) finer
+   block-scale granularity. Both change the artifact and cost size/speed.
+3. **Biasing the quantizer to reproduce the source's argmax** ⇒ overfitting to a
+   test set; forbidden as a general policy.
+
+**Decision rule.** Measure the source logit margin at the deciding token. If the
+margin ≲ the block error ⇒ inherent, document the deviation (live cases: gemma
+FSI/CODE §J, phi-4 DET §O, GLM-5.3-Flash FSI §P of `OPEN_TASKS.md`). If the
+margin is large and a flip is present ⇒ treat it as a bug/precision defect and
+fix it. Never tune per prompt.
+
+**Non-monotonic caveat.** Lower noise does not monotonically restore parity — a
+near-tie can land either way — so parity itself is never *guaranteed*; the only
+guarantee is that more precision puts the noise floor below more margins.
+
+**Consequence.** Once real encoder bugs are fixed and precision has not been
+deliberately raised for a tensor, the residual flips are a stable, deterministic
+property of *that specific converted artifact*. The resolution is either a
+documented deviation or a re-conversion with raised precision for the
+responsible tensor — decided by the margin rule above.
+
+## 7. Open operator decisions
 
 - Confirm the R3 supported GPU-model set. Current: {RTX 5090, RTX 5060 Ti} (both
   sm_120). Adding a model requires cross-model selfcheck evidence and a §1.1
@@ -126,7 +176,7 @@ atomics in the reduce path, unseeded stochastic ops.
   shippable class?
 - Approve building the quality harness (precondition for any C-fast promotion).
 
-## 7. Non-goals
+## 8. Non-goals
 
 - Bit-identity on hardware **outside** the supported GPU-model set.
 - Batch-invariance (single-stream engine; no batch composition to be invariant
