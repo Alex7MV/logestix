@@ -586,6 +586,28 @@ that it can no longer be invisible.
 whole family, which is worth noticing: a family can look fully wired across all four
 parity stages and still have a hole in one of them.
 
+## O. phi-4 DET-TEST-02 RED after the E4M3FN re-conversion (2026-10-07)
+
+Re-converting phi-4 after the E4M3FN (subnormal) block-scale codec change makes
+`test_phi_dense_det_selfcheck` DET-TEST-02 fail: the source golden is
+`CATASTROPHIC` (the unique word in `[CATASTROPHIC, CRITICAL, FATAL, TERMINAL]`
+that begins and ends with `C`), and the converted model now answers `CRITICAL`
+(deterministic 3/3). DET-01/03 and Paris/FSI/CODE still pass.
+
+This is a borderline greedy flip from the offline requantization — the same
+class as gemma's CODE-TEST-02 (section J) and alice's CODE-TEST-02 (whose
+golden is self-consistency and was re-reconciled). The phi DET golden is
+source-parity (`Phi3ForCausalLM` runs locally), so it is **not** reconciled and
+the gate stays red deliberately. The same re-conversion recovered granite's
+tool round-trip (section N archived) — a codec change moves every model's
+borderline decisions; each one has to be judged on whether the new answer is
+still the canonical one.
+
+**Next step if revisited:** feed the source phi-4 the identical DET input_ids
+(HF) and diff the logits at the decision step against the converted tree to
+confirm the flip is a near-tie, and decide whether the NVFP4 numerics or the
+source's own greedy path is the one to trust. Do not loosen the gate.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency

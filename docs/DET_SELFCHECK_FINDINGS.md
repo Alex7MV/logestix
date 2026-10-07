@@ -130,7 +130,7 @@ known fragility.
 | nemotron-3.5-lightning-30b-a3b | pending | — | — | runnable source available; DET not captured |
 | gigachat3.5-432b-a28b-reasoning | pending | — | — | 432B source; template golden only |
 | granite-4.2-30b | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3**; golden committed |
-| phi-4 | **wired** | source (Phi3ForCausalLM) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
+| phi-4 | **wired** | source (Phi3ForCausalLM) | `deterministic=true` | **DET-02 RED (2026-10-07)**: after the E4M3FN re-conversion the model emits `CRITICAL` (deterministic 3/3) instead of the source golden `CATASTROPHIC`; DET-01/03 still pass. A borderline NVFP4 greedy flip — see below and `OPEN_TASKS.md` section O |
 
 Capture and the converted-model run are performed on the GPU host (one model
 load at a time, per the host resource policy). Fill this table as each family is
@@ -165,6 +165,18 @@ LSX_DET_GOLDEN_DIR=tests/fixtures/det \
 A `deterministic=no` result or an extraction mismatch is a **real finding**
 about the converted runtime — record it here and investigate; do not loosen the
 gate.
+
+## phi-4 — DET-TEST-02 RED after the E4M3FN re-conversion (2026-10-07)
+
+The 2026-10-01 golden was captured from the source (`Phi3ForCausalLM`, runs
+locally): DET-02 expects `CATASTROPHIC` (the unique word in
+`[CATASTROPHIC, CRITICAL, FATAL, TERMINAL]` that begins *and* ends with `C`).
+Re-converting phi-4 after the E4M3FN (subnormal) codec change makes the
+converted model answer `CRITICAL` (ends with `L`, so wrong) — `deterministic=true`,
+all 3 runs. DET-01/03 still pass. This is a borderline greedy flip from the
+offline requantization, the same class as gemma's CODE-TEST-02 (see
+`CODE_SELFCHECK_FINDINGS.md`); the golden is source-parity, so it is **not**
+reconciled and the gate stays red. Tracked in `docs/OPEN_TASKS.md` section O.
 
 ## alice-foundation-80b-a3b (2026-10-01)
 
