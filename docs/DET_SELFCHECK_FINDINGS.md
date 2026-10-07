@@ -123,7 +123,7 @@ known fragility.
 | qwen3.8-27b | **wired** | source (`qwen3_5` loader, GPU+CPU) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
 | qwen3.5-35b-a3b | pending | — | — | source not in vault; test SKIPs |
 | qwen3.6-35b-a3b | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |
-| ornith-1.5-35b-a3b | pending | — | — | source not in vault; test SKIPs |
+| ornith-1.5-35b-a3b | **wired** | source (leading system turn, thinking off) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-07, transformers release) |
 | qwen3.8-flash-next | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |
 | gemma-4-26b-a4b-it | **wired** | source (CPU) / tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |
 | kimi-k2.7-code | pending | — | — | source not in vault; test SKIPs |

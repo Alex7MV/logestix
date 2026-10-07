@@ -155,11 +155,16 @@ procedure — `perf-tuning-a-model`.
   slot-LRU, knob `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`);
   format tag `logestix-gigachat-nvfp4`; MLA/GatedDeltaNet attention + decode
   pipeline land in Plan 2b).
-  Ornith-1.5-35B-A3B (independent family `ornith`: an MLX-exported
-  Qwen3.5-MoE reasoning fine-tune, architecture-identical to Qwen3.5/3.6-35B;
-  `ornith_moe_constants.h` (frozen passport), the standalone MLX converter
-  `ornith_moe_convert.{h,cpp}` (prefix `language_model.model.*`,
-  `mlp.switch_mlp.{gate,up,down}_proj` stacked experts, conv `[C,K,1]`),
+  Ornith-1.5-35B-A3B (independent family `ornith`: a Qwen3.5-MoE reasoning
+  fine-tune, architecture-identical to Qwen3.5/3.6-35B; `ornith_moe_constants.h`
+  (frozen passport), the standalone converter `ornith_moe_convert.{h,cpp}`
+  (accepts both published source layouts — the MLX export
+  `language_model.model.*` + `mlp.switch_mlp.*` stacked experts + conv `[C,K,1]`
+  + absolute norms, and the transformers release `model.language_model.*` +
+  root `lm_head.weight` + fused `mlp.experts.{gate_up_proj,down_proj}` + conv
+  `[C,1,K]` + offset norms; the layout selects the norm fixup and the expert
+  split, `model.visual.*` is skipped+counted, `mtp.*` is stored+counted under
+  `deferred`),
   `ornith_moe_load.{h,cpp}` + `ornith_moe_inference.{h,cu}` (duplicated
   qwen_moe runtime layer; reuses the shared generic `qwen_inference.*` kernels
   and routes NVFP4 through the neutral `lsx_nvfp4`), `ornith_moe_model.{h,cpp}`;
