@@ -773,6 +773,7 @@ investigation trail:
 | "Closed in this session" list | 15 items, all closed |
 | D — KV cache layout `[head][pos][dim]` | closed 2026-10-05, **negative**: implemented, measured, rejected. Head-major reads K/V 6-10% faster in isolation and is 2-6% slower end to end, so pos-major ships; the reusable stride layer, the neutral layout knob, a bit-exact parity gate and a streaming-read ceiling probe all shipped. A related `kAttnSplits = 4` finding (+10% at ctx 8191) was rejected on bit-identity. Two pre-existing defects fixed: a test iteration that verified nothing, and a wrong host pitch in the KV readback |
 | L/M/N — NVFP4 E4M3FN codec, Nemotron-NVFP4 ingestion, granite tool round-trip | closed 2026-10-07 — [`open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md`](open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md) |
+| Ornith-1.5-35B-A3B-MLX — prompt-framing defect (`BuildPromptInputIds` dropped the required leading system turn) | found + fixed 2026-10-07 — [`open-tasks/2026-10-07-ornith-framing-closed.md`](open-tasks/2026-10-07-ornith-framing-closed.md) |
 
 Full text: [`open-tasks/2026-09-30-cuda-review-windows-bringup.md`](open-tasks/2026-09-30-cuda-review-windows-bringup.md)
 and [`open-tasks/2026-10-02-mimo-closed.md`](open-tasks/2026-10-02-mimo-closed.md).
@@ -788,6 +789,16 @@ subnormals, bit-identical to the NVIDIA source); the
 NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 ingestion is done and its real-weight
 SelfCheck passes (router-load dtype fix); the granite-4.2-30b tool round-trip is
 recovered.
+
+Added 2026-10-07:
+[`open-tasks/2026-10-07-ornith-framing-closed.md`](open-tasks/2026-10-07-ornith-framing-closed.md)
+— converting Ornith-1.5-35B-A3B-MLX surfaced a real prompt-framing defect: the
+hand-rolled `BuildPromptInputIds` omitted the leading system turn this reasoning
+fine-tune requires, so generation (Paris selfcheck, `--run`, `--testprompt`)
+collapsed into repetition. The frame now goes through the native Qwen renderer
+(mirrors Nemotron), the conversation path injects a default system turn, and the
+real-weight selfcheck asserts the frame shape. FSI/CODE/DET goldens remain
+declared debt.
 
 ## Maintenance rule
 

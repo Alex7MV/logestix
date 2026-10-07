@@ -354,9 +354,15 @@ bool OrnithMoeModelBase::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const
 {
+    // The checkpoint requires a leading system turn (see BuildPromptInputIds);
+    // inject a default one when the caller omitted it.
+    ChatConversation c = conv;
+    if (c.messages.empty() || c.messages.front().role != "system")
+        c.messages.insert(c.messages.begin(),
+                          {"system", "You are a helpful assistant.", "", {}});
     std::string text;
     // Ornith is a reasoning fine-tune: let it think before the tool call.
-    if (!RenderQwenConversation(conv, text, /*enable_thinking=*/true))
+    if (!RenderQwenConversation(c, text, /*enable_thinking=*/true))
         return false;
     if (!AppendQwenChatIds(tok, text, out_ids))
         return BuildPromptInputIds(tok, text, out_ids);
@@ -372,54 +378,25 @@ bool OrnithMoeModelBase::ParseToolCalls(
 
 // ── Ornith chat framing (reasoning model) ─────────────────────────────────
 
-namespace {
-
-// Appends the BPE encoding of `text` to `ids` (geometric growth like every
-// other arrow_tokenizer_encode caller). Returns false on encoder rejection.
-bool AppendOrnithEncoded(const ArrowTokenizerDb &tok, std::string_view text,
-                         std::vector<int32_t> &ids)
-{
-    for (size_t cap = 256; cap <= 16384; cap *= 2) {
-        std::vector<int32_t> buf(cap, 0);
-        size_t enc_cap = cap;
-        const int32_t n = arrow_tokenizer_encode(
-            tok, text.data(), text.size(), buf.data(), &enc_cap);
-        if (n == -2) continue;
-        if (n < 0) return false;
-        ids.insert(ids.end(), buf.begin(), buf.begin() + n);
-        return true;
-    }
-    return false;
-}
-
-} // namespace
-
 bool OrnithMoeModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
                                          std::string_view raw_prompt,
                                          std::vector<int32_t> &out_ids) const
 {
-    const int32_t im_start = arrow_tokenizer_lookup(tok, "<|im_start|>", 12);
-    const int32_t im_end = arrow_tokenizer_lookup(tok, "<|im_end|>", 10);
-    const int32_t think = arrow_tokenizer_lookup(tok, "<think>", 7);
-    const int32_t think_end = arrow_tokenizer_lookup(tok, "</think>", 8);
-    if (im_start < 0 || im_end < 0 || think < 0 || think_end < 0)
-        return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
-
-    // ChatML single turn with a prefilled empty think block (the checkpoint's
-    // enable_thinking=false path): the model answers directly.
-    out_ids.clear();
-    out_ids.push_back(im_start);
-    if (!AppendOrnithEncoded(tok, "user\n", out_ids)) return false;
-    if (!AppendOrnithEncoded(tok, raw_prompt, out_ids)) return false;
-    out_ids.push_back(im_end);
-    if (!AppendOrnithEncoded(tok, "\n", out_ids)) return false;
-    out_ids.push_back(im_start);
-    if (!AppendOrnithEncoded(tok, "assistant\n", out_ids)) return false;
-    out_ids.push_back(think);
-    if (!AppendOrnithEncoded(tok, "\n\n", out_ids)) return false;
-    out_ids.push_back(think_end);
-    if (!AppendOrnithEncoded(tok, "\n\n", out_ids)) return false;
-    return true;
+    // Render the single turn through the checkpoint's Qwen chat template, like
+    // NemotronModelBase — NOT a hand-rolled role-word frame. This reasoning
+    // fine-tune degenerates on a frame that opens at the user turn (repetition
+    // collapse), so the leading system turn its RL harness always injects is
+    // required. A prefilled empty <think> block selects the
+    // enable_thinking=false control path so the model answers directly.
+    ChatConversation conv;
+    conv.messages.push_back(
+        {"system", "You are a helpful assistant.", "", {}});
+    conv.messages.push_back({"user", std::string(raw_prompt), "", {}});
+    std::string frame;
+    if (!RenderQwenConversation(conv, frame, /*enable_thinking=*/false))
+        return false;
+    if (AppendQwenChatIds(tok, frame, out_ids)) return true;
+    return prompt::EncodeRawPrompt(tok, frame, out_ids);
 }
 
 gpu::InferenceResult OrnithMoeModel::SelfCheck(const ModelRequest &req)

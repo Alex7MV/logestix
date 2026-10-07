@@ -76,6 +76,20 @@ TEST_CASE("Ornith-1.5-35B-A3B SelfCheck: 'The capital of France is' -> "
     const std::vector<int32_t> ids = EncodeSelfCheckPrompt(m->Tokenizer());
     REQUIRE(ids.size() > 0);
 
+    // Regression: the frame must open with a system turn. This reasoning
+    // fine-tune degenerates (repetition collapse) on a frame that opens at the
+    // user turn, so BuildPromptInputIds renders `<|im_start|>system…` first.
+    {
+        std::vector<int32_t> framed;
+        REQUIRE(m->BuildPromptInputIds(m->Tokenizer(),
+                                       "The capital of France is", framed));
+        REQUIRE(framed.size() >= 2);
+        REQUIRE(framed[0] ==
+                arrow_tokenizer_lookup(m->Tokenizer(), "<|im_start|>", 12));
+        REQUIRE(framed[1] ==
+                arrow_tokenizer_lookup(m->Tokenizer(), "system", 6));
+    }
+
     lsxcommon::ModelRequest req;
     req.input_ids = ids;
     req.max_gen_tokens = 2;
