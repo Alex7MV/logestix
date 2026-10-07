@@ -603,10 +603,22 @@ tool round-trip (section N archived) — a codec change moves every model's
 borderline decisions; each one has to be judged on whether the new answer is
 still the canonical one.
 
-**Next step if revisited:** feed the source phi-4 the identical DET input_ids
-(HF) and diff the logits at the decision step against the converted tree to
-confirm the flip is a near-tie, and decide whether the NVFP4 numerics or the
-source's own greedy path is the one to trust. Do not loosen the gate.
+**Measured 2026-10-07 (near-tie confirmed).** Feeding the source phi-4 the
+golden DET-02 `input_ids` (HF `Phi3ForCausalLM`, bf16, GPU) gives, at the first
+generated token:
+
+| token | decode | logit |
+|---|---|---|
+| 34 | `C` | 30.75 |
+| 9150 | `CR` | 29.625 |
+| 29296 | `CAT` | 22.75 |
+
+The source spells `C`+`ATA`+`ST`+`RO`+`PH`+`IC` -> `CATASTROPHIC`; `CR` is the
+runner-up at only ~1.1 logits behind (a ~2.3x probability ratio). The converted
+model takes the `CR` branch -> `CRITICAL`. So the divergence is a genuine
+near-tie on the very first token, flipped by the few-percent NVFP4
+requantization — not a systematic degradation. The gate stays red (source
+parity); the decision itself is inherent to greedy decoding at this margin.
 
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
