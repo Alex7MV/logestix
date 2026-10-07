@@ -20,6 +20,11 @@ PROMPTS = os.path.join(HERE, "fsi_prompts.json")
 # `device`: "cuda" / "cpu" / None (auto: cuda when the full checkpoint fits in
 # free VRAM, else cpu). `dtype`: torch dtype name or None (checkpoint default).
 OVERRIDES = {
+    # ornith-1.5-35b-a3b is served with a leading system turn (its model
+    # class injects one when the caller omits it); without it the safety
+    # alignment refuses the FSI-02 financial prompt. Thinking stays off so
+    # the answer is the short direct continuation.
+    "ornith-1.5-35b-a3b": {"system": "You are a helpful assistant."},
     # qwen3.8-flash-next is an experimental "qwen4_exp" arch: the installed
     # transformers ships Qwen4Exp* but its layer-type allowlist and KV-cache
     # mapping predate "qwen_sparse_attention", and the PLE n-gram embedding is
@@ -39,7 +44,7 @@ OVERRIDES = {
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
-           "device_map": None, "loader": None}
+           "device_map": None, "loader": None, "system": None}
 
 _QWEN4_NGRAM_ROWS = 2500012  # rows per PLE n-gram shard (128 shards)
 
@@ -291,6 +296,16 @@ def selftest():
     print("fsi selftest OK: pv=%.6f arb=%.6f" % (v1, v2))
 
 
+def _frame_messages(opts, body):
+    """Chat messages for a prompt: an optional leading system turn (some
+    models are only served with one and refuse otherwise) plus the user turn."""
+    messages = []
+    if opts.get("system"):
+        messages.append({"role": "system", "content": opts["system"]})
+    messages.append({"role": "user", "content": body})
+    return messages
+
+
 def capture(model, model_type, out, max_new_tokens, device_map=None):
     import torch
     import transformers
@@ -346,13 +361,14 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
                 template_kwargs["enable_thinking"] = opts["enable_thinking"]
             if opts.get("low_effort"):
                 template_kwargs["low_effort"] = True
+            messages = _frame_messages(opts, p["body"])
             try:
                 prompt_text = tok.apply_chat_template(
-                    [{"role": "user", "content": p["body"]}], **template_kwargs)
+                    messages, **template_kwargs)
             except TypeError:
                 template_kwargs.pop("enable_thinking", None)
                 prompt_text = tok.apply_chat_template(
-                    [{"role": "user", "content": p["body"]}], **template_kwargs)
+                    messages, **template_kwargs)
             except Exception as exc:  # noqa: BLE001
                 print("chat_template failed, using raw prompt:", exc,
                       file=sys.stderr)
