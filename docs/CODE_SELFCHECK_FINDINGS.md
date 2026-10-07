@@ -114,6 +114,11 @@ miscounts the braces, and then emits an object missing its final `}` — the JSO
 extractor finds nothing. The model's own reasoning states the (incorrect)
 miscount, so it is not a decode/off-by-one artifact.
 
+Not a token-budget truncation: at `max_new_tokens=2048` (with `ignore_eos`) the
+model degenerates past its answer and the last-`</think>` extractor flips CODE-03
+from PASS to a malformed `\b[0-9A-F]{4}b` (CODE-01 stays empty). The golden is
+kept at `max_new_tokens=512`, which captures the answer before the degeneration.
+
 ### granite-4.2-30b — CODE-TEST-01 (json)
 
 Both source and converted wrap the answer in a short chain-of-thought. The

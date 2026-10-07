@@ -670,6 +670,15 @@ This is the `numeric-contract.md` §6 class (a reasoning/requantization divergen
 below the format error), not a discrete kernel defect — the same profile as the
 2026-09-27 sweep, unchanged by the E4M3FN codec.
 
+**Budget experiment (2026-10-07):** raising the think-CoT budget from 512 to 2048
+does **not** rescue either gate, and was reverted. FSI is budget-independent: the
+FSI-01 decoded text is byte-identical at 512 and 2048 (the model echoes the
+prompt and then emits nothing useful), so FSI-01/02 are not truncation artifacts.
+CODE is *sensitive* to the budget under `ignore_eos`: at 2048 the model
+degenerates past its answer and the last-`</think>` extractor flips CODE-03 from
+PASS to a malformed `\b[0-9A-F]{4}b` (CODE-01 stays empty). The goldens keep
+`max_new_tokens=512`, the value that captures the answer before the degeneration.
+
 **Next step:** obtain a hardware-faithful reference from the release's own
 `inference/` stack on 2×80 GB; if any case is a genuine converted-model
 regression rather than a budget/extractor artifact, raise the precision of the
