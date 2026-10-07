@@ -53,7 +53,9 @@ ABSL_FLAG(bool, kimi, false, "Kimi-K2.7-Code conversion pipeline");
 ABSL_FLAG(bool, qwen, false, "Qwen3.5 conversion pipeline");
 ABSL_FLAG(bool, qwen35moe, false, "Qwen3.5-35B-A3B MoE conversion pipeline");
 ABSL_FLAG(bool, qwen36moe, false, "Qwen3.6-35B-A3B MoE conversion pipeline");
-ABSL_FLAG(bool, ornith, false, "Ornith-1.5-35B-A3B (MLX) conversion pipeline");
+ABSL_FLAG(bool, ornith, false,
+          "Ornith-1.5-35B-A3B conversion pipeline (MLX or transformers "
+          "source layout)");
 ABSL_FLAG(bool, qwen38flashnext, false,
           "Qwen3.8-Flash-Next (qwen4_exp) conversion pipeline");
 ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
@@ -489,7 +491,9 @@ int main(int argc, char* argv[]) {
     }
 
     case lsxforge::Pipeline::kOrnith: {
-        lsxcommon::log::info("Ornith-1.5-35B-A3B pipeline (MLX -> unified logestix layout)");
+        lsxcommon::log::info(
+            "Ornith-1.5-35B-A3B pipeline (MLX / transformers -> unified "
+            "logestix layout)");
         auto st = lsxcommon::ornith::ConvertOrnithMoeModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Ornith conversion failed: %s", st.ToString()));

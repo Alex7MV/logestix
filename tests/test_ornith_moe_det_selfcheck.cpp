@@ -25,7 +25,7 @@ std::filesystem::path OrnithModelRoot()
     if (const char *env = std::getenv("LSX_TEST_ORNITH_MODEL_PATH"))
         return std::filesystem::path(env);
     return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           "Ornith-1.5-35B-A3B-MLX";
+           "Ornith-1.5-35B-A3B";
 }
 
 std::filesystem::path OrnithGoldenPath()

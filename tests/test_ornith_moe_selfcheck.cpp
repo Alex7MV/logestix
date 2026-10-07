@@ -40,7 +40,7 @@ std::filesystem::path OrnithConvertedPath()
     const char *src = std::getenv("LSX_TEST_ORNITH_SOURCE_PATH");
     return src ? std::filesystem::path(src)
                : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                     "Ornith-1.5-35B-A3B-MLX";
+                     "Ornith-1.5-35B-A3B";
 }
 
 std::vector<int32_t> EncodeSelfCheckPrompt(lsxcommon::ArrowTokenizerDb &tok)

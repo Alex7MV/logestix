@@ -4,7 +4,7 @@
 // family: values coincide with Qwen3.5/3.6-MoE (same qwen3_5_moe architecture)
 // but this passport is owned and versioned separately.
 //
-// Source of truth: /mnt/llm_models/models/Ornith-1.5-35B-A3B-MLX/config.json
+// Source of truth: /mnt/llm_models/models/Ornith-1.5-35B-A3B/config.json
 // (text_config, model_type qwen3_5_moe).
 
 namespace lsxcommon::ornith {
