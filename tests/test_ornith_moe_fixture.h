@@ -1,10 +1,14 @@
 #pragma once
 
 // Shared fixture builder for Ornith-1.5-35B-A3B converter / loader tests.
-// Builds a synthetic MLX-layout qwen3_5_moe checkpoint on disk:
-//   prefix language_model.model.* / language_model.lm_head.weight,
-//   mlp.switch_mlp.{gate,up,down}_proj stacked experts,
-//   linear_attn.conv1d.weight [C, K, 1].
+// Builds a synthetic qwen3_5_moe checkpoint on disk in either supported source
+// layout:
+//   MLX  — prefix language_model.model.* / language_model.lm_head.weight,
+//          mlp.switch_mlp.{gate,up,down}_proj stacked experts, plain norms in
+//          ABSOLUTE form, linear_attn.conv1d.weight [C, K, 1];
+//   HF   — prefix model.language_model.* / lm_head.weight, fused
+//          mlp.experts.{gate_up_proj,down_proj}, plain norms already in the
+//          runtime OFFSET form, conv1d [C, 1, K], plus visual/MTP ballast.
 // Family-neutral primitives come from test_synth_checkpoint.h (suite autonomy).
 
 #include "test_synth_checkpoint.h"
@@ -201,6 +205,148 @@ inline int BuildSyntheticOrnithCheckpoint(const std::filesystem::path &dir)
 {
     std::filesystem::create_directories(dir);
     auto tensors = BuildSyntheticOrnithTensors();
+    WriteSafetensors(dir, "model.safetensors", tensors);
+    WriteOrnithConfig(dir);
+    return static_cast<int>(tensors.size());
+}
+
+// ── HF (transformers) export variant ───────────────────────────────────────
+// The upstream release re-exports the checkpoint in the transformers layout:
+//   prefix model.language_model.*, lm_head.weight at the root,
+//   mlp.experts.{gate_up_proj [E,2I,H], down_proj [E,H,I]} fused experts,
+//   linear_attn.conv1d.weight [C,1,K], plain norms already in the runtime
+//   OFFSET form, plus the multimodal/MTP ballast that must be stripped
+//   (model.visual.*) and stored-but-never-applied (mtp.*).
+
+inline std::vector<FakeTensor> BuildSyntheticOrnithHfTensors()
+{
+    const auto &c = OrnithCfg();
+    const int H = c.hidden_size;
+    const int V = c.vocab_size;
+    const int E = c.num_experts;
+    const int I = c.moe_intermediate_size;
+    const int SI = c.shared_expert_intermediate_size;
+    const int KD = c.linear_num_key_heads * c.linear_key_head_dim;
+    const int VD = c.linear_num_value_heads * c.linear_value_head_dim;
+    const int CD = KD * 2 + VD;
+    const int NH = c.num_attention_heads * c.head_dim * 2;  // gate doubled
+    const int KV = c.num_key_value_heads * c.head_dim;
+
+    auto weight_pattern = [](int64_t i) {
+        return ((static_cast<float>(i * 37 % 251)) / 251.0f) - 0.5f;
+    };
+    // HF stores the plain norms in the runtime offset form (w = true - 1),
+    // i.e. small values around 0.0 — NOT the MLX near-ones.
+    auto offset_norm_pattern = [](int64_t i) {
+        return 0.05f + static_cast<float>(i % 7) * 0.01f;
+    };
+
+    std::vector<FakeTensor> t;
+    t.push_back({"model.language_model.embed_tokens.weight", "BF16", {V, H},
+                 MakeBf16(V * H)});
+    t.push_back({"lm_head.weight", "BF16", {V, H}, MakeBf16(V * H)});
+    t.push_back({"model.language_model.norm.weight", "BF16", {H},
+                 MakeBf16Values(H, offset_norm_pattern)});
+
+    for (int l = 0; l < c.num_layers; ++l) {
+        const std::string lp =
+            "model.language_model.layers." + std::to_string(l) + ".";
+        const bool full = c.layer_types[static_cast<size_t>(l)] ==
+                          "full_attention";
+        t.push_back({lp + "input_layernorm.weight", "BF16", {H},
+                     MakeBf16Values(H, offset_norm_pattern)});
+        t.push_back({lp + "post_attention_layernorm.weight", "BF16", {H},
+                     MakeBf16Values(H, offset_norm_pattern)});
+        if (full) {
+            const auto fa = lp + "self_attn.";
+            t.push_back({fa + "q_proj.weight", "BF16", {NH, H}, MakeBf16(NH * H)});
+            t.push_back({fa + "k_proj.weight", "BF16", {KV, H}, MakeBf16(KV * H)});
+            t.push_back({fa + "v_proj.weight", "BF16", {KV, H}, MakeBf16(KV * H)});
+            t.push_back({fa + "o_proj.weight", "BF16",
+                         {H, c.num_attention_heads * c.head_dim},
+                         MakeBf16(H * c.num_attention_heads * c.head_dim)});
+            t.push_back({fa + "q_norm.weight", "BF16", {c.head_dim},
+                         MakeBf16Values(c.head_dim, offset_norm_pattern)});
+            t.push_back({fa + "k_norm.weight", "BF16", {c.head_dim},
+                         MakeBf16Values(c.head_dim, offset_norm_pattern)});
+        } else {
+            const auto la = lp + "linear_attn.";
+            t.push_back({la + "in_proj_qkv.weight", "BF16", {CD, H},
+                         MakeBf16(CD * H)});
+            t.push_back({la + "in_proj_a.weight", "BF16",
+                         {c.linear_num_value_heads, H},
+                         MakeBf16(c.linear_num_value_heads * H)});
+            t.push_back({la + "in_proj_b.weight", "BF16",
+                         {c.linear_num_value_heads, H},
+                         MakeBf16(c.linear_num_value_heads * H)});
+            t.push_back({la + "in_proj_z.weight", "BF16", {VD, H},
+                         MakeBf16(VD * H)});
+            t.push_back({la + "out_proj.weight", "BF16", {H, VD},
+                         MakeBf16(H * VD)});
+            // HF conv1d layout is already [C, 1, K].
+            t.push_back({la + "conv1d.weight", "BF16",
+                         {CD, 1, c.linear_conv_kernel_dim},
+                         MakeBf16(CD * c.linear_conv_kernel_dim)});
+            // RMSNormGated stays absolute in both exporters.
+            t.push_back({la + "norm.weight", "BF16",
+                         {c.linear_value_head_dim},
+                         MakeBf16Values(c.linear_value_head_dim,
+                                        [](int64_t) { return 1.0f; })});
+            t.push_back({la + "A_log", "BF16", {c.linear_num_value_heads},
+                         MakeBf16Values(c.linear_num_value_heads,
+                                        [](int64_t) { return 1.0f; })});
+            t.push_back({la + "dt_bias", "BF16", {c.linear_num_value_heads},
+                         MakeBf16Values(c.linear_num_value_heads,
+                                        [](int64_t) { return 0.0f; })});
+        }
+        // HF fused experts: gate_up [E, 2I, H] (gate rows [0,I), up [I,2I)),
+        // down [E, H, I].
+        t.push_back({lp + "mlp.gate.weight", "BF16", {E, H},
+                     MakeBf16Values(E * H, weight_pattern)});
+        t.push_back({lp + "mlp.experts.gate_up_proj", "BF16", {E, 2 * I, H},
+                     MakeBf16Values(static_cast<int64_t>(E) * 2 * I * H,
+                                    weight_pattern)});
+        t.push_back({lp + "mlp.experts.down_proj", "BF16", {E, H, I},
+                     MakeBf16Values(static_cast<int64_t>(E) * H * I,
+                                    weight_pattern)});
+        t.push_back({lp + "mlp.shared_expert.gate_proj.weight", "BF16", {SI, H},
+                     MakeBf16Values(SI * H, weight_pattern)});
+        t.push_back({lp + "mlp.shared_expert.up_proj.weight", "BF16", {SI, H},
+                     MakeBf16Values(SI * H, weight_pattern)});
+        t.push_back({lp + "mlp.shared_expert.down_proj.weight", "BF16", {H, SI},
+                     MakeBf16Values(H * SI, weight_pattern)});
+        t.push_back({lp + "mlp.shared_expert_gate.weight", "BF16", {1, H},
+                     MakeBf16Values(H, [](int64_t i) {
+                         return -0.5f + static_cast<float>(i) * 0.01f;
+                     })});
+    }
+
+    // Vision ballast: skipped and counted, never converted.
+    t.push_back({"model.visual.patch_embed.proj.weight", "BF16", {H, H},
+                 MakeBf16(H * H)});
+    t.push_back({"model.visual.blocks.0.attn.qkv.weight", "BF16", {H, H},
+                 MakeBf16(H * H)});
+    t.push_back({"model.visual.merger.linear_fc1.weight", "BF16", {H, H},
+                 MakeBf16(H * H)});
+
+    // MTP subtree: converted and stored, never applied.
+    t.push_back({"mtp.fc.weight", "BF16", {H, 2 * VD}, MakeBf16(H * 2 * VD)});
+    t.push_back({"mtp.norm.weight", "BF16", {H}, MakeBf16Values(H, offset_norm_pattern)});
+    t.push_back({"mtp.layers.0.input_layernorm.weight", "BF16", {H},
+                 MakeBf16Values(H, offset_norm_pattern)});
+    t.push_back({"mtp.layers.0.self_attn.q_proj.weight", "BF16", {NH, H},
+                 MakeBf16(NH * H)});
+    t.push_back({"mtp.layers.0.mlp.gate.weight", "BF16", {E, H},
+                 MakeBf16Values(E * H, weight_pattern)});
+    t.push_back({"mtp.layers.0.mlp.experts.0.gate_proj.weight", "BF16", {I, H},
+                 MakeBf16Values(I * H, weight_pattern)});
+    return t;
+}
+
+inline int BuildSyntheticOrnithHfCheckpoint(const std::filesystem::path &dir)
+{
+    std::filesystem::create_directories(dir);
+    auto tensors = BuildSyntheticOrnithHfTensors();
     WriteSafetensors(dir, "model.safetensors", tensors);
     WriteOrnithConfig(dir);
     return static_cast<int>(tensors.size());

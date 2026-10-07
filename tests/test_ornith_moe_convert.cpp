@@ -1,4 +1,6 @@
-// TDD — Ornith-1.5-35B-A3B standalone MLX converter tests (label convert).
+// TDD — Ornith-1.5-35B-A3B standalone converter tests (label convert): the
+// MLX export layout and the transformers (HF) release layout.
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
@@ -9,8 +11,12 @@
 #include <string>
 
 #include <lsxcommon/ornith_moe_convert.h>
+#include <lsxcommon/schema.h>
 
 #include "test_ornith_moe_fixture.h"
+
+#include <cstring>
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -22,6 +28,36 @@ std::string ReadText(const fs::path &p)
     std::stringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+// Reads one named high-precision record out of a converted pinned/*.arrow.
+std::optional<lsxcommon::TensorRecord> ReadPinnedTensor(const fs::path &p,
+                                                        const std::string &name)
+{
+    auto batch = lsxcommon::ReadRecordBatchFromFile(p);
+    if (!batch.ok()) return std::nullopt;
+    auto recs = lsxcommon::PinnedSchema::UnpackBatch(*batch);
+    if (!recs.ok()) return std::nullopt;
+    for (auto &r : *recs)
+        if (r.name == name) return r;
+    return std::nullopt;
+}
+
+float Bf16At(const std::vector<uint8_t> &data, size_t i)
+{
+    uint16_t bits = static_cast<uint16_t>(data[i * 2]) |
+                    (static_cast<uint16_t>(data[i * 2 + 1]) << 8);
+    uint32_t u = static_cast<uint32_t>(bits) << 16;
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+}
+
+float F32At(const std::vector<uint8_t> &data, size_t i)
+{
+    float f;
+    std::memcpy(&f, data.data() + i * 4, 4);
+    return f;
 }
 
 class TempDir {
@@ -118,6 +154,119 @@ TEST_CASE("ornith converter synthetic roundtrip", "[ornith][convert]")
     CHECK(idx.find("\"bos_token_id\": 248044") != std::string::npos);
     CHECK(idx.find("\"num_experts\": 8") != std::string::npos);
     // Conv normalization [C,K,1] -> [C,1,K] is asserted in the loader test.
+
+    // MLX absolute norm (fixture value 1.0) becomes the runtime offset form
+    // 1.0 - 1.0 = 0.0 stored as F32.
+    const auto mlx_norm =
+        ReadPinnedTensor(base / "pinned" / "layer_0.arrow",
+                         "language_model.model.layers.0.input_layernorm.weight");
+    REQUIRE(mlx_norm.has_value());
+    CHECK(mlx_norm->dtype == "F32");
+    CHECK(F32At(mlx_norm->data, 0) == Catch::Approx(0.0f));
+}
+
+// ── HF (transformers) export layout ────────────────────────────────────────
+
+TEST_CASE("ornith classifier maps the transformers layout", "[ornith][convert]")
+{
+    using lsxcommon::ornith::OrnithMoeTensorKind;
+    using lsxcommon::ornith::OrnithMoeSourceLayout;
+    using lsxcommon::ornith::classify_ornith_moe_tensor;
+
+    const auto embed = classify_ornith_moe_tensor(
+        "model.language_model.embed_tokens.weight");
+    CHECK(embed.kind == OrnithMoeTensorKind::Embed);
+    CHECK(embed.layout == OrnithMoeSourceLayout::HuggingFace);
+
+    const auto head = classify_ornith_moe_tensor("lm_head.weight");
+    CHECK(head.kind == OrnithMoeTensorKind::LmHead);
+    CHECK(head.layout == OrnithMoeSourceLayout::HuggingFace);
+
+    const auto final_norm =
+        classify_ornith_moe_tensor("model.language_model.norm.weight");
+    CHECK(final_norm.kind == OrnithMoeTensorKind::FinalNorm);
+    CHECK(final_norm.layout == OrnithMoeSourceLayout::HuggingFace);
+
+    auto fused = classify_ornith_moe_tensor(
+        "model.language_model.layers.7.mlp.experts.gate_up_proj");
+    CHECK(fused.kind == OrnithMoeTensorKind::FusedExpertsGateUp);
+    CHECK(fused.layer == 7);
+    auto fused_down = classify_ornith_moe_tensor(
+        "model.language_model.layers.7.mlp.experts.down_proj");
+    CHECK(fused_down.kind == OrnithMoeTensorKind::FusedExpertsDown);
+    CHECK(fused_down.layer == 7);
+
+    CHECK(lsxcommon::ornith::ornith_moe_tensor_is_nvfp4(
+        OrnithMoeTensorKind::FusedExpertsGateUp));
+    CHECK(lsxcommon::ornith::ornith_moe_tensor_is_nvfp4(
+        OrnithMoeTensorKind::FusedExpertsDown));
+    CHECK_FALSE(lsxcommon::ornith::ornith_moe_tensor_is_nvfp4(
+        OrnithMoeTensorKind::RouterGate));
+
+    // Ballast classes.
+    CHECK(classify_ornith_moe_tensor("model.visual.patch_embed.proj.weight")
+              .kind == OrnithMoeTensorKind::Visual);
+    CHECK(classify_ornith_moe_tensor("mtp.fc.weight").kind ==
+          OrnithMoeTensorKind::Mtp);
+
+    // The MLX layout must keep reporting itself.
+    CHECK(classify_ornith_moe_tensor("language_model.model.embed_tokens.weight")
+              .layout == OrnithMoeSourceLayout::Mlx);
+    CHECK(classify_ornith_moe_tensor("bogus.name").kind ==
+          OrnithMoeTensorKind::Unknown);
+}
+
+TEST_CASE("ornith HF converter roundtrip strips vision and defers MTP",
+          "[ornith][convert]")
+{
+    TempDir src("hf_src"), out("hf_out");
+    const int n = ornithtest::BuildSyntheticOrnithHfCheckpoint(src.path);
+    REQUIRE(n > 0);
+
+    const auto st = lsxcommon::ornith::ConvertOrnithMoeModel(
+        src.path.string(), out.path.string());
+    INFO("convert status: " << st.ToString());
+    REQUIRE(st.ok());
+
+    const fs::path base = out.path / "logestix";
+    REQUIRE(fs::exists(base / "model.index.json"));
+    REQUIRE(fs::exists(base / "pinned" / "global_nvfp4.arrow"));
+    REQUIRE(fs::exists(base / "experts" / "layer_0" / "exp_0.arrow"));
+    REQUIRE(fs::exists(base / "experts" /
+                       ("layer_" + std::to_string(
+                                      ornithtest::OrnithCfg().num_layers - 1))));
+    // MTP: stored, never applied.
+    REQUIRE(fs::exists(base / "mtp" / "mtp_nvfp4.arrow"));
+    REQUIRE(fs::exists(base / "mtp" / "mtp_raw.arrow"));
+
+    const std::string idx = ReadText(base / "model.index.json");
+    CHECK(idx.find("\"format\": \"logestix-ornithmoe\"") != std::string::npos);
+    CHECK(idx.find("\"skipped_visual_tensors\": 3") != std::string::npos);
+    CHECK(idx.find("\"deferred\": {\"mtp\": \"stored\"") != std::string::npos);
+    CHECK(idx.find("\"mtp_tensors\": 6") != std::string::npos);
+
+    // The HF plain norm is ALREADY the runtime offset form: it must pass
+    // through untouched (no -1.0 shift, no F32 upcast).
+    const auto norm = ReadPinnedTensor(
+        base / "pinned" / "layer_0.arrow",
+        "model.language_model.layers.0.input_layernorm.weight");
+    REQUIRE(norm.has_value());
+    CHECK(norm->dtype == "BF16");
+    CHECK(Bf16At(norm->data, 0) == Catch::Approx(0.05f).margin(1e-3f));
+    CHECK(Bf16At(norm->data, 1) == Catch::Approx(0.06f).margin(1e-3f));
+
+    // The HF conv1d layout [C,1,K] is already normalized.
+    const auto conv = ReadPinnedTensor(
+        base / "pinned" / "layer_0.arrow",
+        "model.language_model.layers.0.linear_attn.conv1d.weight");
+    REQUIRE(conv.has_value());
+    CHECK(conv->shape ==
+          std::vector<int64_t>{ornithtest::OrnithCfg().linear_num_key_heads *
+                                   ornithtest::OrnithCfg().linear_key_head_dim * 2 +
+                                   ornithtest::OrnithCfg().linear_num_value_heads *
+                                       ornithtest::OrnithCfg().linear_value_head_dim,
+                               1,
+                               ornithtest::OrnithCfg().linear_conv_kernel_dim});
 }
 
 TEST_CASE("ornith frozen gate accepts real geometry and rejects a mutation",
