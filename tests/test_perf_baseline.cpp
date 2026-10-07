@@ -94,7 +94,7 @@ const PerfModel kGigachat = {
     "gigachat3.5-432b-a28b-reasoning", "GigaChat3.5-432B-A28B-Reasoning",
     "The capital of France is", 2048};
 const PerfModel kOrnith = {
-    "ornith-1.5-35b-a3b", "Ornith-1.5-35B-A3B-MLX", "The capital of France is",
+    "ornith-1.5-35b-a3b", "Ornith-1.5-35B-A3B", "The capital of France is",
     2048};
 const PerfModel kGranite = {
     "granite-4.2-30b", "granite-4.2-30b", "The capital of France is", 2048};

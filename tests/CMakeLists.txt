@@ -2205,7 +2205,7 @@ add_test(NAME test_perf_baseline_ornith
 set_tests_properties(test_perf_baseline_ornith PROPERTIES
     TIMEOUT 1200
     SKIP_RETURN_CODE 4
-    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Ornith-1.5-35B-A3B-MLX")
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Ornith-1.5-35B-A3B")
 set_tests_properties(test_perf_baseline_ornith
     PROPERTIES LABELS perf)
 

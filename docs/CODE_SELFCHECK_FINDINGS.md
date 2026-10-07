@@ -72,7 +72,7 @@ python tools/code_capture.py --model /mnt/llm_models/models/GLM-5.3-Flash \
 | Qwen3.5-9B | captured with the `qwen3_5` loader (all 3 exact); converted **PASS 3/3** (2026-10-01) |
 | GLM-5.3-Flash | not capturable (`glm5_next` unknown); template-derived; converted **PASS 3/3** (512 + prompt-echo cut) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (source 3/3 exact); converted **FAIL 3/3** (incoherent; same profile as FSI) |
-| ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |
+| ornith-1.5-35B-A3B | captured (all 3 exact) from the upstream **transformers** release (leading system turn, thinking off); the retired MLX export's `language_model.*` keys MISS the HF layout |
 | DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
 | DeepSeek-V4.1-Flash | not capturable — ships its own inference stack (`deepseek_v41` unknown) |
 | GigaChat3.5-432B | not capturable locally — FP8 416 G, same VRAM blocker |

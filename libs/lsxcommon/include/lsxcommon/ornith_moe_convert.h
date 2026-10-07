@@ -8,14 +8,28 @@
 
 namespace lsxcommon::ornith {
 
-// Tensor kinds of the Ornith-1.5-35B-A3B (qwen3_5_moe) MLX export.
-// MLX layout: language_model.model.* prefix, mlp.switch_mlp.* stacked experts,
-// linear_attn.conv1d.weight [C, K, 1].
+// Tensor kinds of the Ornith-1.5-35B-A3B (qwen3_5_moe) checkpoint.
+//
+// Two source layouts are published for this model and both convert to the same
+// unified layout:
+//   MLX — language_model.model.* prefix, language_model.lm_head.weight,
+//         mlp.switch_mlp.{gate,up,down}_proj stacked experts, plain RMSNorm
+//         weights in ABSOLUTE form, conv1d [C, K, 1].
+//   HF  — model.language_model.* prefix, lm_head.weight at the root, fused
+//         mlp.experts.{gate_up_proj [E,2I,H], down_proj [E,H,I]}, plain norms
+//         already in the runtime OFFSET form, conv1d [C, 1, K], plus the
+//         model.visual.* (stripped) and mtp.* (stored, never applied) ballast.
+enum class OrnithMoeSourceLayout {
+    Unknown,
+    Mlx,
+    HuggingFace,
+};
+
 enum class OrnithMoeTensorKind {
     Unknown,
-    Embed,               // language_model.model.embed_tokens.weight
-    LmHead,              // language_model.lm_head.weight
-    FinalNorm,           // language_model.model.norm.weight
+    Embed,               // <prefix>embed_tokens.weight
+    LmHead,              // lm_head.weight
+    FinalNorm,           // <prefix>norm.weight
     InputNorm,
     PostNorm,
     FullAttnQ,
@@ -29,29 +43,38 @@ enum class OrnithMoeTensorKind {
     LinearAttnB,
     LinearAttnA,
     LinearAttnOut,
-    LinearAttnConv,      // [C, K, 1] (normalized to [C, 1, K] on write)
+    LinearAttnConv,      // MLX [C,K,1] is normalized to [C,1,K] on write
     LinearAttnNorm,
     LinearAttnALog,
     LinearAttnDt,
     RouterGate,          // mlp.gate.weight [E,H] (BF16)
-    SwitchGateProj,      // mlp.switch_mlp.gate_proj.weight [E,I,H] -> w1
-    SwitchUpProj,        // mlp.switch_mlp.up_proj.weight   [E,I,H] -> w3
-    SwitchDownProj,      // mlp.switch_mlp.down_proj.weight [E,H,I] -> w2
+    SwitchGateProj,      // MLX mlp.switch_mlp.gate_proj.weight [E,I,H] -> w1
+    SwitchUpProj,        // MLX mlp.switch_mlp.up_proj.weight   [E,I,H] -> w3
+    SwitchDownProj,      // MLX mlp.switch_mlp.down_proj.weight [E,H,I] -> w2
+    FusedExpertsGateUp,  // HF mlp.experts.gate_up_proj [E,2I,H] -> w1 + w3
+    FusedExpertsDown,    // HF mlp.experts.down_proj [E,H,I] -> w2
     SharedExpertGateProj,
     SharedExpertUpProj,
     SharedExpertDownProj,
     SharedExpertGate,
-    Mtp,                 // mtp.* (absent here; recognized for other MLX exports)
+    Mtp,                 // mtp.* — stored, never applied
     Visual,              // model.visual.* / visual.* — skipped and counted
 };
 
 struct ParsedOrnithTensor {
     OrnithMoeTensorKind kind = OrnithMoeTensorKind::Unknown;
     int layer = -1;
+    OrnithMoeSourceLayout layout = OrnithMoeSourceLayout::Unknown;
 };
 
-// Classifies an MLX qwen3_5_moe tensor name.
+// Classifies a qwen3_5_moe tensor name (MLX or HF layout) and reports which
+// source layout it came from.
 ParsedOrnithTensor classify_ornith_moe_tensor(const std::string &name);
+
+// True when the plain RMSNorm weights of `layout` are stored in ABSOLUTE form
+// (multiplier w, MLX) and must be shifted into the runtime offset form
+// (1 + w). The HF export already stores the offset form, so it passes through.
+bool ornith_plain_norm_is_absolute(OrnithMoeSourceLayout layout);
 
 // True when `kind` is NVFP4-quantized by the converter. Norms, router gate
 // matrix and shared-expert scalar gate always stay high precision.
@@ -98,9 +121,9 @@ OrnithMoeTopology ParseOrnithMoeConfig(const std::string &input_dir);
 // convert test exercises it without the synthetic-geometry escape hatch.
 bool CheckOrnithFrozenGeometry(const OrnithMoeTopology &top, std::string &why);
 
-// Converts an MLX Ornith-1.5-35B-A3B model directory (safetensors shards +
-// config.json) into the unified <output_root>/logestix arrow layout.
-// Format tag: logestix-ornithmoe.
+// Converts an Ornith-1.5-35B-A3B model directory (safetensors shards +
+// config.json) in either supported source layout into the unified
+// <output_root>/logestix arrow layout. Format tag: logestix-ornithmoe.
 arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
                                     const std::string &output_root);
 

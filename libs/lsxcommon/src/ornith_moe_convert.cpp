@@ -254,7 +254,7 @@ OrnithMoeTopology ParseOrnithMoeConfig(const std::string &input_dir)
     return top;
 }
 
-// ── Tensor classification (MLX layout) ────────────────────────────────────
+// ── Tensor classification (MLX and HF layouts) ─────────────────────────────
 
 ParsedOrnithTensor classify_ornith_moe_tensor(const std::string &name)
 {
@@ -267,14 +267,30 @@ ParsedOrnithTensor classify_ornith_moe_tensor(const std::string &name)
         r.kind = OrnithMoeTensorKind::Visual;
         return r;
     }
-    if (name == "language_model.lm_head.weight") {
+    // The language-model prefix selects the source layout; the two differ in
+    // the expert tensors they carry and in the plain-norm storage form.
+    std::string rest;
+    if (name == "lm_head.weight") {
         r.kind = OrnithMoeTensorKind::LmHead;
+        r.layout = OrnithMoeSourceLayout::HuggingFace;
         return r;
     }
-    const std::string kPrefix = "language_model.model.";
-    if (name.rfind(kPrefix, 0) != 0)
+    if (name == "language_model.lm_head.weight") {
+        r.kind = OrnithMoeTensorKind::LmHead;
+        r.layout = OrnithMoeSourceLayout::Mlx;
         return r;
-    const std::string rest = name.substr(kPrefix.size());
+    }
+    constexpr std::string_view kMlxPrefix = "language_model.model.";
+    constexpr std::string_view kHfPrefix = "model.language_model.";
+    if (name.rfind(kMlxPrefix, 0) == 0) {
+        rest = name.substr(kMlxPrefix.size());
+        r.layout = OrnithMoeSourceLayout::Mlx;
+    } else if (name.rfind(kHfPrefix, 0) == 0) {
+        rest = name.substr(kHfPrefix.size());
+        r.layout = OrnithMoeSourceLayout::HuggingFace;
+    } else {
+        return r;
+    }
     if (rest == "embed_tokens.weight") {
         r.kind = OrnithMoeTensorKind::Embed;
         return r;
@@ -324,6 +340,8 @@ ParsedOrnithTensor classify_ornith_moe_tensor(const std::string &name)
         {"mlp.switch_mlp.gate_proj.weight", K::SwitchGateProj},
         {"mlp.switch_mlp.up_proj.weight", K::SwitchUpProj},
         {"mlp.switch_mlp.down_proj.weight", K::SwitchDownProj},
+        {"mlp.experts.gate_up_proj", K::FusedExpertsGateUp},
+        {"mlp.experts.down_proj", K::FusedExpertsDown},
         {"mlp.shared_expert.gate_proj.weight", K::SharedExpertGateProj},
         {"mlp.shared_expert.up_proj.weight", K::SharedExpertUpProj},
         {"mlp.shared_expert.down_proj.weight", K::SharedExpertDownProj},
@@ -336,6 +354,13 @@ ParsedOrnithTensor classify_ornith_moe_tensor(const std::string &name)
         }
     }
     return r;
+}
+
+bool ornith_plain_norm_is_absolute(OrnithMoeSourceLayout layout)
+{
+    // Only the MLX export stores the plain RMSNorm weights as absolute
+    // multipliers; transformers exports use the runtime offset form.
+    return layout == OrnithMoeSourceLayout::Mlx;
 }
 
 bool ornith_moe_tensor_is_nvfp4(OrnithMoeTensorKind kind)
@@ -355,6 +380,8 @@ bool ornith_moe_tensor_is_nvfp4(OrnithMoeTensorKind kind)
     case OrnithMoeTensorKind::SwitchGateProj:
     case OrnithMoeTensorKind::SwitchUpProj:
     case OrnithMoeTensorKind::SwitchDownProj:
+    case OrnithMoeTensorKind::FusedExpertsGateUp:
+    case OrnithMoeTensorKind::FusedExpertsDown:
     case OrnithMoeTensorKind::SharedExpertGateProj:
     case OrnithMoeTensorKind::SharedExpertUpProj:
     case OrnithMoeTensorKind::SharedExpertDownProj:
@@ -433,6 +460,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
     std::vector<DenseNvfp4Record> mtp_nvfp4;
     std::vector<TensorRecord> mtp_raw;
 
+    int mtp_tensors = 0;
     int64_t total_pinned = 0;
 
     for (auto &shard : model.shards) {
@@ -447,8 +475,11 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
                 return arrow::Status::IOError("failed to read tensor data: ",
                                               t.name);
 
-            // MTP subtree: converted and stored, never applied at inference.
             if (p.kind == OrnithMoeTensorKind::Mtp) {
+                ++mtp_tensors;
+                // MTP subtree: converted and stored, never applied at
+                // inference (HF parity — the reference implementation ignores
+                // ^mtp.*). Norms stay high precision; the rest is NVFP4.
                 const bool keep_raw = t.name.find("norm") != std::string::npos;
                 if (keep_raw) {
                     TensorRecord r;
@@ -483,10 +514,19 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             case OrnithMoeTensorKind::PostNorm:
             case OrnithMoeTensorKind::FullAttnQNorm:
             case OrnithMoeTensorKind::FullAttnKNorm: {
-                // MLX absolute -> runtime offset form (see OffsetNormToF32).
+                // MLX absolute -> runtime offset form (see OffsetNormToF32);
+                // the HF export already stores the offset form and passes
+                // through unchanged.
                 TensorRecord r;
-                r.name = t.name; r.dtype = "F32"; r.shape = t.shape;
-                r.data = OffsetNormToF32(data.data(), t.numel(), t.dtype);
+                r.name = t.name;
+                r.shape = t.shape;
+                if (ornith_plain_norm_is_absolute(p.layout)) {
+                    r.dtype = "F32";
+                    r.data = OffsetNormToF32(data.data(), t.numel(), t.dtype);
+                } else {
+                    r.dtype = t.dtype;
+                    r.data = std::move(data);
+                }
                 if (p.kind == OrnithMoeTensorKind::FinalNorm)
                     global_raw.push_back(std::move(r));
                 else
@@ -507,7 +547,8 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             case OrnithMoeTensorKind::LinearAttnConv: {
                 TensorRecord r;
                 r.name = t.name; r.dtype = t.dtype;
-                // MLX [C, K, 1] -> HF [C, 1, K]; identical flat order (c*K+k).
+                // MLX [C, K, 1] -> HF [C, 1, K]; identical flat order
+                // (c*K+k). The HF export is already [C, 1, K].
                 if (t.shape.size() == 3 && t.shape[2] == 1)
                     r.shape = {t.shape[0], 1, t.shape[1]};
                 else
@@ -566,7 +607,9 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             case OrnithMoeTensorKind::SwitchGateProj:
             case OrnithMoeTensorKind::SwitchUpProj:
             case OrnithMoeTensorKind::SwitchDownProj:
-                continue;  // handled by the switch_mlp pass below
+            case OrnithMoeTensorKind::FusedExpertsGateUp:
+            case OrnithMoeTensorKind::FusedExpertsDown:
+                continue;  // handled by the expert passes below
             default:
                 return arrow::Status::Invalid("unhandled tensor kind: ",
                                               t.name);
@@ -574,7 +617,11 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
         }
     }
 
-    // MLX switch_mlp split: gate_proj -> w1, up_proj -> w3, down_proj -> w2.
+    // Expert split — two source layouts, one destination:
+    //   MLX stacked  switch_mlp.gate_proj [E,I,H] -> w1, up_proj -> w3,
+    //                down_proj [E,H,I] -> w2;
+    //   HF fused     experts.gate_up_proj [E,2I,H]: gate = rows [0,I),
+    //                up = rows [I,2I); down_proj [E,H,I] -> w2.
     const int E = top.num_experts;
     const int I = top.moe_intermediate_size;
     const int H = top.hidden_size;
@@ -586,31 +633,65 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             const bool is_w1 = p.kind == OrnithMoeTensorKind::SwitchGateProj;
             const bool is_w3 = p.kind == OrnithMoeTensorKind::SwitchUpProj;
             const bool is_w2 = p.kind == OrnithMoeTensorKind::SwitchDownProj;
-            if (!is_w1 && !is_w2 && !is_w3) continue;
+            const bool fused_up =
+                p.kind == OrnithMoeTensorKind::FusedExpertsGateUp;
+            const bool fused_down =
+                p.kind == OrnithMoeTensorKind::FusedExpertsDown;
+            if (!is_w1 && !is_w2 && !is_w3 && !fused_up && !fused_down)
+                continue;
             auto data = read_tensor_data(input_dir, shard, t);
             if (data.empty() ||
                 static_cast<int64_t>(data.size()) != t.byte_size())
                 return arrow::Status::IOError("failed to read tensor data: ",
                                               t.name);
             if (t.shape.size() != 3 || t.shape[0] != E)
-                return arrow::Status::Invalid("bad switch_mlp shape: ", t.name);
-            const int64_t rows = is_w2 ? H : I;   // w2: [E,H,I], else [E,I,H]
-            const int64_t cols = is_w2 ? I : H;
-            if (t.shape[1] != rows || t.shape[2] != cols)
-                return arrow::Status::Invalid("switch_mlp shape mismatch: ",
+                return arrow::Status::Invalid("bad expert shape: ", t.name);
+            if (fused_up && t.shape[1] != 2 * I)
+                return arrow::Status::Invalid(
+                    "gate_up_proj dim1 != 2*moe_intermediate: ", t.name);
+            if (fused_down && (t.shape[1] != H || t.shape[2] != I))
+                return arrow::Status::Invalid(
+                    "experts.down_proj shape != [E,H,I]: ", t.name);
+            // Stacked rows: [E,I,H] for gate/up, [E,H,I] for down. Fused rows:
+            // [E,2I,H] split at I.
+            const int64_t rows = is_w2 || fused_down ? H : (fused_up ? 2 * I : I);
+            const int64_t cols = is_w2 || fused_down ? I : H;
+            if (!fused_up && !fused_down &&
+                (t.shape[1] != rows || t.shape[2] != cols))
+                return arrow::Status::Invalid("expert shape mismatch: ",
                                               t.name);
             const int64_t row_bytes = cols * 2;   // BF16
-            auto &map = is_w1 ? w1_map : (is_w3 ? w3_map : w2_map);
+            const int64_t block = rows * row_bytes;
             for (int e = 0; e < E; ++e) {
+                const uint8_t *base =
+                    data.data() + static_cast<int64_t>(e) * block;
+                if (fused_up) {
+                    // gate = rows [0,I) -> w1, up = rows [I,2I) -> w3.
+                    DenseNvfp4Record w1r, w3r;
+                    w1r.name = absl::StrCat(t.name, ".w1.e", e);
+                    w1r.shape = {I, H}; w1r.dtype = t.dtype;
+                    w3r.name = absl::StrCat(t.name, ".w3.e", e);
+                    w3r.shape = {I, H}; w3r.dtype = t.dtype;
+                    if (!quantize_slice(base, static_cast<int64_t>(I) * H, w1r))
+                        return arrow::Status::IOError("quantize failed w1 ",
+                                                      t.name, " e", e);
+                    if (!quantize_slice(base + I * row_bytes,
+                                        static_cast<int64_t>(I) * H, w3r))
+                        return arrow::Status::IOError("quantize failed w3 ",
+                                                      t.name, " e", e);
+                    w1_map[{p.layer, e}] = std::move(w1r);
+                    w3_map[{p.layer, e}] = std::move(w3r);
+                    continue;
+                }
                 DenseNvfp4Record r;
-                r.name = absl::StrCat(t.name, ".e", e);
+                r.name = fused_down ? absl::StrCat(t.name, ".w2.e", e)
+                                    : absl::StrCat(t.name, ".e", e);
                 r.shape = {rows, cols}; r.dtype = t.dtype;
-                if (!quantize_slice(
-                        data.data() + static_cast<int64_t>(e) * rows * row_bytes,
-                        rows * cols, r))
+                if (!quantize_slice(base, rows * cols, r))
                     return arrow::Status::IOError("quantize failed ", t.name,
                                                   " e", e);
-                map[std::make_pair(p.layer, e)] = std::move(r);
+                auto &map = is_w1 ? w1_map : (is_w3 ? w3_map : w2_map);
+                map[{p.layer, e}] = std::move(r);
             }
         }
     }
@@ -732,6 +813,8 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
         if (top.bos_token_id >= 0)
             j << ",\n  \"bos_token_id\": " << top.bos_token_id;
         j << ",\n  \"skipped_visual_tensors\": " << visual_skipped
+          << ",\n  \"deferred\": {\"mtp\": \"stored\", \"mtp_tensors\": "
+          << mtp_tensors << "}"
           << ",\n  \"tokenizer\": \"" << (tokenizer_ok ? "binary" : "fixture")
           << "\""
           << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
@@ -756,8 +839,8 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
 
     lsxcommon::log::info(absl::StrFormat(
         "Ornith-MoE conversion: %d layers x %d experts, %d visual tensors "
-        "skipped, %d pinned tensors",
-        top.num_layers, top.num_experts, visual_skipped,
+        "skipped, %d MTP tensors stored, %d pinned tensors",
+        top.num_layers, top.num_experts, visual_skipped, mtp_tensors,
         top.total_pinned_tensors));
     return arrow::Status::OK();
 }

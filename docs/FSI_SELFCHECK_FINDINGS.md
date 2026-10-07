@@ -24,13 +24,31 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | granite-4.2-30b | captured with the chat template + low-effort thinking (see below); all 3 exact |
 | phi-4 | captured with the built-in ChatML template (`tokenizer_config.json`); all 3 exact |
 | Qwen3.5-9B | captured (all 3; FSI-01/02 numeric substitution) — see the `qwen3_5` note below |
-| ornith-1.5-35B-A3B | not capturable — config loads as `qwen3_5_moe`, but the MLX checkpoint uses `language_model.*` key names, so all HF params MISSING (needs a key-prefix remap) |
+| ornith-1.5-35B-A3B | captured (all 3 exact) from the upstream **transformers** release — the retired MLX export was not capturable (its `language_model.*` keys MISS against the `model.language_model.` HF layout); see the ornith note below |
 | DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
 | DeepSeek-V4.1-Flash | not capturable locally — `deepseek_v41` is not in transformers 5.15.1 and the release ships its **own inference stack** (`inference/model.py`, `convert.py`, `generate.py`; tilelang FP8/FP4 kernels, tensor-parallel, target 2×80 GB GPU), not HF remote code. Do not confuse it with the flat FP8 + FP4 MoE checkpoint in the vault. |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
 | Qwen3.5-35B-A3B | captured (all 3 exact) on **CPU**, no `OVERRIDES` entry — see below |
 | GLM-5.2, Kimi-K2.7-Code | source absent from the vault |
+
+### Ornith-1.5-35B-A3B capture recipe (leading system turn, thinking off)
+
+The upstream **transformers** release is the same `qwen3_5_moe` VLM layout as
+Qwen3.5-35B-A3B (`model.language_model.*`, `lm_head.weight`, fused
+`mlp.experts.*`, `model.visual.*`), so the generic loader works. Unlike
+Qwen3.5-35B-A3B it is safety-tuned: with only a user turn,
+`enable_thinking=False` **refuses FSI-TEST-02** (reads the "deterministic
+routing loop" prompt as money laundering) and answers FSI-TEST-01 with a
+non-canonical variant. Ornith is normally served with a leading system turn
+(its own model class injects one), and with that system turn + thinking off
+the source answers all three prompts directly, in < 40 tokens each. This is
+the `{"system": "You are a helpful assistant."}` override in
+`tools/fsi_capture.py` (and the CODE/DET scripts). With thinking **on** the
+model reasons for > 512 tokens and never closes `</think>` inside the budget,
+so `enable_thinking=True` is not usable.
+
+Converted-model parity passes 3/3 (2026-10-07); the goldens are committed.
 
 ### Qwen3.5-35B-A3B capture recipe (CPU, no overrides)
 
