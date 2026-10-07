@@ -620,6 +620,30 @@ near-tie on the very first token, flipped by the few-percent NVFP4
 requantization — not a systematic degradation. The gate stays red (source
 parity); the decision itself is inherent to greedy decoding at this margin.
 
+## P. GLM-5.3-Flash FSI-TEST-02 RED after the E4M3FN re-conversion (2026-10-07)
+
+Re-converting GLM-5.3-Flash after the E4M3FN (subnormal) block-scale codec
+change makes `test_glm_moe_flash_fsi_selfcheck` FSI-TEST-02 fail. The prompt
+asks for a single-line expression and names the expected template; the
+converted model instead deliberates (`Let me analyze this request carefully…`),
+echoes the initial state and the template inside its reasoning, and never emits
+a clean answer line. The FSI extractor's "first `anchor=…` line" rule then
+picks the reasoning's `Balance_Alpha=100000000`. FSI-01/03 and
+Paris/CODE/DET stay green.
+
+Not a token budget: the same failure reproduces at 128 (committed golden), 512
+(drifts into numerically evaluating the expression) and 2048 (still
+deliberating). It is a behavioural divergence from the offline requantization
+of a borderline compliance prompt — the same family as §J (gemma) and §O (phi).
+The golden is template-derived (the `glm5_next` source cannot run locally), so
+there is no source answer to compare against; leaving it red rather than
+rewriting the extractor/golden keeps the DSA-path guard honest.
+
+**Next step if revisited:** run the FSI-02 prompt through the pre-E4M3
+conversion of the same tree (or the `glm5_next` source if it ever becomes
+loadable) to confirm the pre-codec tree answered and the flip is purely the
+offline encoder.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency

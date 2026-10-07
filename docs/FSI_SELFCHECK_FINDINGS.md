@@ -414,6 +414,17 @@ rule, forced by the unrunnable source; it still guards the converted DSA path
 (it was 0/3 before the fix, 3/3 after). `test_glm_moe_flash_fsi_selfcheck` now
 runs green (~283 s) instead of SKIPping.
 
+> **Re-conversion regression 2026-10-07.** Re-converting GLM-5.3-Flash after
+> the full-E4M3FN (subnormal) codec change makes **FSI-TEST-02 RED**: the model
+> deliberates (`Let me analyze …`) and never emits a clean answer line, so the
+> extractor picks the reasoning's initial-state echo `Balance_Alpha=100000000`
+> instead of the required `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`.
+> It is **not** a token budget (tested at 128, 512 and 2048 — at 512 it drifts
+> into numerically evaluating the expression and at 2048 it is still
+> deliberating). FSI-01/03 and Paris/CODE/DET stay green. A behavioural
+> divergence from the offline requantization; tracked in `OPEN_TASKS.md`
+> section P. The template-derived golden is left unchanged.
+
 ## Normalization contract implemented here
 
 - Preferred answer line: the first line where the anchor is immediately
