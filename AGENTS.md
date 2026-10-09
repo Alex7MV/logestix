@@ -254,6 +254,15 @@ procedure — `perf-tuning-a-model`.
   and the remaining costs are the per-MoE-layer routed-id
   D2H sync, the per-token host logits round trip and token-by-token prefill
   (`docs/OPEN_TASKS.md` D2).
+  Gemma-4 (two members, one tokenizer): the MoE 26B (`gemma_moe_*` +
+  `gemma_base_model.*` + `gemma_tool_format.*`, format tag `logestix-gemma`) and
+  the DENSE 31B (`gemma_dense_constants.h` (frozen passport),
+  `gemma_dense_convert.{h,cpp}` (vision ballast stripped), `gemma_dense_load.*`,
+  `gemma_dense_inference.{h,cu}` (HF-exact "proportional" RoPE on the global
+  layers, K-tied-to-V, GeGLU, NVFP4 tied head; FP16 activations) and
+  `gemma_dense_model.{h,cpp}`; format tag `logestix-gemma-dense`; converted in
+  place with `lsxforge --gemma4dense`; CODE 3/3, DET 3/3, FSI 2/3 (FSI-01 is the
+  same NVFP4-borderline class as the 26B).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

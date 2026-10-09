@@ -1923,6 +1923,198 @@ add_test(NAME test_gemma_moe_convert COMMAND test_gemma_moe_convert)
 set_tests_properties(test_gemma_moe_convert PROPERTIES
     TIMEOUT 120)
 
+# ── Gemma-4-31B-it (dense) kernel tests ───────────────────────────────────
+add_executable(test_gemma_dense_kernels test_gemma_dense_kernels.cpp)
+target_link_libraries(test_gemma_dense_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_kernels>"
+    )
+    add_custom_command(TARGET test_gemma_dense_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_kernels>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_kernels COMMAND test_gemma_dense_kernels)
+
+# ── Gemma-4-31B-it (dense) loader test ────────────────────────────────────
+add_executable(test_gemma_dense_loader test_gemma_dense_loader.cpp)
+target_compile_definitions(test_gemma_dense_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma_dense_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_loader>"
+    )
+    add_custom_command(TARGET test_gemma_dense_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_loader>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_loader COMMAND test_gemma_dense_loader)
+set_tests_properties(test_gemma_dense_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Gemma-4-31B-it (dense) model test ─────────────────────────────────────
+add_executable(test_gemma_dense_model test_gemma_dense_model.cpp)
+target_include_directories(test_gemma_dense_model PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_compile_definitions(test_gemma_dense_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_model>"
+    )
+    add_custom_command(TARGET test_gemma_dense_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_model>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_model COMMAND test_gemma_dense_model)
+set_tests_properties(test_gemma_dense_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+
+
+
+# ── Gemma-4-31B-it (dense) selfcheck test ─────────────────────────────────
+add_executable(test_gemma_dense_selfcheck test_gemma_dense_selfcheck.cpp)
+target_compile_definitions(test_gemma_dense_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_selfcheck>"
+    )
+    add_custom_command(TARGET test_gemma_dense_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_selfcheck COMMAND test_gemma_dense_selfcheck)
+set_tests_properties(test_gemma_dense_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Gemma-4-31B-it (dense) fsi selfcheck test ──────────────────────────
+add_executable(test_gemma_dense_fsi_selfcheck test_gemma_dense_fsi_selfcheck.cpp)
+target_compile_definitions(test_gemma_dense_fsi_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi"
+)
+target_link_libraries(test_gemma_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_fsi_selfcheck>"
+    )
+    add_custom_command(TARGET test_gemma_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_fsi_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_fsi_selfcheck COMMAND test_gemma_dense_fsi_selfcheck)
+set_tests_properties(test_gemma_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Gemma-4-31B-it (dense) code selfcheck test ──────────────────────────
+add_executable(test_gemma_dense_code_selfcheck test_gemma_dense_code_selfcheck.cpp)
+target_compile_definitions(test_gemma_dense_code_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code"
+)
+target_link_libraries(test_gemma_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_code_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_code_selfcheck>"
+    )
+    add_custom_command(TARGET test_gemma_dense_code_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_code_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_code_selfcheck COMMAND test_gemma_dense_code_selfcheck)
+set_tests_properties(test_gemma_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Gemma-4-31B-it (dense) det selfcheck test ──────────────────────────
+add_executable(test_gemma_dense_det_selfcheck test_gemma_dense_det_selfcheck.cpp)
+target_compile_definitions(test_gemma_dense_det_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det"
+)
+target_link_libraries(test_gemma_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_det_selfcheck>"
+    )
+    add_custom_command(TARGET test_gemma_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_det_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_det_selfcheck COMMAND test_gemma_dense_det_selfcheck)
+set_tests_properties(test_gemma_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Gemma-4-31B-it (dense) converter test ─────────────────────────────────
+add_executable(test_gemma_dense_convert test_gemma_dense_convert.cpp)
+target_compile_definitions(test_gemma_dense_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_dense_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_convert>"
+    )
+    add_custom_command(TARGET test_gemma_dense_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_dense_convert>"
+    )
+endif()
+
+add_test(NAME test_gemma_dense_convert COMMAND test_gemma_dense_convert)
+set_tests_properties(test_gemma_dense_convert PROPERTIES
+    TIMEOUT 120)
+
 # ── Gemma-4 loader test (BF16→FP16 in-place, arena, expert LRU) ─────────
 add_executable(test_gemma_moe_loader test_gemma_moe_loader.cpp)
 target_compile_definitions(test_gemma_moe_loader PRIVATE
@@ -2074,6 +2266,14 @@ target_link_libraries(test_perf_baseline PRIVATE lsxcommon
 # giving every model the lsxbenchmark-isolated measurement it baselines.
 # Literal names (no foreach): test_ctest_labels_guard statically parses
 # add_test/set_tests_properties and requires literal, quoted-label-free calls.
+add_test(NAME test_perf_baseline_gemma_4_31b_it
+         COMMAND test_perf_baseline "perf baseline: gemma-4-31b-it")
+set_tests_properties(test_perf_baseline_gemma_4_31b_it PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=gemma-4-31B-it")
+set_tests_properties(test_perf_baseline_gemma_4_31b_it
+    PROPERTIES LABELS perf)
 add_test(NAME test_perf_baseline_gemma_4_26b_a4b_it
          COMMAND test_perf_baseline "perf baseline: gemma-4-26b-a4b-it")
 set_tests_properties(test_perf_baseline_gemma_4_26b_a4b_it PROPERTIES
@@ -5855,6 +6055,7 @@ set_tests_properties(
     test_glm_moe_flash_convert
     test_kimi_moe_convert
     test_gemma_moe_convert
+    test_gemma_dense_convert
     test_qwen_moe_convert
     test_qwen_moe_36_convert
     test_ornith_moe_convert
@@ -5999,6 +6200,13 @@ set_tests_properties(
     test_deepseek_moe_prompt_output
     test_deepseek_moe_selfcheck
     test_gemma_moe_loader
+    test_gemma_dense_loader
+    test_gemma_dense_model
+    test_gemma_dense_kernels
+    test_gemma_dense_selfcheck
+    test_gemma_dense_fsi_selfcheck
+    test_gemma_dense_code_selfcheck
+    test_gemma_dense_det_selfcheck
     test_gemma_moe_model
     test_gemma_moe_selfcheck
     test_gemma_moe_norm

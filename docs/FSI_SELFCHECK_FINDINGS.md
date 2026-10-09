@@ -21,6 +21,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | Qwen3.8-Flash-Next | captured (all 3 exact; experimental `qwen4_exp` arch loaded with patches, see below) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (all 3 exact) |
 | gemma-4-26B-A4B-it | captured (FSI-01/02 rephrased; template warnings) |
+| gemma-4-31B-it | captured (FSI-02/03 exact; FSI-01 template divergence — the 26B class) |
 | granite-4.2-30b | captured with the chat template + low-effort thinking (see below); all 3 exact |
 | phi-4 | captured with the built-in ChatML template (`tokenizer_config.json`); all 3 exact |
 | Qwen3.5-9B | captured (all 3; FSI-01/02 numeric substitution) — see the `qwen3_5` note below |
@@ -601,3 +602,26 @@ captured the same way. CODE-TEST-01 and CODE-TEST-03 match; CODE-TEST-02 fails w
 `m=(l+(h-l)/2)` against the source's `m=l+((h-l)/2)`. The two are algebraically identical
 and CODE applies **no** canonicalization by design, so this is the intended strictness
 firing rather than a defect. Recorded in `docs/CODE_SELFCHECK_FINDINGS.md`.
+
+## gemma-4-31b-it (2026-10-09) — the dense member of the Gemma-4 family
+
+Captured from the source safetensors with `Gemma4ForConditionalGeneration` /
+bf16 / `Gemma4Config` in transformers 5.15.1, `--device-map auto` (62 GB bf16
+against a 32 GB RTX 5090, so the source offloads to CPU and is PCIe-bound).
+`chat_template.jinja` was required and loaded; the 31B ships a tokenizer.json
+and chat template BYTE-IDENTICAL to the 26B's.
+
+| case | source (golden) | converted | verdict |
+|---|---|---|---|
+| FSI-TEST-01 | `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))` | `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` | **fail** (template form) |
+| FSI-TEST-02 | `Balance_Alpha=(((100000000*Rate_A*(1-Slip_A))*Rate_B*(1-Slip_B))*Rate_C*(1-Slip_C))` | same | pass (canonicalized) |
+| FSI-TEST-03 | `Drawdown>Threshold` | same | pass |
+
+FSI-TEST-01 is the same divergence class as the 26B: the source substitutes the
+prompt's numbers (the annuity-due form) while the converted model repeats the
+template formula. It is an NVFP4-vs-bf16 quantization difference on a borderline
+greedy decision, not a harness artifact — `ExtractFsiFormula` returned a clean,
+balanced expression. The gate stays red, consistent with the 26B.
+
+The converted model's CODE gate is fully green (3/3) and the DET gate is green
+(3/3, `deterministic=true` on every case) — see the CODE/DET findings docs.

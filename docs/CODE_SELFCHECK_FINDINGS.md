@@ -297,3 +297,19 @@ reason to exist.
 Not caused by the attention score-dot port — reverting `gemma_moe_inference.cu` to its
 pre-port state at `7810383` reproduces 5 passed / 1 failed exactly. It is an
 NVFP4-vs-bf16 difference on a borderline greedy decision, and it stands as a red gate.
+
+
+## gemma-4-31b-it (2026-10-09)
+
+Captured from the source safetensors with the shared `code_capture.py`
+(`--device-map auto`). Result: **3/3 PASS**.
+
+| case | kind | source | converted | verdict |
+|---|---|---|---|---|
+| CODE-TEST-01 | json | `{"root":{"nodes":{"leaf":true}}}` | same | pass |
+| CODE-TEST-02 | assignment | `m=l+((h-l)/2)` | same | pass |
+| CODE-TEST-03 | regex | `\b[0-9A-F]{4}\b` | same | pass |
+
+Unlike the 26B (whose CODE-TEST-02 fails on the algebraically-equivalent
+`m=(l+(h-l)/2)` spelling), the 31B's offline NVFP4 requantization preserves the
+source's exact syntactic form on all three cases.

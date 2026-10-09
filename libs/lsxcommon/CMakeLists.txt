@@ -22,6 +22,8 @@ add_library(lsxcommon STATIC
     src/glm_moe_model.cpp
     src/gemma_moe_convert.cpp
     src/gemma_moe_load.cpp
+    src/gemma_dense_convert.cpp
+    src/gemma_dense_load.cpp
     src/granite_dense_convert.cpp
     src/granite_dense_load.cpp
     src/granite_dense_model.cpp
@@ -30,6 +32,7 @@ add_library(lsxcommon STATIC
     src/phi_dense_model.cpp
     src/gemma_base_model.cpp
     src/gemma_moe_model.cpp
+    src/gemma_dense_model.cpp
     src/nemotron_moe_convert.cpp
     src/nemotron_moe_nvfp4_convert.cpp
     src/nemotron_moe_nvfp4_load.cpp
@@ -339,14 +342,18 @@ target_link_libraries(lsxcommon_kimi_cu
 
 add_library(lsxcommon_gemma_cu OBJECT
     src/gemma_moe_inference.cu
+    src/gemma_dense_inference.cu
 )
 set_target_properties(lsxcommon_gemma_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+# --expt-relaxed-constexpr: the KV cache is addressed through
+# KvCacheGeometry::Offset, a constexpr __host__ function shared by host and
+# device (lsx_kv_cache.h). Every other CUDA object target here carries it.
 target_compile_options(lsxcommon_gemma_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
