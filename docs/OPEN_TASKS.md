@@ -558,6 +558,56 @@ of them never executed. A SKIP is not a pass, and a missing golden is indistingu
 from a passing one in the ctest summary. Every other family's `det` golden exists and
 gemma's did not, which is why this gap survived — the absence is now closed.
 
+## R. gemma-4-31b-it (dense) ingested; FSI-01 RED; shared TC partial-M bug (2026-10-09)
+
+The dense 31B member of the Gemma-4 family was ingested (`gemma_dense_*`,
+format tag `logestix-gemma-dense`, `lsxforge --gemma4dense`). Real-weight
+results: SelfCheck PASS (`Paris.`, bit-exact across stress cycles), CODE 3/3,
+DET 3/3, FSI 2/3. Open items:
+
+- **FSI-TEST-01 RED.** Source (golden):
+  `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))`; the converted model
+  repeats the prompt template `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`. Same
+  NVFP4-vs-bf16 borderline class as the 26B (section J); the gate stays red.
+- **CRITICAL (shared layer): the TC mxf4nvf4 GEMM drops the partial M tile.**
+  A prefill whose length is not a multiple of the MMA tile (measured: seq=18)
+  leaves the last rows of every projection at ZERO (`lsx_tc::TcGemmKernel`,
+  reached when fast-math is on and `seq > 1`). With `seq=18` the last two rows
+  of the prefill hidden are 0, so the last token's logits are 0 and the first
+  generated token came back as 0. `LSX_PERF_AUTO=0` (bit-exact scalar path)
+  reproduces the correct `Paris.`, so the scalar kernel is fine and the fault
+  is in the TC dispatch/kernel's partial-M store. This affects EVERY family
+  whose `kAuto` prefill length is not tile-aligned, not just gemma (the parity
+  gates hide it because they run `kOff`). **Family-local workaround landed:**
+  `gemma_dense_inference.cu` runs the prefill projections with
+  `SetLsxTcFastMath(false)` (restoring after; decode is GEMV and unaffected),
+  which costs TTFT (56 -> 337 ms at an 18-token prompt) but is correct.
+  **Proper fix (open):** guard the TC kernel's partial M sub-tile store so the
+  valid rows in a short tile are written; then the workaround and the TTFT
+  cost can go.
+- **Perf: 47.3 t/s (perf) / 41.0 t/s (r3)** at 2048 tokens on
+  `linux-release-znver4-aocc` (16.5 GiB resident; TTFT 337 ms, scalar prefill).
+  Profile-guided decode work took it 40.6 -> 47.5: shuffle RMSNorm
+  (11.4 -> 3.5 us/call), tied-head logits through the neutral warp-per-row GEMV
+  (308 -> ~670 GB/s), unsplit attention at short context.
+- **Rejected experiments (each measured, then reverted):**
+  - *CUDA-graph replay of the decode step.* Implemented (capture-safe device
+    position + KV-write kernel; `LSX_GEMMA_DENSE_CUDA_GRAPH`), capture
+    succeeded, but it is SLOWER: 46.8 vs 53.8 t/s at 1024 and 47.6 -> 46.1 at
+    2048. The decode is kernel-bound, not launch-bound, and a captured step
+    needs a FIXED split count (the position advances in-graph), which
+    over-splits short contexts. Default off. The device-pos/KV-kernel refactor
+    it required was reverted with it.
+  - *Warp-per-head decode attention.* 43.1 vs 47.6 t/s (only ~1k threads in
+    flight). Reverted.
+- **Comparison to the other dense model, Qwen3.8-27B** (same release tree,
+  same prompt, `--max-gen 2048`): 54.9 t/s, but it is 48/64 *linear-attention*
+  (GatedDeltaNet) layers, so its per-token work is far lower, and it reads a
+  smaller pinned set; gemma-4-31B is 60 full/sliding-window attention layers
+  and ~7% more weight bytes (16.1 vs ~15 GiB). Effective HBM bandwidth is
+  comparable (gemma ~818 GB/s vs qwen ~884 GB/s). The ~13% gap is layer-type +
+  bytes, not a defect; at `--max-gen 1024` they are at parity (53.8 vs 54.1).
+
 ## K. Golden-debt: the declared list, and why it is not a hard failure (2026-10-06)
 
 Vector 2 of the three "will it recur" holes is now closed. `test_model_suite_guard`

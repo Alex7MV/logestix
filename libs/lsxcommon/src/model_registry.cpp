@@ -6,6 +6,7 @@
 #include "lsxcommon/gigachat_moe_model.h"
 #include "deepseek_moe_model.h"
 #include "deepseek_moe_v41_model.h"
+#include "gemma_dense_model.h"
 #include "gemma_moe_model.h"
 #include "granite_dense_model.h"
 #include "mimo_moe_model.h"
@@ -34,6 +35,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Qwen3_5_9BModel>();
         LsxModelFactory::Register<Qwen3_8_27BModel>();
         LsxModelFactory::Register<Gemma4_26BA4BModel>();
+        LsxModelFactory::Register<Gemma4_31BDenseModel>();
         LsxModelFactory::Register<Qwen35MoeModel>();
         LsxModelFactory::Register<Qwen36MoeModel>();
         LsxModelFactory::Register<OrnithMoeModel>();

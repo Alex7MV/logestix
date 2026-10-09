@@ -71,6 +71,8 @@ const std::vector<PassportRow> kPassports = {
      "lsxcommon::deepseek_v41"},
     {"gemma-4-26b-a4b-it", "../include/lsxcommon/gemma_moe_load.h",
      "lsxcommon::gemma"},
+    {"gemma-4-31b-it", "../include/lsxcommon/gemma_dense_constants.h",
+     "lsxcommon::gemma_dense::frozen"},
     {"kimi-k2.7-code", "../include/lsxcommon/kimi_moe_load.h",
      "lsxcommon::kimi"},
     {"qwen3.5-9b", "qwen_dense_model.h", "Qwen3_5_9BModel"},
@@ -173,6 +175,8 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"deepseek_moe_load.cuh", "namespace gpu {"},
         {"deepseek_moe_v41_constants.h", "namespace deepseek_v41 {"},
         {"../include/lsxcommon/gemma_moe_load.h", "namespace gemma {"},
+        {"../include/lsxcommon/gemma_dense_constants.h",
+         "namespace frozen {"},
         {"../include/lsxcommon/kimi_moe_load.h", "namespace kimi {"},
         {"qwen_moe_constants.h", "namespace frozen {"},
         {"qwen_moe_exp_constants.h", "namespace frozen {"},
@@ -298,6 +302,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "gigachat_moe_model.cpp",      // gigachat3.5-432b-a28b-reasoning
         "ornith_moe_model.cpp",        // ornith-1.5-35b-a3b
         "granite_dense_model.cpp",     // granite-4.2-30b
+        "gemma_dense_model.cpp",       // gemma-4-31b-it (dense)
         "phi_dense_model.cpp",         // phi-4
         "mimo_moe_model.cpp",          // mimo-v2.6-flash-rl
         "alice_moe_model.cpp",         // alice-foundation-80b-a3b
@@ -382,6 +387,7 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         {"qwen3.6-35b-a3b", {"qwen_moe_model.cpp"}},
         {"qwen3.8-flash-next", {"qwen_moe_exp_model.cpp"}},
         {"gemma-4-26b-a4b-it", {"gemma_base_model.cpp"}},
+        {"gemma-4-31b-it", {"gemma_dense_model.cpp"}},
         {"kimi-k2.7-code", {"kimi_moe_model.cpp"}},
         {"ornith-1.5-35b-a3b", {"ornith_moe_model.cpp"}},
         {"granite-4.2-30b", {"granite_dense_model.cpp"}},

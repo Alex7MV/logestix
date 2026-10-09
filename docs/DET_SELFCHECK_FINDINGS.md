@@ -184,3 +184,19 @@ Template-derived golden (source too large to run locally; see FSI findings).
 DET requires byte-identical `gen_tokens` across R=3 runs: **deterministic=true**
 on all three cases. Extraction added the AliceAI `[COT_END]` reasoning-close
 marker (as in FSI/CODE) so the token after CoT is selected. All three PASS.
+
+
+## gemma-4-31b-it (2026-10-09)
+
+Captured from the source safetensors (`--device-map auto`). Result: **3/3 PASS**
+with `deterministic=true` on every case (R=3 runs byte-identical `gen_tokens`).
+
+| case | expected | converted | deterministic | verdict |
+|---|---|---|---|---|
+| DET-TEST-01 | `PARADOX_ANTINOMY` | same | true | pass |
+| DET-TEST-02 | `CATASTROPHIC` | same | true | pass |
+| DET-TEST-03 | `BIT_ZERO` | same | true | pass |
+
+This is the dense Gemma-4 member (`gemma_dense_*`): the same decoder as the 26B
+without routed experts. Its selfcheck logits are bit-exact across stress cycles
+under both `kAuto` and `kOff`.

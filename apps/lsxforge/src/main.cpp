@@ -9,6 +9,7 @@
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tokenizer.h"
+#include "lsxcommon/gemma_dense_convert.h"
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gigachat_moe_convert.h"
 #include "lsxcommon/alice_moe_convert.h"
@@ -58,7 +59,9 @@ ABSL_FLAG(bool, ornith, false,
           "source layout)");
 ABSL_FLAG(bool, qwen38flashnext, false,
           "Qwen3.8-Flash-Next (qwen4_exp) conversion pipeline");
-ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
+ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B (MoE) conversion pipeline");
+ABSL_FLAG(bool, gemma4dense, false,
+          "Gemma-4-31B-it (dense) conversion pipeline");
 ABSL_FLAG(bool, nemotron, false,
           "Nemotron-3.5-Lightning-30B-A3B (NemotronH hybrid) conversion pipeline");
 ABSL_FLAG(bool, nemotron_nvfp4, false,
@@ -127,6 +130,7 @@ int main(int argc, char* argv[]) {
     bool ornith = absl::GetFlag(FLAGS_ornith);
     bool qwen38flashnext = absl::GetFlag(FLAGS_qwen38flashnext);
     bool gemma4 = absl::GetFlag(FLAGS_gemma4);
+    bool gemma4dense = absl::GetFlag(FLAGS_gemma4dense);
     bool nemotron = absl::GetFlag(FLAGS_nemotron);
     bool nemotron_nvfp4 = absl::GetFlag(FLAGS_nemotron_nvfp4);
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
@@ -159,6 +163,7 @@ int main(int argc, char* argv[]) {
     flags.ornith = ornith;
     flags.qwen38flashnext = qwen38flashnext;
     flags.gemma4 = gemma4;
+    flags.gemma4dense = gemma4dense;
     flags.nemotron = nemotron;
     flags.nemotron_nvfp4 = nemotron_nvfp4;
     flags.gigachat = gigachat;
@@ -383,6 +388,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Xing conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kGemma4Dense: {
+        lsxcommon::log::info(
+            "Gemma-4 dense pipeline (logestix-gemma-dense layout)");
+        auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Gemma-4 dense conversion failed: %s",
+                                st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Gemma-4 dense conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

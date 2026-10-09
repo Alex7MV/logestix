@@ -57,6 +57,12 @@ const PerfModel kGemma = {
     "Write a detailed long essay about the history of computing, from "
     "Babbage to modern GPUs.",
     2048};
+// Gemma-4-31B-it (dense): the same 2048-token essay protocol.
+const PerfModel kGemmaDense = {
+    "gemma-4-31b-it", "gemma-4-31B-it",
+    "Write a detailed long essay about the history of computing, from "
+    "Babbage to modern GPUs.",
+    2048};
 const PerfModel kGlmFlash = {
     "glm-5.3-flash", "GLM-5.3-Flash", "The capital of France is", 2048};
 // glm-5.2 and qwen3.5-9b are registered but not present in the local vault:
@@ -331,6 +337,11 @@ TEST_CASE("perf baseline: xing4.0-29b-a4b", "[perf]")
 TEST_CASE("perf baseline: gemma-4-26b-a4b-it", "[perf]")
 {
     RunPerfModel(kGemma);
+}
+
+TEST_CASE("perf baseline: gemma-4-31b-it", "[perf]")
+{
+    RunPerfModel(kGemmaDense);
 }
 
 TEST_CASE("perf baseline: glm-5.3-flash", "[perf]")
