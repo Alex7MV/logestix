@@ -11,7 +11,10 @@
 #include <cstring>
 #include <vector>
 
+#include "lsxcommon/lsx_inference_load.h"
 #include "lsxcommon/qwen_inference.h"
+
+namespace attn = lsxcommon::attn;
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/schema.h"
 
@@ -100,7 +103,7 @@ TEST_CASE("RunQwenNvfp4Gemm accumulate adds into the output buffer", "[qwen][gem
 TEST_CASE("RunQwenFusedMLP full-MLP parity vs host split", "[qwen][mlp][fused]")
 {
     constexpr int H = 16, I = 32;
-    lsxcommon::qwen::QwenLayerWeights lw;
+    lsxcommon::attn::LayerWeights lw;
     lw.loaded = true;
     // MLP weights: gate/up are [output=I, input-H] (gemm K=H reduction),
     // down is [output=H, input=I] (gemm K=I reduction).

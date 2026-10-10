@@ -1216,7 +1216,7 @@ __global__ void gating_prep_kernel(const __half *__restrict__ a_buf,
 // gated-delta recurrence, RMSNormGated and out_proj tail are unchanged.
 cudaError_t RunQwenFusedLinearAttnKernel(
     cudaStream_t stream,
-    const QwenLayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
@@ -1384,7 +1384,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
 }
 
 cudaError_t RunQwenMLP(cudaStream_t stream,
-                       const QwenLayerWeights &lw, int seq,
+                       const attn::LayerWeights &lw, int seq,
                        const __half *d_in, __half *d_out, __half *d_scratch)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
@@ -1424,7 +1424,7 @@ cudaError_t RunQwenMLP(cudaStream_t stream,
 // RunQwenMLP except the final down-GEMM writes resid (d_resid) rather than a
 // separate output buffer that the caller then adds. `top` is reserved for
 // future use (geometry is read from `lw`).
-cudaError_t RunQwenFusedMLP(cudaStream_t stream, const QwenLayerWeights &lw,
+cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
                             const QwenTopology &top, int seq,
                             const __half *d_in, __half *d_resid, __half *d_scratch)
 {
@@ -1521,7 +1521,7 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const QwenLayerWeights &lw,
 //   d_cos : [seq, rotary_dim]
 //   d_sin : [seq, rotary_dim]
 cudaError_t RunQwenFullAttention(cudaStream_t stream,
-                                 const QwenLayerWeights &lw,
+                                 const attn::LayerWeights &lw,
                                  const QwenTopology &top, int seq,
                                  const __half *d_normed, __half *d_out,
                                  __half *d_qc, __half *d_q, __half *d_gate,
@@ -1626,7 +1626,7 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
 //   d_gated:[seq, NVR*VD]   RMSNormGated output
 // NVR = linear_num_value_heads.
 cudaError_t RunQwenLinearAttention(cudaStream_t stream,
-                                   const QwenLayerWeights &lw,
+                                   const attn::LayerWeights &lw,
                                    const QwenTopology &top, int seq,
                                    const __half *d_normed, __half *d_out,
                                    __half *d_qkv, __half *d_z, __half *d_ab,

@@ -20,11 +20,8 @@
 
 #include "fast_load_internal.h"
 
-namespace lsxcommon::qwen {
-
-// QwenNvfp4Weight::Free is defined inline in the header.
-
-void QwenLayerWeights::Free() {
+namespace lsxcommon::attn {
+void lsxcommon::attn::LayerWeights::Free() {
     if (d_arena) {
         cudaFree(d_arena);
         d_arena = nullptr;
@@ -55,6 +52,12 @@ void QwenLayerWeights::Free() {
     mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
     loaded = false;
 }
+} // namespace lsxcommon::attn
+
+namespace lsxcommon::qwen {
+
+// QwenNvfp4Weight::Free is defined inline in the header.
+
 
 void QwenPinnedWeights::Free() {
     embed.Free();
@@ -99,7 +102,7 @@ CvKind CvKindFromDtype(const TensorView *t, CvKind f32_kind)
 
 cudaError_t LoadLayer(const TensorBatchViews &raw,
                       const DenseNvfp4BatchViews &nv,
-                      QwenLayerWeights &lw, cudaStream_t stream,
+                      attn::LayerWeights &lw, cudaStream_t stream,
                       fastload::PinnedStagingRing &ring,
                       std::uint64_t &bytes_acc, bool is_linear)
 {

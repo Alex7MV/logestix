@@ -1505,7 +1505,7 @@ cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
 //     [PLE(1)] -> hc -> GDN|QSA -> hc-scatter -> hc -> MoE(top-10) ->
 //     hc-scatter -> global mixer -> final norm -> lm_head.
 // KV caches + GDN recurrent states are reused from the qwen primitives via
-// shallow views (qwen::QwenLayerWeights mirrors); the qwen4_exp-specific
+// shallow views (lsxcommon::attn::LayerWeights mirrors); the qwen4_exp-specific
 // hc/PLE/QSA stages run before/after the reused attention cores.
 
 namespace {

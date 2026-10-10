@@ -131,7 +131,7 @@ using lsx_nvfp4::LaunchNvfp4Gemm;
 // kernel can append into a persistent KV cache (incremental decode).
 cudaError_t RunQwenFullAttention(
     cudaStream_t stream,
-    const QwenLayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qc, __half *d_q, __half *d_gate,
     __half *d_k, __half *d_v, __half *d_attn,
@@ -150,7 +150,7 @@ cudaError_t RunQwenFullAttention(
 // the last row's block when non-null.
 cudaError_t RunQwenLinearAttention(
     cudaStream_t stream,
-    const QwenLayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
@@ -163,7 +163,7 @@ cudaError_t RunQwenLinearAttention(
 // Call signature and scratch layout identical to RunQwenLinearAttention.
 cudaError_t RunQwenFusedLinearAttnKernel(
     cudaStream_t stream,
-    const QwenLayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
@@ -201,14 +201,14 @@ cudaError_t RunQwenFullAttnKernelSplitKV(
 // Dense SwiGLU MLP: gate=silu(x@Wg), up=x@Wu, inter=gate*up, out=inter@Wd.
 cudaError_t RunQwenMLP(
     cudaStream_t stream,
-    const QwenLayerWeights &lw, int seq,
+    const attn::LayerWeights &lw, int seq,
     const __half *d_in, __half *d_out, __half *d_scratch);
 
 // Fused MLP layer: takes the ALREADY post-RMSNormed input stream (d_in) and
 // accumulates the down-projection INTO d_resid (the residual stream) via the
 // acc-down GEMM, absorbing the separate residual add. d_scratch is [2*seq*I].
 cudaError_t RunQwenFusedMLP(
-    cudaStream_t stream, const QwenLayerWeights &lw,
+    cudaStream_t stream, const attn::LayerWeights &lw,
     const QwenTopology &top, int seq,
     const __half *d_in, __half *d_resid, __half *d_scratch);
 

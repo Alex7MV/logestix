@@ -363,7 +363,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
             if (e != cudaSuccess) return fail(e, "embed");
 
             for (int l = 0; l < (int)pw.layers.size(); ++l) {
-                const QwenLayerWeights &lw = pw.layers[l];
+                const attn::LayerWeights &lw = pw.layers[l];
                 // input RMSNorm
                 e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
                                    seq, H, eps);
@@ -495,7 +495,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
 
             int full_idx = 0, lin_idx = 0;
             for (int l = 0; l < (int)pw.layers.size(); ++l) {
-                const QwenLayerWeights &lw = pw.layers[l];
+                const attn::LayerWeights &lw = pw.layers[l];
                 if (step < prof_steps) cudaEventRecord(ph_a[ph_idx], stream);
                 // input RMSNorm
                 e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,

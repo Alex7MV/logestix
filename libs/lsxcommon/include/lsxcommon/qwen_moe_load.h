@@ -16,7 +16,7 @@ namespace lsxcommon::qwen_moe {
 // Per-layer device weights: reused dense attention block + MoE extras
 // (router kept BF16 on device; shared expert NVFP4 trio + FP16 scalar gate).
 struct QwenMoeLayerWeights {
-    qwen::QwenLayerWeights attn;             // norms + attention (no dense MLP)
+    lsxcommon::attn::LayerWeights attn;             // norms + attention (no dense MLP)
     uint8_t *d_router = nullptr;             // raw BF16 bits [E, H]
     int64_t router_bytes = 0;
     qwen::QwenNvfp4Weight shared_w1;         // gate_proj  [SI, H]

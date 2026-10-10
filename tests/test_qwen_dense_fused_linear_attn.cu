@@ -3,7 +3,10 @@
 #include <cmath>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include "lsxcommon/lsx_inference_load.h"
 #include "lsxcommon/qwen_inference.h"
+
+namespace attn = lsxcommon::attn;
 #include "nvfp4_codec.h"
 
 using namespace lsxcommon::qwen;
@@ -47,7 +50,7 @@ TEST_CASE("RunQwenFusedLinearAttnKernel entry runs on a tiny layer", "[qwen][lin
     top.linear_num_value_heads = nv; top.linear_value_head_dim = vd;
     top.rms_norm_eps = 1e-6f;
 
-    QwenLayerWeights lw; lw.loaded = true; lw.is_linear = true;
+    attn::LayerWeights lw; lw.loaded = true; lw.is_linear = true;
     FillNvfp4(lw.qkv, H, S, 0.5f); FillNvfp4(lw.z, H, VD, 0.5f);
     FillNvfp4(lw.a, H, nv, 0.5f);  FillNvfp4(lw.b, H, nv, 0.5f);
     FillNvfp4(lw.out, VD, H, 0.5f);
@@ -84,7 +87,7 @@ TEST_CASE("RunQwenFusedLinearAttnKernel entry runs on a tiny layer", "[qwen][lin
 namespace {
 // Host F1 reference: qkv raw row (per col), causal conv1d, l2norm q/k slices.
 // Mirrors the fused_linear_front_kernel phase order for parity.
-std::vector<__half> HostLinearFront(const QwenLayerWeights &lw, int seq, int kv_base,
+std::vector<__half> HostLinearFront(const attn::LayerWeights &lw, int seq, int kv_base,
                                     int nk, int kd, int nv, int vd,
                                     const std::vector<__half> &x, int H)
 {
@@ -149,7 +152,7 @@ TEST_CASE("Fused front F1 qkv+conv1d+l2norm matches host reference", "[qwen][lin
         top.linear_num_value_heads = nv; top.linear_value_head_dim = vd;
         top.rms_norm_eps = 1e-6f;
 
-        QwenLayerWeights lw; lw.loaded = true; lw.is_linear = true;
+        attn::LayerWeights lw; lw.loaded = true; lw.is_linear = true;
         FillNvfp4(lw.qkv, H, S, gs); FillNvfp4(lw.z, H, VD, gs);
         FillNvfp4(lw.a, H, nv, gs);  FillNvfp4(lw.b, H, nv, gs);
         FillNvfp4(lw.out, VD, H, gs);
@@ -260,7 +263,7 @@ TEST_CASE("Fused linear-attn full layer matches split reference (seq=1,2)", "[qw
         top.linear_num_value_heads = nv; top.linear_value_head_dim = vd;
         top.rms_norm_eps = 1e-6f;
 
-        QwenLayerWeights lw; lw.loaded = true; lw.is_linear = true;
+        attn::LayerWeights lw; lw.loaded = true; lw.is_linear = true;
         FillNvfp4(lw.qkv, H, S, gs); FillNvfp4(lw.z, H, VD, gs);
         FillNvfp4(lw.a, H, nv, gs);  FillNvfp4(lw.b, H, nv, gs);
         FillNvfp4(lw.out, VD, H, gs);

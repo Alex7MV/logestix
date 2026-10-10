@@ -37,7 +37,7 @@ cudaError_t BuildExpHcDequantCache(cudaStream_t stream,
 // router BF16 raw; shared expert NVFP4 trio + FP16 scalar gate; PLE
 // projections on the PLE layer).
 struct ExpLayerWeights {
-    qwen::QwenLayerWeights attn;  // norms + attention/GDN (no dense MLP)
+    lsxcommon::attn::LayerWeights attn;  // norms + attention/GDN (no dense MLP)
     qwen::QwenNvfp4Weight indexer_qk;  // QSA: hidden -> (idx_h+idx_kv)*idx_hd
 
     // Hyper-connections (GatedResidual): group-RMSNorm weights BF16 raw,
