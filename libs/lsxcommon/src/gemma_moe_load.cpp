@@ -223,7 +223,7 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
     const bool attn_v_ok =
         !v_expected || (v_rec.packed && v_rec.scales && v_rec.gs);
     auto upload_nv = [&](const Nvfp4Recs &r,
-                         lsxcommon::lsx_nvfp4::LsxNvfp4Weight &w)
+                         lsx_nvfp4::LsxNvfp4Weight &w)
         -> cudaError_t {
         if (!r.packed || !r.scales || !r.gs) return cudaErrorInvalidValue;
         w.rows = r.packed->shape.size() >= 2
@@ -433,7 +433,7 @@ void GemmaPinnedWeights::Free()
     if (d_final_norm) cudaFree(d_final_norm);
     d_embed = d_final_norm = nullptr;
     embed_nvfp4.Free();
-    head_nvfp4 = lsxcommon::lsx_nvfp4::LsxNvfp4Weight{};  // aliases embed
+    head_nvfp4 = lsx_nvfp4::LsxNvfp4Weight{};  // aliases embed
     vocab_size = 0;
     hidden = 0;
     resident_bytes = 0;

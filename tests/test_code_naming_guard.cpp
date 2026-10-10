@@ -59,7 +59,7 @@ const std::vector<std::string>& FamilyStems()
 bool AllowedCommon(const std::string& stem)
 {
     static const std::vector<std::string> kAllowed = {
-        "qwen_inference",     // kernels/GEMM API+impl shared by dense+moe
+        "lsx_attn_inference",  // neutral attention/MLP kernel layer
         "qwen_base_model",
         "qwen_inference_load",
         "qwen_device_math",

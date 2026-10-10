@@ -7,7 +7,8 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_dense_inference_pipeline.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/tool_format.h"

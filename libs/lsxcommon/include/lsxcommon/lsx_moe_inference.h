@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "lsxcommon/expert_device_cache.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 namespace lsxcommon::moe {
 
@@ -201,7 +201,7 @@ cudaError_t RunMoERoutedGemmVNoHandshake(
 
 // Batched decode swiglu-quant: per slot s, gate = ygu[s*2I + j],
 // up = ygu[s*2I + I + j]; h[s] = silu(gate)*up (FP16) + NVFP4 encode of h.
-// Bit-identical to per-slot RunQwenSwigluQuant (same 16-group math).
+// Bit-identical to per-slot RunAttnSwigluQuant (same 16-group math).
 cudaError_t RunMoESwigluQuantBatch(cudaStream_t stream,
                                        const __half *ygu, int k_slots, int I,
                                        __half *h, uint8_t *packed,
@@ -250,9 +250,9 @@ bool MoETruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id);
 // d_gate_val [seq] fp32 workspace. sw1=gate_proj [SI,H], sw3=up_proj,
 // sw2=down_proj [H,SI].
 cudaError_t RunMoESharedCombine(
-    cudaStream_t stream, const lsxcommon::qwen::QwenNvfp4Weight &sw1,
-    const lsxcommon::qwen::QwenNvfp4Weight &sw2,
-    const lsxcommon::qwen::QwenNvfp4Weight &sw3,
+    cudaStream_t stream, const lsxcommon::lsx_nvfp4::LsxNvfp4Weight &sw1,
+    const lsxcommon::lsx_nvfp4::LsxNvfp4Weight &sw2,
+    const lsxcommon::lsx_nvfp4::LsxNvfp4Weight &sw3,
     const __half *d_shared_gate, const __half *d_x, int seq, int H, int SI,
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out, const uint8_t *xq = nullptr,

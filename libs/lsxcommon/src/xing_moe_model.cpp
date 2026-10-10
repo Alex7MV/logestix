@@ -12,7 +12,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
-#include "lsxcommon/qwen_inference.h"   // DecideSession (shared, model-neutral)
+#include "lsxcommon/lsx_attn_inference.h"   // DecideSession (shared, model-neutral)
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/synthetic_geometry.h"
 

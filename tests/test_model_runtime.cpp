@@ -16,7 +16,7 @@ using Catch::Approx;
 #include <lsxcommon/converter.h>
 #include <lsxcommon/model_base.h>
 #include <lsxcommon/model_runtime.h>
-#include <lsxcommon/qwen_inference.h>
+#include <lsxcommon/lsx_attn_inference.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace fs = std::filesystem;

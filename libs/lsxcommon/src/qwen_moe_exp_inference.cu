@@ -4,7 +4,8 @@
 
 #include "qwen_moe_exp_constants.h"
 #include "lsxcommon/lsx_tc_gemm.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_dense_inference_pipeline.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/qwen_moe_inference_pipeline.h"
 #include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
@@ -1012,8 +1013,8 @@ __global__ void bf16_bits_to_float_kernel(const uint8_t *__restrict__ bits,
 }
 
 LSX_EXP_NOINLINE cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
-                            const qwen::QwenNvfp4Weight &key_proj,
-                            const qwen::QwenNvfp4Weight &value_proj,
+                            const lsx_nvfp4::LsxNvfp4Weight &key_proj,
+                            const lsx_nvfp4::LsxNvfp4Weight &value_proj,
                             const uint8_t *d_norm_key,
                             const uint8_t *d_norm_query,
                             const uint8_t *d_norm_conv,
@@ -1127,8 +1128,8 @@ HcScratch &HcScratchInstance() {
 // (steady state never reallocates, so the hot path is unaffected). Clearing the
 // alias before the realloc keeps a failed cudaMalloc from leaving a dangling
 // interior pointer.
-cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
-                          const qwen::QwenNvfp4Weight &up, int x32_floats,
+cudaError_t EnsureScratch(const lsx_nvfp4::LsxNvfp4Weight &down,
+                          const lsx_nvfp4::LsxNvfp4Weight &up, int x32_floats,
                           cudaStream_t stream)
 {
     HcScratch &s = HcScratchInstance();
@@ -1233,7 +1234,7 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank,
     return cudaSuccess;
 }
 
-cudaError_t EnsureInjectScratch(const qwen::QwenNvfp4Weight &inject_w,
+cudaError_t EnsureInjectScratch(const lsx_nvfp4::LsxNvfp4Weight &inject_w,
                                 cudaStream_t stream)
 {
     HcScratch &s = HcScratchInstance();
@@ -1262,9 +1263,9 @@ void ExpHcDequantCache::Free()
 }
 
 cudaError_t BuildExpHcDequantCache(cudaStream_t stream,
-                                   const qwen::QwenNvfp4Weight &down,
-                                   const qwen::QwenNvfp4Weight &up,
-                                   const qwen::QwenNvfp4Weight &inject_w,
+                                   const lsx_nvfp4::LsxNvfp4Weight &down,
+                                   const lsx_nvfp4::LsxNvfp4Weight &up,
+                                   const lsx_nvfp4::LsxNvfp4Weight &inject_w,
                                    ExpHcDequantCache &out)
 {
     out.Free();
@@ -1343,8 +1344,8 @@ __global__ void float_to_half_kernel(const float *__restrict__ src,
 
 cudaError_t RunExpHcGatedResidual(
     cudaStream_t stream, const __half *d_hyper_input,
-    const qwen::QwenNvfp4Weight &down, const qwen::QwenNvfp4Weight &up,
-    const qwen::QwenNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
+    const lsx_nvfp4::LsxNvfp4Weight &down, const lsx_nvfp4::LsxNvfp4Weight &up,
+    const lsx_nvfp4::LsxNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
     int seq, int H, int hc, int lowrank, float *d_mixed, float *d_inject_out,
     __half *d_mixed_h, const uint8_t *d_hc_norm_override)
 {
@@ -1439,8 +1440,8 @@ cudaError_t RunExpHcGatedResidualCached(
 }
 
 cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
-                          const qwen::QwenNvfp4Weight &down,
-                          const qwen::QwenNvfp4Weight &up,
+                          const lsx_nvfp4::LsxNvfp4Weight &down,
+                          const lsx_nvfp4::LsxNvfp4Weight &up,
                           const uint8_t *d_mixer_norm, int seq, int H, int hc,
                           int lowrank, __half *d_out, __half *d_normed_scratch)
 {
@@ -1455,7 +1456,7 @@ cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
     }
     cudaError_t e = RunExpHcGatedResidual(
         stream, d_hidden, down, up,
-        qwen::QwenNvfp4Weight{}, nullptr, seq, H, hc, lowrank, d_mixed, d_inj,
+        lsx_nvfp4::LsxNvfp4Weight{}, nullptr, seq, H, hc, lowrank, d_mixed, d_inj,
         nullptr, d_mixer_norm);
     if (e == cudaSuccess) {
         // Float->half conversion for the mixed output.
@@ -1504,7 +1505,7 @@ cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
 //     [PLE(1)] -> hc -> GDN|QSA -> hc-scatter -> hc -> MoE(top-10) ->
 //     hc-scatter -> global mixer -> final norm -> lm_head.
 // KV caches + GDN recurrent states are reused from the qwen primitives via
-// shallow views (qwen::QwenLayerWeights mirrors); the qwen4_exp-specific
+// shallow views (lsxcommon::attn::LayerWeights mirrors); the qwen4_exp-specific
 // hc/PLE/QSA stages run before/after the reused attention cores.
 
 namespace {
@@ -1880,7 +1881,7 @@ cudaError_t RunExpGeneration(
             cudaMemcpy(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice);
             cudaMemcpy(d_pos, &kv_base, sizeof(int32_t), cudaMemcpyHostToDevice);
         }
-        e = qwen::RunQwenEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
+        e = qwen::RunAttnEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
         if (e != cudaSuccess) { result.error_msg = "embed"; break; }
         // hidden -> 4 streams.
         exp_repeat_hc_kernel<<<(H + threads - 1) / threads, threads, 0, stream>>>(
@@ -2006,8 +2007,8 @@ cudaError_t RunExpGeneration(
             }
             if (e != cudaSuccess) { result.error_msg = "hc-attn"; break; }
             if (lw.attn.is_linear) {
-                e = qwen::RunQwenFusedLinearAttnKernel(
-                    stream, lw.attn, top, 1, d_mixed, d_act,
+                e = qwen::RunAttnFusedLinearAttnKernel(
+                    stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_mixed, d_act,
                     kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                     d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
                     kv_base,
@@ -2025,8 +2026,8 @@ cudaError_t RunExpGeneration(
                 // core with full causal mask for the fixture/selfcheck
                 // horizon (indexer budget covers ctx <= 2048 — degenerate
                 // fast path in RunExpQsaIndexer).
-                e = qwen::RunQwenFullAttention(
-                    stream, lw.attn, top, 1, d_mixed, d_act, d_qc, d_q,
+                e = qwen::RunAttnFullAttention(
+                    stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_mixed, d_act, d_qc, d_q,
                     d_qgate, kv->d_kv_k +
                                  (int64_t)full_idx * kv->max_total * NKV * HD,
                     kv->d_kv_v +

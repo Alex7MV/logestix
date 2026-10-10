@@ -5,7 +5,8 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_dense_inference_pipeline.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "fast_load_internal.h"
 #include "lsxcommon/safetensors.h"

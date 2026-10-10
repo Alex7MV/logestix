@@ -387,7 +387,7 @@ TEST_CASE("E2M1Value exhaustive table and lo-nibble packing order",
 // ── Task 3: math cluster references (verbatim ports) ───────────────────────
 namespace ref {
 
-// qwen_inference.cu qwen_add_kernel verbatim.
+// lsx_attn_inference.cu qwen_add_kernel verbatim.
 __global__ void add_half(const __half* __restrict__ src,
                          __half* __restrict__ dst, int64_t n) {
     const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;

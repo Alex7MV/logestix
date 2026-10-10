@@ -1,7 +1,7 @@
 // Qwen fused MLP: accumulate-mode NVFP4 GEMM + full MLP parity vs split.
 //
 // Direction A: the MLP residual-add is absorbed into the down GEMM via an
-// `accumulate` mode on RunQwenNvfp4Gemm (y = y + sum). This unit verifies the
+// `accumulate` mode on lsx_nvfp4::RunLsxNvfp4Gemm (y = y + sum). This unit verifies the
 // acc mode, and (Task 2) the full fused MLP vs split parity for seq=1 / seq>1.
 #include <catch2/catch_all.hpp>
 #include <cuda_runtime.h>
@@ -11,13 +11,17 @@
 #include <cstring>
 #include <vector>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_inference_load.h"
+#include "lsxcommon/lsx_attn_inference.h"
+
+namespace attn = lsxcommon::attn;
+namespace lsx_nvfp4 = lsxcommon::lsx_nvfp4;
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/schema.h"
 
 namespace {
 
-void FillNvfp4(lsxcommon::qwen::QwenNvfp4Weight &w, int K, int N,
+void FillNvfp4(lsxcommon::lsx_nvfp4::LsxNvfp4Weight &w, int K, int N,
                uint8_t seed_pack, uint8_t seed_scale)
 {
     w.rows = K; w.cols = N;
@@ -62,7 +66,7 @@ double HostSilu(double x) { return x / (1.0 + std::exp(-x)); }
 
 }  // namespace
 
-TEST_CASE("RunQwenNvfp4Gemm accumulate adds into the output buffer", "[qwen][gemm][acc]")
+TEST_CASE("lsx_nvfp4::RunLsxNvfp4Gemm accumulate adds into the output buffer", "[qwen][gemm][acc]")
 {
     constexpr int seq = 2, K = 64, N = 128;
     std::vector<__half> hx(seq * K), hsrc(seq * N);
@@ -81,10 +85,10 @@ TEST_CASE("RunQwenNvfp4Gemm accumulate adds into the output buffer", "[qwen][gem
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
         nullptr, dx, dp, ds, gs, dout, seq, K, N) == cudaSuccess);
     cudaMemcpy(dacc, hsrc.data(), seq*N*2, cudaMemcpyHostToDevice);
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
         nullptr, dx, dp, ds, gs, dacc, seq, K, N, /*acc=*/true) == cudaSuccess);
 
     std::vector<__half> ho(seq*N), ha(seq*N);
@@ -97,10 +101,10 @@ TEST_CASE("RunQwenNvfp4Gemm accumulate adds into the output buffer", "[qwen][gem
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dout); cudaFree(dacc);
 }
 
-TEST_CASE("RunQwenFusedMLP full-MLP parity vs host split", "[qwen][mlp][fused]")
+TEST_CASE("RunAttnFusedMLP full-MLP parity vs host split", "[qwen][mlp][fused]")
 {
     constexpr int H = 16, I = 32;
-    lsxcommon::qwen::QwenLayerWeights lw;
+    lsxcommon::attn::LayerWeights lw;
     lw.loaded = true;
     // MLP weights: gate/up are [output=I, input-H] (gemm K=H reduction),
     // down is [output=H, input=I] (gemm K=I reduction).
@@ -120,8 +124,8 @@ TEST_CASE("RunQwenFusedMLP full-MLP parity vs host split", "[qwen][mlp][fused]")
     auto u = host_bytes(lw.mlp_up.packed_bytes,   23, 2);
     auto d = host_bytes(lw.mlp_down.packed_bytes, 7,  3);
 
-    lsxcommon::qwen::QwenTopology top{};
-    top.hidden_size = H;
+    attn::AttnGeometry geo{};
+    geo.hidden_size = H;
 
     for (int seq : {1, 2}) {
         // post-RMSNormed input stream [seq, H] (deterministic, small).
@@ -143,8 +147,8 @@ TEST_CASE("RunQwenFusedMLP full-MLP parity vs host split", "[qwen][mlp][fused]")
         cudaMemcpy(dx,      hx.data(),   (size_t)seq * H * 2, cudaMemcpyHostToDevice);
         cudaMemcpy(dresid,  hres.data(), (size_t)seq * H * 2, cudaMemcpyHostToDevice);
 
-        REQUIRE(lsxcommon::qwen::RunQwenFusedMLP(
-            nullptr, lw, top, seq, dx, dresid, dscratch) == cudaSuccess);
+        REQUIRE(lsxcommon::qwen::RunAttnFusedMLP(
+            nullptr, lw, geo, seq, dx, dresid, dscratch) == cudaSuccess);
         cudaDeviceSynchronize();
 
         std::vector<__half> hout((size_t)seq * H);

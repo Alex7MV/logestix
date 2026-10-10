@@ -399,7 +399,7 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
                 }
                 struct KdaNv {
                     const char *suffix;
-                    qwen::QwenNvfp4Weight *dst;
+                    lsx_nvfp4::LsxNvfp4Weight *dst;
                 };
                 const KdaNv kNv[] = {
                     {"self_attn.q_proj.weight", &lw.kda_q},

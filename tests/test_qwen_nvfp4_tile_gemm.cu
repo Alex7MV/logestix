@@ -1,4 +1,4 @@
-// NVFP4 dense GEMM parity harness: RunQwenNvfp4Gemm vs exact host reference.
+// NVFP4 dense GEMM parity harness: lsx_nvfp4::RunLsxNvfp4Gemm vs exact host reference.
 //
 // Direction A (Blackwell inference optimization): the Qwen dense NVFP4 GEMM is
 // reworked from a per-element kernel to a shared-memory tile kernel. The
@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/schema.h"
 #include "nvfp4_scale.h"
 #include "lsx_kernels_quant.cuh"
@@ -102,7 +102,7 @@ TEST_CASE("full-E4M3 scale decode follows the E4M3FN table",
     CHECK(std::isnan(E4m3ToFloat(0x7F)));
 }
 
-TEST_CASE("RunQwenNvfp4Gemm matches host reference (small-K, tile path)", "[qwen][gemm][nvfp4]")
+TEST_CASE("lsx_nvfp4::RunLsxNvfp4Gemm matches host reference (small-K, tile path)", "[qwen][gemm][nvfp4]")
 {
     constexpr int seq = 2, K = 64, N = 128;   // N>=8, K>=16 -> tile kernel
     std::vector<__half> hx(seq * K);
@@ -124,7 +124,7 @@ TEST_CASE("RunQwenNvfp4Gemm matches host reference (small-K, tile path)", "[qwen
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                 nullptr, dx, dp, ds, gs, dy, seq, K, N) == cudaSuccess);
 
     std::vector<__half> hy((size_t)seq * N);
@@ -136,7 +136,7 @@ TEST_CASE("RunQwenNvfp4Gemm matches host reference (small-K, tile path)", "[qwen
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
 }
 
-TEST_CASE("RunQwenNvfp4Gemm legacy fallback at truly-small K", "[qwen][gemm][nvfp4]")
+TEST_CASE("lsx_nvfp4::RunLsxNvfp4Gemm legacy fallback at truly-small K", "[qwen][gemm][nvfp4]")
 {
     constexpr int seq = 1, K = 8, N = 16;    // K<16 -> legacy per-element path
     std::vector<__half> hx(seq * K);
@@ -158,7 +158,7 @@ TEST_CASE("RunQwenNvfp4Gemm legacy fallback at truly-small K", "[qwen][gemm][nvf
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                 nullptr, dx, dp, ds, gs, dy, seq, K, N) == cudaSuccess);
 
     std::vector<__half> hy((size_t)seq * N);
@@ -202,7 +202,7 @@ void HostRefTileGemm(const __half *x, const uint8_t *packed, const uint8_t *scal
         }
 }
 
-TEST_CASE("RunQwenNvfp4Gemm seq==1 decode path is bit-exact vs tile-kernel "
+TEST_CASE("lsx_nvfp4::RunLsxNvfp4Gemm seq==1 decode path is bit-exact vs tile-kernel "
           "host replica (incl. K/N tails)",
           "[qwen][gemm][nvfp4][decode]")
 {
@@ -227,7 +227,7 @@ TEST_CASE("RunQwenNvfp4Gemm seq==1 decode path is bit-exact vs tile-kernel "
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                 nullptr, dx, dp, ds, gs, dy, seq, K, N) == cudaSuccess);
 
     std::vector<__half> hy((size_t)seq * N);
@@ -239,7 +239,7 @@ TEST_CASE("RunQwenNvfp4Gemm seq==1 decode path is bit-exact vs tile-kernel "
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
 }
 
-TEST_CASE("RunQwenNvfp4Gemm tile matches host reference at large K", "[qwen][gemm][nvfp4]")
+TEST_CASE("lsx_nvfp4::RunLsxNvfp4Gemm tile matches host reference at large K", "[qwen][gemm][nvfp4]")
 {
     constexpr int seq = 2, K = 5120, N = 512;
     std::vector<__half> hx(seq * K);
@@ -261,7 +261,7 @@ TEST_CASE("RunQwenNvfp4Gemm tile matches host reference at large K", "[qwen][gem
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                 nullptr, dx, dp, ds, gs, dy, seq, K, N) == cudaSuccess);
 
     std::vector<__half> hy((size_t)seq * N);
@@ -278,7 +278,7 @@ inline float silu_ref(float v) { return v / (1.0f + std::exp(-v)); }
 } // namespace
 
 // ── Producer-fused swiglu+quant: byte parity vs standalone act-quant ──────
-TEST_CASE("RunQwenSwigluQuant matches swiglu+ActQuant byte-for-byte",
+TEST_CASE("RunAttnSwigluQuant matches swiglu+ActQuant byte-for-byte",
           "[qwen][gemm][nvfp4][swigluquant]")
 {
     // Sizes exercise full groups, one tail group, and multi-block grids.
@@ -310,13 +310,13 @@ TEST_CASE("RunQwenSwigluQuant matches swiglu+ActQuant byte-for-byte",
         cudaMemcpy(db, b.data(), n * 2, cudaMemcpyHostToDevice);
 
         // Fused path.
-        REQUIRE(lsxcommon::qwen::RunQwenSwigluQuant(
+        REQUIRE(lsxcommon::qwen::RunAttnSwigluQuant(
                     nullptr, da, db, dy1, dp1, ds1, n) == cudaSuccess);
         // Reference: plain swiglu then the standalone act-quant kernel —
         // reached through the public GEMM entry's QuantizeActsNvfp4 is not
         // exported, so quantize dy2 via RunLsxTcGemmPreQuant-free path:
         // run ActQuant by calling the fused launcher's sibling: use
-        // QuantizeActsNvfp4 through RunQwenNvfp4Gemm? Not exposed either.
+        // QuantizeActsNvfp4 through lsx_nvfp4::RunLsxNvfp4Gemm? Not exposed either.
         // Instead compare against the scalar host model below.
 
         cudaDeviceSynchronize();

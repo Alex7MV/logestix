@@ -26,6 +26,8 @@
 #include <absl/container/btree_set.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
+#include <absl/strings/str_split.h>
+#include <string_view>
 
 #include <filesystem>
 #include <fstream>
@@ -228,7 +230,7 @@ TEST_CASE("cross-family geometry borrowing is forbidden", "[independence]")
 
     // The ornith family is independent from every other family: its files must
     // not include qwen/dense model passports, except the generic kernel layer
-    // (qwen_inference.*) which the repo documents as shared.
+    // (lsx_attn_inference.*) which the repo documents as shared.
     const std::vector<std::string> ornith_files = {
         "ornith_moe_constants.h", "ornith_moe_model.h",
         "ornith_moe_model.cpp", "ornith_moe_load.cpp",
@@ -261,7 +263,7 @@ TEST_CASE("fast-math toggles stay family-scoped", "[independence]")
     const std::string nvfp4_inf =
         ReadFile(kSrcDir / "lsx_inference_nvfp4.cu");
     const std::string qwen_inf =
-        ReadFile(kSrcDir / "qwen_inference.cu");
+        ReadFile(kSrcDir / "lsx_attn_inference.cu");
     const std::string ds_inf =
         ReadFile(kSrcDir / "deepseek_moe_inference_moe.cu");
     // Single definition site of the routing state.
@@ -321,15 +323,17 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
 TEST_CASE("glm-5.3-flash calls the neutral NVFP4 layer directly",
           "[independence]")
 {
-    // The qwen-named GEMM shims (RunQwenNvfp4Gemm*) are qwen-family call-site
-    // aliases over lsx_nvfp4. A glm model must not depend on them: flash
-    // kernels call lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm directly. The
-    // shared slot/result TYPES (MoERoutedSlot, QwenGenerationResult)
-    // remain legitimate cross-model data carriers.
+    // glm's kernels must reach the NVFP4 GEMM through the neutral
+    // lsxcommon::lsx_nvfp4 entry point, never through a qwen-family shim.
+    // This used to read "no lsx_nvfp4::RunLsxNvfp4Gemm", because the GEMM was
+    // then only reachable as the qwen alias RunQwenNvfp4Gemm; that alias is
+    // gone (it was a pure passthrough, the same shape as qwen_reduce.cuh), so
+    // the rule is now stated directly: no lsxcommon::qwen GEMM entry point.
     for (const char *f : {"glm_moe_flash_inference.cu",
                           "glm_moe_flash_model.cpp"}) {
         const std::string text = ReadFile(kSrcDir / f);
-        INFO(f << " must not use qwen::RunQwenNvfp4Gemm shims");
+        INFO(f << " must not call a qwen-namespaced GEMM entry point");
+        REQUIRE(text.find("qwen::RunLsxNvfp4Gemm") == std::string::npos);
         REQUIRE(text.find("qwen::RunQwenNvfp4Gemm") == std::string::npos);
     }
 }
@@ -504,9 +508,9 @@ TEST_CASE("broken fused-decode attention path is removed", "[independence]")
     // generation in 19e8d4f) and test-only since — deleted by the 2026-09
     // model-independence audit. Reintroduction requires a full-layer parity
     // re-validation on the real checkpoint (see AGENTS.md selfcheck rules).
-    const std::string header = ReadFile(kIncDir / "qwen_inference.h");
+    const std::string header = ReadFile(kIncDir / "lsx_attn_inference.h");
     REQUIRE(header.find("RunQwenFusedDecodeAttnKernel") == std::string::npos);
-    const std::string tu = ReadFile(kSrcDir / "qwen_inference.cu");
+    const std::string tu = ReadFile(kSrcDir / "lsx_attn_inference.cu");
     REQUIRE(tu.find("RunQwenFusedDecodeAttnKernel") == std::string::npos);
     REQUIRE(tu.find("RunQwenFusedQkv") == std::string::npos);
     REQUIRE(tu.find("RunQwenFusedOProj") == std::string::npos);
@@ -540,7 +544,7 @@ TEST_CASE("KV cache layout goes through the shared geometry", "[guard][fast]")
          "structural: one THREAD per head, not one block - a warp-of-heads has a different coalescing trade-off and needs its own analysis"},
         {"glm_moe_flash_inference.cu",
          "structural: same one-thread-per-head blocking as glm"},
-        {"qwen_inference.cu",
+        {"lsx_attn_inference.cu",
          "pending: migrates to the shared geometry when its decode attention is next touched"},
         {"gemma_moe_inference.cu",
          "pending: migrates to the shared geometry when its decode attention is next touched"},
@@ -623,7 +627,7 @@ TEST_CASE("the routed-MoE inference layer is model-neutral in name and deps",
     // "Neutral" is scoped to MODEL dependencies. Two qwen-named things are
     // deliberately still allowed, both of them repository-wide shared layers
     // rather than qwen state:
-    //   - qwen_inference.h / namespace qwen  -- the designated generic kernel
+    //   - lsx_attn_inference.h / namespace qwen  -- the designated generic kernel
     //     layer (17 dependents; AGENTS.md has families reuse it);
     //   - qwen_moe_expert_cache.h -- a thin alias over the neutral
     //     gpu::ExpertDeviceCache.
@@ -646,6 +650,59 @@ TEST_CASE("the routed-MoE inference layer is model-neutral in name and deps",
             "qwen_moe_load.h",         "qwen_moe_model.h",
             "qwen_moe_convert.h",      "qwen_moe_constants.h",
             "qwen_moe_inference_pipeline.h", "qwen_inference_load.h"};
+        for (const char *h : kModelOwned) {
+            INFO(p.filename() << " must not include the model header " << h);
+            REQUIRE(text.find(h) == std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("the attention kernel layer is model-neutral in name and deps",
+          "[independence]")
+{
+    // Geometry-neutral in content (every dimension is a runtime parameter) and
+    // consumed by Qwen MoE, Qwen MoE Exp, Ornith and Alice, so it carries the
+    // neutral lsx_ name. Scoped the same way as the routed-MoE guard: no model
+    // dependency, no family-named symbol of its own. The shared fast-math
+    // aliases and the KV cache / result structs keep their qwen names on
+    // purpose -- they are held by three families, so renaming them would make
+    // a non-qwen family depend on a qwen-owned header.
+    const fs::path hdr = kIncDir / "lsx_attn_inference.h";
+    const fs::path cu = kSrcDir / "lsx_attn_inference.cu";
+    REQUIRE(fs::exists(hdr));
+    REQUIRE(fs::exists(cu));
+
+    static const char *kAllowed[] = {
+        "QwenTcFastMath",  "SetQwenTcFastMath", "QwenSeq1Gemv",
+        "SetQwenSeq1Gemv", "QwenGemmLarge",     "QwenGemmLargeActive",
+        "QwenKvCache",     "QwenGenerationResult",
+            "QwenFastMathScope"};
+
+    for (const fs::path &p : {hdr, cu}) {
+        const std::string text = ReadFile(p);
+        REQUIRE_FALSE(text.empty());
+
+        // Comments are prose, not symbols: citing the upstream model whose
+        // numerics a kernel reproduces is exactly the provenance we want.
+        std::string stripped;
+        for (const std::string_view line :
+             absl::StrSplit(text, absl::ByChar('\n'))) {
+            const size_t c = line.find("//");
+            stripped.append(c == std::string::npos ? line : line.substr(0, c));
+            stripped.push_back('\n');
+        }
+        for (const char *a : kAllowed) {
+            const size_t n = std::strlen(a);
+            for (size_t at = stripped.find(a); at != std::string::npos;
+                 at = stripped.find(a, at + n))
+                stripped.replace(at, n, std::string(n, '_'));
+        }
+        INFO(p.filename() << " must not define a family-named symbol");
+        REQUIRE(stripped.find("Qwen") == std::string::npos);
+
+        static const char *kModelOwned[] = {
+            "qwen_dense_convert.h", "qwen_inference_load.h",
+            "qwen_dense_inference_pipeline.h",    "qwen_moe_load.h"};
         for (const char *h : kModelOwned) {
             INFO(p.filename() << " must not include the model header " << h);
             REQUIRE(text.find(h) == std::string::npos);

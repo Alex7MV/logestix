@@ -20,12 +20,12 @@ using OrnithMoeExpertDeviceCache = gpu::ExpertDeviceCache;
 // Per-layer device weights: reused dense attention block + MoE extras
 // (router kept BF16 on device; shared expert NVFP4 trio + FP16 scalar gate).
 struct OrnithMoeLayerWeights {
-    qwen::QwenLayerWeights attn;             // norms + attention (no dense MLP)
+    lsxcommon::attn::LayerWeights attn;             // norms + attention (no dense MLP)
     uint8_t *d_router = nullptr;             // raw BF16 bits [E, H]
     int64_t router_bytes = 0;
-    qwen::QwenNvfp4Weight shared_w1;         // gate_proj  [SI, H]
-    qwen::QwenNvfp4Weight shared_w2;         // down_proj  [H, SI]
-    qwen::QwenNvfp4Weight shared_w3;         // up_proj    [SI, H]
+    lsx_nvfp4::LsxNvfp4Weight shared_w1;         // gate_proj  [SI, H]
+    lsx_nvfp4::LsxNvfp4Weight shared_w2;         // down_proj  [H, SI]
+    lsx_nvfp4::LsxNvfp4Weight shared_w3;         // up_proj    [SI, H]
     __half *d_shared_gate = nullptr;         // [H] fp16
     bool moe_loaded = false;
 };
@@ -33,8 +33,8 @@ struct OrnithMoeLayerWeights {
 struct OrnithMoePinnedWeights {
     qwen::QwenTopology top;                  // dense view for kernel reuse
     OrnithMoeTopology moe_top;                 // full topology incl. MoE fields
-    qwen::QwenNvfp4Weight embed;
-    qwen::QwenNvfp4Weight head;
+    lsx_nvfp4::LsxNvfp4Weight embed;
+    lsx_nvfp4::LsxNvfp4Weight head;
     __half *d_final_norm = nullptr;
     int final_norm_size = 0;
     std::vector<OrnithMoeLayerWeights> layers;

@@ -20,11 +20,8 @@
 
 #include "fast_load_internal.h"
 
-namespace lsxcommon::qwen {
-
-// QwenNvfp4Weight::Free is defined inline in the header.
-
-void QwenLayerWeights::Free() {
+namespace lsxcommon::attn {
+void lsxcommon::attn::LayerWeights::Free() {
     if (d_arena) {
         cudaFree(d_arena);
         d_arena = nullptr;
@@ -55,6 +52,12 @@ void QwenLayerWeights::Free() {
     mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
     loaded = false;
 }
+} // namespace lsxcommon::attn
+
+namespace lsxcommon::qwen {
+
+// lsx_nvfp4::LsxNvfp4Weight::Free is defined inline in the header.
+
 
 void QwenPinnedWeights::Free() {
     embed.Free();
@@ -99,7 +102,7 @@ CvKind CvKindFromDtype(const TensorView *t, CvKind f32_kind)
 
 cudaError_t LoadLayer(const TensorBatchViews &raw,
                       const DenseNvfp4BatchViews &nv,
-                      QwenLayerWeights &lw, cudaStream_t stream,
+                      attn::LayerWeights &lw, cudaStream_t stream,
                       fastload::PinnedStagingRing &ring,
                       std::uint64_t &bytes_acc, bool is_linear)
 {
@@ -187,7 +190,7 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
         const int64_t I = lw.mlp_gate_up.rows / 2;
         const int64_t gate_packed = lw.mlp_gate_up.packed_bytes / 2;
         const int64_t gate_scales = lw.mlp_gate_up.scale_bytes / 2;
-        auto make_view = [&](QwenNvfp4Weight &w, const uint8_t *packed,
+        auto make_view = [&](lsx_nvfp4::LsxNvfp4Weight &w, const uint8_t *packed,
                              const uint8_t *scales) {
             w.d_packed = packed;
             w.d_scales = scales;

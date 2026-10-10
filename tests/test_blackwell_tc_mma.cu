@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "lsxcommon/lsx_tc_gemm.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/schema.h"
 #include "nvfp4_codec.h"
 #include "nvfp4_scale.h"
@@ -853,12 +853,12 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
                            cudaMemcpyHostToDevice) == cudaSuccess);
 
         auto bench = [&](bool tc, float &us) {
-            using lsxcommon::qwen::RunQwenNvfp4Gemm;
+            using lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm;
             for (int w = 0; w < 5; ++w) {
                 cudaError_t e = tc
                     ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                           st, dx, wp, ws, 0.125f, dy, 1, K, N)
-                    : RunQwenNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
+                    : lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
                 REQUIRE(e == cudaSuccess);
             }
             REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
@@ -868,7 +868,7 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
                 cudaError_t e = tc
                     ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                           st, dx, wp, ws, 0.125f, dy, 1, K, N)
-                    : RunQwenNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
+                    : lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
                 REQUIRE(e == cudaSuccess);
             }
             REQUIRE(cudaEventRecord(t1, st) == cudaSuccess);
@@ -896,7 +896,7 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
                     cudaError_t e =
                         tc ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                                  st, dx, wp, ws, 0.125f, dy, 1, K, N)
-                           : lsxcommon::qwen::RunQwenNvfp4Gemm(
+                           : lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                                  st, dx, dp, ds, 0.125f, dy, 1, K, N);
                     REQUIRE(e == cudaSuccess);
                 }
@@ -910,7 +910,7 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
                     cudaError_t e =
                         tc ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                                  st, dx, wp, ws, 0.125f, dy, 1, K, N)
-                           : lsxcommon::qwen::RunQwenNvfp4Gemm(
+                           : lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                                  st, dx, dp, ds, 0.125f, dy, 1, K, N);
                     REQUIRE(e == cudaSuccess);
                 }

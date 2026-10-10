@@ -3,7 +3,7 @@
 #include "test_qwen_moe_fixture.h"
 #include "test_streaming_assert.h"
 #include "lsxcommon/model_factory.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "qwen_moe_model.h"
 #include "lsxcommon/lifecycle_strategy.h"

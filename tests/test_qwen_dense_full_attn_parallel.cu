@@ -3,7 +3,7 @@
 // Direction A (Blackwell inference optimization): the production
 // full_attn_softmax_kernel is reworked from thread-0-only scores to a
 // block-wide chunked parallel softmax. These tests verify that the public
-// enrollment RunQwenFullAttnKernel matches an exact FP64 host reference for a
+// enrollment RunAttnFullAttnKernel matches an exact FP64 host reference for a
 // small case (kv_base=0) and a long-context incremental-decode case
 // (kv_base=2000). Numeric contract: FP32 accumulate, tolerance envelope.
 #include <catch2/catch_all.hpp>
@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 namespace {
 
@@ -52,7 +52,7 @@ void AttnRefFp64(const __half *q, const __half *k, const __half *v,
 
 }  // namespace
 
-TEST_CASE("RunQwenFullAttnKernel small case matches FP64 ref", "[qwen][attn][full]")
+TEST_CASE("RunAttnFullAttnKernel small case matches FP64 ref", "[qwen][attn][full]")
 {
     constexpr int seq = 4, heads = 2, kv_heads = 1, head_dim = 8, kv_base = 0;
     const float scale = 1.0f / std::sqrt((float)head_dim);
@@ -74,7 +74,7 @@ TEST_CASE("RunQwenFullAttnKernel small case matches FP64 ref", "[qwen][attn][ful
     cudaMemcpy(dk, hk.data(), nkv * 2, cudaMemcpyHostToDevice);
     cudaMemcpy(dv, hv.data(), nkv * 2, cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernel(
+    REQUIRE(lsxcommon::qwen::RunAttnFullAttnKernel(
                 nullptr, dq, dk, dv, dout, seq, heads, head_dim,
                 kv_heads, scale, kv_base) == cudaSuccess);
 
@@ -86,7 +86,7 @@ TEST_CASE("RunQwenFullAttnKernel small case matches FP64 ref", "[qwen][attn][ful
     cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
 }
 
-TEST_CASE("RunQwenFullAttnKernel long-context matches FP64 ref", "[qwen][attn][full]")
+TEST_CASE("RunAttnFullAttnKernel long-context matches FP64 ref", "[qwen][attn][full]")
 {
     constexpr int seq = 64, heads = 2, kv_heads = 1, head_dim = 8, kv_base = 2000;
     const float scale = 1.0f / std::sqrt((float)head_dim);
@@ -108,7 +108,7 @@ TEST_CASE("RunQwenFullAttnKernel long-context matches FP64 ref", "[qwen][attn][f
     cudaMemcpy(dk, hk.data(), nkv * 2, cudaMemcpyHostToDevice);
     cudaMemcpy(dv, hv.data(), nkv * 2, cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernel(
+    REQUIRE(lsxcommon::qwen::RunAttnFullAttnKernel(
                 nullptr, dq, dk, dv, dout, seq, heads, head_dim,
                 kv_heads, scale, kv_base) == cudaSuccess);
 

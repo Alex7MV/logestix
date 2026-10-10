@@ -796,32 +796,28 @@ product or numerics decision, not a patch.
   endpoint, or plumb `temperature`/`top_p` into `ModelRequest` and the
   `sample::ISampler` implementations. Not a regression — nothing regressed.
 
-## S. `qwen_inference.*` is still qwen-typed; only the routed-MoE layer is neutral (2026-10-10)
+## S. Attention layer neutral; only the KV session keeps a qwen name (2026-10-10, updated)
 
-- **What landed:** the routed-MoE kernel layer is now `lsx_moe_inference.{h,cu}`
-  in `lsxcommon::moe`, with the expert store, `EnsureMoEExpertResident` and the
-  device cache moved into it. `test_model_independence_guard` forbids `QwenMoe*`
-  symbols and model-owned headers there. The qwen generation driver stays in
-  `qwen_moe_inference_pipeline.{h,cu}` because it takes `QwenMoePinnedWeights`.
-- **What is still qwen-typed:** `qwen_inference.{h,cu}` — the layer every
-  qwen-derived family calls — is only geometrically neutral. Its kernels take
-  `QwenLayerWeights` (`qwen_inference_load.h:25`) and `QwenTopology`, and
-  `QwenKvCache::Allocate` takes `QwenPinnedWeights`. A neutral file cannot
-  depend on a model's own weight bundle, so the name would be a lie.
-- **Blast radius if done:** `qwen_moe` (8 call sites), `qwen_moe_exp` (2),
-  `ornith` (9), `alice` (1). The dense families (gemma/granite/phi/qwen_dense)
-  do **not** call these kernels and are unaffected.
-- **Next step:** decompose `QwenLayerWeights`/`QwenTopology` into neutral
-  structs (raw device pointers + scalars) or replace them with neutral
-  equivalents, THEN rename. This is the natural Phase 5 of
-  `docs/superpowers/plans/2026-08-24-cuda-unification-phase4.md` (Phase A built
-  `lsx_kernels_*.cuh` for exactly this). Do not rename before decomposing.
-- **Ornith de-duplication: DONE 2026-10-10** - `ornith_moe_inference.{h,cu}` is
-  gone; ornith calls the neutral layer and keeps only its generation
-  pipeline. The expert-store loader cluster, duplicated in qwen, glm-flash
-  and ornith, moved into the neutral layer. Net -2776 lines. See
-  [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md).
+- **What landed (Phase 5, 2026-10-11):** `qwen_inference.{h,cu}` is now
+  `lsx_attn_inference.{h,cu}` in `lsxcommon::attn`, and the neutrality guard
+  enforces it. `QwenLayerWeights` became the neutral `attn::LayerWeights`
+  (`lsx_inference_load.h`); the kernels take a neutral `attn::AttnGeometry`
+  instead of the `QwenTopology` passport (they read exactly 12 of its scalars
+  and none of its vectors/strings/vram). Two pure-passthrough GEMM shims were
+  deleted outright. Bit-identical on real weights; throughput unchanged
+  (ornith 167.3 vs 167.06 t/s baseline at 2048).
+- **What is still qwen-named on purpose (Phase 5b):** `QwenKvCache`,
+  `QwenGenerationResult` and the shared fast-math aliases
+  (`QwenTcFastMath`/`SetQwenTcFastMath`/`QwenSeq1Gemv`/`QwenGemmLarge`/
+  `QwenFastMathScope`). Three families hold a `QwenKvCache`, so renaming it
+  into a qwen-owned header would make Ornith depend on another family --
+  worse than today, for a cosmetic gain. `QwenKvCache::Allocate` also still
+  takes `QwenPinnedWeights`.
+- **Next step (5b):** change `QwenKvCache::Allocate`/`EnsureCapacity` to take
+  scalars rather than the pinned-weight bundle, then the cache and result
+  structs can go neutral too. Separate change; nothing blocks on it.
 
+## Archive
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

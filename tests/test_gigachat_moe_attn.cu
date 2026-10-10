@@ -17,6 +17,10 @@
 #include <cstring>
 #include <vector>
 
+#include <lsxcommon/lsx_inference_nvfp4.h>
+
+namespace lsx_nvfp4 = lsxcommon::lsx_nvfp4;
+
 using namespace lsxcommon::gigachat;
 using namespace gigachatref;
 
@@ -75,10 +79,10 @@ T *DevCopy(const std::vector<T> &v)
     return d;
 }
 
-lsxcommon::lsx_nvfp4::LsxNvfp4Weight DevNvfp4(const std::vector<float> &w, int N, int K)
+lsx_nvfp4::LsxNvfp4Weight DevNvfp4(const std::vector<float> &w, int N, int K)
 {
     Nvfp4Host p = PackNvfp4(w, N, K);
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight out;
+    lsx_nvfp4::LsxNvfp4Weight out;
     out.rows = N;
     out.cols = K;
     out.global_scale = 1.0f;

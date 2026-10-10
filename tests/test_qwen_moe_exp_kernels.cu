@@ -311,7 +311,7 @@ TEST_CASE("PLE inject kernel end-to-end parity vs host replica",
 
     CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2), d_emb(emb.size() * 4),
         d_hidden(hidden.size() * 2);
-    lsxcommon::qwen::QwenNvfp4Weight kp, vp;
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight kp, vp;
     kp.d_packed = d_keyp.as<uint8_t>();
     kp.d_scales = d_keys.as<uint8_t>();
     kp.global_scale = 1.f;
@@ -384,7 +384,7 @@ TEST_CASE("PLE dilated short-conv tap order matches HF conv1d",
     cudaMemcpy(d_emb.p, emb.data(), emb.size() * 4, cudaMemcpyHostToDevice);
     cudaMemcpy(d_hidden.p, hidden.data(), n * 2, cudaMemcpyHostToDevice);
 
-    lsxcommon::qwen::QwenNvfp4Weight kp, vp, cv;
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight kp, vp, cv;
     kp.d_packed = d_keyp.as<uint8_t>();
     kp.d_scales = d_keys.as<uint8_t>();
     kp.global_scale = 1.f;
@@ -453,7 +453,7 @@ TEST_CASE("PLE inject kernel executes at real-model shared-memory scale",
     CudaBuf d_keyp(packed), d_keys(scales), d_valp((H * E) / 2),
         d_vals((H * E) / 16), d_emb(2560 * 4), d_hidden(n * 2);
     CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2);
-    lsxcommon::qwen::QwenNvfp4Weight kp, vp, cv;
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight kp, vp, cv;
     kp.d_packed = d_keyp.as<uint8_t>();
     kp.d_scales = d_keys.as<uint8_t>();
     kp.global_scale = 1.f;
@@ -537,7 +537,7 @@ TEST_CASE("PLE inject real-scale decode latency budget", "[qwen-exp-kernels]")
     std::vector<float> embv(2560);
     for (int i = 0; i < 2560; ++i) embv[i] = 0.01f * (i % 7) - 0.03f;
     cudaMemcpy(d_emb.p, embv.data(), 2560 * 4, cudaMemcpyHostToDevice);
-    lsxcommon::qwen::QwenNvfp4Weight kp, vp;
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight kp, vp;
     kp.d_packed = d_keyp.as<uint8_t>();
     kp.d_scales = d_keys.as<uint8_t>();
     kp.global_scale = 1.f;

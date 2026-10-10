@@ -97,6 +97,12 @@ procedure — `perf-tuning-a-model`.
   calling render/parse), `incremental_detokenizer.{h,cpp}`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
   (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`,
+  `lsx_attn_inference.{h,cu}` (model-neutral **attention/MLP kernel** layer in
+  `lsxcommon::attn` — full-attn + GatedDeltaNet hybrid, fused decode-attn/MLP,
+  RMSNorm/RoPE/embed; its neutral weight bundle and geometry POD live in
+  `lsx_inference_load.h`; the qwen generation driver + KV session stay
+  family-named in `qwen_dense_inference_pipeline.{h,cu}`; consumed by Qwen
+  dense+MoE, Qwen MoE Exp, Ornith and Alice),
   `lsx_moe_inference.{h,cu}` (model-neutral **routed-MoE kernel** layer in
   `lsxcommon::moe` — router top-k, routed FFN, expert host store +
   `EnsureMoEExpertResident`; consumed by Qwen MoE, Gemma MoE, GLM MoE Flash and

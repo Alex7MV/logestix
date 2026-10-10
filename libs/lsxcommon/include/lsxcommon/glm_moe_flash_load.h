@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "lsxcommon/qwen_inference_load.h"  // QwenNvfp4Weight
+#include "lsxcommon/qwen_inference_load.h"  // lsx_nvfp4::LsxNvfp4Weight
 #include "lsxcommon/qwen_moe_expert_cache.h"
 #include "lsxcommon/qwen_moe_load.h"  // moe::MoEExpertStore
 #include "lsxcommon/glm_moe_flash_convert.h"  // FlashTopology
@@ -48,10 +48,10 @@ struct FlashLayerWeights {
     // KDA (linear_attention) — q/k/v/o are NVFP4 (the four [4096,8192]
     // projections dominated the device-dense footprint; conv/scalar/gating
     // tensors stay FP16/F32 — numerics of the recurrence path unchanged).
-    qwen::QwenNvfp4Weight kda_q;    // [8192, H]
-    qwen::QwenNvfp4Weight kda_k;    // [8192, H]
-    qwen::QwenNvfp4Weight kda_v;    // [8192, H]
-    qwen::QwenNvfp4Weight kda_o;    // [H, 8192]
+    lsx_nvfp4::LsxNvfp4Weight kda_q;    // [8192, H]
+    lsx_nvfp4::LsxNvfp4Weight kda_k;    // [8192, H]
+    lsx_nvfp4::LsxNvfp4Weight kda_v;    // [8192, H]
+    lsx_nvfp4::LsxNvfp4Weight kda_o;    // [H, 8192]
     __half *d_kda_q_conv = nullptr; // [8192, 1, 4] -> flat [8192*4]
     __half *d_kda_k_conv = nullptr;
     __half *d_kda_v_conv = nullptr;
@@ -65,10 +65,10 @@ struct FlashLayerWeights {
     __half *d_o_norm = nullptr;     // [128]
 
     // DSA (deepseek_sparse_attention) — NVFP4 + FP16 norms + BF16 raw.
-    qwen::QwenNvfp4Weight q_a;            // [q_lora, H]
-    qwen::QwenNvfp4Weight q_b;            // [heads*qk, q_lora]
-    qwen::QwenNvfp4Weight kv_a;           // [kv_lora + qk, H]
-    qwen::QwenNvfp4Weight o_big;          // [H, heads*qk]
+    lsx_nvfp4::LsxNvfp4Weight q_a;            // [q_lora, H]
+    lsx_nvfp4::LsxNvfp4Weight q_b;            // [heads*qk, q_lora]
+    lsx_nvfp4::LsxNvfp4Weight kv_a;           // [kv_lora + qk, H]
+    lsx_nvfp4::LsxNvfp4Weight o_big;          // [H, heads*qk]
     __half *d_q_a_norm = nullptr;   // [q_lora]
     __half *d_kv_a_norm = nullptr;  // [kv_lora]
     uint16_t *d_kv_b = nullptr;     // BF16 bits [heads*(qk+qk), kv_lora]
@@ -80,14 +80,14 @@ struct FlashLayerWeights {
     uint8_t *d_router = nullptr;
     int64_t router_bytes = 0;
     float *d_router_bias = nullptr;
-    qwen::QwenNvfp4Weight shared_w1;  // gate_proj [SI, H]
-    qwen::QwenNvfp4Weight shared_w2;  // down_proj [H, SI]
-    qwen::QwenNvfp4Weight shared_w3;  // up_proj [SI, H]
+    lsx_nvfp4::LsxNvfp4Weight shared_w1;  // gate_proj [SI, H]
+    lsx_nvfp4::LsxNvfp4Weight shared_w2;  // down_proj [H, SI]
+    lsx_nvfp4::LsxNvfp4Weight shared_w3;  // up_proj [SI, H]
 
     // Dense MLP (layers 0..2): NVFP4 gate/up/down.
-    qwen::QwenNvfp4Weight mlp_gate;   // [dense_I, H]
-    qwen::QwenNvfp4Weight mlp_up;     // [dense_I, H]
-    qwen::QwenNvfp4Weight mlp_down;   // [H, dense_I]
+    lsx_nvfp4::LsxNvfp4Weight mlp_gate;   // [dense_I, H]
+    lsx_nvfp4::LsxNvfp4Weight mlp_up;     // [dense_I, H]
+    lsx_nvfp4::LsxNvfp4Weight mlp_down;   // [H, dense_I]
 
     void Free();
 };

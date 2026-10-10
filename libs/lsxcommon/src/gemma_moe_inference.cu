@@ -1886,7 +1886,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
         // one-block-per-head kernel is memory-latency bound — its per-step
         // cost grows linearly with the attended span (measured: 21.5 t/s at
         // ctx 64 vs 4.5 t/s at ctx 1024). The chunked path keeps the
-        // per-step cost flat (qwen RunQwenFullAttnKernelSplitKV parity,
+        // per-step cost flat (qwen RunAttnFullAttnKernelSplitKV parity,
         // tolerance-envelope contract class; run-to-run bit-identical).
         // Prefill (seq > 1) keeps the legacy kernel: its 2D grid over
         // (t, h) already provides the parallelism decode lacks.

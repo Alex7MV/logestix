@@ -63,12 +63,12 @@ struct alignas(16) GemmaLayerWeights {
     // global_scale triple). Non-null d_packed when present; the BF16
     // d_mlp_* fields above stay null then. `mlp_nvfp4` selects the GEMV
     // chain in ForwardLayer.
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight mlp_gate, mlp_up, mlp_down;
+    lsx_nvfp4::LsxNvfp4Weight mlp_gate, mlp_up, mlp_down;
     bool mlp_nvfp4 = false;
 
     // NVFP4 attention projections (same record triple). Full-attention
     // layers tie V to K: attn_v.d_packed is null there (v := raw k).
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight attn_q, attn_k, attn_v, attn_o;
+    lsx_nvfp4::LsxNvfp4Weight attn_q, attn_k, attn_v, attn_o;
     bool attn_nvfp4 = false;
 
     // Router logits projection (FP16) [num_experts, hidden].
@@ -90,8 +90,8 @@ struct GemmaPinnedWeights {
     // NVFP4 tied embed/lm_head (global_nvfp4.arrow). When present the BF16
     // d_embed stays null; head_nvfp4 aliases embed_nvfp4's buffers (tied
     // embeddings — Free() releases them once via embed_nvfp4 only).
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight embed_nvfp4;
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight head_nvfp4;
+    lsx_nvfp4::LsxNvfp4Weight embed_nvfp4;
+    lsx_nvfp4::LsxNvfp4Weight head_nvfp4;
     std::vector<GemmaLayerWeights> layers;
 
     // Host mirror of per-layer layer_scalar (constant weight; read once at
