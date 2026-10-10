@@ -97,6 +97,12 @@ procedure — `perf-tuning-a-model`.
   calling render/parse), `incremental_detokenizer.{h,cpp}`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
   (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`,
+  `lsx_moe_inference.{h,cu}` (model-neutral **routed-MoE kernel** layer in
+  `lsxcommon::moe` — router top-k, routed FFN, expert host store +
+  `EnsureMoEExpertResident`; consumed by Qwen MoE, Gemma MoE, GLM MoE Flash and
+  Qwen MoE Exp, with the qwen generation driver staying family-named in
+  `qwen_moe_inference_pipeline.{h,cu}`; `test_model_independence_guard` forbids
+  `QwenMoe*` symbols and model-owned headers there — see §R),
   `lsx_device_math.h` (model-neutral glibc-replica `ExpfGlibc`/`RsqrtfGlibc`;
   `glm_moe_device_math.h` aliases it) and `lsx_reduce.cuh` (model-neutral
   `BlockMaxShfl`; `qwen_reduce.cuh` aliases it); `synthetic_geometry.h`
