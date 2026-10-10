@@ -172,7 +172,7 @@ set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
@@ -196,7 +196,7 @@ set_target_properties(lsxcommon_glm_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_glm_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
@@ -232,7 +232,7 @@ set_target_properties(lsxcommon_qwen_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_qwen_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
@@ -255,7 +255,7 @@ set_target_properties(lsxcommon_moe_cu PROPERTIES
 )
 # -fmad=false: bit-exact router/expert math (protocol invariant).
 target_compile_options(lsxcommon_moe_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_moe_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
@@ -280,7 +280,7 @@ set_target_properties(lsxcommon_xing_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_xing_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_xing_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
@@ -305,7 +305,7 @@ set_target_properties(lsxcommon_tc_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_tc_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     -lineinfo;
     --generate-code=arch=compute_120a,code=sm_120a;
     --generate-code=arch=compute_121a,code=sm_121a>
@@ -351,11 +351,8 @@ set_target_properties(lsxcommon_gemma_cu PROPERTIES
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
-# --expt-relaxed-constexpr: the KV cache is addressed through
-# KvCacheGeometry::Offset, a constexpr __host__ function shared by host and
-# device (lsx_kv_cache.h). Every other CUDA object target here carries it.
 target_compile_options(lsxcommon_gemma_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
@@ -377,7 +374,7 @@ set_target_properties(lsxcommon_ornith_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_ornith_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_ornith_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
@@ -401,7 +398,7 @@ set_target_properties(lsxcommon_granite_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_granite_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
@@ -426,7 +423,7 @@ set_target_properties(lsxcommon_phi_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_phi_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
@@ -452,7 +449,7 @@ set_target_properties(lsxcommon_alice_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_alice_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
@@ -465,15 +462,16 @@ target_link_libraries(lsxcommon_alice_cu
     absl::strings
 )
 
-# NVCC options that the PUBLIC headers in include/lsxcommon require of any
-# translation unit that includes them (host `constexpr` helpers are called from
-# `__device__` code). Until this existed the flags were PRIVATE to the object
-# libraries below, so the project's own .cu files compiled while every external
-# consumer had to rediscover them from the build error. Exported as an
-# INTERFACE requirement via lsxcommon so headers declare their own needs.
+# NVCC options a translation unit that includes the PUBLIC headers in
+# include/lsxcommon needs. Exported as an INTERFACE requirement via lsxcommon so
+# headers declare their own needs instead of every consumer rediscovering them
+# from a build error. The KV geometry (lsx_kv_cache.h) used to be the reason for
+# --expt-relaxed-constexpr here; its helpers are now explicitly __host__
+# __device__, so the flag is gone - keeping it only fed nvcc's device-debug
+# relaxation path ("Invalid instruction with no BB"). --extended-lambda stays.
 add_library(lsxcommon_cuda_reqs INTERFACE)
 target_compile_options(lsxcommon_cuda_reqs INTERFACE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>)
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cuda_reqs)
 
@@ -505,7 +503,7 @@ set_target_properties(lsxcommon_nemotron_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_nemotron_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
@@ -530,7 +528,7 @@ set_target_properties(lsxcommon_gigachat_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_gigachat_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_gigachat_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
@@ -553,7 +551,7 @@ set_target_properties(lsxcommon_mimo_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_mimo_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_mimo_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
@@ -574,7 +572,7 @@ set_target_properties(lsxcommon_qwen_moe_exp_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_qwen_moe_exp_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     # GCC LTO value-propagation miscompiles the multi-exit PLE inject wrapper
     # into an early-return clone that skips its kernel launch (observed

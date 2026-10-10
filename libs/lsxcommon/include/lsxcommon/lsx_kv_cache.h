@@ -30,6 +30,15 @@
 
 #include <cstdint>
 
+// The geometry helpers below are __host__ __device__ under nvcc so ONE function
+// serves both execution spaces; the guard keeps this header includable from
+// plain host C++ (it is pulled in by gemma_dense_load.h / model.h too).
+#ifdef __CUDACC__
+#define LSX_KV_CACHE_HD __host__ __device__
+#else
+#define LSX_KV_CACHE_HD
+#endif
+
 namespace lsxcommon
 {
 
@@ -48,9 +57,9 @@ struct KvCacheGeometry
     int64_t pos_stride = 0;
     int64_t head_stride = 0;
 
-    static constexpr KvCacheGeometry Make(KvCacheLayout layout, int64_t capacity,
-                                          int64_t kv_heads, int64_t head_dim,
-                                          int64_t layers)
+    LSX_KV_CACHE_HD static constexpr KvCacheGeometry Make(
+        KvCacheLayout layout, int64_t capacity, int64_t kv_heads,
+        int64_t head_dim, int64_t layers)
     {
         KvCacheGeometry g;
         g.capacity = capacity;
@@ -70,18 +79,23 @@ struct KvCacheGeometry
         return g;
     }
 
-    // constexpr, not __host__ __device__: --expt-relaxed-constexpr is already on
-    // (libs/lsxcommon/CMakeLists.txt:169), so host and device share ONE function
-    // rather than two that can drift apart.
-    constexpr int64_t LayerStride() const
+    // __host__ __device__ constexpr: ONE function compiled for both host and
+    // device, so the two cannot drift apart. The annotation must be explicit:
+    // a host-only constexpr leans on --expt-relaxed-constexpr for device
+    // callers, which device-debug nvcc miscompiles ("Invalid instruction with
+    // no BB"), and dropping the flag instead breaks the call outright.
+    LSX_KV_CACHE_HD constexpr int64_t LayerStride() const
     {
         return kv_heads * capacity * head_dim;
     }
 
-    constexpr int64_t Elements() const { return layers * LayerStride(); }
+    LSX_KV_CACHE_HD constexpr int64_t Elements() const
+    {
+        return layers * LayerStride();
+    }
 
-    constexpr int64_t Offset(int64_t layer, int64_t head, int64_t pos,
-                             int64_t dim = 0) const
+    LSX_KV_CACHE_HD constexpr int64_t Offset(int64_t layer, int64_t head,
+                                             int64_t pos, int64_t dim = 0) const
     {
         return layer * LayerStride() + head * head_stride + pos * pos_stride +
                dim;
@@ -89,3 +103,5 @@ struct KvCacheGeometry
 };
 
 }  // namespace lsxcommon
+
+#undef LSX_KV_CACHE_HD

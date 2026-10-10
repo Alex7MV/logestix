@@ -1,10 +1,11 @@
 // Device-side agreement for KvCacheGeometry.
 //
-// constexpr (not __host__ __device__) already makes host and device share ONE
-// function, so this is close to a tautology - and that is the point: it fails the
-// day someone drops constexpr, or adds a second definition behind a macro. Cheap
-// insurance against exactly the host/device drift the single-function form exists
-// to make impossible.
+// The helpers are __host__ __device__ constexpr, so host and device share ONE
+// function that cannot drift apart. This target compiles WITHOUT
+// --expt-relaxed-constexpr, so the device pass must resolve Offset() on its own:
+// the day someone drops the explicit device annotation and leans on the flag,
+// this stops compiling. Cheap insurance against exactly the host/device drift
+// the single-function form exists to make impossible.
 #include <cuda_runtime.h>
 
 #include <catch2/catch_test_macros.hpp>

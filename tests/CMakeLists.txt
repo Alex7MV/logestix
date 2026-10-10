@@ -926,7 +926,7 @@ set_target_properties(test_blackwell_tc_cu PROPERTIES
     CUDA_ARCHITECTURES OFF
 )
 target_compile_options(test_blackwell_tc_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     --generate-code=arch=compute_120a,code=sm_120a;
     --generate-code=arch=compute_121a,code=sm_121a;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -1039,7 +1039,7 @@ function(lsx_add_qwen_cu_test name)
         CUDA_ARCHITECTURES OFF
     )
     target_compile_options(${name}_cu PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
         --generate-code=arch=compute_120,code=sm_120;
         --generate-code=arch=compute_121,code=sm_121;
         $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -2506,6 +2506,11 @@ target_link_libraries(test_tokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
 # lsxcommon here would drag its private "-Xcompiler=/utf-8" CUDA option into this
 # target's own compile step (the duplicated-bare-/utf-8 nvcc misparse documented
 # above test_deepseek_moe_inference_kernels).
+#
+# It deliberately does NOT pass --expt-relaxed-constexpr: the header's helpers
+# are __host__ __device__, so the device pass must compile them on its own. If
+# someone drops the explicit device annotation and leans on the flag, this target
+# stops compiling - that is the guard.
 add_library(test_kv_cache_layout_cu OBJECT test_kv_cache_layout_device.cu)
 set_target_properties(test_kv_cache_layout_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2513,7 +2518,6 @@ set_target_properties(test_kv_cache_layout_cu PROPERTIES
 )
 target_compile_options(test_kv_cache_layout_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --expt-relaxed-constexpr;
     --generate-code=arch=compute_120,code=sm_120;
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -2868,7 +2872,6 @@ set_target_properties(test_stream_read_ceiling_cu PROPERTIES
 )
 target_compile_options(test_stream_read_ceiling_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --expt-relaxed-constexpr;
     --generate-code=arch=compute_120,code=sm_120;
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -5752,7 +5755,7 @@ set_target_properties(test_qwen_moe_exp_kernels_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(test_qwen_moe_exp_kernels_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(test_qwen_moe_exp_kernels_cu PRIVATE
@@ -5795,7 +5798,7 @@ set_target_properties(test_glm_moe_flash_kernels_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(test_glm_moe_flash_kernels_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(test_glm_moe_flash_kernels_cu PRIVATE
