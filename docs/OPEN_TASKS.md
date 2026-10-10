@@ -569,22 +569,22 @@ DET 3/3, FSI 2/3. Open items:
   `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))`; the converted model
   repeats the prompt template `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`. Same
   NVFP4-vs-bf16 borderline class as the 26B (section J); the gate stays red.
-- **CRITICAL (shared layer): the TC mxf4nvf4 GEMM drops the partial M tile.**
-  A prefill whose length is not a multiple of the MMA tile (measured: seq=18)
-  leaves the last rows of every projection at ZERO (`lsx_tc::TcGemmKernel`,
-  reached when fast-math is on and `seq > 1`). With `seq=18` the last two rows
-  of the prefill hidden are 0, so the last token's logits are 0 and the first
-  generated token came back as 0. `LSX_PERF_AUTO=0` (bit-exact scalar path)
-  reproduces the correct `Paris.`, so the scalar kernel is fine and the fault
-  is in the TC dispatch/kernel's partial-M store. This affects EVERY family
-  whose `kAuto` prefill length is not tile-aligned, not just gemma (the parity
-  gates hide it because they run `kOff`). **Family-local workaround landed:**
-  `gemma_dense_inference.cu` runs the prefill projections with
-  `SetLsxTcFastMath(false)` (restoring after; decode is GEMV and unaffected),
-  which costs TTFT (56 -> 337 ms at an 18-token prompt) but is correct.
-  **Proper fix (open):** guard the TC kernel's partial M sub-tile store so the
-  valid rows in a short tile are written; then the workaround and the TTFT
-  cost can go.
+- **RESOLVED 2026-10-10 (shared layer): the TC mxf4nvf4 GEMM dropped 48 of every
+  64 rows of the M tile.** Root cause was not the partial-M store: in
+  `lsx_tc::TcGemmKernel` the block is 8 warps arranged 4(M) x 2(N) and each warp
+  covers 16 rows, but the row-group index `wm` was computed and **never used**,
+  so `r0 = row_base + g` only ever emitted rows `[0,16)` of a 64-row tile.
+  Rows 16..63 of every tile were silently never written -- for seq=18 only rows
+  0..15 were correct. Fixed by adding `warp_row = wm * 16` to all four row
+  computations (acc-in seeding, the A fragment, the A scale `sr`, and the
+  epilogue). The TC test only swept `seq` in {1,3} -- exactly the range where
+  the bug is invisible; the sweep now includes 17/18/33/64 and fails on the old
+  kernel (`max_abs_err` 1055.79 at seq=18, whole rows unwritten).
+  gemma-4-31b-it keeps its family-local `SetLsxTcFastMath(false)` prefill, now
+  **by choice rather than necessity**: the kernel is correct, and running this
+  family's prefill through TC moves its first token and breaks its tool
+  round-trip, while its FSI/CODE/DET goldens were captured on the scalar path.
+  The TTFT cost (56 -> 337 ms) therefore stays for this family alone.
 - **Perf: 47.3 t/s (perf) / 41.0 t/s (r3)** at 2048 tokens on
   `linux-release-znver4-aocc` (16.5 GiB resident; TTFT 337 ms, scalar prefill).
   Profile-guided decode work took it 40.6 -> 47.5: shuffle RMSNorm
