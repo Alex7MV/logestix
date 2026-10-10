@@ -9,7 +9,7 @@
 
 #include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/model_base.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/glm_moe_flash_inference.h"
 #include "lsxcommon/glm_moe_flash_load.h"
 

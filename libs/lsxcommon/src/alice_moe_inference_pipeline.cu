@@ -6,7 +6,7 @@
 #include "lsxcommon/alice_moe_inference.h"
 #include "lsxcommon/alice_moe_kernels.h"
 #include "lsxcommon/lsx_gemv.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 #include <cstdio>
 #include <chrono>
@@ -338,7 +338,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                 e = ProjRaw(stream, lw.fa_v, mixed, vrow, KVH * HD, HID); if (e) return e;
                 cudaMemcpyAsync(posb, &pos, sizeof(int32_t),
                                 cudaMemcpyHostToDevice, stream);
-                e = qwen::RunQwenRopeCosSin(stream, posb, 1, ROT,
+                e = qwen::RunAttnRopeCosSin(stream, posb, 1, ROT,
                                             pw.top.rope_theta, cosb, sinb);
                 if (e) return e;
                 stage="fa_core"; e = RunAliceGatedAttentionCore(

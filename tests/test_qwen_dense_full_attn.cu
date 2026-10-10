@@ -5,7 +5,7 @@
 #include <cstring>
 #include <vector>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 __global__ void test_causal_softmax_attn_kernel(
     const __half *q, const __half *k, const __half *v,
@@ -144,11 +144,11 @@ TEST_CASE("Split-KV decode attention matches legacy within tolerance",
     cudaMemcpy(d_v, hv.data(), kvn * sizeof(__half), cudaMemcpyHostToDevice);
 
     // Legacy reference (single-block kernel, public numeric entry).
-    REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernel(
+    REQUIRE(lsxcommon::qwen::RunAttnFullAttnKernel(
                 0, d_q, d_k, d_v, d_legacy, 1, heads, head_dim, kv_heads,
                 scale, kv_base) == cudaSuccess);
     // Split-KV path.
-    REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+    REQUIRE(lsxcommon::qwen::RunAttnFullAttnKernelSplitKV(
                 0, d_q, d_k, d_v, d_split, 1, heads, head_dim, kv_heads,
                 scale, kv_base) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
@@ -196,7 +196,7 @@ TEST_CASE("Split-KV decode attention is run-to-run deterministic",
     cudaMemcpy(d_v, hv.data(), kvn * sizeof(__half), cudaMemcpyHostToDevice);
 
     auto run = [&]( __half *dst ) {
-        REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+        REQUIRE(lsxcommon::qwen::RunAttnFullAttnKernelSplitKV(
                     0, d_q, d_k, d_v, dst, 1, heads, head_dim, kv_heads,
                     scale, kv_base) == cudaSuccess);
         REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
@@ -231,12 +231,12 @@ TEST_CASE("Split-KV decode attention rejects unsupported geometry",
     // Non-pow2 head_dim: the sreduce tree reduction (partial + combine) and
     // the one-thread-per-dim value pass assume a power-of-two blockDim; a
     // non-pow2 block silently corrupts the softmax denominator.
-    CHECK(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+    CHECK(lsxcommon::qwen::RunAttnFullAttnKernelSplitKV(
               0, d_q, d_k, d_v, d_out, 1, 4, 96, 1, 0.1f, 1024) ==
           cudaErrorInvalidValue);
     // GQA mapping kvh = h / (heads / kv_heads) requires exact division:
     // heads % kv_heads != 0 reads past the kv-head table.
-    CHECK(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+    CHECK(lsxcommon::qwen::RunAttnFullAttnKernelSplitKV(
               0, d_q, d_k, d_v, d_out, 1, 6, 128, 4, 0.1f, 1024) ==
           cudaErrorInvalidValue);
 

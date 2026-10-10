@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/log.h"
 
@@ -98,12 +98,12 @@ TEST_CASE("NVFP4 GEMM micro-benchmark (seq=1 decode shapes)",
         // Scalar/tile dispatch baseline (fast-math off).
         lsxcommon::qwen::SetQwenTcFastMath(false);
         const float us_scalar = bench_call([&] {
-            return lsxcommon::qwen::RunQwenNvfp4Gemm(
+            return lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                 st, dx, dp, ds, 0.125f, dy, 1, K, N);
         });
         // Weight-streaming GEMV.
         const float us_gemv = bench_call([&] {
-            return lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+            return lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                 st, dx, dp, ds, 0.125f, dy, K, N);
         });
         // TC W4A4 mxf4nvf4 (current fast-math production baseline at seq==1).

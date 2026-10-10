@@ -10,7 +10,7 @@
 #include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/model_base.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 
 namespace lsxcommon {

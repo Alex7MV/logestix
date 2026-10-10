@@ -1,6 +1,6 @@
 #include <catch2/catch_all.hpp>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -65,8 +65,8 @@ TEST_CASE("Partial rotary (64 of 256 dims) matches CPU reference")
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
-    CHECK(RunQwenRopeCosSin(stream, d_pos, seq, rotary_dim, theta, d_cos, d_sin) == cudaSuccess);
-    CHECK(RunQwenPartialRope(stream, d_q, d_k, d_cos, d_sin, d_qo, d_ko,
+    CHECK(RunAttnRopeCosSin(stream, d_pos, seq, rotary_dim, theta, d_cos, d_sin) == cudaSuccess);
+    CHECK(RunAttnPartialRope(stream, d_q, d_k, d_cos, d_sin, d_qo, d_ko,
                              seq, heads, head_dim, rotary_dim) == cudaSuccess);
     cudaStreamSynchronize(stream);
 

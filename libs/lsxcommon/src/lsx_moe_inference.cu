@@ -12,7 +12,7 @@
 
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/lsx_moe_inference.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
@@ -543,11 +543,11 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
         const uint8_t *s1_split = scale;
         const uint8_t *s3_split = scale + rec.s1_bytes;
         if (!tc_fused) {
-            if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1_split, s1_split,
+            if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w1_split, s1_split,
                                        rec.gs1, d_yg, 1, H, I,
                                        false) != cudaSuccess)
                 { error = "w1 gemm failed"; return cudaErrorInvalidValue; }
-            if (qwen::RunQwenNvfp4Gemm(stream, d_x, w3_split, s3_split,
+            if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w3_split, s3_split,
                                        rec.gs3, d_yu, 1, H, I,
                                        false) != cudaSuccess)
                 { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
@@ -558,7 +558,7 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                     stream, xq, xqs, w13, s13, 1.0f, d_yg, 1, H, 2 * I,
                     false, seg_wgs, nullptr);
             } else {
-                ge = qwen::RunQwenNvfp4Gemm(stream, d_x, w13, s13, 1.0f,
+                ge = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w13, s13, 1.0f,
                                             d_yg, 1, H, 2 * I, false,
                                             seg_wgs, nullptr);
             }
@@ -586,7 +586,7 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                     return cudaErrorInvalidValue;
                 }
             }
-            cudaError_t qe = qwen::RunQwenSwigluPreciseQuantInternal(
+            cudaError_t qe = qwen::RunAttnSwigluPreciseQuantInternal(
                 stream, d_yg, d_yu, d_yg, ap, as, I);
             if (qe == cudaSuccess)
                 qe = lsx_tc::RunLsxTcGemmPreQuant(
@@ -600,7 +600,7 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
         } else {
             ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
                 <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
-            if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
+            if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
                                        I, H, false) != cudaSuccess)
                 { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
         }
@@ -1286,17 +1286,17 @@ cudaError_t RunMoESharedCombine(
                               seq, H, fn, false, fw, nullptr));
         } else {
             LSX_MOE_STAGE("shared_fused_gemm",
-                          qwen::RunQwenNvfp4Gemm(stream, d_x, fp, fs, 1.0f,
+                          lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, fp, fs, 1.0f,
                                                  d_scratch_i, seq, H, fn,
                                                  false, fw, nullptr));
         }
         up_base = d_scratch_i + static_cast<int64_t>(seq) * SI;
     } else {
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
+        if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
                                    sw1.global_scale, d_scratch_i, seq, H, SI,
                                    false) != cudaSuccess)
             return cudaErrorInvalidValue;
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw3.d_packed, sw3.d_scales,
+        if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, sw3.d_packed, sw3.d_scales,
                                    sw3.global_scale, d_scratch_h, seq, H, SI,
                                    false) != cudaSuccess)
             return cudaErrorInvalidValue;
@@ -1314,7 +1314,7 @@ cudaError_t RunMoESharedCombine(
             return se_;
         }
     }
-    if (qwen::RunQwenNvfp4Gemm(stream, d_scratch_i, sw2.d_packed, sw2.d_scales,
+    if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_scratch_i, sw2.d_packed, sw2.d_scales,
                                sw2.global_scale, d_scratch_h, seq, SI, H,
                                false) != cudaSuccess)
         return cudaErrorInvalidValue;

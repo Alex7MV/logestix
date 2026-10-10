@@ -19,7 +19,7 @@
 #include <cstdlib>
 #include <vector>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/schema.h"
 #include <cmath>
@@ -88,7 +88,7 @@ void RunParity(const GemvCase &c, bool acc_in, float gs)
     cudaMemcpy(dy, hseed.data(), static_cast<size_t>(c.N) * 2,
                cudaMemcpyHostToDevice);
 
-    cudaError_t e = lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+    cudaError_t e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
         nullptr, dx, dp, ds, gs, dy, c.K, c.N, acc_in);
     REQUIRE(e == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
@@ -242,7 +242,7 @@ TEST_CASE("NVFP4 GEMV chunk scale-block split", "[qwen][gemm][nvfp4][gemv]")
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                 nullptr, dx, dp, ds, gs, dy, K, N, false) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
@@ -279,9 +279,9 @@ TEST_CASE("NVFP4 GEMV deterministic across launches",
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                 nullptr, dx, dp, ds, 0.25f, d1, K, N, false) == cudaSuccess);
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                 nullptr, dx, dp, ds, 0.25f, d2, K, N, false) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
@@ -340,7 +340,7 @@ TEST_CASE("seq1 GEMV dense-decode aggregate bandwidth budget",
                    cudaMemcpyHostToDevice);
         cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
         cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
-        REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                     nullptr, dx, dp, ds, 0.125f, dy, c.K, c.N, false) ==
                 cudaSuccess);
         REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
@@ -348,7 +348,7 @@ TEST_CASE("seq1 GEMV dense-decode aggregate bandwidth budget",
         for (int i = 0; i < kIters; ++i) {
             REQUIRE(cudaMemsetAsync(flush, 0, kFlushBytes) == cudaSuccess);
             REQUIRE(cudaEventRecord(e0) == cudaSuccess);
-            REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+            REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                         nullptr, dx, dp, ds, 0.125f, dy, c.K, c.N, false) ==
                     cudaSuccess);
             REQUIRE(cudaEventRecord(e1) == cudaSuccess);
@@ -375,7 +375,7 @@ TEST_CASE("seq1 GEMV dense-decode aggregate bandwidth budget",
 #endif
 }
 
-TEST_CASE("RunQwenNvfp4Gemm fast-math seq==1 dispatch reaches GEMV "
+TEST_CASE("lsx_nvfp4::RunLsxNvfp4Gemm fast-math seq==1 dispatch reaches GEMV "
           "(bitwise equal)",
           "[qwen][gemm][nvfp4][gemv]")
 {
@@ -401,9 +401,9 @@ TEST_CASE("RunQwenNvfp4Gemm fast-math seq==1 dispatch reaches GEMV "
     cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
                 nullptr, dx, dp, ds, 0.125f, d_tile, 1, K, N) == cudaSuccess);
-    REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                 nullptr, dx, dp, ds, 0.125f, d_gemv, K, N, false) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
@@ -517,7 +517,7 @@ void RunBatch(const BatchCase &c, std::vector<float> *acc_out)
         const uint8_t *pbase =
             d_pack + static_cast<int64_t>(eid) * pack_stride;   // host? NO --
         (void)pbase;
-        REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                     nullptr, dx, d_pack + static_cast<int64_t>(eid) *
                                       pack_stride,
                     d_scale + static_cast<int64_t>(eid) * scale_stride,
@@ -525,7 +525,7 @@ void RunBatch(const BatchCase &c, std::vector<float> *acc_out)
         cudaMemcpy(exp_gu.data() + static_cast<int64_t>(k) * 2 * I,
                    d_stage_out, static_cast<size_t>(I) * 2,
                    cudaMemcpyDeviceToHost);
-        REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                     nullptr, dx, d_pack + static_cast<int64_t>(eid) *
                                       pack_stride + w13b / 2,
                     d_scale + static_cast<int64_t>(eid) * scale_stride +
@@ -544,7 +544,7 @@ void RunBatch(const BatchCase &c, std::vector<float> *acc_out)
         }
         cudaMemcpy(d_stage_in, hbuf + static_cast<int64_t>(k) * I,
                    static_cast<size_t>(I) * 2, cudaMemcpyDeviceToDevice);
-        REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                     nullptr, d_stage_in,
                     d_pack + static_cast<int64_t>(eid) * pack_stride +
                         w13b,

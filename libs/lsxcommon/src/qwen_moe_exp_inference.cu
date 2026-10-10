@@ -5,7 +5,7 @@
 #include "qwen_moe_exp_constants.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/qwen_moe_inference_pipeline.h"
 #include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
@@ -1881,7 +1881,7 @@ cudaError_t RunExpGeneration(
             cudaMemcpy(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice);
             cudaMemcpy(d_pos, &kv_base, sizeof(int32_t), cudaMemcpyHostToDevice);
         }
-        e = qwen::RunQwenEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
+        e = qwen::RunAttnEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
         if (e != cudaSuccess) { result.error_msg = "embed"; break; }
         // hidden -> 4 streams.
         exp_repeat_hc_kernel<<<(H + threads - 1) / threads, threads, 0, stream>>>(
@@ -2007,7 +2007,7 @@ cudaError_t RunExpGeneration(
             }
             if (e != cudaSuccess) { result.error_msg = "hc-attn"; break; }
             if (lw.attn.is_linear) {
-                e = qwen::RunQwenFusedLinearAttnKernel(
+                e = qwen::RunAttnFusedLinearAttnKernel(
                     stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_mixed, d_act,
                     kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                     d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
@@ -2026,7 +2026,7 @@ cudaError_t RunExpGeneration(
                 // core with full causal mask for the fixture/selfcheck
                 // horizon (indexer budget covers ctx <= 2048 — degenerate
                 // fast path in RunExpQsaIndexer).
-                e = qwen::RunQwenFullAttention(
+                e = qwen::RunAttnFullAttention(
                     stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_mixed, d_act, d_qc, d_q,
                     d_qgate, kv->d_kv_k +
                                  (int64_t)full_idx * kv->max_total * NKV * HD,

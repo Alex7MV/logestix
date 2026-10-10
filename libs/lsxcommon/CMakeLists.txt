@@ -223,7 +223,7 @@ target_link_libraries(lsxcommon_glm_cu
 # comment here used to be the only place that said which way each library goes, and
 # two helpers claimed a flag their object libraries do not set.
 add_library(lsxcommon_qwen_cu OBJECT
-    src/qwen_inference.cu
+    src/lsx_attn_inference.cu
     src/qwen_dense_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_qwen_cu PROPERTIES

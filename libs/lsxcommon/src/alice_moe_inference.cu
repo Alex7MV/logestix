@@ -1,11 +1,11 @@
 // AliceAI inference kernels: gated full attention (E4) and the KDA/full/MoE
 // layer pipeline. Projections go through the neutral NVFP4 GEMV layer; the
 // RoPE and causal-GQA primitives come from the documented shared kernel layer
-// (qwen_inference.h).
+// (lsx_attn_inference.h).
 #include "lsxcommon/alice_moe_inference.h"
 
 #include "lsxcommon/alice_moe_kernels.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 namespace lsxcommon::alice {
 namespace {
@@ -83,7 +83,7 @@ cudaError_t RunAliceGatedAttentionCore(
                                   static_cast<size_t>(kv_base) * KVH * D,
                               seq * KVH, D, 1e-6f, true);
     if (e == cudaSuccess)
-        e = qwen::RunQwenPartialRope(stream, d_q,
+        e = qwen::RunAttnPartialRope(stream, d_q,
                                      k + static_cast<size_t>(kv_base) * KVH * D,
                                      cos, sin, d_qr, d_kr, seq, H, KVH, D, rot);
     if (e == cudaSuccess)
@@ -92,7 +92,7 @@ cudaError_t RunAliceGatedAttentionCore(
                             d_kr, kn * sizeof(__half), cudaMemcpyDeviceToDevice,
                             stream);
     if (e == cudaSuccess)
-        e = qwen::RunQwenFullAttnKernel(stream, d_qr, k, v, out, seq, H, D, KVH,
+        e = qwen::RunAttnFullAttnKernel(stream, d_qr, k, v, out, seq, H, D, KVH,
                                         scale, kv_base);
     if (e == cudaSuccess)
         gate_mul_kernel<<<(qn + block - 1) / block, block, 0, stream>>>(

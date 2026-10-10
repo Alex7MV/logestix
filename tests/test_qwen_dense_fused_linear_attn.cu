@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include "lsxcommon/lsx_inference_load.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 namespace attn = lsxcommon::attn;
 namespace lsx_nvfp4 = lsxcommon::lsx_nvfp4;
@@ -41,7 +41,7 @@ void FillNvfp4(lsx_nvfp4::LsxNvfp4Weight &w, int K, int N, float gs) {
 
 } // namespace
 
-TEST_CASE("RunQwenFusedLinearAttnKernel entry runs on a tiny layer", "[qwen][linear][fuse]")
+TEST_CASE("RunAttnFusedLinearAttnKernel entry runs on a tiny layer", "[qwen][linear][fuse]")
 {
     const int H = 16, nk = 2, kd = 8, nv = 2, vd = 8, seq = 2, kernel = 3;
     const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
@@ -75,7 +75,7 @@ TEST_CASE("RunQwenFusedLinearAttnKernel entry runs on a tiny layer", "[qwen][lin
     cudaMalloc(&dout, (size_t)seq*H*2); cudaMalloc(&dg, (size_t)seq*nv*4);
     cudaMalloc(&dbeta, (size_t)seq*nv*4);
 
-    REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, dout,
+    REQUIRE(RunAttnFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, dout,
         dq, dz, dab, dg, dbeta, dconv, dcore, dgated) == cudaSuccess);
     cudaDeviceSynchronize();
 
@@ -185,7 +185,7 @@ TEST_CASE("Fused front F1 qkv+conv1d+l2norm matches host reference", "[qwen][lin
             cudaMalloc(&dout, (size_t)seq*H*2); cudaMalloc(&dg, (size_t)seq*nv*4);
             cudaMalloc(&dbeta, (size_t)seq*nv*4);
 
-            REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, dout,
+            REQUIRE(RunAttnFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, dout,
                 dq, dz, dab, dg, dbeta, dconv, dcore, dgated) == cudaSuccess);
             cudaDeviceSynchronize();
 
@@ -294,9 +294,9 @@ TEST_CASE("Fused linear-attn full layer matches split reference (seq=1,2)", "[qw
             cudaMalloc(&dg, (size_t)seq*nv*4); cudaMalloc(&dgf, (size_t)seq*nv*4);
             cudaMalloc(&dbeta, (size_t)seq*nv*4); cudaMalloc(&dbetaf, (size_t)seq*nv*4);
 
-            REQUIRE(RunQwenLinearAttention(nullptr, lw, geo, seq, dx, dout,
+            REQUIRE(RunAttnLinearAttention(nullptr, lw, geo, seq, dx, dout,
                 dq, dz, dab, dg, dbeta, dconv, dcore, dgated) == cudaSuccess);
-            REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, doutf,
+            REQUIRE(RunAttnFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, doutf,
                 dqf, dzf, dabf, dgf, dbetaf, dconvf, dcoref, dgatedf) == cudaSuccess);
             cudaDeviceSynchronize();
 

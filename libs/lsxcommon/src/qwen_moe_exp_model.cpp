@@ -4,7 +4,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/resource_governor.h"
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/qwen_tool_format.h"

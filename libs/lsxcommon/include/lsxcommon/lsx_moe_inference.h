@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "lsxcommon/expert_device_cache.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 namespace lsxcommon::moe {
 
@@ -201,7 +201,7 @@ cudaError_t RunMoERoutedGemmVNoHandshake(
 
 // Batched decode swiglu-quant: per slot s, gate = ygu[s*2I + j],
 // up = ygu[s*2I + I + j]; h[s] = silu(gate)*up (FP16) + NVFP4 encode of h.
-// Bit-identical to per-slot RunQwenSwigluQuant (same 16-group math).
+// Bit-identical to per-slot RunAttnSwigluQuant (same 16-group math).
 cudaError_t RunMoESwigluQuantBatch(cudaStream_t stream,
                                        const __half *ygu, int k_slots, int I,
                                        __half *h, uint8_t *packed,

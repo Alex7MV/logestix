@@ -1,6 +1,6 @@
 #include <catch2/catch_all.hpp>
 
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -45,7 +45,7 @@ TEST_CASE("RMSNorm offset form matches CPU FP64")
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
-    CHECK(RunQwenRMSNorm(stream, d_x, d_w, d_out, rows, hidden, 1e-6) == cudaSuccess);
+    CHECK(RunAttnRMSNorm(stream, d_x, d_w, d_out, rows, hidden, 1e-6) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     std::vector<__half> h_out(rows * hidden);
@@ -61,6 +61,6 @@ TEST_CASE("RMSNorm offset form matches CPU FP64")
 TEST_CASE("RMSNorm rejects invalid args")
 {
     __half *d = nullptr;
-    CHECK(RunQwenRMSNorm(nullptr, nullptr, nullptr, nullptr, 0, 0, 1e-6) == cudaErrorInvalidValue);
+    CHECK(RunAttnRMSNorm(nullptr, nullptr, nullptr, nullptr, 0, 0, 1e-6) == cudaErrorInvalidValue);
     CHECK(d == nullptr);
 }

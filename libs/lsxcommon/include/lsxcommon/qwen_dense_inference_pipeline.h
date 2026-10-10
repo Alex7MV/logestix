@@ -15,7 +15,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
-#include "lsxcommon/qwen_inference.h"        // kernel entry points
+#include "lsxcommon/lsx_attn_inference.h"        // kernel entry points
 #include "lsxcommon/qwen_inference_load.h"   // QwenPinnedWeights
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/token_stream.h"

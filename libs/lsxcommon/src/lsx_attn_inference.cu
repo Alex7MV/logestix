@@ -1,5 +1,4 @@
-#include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/shared_experts.h"
@@ -268,8 +267,8 @@ __global__ void full_attn_softmax_kernel(
 
 // Block-wide chunked-parallel causal attention (GQA). Serves as the numeric
 // entry for the standalone softmax-kernel launch (the high-level
-// RunQwenFullAttention calls the same kernel with projections/RoPE/gate).
-cudaError_t RunQwenFullAttnKernel(
+// RunAttnFullAttention calls the same kernel with projections/RoPE/gate).
+cudaError_t RunAttnFullAttnKernel(
     cudaStream_t stream,
     const __half *q, const __half *k, const __half *v, __half *out,
     int seq, int heads, int head_dim, int kv_heads, float scale, int kv_base)
@@ -329,7 +328,7 @@ cudaError_t RunQwenFullAttnKernel(
 // prompts are short enough that splits collapses to one chunk, that non-split kernel
 // is what the golden gates actually exercise, which is how the difference was found.
 // The split kernel is the long-context path this change is for.
-__device__ __forceinline__ float QwenHalfDotRow(const __half *__restrict__ qrow,
+__device__ __forceinline__ float AttnHalfDotRow(const __half *__restrict__ qrow,
                                                 const __half *__restrict__ krow,
                                                 int hd)
 {
@@ -385,7 +384,7 @@ __global__ void split_kv_attn_partials_kernel(
     for (int j = threadIdx.x; j < rows; j += threads) {
         const __half *krow =
             kbase_p + (int64_t)(begin + j) * kv_heads * head_dim;
-        const float dot = QwenHalfDotRow(qrow, krow, head_dim);
+        const float dot = AttnHalfDotRow(qrow, krow, head_dim);
         slogits[j] = dot * scale;
     }
     __syncthreads();
@@ -466,7 +465,7 @@ __global__ void split_kv_attn_combine_kernel(
     out[(int64_t)h * head_dim + d] = __float2half(acc * inv);
 }
 
-cudaError_t RunQwenFullAttnKernelSplitKV(
+cudaError_t RunAttnFullAttnKernelSplitKV(
     cudaStream_t stream,
     const __half *q, const __half *k, const __half *v, __half *out,
     int seq, int heads, int head_dim, int kv_heads, float scale, int kv_base)
@@ -516,7 +515,7 @@ cudaError_t RunQwenFullAttnKernelSplitKV(
     return e;
 }
 
-cudaError_t RunQwenRMSNorm(cudaStream_t stream, const __half *x, const __half *w,
+cudaError_t RunAttnRMSNorm(cudaStream_t stream, const __half *x, const __half *w,
                            __half *out, int rows, int hidden, double eps)
 {
     if (!x || !w || !out || rows <= 0 || hidden <= 0) return cudaErrorInvalidValue;
@@ -526,7 +525,7 @@ cudaError_t RunQwenRMSNorm(cudaStream_t stream, const __half *x, const __half *w
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenRopeCosSin(cudaStream_t stream, const int32_t *pos, int seq,
+cudaError_t RunAttnRopeCosSin(cudaStream_t stream, const int32_t *pos, int seq,
                               int rotary_dim, double theta, __half *cos_buf,
                               __half *sin_buf)
 {
@@ -538,7 +537,7 @@ cudaError_t RunQwenRopeCosSin(cudaStream_t stream, const int32_t *pos, int seq,
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenPartialRope(cudaStream_t stream, const __half *q,
+cudaError_t RunAttnPartialRope(cudaStream_t stream, const __half *q,
                                const __half *k, const __half *cos_buf,
                                const __half *sin_buf, __half *q_out,
                                __half *k_out, int seq, int q_heads,
@@ -555,17 +554,17 @@ cudaError_t RunQwenPartialRope(cudaStream_t stream, const __half *q,
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenPartialRope(cudaStream_t stream, const __half *q,
+cudaError_t RunAttnPartialRope(cudaStream_t stream, const __half *q,
                                const __half *k, const __half *cos_buf,
                                const __half *sin_buf, __half *q_out,
                                __half *k_out, int seq, int heads,
                                int head_dim, int rotary_dim)
 {
-    return RunQwenPartialRope(stream, q, k, cos_buf, sin_buf, q_out, k_out,
+    return RunAttnPartialRope(stream, q, k, cos_buf, sin_buf, q_out, k_out,
                               seq, heads, heads, head_dim, rotary_dim);
 }
 
-cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *embed,
+cudaError_t RunAttnEmbed(cudaStream_t stream, const __half *embed,
                          const int32_t *ids, __half *out, int seq, int hidden)
 {
     const int threads = 256;
@@ -1036,7 +1035,7 @@ __global__ void qwen_swiglu_precise_quant_kernel(
     }
 }
 
-cudaError_t RunQwenSwigluPreciseQuantInternal(cudaStream_t stream,
+cudaError_t RunAttnSwigluPreciseQuantInternal(cudaStream_t stream,
                                              const __half *a, const __half *b,
                                              __half *y, uint8_t *packed,
                                              uint8_t *scales, int64_t n)
@@ -1051,7 +1050,7 @@ cudaError_t RunQwenSwigluPreciseQuantInternal(cudaStream_t stream,
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenSwigluQuant(cudaStream_t stream, const __half *a,
+cudaError_t RunAttnSwigluQuant(cudaStream_t stream, const __half *a,
                                const __half *b, __half *y, uint8_t *packed,
                                uint8_t *scales, int64_t n)
 {
@@ -1066,7 +1065,7 @@ cudaError_t RunQwenSwigluQuant(cudaStream_t stream, const __half *a,
 }
 
 // ── Fused linear-attention (GatedDeltaNet) front-end entry ──────────────────
-// Fused F1 + F2 replace the split front of RunQwenLinearAttention; the
+// Fused F1 + F2 replace the split front of RunAttnLinearAttention; the
 // gated-delta recurrence, RMSNormGated and out_proj tail are unchanged.
 
 // Decode fast path (audit F-05, measured): the block-per-token design below
@@ -1212,9 +1211,9 @@ __global__ void gating_prep_kernel(const __half *__restrict__ a_buf,
     d_g[c] = -__expf(A_log[c]) * softplus_dev(a_v + dt_bias[c]);
 }
 
-// Fused F1 + F2 replace the split front of RunQwenLinearAttention; the
+// Fused F1 + F2 replace the split front of RunAttnLinearAttention; the
 // gated-delta recurrence, RMSNormGated and out_proj tail are unchanged.
-cudaError_t RunQwenFusedLinearAttnKernel(
+cudaError_t RunAttnFusedLinearAttnKernel(
     cudaStream_t stream,
     const attn::LayerWeights &lw, const attn::AttnGeometry &geo, int seq,
     const __half *d_normed, __half *d_out,
@@ -1358,7 +1357,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     e = cudaGetLastError(); if (e) return e;
     }
 
-    // Tail (unchanged, mirrors RunQwenLinearAttention stages 4-6).
+    // Tail (unchanged, mirrors RunAttnLinearAttention stages 4-6).
     {
         const __half *qsplit = d_conv;
         const __half *ksplit = d_conv + KD;
@@ -1378,12 +1377,12 @@ cudaError_t RunQwenFusedLinearAttnKernel(
             geo.rms_norm_eps, use_sigmoid_gate);
         e = cudaGetLastError(); if (e) return e;
     }
-    return RunQwenNvfp4Gemm(stream, d_gated, lw.out.d_packed, lw.out.d_scales,
+    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_gated, lw.out.d_packed, lw.out.d_scales,
                             lw.out.global_scale, d_out, seq, lw.out.cols,
                             lw.out.rows);
 }
 
-cudaError_t RunQwenMLP(cudaStream_t stream,
+cudaError_t RunAttnMLP(cudaStream_t stream,
                        const attn::LayerWeights &lw, int seq,
                        const __half *d_in, __half *d_out, __half *d_scratch)
 {
@@ -1421,10 +1420,10 @@ cudaError_t RunQwenMLP(cudaStream_t stream,
 // Fused MLP layer. Takes d_in as the ALREADY post-RMSNormed input stream and
 // accumulates the down-projection INTO d_resid (the residual stream) via the
 // GEMM's acc=true path, absorbing the separate qwen_add residual. This mirrors
-// RunQwenMLP except the final down-GEMM writes resid (d_resid) rather than a
+// RunAttnMLP except the final down-GEMM writes resid (d_resid) rather than a
 // separate output buffer that the caller then adds. `top` is reserved for
 // future use (geometry is read from `lw`).
-cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
+cudaError_t RunAttnFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
                             const attn::AttnGeometry &geo, int seq,
                             const __half *d_in, __half *d_resid, __half *d_scratch)
 {
@@ -1446,7 +1445,7 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
     const int blocks = (int)((n_act + threads - 1) / threads);
     if (lw.mlp_gate_up.d_packed) {
         // B1 fast path: single fused-weight GEMM into [seq, 2I].
-        e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_gate_up.d_packed,
+        e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_in, lw.mlp_gate_up.d_packed,
                              lw.mlp_gate_up.d_scales,
                              lw.mlp_gate_up.global_scale, d_gate, seq, H, 2 * I,
                              /*acc=*/false);
@@ -1493,11 +1492,11 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
         e = cudaGetLastError();
         if (e) return e;
     } else {
-        e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_gate.d_packed, lw.mlp_gate.d_scales,
+        e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_in, lw.mlp_gate.d_packed, lw.mlp_gate.d_scales,
                              lw.mlp_gate.global_scale, d_gate, seq, H, I,
                              /*acc=*/false);
         if (e) return e;
-        e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_up.d_packed, lw.mlp_up.d_scales,
+        e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_in, lw.mlp_up.d_packed, lw.mlp_up.d_scales,
                              lw.mlp_up.global_scale, d_up, seq, H, I,
                              /*acc=*/false);
         if (e) return e;
@@ -1505,7 +1504,7 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
         e = cudaGetLastError();
         if (e) return e;
     }
-    return RunQwenNvfp4Gemm(stream, d_gate, lw.mlp_down.d_packed,
+    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_gate, lw.mlp_down.d_packed,
                             lw.mlp_down.d_scales, lw.mlp_down.global_scale,
                             d_resid, seq, I, H, /*acc=*/true);
 }
@@ -1520,7 +1519,7 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
 //   d_attn: [seq, NH*HD]    attention output (pre-o_proj)
 //   d_cos : [seq, rotary_dim]
 //   d_sin : [seq, rotary_dim]
-cudaError_t RunQwenFullAttention(cudaStream_t stream,
+cudaError_t RunAttnFullAttention(cudaStream_t stream,
                                  const attn::LayerWeights &lw,
                                  const attn::AttnGeometry &geo, int seq,
                                  const __half *d_normed, __half *d_out,
@@ -1569,9 +1568,9 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
     }
 
     // 5. RoPE on q,k (first rotary_dim dims). k has NKV heads, q has NH heads.
-    e = RunQwenRopeCosSin(stream, d_pos, seq, rotary_dim, geo.rope_theta,
+    e = RunAttnRopeCosSin(stream, d_pos, seq, rotary_dim, geo.rope_theta,
                           d_cos, d_sin); if (e) return e;
-    e = RunQwenPartialRope(stream, d_q, k_row0, d_cos, d_sin, d_q, k_row0,
+    e = RunAttnPartialRope(stream, d_q, k_row0, d_cos, d_sin, d_q, k_row0,
                            seq, NH, NKV, HD, rotary_dim); if (e) return e;
 
     // 6. Scaled dot-product attention (GQA, causal) -> d_attn [seq, NH, HD].
@@ -1585,7 +1584,7 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
         // contexts keep the legacy kernel (bit-identical established
         // behavior, incl. every parity/selfcheck fixture).
         if (seq == 1 && kv_base + 1 > 512) {
-            e = RunQwenFullAttnKernelSplitKV(stream, d_q, d_k, d_v, d_attn,
+            e = RunAttnFullAttnKernelSplitKV(stream, d_q, d_k, d_v, d_attn,
                                              seq, NH, HD, NKV, scale,
                                              kv_base);
             if (e) return e;
@@ -1625,7 +1624,7 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
 //   d_core: [seq, NVR*VD]   gated-delta output (pre-RMSNormGated)
 //   d_gated:[seq, NVR*VD]   RMSNormGated output
 // NVR = linear_num_value_heads.
-cudaError_t RunQwenLinearAttention(cudaStream_t stream,
+cudaError_t RunAttnLinearAttention(cudaStream_t stream,
                                    const attn::LayerWeights &lw,
                                    const attn::AttnGeometry &geo, int seq,
                                    const __half *d_normed, __half *d_out,

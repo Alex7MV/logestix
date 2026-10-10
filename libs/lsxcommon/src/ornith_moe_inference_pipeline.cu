@@ -11,7 +11,7 @@
 
 #include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/ornith_moe_load.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/lsx_tc_gemm.h"
@@ -436,17 +436,17 @@ cudaError_t RunOrnithMoeGeneration(
                 cudaMemcpy(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice);
         }
 
-        e = qwen::RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
+        e = qwen::RunAttnEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
         if (e != cudaSuccess) return fail(e, "embed");
 
         int full_idx = 0, lin_idx = 0;
         for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
             const OrnithMoeLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
-            e = qwen::RunQwenRMSNorm(stream, d_act, lw.attn.d_input_norm,
+            e = qwen::RunAttnRMSNorm(stream, d_act, lw.attn.d_input_norm,
                                      d_normed, seq, H, eps);
             if (e != cudaSuccess) return fail(e, "inputnorm l" + std::to_string(l));
             if (lw.attn.is_linear) {
-                e = qwen::RunQwenFusedLinearAttnKernel(stream, lw.attn, qwen::MakeAttnGeometry(top), seq,
+                e = qwen::RunAttnFusedLinearAttnKernel(stream, lw.attn, qwen::MakeAttnGeometry(top), seq,
                     d_normed, d_attn_out,
                     kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                     d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
@@ -454,7 +454,7 @@ cudaError_t RunOrnithMoeGeneration(
                     kv->d_col + (int64_t)lin_idx * nv * vd * kd);
                 ++lin_idx;
             } else {
-                e = qwen::RunQwenFullAttention(stream, lw.attn, qwen::MakeAttnGeometry(top), seq,
+                e = qwen::RunAttnFullAttention(stream, lw.attn, qwen::MakeAttnGeometry(top), seq,
                     d_normed, d_attn_out, d_qc, d_q, d_qgate,
                     kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
                     kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
@@ -469,7 +469,7 @@ cudaError_t RunOrnithMoeGeneration(
                 e = cudaGetLastError();
                 if (e) return fail(e, "res1 l" + std::to_string(l));
             }
-            e = qwen::RunQwenRMSNorm(stream, d_act, lw.attn.d_post_norm,
+            e = qwen::RunAttnRMSNorm(stream, d_act, lw.attn.d_post_norm,
                                      d_postin, seq, H, eps);
             if (e != cudaSuccess) return fail(e, "postnorm l" + std::to_string(l));
 
@@ -640,7 +640,7 @@ cudaError_t RunOrnithMoeGeneration(
             }
         }
 
-        e = qwen::RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
+        e = qwen::RunAttnRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
                                  seq, H, eps);
         if (e != cudaSuccess) return fail(e, "finalnorm");
         e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_postin, pw.head.d_packed,
@@ -761,14 +761,14 @@ cudaError_t RunOrnithMoeGeneration(
                 if (si <= nseg) stamp();
             };
             mark();   // t0: start-of-round boundary
-            qwen::RunQwenEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
+            qwen::RunAttnEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
             mark();
             for (size_t l = 0; l < nlayers; ++l) {
                 const OrnithMoeLayerWeights &lw = pw.layers[l];
-                qwen::RunQwenRMSNorm(stream, d_act, lw.attn.d_input_norm,
+                qwen::RunAttnRMSNorm(stream, d_act, lw.attn.d_input_norm,
                                      d_normed, 1, H, eps);
                 if (lw.attn.is_linear) {
-                    qwen::RunQwenFusedLinearAttnKernel(
+                    qwen::RunAttnFusedLinearAttnKernel(
                         stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_normed, d_attn_out,
                         kv->d_qkv +
                             (int64_t)linA * kv->max_total * S,
@@ -777,7 +777,7 @@ cudaError_t RunOrnithMoeGeneration(
                         kv->d_col + (int64_t)linA * nv * vd * kd);
                     ++linA;
                 } else {
-                    qwen::RunQwenFullAttention(
+                    qwen::RunAttnFullAttention(
                         stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_normed, d_attn_out, d_qc,
                         d_q, d_qgate,
                         kv->d_kv_k +
@@ -801,7 +801,7 @@ cudaError_t RunOrnithMoeGeneration(
                                         nullptr);
                 stamp();   // ffn segment: router + routed chain + shared
             }
-            qwen::RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin, 1,
+            qwen::RunAttnRMSNorm(stream, d_act, pw.d_final_norm, d_postin, 1,
                                  H, eps);
             lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_postin, pw.head.d_packed,
                                    pw.head.d_scales, pw.head.global_scale,

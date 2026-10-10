@@ -11,7 +11,7 @@
 
 #include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/model_base.h"
-#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/lsx_moe_inference.h"
