@@ -611,3 +611,35 @@ TEST_CASE("perf layer is model-neutral (no family stem)", "[independence][perf]"
         }
     }
 }
+
+TEST_CASE("the routed-MoE inference layer is model-neutral in name and deps",
+          "[independence]")
+{
+    // The routed-MoE kernels are geometry-parameterised (hidden size, top-k
+    // and the expert count are runtime parameters) and are already consumed by
+    // the Gemma, GLM-flash and Qwen-MoE-exp families. They therefore carry the
+    // neutral lsx_ name, and must not name a family or reach into a model
+    // loader -- otherwise the name promises neutrality the code does not keep.
+    const fs::path hdr = kIncDir / "lsx_moe_inference.h";
+    const fs::path cu = kSrcDir / "lsx_moe_inference.cu";
+    REQUIRE(fs::exists(hdr));
+    REQUIRE(fs::exists(cu));
+
+    static const char *kFamilies[] = {
+        "qwen", "gemma",   "glm",    "deepseek", "kimi",   "ornith",
+        "nemotron", "gigachat", "mimo", "alice",  "xing",   "granite",
+        "phi"};
+
+    for (const fs::path &p : {hdr, cu}) {
+        const std::string text = ReadFile(p);
+        REQUIRE_FALSE(text.empty());
+        for (const char *fam : kFamilies) {
+            INFO(p.filename() << " must not name the family '" << fam << "'");
+            REQUIRE(text.find(fam) == std::string::npos);
+        }
+    }
+
+    // No model loader may be pulled into the neutral translation unit.
+    INFO("the neutral layer must not include a model loader");
+    REQUIRE(ReadFile(cu).find("qwen_moe_load.h") == std::string::npos);
+}
