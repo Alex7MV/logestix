@@ -569,22 +569,12 @@ DET 3/3, FSI 2/3. Open items:
   `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))`; the converted model
   repeats the prompt template `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`. Same
   NVFP4-vs-bf16 borderline class as the 26B (section J); the gate stays red.
-- **RESOLVED 2026-10-10 (shared layer): the TC mxf4nvf4 GEMM dropped 48 of every
-  64 rows of the M tile.** Root cause was not the partial-M store: in
-  `lsx_tc::TcGemmKernel` the block is 8 warps arranged 4(M) x 2(N) and each warp
-  covers 16 rows, but the row-group index `wm` was computed and **never used**,
-  so `r0 = row_base + g` only ever emitted rows `[0,16)` of a 64-row tile.
-  Rows 16..63 of every tile were silently never written -- for seq=18 only rows
-  0..15 were correct. Fixed by adding `warp_row = wm * 16` to all four row
-  computations (acc-in seeding, the A fragment, the A scale `sr`, and the
-  epilogue). The TC test only swept `seq` in {1,3} -- exactly the range where
-  the bug is invisible; the sweep now includes 17/18/33/64 and fails on the old
-  kernel (`max_abs_err` 1055.79 at seq=18, whole rows unwritten).
-  gemma-4-31b-it keeps its family-local `SetLsxTcFastMath(false)` prefill, now
-  **by choice rather than necessity**: the kernel is correct, and running this
-  family's prefill through TC moves its first token and breaks its tool
-  round-trip, while its FSI/CODE/DET goldens were captured on the scalar path.
-  The TTFT cost (56 -> 337 ms) therefore stays for this family alone.
+- **Shared TC defect: RESOLVED 2026-10-10** - `TcGemmKernel` wrote only
+  rows `[0,16)` of its 64-row tile (`wm` was computed and never used); all
+  four row computations fixed, TC shape sweep extended to seq 17/18/33/64.
+  gemma keeps its scalar prefill **by choice** now, because running it
+  through TC moves the first token and breaks the tool round-trip. Full
+  trail: [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md).
 - **Perf: 47.3 t/s (perf) / 41.0 t/s (r3)** at 2048 tokens on
   `linux-release-znver4-aocc` (16.5 GiB resident; TTFT 337 ms, scalar prefill).
   Profile-guided decode work took it 40.6 -> 47.5: shuffle RMSNorm
@@ -826,13 +816,11 @@ product or numerics decision, not a patch.
   equivalents, THEN rename. This is the natural Phase 5 of
   `docs/superpowers/plans/2026-08-24-cuda-unification-phase4.md` (Phase A built
   `lsx_kernels_*.cuh` for exactly this). Do not rename before decomposing.
-- **Resolved 2026-10-10:** `ornith_moe_inference.{h,cu}` is gone. Ornith now
-  calls the neutral `lsx_moe_inference` layer and keeps only
-  `ornith_moe_inference_pipeline.{h,cu}` (its generation driver, which is
-  welded to `OrnithMoePinnedWeights`). The expert store/residency/loader
-  cluster moved to the neutral layer as well, which also de-duplicated qwen's
-  and glm-flash's copies. Net −2776 lines. Real-weight SelfCheck (ornith and
-  qwen_moe_36) and ornith DET pass. TC-routed expert chain is now shared.
+- **Ornith de-duplication: DONE 2026-10-10** - `ornith_moe_inference.{h,cu}` is
+  gone; ornith calls the neutral layer and keeps only its generation
+  pipeline. The expert-store loader cluster, duplicated in qwen, glm-flash
+  and ornith, moved into the neutral layer. Net -2776 lines. See
+  [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md).
 
 ## Archive
 
@@ -847,6 +835,7 @@ investigation trail:
 | E1 — 14 test executables were one binary | per-`.cu` object libraries |
 | G1 — toolkit mismatch caught only after the build | configure-time check in `CMakeLists.txt` |
 | A2 — MiMo wrong top-1 | closed 2026-10-02: no implementation bug, the checkpoint is bad (vendor oracle matches) — [`open-tasks/2026-10-02-mimo-closed.md`](open-tasks/2026-10-02-mimo-closed.md) |
+| 2026-10-10 | Neutral routed-MoE layer + ornith de-duplication + the shared TC M-tile defect | `TcGemmKernel` wrote only rows `[0,16)` of its 64-row M tile (`wm` computed, never used) - fixed in all four row computations, TC shape sweep extended to seq 17/18/33/64; `ornith_moe_inference.cu` (2182 lines, 97% copy, already drifted) deleted in favour of the neutral `lsx_moe_inference` layer, expert-store loader cluster de-duplicated across qwen/glm-flash/ornith (-2776 lines); Ornith fused-expert split and gemma `final_logits` now read back by tests - [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md) |
 | Inference-conformance review (9 deviations) | all fixed in dedicated commits |
 | "Closed in this session" list | 15 items, all closed |
 | D — KV cache layout `[head][pos][dim]` | closed 2026-10-05, **negative**: implemented, measured, rejected. Head-major reads K/V 6-10% faster in isolation and is 2-6% slower end to end, so pos-major ships; the reusable stride layer, the neutral layout knob, a bit-exact parity gate and a streaming-read ceiling probe all shipped. A related `kAttnSplits = 4` finding (+10% at ctx 8191) was rejected on bit-identity. Two pre-existing defects fixed: a test iteration that verified nothing, and a wrong host pitch in the KV readback |
