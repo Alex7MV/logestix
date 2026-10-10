@@ -10,6 +10,7 @@
 #include <cuda_fp16.h>  // __half, used by QwenMoeGenScratch::d_embed
 #include <cuda_runtime.h>
 
+#include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/qwen_inference.h"         // QwenGenerationResult
 #include "lsxcommon/qwen_inference_load.h"    // QwenKvCache
 #include "lsxcommon/qwen_moe_expert_cache.h"  // QwenMoeExpertDeviceCache

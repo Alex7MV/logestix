@@ -1,5 +1,6 @@
 #include "lsxcommon/qwen_moe_inference_pipeline.h"
 #include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/shared_experts.h"

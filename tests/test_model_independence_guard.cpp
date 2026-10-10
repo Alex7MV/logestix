@@ -689,7 +689,7 @@ TEST_CASE("the attention kernel layer is model-neutral in name and deps",
 
         static const char *kModelOwned[] = {
             "qwen_dense_convert.h", "qwen_inference_load.h",
-            "qwen_generation.h",    "qwen_moe_load.h"};
+            "qwen_dense_inference_pipeline.h",    "qwen_moe_load.h"};
         for (const char *h : kModelOwned) {
             INFO(p.filename() << " must not include the model header " << h);
             REQUIRE(text.find(h) == std::string::npos);

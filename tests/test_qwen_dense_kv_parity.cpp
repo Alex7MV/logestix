@@ -6,6 +6,7 @@
 
 #include <cuda_runtime.h>
 
+#include <lsxcommon/qwen_dense_inference_pipeline.h>
 #include <lsxcommon/qwen_inference.h>
 #include <lsxcommon/qwen_inference_load.h>
 

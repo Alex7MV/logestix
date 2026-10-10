@@ -10,6 +10,7 @@
 // generation loop), shared-memory RMW only by thread 0 behind barriers.
 
 #include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/ornith_moe_load.h"
 #include "lsxcommon/shared_experts.h"
