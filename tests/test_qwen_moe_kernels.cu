@@ -83,6 +83,7 @@ TEST_CASE("expert cache LRU bookkeeping", "[qwen-moe-cache]")
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include "lsxcommon/qwen_moe_inference_pipeline.h"
 #include "lsxcommon/qwen_moe_inference.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 

@@ -38,8 +38,11 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,
                                  QwenMoeRoutedSlot *d_slots);    // [seq*K]
 
 // Forward decls from the loader side (pinned store + LRU device cache).
+// Upper bound on the routed top-k; the generation loop sizes its router
+// scratch from it, so it is shared state rather than TU-local.
+inline constexpr int kMaxTopK = 16;
+
 struct QwenMoeExpertStore;
-struct QwenMoePinnedWeights;
 
 // Per-slot device table for the batched routed GEMV chain (built host-side
 // in the handshake flow or on device by the no-handshake gather kernel;
@@ -143,6 +146,17 @@ cudaError_t RunQwenMoeGemvGatherTable(
 // path. One-time lazy upload of the mirror on first readiness.
 bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store);
 
+// Same routed GEMV without the device->host handshake; the generation loop
+// calls it on the resident path.
+cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
+    cudaStream_t stream, QwenMoeExpertStore &store,
+    QwenMoeExpertDeviceCache &cache, int layer,
+    const QwenMoeRoutedSlot *d_slots, int K,
+    const __half *d_x, int H, int I, float *d_acc,
+    __half *ygu_b, __half *hbuf_b, __half *ypart_b,
+    QwenMoeGvSlotDev *d_tbl,
+    std::string &error);
+
 // Batched decode swiglu-quant: per slot s, gate = ygu[s*2I + j],
 // up = ygu[s*2I + I + j]; h[s] = silu(gate)*up (FP16) + NVFP4 encode of h.
 // Bit-identical to per-slot RunQwenSwigluQuant (same 16-group math).
@@ -201,35 +215,5 @@ cudaError_t RunQwenMoeSharedCombine(
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out, const uint8_t *xq = nullptr,
     const uint8_t *xqs = nullptr);
-
-// Persistent generation scratch owned by the model: the dequantized FP16
-// embedding table (computed once, byte-identical to per-call dequant) and a
-// capacity-grown workspace arena reused across Infer calls.
-struct QwenMoeGenScratch {
-    __half *d_embed = nullptr;      // [V*H]
-    int64_t table_elems = 0;
-    void *arena = nullptr;
-    size_t arena_capacity = 0;
-    int64_t dequant_runs = 0;       // diagnostics/tests
-    int64_t arena_allocs = 0;       // diagnostics/tests
-};
-
-cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
-                                 const QwenMoePinnedWeights &pw,
-                                 QwenMoeGenScratch &scratch);
-cudaError_t ReserveQwenMoeArena(QwenMoeGenScratch &scratch, size_t bytes);
-void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch);
-
-// Incremental single-stream generation driver (MoE FFN call site). Requires
-// a KV cache session (kv != nullptr); mirrors RunQwenGeneration's per-token
-// handshake and final-logits publication.
-cudaError_t RunQwenMoeGeneration(
-    cudaStream_t stream, const QwenMoePinnedWeights &pw,
-    QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
-    QwenMoeGenScratch &scratch,
-    const std::vector<int32_t> &prompt, int max_new, int eos_id,
-    lsxcommon::qwen::QwenGenerationResult &result,
-    lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::QwenKvCache *kv,
-    const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace lsxcommon::qwen_moe

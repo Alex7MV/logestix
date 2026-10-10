@@ -21,6 +21,7 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/qwen_moe_expert_cache.h"
+#include "lsxcommon/qwen_moe_inference_pipeline.h"
 #include "lsxcommon/qwen_moe_inference.h"
 #include "lsxcommon/qwen_moe_load.h"
 

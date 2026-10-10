@@ -5,6 +5,7 @@
 #include "qwen_moe_exp_constants.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_moe_inference_pipeline.h"
 #include "lsxcommon/qwen_moe_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/shared_experts.h"

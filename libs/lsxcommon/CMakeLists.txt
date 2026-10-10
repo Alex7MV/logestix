@@ -245,6 +245,7 @@ target_link_libraries(lsxcommon_qwen_cu
 )
 add_library(lsxcommon_qwen_moe_cu OBJECT
     src/qwen_moe_inference.cu
+    src/qwen_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_qwen_moe_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
