@@ -667,7 +667,7 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
 }
 
 bool LoadGlmFlashExpertStore(const std::string &model_path,
-                             qwen_moe::QwenMoeExpertStore &store,
+                             lsxcommon::moe::MoEExpertStore &store,
                              std::string &error)
 {
     namespace fs = std::filesystem;

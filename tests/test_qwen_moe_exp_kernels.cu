@@ -214,7 +214,7 @@ TEST_CASE("router top-10 renorm parity (512 experts)", "[qwen-exp-kernels]")
     cudaMemcpy(d_router.p, router.data(), router.size() * 2,
                cudaMemcpyHostToDevice);
     cudaMemcpy(d_x.p, x16.data(), x16.size() * 2, cudaMemcpyHostToDevice);
-    using Slot = lsxcommon::qwen_moe::QwenMoeRoutedSlot;
+    using Slot = lsxcommon::moe::MoERoutedSlot;
     auto err = lsxcommon::qwen_moe_exp::RunExpRouterTop10(
         nullptr, d_router.as<uint8_t>(), d_x.as<__half>(), SEQ, H, E, K,
         d_slots.as<Slot>());

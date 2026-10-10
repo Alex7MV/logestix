@@ -185,7 +185,7 @@ cudaError_t RunFlashGatedDeltaF32(cudaStream_t stream, const float *q,
 // selection round writes its slot once.
 __global__ void flash_router_top8_kernel(
     const uint8_t *__restrict__ gate_bf16, const float *__restrict__ bias,
-    const uint8_t *__restrict__ x_bf16, qwen_moe::QwenMoeRoutedSlot *__restrict__ slots,
+    const uint8_t *__restrict__ x_bf16, moe::MoERoutedSlot *__restrict__ slots,
     int hidden, int experts)
 {
     const int t = blockIdx.x;
@@ -243,7 +243,7 @@ __global__ void flash_router_top8_kernel(
 cudaError_t RunFlashRouterTop8(cudaStream_t stream, const uint8_t *d_gate,
                                const float *d_bias, const uint8_t *d_x,
                                int tok, int hidden, int experts,
-                               qwen_moe::QwenMoeRoutedSlot *d_slots)
+                               moe::MoERoutedSlot *d_slots)
 {
     const int threads = experts <= 1024 ? experts : 1024;
     const size_t scratch = static_cast<size_t>(experts) * 2 * sizeof(float);
@@ -1240,7 +1240,7 @@ __global__ void flash_router_score_f16_kernel(
 // grid = tok, one block per token, 512 threads (16 warps).
 __global__ void flash_router_top8_f16_kernel(
     const float *__restrict__ scratch, int experts,
-    qwen_moe::QwenMoeRoutedSlot *__restrict__ slots)
+    moe::MoERoutedSlot *__restrict__ slots)
 {
     constexpr int kTopK = 8;
     constexpr int kWarps = 16;
@@ -1305,7 +1305,7 @@ __global__ void flash_router_top8_f16_kernel(
 cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
                                   const float *d_bias, const __half *d_x,
                                   int tok, int hidden, int experts,
-                                  qwen_moe::QwenMoeRoutedSlot *d_slots)
+                                  moe::MoERoutedSlot *d_slots)
 {
     if (std::getenv("LSX_TRACE_FLASH")) {
         __half hx[4];
@@ -1339,14 +1339,14 @@ cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
 
 
 cudaError_t RunFlashRoutedFFN(
-    cudaStream_t stream, qwen_moe::QwenMoeExpertStore &store,
+    cudaStream_t stream, lsxcommon::moe::MoEExpertStore &store,
     gpu::ExpertDeviceCache &cache, int layer, int moe_layer,
-    const qwen_moe::QwenMoeRoutedSlot *h_slots, int k_top,
+    const moe::MoERoutedSlot *h_slots, int k_top,
     const __half *d_x, int hidden, int moe_inter, float *d_acc,
     __half *d_yg, __half *d_yu, __half *d_y2, std::string &error,
     cudaStream_t h2d_stream, cudaEvent_t *copy_ev, cudaEvent_t *slot_free_ev,
     __half *batch_ygu, __half *batch_hbuf, __half *batch_ypart,
-    qwen_moe::QwenMoeGvSlotDev *d_gemv_tbl)
+    moe::MoEGvSlotDev *d_gemv_tbl)
 {
     error.clear();
     if (k_top > 16) {
@@ -1364,7 +1364,7 @@ cudaError_t RunFlashRoutedFFN(
         std::string ensure_err;
         bool missed = false;
         int evicted = -1;
-        const int slot = qwen_moe::EnsureQwenMoeExpertResident(
+        const int slot = moe::EnsureMoEExpertResident(
             store, store_layer, h_slots[k].eid, cache, stream, ensure_err,
             h2d_stream, &missed, &evicted);
         if (slot < 0) {
@@ -1398,7 +1398,7 @@ cudaError_t RunFlashRoutedFFN(
     // keep the legacy path.
     if (batch_ygu && batch_hbuf && batch_ypart && d_gemv_tbl &&
         (hidden & 63) == 0 && (moe_inter & 63) == 0 && k_top <= 16) {
-        qwen_moe::QwenMoeGvSlotDev tbl[16];
+        moe::MoEGvSlotDev tbl[16];
         for (int k = 0; k < k_top; ++k) {
             const auto &rec = recs[static_cast<size_t>(h_slots[k].eid)];
             tbl[k].dev_slot = dev_slots[k];
@@ -1408,7 +1408,7 @@ cudaError_t RunFlashRoutedFFN(
             tbl[k].coeff = h_slots[k].coeff;
         }
         if (cudaMemcpyAsync(d_gemv_tbl, tbl,
-                            sizeof(qwen_moe::QwenMoeGvSlotDev) * k_top,
+                            sizeof(moe::MoEGvSlotDev) * k_top,
                             cudaMemcpyHostToDevice, stream) != cudaSuccess) {
             error = "gemv slot table upload failed";
             return cudaErrorInvalidValue;
@@ -1417,7 +1417,7 @@ cudaError_t RunFlashRoutedFFN(
             static_cast<int64_t>(rec0.w1_bytes + rec0.w3_bytes);
         const int64_t s13_b =
             static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
-        const cudaError_t be = qwen_moe::RunQwenMoeRoutedGemmVBatchCore(
+        const cudaError_t be = moe::RunMoERoutedGemmVBatchCore(
             stream, pack_base, scale_base, pack_stride, scale_stride,
             d_gemv_tbl, k_top, w13_b, s13_b, hidden, moe_inter, d_x, batch_ygu,
             batch_hbuf, batch_ypart, d_acc);
@@ -1510,7 +1510,7 @@ cudaError_t RunFlashSharedFFN(cudaStream_t stream, const FlashLayerWeights &lw,
 
 cudaError_t RunGlmFlashGeneration(
     cudaStream_t stream, const FlashPinnedWeights &pw,
-    qwen_moe::QwenMoeExpertStore &store, gpu::ExpertDeviceCache &cache,
+    lsxcommon::moe::MoEExpertStore &store, gpu::ExpertDeviceCache &cache,
     const std::vector<int32_t> &prompt, int max_new,
     const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result,
     sample::ISampler &sampler,
@@ -1659,11 +1659,11 @@ cudaError_t RunGlmFlashGeneration(
     __half *d_y2 = adv(kYMax);
     __half *d_sy = adv(kYMax);
     // Batched routed-FFN scratch (see RunFlashRoutedFFN). Slot-major layouts
-    // consumed by qwen_moe::RunQwenMoeRoutedGemmVBatchCore.
+    // consumed by moe::RunMoERoutedGemmVBatchCore.
     __half *d_batch_ygu = adv((size_t) K * 2 * I);
     __half *d_batch_hbuf = adv((size_t) K * I);
     __half *d_batch_ypart = adv((size_t) K * H);
-    qwen_moe::QwenMoeGvSlotDev *d_gemv_tbl = nullptr;
+    moe::MoEGvSlotDev *d_gemv_tbl = nullptr;
     float *pf = reinterpret_cast<float *>(static_cast<uint8_t *>(arena)
                                           + half_bytes);
     float *d_state = pf; pf += HCH;
@@ -1695,10 +1695,10 @@ cudaError_t RunGlmFlashGeneration(
         || cudaMalloc(&d_tokens, sizeof(int32_t) * max_new) != cudaSuccess
         || cudaMalloc(&d_ids, 4) != cudaSuccess)
         return cudaGetLastError();
-    qwen_moe::QwenMoeRoutedSlot *d_slots = nullptr;
-    if (cudaMalloc(&d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * K)
+    moe::MoERoutedSlot *d_slots = nullptr;
+    if (cudaMalloc(&d_slots, sizeof(moe::MoERoutedSlot) * K)
         != cudaSuccess) return cudaGetLastError();
-    if (cudaMalloc(&d_gemv_tbl, sizeof(qwen_moe::QwenMoeGvSlotDev) * K)
+    if (cudaMalloc(&d_gemv_tbl, sizeof(moe::MoEGvSlotDev) * K)
         != cudaSuccess) return cudaGetLastError();
 
     // Dual-stream expert staging: a dedicated H2D stream overlaps miss
@@ -1908,7 +1908,7 @@ cudaError_t RunGlmFlashGeneration(
                                  hmean / H, nan);
                 }
                 // Router (FP16 activations, BF16 gate bits).
-                qwen_moe::QwenMoeRoutedSlot h_slots[16];
+                moe::MoERoutedSlot h_slots[16];
                 {
                     // Host-side route via bf16 gemv on device — reuse the
                     // f16 router variant below (RunFlashRouterTop8F16).

@@ -172,7 +172,7 @@ cudaError_t RunOrnithMoeRoutedTcBatch(
 // Host-side EOS truncation (decode loop runs to max_new without per-step
 // EOS readback). Keeps the EOS token (legacy break semantics), returns
 // true when a cut happened. eos_id < 0 disables.
-bool TruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id);
+bool MoETruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id);
 
 // MoE FFN epilogue (HF parity): out = routed_acc + sigmoid(gate.x) * shared.
 // d_routed_acc: [seq,H] fp32; scratch_i [seq,SI], scratch_h [seq,H];

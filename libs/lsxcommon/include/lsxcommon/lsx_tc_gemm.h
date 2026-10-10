@@ -77,7 +77,7 @@ cudaError_t LsxTcBuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
 cudaError_t LsxProbeTmaBulkCopy(cudaStream_t stream);
 
 // One slot of the batched routed-expert TC chain: cache slot + per-segment
-// global scales. Layout-identical to qwen_moe::QwenMoeGvSlotDev (pinned by
+// global scales. Layout-identical to moe::MoEGvSlotDev (pinned by
 // static_assert in qwen_moe_inference.cu) so the existing device gather
 // kernel output can be consumed directly.
 struct alignas(8) LsxTcBatchSlot {

@@ -10,7 +10,7 @@
 #include <cstring>
 #include <vector>
 
-#include "lsxcommon/qwen_moe_inference.h"  // QwenMoeRoutedSlot
+#include "lsxcommon/lsx_moe_inference.h"  // MoERoutedSlot
 
 namespace lsxcommon {
 namespace glm_moe_flash {
@@ -194,13 +194,13 @@ inline void FlashGatedDeltaHost(const float *q, const float *k,
 // HF Glm5NextTextTopkRouter semantics: choice score_e = sigmoid(dot) + bias_e;
 // top-8 by choice score (n_group == 1 -> no group mask); coeff from the RAW
 // sigmoid score; renorm coeff / sum(top8) * routed_scaling (2.5).
-inline std::vector<qwen_moe::QwenMoeRoutedSlot> FlashRouterTop8Host(
+inline std::vector<moe::MoERoutedSlot> FlashRouterTop8Host(
     const uint8_t *gate_bf16, const float *bias, const uint8_t *x_bf16,
     int tok, int hidden, int experts)
 {
     constexpr int kTopK = 8;
     constexpr float kScaling = 2.5f;
-    std::vector<qwen_moe::QwenMoeRoutedSlot> out(tok * kTopK);
+    std::vector<moe::MoERoutedSlot> out(tok * kTopK);
     for (int t = 0; t < tok; ++t) {
         std::vector<float> score(experts);
         std::vector<float> choice(experts);

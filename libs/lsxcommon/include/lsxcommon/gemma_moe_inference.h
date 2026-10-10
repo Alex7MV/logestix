@@ -9,7 +9,7 @@
 
 #include "lsxcommon/gemma_moe_load.h"
 #include "lsxcommon/expert_device_cache.h"
-#include "lsxcommon/qwen_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
 
 namespace lsxcommon {
 namespace gemma {
@@ -99,7 +99,7 @@ cudaError_t RunRoutedGemvBatchSeg(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
-    const lsxcommon::qwen_moe::QwenMoeGvSlotDev *slots_dev, int k_slots,
+    const lsxcommon::moe::MoEGvSlotDev *slots_dev, int k_slots,
     int64_t off_gate_p, int64_t off_gate_s,
     int64_t off_up_p, int64_t off_up_s,
     int64_t off_down_p, int64_t off_down_s,
@@ -247,9 +247,9 @@ struct GemmaGenContext {
     // {dev_slot, gs1, gs3, gs2} per flat expert; coeff composed on device.
     // Null until EnsureGemmaExpertCache allocates it; fully-resident caches
     // never change dev_slot after prewarm.
-    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_flat_meta = nullptr;
+    lsxcommon::moe::MoEGvSlotDev *d_flat_meta = nullptr;
     int d_flat_meta_count = 0;
-    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;  // [K] composed per layer
+    lsxcommon::moe::MoEGvSlotDev *d_tbl = nullptr;  // [K] composed per layer
     bool no_handshake = false;   // slots == total experts (no evictions)
 };
 

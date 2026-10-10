@@ -57,7 +57,7 @@ Qwen35MoeModel::~Qwen35MoeModel() { Unload(); }
 void QwenMoeModelBase::TeardownWeights()
 {
     qwen_moe::FreeQwenMoeGenScratch(scratch_);
-    qwen_moe::FreeQwenMoeExpertCache(cache_);
+    qwen_moe::FreeMoEExpertCache(cache_);
     experts_.Free();
     qwen_moe::FreeQwenMoePinnedWeights(pw_);
     kv_.reset();
@@ -121,7 +121,7 @@ bool QwenMoeModelBase::Load()
         return AbortLoad();
     }
     const auto t_experts = std::chrono::steady_clock::now();
-    if (!qwen_moe::LoadQwenMoeExpertStore(cfg_.model_path, experts_, err)) {
+    if (!qwen_moe::LoadMoEExpertStore(cfg_.model_path, experts_, err)) {
         log::error("[qwen-moe-model] expert store load failed: " + err);
         return AbortLoad();
     }
@@ -197,7 +197,7 @@ bool QwenMoeModelBase::Load()
     // Shrink-retry so an optimistic estimate degrades instead of failing
     // the lifecycle.
     while (slots >= 4 &&
-           !qwen_moe::AllocateQwenMoeExpertCache(experts_, slots, cache_,
+           !qwen_moe::AllocateMoEExpertCache(experts_, slots, cache_,
                                                  err)) {
         slots /= 2;
         cache_ = {};
@@ -214,7 +214,7 @@ bool QwenMoeModelBase::Load()
         const auto t_pre = std::chrono::steady_clock::now();
         for (int l = 0; l < experts_.num_layers; ++l) {
             for (int e = 0; e < experts_.num_experts; ++e) {
-                if (qwen_moe::EnsureQwenMoeExpertResident(
+                if (moe::EnsureMoEExpertResident(
                         experts_, l, e, cache_, stream(), err) < 0) {
                     log::error("[qwen-moe-model] prestage failed: " + err);
                     return AbortLoad();
@@ -222,7 +222,7 @@ bool QwenMoeModelBase::Load()
             }
         }
         if (stream()) cudaStreamSynchronize(stream());
-        qwen_moe::QwenMoeGemvNohandshake(experts_);
+        moe::MoEGemvNohandshake(experts_);
         log::info(absl::StrCat("[qwen-moe-model] expert prestage ",
                                MsSince(t_pre), " ms"));
     }

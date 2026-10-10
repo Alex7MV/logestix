@@ -324,7 +324,7 @@ TEST_CASE("glm-5.3-flash calls the neutral NVFP4 layer directly",
     // The qwen-named GEMM shims (RunQwenNvfp4Gemm*) are qwen-family call-site
     // aliases over lsx_nvfp4. A glm model must not depend on them: flash
     // kernels call lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm directly. The
-    // shared slot/result TYPES (QwenMoeRoutedSlot, QwenGenerationResult)
+    // shared slot/result TYPES (MoERoutedSlot, QwenGenerationResult)
     // remain legitimate cross-model data carriers.
     for (const char *f : {"glm_moe_flash_inference.cu",
                           "glm_moe_flash_model.cpp"}) {
@@ -608,6 +608,47 @@ TEST_CASE("perf layer is model-neutral (no family stem)", "[independence][perf]"
         for (const char *stem : {"glm", "qwen", "gemma", "kimi", "deepseek"}) {
             INFO(f << " must not mention family stem " << stem);
             REQUIRE(text.find(stem) == std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("the routed-MoE inference layer is model-neutral in name and deps",
+          "[independence]")
+{
+    // The routed-MoE kernels are geometry-parameterised (hidden size, top-k
+    // and the expert count are runtime parameters) and are consumed by the
+    // Gemma, GLM-flash and Qwen-MoE-exp families, so they carry the neutral
+    // lsx_ name.
+    //
+    // "Neutral" is scoped to MODEL dependencies. Two qwen-named things are
+    // deliberately still allowed, both of them repository-wide shared layers
+    // rather than qwen state:
+    //   - qwen_inference.h / namespace qwen  -- the designated generic kernel
+    //     layer (17 dependents; AGENTS.md has families reuse it);
+    //   - qwen_moe_expert_cache.h -- a thin alias over the neutral
+    //     gpu::ExpertDeviceCache.
+    // What it must NOT do is reach into a model's own weights or passports.
+    const fs::path hdr = kIncDir / "lsx_moe_inference.h";
+    const fs::path cu = kSrcDir / "lsx_moe_inference.cu";
+    REQUIRE(fs::exists(hdr));
+    REQUIRE(fs::exists(cu));
+
+    for (const fs::path &p : {hdr, cu}) {
+        const std::string text = ReadFile(p);
+        REQUIRE_FALSE(text.empty());
+
+        // No family-named symbol may survive in a neutral file.
+        INFO(p.filename() << " must not define any QwenMoe* symbol");
+        REQUIRE(text.find("QwenMoe") == std::string::npos);
+
+        // No model-owned header may be pulled in.
+        static const char *kModelOwned[] = {
+            "qwen_moe_load.h",         "qwen_moe_model.h",
+            "qwen_moe_convert.h",      "qwen_moe_constants.h",
+            "qwen_moe_inference_pipeline.h", "qwen_inference_load.h"};
+        for (const char *h : kModelOwned) {
+            INFO(p.filename() << " must not include the model header " << h);
+            REQUIRE(text.find(h) == std::string::npos);
         }
     }
 }

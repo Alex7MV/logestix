@@ -14,7 +14,7 @@
 
 #include "lsxcommon/glm_moe_flash_load.h"
 #include "lsxcommon/qwen_inference.h"     // QwenNvfp4Weight, QwenGenerationResult
-#include "lsxcommon/qwen_moe_inference.h"  // QwenMoeRoutedSlot
+#include "lsxcommon/lsx_moe_inference.h"  // MoERoutedSlot
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/token_stream.h"
 
@@ -46,7 +46,7 @@ cudaError_t RunFlashGatedDeltaF32(cudaStream_t stream, const float *q,
 cudaError_t RunFlashRouterTop8(cudaStream_t stream, const uint8_t *d_gate,
                                const float *d_bias, const uint8_t *d_x,
                                int tok, int hidden, int experts,
-                               qwen_moe::QwenMoeRoutedSlot *d_slots);
+                               moe::MoERoutedSlot *d_slots);
 
 // ── KDA decode-path state + kernels ──────────────────────────────────────
 // Per-layer recurrent state: S[heads, dim, dim] FP32 + short-conv history
@@ -79,7 +79,7 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
 cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
                                   const float *d_bias, const __half *d_x,
                                   int tok, int hidden, int experts,
-                                  qwen_moe::QwenMoeRoutedSlot *d_slots);
+                                  moe::MoERoutedSlot *d_slots);
 
 // Test probe: flash_expf_glibc(0/1).
 cudaError_t RunFlashExp0Probe(cudaStream_t stream, float *d_out);
@@ -121,23 +121,23 @@ cudaError_t RunFlashL2normQKTest(cudaStream_t stream, __half *q, __half *k,
 
 // ── MoE: clamped-swiglu routed chain (flash-local; GLM semantics) ────────
 // Per-slot chain over LRU-resident experts (staging via
-// EnsureQwenMoeExpertResident): y_g = w1@x, y_u = w3@x (NVFP4 GEMM),
+// moe::EnsureMoEExpertResident): y_g = w1@x, y_u = w3@x (NVFP4 GEMM),
 // inter = clamp10(silu(y_g)) * clamp10(y_u), y2 = w2@inter, acc += c*y2.
 //
 // Perf path: when `batch_ygu`/`batch_hbuf`/`batch_ypart`/`d_gemv_tbl` are
 // supplied, the K slots run through the shared batched routed-GEMV chain
-// (qwen_moe::RunQwenMoeRoutedGemmVBatchCore) -- 4 launches per layer instead
+// (moe::RunMoERoutedGemmVBatchCore) -- 4 launches per layer instead
 // of K*4, same slot-major weight streaming. Nulls fall back to the legacy
 // per-slot chain (also the test/ad-hoc path).
 cudaError_t RunFlashRoutedFFN(
-    cudaStream_t stream, qwen_moe::QwenMoeExpertStore &store,
+    cudaStream_t stream, lsxcommon::moe::MoEExpertStore &store,
     gpu::ExpertDeviceCache &cache, int layer, int moe_layer,
-    const qwen_moe::QwenMoeRoutedSlot *h_slots, int k_top,
+    const moe::MoERoutedSlot *h_slots, int k_top,
     const __half *d_x, int hidden, int moe_inter, float *d_acc,
     __half *d_yg, __half *d_yu, __half *d_y2, std::string &error,
     cudaStream_t h2d_stream, cudaEvent_t *copy_ev, cudaEvent_t *slot_free_ev,
     __half *batch_ygu, __half *batch_hbuf, __half *batch_ypart,
-    qwen_moe::QwenMoeGvSlotDev *d_gemv_tbl);
+    moe::MoEGvSlotDev *d_gemv_tbl);
 
 // Shared expert: same clamped swiglu semantics; out += result.
 cudaError_t RunFlashSharedFFN(cudaStream_t stream,
@@ -153,7 +153,7 @@ cudaError_t RunFlashSharedFFN(cudaStream_t stream,
 // shared expert; dense layers 0..2: NVFP4 MLP) -> hc inject scatter.
 cudaError_t RunGlmFlashGeneration(
     cudaStream_t stream, const FlashPinnedWeights &pw,
-    qwen_moe::QwenMoeExpertStore &store, gpu::ExpertDeviceCache &cache,
+    lsxcommon::moe::MoEExpertStore &store, gpu::ExpertDeviceCache &cache,
     const std::vector<int32_t> &prompt, int max_new,
     const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result,
     sample::ISampler &sampler,

@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "lsxcommon/gemma_moe_inference.h"
-#include "lsxcommon/qwen_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
 #include "lsx_reduce.cuh"
 #include "lsxcommon/gemma_moe_load.h"
 #include "lsxcommon/expert_device_cache.h"
@@ -34,8 +34,8 @@ __global__ void gemma_f32_to_bf16_kernel(const float *__restrict__ src,
 __global__ void gemma_gemv_zero_f32_kernel(float *__restrict__ dst, int n);
 __global__ void gemma_gemv_gather_table_kernel(
     const int32_t *__restrict__ d_sel, const float *__restrict__ d_selw,
-    const lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ flat_meta,
-    int flat_base, int K, lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ tbl);
+    const lsxcommon::moe::MoEGvSlotDev *__restrict__ flat_meta,
+    int flat_base, int K, lsxcommon::moe::MoEGvSlotDev *__restrict__ tbl);
 __global__ void gemma_embed_nvfp4_kernel(
     const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
     float gs, const int32_t *__restrict__ ids,
@@ -50,7 +50,7 @@ cudaError_t RunRoutedGemvBatchSeg(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
-    const lsxcommon::qwen_moe::QwenMoeGvSlotDev *slots_dev, int k_slots,
+    const lsxcommon::moe::MoEGvSlotDev *slots_dev, int k_slots,
     int64_t off_gate_p, int64_t off_gate_s,
     int64_t off_up_p, int64_t off_up_s,
     int64_t off_down_p, int64_t off_down_s,
@@ -1669,7 +1669,7 @@ cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
     // values in the mirror stay valid for the whole generation.
     ctx.no_handshake = (ctx.ec.slots >= total);
     if (ctx.no_handshake) {
-        std::vector<lsxcommon::qwen_moe::QwenMoeGvSlotDev> meta(
+        std::vector<lsxcommon::moe::MoEGvSlotDev> meta(
             static_cast<size_t>(total));
         for (int flat = 0; flat < total; ++flat) {
             const auto &ent = db.entries[static_cast<size_t>(flat)];
@@ -1680,7 +1680,7 @@ cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
             meta[static_cast<size_t>(flat)].coeff = 0.f;
         }
         e = cudaMalloc(&ctx.d_flat_meta,
-                       sizeof(lsxcommon::qwen_moe::QwenMoeGvSlotDev) *
+                       sizeof(lsxcommon::moe::MoEGvSlotDev) *
                            static_cast<size_t>(total));
         if (e != cudaSuccess) return e;
         ctx.d_flat_meta_count = total;
@@ -1691,7 +1691,7 @@ cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
         e = cudaStreamSynchronize(stream);
         if (e != cudaSuccess) return e;
         e = cudaMalloc(&ctx.d_tbl,
-                       sizeof(lsxcommon::qwen_moe::QwenMoeGvSlotDev) * 16);
+                       sizeof(lsxcommon::moe::MoEGvSlotDev) * 16);
         if (e != cudaSuccess) return e;
     }
     return cudaSuccess;
@@ -2147,16 +2147,16 @@ cudaError_t ForwardLayer(cudaStream_t stream,
             ((MI & 31) == 0) && ((H & 31) == 0);
         if (kGemvRoute && gemv_shapes_ok && K >= 1 && K <= 16 &&
             static_cast<int>(H) % 32 == 0) {
-            lsxcommon::qwen_moe::QwenMoeGvSlotDev tbl[16];
+            lsxcommon::moe::MoEGvSlotDev tbl[16];
             const auto &ent0 =
                 g_expert_db->entries[static_cast<size_t>(layer_idx) *
                                      static_cast<size_t>(E)];
-            lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;
+            lsxcommon::moe::MoEGvSlotDev *d_tbl = nullptr;
             __half *xh = nullptr, *ygu = nullptr, *hbuf = nullptr;
             float *accf = nullptr;
             bool pool_ok =
                 cudaMallocAsync(&d_tbl,
-                                sizeof(lsxcommon::qwen_moe::QwenMoeGvSlotDev) *
+                                sizeof(lsxcommon::moe::MoEGvSlotDev) *
                                     K,
                                 stream) == cudaSuccess &&
                 cudaMallocAsync(reinterpret_cast<void **>(&xh),
@@ -2805,7 +2805,7 @@ __global__ void gemma_gemv_pair_batch_kernel(
     int64_t pack_stride, int64_t scale_stride,
     int64_t off_gate_p, int64_t off_gate_s,
     int64_t off_up_p, int64_t off_up_s,
-    const qwen_moe::QwenMoeGvSlotDev *__restrict__ slots,
+    const moe::MoEGvSlotDev *__restrict__ slots,
     int k_slots, int n_rows, int cols, __half *__restrict__ ygu)
 {
     constexpr int ROWS = kGemvWarps3 / KP;
@@ -2819,7 +2819,7 @@ __global__ void gemma_gemv_pair_batch_kernel(
         const int s = rflat / (2 * n_rows);
         const int r = rflat - s * 2 * n_rows;
         const bool gate = r < n_rows;
-        const qwen_moe::QwenMoeGvSlotDev slot = slots[s];
+        const moe::MoEGvSlotDev slot = slots[s];
         const int rr = gate ? r : r - n_rows;
         acc = GemvDotRow(
                   x_row,
@@ -2854,7 +2854,7 @@ __global__ void gemma_gemv_down_batch_kernel(
     const uint8_t *__restrict__ scale_base,
     int64_t pack_stride, int64_t scale_stride,
     int64_t off_down_p, int64_t off_down_s,
-    const qwen_moe::QwenMoeGvSlotDev *__restrict__ slots,
+    const moe::MoEGvSlotDev *__restrict__ slots,
     int k_slots, int n_rows, int cols, __half *__restrict__ ypart)
 {
     constexpr int ROWS = kGemvWarps3 / KP;
@@ -2867,7 +2867,7 @@ __global__ void gemma_gemv_down_batch_kernel(
     if (rflat < total) {
         const int s = rflat / n_rows;
         const int r = rflat - s * n_rows;
-        const qwen_moe::QwenMoeGvSlotDev slot = slots[s];
+        const moe::MoEGvSlotDev slot = slots[s];
         acc = GemvDotRow(
                   hbuf + static_cast<int64_t>(s) * cols,
                   pack_base +
@@ -2911,7 +2911,7 @@ __global__ void gemma_gemv_act_batch_kernel(const __half *__restrict__ ygu,
 
 __global__ void gemma_gemv_reduce_batch_kernel(
     const __half *__restrict__ ypart,
-    const qwen_moe::QwenMoeGvSlotDev *__restrict__ slots, int k_slots,
+    const moe::MoEGvSlotDev *__restrict__ slots, int k_slots,
     int n_elems, float *__restrict__ acc_f32)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2954,7 +2954,7 @@ cudaError_t RunRoutedGemvBatchSeg(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
-    const lsxcommon::qwen_moe::QwenMoeGvSlotDev *slots_dev, int k_slots,
+    const lsxcommon::moe::MoEGvSlotDev *slots_dev, int k_slots,
     int64_t off_gate_p, int64_t off_gate_s,
     int64_t off_up_p, int64_t off_up_s,
     int64_t off_down_p, int64_t off_down_s,
@@ -3054,13 +3054,13 @@ cudaError_t RunRoutedGemvBatchSeg(
 // on device — no host readback, no LRU-lookup stall.
 __global__ void gemma_gemv_gather_table_kernel(
     const int32_t *__restrict__ d_sel, const float *__restrict__ d_selw,
-    const lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ flat_meta,
-    int flat_base, int K, lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ tbl)
+    const lsxcommon::moe::MoEGvSlotDev *__restrict__ flat_meta,
+    int flat_base, int K, lsxcommon::moe::MoEGvSlotDev *__restrict__ tbl)
 {
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= K) return;
     const int flat = flat_base + d_sel[k];
-    lsxcommon::qwen_moe::QwenMoeGvSlotDev v = flat_meta[flat];
+    lsxcommon::moe::MoEGvSlotDev v = flat_meta[flat];
     v.coeff = d_selw[k];
     tbl[k] = v;
 }
