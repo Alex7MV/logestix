@@ -20,14 +20,13 @@ namespace lsxcommon::qwen {
 // Device NVFP4 weight container moved to the model-neutral NVFP4 layer
 // (lsxcommon/lsx_inference_nvfp4.h); the qwen-named alias keeps the
 // qwen-family call sites unchanged.
-using QwenNvfp4Weight = lsx_nvfp4::LsxNvfp4Weight;
 
 // Per decoder layer weights. `is_linear` selects linear_attn vs self_attn.
 
 struct QwenPinnedWeights {
     QwenTopology top;
-    QwenNvfp4Weight embed;        // vocab x hidden
-    QwenNvfp4Weight head;         // vocab x hidden
+    lsx_nvfp4::LsxNvfp4Weight embed;        // vocab x hidden
+    lsx_nvfp4::LsxNvfp4Weight head;         // vocab x hidden
     __half *d_final_norm = nullptr;
     int final_norm_size = 0;
     std::vector<attn::LayerWeights> layers;
@@ -38,6 +37,28 @@ struct QwenPinnedWeights {
 
 // Loads all Qwen3.5-9B weights from output _root (either <root>/logestix/pinned
 // or <root>/pinned) into device memory on `stream`. Returns false on failure.
+// Adapts the model passport to the geometry the neutral kernels take. Lives
+// here, not in lsx_inference_load.h, because the reverse dependency (a
+// neutral header naming a model passport) is exactly what the neutrality
+// guard forbids.
+inline attn::AttnGeometry MakeAttnGeometry(const QwenTopology &top)
+{
+    return attn::AttnGeometry{
+        .hidden_size = top.hidden_size,
+        .intermediate_size = top.intermediate_size,
+        .vocab_size = top.vocab_size,
+        .num_attention_heads = top.num_attention_heads,
+        .num_key_value_heads = top.num_key_value_heads,
+        .head_dim = top.head_dim,
+        .linear_num_key_heads = top.linear_num_key_heads,
+        .linear_num_value_heads = top.linear_num_value_heads,
+        .linear_key_head_dim = top.linear_key_head_dim,
+        .linear_value_head_dim = top.linear_value_head_dim,
+        .rms_norm_eps = top.rms_norm_eps,
+        .partial_rotary_factor = top.partial_rotary_factor,
+        .rope_theta = top.rope_theta};
+}
+
 bool LoadQwenPinnedWeights(const std::string &output_root,
                            QwenPinnedWeights &pw, cudaStream_t stream);
 

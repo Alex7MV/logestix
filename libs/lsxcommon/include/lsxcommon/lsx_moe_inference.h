@@ -250,9 +250,9 @@ bool MoETruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id);
 // d_gate_val [seq] fp32 workspace. sw1=gate_proj [SI,H], sw3=up_proj,
 // sw2=down_proj [H,SI].
 cudaError_t RunMoESharedCombine(
-    cudaStream_t stream, const lsxcommon::qwen::QwenNvfp4Weight &sw1,
-    const lsxcommon::qwen::QwenNvfp4Weight &sw2,
-    const lsxcommon::qwen::QwenNvfp4Weight &sw3,
+    cudaStream_t stream, const lsxcommon::lsx_nvfp4::LsxNvfp4Weight &sw1,
+    const lsxcommon::lsx_nvfp4::LsxNvfp4Weight &sw2,
+    const lsxcommon::lsx_nvfp4::LsxNvfp4Weight &sw3,
     const __half *d_shared_gate, const __half *d_x, int seq, int H, int SI,
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out, const uint8_t *xq = nullptr,

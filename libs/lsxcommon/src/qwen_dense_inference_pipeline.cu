@@ -369,11 +369,11 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                 if (lw.is_linear) {
-                    e = RunQwenFusedLinearAttnKernel(stream, lw, top, seq,
+                    e = RunQwenFusedLinearAttnKernel(stream, lw, qwen::MakeAttnGeometry(top), seq,
                         d_normed, d_attn_out, d_qkv, d_z, d_ab,
                         d_gf, d_betaf, d_conv, d_core, d_gated);
                 } else {
-                    e = RunQwenFullAttention(stream, lw, top, seq,
+                    e = RunQwenFullAttention(stream, lw, qwen::MakeAttnGeometry(top), seq,
                         d_normed, d_attn_out, d_qc, d_q, d_qgate,
                         d_k, d_v, d_attn, d_cos, d_sin, d_pos);
                 }
@@ -390,7 +390,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
                 // fused MLP (down-GEMM accumulates into d_act residual)
-                e = RunQwenFusedMLP(stream, lw, top, seq, d_postin, d_act,
+                e = RunQwenFusedMLP(stream, lw, qwen::MakeAttnGeometry(top), seq, d_postin, d_act,
                                     d_gate);
                 if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
             }
@@ -502,7 +502,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                 if (lw.is_linear) {
-                    e = RunQwenFusedLinearAttnKernel(stream, lw, top, seq,
+                    e = RunQwenFusedLinearAttnKernel(stream, lw, qwen::MakeAttnGeometry(top), seq,
                         d_normed, d_attn_out,
                         kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                         d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
@@ -510,7 +510,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                         kv->d_col + (int64_t)lin_idx * nv * vd * kd);
                     ++lin_idx;
                 } else {
-                    e = RunQwenFullAttention(stream, lw, top, seq,
+                    e = RunQwenFullAttention(stream, lw, qwen::MakeAttnGeometry(top), seq,
                         d_normed, d_attn_out, d_qc, d_q, d_qgate,
                         kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
                         kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
@@ -532,7 +532,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
                 // fused MLP (down-GEMM accumulates into d_act residual)
-                e = RunQwenFusedMLP(stream, lw, top, seq, d_postin, d_act,
+                e = RunQwenFusedMLP(stream, lw, qwen::MakeAttnGeometry(top), seq, d_postin, d_act,
                                     d_gate);
                 if (step < prof_steps) {
                     cudaEventRecord(ph_b[ph_idx + 1], stream);

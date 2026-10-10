@@ -445,7 +445,7 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
             cudaError_t mhe = pw.mixer_hc_cache
                                   ? BuildExpHcDequantCache(
                                         stream, pw.mixer_down, pw.mixer_up,
-                                        qwen::QwenNvfp4Weight{},
+                                        lsx_nvfp4::LsxNvfp4Weight{},
                                         *pw.mixer_hc_cache)
                                   : cudaErrorMemoryAllocation;
             if (mhe != cudaSuccess) {
@@ -666,9 +666,9 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
             // single decode cost of this architecture). Bit-identical to the
             // legacy path (same dequant kernel; fp16->fp32 upcast lossless).
             auto build_hc = [&](ExpHcDequantCache **slot,
-                                const qwen::QwenNvfp4Weight &dn,
-                                const qwen::QwenNvfp4Weight &up,
-                                const qwen::QwenNvfp4Weight &inj) -> cudaError_t {
+                                const lsx_nvfp4::LsxNvfp4Weight &dn,
+                                const lsx_nvfp4::LsxNvfp4Weight &up,
+                                const lsx_nvfp4::LsxNvfp4Weight &inj) -> cudaError_t {
                 *slot = new (std::nothrow) ExpHcDequantCache();
                 if (!*slot) return cudaErrorMemoryAllocation;
                 cudaError_t bhe =

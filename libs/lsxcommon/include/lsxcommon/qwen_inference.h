@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "lsxcommon/lsx_inference_nvfp4.h"
-#include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/lsx_inference_load.h"
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/token_stream.h"
 
@@ -119,7 +119,7 @@ inline cudaError_t RunQwenNvfp4GemmSeq1GemmV(
                                                global_scale, y, K, N, acc);
 }
 
-// QwenNvfp4Weight is an alias of lsx_nvfp4::LsxNvfp4Weight; the launcher is
+// lsx_nvfp4::LsxNvfp4Weight is an alias of lsx_nvfp4::LsxNvfp4Weight; the launcher is
 // the single model-neutral definition (a same-signature inline shim here
 // would make unqualified calls ambiguous).
 using lsx_nvfp4::LaunchNvfp4Gemm;
@@ -131,7 +131,7 @@ using lsx_nvfp4::LaunchNvfp4Gemm;
 // kernel can append into a persistent KV cache (incremental decode).
 cudaError_t RunQwenFullAttention(
     cudaStream_t stream,
-    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const attn::AttnGeometry &geo, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qc, __half *d_q, __half *d_gate,
     __half *d_k, __half *d_v, __half *d_attn,
@@ -150,7 +150,7 @@ cudaError_t RunQwenFullAttention(
 // the last row's block when non-null.
 cudaError_t RunQwenLinearAttention(
     cudaStream_t stream,
-    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const attn::AttnGeometry &geo, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
@@ -163,7 +163,7 @@ cudaError_t RunQwenLinearAttention(
 // Call signature and scratch layout identical to RunQwenLinearAttention.
 cudaError_t RunQwenFusedLinearAttnKernel(
     cudaStream_t stream,
-    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const attn::AttnGeometry &geo, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
@@ -209,7 +209,7 @@ cudaError_t RunQwenMLP(
 // acc-down GEMM, absorbing the separate residual add. d_scratch is [2*seq*I].
 cudaError_t RunQwenFusedMLP(
     cudaStream_t stream, const attn::LayerWeights &lw,
-    const QwenTopology &top, int seq,
+    const attn::AttnGeometry &geo, int seq,
     const __half *d_in, __half *d_resid, __half *d_scratch);
 
 // Producer-fused SwiGLU + NVFP4 activation quant: y = silu(a)*b in fp16 AND

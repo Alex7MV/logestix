@@ -7,6 +7,7 @@
 #include "lsxcommon/qwen_inference.h"
 
 namespace attn = lsxcommon::attn;
+namespace lsx_nvfp4 = lsxcommon::lsx_nvfp4;
 #include "nvfp4_codec.h"
 
 using namespace lsxcommon::qwen;
@@ -26,14 +27,14 @@ __host__ float HostDeq(const std::vector<uint8_t>& packed, const std::vector<uin
     return __half2float(wv);
 }
 
-void FillNvfp4(QwenNvfp4Weight &w, int K, int N, float gs) {
+void FillNvfp4(lsx_nvfp4::LsxNvfp4Weight &w, int K, int N, float gs) {
     std::vector<uint8_t> pk((size_t)K * N / 2), sc((size_t)K * N / 16);
     for (size_t i = 0; i < pk.size(); ++i) pk[i] = (uint8_t)((i * 37 + 5) & 0xFF);
     for (size_t i = 0; i < sc.size(); ++i) sc[i] = (uint8_t)(120 + (i % 12));
     cudaMalloc(&w.d_packed, pk.size()); cudaMemcpy(const_cast<uint8_t*>(w.d_packed), pk.data(), pk.size(), cudaMemcpyHostToDevice);
     cudaMalloc(&w.d_scales, sc.size()); cudaMemcpy(const_cast<uint8_t*>(w.d_scales), sc.data(), sc.size(), cudaMemcpyHostToDevice);
     w.global_scale = gs;
-    // QwenNvfp4Weight convention: rows = OUTPUT dim, cols = INPUT dim (K for GEMM).
+    // lsx_nvfp4::LsxNvfp4Weight convention: rows = OUTPUT dim, cols = INPUT dim (K for GEMM).
     w.rows = N; w.cols = K;
     w.packed_bytes = pk.size(); w.scale_bytes = sc.size();
 }
@@ -45,10 +46,10 @@ TEST_CASE("RunQwenFusedLinearAttnKernel entry runs on a tiny layer", "[qwen][lin
     const int H = 16, nk = 2, kd = 8, nv = 2, vd = 8, seq = 2, kernel = 3;
     const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
 
-    QwenTopology top;
-    top.linear_num_key_heads = nk; top.linear_key_head_dim = kd;
-    top.linear_num_value_heads = nv; top.linear_value_head_dim = vd;
-    top.rms_norm_eps = 1e-6f;
+    attn::AttnGeometry geo;
+    geo.linear_num_key_heads = nk; geo.linear_key_head_dim = kd;
+    geo.linear_num_value_heads = nv; geo.linear_value_head_dim = vd;
+    geo.rms_norm_eps = 1e-6f;
 
     attn::LayerWeights lw; lw.loaded = true; lw.is_linear = true;
     FillNvfp4(lw.qkv, H, S, 0.5f); FillNvfp4(lw.z, H, VD, 0.5f);
@@ -74,7 +75,7 @@ TEST_CASE("RunQwenFusedLinearAttnKernel entry runs on a tiny layer", "[qwen][lin
     cudaMalloc(&dout, (size_t)seq*H*2); cudaMalloc(&dg, (size_t)seq*nv*4);
     cudaMalloc(&dbeta, (size_t)seq*nv*4);
 
-    REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, top, seq, dx, dout,
+    REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, dout,
         dq, dz, dab, dg, dbeta, dconv, dcore, dgated) == cudaSuccess);
     cudaDeviceSynchronize();
 
@@ -147,10 +148,10 @@ TEST_CASE("Fused front F1 qkv+conv1d+l2norm matches host reference", "[qwen][lin
         const int H = nk * kd, kernel = 3;
         const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
 
-        QwenTopology top;
-        top.linear_num_key_heads = nk; top.linear_key_head_dim = kd;
-        top.linear_num_value_heads = nv; top.linear_value_head_dim = vd;
-        top.rms_norm_eps = 1e-6f;
+        attn::AttnGeometry geo;
+        geo.linear_num_key_heads = nk; geo.linear_key_head_dim = kd;
+        geo.linear_num_value_heads = nv; geo.linear_value_head_dim = vd;
+        geo.rms_norm_eps = 1e-6f;
 
         attn::LayerWeights lw; lw.loaded = true; lw.is_linear = true;
         FillNvfp4(lw.qkv, H, S, gs); FillNvfp4(lw.z, H, VD, gs);
@@ -166,7 +167,7 @@ TEST_CASE("Fused front F1 qkv+conv1d+l2norm matches host reference", "[qwen][lin
         std::vector<__half> attn_norm(vd, __float2half(1.0f));
         cudaMalloc(&lw.d_attn_norm, vd*2); cudaMemcpy(lw.d_attn_norm, attn_norm.data(), vd*2, cudaMemcpyHostToDevice);
 
-        auto w2host = [](const QwenNvfp4Weight &w) {
+        auto w2host = [](const lsx_nvfp4::LsxNvfp4Weight &w) {
             std::vector<uint8_t> pk(w.rows * w.cols / 2), sc(w.rows * w.cols / 16);
             cudaMemcpy(pk.data(), w.d_packed, pk.size(), cudaMemcpyDeviceToHost);
             cudaMemcpy(sc.data(), w.d_scales, sc.size(), cudaMemcpyDeviceToHost);
@@ -184,7 +185,7 @@ TEST_CASE("Fused front F1 qkv+conv1d+l2norm matches host reference", "[qwen][lin
             cudaMalloc(&dout, (size_t)seq*H*2); cudaMalloc(&dg, (size_t)seq*nv*4);
             cudaMalloc(&dbeta, (size_t)seq*nv*4);
 
-            REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, top, seq, dx, dout,
+            REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, dout,
                 dq, dz, dab, dg, dbeta, dconv, dcore, dgated) == cudaSuccess);
             cudaDeviceSynchronize();
 
@@ -197,7 +198,7 @@ TEST_CASE("Fused front F1 qkv+conv1d+l2norm matches host reference", "[qwen][lin
             }
 
             // F2 host reference: z[i], a[i], b[i] then g/beta.
-            auto w2host = [](const QwenNvfp4Weight &w) {
+            auto w2host = [](const lsx_nvfp4::LsxNvfp4Weight &w) {
                 std::vector<uint8_t> pk(w.packed_bytes), sc(w.scale_bytes);
                 cudaMemcpy(pk.data(), w.d_packed, pk.size(), cudaMemcpyDeviceToHost);
                 cudaMemcpy(sc.data(), w.d_scales, sc.size(), cudaMemcpyDeviceToHost);
@@ -258,10 +259,10 @@ TEST_CASE("Fused linear-attn full layer matches split reference (seq=1,2)", "[qw
         const int H = nk * kd;             // hidden matches key head count x dim
         const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
 
-        QwenTopology top;
-        top.linear_num_key_heads = nk; top.linear_key_head_dim = kd;
-        top.linear_num_value_heads = nv; top.linear_value_head_dim = vd;
-        top.rms_norm_eps = 1e-6f;
+        attn::AttnGeometry geo;
+        geo.linear_num_key_heads = nk; geo.linear_key_head_dim = kd;
+        geo.linear_num_value_heads = nv; geo.linear_value_head_dim = vd;
+        geo.rms_norm_eps = 1e-6f;
 
         attn::LayerWeights lw; lw.loaded = true; lw.is_linear = true;
         FillNvfp4(lw.qkv, H, S, gs); FillNvfp4(lw.z, H, VD, gs);
@@ -293,9 +294,9 @@ TEST_CASE("Fused linear-attn full layer matches split reference (seq=1,2)", "[qw
             cudaMalloc(&dg, (size_t)seq*nv*4); cudaMalloc(&dgf, (size_t)seq*nv*4);
             cudaMalloc(&dbeta, (size_t)seq*nv*4); cudaMalloc(&dbetaf, (size_t)seq*nv*4);
 
-            REQUIRE(RunQwenLinearAttention(nullptr, lw, top, seq, dx, dout,
+            REQUIRE(RunQwenLinearAttention(nullptr, lw, geo, seq, dx, dout,
                 dq, dz, dab, dg, dbeta, dconv, dcore, dgated) == cudaSuccess);
-            REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, top, seq, dx, doutf,
+            REQUIRE(RunQwenFusedLinearAttnKernel(nullptr, lw, geo, seq, dx, doutf,
                 dqf, dzf, dabf, dgf, dbetaf, dconvf, dcoref, dgatedf) == cudaSuccess);
             cudaDeviceSynchronize();
 

@@ -15,12 +15,13 @@
 #include "lsxcommon/qwen_inference.h"
 
 namespace attn = lsxcommon::attn;
+namespace lsx_nvfp4 = lsxcommon::lsx_nvfp4;
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/schema.h"
 
 namespace {
 
-void FillNvfp4(lsxcommon::qwen::QwenNvfp4Weight &w, int K, int N,
+void FillNvfp4(lsxcommon::lsx_nvfp4::LsxNvfp4Weight &w, int K, int N,
                uint8_t seed_pack, uint8_t seed_scale)
 {
     w.rows = K; w.cols = N;
@@ -123,8 +124,8 @@ TEST_CASE("RunQwenFusedMLP full-MLP parity vs host split", "[qwen][mlp][fused]")
     auto u = host_bytes(lw.mlp_up.packed_bytes,   23, 2);
     auto d = host_bytes(lw.mlp_down.packed_bytes, 7,  3);
 
-    lsxcommon::qwen::QwenTopology top{};
-    top.hidden_size = H;
+    attn::AttnGeometry geo{};
+    geo.hidden_size = H;
 
     for (int seq : {1, 2}) {
         // post-RMSNormed input stream [seq, H] (deterministic, small).
@@ -147,7 +148,7 @@ TEST_CASE("RunQwenFusedMLP full-MLP parity vs host split", "[qwen][mlp][fused]")
         cudaMemcpy(dresid,  hres.data(), (size_t)seq * H * 2, cudaMemcpyHostToDevice);
 
         REQUIRE(lsxcommon::qwen::RunQwenFusedMLP(
-            nullptr, lw, top, seq, dx, dresid, dscratch) == cudaSuccess);
+            nullptr, lw, geo, seq, dx, dresid, dscratch) == cudaSuccess);
         cudaDeviceSynchronize();
 
         std::vector<__half> hout((size_t)seq * H);

@@ -446,7 +446,7 @@ cudaError_t RunOrnithMoeGeneration(
                                      d_normed, seq, H, eps);
             if (e != cudaSuccess) return fail(e, "inputnorm l" + std::to_string(l));
             if (lw.attn.is_linear) {
-                e = qwen::RunQwenFusedLinearAttnKernel(stream, lw.attn, top, seq,
+                e = qwen::RunQwenFusedLinearAttnKernel(stream, lw.attn, qwen::MakeAttnGeometry(top), seq,
                     d_normed, d_attn_out,
                     kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                     d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
@@ -454,7 +454,7 @@ cudaError_t RunOrnithMoeGeneration(
                     kv->d_col + (int64_t)lin_idx * nv * vd * kd);
                 ++lin_idx;
             } else {
-                e = qwen::RunQwenFullAttention(stream, lw.attn, top, seq,
+                e = qwen::RunQwenFullAttention(stream, lw.attn, qwen::MakeAttnGeometry(top), seq,
                     d_normed, d_attn_out, d_qc, d_q, d_qgate,
                     kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
                     kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
@@ -769,7 +769,7 @@ cudaError_t RunOrnithMoeGeneration(
                                      d_normed, 1, H, eps);
                 if (lw.attn.is_linear) {
                     qwen::RunQwenFusedLinearAttnKernel(
-                        stream, lw.attn, top, 1, d_normed, d_attn_out,
+                        stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_normed, d_attn_out,
                         kv->d_qkv +
                             (int64_t)linA * kv->max_total * S,
                         d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
@@ -778,7 +778,7 @@ cudaError_t RunOrnithMoeGeneration(
                     ++linA;
                 } else {
                     qwen::RunQwenFullAttention(
-                        stream, lw.attn, top, 1, d_normed, d_attn_out, d_qc,
+                        stream, lw.attn, qwen::MakeAttnGeometry(top), 1, d_normed, d_attn_out, d_qc,
                         d_q, d_qgate,
                         kv->d_kv_k +
                             (int64_t)fullA * kv->max_total * NKV * HD,

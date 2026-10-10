@@ -27,9 +27,9 @@ struct ExpHcDequantCache {
 // Dequantizes the three hc weights once (on load). The mixer passes an
 // empty inject_w: inject cache stays null. Strict on allocation failure.
 cudaError_t BuildExpHcDequantCache(cudaStream_t stream,
-                                   const qwen::QwenNvfp4Weight &down,
-                                   const qwen::QwenNvfp4Weight &up,
-                                   const qwen::QwenNvfp4Weight &inject_w,
+                                   const lsx_nvfp4::LsxNvfp4Weight &down,
+                                   const lsx_nvfp4::LsxNvfp4Weight &up,
+                                   const lsx_nvfp4::LsxNvfp4Weight &inject_w,
                                    ExpHcDequantCache &out);
 
 // Per-layer device weights: reused dense attention block + qwen4_exp extras
@@ -38,19 +38,19 @@ cudaError_t BuildExpHcDequantCache(cudaStream_t stream,
 // projections on the PLE layer).
 struct ExpLayerWeights {
     lsxcommon::attn::LayerWeights attn;  // norms + attention/GDN (no dense MLP)
-    qwen::QwenNvfp4Weight indexer_qk;  // QSA: hidden -> (idx_h+idx_kv)*idx_hd
+    lsx_nvfp4::LsxNvfp4Weight indexer_qk;  // QSA: hidden -> (idx_h+idx_kv)*idx_hd
 
     // Hyper-connections (GatedResidual): group-RMSNorm weights BF16 raw,
     // low-rank projections NVFP4, block-inject NVFP4.
     uint8_t *d_attn_hc_norm = nullptr;  // [hc*H] BF16 bits
     uint8_t *d_mlp_hc_norm = nullptr;   // [hc*H] BF16 bits
     int64_t hc_norm_bytes = 0;
-    qwen::QwenNvfp4Weight attn_hc_down;    // [lowrank, hc*H]
-    qwen::QwenNvfp4Weight attn_hc_up;      // [hc*H, lowrank]
-    qwen::QwenNvfp4Weight attn_hc_inject;  // [hc, hc*H]
-    qwen::QwenNvfp4Weight mlp_hc_down;
-    qwen::QwenNvfp4Weight mlp_hc_up;
-    qwen::QwenNvfp4Weight mlp_hc_inject;
+    lsx_nvfp4::LsxNvfp4Weight attn_hc_down;    // [lowrank, hc*H]
+    lsx_nvfp4::LsxNvfp4Weight attn_hc_up;      // [hc*H, lowrank]
+    lsx_nvfp4::LsxNvfp4Weight attn_hc_inject;  // [hc, hc*H]
+    lsx_nvfp4::LsxNvfp4Weight mlp_hc_down;
+    lsx_nvfp4::LsxNvfp4Weight mlp_hc_up;
+    lsx_nvfp4::LsxNvfp4Weight mlp_hc_inject;
     // Pre-dequantized fp16 hc weights (built once at load; per-token hc
     // dequant eliminated). Null until BuildExpHcDequantCache runs.
     ExpHcDequantCache *attn_hc_cache = nullptr;
@@ -59,15 +59,15 @@ struct ExpLayerWeights {
     // MoE.
     uint8_t *d_router = nullptr;  // raw BF16 bits [E, H]
     int64_t router_bytes = 0;
-    qwen::QwenNvfp4Weight shared_w1;  // gate_proj [SI, H]
-    qwen::QwenNvfp4Weight shared_w2;  // down_proj [H, SI]
-    qwen::QwenNvfp4Weight shared_w3;  // up_proj    [SI, H]
+    lsx_nvfp4::LsxNvfp4Weight shared_w1;  // gate_proj [SI, H]
+    lsx_nvfp4::LsxNvfp4Weight shared_w2;  // down_proj [H, SI]
+    lsx_nvfp4::LsxNvfp4Weight shared_w3;  // up_proj    [SI, H]
     __half *d_shared_gate = nullptr;  // [H] fp16
     bool moe_loaded = false;
 
     // PLE (only on the PLE layer, otherwise null).
-    qwen::QwenNvfp4Weight ple_key;    // [hc*H, ple_embed]
-    qwen::QwenNvfp4Weight ple_value;  // [H, ple_embed]
+    lsx_nvfp4::LsxNvfp4Weight ple_key;    // [hc*H, ple_embed]
+    lsx_nvfp4::LsxNvfp4Weight ple_value;  // [H, ple_embed]
     uint8_t *d_ple_norm_key = nullptr;    // [hc*H] BF16 bits
     uint8_t *d_ple_norm_query = nullptr;  // [hc*H] BF16 bits
     uint8_t *d_ple_norm_conv = nullptr;   // [hc*H] BF16 bits
@@ -101,8 +101,8 @@ struct ExpPleShardView {
 struct ExpPinnedWeights {
     qwen::QwenTopology top;    // dense view for kernel reuse
     Qwen4ExpTopology exp_top;  // full topology incl. qwen4_exp fields
-    qwen::QwenNvfp4Weight embed;
-    qwen::QwenNvfp4Weight head;   // legacy NVFP4 view (unused for qwen38)
+    lsx_nvfp4::LsxNvfp4Weight embed;
+    lsx_nvfp4::LsxNvfp4Weight head;   // legacy NVFP4 view (unused for qwen38)
     // LM head as a persistent FP16 table ([V, H], from BF16 raw global.arrow)
     // for the FP16 head GEMV: NVFP4 logit noise exceeds the top-1/top-2
     // margin of this model.
@@ -112,8 +112,8 @@ struct ExpPinnedWeights {
     // norm BF16 raw + down/up NVFP4; output [H] (mean over streams).
     uint8_t *d_mixer_norm = nullptr;  // [hc*H] BF16 bits
     int64_t mixer_norm_bytes = 0;
-    qwen::QwenNvfp4Weight mixer_down;  // [lowrank, hc*H]
-    qwen::QwenNvfp4Weight mixer_up;    // [hc*H, lowrank]
+    lsx_nvfp4::LsxNvfp4Weight mixer_down;  // [lowrank, hc*H]
+    lsx_nvfp4::LsxNvfp4Weight mixer_up;    // [hc*H, lowrank]
     ExpHcDequantCache *mixer_hc_cache = nullptr;  // pre-dequant mixer weights
     __half *d_final_norm = nullptr;
     int final_norm_size = 0;

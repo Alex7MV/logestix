@@ -14,7 +14,7 @@
 
 #include "lsxcommon/glm_moe_flash_load.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/qwen_inference.h"     // QwenNvfp4Weight, QwenGenerationResult
+#include "lsxcommon/qwen_inference.h"     // lsx_nvfp4::LsxNvfp4Weight, QwenGenerationResult
 #include "lsxcommon/lsx_moe_inference.h"  // MoERoutedSlot
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/token_stream.h"

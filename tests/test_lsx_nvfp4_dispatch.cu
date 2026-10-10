@@ -293,7 +293,7 @@ TEST_CASE("LaunchNvfp4Gemm wrapper parity and LsxNvfp4Weight guards",
     b.Init(2, 64, 128);
     const float gs = 0.5f;
 
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight w;
+    lsx_nvfp4::LsxNvfp4Weight w;
     w.d_packed = b.dp;
     w.d_scales = b.ds;
     w.global_scale = gs;
@@ -311,14 +311,14 @@ TEST_CASE("LaunchNvfp4Gemm wrapper parity and LsxNvfp4Weight guards",
     CHECK(std::memcmp(hy.data(), hy2.data(), hy.size() * sizeof(__half)) == 0);
 
     // Degenerate weight geometry is rejected.
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight bad = w;
+    lsx_nvfp4::LsxNvfp4Weight bad = w;
     bad.rows = 0;
     CHECK(lsx_nvfp4::LaunchNvfp4Gemm(bad, b.dx, b.seq, b.dy, nullptr) == cudaErrorInvalidValue);
     bad.rows = b.N; bad.cols = 0;
     CHECK(lsx_nvfp4::LaunchNvfp4Gemm(bad, b.dx, b.seq, b.dy, nullptr) == cudaErrorInvalidValue);
 
     // view_only weights must NOT release aliased storage on Free().
-    lsxcommon::lsx_nvfp4::LsxNvfp4Weight view = w;
+    lsx_nvfp4::LsxNvfp4Weight view = w;
     view.view_only = true;
     view.Free();
     CHECK(view.d_packed == nullptr);

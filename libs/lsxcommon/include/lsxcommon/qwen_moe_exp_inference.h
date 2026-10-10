@@ -8,7 +8,7 @@
 #include <cuda_bf16.h>
 
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/qwen_inference.h"  // QwenNvfp4Weight
+#include "lsxcommon/qwen_inference.h"  // lsx_nvfp4::LsxNvfp4Weight
 #include "lsxcommon/lsx_moe_inference.h"  // MoERoutedSlot + router kernel
 #include "qwen_moe_exp_load.h"
 #include "lsxcommon/sampling.h"
@@ -33,8 +33,8 @@ cudaError_t RunExpHcGatedResidualCached(
 // Legacy per-call dequant path (fallback when no cache is attached).
 cudaError_t RunExpHcGatedResidual(
     cudaStream_t stream, const __half *d_hyper_input,
-    const qwen::QwenNvfp4Weight &down, const qwen::QwenNvfp4Weight &up,
-    const qwen::QwenNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
+    const lsx_nvfp4::LsxNvfp4Weight &down, const lsx_nvfp4::LsxNvfp4Weight &up,
+    const lsx_nvfp4::LsxNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
     int seq, int H, int hc, int lowrank, float *d_mixed, float *d_inject_out,
     __half *d_mixed_h, const uint8_t *d_hc_norm_override = nullptr);
 
@@ -55,8 +55,8 @@ cudaError_t RunExpHcInjectScatter(cudaStream_t stream,
 
 // Final global mixer (GatedResidual without block_inject) — out [seq, H].
 cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
-                          const qwen::QwenNvfp4Weight &down,
-                          const qwen::QwenNvfp4Weight &up,
+                          const lsx_nvfp4::LsxNvfp4Weight &down,
+                          const lsx_nvfp4::LsxNvfp4Weight &up,
                           const uint8_t *d_mixer_norm, int seq, int H, int hc,
                           int lowrank, __half *d_out, __half *d_normed_scratch);
 
@@ -134,8 +134,8 @@ void ExpPleStateFree(ExpPleState &st);
 // pre-gathered from the mmap shards). d_token: current token id.
 // d_ple_conv_w: depthwise conv weights [hc*H, k] fp32.
 cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
-                            const qwen::QwenNvfp4Weight &key_proj,
-                            const qwen::QwenNvfp4Weight &value_proj,
+                            const lsx_nvfp4::LsxNvfp4Weight &key_proj,
+                            const lsx_nvfp4::LsxNvfp4Weight &value_proj,
                             const uint8_t *d_norm_key,
                             const uint8_t *d_norm_query,
                             const uint8_t *d_norm_conv,

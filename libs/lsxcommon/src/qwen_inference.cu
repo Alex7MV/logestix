@@ -855,7 +855,7 @@ __global__ void fused_rope_tables_kernel(__half *__restrict__ cos_buf,
 // tokens of the same call, which requires kernel-launch ordering.
 __global__ void fused_linear_qkv_kernel(
     const __half * __restrict__ x,          // d_normed [seq, H]
-    const QwenNvfp4Weight qkv,              // rows=H, cols=S
+    const lsx_nvfp4::LsxNvfp4Weight qkv,              // rows=H, cols=S
     int seq, int nk, int kd, int nv, int vd, int H, int kv_base,
     __half * __restrict__ d_qkv)            // persistent raw history
 {
@@ -888,8 +888,8 @@ __global__ void fused_linear_qkv_kernel(
 // stage A; z/a/b read d_normed directly), so they share one launch.
 __global__ void fused_linear_conv_zab_kernel(
     const __half * __restrict__ x,          // d_normed [seq, H]
-    const QwenNvfp4Weight z,
-    const QwenNvfp4Weight a, const QwenNvfp4Weight b,
+    const lsx_nvfp4::LsxNvfp4Weight z,
+    const lsx_nvfp4::LsxNvfp4Weight a, const lsx_nvfp4::LsxNvfp4Weight b,
     const float * __restrict__ A_log, const float * __restrict__ dt_bias,
     const __half * __restrict__ conv_w,     // [S, kernel]
     int seq, int nk, int kd, int nv, int vd, int H, int kernel, int kv_base,
@@ -1216,7 +1216,7 @@ __global__ void gating_prep_kernel(const __half *__restrict__ a_buf,
 // gated-delta recurrence, RMSNormGated and out_proj tail are unchanged.
 cudaError_t RunQwenFusedLinearAttnKernel(
     cudaStream_t stream,
-    const attn::LayerWeights &lw, const QwenTopology &top, int seq,
+    const attn::LayerWeights &lw, const attn::AttnGeometry &geo, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
@@ -1225,10 +1225,10 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     bool use_sigmoid_gate /* = false */)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
-    const int nk = top.linear_num_key_heads;
-    const int kd = top.linear_key_head_dim;
-    const int nv = top.linear_num_value_heads;
-    const int vd = top.linear_value_head_dim;
+    const int nk = geo.linear_num_key_heads;
+    const int kd = geo.linear_key_head_dim;
+    const int nv = geo.linear_num_value_heads;
+    const int vd = geo.linear_value_head_dim;
     const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
     if (nk <= 0 || kd <= 0 || nv <= 0 || vd <= 0) return cudaErrorInvalidValue;
     if (kd > 256) return cudaErrorInvalidValue;  // shared arrays sized [256]
@@ -1375,7 +1375,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
         const int threads = std::min(vd, 256);
         rmsnorm_gated_kernel<<<seq * nv, threads, vd * sizeof(float), stream>>>(
             d_core, d_z, lw.d_attn_norm, d_gated, seq * nv, vd,
-            top.rms_norm_eps, use_sigmoid_gate);
+            geo.rms_norm_eps, use_sigmoid_gate);
         e = cudaGetLastError(); if (e) return e;
     }
     return RunQwenNvfp4Gemm(stream, d_gated, lw.out.d_packed, lw.out.d_scales,
@@ -1425,10 +1425,10 @@ cudaError_t RunQwenMLP(cudaStream_t stream,
 // separate output buffer that the caller then adds. `top` is reserved for
 // future use (geometry is read from `lw`).
 cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
-                            const QwenTopology &top, int seq,
+                            const attn::AttnGeometry &geo, int seq,
                             const __half *d_in, __half *d_resid, __half *d_scratch)
 {
-    (void)top;
+    (void)geo;
     if (!lw.loaded || !d_in || !d_resid || !d_scratch || seq <= 0)
         return cudaErrorInvalidValue;
     const int H = lw.mlp_gate.cols;   // input hidden dim
@@ -1522,7 +1522,7 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
 //   d_sin : [seq, rotary_dim]
 cudaError_t RunQwenFullAttention(cudaStream_t stream,
                                  const attn::LayerWeights &lw,
-                                 const QwenTopology &top, int seq,
+                                 const attn::AttnGeometry &geo, int seq,
                                  const __half *d_normed, __half *d_out,
                                  __half *d_qc, __half *d_q, __half *d_gate,
                                  __half *d_k, __half *d_v, __half *d_attn,
@@ -1530,11 +1530,11 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
                                  int32_t *d_pos, int kv_base)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
-    const int NH = top.num_attention_heads;
-    const int HD = top.head_dim;
-    const int NKV = top.num_key_value_heads;
-    const int H = top.hidden_size;
-    const int rotary_dim = (int)(HD * top.partial_rotary_factor);
+    const int NH = geo.num_attention_heads;
+    const int HD = geo.head_dim;
+    const int NKV = geo.num_key_value_heads;
+    const int H = geo.hidden_size;
+    const int rotary_dim = (int)(HD * geo.partial_rotary_factor);
     if (NH <= 0 || HD <= 0 || NKV <= 0 || H <= 0) return cudaErrorInvalidValue;
 
     // kv rows are appended at [kv_base..kv_base+seq) when kv_base > 0
@@ -1555,7 +1555,7 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
         qwen_split_query_kernel<<<seq * NH, threads, HD * sizeof(float),
                                   stream>>>(
             d_qc, d_gate, d_q, nullptr, seq, NH, HD, lw.d_q_norm,
-            lw.d_k_norm, (float)top.rms_norm_eps);
+            lw.d_k_norm, (float)geo.rms_norm_eps);
         e = cudaGetLastError(); if (e) return e;
     }
 
@@ -1564,12 +1564,12 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
         const int threads = std::min(HD, 512);
         qwen_head_norm_kernel<<<seq * NKV, threads, HD * sizeof(float),
                                   stream>>>(
-            k_row0, lw.d_k_norm, k_row0, seq, NKV, HD, (float)top.rms_norm_eps);
+            k_row0, lw.d_k_norm, k_row0, seq, NKV, HD, (float)geo.rms_norm_eps);
         e = cudaGetLastError(); if (e) return e;
     }
 
     // 5. RoPE on q,k (first rotary_dim dims). k has NKV heads, q has NH heads.
-    e = RunQwenRopeCosSin(stream, d_pos, seq, rotary_dim, top.rope_theta,
+    e = RunQwenRopeCosSin(stream, d_pos, seq, rotary_dim, geo.rope_theta,
                           d_cos, d_sin); if (e) return e;
     e = RunQwenPartialRope(stream, d_q, k_row0, d_cos, d_sin, d_q, k_row0,
                            seq, NH, NKV, HD, rotary_dim); if (e) return e;
@@ -1627,7 +1627,7 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
 // NVR = linear_num_value_heads.
 cudaError_t RunQwenLinearAttention(cudaStream_t stream,
                                    const attn::LayerWeights &lw,
-                                   const QwenTopology &top, int seq,
+                                   const attn::AttnGeometry &geo, int seq,
                                    const __half *d_normed, __half *d_out,
                                    __half *d_qkv, __half *d_z, __half *d_ab,
                                    float *d_g, float *d_beta,
@@ -1636,10 +1636,10 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
                                    float *d_gd_state)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
-    const int nk = top.linear_num_key_heads;
-    const int kd = top.linear_key_head_dim;
-    const int nv = top.linear_num_value_heads;
-    const int vd = top.linear_value_head_dim;
+    const int nk = geo.linear_num_key_heads;
+    const int kd = geo.linear_key_head_dim;
+    const int nv = geo.linear_num_value_heads;
+    const int vd = geo.linear_value_head_dim;
     const int KD = nk * kd;
     const int VD = nv * vd;
     const int S = KD * 2 + VD;
@@ -1714,7 +1714,7 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
         const int threads = std::min(vd, 256);
         rmsnorm_gated_kernel<<<seq * nv, threads, vd * sizeof(float), stream>>>(
             d_core, d_z, lw.d_attn_norm, d_gated, seq * nv, vd,
-            top.rms_norm_eps);
+            geo.rms_norm_eps);
         e = cudaGetLastError(); if (e) return e;
     }
 

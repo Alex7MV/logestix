@@ -239,7 +239,7 @@ cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
 
 // Uploads one NVFP4 weight as two raw device blocks staged through the ring.
 // WeightT must expose rows/cols/global_scale/packed_bytes/scale_bytes/
-// d_packed/d_scales/Free() (qwen::QwenNvfp4Weight satisfies this).
+// d_packed/d_scales/Free() (lsx_nvfp4::LsxNvfp4Weight satisfies this).
 template <typename WeightT>
 cudaError_t UploadNvfp4Weight(const DenseNvfp4View *r, WeightT &w,
                               cudaStream_t stream, PinnedStagingRing &ring,
