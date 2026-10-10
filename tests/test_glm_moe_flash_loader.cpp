@@ -165,7 +165,7 @@ TEST_CASE("AllocateMoEExpertCache: LRU eviction bookkeeping")
     }
     gpu::ExpertDeviceCache cache;
     std::string error;
-    REQUIRE(qwen_moe::AllocateMoEExpertCache(store, 2, cache, error));
+    REQUIRE(moe::AllocateMoEExpertCache(store, 2, cache, error));
     REQUIRE(cache.slots == 2);
     // LRU: insert flat 0 and 1 -> touch 0 -> insert 2 evicts 1 (LRU).
     REQUIRE(qwen_moe::QwenMoeExpertCacheInsert(cache, 0) >= 0);
@@ -174,6 +174,6 @@ TEST_CASE("AllocateMoEExpertCache: LRU eviction bookkeeping")
     REQUIRE(qwen_moe::QwenMoeExpertCacheInsert(cache, 2) >= 0);
     REQUIRE(qwen_moe::QwenMoeExpertCacheLookup(cache, 1) == -1);
     REQUIRE(qwen_moe::QwenMoeExpertCacheLookup(cache, 0) >= 0);
-    qwen_moe::FreeMoEExpertCache(cache);
+    moe::FreeMoEExpertCache(cache);
     cudaFreeHost(slab);
 }

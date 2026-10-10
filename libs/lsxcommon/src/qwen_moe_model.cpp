@@ -57,7 +57,7 @@ Qwen35MoeModel::~Qwen35MoeModel() { Unload(); }
 void QwenMoeModelBase::TeardownWeights()
 {
     qwen_moe::FreeQwenMoeGenScratch(scratch_);
-    qwen_moe::FreeMoEExpertCache(cache_);
+    moe::FreeMoEExpertCache(cache_);
     experts_.Free();
     qwen_moe::FreeQwenMoePinnedWeights(pw_);
     kv_.reset();
@@ -121,7 +121,7 @@ bool QwenMoeModelBase::Load()
         return AbortLoad();
     }
     const auto t_experts = std::chrono::steady_clock::now();
-    if (!qwen_moe::LoadMoEExpertStore(cfg_.model_path, experts_, err)) {
+    if (!moe::LoadMoEExpertStore(cfg_.model_path, experts_, err)) {
         log::error("[qwen-moe-model] expert store load failed: " + err);
         return AbortLoad();
     }
@@ -197,7 +197,7 @@ bool QwenMoeModelBase::Load()
     // Shrink-retry so an optimistic estimate degrades instead of failing
     // the lifecycle.
     while (slots >= 4 &&
-           !qwen_moe::AllocateMoEExpertCache(experts_, slots, cache_,
+           !moe::AllocateMoEExpertCache(experts_, slots, cache_,
                                                  err)) {
         slots /= 2;
         cache_ = {};

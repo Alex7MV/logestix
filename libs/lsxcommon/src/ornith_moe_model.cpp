@@ -59,7 +59,7 @@ OrnithMoeModel::~OrnithMoeModel() { Unload(); }
 void OrnithMoeModelBase::TeardownWeights()
 {
     ornith::FreeOrnithMoeGenScratch(scratch_);
-    ornith::FreeOrnithMoeExpertCache(cache_);
+    moe::FreeMoEExpertCache(cache_);
     experts_.Free();
     ornith::FreeOrnithMoePinnedWeights(pw_);
     kv_.reset();
@@ -123,7 +123,7 @@ bool OrnithMoeModelBase::Load()
         return AbortLoad();
     }
     const auto t_experts = std::chrono::steady_clock::now();
-    if (!ornith::LoadOrnithMoeExpertStore(cfg_.model_path, experts_, err)) {
+    if (!moe::LoadMoEExpertStore(cfg_.model_path, experts_, err)) {
         log::error("[ornith-moe-model] expert store load failed: " + err);
         return AbortLoad();
     }
@@ -199,7 +199,7 @@ bool OrnithMoeModelBase::Load()
     // Shrink-retry so an optimistic estimate degrades instead of failing
     // the lifecycle.
     while (slots >= 4 &&
-           !ornith::AllocateOrnithMoeExpertCache(experts_, slots, cache_,
+           !moe::AllocateMoEExpertCache(experts_, slots, cache_,
                                                  err)) {
         slots /= 2;
         cache_ = {};
@@ -216,7 +216,7 @@ bool OrnithMoeModelBase::Load()
         const auto t_pre = std::chrono::steady_clock::now();
         for (int l = 0; l < experts_.num_layers; ++l) {
             for (int e = 0; e < experts_.num_experts; ++e) {
-                if (ornith::EnsureOrnithMoeExpertResident(
+                if (moe::EnsureMoEExpertResident(
                         experts_, l, e, cache_, stream(), err) < 0) {
                     log::error("[ornith-moe-model] prestage failed: " + err);
                     return AbortLoad();
@@ -224,7 +224,7 @@ bool OrnithMoeModelBase::Load()
             }
         }
         if (stream()) cudaStreamSynchronize(stream());
-        ornith::OrnithMoeGemvNohandshake(experts_);
+        moe::MoEGemvNohandshake(experts_);
         log::info(absl::StrCat("[ornith-moe-model] expert prestage ",
                                MsSince(t_pre), " ms"));
     }

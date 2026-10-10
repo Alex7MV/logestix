@@ -368,7 +368,7 @@ target_link_libraries(lsxcommon_gemma_cu
 # Ornith-1.5-35B-A3B MoE kernels (duplicated qwen_moe layer).
 # -fmad=false: bit-exact router/expert math (protocol invariant).
 add_library(lsxcommon_ornith_cu OBJECT
-    src/ornith_moe_inference.cu
+    src/ornith_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_ornith_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

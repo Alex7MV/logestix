@@ -10,7 +10,11 @@
 #include <cstdint>
 #include <vector>
 
+#include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/ornith_moe_inference_pipeline.h"
 #include "lsxcommon/ornith_moe_load.h"
+
+namespace moe = lsxcommon::moe;
 
 using lsxcommon::ornith::OrnithMoeExpertDeviceCache;
 
@@ -83,7 +87,7 @@ TEST_CASE("expert cache LRU bookkeeping", "[ornith-moe-cache]")
 #include <cmath>
 #include <cstring>
 #include <vector>
-#include "lsxcommon/ornith_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 
 TEST_CASE("bf16 act-quant matches fp16 variant for bf16-representable values",
@@ -136,7 +140,7 @@ namespace {
 // Host replica of the HF router semantics (fp32 softmax -> top-k -> renorm).
 void HostRouter(const std::vector<__nv_bfloat16> &w,
                 const std::vector<__half> &x, int seq, int E, int K, int H,
-                std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> &out)
+                std::vector<lsxcommon::moe::MoERoutedSlot> &out)
 {
     out.assign(static_cast<size_t>(seq) * K, {});
     for (int t = 0; t < seq; ++t) {
@@ -194,27 +198,27 @@ TEST_CASE("router top-k matches host replica", "[ornith-moe-router]")
 
     __nv_bfloat16 *d_w;
     __half *d_x;
-    lsxcommon::ornith::OrnithMoeRoutedSlot *d_slots;
+    lsxcommon::moe::MoERoutedSlot *d_slots;
     cudaMalloc(&d_w, w.size() * sizeof(__nv_bfloat16));
     cudaMalloc(&d_x, x.size() * sizeof(__half));
-    cudaMalloc(&d_slots, sizeof(lsxcommon::ornith::OrnithMoeRoutedSlot) *
+    cudaMalloc(&d_slots, sizeof(lsxcommon::moe::MoERoutedSlot) *
                              static_cast<size_t>(seq) * K);
     cudaMemcpy(d_w, w.data(), w.size() * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
     cudaMemcpy(d_x, x.data(), x.size() * sizeof(__half), cudaMemcpyHostToDevice);
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeRouterTopK(stream, d_w, d_x, seq, E,
+    REQUIRE(lsxcommon::moe::RunMoERouterTopK(stream, d_w, d_x, seq, E,
                                                       K, H, d_slots) ==
             cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> got(
+    std::vector<lsxcommon::moe::MoERoutedSlot> got(
         static_cast<size_t>(seq) * K);
     cudaMemcpy(got.data(), d_slots, got.size() * sizeof(got[0]),
                cudaMemcpyDeviceToHost);
 
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> want;
+    std::vector<lsxcommon::moe::MoERoutedSlot> want;
     HostRouter(w, x, seq, E, K, H, want);
 
     for (size_t i = 0; i < want.size(); ++i) {
@@ -224,9 +228,9 @@ TEST_CASE("router top-k matches host replica", "[ornith-moe-router]")
     }
 
     // Determinism: repeat run must be bit-identical.
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> again(
+    std::vector<lsxcommon::moe::MoERoutedSlot> again(
         static_cast<size_t>(seq) * K);
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeRouterTopK(stream, d_w, d_x, seq, E,
+    REQUIRE(lsxcommon::moe::RunMoERouterTopK(stream, d_w, d_x, seq, E,
                                                       K, H, d_slots) ==
             cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -282,12 +286,12 @@ TEST_CASE("router decode-split matches prefill bit-exact", "[ornith-moe-router]"
 
     __nv_bfloat16 *d_w;
     __half *d_x;
-    lsxcommon::ornith::OrnithMoeRoutedSlot *d_slots_mono, *d_slots_split;
+    lsxcommon::moe::MoERoutedSlot *d_slots_mono, *d_slots_split;
     cudaMalloc(&d_w, w.size() * sizeof(__nv_bfloat16));
     cudaMalloc(&d_x, x.size() * sizeof(__half));
-    cudaMalloc(&d_slots_mono, sizeof(lsxcommon::ornith::OrnithMoeRoutedSlot) *
+    cudaMalloc(&d_slots_mono, sizeof(lsxcommon::moe::MoERoutedSlot) *
                                   static_cast<size_t>(seq) * K);
-    cudaMalloc(&d_slots_split, sizeof(lsxcommon::ornith::OrnithMoeRoutedSlot) *
+    cudaMalloc(&d_slots_split, sizeof(lsxcommon::moe::MoERoutedSlot) *
                                    static_cast<size_t>(seq) * K);
     cudaMemcpy(d_w, w.data(), w.size() * sizeof(__nv_bfloat16),
                cudaMemcpyHostToDevice);
@@ -297,19 +301,19 @@ TEST_CASE("router decode-split matches prefill bit-exact", "[ornith-moe-router]"
     cudaStreamCreate(&stream);
 
     // Prefill: one monolithic launch over all tokens.
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeRouterTopK(
+    REQUIRE(lsxcommon::moe::RunMoERouterTopK(
                 stream, d_w, d_x, seq, E, K, H, d_slots_mono) == cudaSuccess);
     // Decode: two-stage split, one token at a time.
     for (int t = 0; t < seq; ++t) {
-        REQUIRE(lsxcommon::ornith::RunOrnithMoeRouterTopK(
+        REQUIRE(lsxcommon::moe::RunMoERouterTopK(
                     stream, d_w, d_x + static_cast<size_t>(t) * H, 1, E, K, H,
                     d_slots_split + static_cast<size_t>(t) * K) == cudaSuccess);
     }
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> mono(
+    std::vector<lsxcommon::moe::MoERoutedSlot> mono(
         static_cast<size_t>(seq) * K);
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> split(
+    std::vector<lsxcommon::moe::MoERoutedSlot> split(
         static_cast<size_t>(seq) * K);
     cudaMemcpy(mono.data(), d_slots_mono, mono.size() * sizeof(mono[0]),
                cudaMemcpyDeviceToHost);
@@ -340,7 +344,7 @@ TEST_CASE("router decode-split matches prefill bit-exact", "[ornith-moe-router]"
 // replica so a "fast but wrong" rewrite cannot pass on timing alone.
 TEST_CASE("router real-shape decode latency budget", "[ornith-moe-router]")
 {
-    using lsxcommon::ornith::OrnithMoeRoutedSlot;
+    using lsxcommon::moe::MoERoutedSlot;
     const int E = 256, K = 8, H = 2048;
     std::vector<__nv_bfloat16> w(static_cast<size_t>(E) * H);
     std::vector<__half> x(static_cast<size_t>(H));
@@ -352,10 +356,10 @@ TEST_CASE("router real-shape decode latency budget", "[ornith-moe-router]")
 
     __nv_bfloat16 *d_w;
     __half *d_x;
-    OrnithMoeRoutedSlot *d_slots;
+    moe::MoERoutedSlot *d_slots;
     cudaMalloc(&d_w, w.size() * sizeof(__nv_bfloat16));
     cudaMalloc(&d_x, x.size() * sizeof(__half));
-    cudaMalloc(&d_slots, sizeof(OrnithMoeRoutedSlot) * K);
+    cudaMalloc(&d_slots, sizeof(moe::MoERoutedSlot) * K);
     cudaMemcpy(d_w, w.data(), w.size() * sizeof(__nv_bfloat16),
                cudaMemcpyHostToDevice);
     cudaMemcpy(d_x, x.data(), x.size() * sizeof(__half),
@@ -364,15 +368,15 @@ TEST_CASE("router real-shape decode latency budget", "[ornith-moe-router]")
     cudaStream_t stream;
     cudaStreamCreate(&stream);
     for (int i = 0; i < 5; ++i)
-        REQUIRE(lsxcommon::ornith::RunOrnithMoeRouterTopK(
+        REQUIRE(lsxcommon::moe::RunMoERouterTopK(
                     stream, d_w, d_x, 1, E, K, H, d_slots) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     // Selection sanity + host-replica agreement at real scale.
-    std::vector<OrnithMoeRoutedSlot> got(static_cast<size_t>(K));
+    std::vector<moe::MoERoutedSlot> got(static_cast<size_t>(K));
     cudaMemcpy(got.data(), d_slots, got.size() * sizeof(got[0]),
                cudaMemcpyDeviceToHost);
-    std::vector<OrnithMoeRoutedSlot> want;
+    std::vector<moe::MoERoutedSlot> want;
     HostRouter(w, x, 1, E, K, H, want);
     for (int k = 0; k < K; ++k) {
         CHECK(got[static_cast<size_t>(k)].eid ==
@@ -390,7 +394,7 @@ TEST_CASE("router real-shape decode latency budget", "[ornith-moe-router]")
     constexpr int kIters = 200;
     cudaEventRecord(a, stream);
     for (int i = 0; i < kIters; ++i)
-        REQUIRE(lsxcommon::ornith::RunOrnithMoeRouterTopK(
+        REQUIRE(lsxcommon::moe::RunMoERouterTopK(
                     stream, d_w, d_x, 1, E, K, H, d_slots) == cudaSuccess);
     cudaEventRecord(b, stream);
     REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
@@ -424,14 +428,14 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[ornith-moe-expert
     ornithtest::OrnithSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     REQUIRE(lsxcommon::ornith::ConvertOrnithMoeModel(in.string(), out.string()).ok());
 
-    lsxcommon::ornith::OrnithMoeExpertStore store;
+    lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::ornith::LoadOrnithMoeExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     REQUIRE(store.num_layers == 4);
     REQUIRE(store.num_experts == 8);
 
     lsxcommon::ornith::OrnithMoeExpertDeviceCache cache;
-    REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 4, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -452,12 +456,12 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[ornith-moe-expert
     cudaMemset(d_acc, 0, H * 4);
     cudaMemcpy(d_x, hx.data(), H * 2, cudaMemcpyHostToDevice);
 
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> h_slots =
+    std::vector<lsxcommon::moe::MoERoutedSlot> h_slots =
         {{0, 0.5f}, {1, 0.5f}};
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeRoutedFFN(
+    REQUIRE(lsxcommon::moe::RunMoERoutedFFN(
                 stream, store, cache, /*layer=*/0, h_slots.data(), K, d_x,
                 H, I, d_acc, d_yg, d_yu, d_y2, err) == cudaSuccess);
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeAccToFp16(stream, d_acc, d_y2, H) ==
+    REQUIRE(lsxcommon::moe::RunMoEAccToFp16(stream, d_acc, d_y2, H) ==
             cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
@@ -467,18 +471,18 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[ornith-moe-expert
     // Determinism across cache states: flush the cache and re-run.
     std::vector<__half> hout2(H);
     {
-        lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
-        REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 4, cache, err));
+        lsxcommon::moe::FreeMoEExpertCache(cache);
+        REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
         cudaMemset(d_acc, 0, H * 4);
         // Reverse slot order exercises LRU eviction path.
         std::swap(h_slots[0], h_slots[1]);
         // Undo the coefficient pairing so math matches the first run.
         h_slots[0].coeff = 0.5f; h_slots[1].coeff = 0.5f;
         h_slots[0].eid = 0; h_slots[1].eid = 1;
-        REQUIRE(lsxcommon::ornith::RunOrnithMoeRoutedFFN(
+        REQUIRE(lsxcommon::moe::RunMoERoutedFFN(
                     stream, store, cache, 0, h_slots.data(), K, d_x, H, I,
                     d_acc, d_yg, d_yu, d_y2, err) == cudaSuccess);
-        REQUIRE(lsxcommon::ornith::RunOrnithMoeAccToFp16(stream, d_acc, d_y2, H) ==
+        REQUIRE(lsxcommon::moe::RunMoEAccToFp16(stream, d_acc, d_y2, H) ==
                 cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         cudaMemcpy(hout2.data(), d_y2, H * 2, cudaMemcpyDeviceToHost);
@@ -497,7 +501,7 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[ornith-moe-expert
     cudaFree(d_x); cudaFree(d_yg); cudaFree(d_yu); cudaFree(d_y2);
     cudaFree(d_acc);
     cudaStreamDestroy(stream);
-    lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
@@ -518,14 +522,14 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
     ornithtest::OrnithSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     REQUIRE(lsxcommon::ornith::ConvertOrnithMoeModel(in.string(), out.string()).ok());
 
-    lsxcommon::ornith::OrnithMoeExpertStore store;
+    lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::ornith::LoadOrnithMoeExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
 
     lsxcommon::ornith::OrnithMoeExpertDeviceCache cache;
     // Deliberately small (4 slots < 8 experts over both layers) so the
     // copy-stream pass also exercises LRU eviction across layers.
-    REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 4, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
 
     cudaStream_t stream, copy_stream;
     REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
@@ -546,17 +550,17 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
 
     cudaMemcpy(d_x, hx.data(), H * 2, cudaMemcpyHostToDevice);
 
-    const std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> h_slots =
+    const std::vector<lsxcommon::moe::MoERoutedSlot> h_slots =
         {{0, 0.5f}, {1, 0.5f}};
 
     auto run_layer = [&](cudaStream_t cs, cudaEvent_t *ev_uploads,
                          cudaEvent_t ev_front, std::vector<__half> &dst) {
         cudaMemset(d_acc, 0, H * 4);
-        REQUIRE(lsxcommon::ornith::RunOrnithMoeRoutedFFN(
+        REQUIRE(lsxcommon::moe::RunMoERoutedFFN(
                     stream, store, cache, /*layer=*/0, h_slots.data(), K, d_x,
                     H, I, d_acc, d_yg, d_yu, d_y2, err,
                     cs, ev_uploads, ev_front) == cudaSuccess);
-        REQUIRE(lsxcommon::ornith::RunOrnithMoeAccToFp16(stream, d_acc, d_y2, H) ==
+        REQUIRE(lsxcommon::moe::RunMoEAccToFp16(stream, d_acc, d_y2, H) ==
                 cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         dst.resize(H);
@@ -569,8 +573,8 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
 
     // Copy-stream path: fresh cache -> every expert is a miss staged on
     // copy_stream, compute fenced by per-expert events.
-    lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
-    REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 4, cache, err));
+    lsxcommon::moe::FreeMoEExpertCache(cache);
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
     std::vector<__half> got;
     {
         cudaEvent_t ev_uploads[K];
@@ -592,7 +596,7 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
     cudaFree(d_acc);
     cudaStreamDestroy(stream);
     cudaStreamDestroy(copy_stream);
-    lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
@@ -633,7 +637,7 @@ TEST_CASE("shared expert gate combine", "[ornith-moe-experts]")
     cudaMemset(d_acc, 0, static_cast<size_t>(seq) * H * 4);
     cudaMemcpy(d_x, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeSharedCombine(
+    REQUIRE(lsxcommon::moe::RunMoESharedCombine(
                 stream, lw.shared_w1, lw.shared_w2, lw.shared_w3,
                 lw.d_shared_gate, d_x, seq, H, SI, d_acc, d_si, d_sh, d_g,
                 d_out) == cudaSuccess);
@@ -648,7 +652,7 @@ TEST_CASE("shared expert gate combine", "[ornith-moe-experts]")
 
     // Determinism: bit-identical repeat.
     std::vector<__half> hout2(hout.size());
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeSharedCombine(
+    REQUIRE(lsxcommon::moe::RunMoESharedCombine(
                 stream, lw.shared_w1, lw.shared_w2, lw.shared_w3,
                 lw.d_shared_gate, d_x, seq, H, SI, d_acc, d_si, d_sh, d_g,
                 d_out) == cudaSuccess);
@@ -675,14 +679,14 @@ TEST_CASE("generation driver deterministic on synthetic model", "[ornith-moe-gen
     REQUIRE(lsxcommon::ornith::ConvertOrnithMoeModel(in.string(), out.string()).ok());
 
     lsxcommon::ornith::OrnithMoePinnedWeights pw;
-    lsxcommon::ornith::OrnithMoeExpertStore store;
+    lsxcommon::moe::MoEExpertStore store;
     lsxcommon::ornith::OrnithMoeExpertDeviceCache cache;
     cudaStream_t stream;
     cudaStreamCreate(&stream);
     std::string err;
     REQUIRE(lsxcommon::ornith::LoadOrnithMoeDenseWeights(out.string(), pw, stream, err));
-    REQUIRE(lsxcommon::ornith::LoadOrnithMoeExpertStore(out.string(), store, err));
-    REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 8, cache, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     lsxcommon::ornith::OrnithMoeGenScratch gen_scratch;
     REQUIRE(lsxcommon::ornith::EnsureOrnithMoeScratch(stream, pw, gen_scratch) ==
@@ -714,7 +718,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[ornith-moe-gen
     CHECK(r1.ok); CHECK(r2.ok);
 
     lsxcommon::ornith::FreeOrnithMoeGenScratch(gen_scratch);
-    lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::ornith::FreeOrnithMoePinnedWeights(pw);
     cudaStreamDestroy(stream);
@@ -739,12 +743,12 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[ornith-moe-tc-batch]
     ornithtest::OrnithSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     REQUIRE(lsxcommon::ornith::ConvertOrnithMoeModel(in.string(), out.string()).ok());
 
-    lsxcommon::ornith::OrnithMoeExpertStore store;
+    lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::ornith::LoadOrnithMoeExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     lsxcommon::ornith::OrnithMoeExpertDeviceCache cache;
     // Full residency: 8 experts -> 8 slots, so every dev_slot is stable.
-    REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 8, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -774,11 +778,11 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[ornith-moe-tc-batch]
 
     // Legacy reference: K sequential RunLsxTcGemmPreQuant calls against the
     // SAME slot addresses the table resolves to (slot k == dev_slot k under
-    // full residency; mirrored via EnsureOrnithMoeExpertResident).
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> routes =
+    // full residency; mirrored via moe::EnsureMoEExpertResident).
+    std::vector<lsxcommon::moe::MoERoutedSlot> routes =
         {{0, 0.3f}, {0, 0.0f}};   // duplicate eid 0, zero coeff
     for (int k = 0; k < K; ++k) {
-        const int slot = lsxcommon::ornith::EnsureOrnithMoeExpertResident(
+        const int slot = lsxcommon::moe::EnsureMoEExpertResident(
             store, 0, routes[static_cast<size_t>(k)].eid, cache, stream, err);
         REQUIRE(slot >= 0);
         const auto &rec = store.records[0][routes[static_cast<size_t>(k)].eid];
@@ -804,7 +808,7 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[ornith-moe-tc-batch]
     // Batched: device table with the same dev_slot/scale mapping.
     std::vector<lsxcommon::lsx_tc::LsxTcBatchSlot> tbl(K);
     for (int k = 0; k < K; ++k) {
-        const int slot = lsxcommon::ornith::EnsureOrnithMoeExpertResident(
+        const int slot = lsxcommon::moe::EnsureMoEExpertResident(
             store, 0, routes[static_cast<size_t>(k)].eid, cache, stream, err);
         const auto &rec = store.records[0][routes[static_cast<size_t>(k)].eid];
         tbl[static_cast<size_t>(k)] = {slot, rec.gs1, rec.gs3, rec.gs2, 0.f};
@@ -856,7 +860,7 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[ornith-moe-tc-batch]
     cudaFree(d_xq); cudaFree(d_xqs); cudaFree(d_y13_seq); cudaFree(d_y13_batch);
     cudaFree(d_y2_seq); cudaFree(d_y2_batch); cudaFree(d_tbl);
     cudaStreamDestroy(stream);
-    lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::qwen::SetQwenTcFastMath(false);
     std::error_code ec;
@@ -880,11 +884,11 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     ornithtest::OrnithSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     REQUIRE(lsxcommon::ornith::ConvertOrnithMoeModel(in.string(), out.string()).ok());
 
-    lsxcommon::ornith::OrnithMoeExpertStore store;
+    lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::ornith::LoadOrnithMoeExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     lsxcommon::ornith::OrnithMoeExpertDeviceCache cache;
-    REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 8, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -928,43 +932,43 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
 
     // Legacy reference (handshake per-slot TC chain, xq/xqs provided):
     // acc seeded from the residual (init kernel) then coeff_add chain.
-    std::vector<lsxcommon::ornith::OrnithMoeRoutedSlot> routes =
+    std::vector<lsxcommon::moe::MoERoutedSlot> routes =
         {{3, 0.6f}, {3, 0.4f}};   // duplicate expert eid 3
     cudaMemsetAsync(d_acc_seq, 0, H * 4, stream);
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeAccInitForTest(
+    REQUIRE(lsxcommon::moe::RunMoEAccInitForTest(
                 stream, d_postin, d_acc_seq, H) == cudaSuccess);
     // Then the legacy coeff-add chain.
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeRoutedFFN(
+    REQUIRE(lsxcommon::moe::RunMoERoutedFFN(
                 stream, store, cache, 0, routes.data(), K, d_postin, H, I,
                 d_acc_seq, d_yg, d_yu, d_y2, err, nullptr, nullptr, nullptr,
                 d_xq, d_xqs) == cudaSuccess);
 
     // Batched chain: warm the mirror, gather on device, run the batch.
     for (int e = 0; e < store.num_experts; ++e)
-        REQUIRE(lsxcommon::ornith::EnsureOrnithMoeExpertResident(
+        REQUIRE(lsxcommon::moe::EnsureMoEExpertResident(
                     store, 0, e, cache, stream, err) >= 0);
     // Stage the remaining layers so the full-residency mirror completes and
-    // OrnithMoeGemvNohandshake uploads d_gemv_meta (the gather input).
+    // moe::MoEGemvNohandshake uploads d_gemv_meta (the gather input).
     for (int l = 1; l < store.num_layers; ++l)
         for (int e = 0; e < store.num_experts; ++e)
-            REQUIRE(lsxcommon::ornith::EnsureOrnithMoeExpertResident(
+            REQUIRE(lsxcommon::moe::EnsureMoEExpertResident(
                         store, l, e, cache, stream, err) >= 0);
-    REQUIRE(lsxcommon::ornith::OrnithMoeGemvNohandshake(store));
+    REQUIRE(lsxcommon::moe::MoEGemvNohandshake(store));
 
-    lsxcommon::ornith::OrnithMoeRoutedSlot *d_routes;
+    lsxcommon::moe::MoERoutedSlot *d_routes;
     cudaMalloc(&d_routes, sizeof(routes[0]) * K);
     cudaMemcpy(d_routes, routes.data(), sizeof(routes[0]) * K,
                cudaMemcpyHostToDevice);
-    lsxcommon::ornith::OrnithMoeGvSlotDev *d_tbl;
-    cudaMalloc(&d_tbl, sizeof(lsxcommon::ornith::OrnithMoeGvSlotDev) * 16);
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeGemvGatherTable(
+    lsxcommon::moe::MoEGvSlotDev *d_tbl;
+    cudaMalloc(&d_tbl, sizeof(lsxcommon::moe::MoEGvSlotDev) * 16);
+    REQUIRE(lsxcommon::moe::RunMoEGemvGatherTable(
                 stream, d_routes, K, store.d_gemv_meta, d_tbl) == cudaSuccess);
     // Batched path: acc seeded with the SAME init kernel, then the plain
     // ascending reduce (the seeded-reduce fold was reverted — it corrupted
     // real-model decode; see commit 2e97def).
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeAccInitForTest(
+    REQUIRE(lsxcommon::moe::RunMoEAccInitForTest(
                 stream, d_postin, d_acc_batch, H) == cudaSuccess);
-    REQUIRE(lsxcommon::ornith::RunOrnithMoeRoutedTcBatch(
+    REQUIRE(lsxcommon::moe::RunMoERoutedTcBatch(
                 stream, store, cache, 0, d_routes, d_xq, d_xqs, K, H, I,
                 d_postin, d_acc_batch, d_ygu_batch, d_h_batch, d_yp_batch,
                 d_qpack_b, d_qscales_b, nullptr, d_tbl) == cudaSuccess);
@@ -984,7 +988,7 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     cudaFree(d_acc_batch); cudaFree(d_qpack_b); cudaFree(d_qscales_b);
     cudaFree(d_routes); cudaFree(d_tbl);
     cudaStreamDestroy(stream);
-    lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::qwen::SetQwenTcFastMath(false);
     ornithtest::OrnithUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
@@ -1009,17 +1013,17 @@ TEST_CASE("generation driver fallback parity under partial residency",
 
     lsxcommon::qwen::SetQwenTcFastMath(true);
     lsxcommon::ornith::OrnithMoePinnedWeights pw;
-    lsxcommon::ornith::OrnithMoeExpertStore store;
+    lsxcommon::moe::MoEExpertStore store;
     lsxcommon::ornith::OrnithMoeExpertDeviceCache cache;
     cudaStream_t stream;
     cudaStreamCreate(&stream);
     std::string err;
     REQUIRE(lsxcommon::ornith::LoadOrnithMoeDenseWeights(out.string(), pw, stream, err));
-    REQUIRE(lsxcommon::ornith::LoadOrnithMoeExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     // Deliberately SMALL: 4 slots < 8 experts -> mirror never completes ->
-    // OrnithMoeGemvNohandshake never trips -> legacy path is the default.
-    REQUIRE(lsxcommon::ornith::AllocateOrnithMoeExpertCache(store, 4, cache, err));
-    REQUIRE(!lsxcommon::ornith::OrnithMoeGemvNohandshake(store));
+    // moe::MoEGemvNohandshake never trips -> legacy path is the default.
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
+    REQUIRE(!lsxcommon::moe::MoEGemvNohandshake(store));
 
     lsxcommon::ornith::OrnithMoeGenScratch gen_scratch;
     REQUIRE(lsxcommon::ornith::EnsureOrnithMoeScratch(stream, pw, gen_scratch) ==
@@ -1047,7 +1051,7 @@ TEST_CASE("generation driver fallback parity under partial residency",
     CHECK(r1.ok); CHECK(r2.ok);
 
     lsxcommon::ornith::FreeOrnithMoeGenScratch(gen_scratch);
-    lsxcommon::ornith::FreeOrnithMoeExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::ornith::FreeOrnithMoePinnedWeights(pw);
     cudaStreamDestroy(stream);

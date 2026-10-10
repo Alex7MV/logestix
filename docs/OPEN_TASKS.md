@@ -826,10 +826,13 @@ product or numerics decision, not a patch.
   equivalents, THEN rename. This is the natural Phase 5 of
   `docs/superpowers/plans/2026-08-24-cuda-unification-phase4.md` (Phase A built
   `lsx_kernels_*.cuh` for exactly this). Do not rename before decomposing.
-- **Also open:** `ornith_moe_inference.cu` still duplicates the (now neutral)
-  kernel layer — 2228 lines, ~97% identical, and already missing the TC-routed
-  expert chain. The rename unblocks it; the de-duplication is its own change so
-  a throughput regression stays bisectable.
+- **Resolved 2026-10-10:** `ornith_moe_inference.{h,cu}` is gone. Ornith now
+  calls the neutral `lsx_moe_inference` layer and keeps only
+  `ornith_moe_inference_pipeline.{h,cu}` (its generation driver, which is
+  welded to `OrnithMoePinnedWeights`). The expert store/residency/loader
+  cluster moved to the neutral layer as well, which also de-duplicated qwen's
+  and glm-flash's copies. Net −2776 lines. Real-weight SelfCheck (ornith and
+  qwen_moe_36) and ornith DET pass. TC-routed expert chain is now shared.
 
 ## Archive
 

@@ -9,7 +9,6 @@
 // Protocol invariants: one stream end-to-end (no cudaDeviceSynchronize in the
 // generation loop), shared-memory RMW only by thread 0 behind barriers.
 
-#include "absl/strings/str_cat.h"
 
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/lsx_moe_inference.h"
@@ -25,13 +24,26 @@
 #include "lsx_kernels_quant.cuh"
 
 #include <algorithm>
+#include <filesystem>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include "lsxcommon/log.h"
+#include "lsxcommon/schema.h"
+#include "fast_load_internal.h"
+
+#include <absl/strings/str_cat.h>
+
+#include <fstream>
+#include <iterator>
+
 namespace lsxcommon {
 namespace moe {
 namespace {
+
+using fastload::kArenaAlign;
+using fastload::AlignUp;
 
 constexpr int kRouterBlock = 128;
 
@@ -1452,6 +1464,229 @@ void MoEExpertStore::Free()
     gemv_ready = false;
     num_layers = 0;
     num_experts = 0;
+}
+
+// ── Routed-expert store: load + device cache ────────────────────────────────
+
+bool LoadMoEExpertStore(const std::string &model_path,
+                            MoEExpertStore &store, std::string &error)
+{
+    namespace fs = std::filesystem;
+    store.Free();
+    error.clear();
+
+    fs::path base = fs::path(model_path) / "logestix";
+    if (!fs::exists(base))
+        base = fs::path(model_path) / "logestix-qwen35moe";  // legacy layout
+    const fs::path experts_dir = base / "experts";
+
+    // Discover layer count from directory names.
+    int max_layer = -1;
+    for (fs::directory_iterator it(experts_dir), end; it != end; ++it) {
+        const std::string name = it->path().filename().string();
+        if (name.rfind("layer_", 0) == 0) {
+            int l = 0;
+            if (absl::SimpleAtoi(name.substr(6), &l))
+                max_layer = std::max(max_layer, l);
+        }
+    }
+    if (max_layer < 0) {
+        error = "no expert layer dirs under " + experts_dir.string();
+        return false;
+    }
+    store.num_layers = max_layer + 1;
+    store.records.resize(static_cast<size_t>(store.num_layers));
+    store.h_slabs.assign(static_cast<size_t>(store.num_layers), nullptr);
+    store.slab_bytes.assign(static_cast<size_t>(store.num_layers), 0);
+
+    for (int l = 0; l < store.num_layers; ++l) {
+        const fs::path layer_dir = experts_dir / absl::StrCat("layer_", l);
+
+        // Expert count from files present in layer 0; strict afterwards.
+        int E = store.num_experts;
+        if (E <= 0) {
+            E = 0;
+            for (fs::directory_iterator it(layer_dir), end; it != end; ++it) {
+                const std::string name = it->path().filename().string();
+                if (name.rfind("exp_", 0) == 0 && name.find(".arrow") != std::string::npos) {
+                    int e = 0;
+                    if (absl::SimpleAtoi(name.substr(4, name.find('.') - 4), &e))
+                        E = std::max(E, e + 1);
+                }
+            }
+            store.num_experts = E;
+        }
+        if (E <= 0) {
+            error = absl::StrCat("no expert files in layer_", l);
+            return false;
+        }
+
+        // Build all records, staging payloads once (single disk pass), then
+        // one pinned slab per layer.
+        struct StagedExpert {
+            std::vector<uint8_t> w1, w2, w3, s1, s2, s3;
+        };
+        std::vector<StagedExpert> staged(static_cast<size_t>(E));
+        auto &recs = store.records[static_cast<size_t>(l)];
+        recs.assign(static_cast<size_t>(E), {});
+        size_t total = 0;
+        for (int e = 0; e < E; ++e) {
+            const std::string path =
+                (layer_dir / absl::StrCat("exp_", e, ".arrow")).string();
+            auto batch_res = ReadRecordBatchFromFile(path);
+            if (!batch_res.ok()) {
+                error = absl::StrCat("read failed: ", path);
+                return false;
+            }
+            auto pe_res = ExpertSchema::UnpackBatch(*batch_res);
+            if (!pe_res.ok()) {
+                error = absl::StrCat("unpack failed: ", path);
+                return false;
+            }
+            auto &pe = *pe_res;
+            auto &st = staged[static_cast<size_t>(e)];
+            st.w1 = std::move(pe.w1_packed);
+            st.w2 = std::move(pe.w2_packed);
+            st.w3 = std::move(pe.w3_packed);
+            st.s1 = std::move(pe.w1_scales);
+            st.s2 = std::move(pe.w2_scales);
+            st.s3 = std::move(pe.w3_scales);
+            auto &r = recs[static_cast<size_t>(e)];
+            r.w1_off = total; r.w1_bytes = static_cast<int64_t>(st.w1.size());
+            total += r.w1_bytes;
+            r.w2_off = total; r.w2_bytes = static_cast<int64_t>(st.w2.size());
+            total += r.w2_bytes;
+            r.w3_off = total; r.w3_bytes = static_cast<int64_t>(st.w3.size());
+            total += r.w3_bytes;
+            r.gs1 = pe.w1_global_scale;
+            r.gs2 = pe.w2_global_scale;
+            r.gs3 = pe.w3_global_scale;
+            // Scales stored after the packed region with 16B alignment.
+            total = AlignUp(total, 16);
+            r.s1_off = total; r.s1_bytes = static_cast<int64_t>(st.s1.size()); total += r.s1_bytes;
+            r.s2_off = total; r.s2_bytes = static_cast<int64_t>(st.s2.size()); total += r.s2_bytes;
+            r.s3_off = total; r.s3_bytes = static_cast<int64_t>(st.s3.size()); total += r.s3_bytes;
+        }
+        store.slab_bytes[static_cast<size_t>(l)] = total;
+
+        uint8_t *slab = nullptr;
+        if (cudaMallocHost(reinterpret_cast<void **>(&slab), total) !=
+            cudaSuccess) {
+            error = absl::StrCat("pinned slab alloc failed (layer ", l, ")");
+            return false;
+        }
+        store.h_slabs[static_cast<size_t>(l)] = slab;
+
+        for (int e = 0; e < E; ++e) {
+            const auto &st = staged[static_cast<size_t>(e)];
+            const auto &r = recs[static_cast<size_t>(e)];
+            std::memcpy(slab + r.w1_off, st.w1.data(), r.w1_bytes);
+            std::memcpy(slab + r.w2_off, st.w2.data(), r.w2_bytes);
+            std::memcpy(slab + r.w3_off, st.w3.data(), r.w3_bytes);
+            std::memcpy(slab + r.s1_off, st.s1.data(), r.s1_bytes);
+            std::memcpy(slab + r.s2_off, st.s2.data(), r.s2_bytes);
+            std::memcpy(slab + r.s3_off, st.s3.data(), r.s3_bytes);
+        }
+        staged.clear();
+        staged.shrink_to_fit();
+        log::info(absl::StrCat("[qwen_moe_load] layer_", l, ": ", E,
+                               " experts, ", total >> 10, " KiB pinned"));
+    }
+
+    // Device-side per-expert {gs1, gs3} pairs for the fused w13 GEMM
+    // epilogue: the kernel treats a non-null seg_wgs with null bounds as a
+    // two-segment split at N/2 (gate | up).
+    const int flats = store.num_layers * store.num_experts;
+    if (flats > 0) {
+        std::vector<float> hw(static_cast<size_t>(flats) * 2);
+        for (int l = 0; l < store.num_layers; ++l)
+            for (int e = 0; e < store.num_experts; ++e) {
+                const auto &r =
+                    store.records[static_cast<size_t>(l)]
+                                 [static_cast<size_t>(e)];
+                hw[(static_cast<size_t>(l) * store.num_experts + e) * 2] =
+                    static_cast<float>(r.gs1);
+                hw[(static_cast<size_t>(l) * store.num_experts + e) * 2 + 1] =
+                    static_cast<float>(r.gs3);
+            }
+        if (cudaMalloc(&store.d_seg_wgs, hw.size() * sizeof(float)) !=
+            cudaSuccess)
+            return false;
+        if (cudaMemcpy(store.d_seg_wgs, hw.data(), hw.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) != cudaSuccess)
+            return false;
+    }
+    return true;
+}
+
+bool AllocateMoEExpertCache(MoEExpertStore &store, int slots,
+                                gpu::ExpertDeviceCache &cache,
+                                std::string &error)
+{
+    if (slots <= 0 || store.num_layers <= 0 || store.num_experts <= 0 ||
+        store.h_slabs.empty() || !store.h_slabs[0]) {
+        error = "expert store not loaded";
+        return false;
+    }
+    // Slot strides sized to the largest expert payload across layers.
+    size_t max_pack = 0, max_scale = 0;
+    for (int l = 0; l < store.num_layers; ++l) {
+        for (const auto &r : store.records[static_cast<size_t>(l)]) {
+            const size_t pack = static_cast<size_t>(r.w1_bytes + r.w2_bytes +
+                                                    r.w3_bytes);
+            const size_t scale = static_cast<size_t>(r.s1_bytes + r.s2_bytes +
+                                                     r.s3_bytes);
+            max_pack = std::max(max_pack, pack);
+            max_scale = std::max(max_scale, scale);
+        }
+    }
+    cache.slots = slots;
+    cache.total_experts = store.num_layers * store.num_experts;
+    cache.pack_stride = AlignUp(max_pack, kArenaAlign);
+    cache.scale_stride = AlignUp(max_scale, kArenaAlign);
+    const size_t bytes = cache.DeviceBytes();
+
+    void *base = nullptr;
+    if (cudaMalloc(&base, bytes) != cudaSuccess) {
+        error = absl::StrCat("expert device block alloc failed: ",
+                             cudaGetErrorString(cudaGetLastError()),
+                             " (", (bytes >> 20), " MiB requested)");
+        return false;
+    }
+    cache.d_base = static_cast<uint8_t *>(base);
+    cache.d_pack = cache.d_base;
+    cache.d_scale = cache.d_base +
+                    static_cast<int64_t>(slots) * cache.pack_stride;
+    // Host LRU bookkeeping owned by the cache allocation.
+    cache.h_slot_of = new int32_t[static_cast<size_t>(cache.total_experts)];
+    cache.h_slot_owner = new int32_t[static_cast<size_t>(slots)];
+    cache.h_lru = new int32_t[static_cast<size_t>(slots)];
+    for (int i = 0; i < cache.total_experts; ++i)
+        cache.h_slot_of[i] = -1;
+    for (int i = 0; i < slots; ++i) {
+        cache.h_slot_owner[i] = -1;
+        cache.h_lru[i] = i;
+    }
+    cache.hits = 0;
+    cache.misses = 0;
+    return true;
+}
+
+void FreeMoEExpertCache(gpu::ExpertDeviceCache &cache)
+{
+    if (cache.d_base) {
+        cudaFree(cache.d_base);
+        cache.d_base = nullptr;
+    }
+    delete[] cache.h_slot_of;
+    delete[] cache.h_slot_owner;
+    delete[] cache.h_lru;
+    cache.h_slot_of = nullptr;
+    cache.h_slot_owner = nullptr;
+    cache.h_lru = nullptr;
+    cache.d_pack = nullptr;
+    cache.d_scale = nullptr;
+    cache.slots = 0;
 }
 
 } // namespace moe
