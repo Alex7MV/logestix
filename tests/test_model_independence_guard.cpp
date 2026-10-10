@@ -652,3 +652,47 @@ TEST_CASE("the routed-MoE inference layer is model-neutral in name and deps",
         }
     }
 }
+
+TEST_CASE("the attention kernel layer is model-neutral in name and deps",
+          "[independence]")
+{
+    // Geometry-neutral in content (every dimension is a runtime parameter) and
+    // consumed by Qwen MoE, Qwen MoE Exp, Ornith and Alice, so it carries the
+    // neutral lsx_ name. Scoped the same way as the routed-MoE guard: no model
+    // dependency, no family-named symbol of its own. The shared fast-math
+    // aliases and the KV cache / result structs keep their qwen names on
+    // purpose -- they are held by three families, so renaming them would make
+    // a non-qwen family depend on a qwen-owned header.
+    const fs::path hdr = kIncDir / "lsx_attn_inference.h";
+    const fs::path cu = kSrcDir / "lsx_attn_inference.cu";
+    REQUIRE(fs::exists(hdr));
+    REQUIRE(fs::exists(cu));
+
+    static const char *kAllowed[] = {
+        "QwenTcFastMath",  "SetQwenTcFastMath", "QwenSeq1Gemv",
+        "SetQwenSeq1Gemv", "QwenGemmLarge",     "QwenGemmLargeActive",
+        "QwenKvCache",     "QwenGenerationResult"};
+
+    for (const fs::path &p : {hdr, cu}) {
+        const std::string text = ReadFile(p);
+        REQUIRE_FALSE(text.empty());
+
+        std::string stripped = text;
+        for (const char *a : kAllowed) {
+            const size_t n = std::strlen(a);
+            for (size_t at = stripped.find(a); at != std::string::npos;
+                 at = stripped.find(a, at + n))
+                stripped.replace(at, n, std::string(n, '_'));
+        }
+        INFO(p.filename() << " must not define a family-named symbol");
+        REQUIRE(stripped.find("Qwen") == std::string::npos);
+
+        static const char *kModelOwned[] = {
+            "qwen_dense_convert.h", "qwen_inference_load.h",
+            "qwen_generation.h",    "qwen_moe_load.h"};
+        for (const char *h : kModelOwned) {
+            INFO(p.filename() << " must not include the model header " << h);
+            REQUIRE(text.find(h) == std::string::npos);
+        }
+    }
+}
