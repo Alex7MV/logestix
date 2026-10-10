@@ -1207,11 +1207,12 @@ cudaError_t RunGemmaDenseGeneration(
     // ── Prefill ──
     {
         const int seq = P;
-        // The shared TC mxf4nvf4 GEMM drops the partial M tile: a prefill whose
-        // length is not a multiple of the MMA tile leaves the last rows at zero
-        // (measured: seq=18 -> rows 16..17 = 0, so the last row's logits were 0
-        // and the first token came back as 0). Run the prefill projections on
-        // the bit-exact scalar path; the decode is NVFP4 GEMV and unaffected.
+        // Prefill stays on the bit-exact scalar path by choice, not by
+        // necessity: the shared TC GEMM's partial-M bug that used to force
+        // this is fixed (lsx_tc_gemm.cu now applies the warp row group), but
+        // running gemma's prefill through TC changes its numeric class --
+        // the first token and the tool round-trip both move, and this
+        // family's FSI/CODE/DET goldens were captured on the scalar path.
         const bool tc_saved = lsx_nvfp4::LsxTcFastMath();
         lsx_nvfp4::SetLsxTcFastMath(false);
         cudaError_t e = cudaMemcpyAsync(ws.ids, input_ids.data(),

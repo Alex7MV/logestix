@@ -49,16 +49,6 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
 
 void FreeQwenMoePinnedWeights(QwenMoePinnedWeights &pw);
 
-// Loads every experts/layer_<l>/exp_<e>.arrow under
-// <model_path>/logestix/ into pinned host memory. Strict errors.
-bool LoadMoEExpertStore(const std::string &model_path,
-                            lsxcommon::moe::MoEExpertStore &store, std::string &error);
-
-// Allocates the LRU device cache sized to the largest expert payload.
-bool AllocateMoEExpertCache(moe::MoEExpertStore &store, int slots,
-                                gpu::ExpertDeviceCache &cache,
-                                std::string &error);
-void FreeMoEExpertCache(gpu::ExpertDeviceCache &cache);
 
 // Ensures expert `eid` of `layer` is resident in the device cache; stages its
 // payload H2D from the pinned slab on miss. Returns slot index, -1 on error

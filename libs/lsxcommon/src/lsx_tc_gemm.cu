@@ -468,6 +468,10 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     const int warp = tid >> 5;
     const int lane = tid & 31;
     const int wm = warp >> 1;          // 0..3
+    // Warp row group: the 8 warps are a 4(M) x 2(N) grid and each covers
+    // 16 rows, so the M tile spans wm * 16. Without this the block only
+    // ever emits rows [0,16) of its 64-row tile.
+    const int warp_row = wm * 16;
     const int wn = warp & 1;           // 0..1
     const int g = lane >> 2;
     const int tig = lane & 3;
@@ -499,7 +503,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 #pragma unroll
         for (int j = 0; j < kTN / 16; ++j) {
             const int n0 = col_base + wn * (kTN / 2) + j * 8 + tig * 2;
-            const int r0 = row_base + g;
+            const int r0 = row_base + warp_row + g;
             if (r0 < seq && n0 < N)
                 d[j][0] = __half2float(y[static_cast<int64_t>(r0) * N + n0]) *
                           inv_wgs;
@@ -519,7 +523,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     int a_row[32], a_koff[32];
 #pragma unroll
     for (int i = 0; i < 32; ++i) {
-        a_row[i] = (i < 8 || (i >= 16 && i < 24)) ? g : g + 8;
+        a_row[i] = warp_row + ((i < 8 || (i >= 16 && i < 24)) ? g : g + 8);
         a_koff[i] = tig * 8 + (i & 7) + ((i >= 16) ? 32 : 0);
     }
 
@@ -679,7 +683,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 #pragma unroll
     for (int j = 0; j < kTN / 16; ++j) {
         const int n0 = col_base + wn * (kTN / 2) + j * 8 + tig * 2;
-        const int r0 = row_base + g;
+        const int r0 = row_base + warp_row + g;
         if (split_k > 1) {
             // RAW partial: wgs applied once in TcSplitKFinalize. Partials
             // are disjoint per z -> deterministic, no atomics. In batch mode

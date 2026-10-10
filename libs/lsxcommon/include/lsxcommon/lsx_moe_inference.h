@@ -273,4 +273,15 @@ int EnsureMoEExpertResident(MoEExpertStore &store, int layer, int eid,
                                 bool *missed = nullptr,
                                 int *evicted_slot = nullptr);
 
+// Loads every experts/layer_<l>/exp_<e>.arrow under
+// <model_path>/logestix/ into pinned host memory. Strict errors.
+bool LoadMoEExpertStore(const std::string &model_path,
+                            lsxcommon::moe::MoEExpertStore &store, std::string &error);
+
+// Allocates the LRU device cache sized to the largest expert payload.
+bool AllocateMoEExpertCache(moe::MoEExpertStore &store, int slots,
+                                gpu::ExpertDeviceCache &cache,
+                                std::string &error);
+void FreeMoEExpertCache(gpu::ExpertDeviceCache &cache);
+
 } // namespace lsxcommon::moe

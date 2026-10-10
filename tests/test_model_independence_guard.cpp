@@ -233,7 +233,7 @@ TEST_CASE("cross-family geometry borrowing is forbidden", "[independence]")
         "ornith_moe_constants.h", "ornith_moe_model.h",
         "ornith_moe_model.cpp", "ornith_moe_load.cpp",
         "../include/lsxcommon/ornith_moe_load.h",
-        "../include/lsxcommon/ornith_moe_inference.h",
+        "../include/lsxcommon/ornith_moe_inference_pipeline.h",
     };
     const std::vector<std::string> ornith_foreign = {
         "qwen_moe_constants.h", "qwen_moe_36_constants.h",

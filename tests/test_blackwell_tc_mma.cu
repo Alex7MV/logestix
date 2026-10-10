@@ -642,10 +642,14 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
     if (prop.major != 12) SKIP("requires Blackwell sm_120");
 
     // Shape sweep: original verified shape plus seq==1 fast-path shapes
-    // (decode kernel route; tile via LSX_DEC_DISABLE=1).
+    // (decode kernel route; tile via LSX_DEC_DISABLE=1), plus the partial-M
+    // shapes. kTileM is 64 but the block is 8 warps arranged 4 (rows) x 2
+    // (cols), so seq must cover more than one 16-row warp group to exercise
+    // the whole tile -- seq<=16 alone can never catch a dropped row group.
     const std::vector<std::array<int, 3>> shapes{
-        {3, 544, 36},   {1, 64, 128},  {1, 256, 128},
-        {1, 1024, 512}, {1, 4096, 128}};
+        {3, 544, 36},    {1, 64, 128},  {1, 256, 128},
+        {1, 1024, 512},  {1, 4096, 128}, {17, 544, 36},
+        {18, 544, 36},   {33, 544, 36}, {64, 544, 36}};
     for (const auto &[seq, K, N] : shapes) {
     std::vector<__half> hx(static_cast<size_t>(seq) * K);
     const float xvals[16] = {0.f, 0.25f, -0.5f, 1.f,  -1.5f, 2.f, -2.5f, 3.f,

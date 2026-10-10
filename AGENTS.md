@@ -171,9 +171,11 @@ procedure — `perf-tuning-a-model`.
   `[C,1,K]` + offset norms; the layout selects the norm fixup and the expert
   split, `model.visual.*` is skipped+counted, `mtp.*` is stored+counted under
   `deferred`),
-  `ornith_moe_load.{h,cpp}` + `ornith_moe_inference.{h,cu}` (duplicated
-  qwen_moe runtime layer; reuses the shared generic `qwen_inference.*` kernels
-  and routes NVFP4 through the neutral `lsx_nvfp4`), `ornith_moe_model.{h,cpp}`;
+  `ornith_moe_load.{h,cpp}` + `ornith_moe_inference_pipeline.{h,cu}` (the
+  qwen-owned generation driver; the routed-MoE kernels it calls are the
+  **neutral** `lsx_moe_inference.{h,cu}` layer, shared with Qwen MoE, Gemma MoE
+  and Qwen MoE Exp — ornith no longer duplicates them — and NVFP4 routes
+  through the neutral `lsx_nvfp4`), `ornith_moe_model.{h,cpp}`;
   format tag `logestix-ornithmoe`; knob
   `LSX_ORNITH_MOE_EXPERT_CACHE_SLOTS`).
   Granite-4.2-30B (independent family `granite`: dense decoder-only,

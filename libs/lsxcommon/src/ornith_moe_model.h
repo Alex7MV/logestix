@@ -14,7 +14,8 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/expert_device_cache.h"
-#include "lsxcommon/ornith_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/ornith_moe_inference_pipeline.h"
 #include "lsxcommon/ornith_moe_load.h"
 
 namespace lsxcommon {
@@ -53,7 +54,7 @@ protected:
     gpu::InferenceResult RunInferShared(const ModelRequest &req);
 
     ornith::OrnithMoePinnedWeights pw_;
-    ornith::OrnithMoeExpertStore experts_;
+    moe::MoEExpertStore experts_;
     ornith::OrnithMoeExpertDeviceCache cache_{};
     ornith::OrnithMoeGenScratch scratch_{};
     std::unique_ptr<qwen::QwenKvCache> kv_;

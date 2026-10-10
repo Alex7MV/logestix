@@ -130,7 +130,7 @@ bool Glm5NextFlashModel::Load()
                                    FlashExpertSlotBytes(experts_) >> 20),
             " MiB); pre-cache free=", static_cast<long long>(free_b >> 20),
             " MiB total=", static_cast<long long>(total_b >> 20), " MiB"));
-        if (!qwen_moe::AllocateMoEExpertCache(experts_, slots, cache_,
+        if (!moe::AllocateMoEExpertCache(experts_, slots, cache_,
                                                   error)) {
             log::error("[glm-flash-model] expert cache alloc failed: "
                        + error);
@@ -217,7 +217,7 @@ void Glm5NextFlashModel::TeardownWeights()
 {
     pw_.Free();
     experts_.Free();
-    qwen_moe::FreeMoEExpertCache(cache_);
+    moe::FreeMoEExpertCache(cache_);
     TeardownContext();
 }
 

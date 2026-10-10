@@ -622,7 +622,7 @@ struct RealRoutedHarness {
             r.gs1 = r.gs2 = r.gs3 = 1.0f;
         }
         std::string err;
-        if (!qwen_moe::AllocateMoEExpertCache(store, S, cache, err))
+        if (!moe::AllocateMoEExpertCache(store, S, cache, err))
             return false;
         if (cudaMalloc(&dx, static_cast<size_t>(H) * 2) != cudaSuccess ||
             cudaMalloc(&yg, static_cast<size_t>(2 * I) * 2) != cudaSuccess ||
@@ -642,7 +642,7 @@ struct RealRoutedHarness {
 
     void Free()
     {
-        qwen_moe::FreeMoEExpertCache(cache);
+        moe::FreeMoEExpertCache(cache);
         if (slab) cudaFreeHost(const_cast<uint8_t *>(slab));
         cudaFree(dx); cudaFree(yg); cudaFree(yu); cudaFree(y2);
         cudaFree(ygu); cudaFree(hbuf); cudaFree(ypart); cudaFree(acc);

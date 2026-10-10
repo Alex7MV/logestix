@@ -426,12 +426,12 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]
 
     lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::qwen_moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     REQUIRE(store.num_layers == 4);
     REQUIRE(store.num_experts == 8);
 
     lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
-    REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 4, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -467,8 +467,8 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]
     // Determinism across cache states: flush the cache and re-run.
     std::vector<__half> hout2(H);
     {
-        lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
-        REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 4, cache, err));
+        lsxcommon::moe::FreeMoEExpertCache(cache);
+        REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
         cudaMemset(d_acc, 0, H * 4);
         // Reverse slot order exercises LRU eviction path.
         std::swap(h_slots[0], h_slots[1]);
@@ -497,7 +497,7 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]
     cudaFree(d_x); cudaFree(d_yg); cudaFree(d_yu); cudaFree(d_y2);
     cudaFree(d_acc);
     cudaStreamDestroy(stream);
-    lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
@@ -520,12 +520,12 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
 
     lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::qwen_moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
 
     lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
     // Deliberately small (4 slots < 8 experts over both layers) so the
     // copy-stream pass also exercises LRU eviction across layers.
-    REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 4, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
 
     cudaStream_t stream, copy_stream;
     REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
@@ -569,8 +569,8 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
 
     // Copy-stream path: fresh cache -> every expert is a miss staged on
     // copy_stream, compute fenced by per-expert events.
-    lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
-    REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 4, cache, err));
+    lsxcommon::moe::FreeMoEExpertCache(cache);
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
     std::vector<__half> got;
     {
         cudaEvent_t ev_uploads[K];
@@ -592,7 +592,7 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
     cudaFree(d_acc);
     cudaStreamDestroy(stream);
     cudaStreamDestroy(copy_stream);
-    lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
@@ -681,8 +681,8 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     cudaStreamCreate(&stream);
     std::string err;
     REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeDenseWeights(out.string(), pw, stream, err));
-    REQUIRE(lsxcommon::qwen_moe::LoadMoEExpertStore(out.string(), store, err));
-    REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 8, cache, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     lsxcommon::qwen_moe::QwenMoeGenScratch gen_scratch;
     REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeScratch(stream, pw, gen_scratch) ==
@@ -714,7 +714,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     CHECK(r1.ok); CHECK(r2.ok);
 
     lsxcommon::qwen_moe::FreeQwenMoeGenScratch(gen_scratch);
-    lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::qwen_moe::FreeQwenMoePinnedWeights(pw);
     cudaStreamDestroy(stream);
@@ -741,10 +741,10 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
 
     lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::qwen_moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
     // Full residency: 8 experts -> 8 slots, so every dev_slot is stable.
-    REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 8, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -856,7 +856,7 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
     cudaFree(d_xq); cudaFree(d_xqs); cudaFree(d_y13_seq); cudaFree(d_y13_batch);
     cudaFree(d_y2_seq); cudaFree(d_y2_batch); cudaFree(d_tbl);
     cudaStreamDestroy(stream);
-    lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::qwen::SetQwenTcFastMath(false);
     std::error_code ec;
@@ -882,9 +882,9 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
 
     lsxcommon::moe::MoEExpertStore store;
     std::string err;
-    REQUIRE(lsxcommon::qwen_moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
-    REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 8, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -984,7 +984,7 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     cudaFree(d_acc_batch); cudaFree(d_qpack_b); cudaFree(d_qscales_b);
     cudaFree(d_routes); cudaFree(d_tbl);
     cudaStreamDestroy(stream);
-    lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::qwen::SetQwenTcFastMath(false);
     qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
@@ -1015,10 +1015,10 @@ TEST_CASE("generation driver fallback parity under partial residency",
     cudaStreamCreate(&stream);
     std::string err;
     REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeDenseWeights(out.string(), pw, stream, err));
-    REQUIRE(lsxcommon::qwen_moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     // Deliberately SMALL: 4 slots < 8 experts -> mirror never completes ->
     // MoEGemvNohandshake never trips -> legacy path is the default.
-    REQUIRE(lsxcommon::qwen_moe::AllocateMoEExpertCache(store, 4, cache, err));
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
     REQUIRE(!lsxcommon::moe::MoEGemvNohandshake(store));
 
     lsxcommon::qwen_moe::QwenMoeGenScratch gen_scratch;
@@ -1047,7 +1047,7 @@ TEST_CASE("generation driver fallback parity under partial residency",
     CHECK(r1.ok); CHECK(r2.ok);
 
     lsxcommon::qwen_moe::FreeQwenMoeGenScratch(gen_scratch);
-    lsxcommon::qwen_moe::FreeMoEExpertCache(cache);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
     store.Free();
     lsxcommon::qwen_moe::FreeQwenMoePinnedWeights(pw);
     cudaStreamDestroy(stream);
