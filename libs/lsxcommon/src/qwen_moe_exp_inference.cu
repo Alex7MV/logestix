@@ -6,7 +6,7 @@
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_inference_pipeline.h"
-#include "lsxcommon/qwen_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/shared_experts.h"
 
@@ -1067,9 +1067,9 @@ LSX_EXP_NOINLINE cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &s
 
 cudaError_t RunExpRouterTop10(cudaStream_t stream, const uint8_t *d_router_bf16,
                               const __half *d_x, int seq, int H, int E, int K,
-                              qwen_moe::QwenMoeRoutedSlot *d_slots)
+                              moe::MoERoutedSlot *d_slots)
 {
-    return qwen_moe::RunQwenMoeRouterTopK(
+    return moe::RunMoERouterTopK(
         stream, reinterpret_cast<const __nv_bfloat16 *>(d_router_bf16), d_x,
         seq, E, K, H, d_slots);
 }
@@ -1672,7 +1672,7 @@ cudaError_t RunExpGeneration(
     const size_t qscales_b_bytes =
         ((static_cast<size_t>(K) * ((I + 15) / 16)) + 63) / 64 * 64;
     const size_t gemv_tbl_bytes =
-        ((sizeof(qwen_moe::QwenMoeGvSlotDev) * static_cast<size_t>(K)) + 63) /
+        ((sizeof(moe::MoEGvSlotDev) * static_cast<size_t>(K)) + 63) /
         64 * 64;
     const int tc_splitk = lsx_tc::LsxTcBatchSplitK(H, 2 * I);
     const size_t tc_splitk_bytes =
@@ -1750,22 +1750,22 @@ cudaError_t RunExpGeneration(
     uint8_t *d_xqs = d_xq + xq_bytes;
     uint8_t *d_qpack_b = d_xqs + xqs_bytes;
     uint8_t *d_qscales_b = d_qpack_b + qpack_b_bytes;
-    qwen_moe::QwenMoeGvSlotDev *d_gemv_tbl =
-        reinterpret_cast<qwen_moe::QwenMoeGvSlotDev *>(d_qscales_b +
+    moe::MoEGvSlotDev *d_gemv_tbl =
+        reinterpret_cast<moe::MoEGvSlotDev *>(d_qscales_b +
                                                        qscales_b_bytes);
     float *d_tc_splitk = reinterpret_cast<float *>(
         reinterpret_cast<uint8_t *>(d_gemv_tbl) + gemv_tbl_bytes);
 
     int32_t *d_ids = nullptr, *d_pos = nullptr, *d_argmax = nullptr,
             *d_tokens = nullptr;
-    qwen_moe::QwenMoeRoutedSlot *d_slots = nullptr;
+    moe::MoERoutedSlot *d_slots = nullptr;
     cudaError_t e = cudaMalloc(&d_ids, sizeof(int32_t) * 4);
     if (e == cudaSuccess) e = cudaMalloc(&d_pos, sizeof(int32_t) * 4);
     if (e == cudaSuccess) e = cudaMalloc(&d_argmax, sizeof(int32_t));
     if (e == cudaSuccess)
         e = cudaMalloc(&d_tokens, sizeof(int32_t) * (size_t)max_new);
     if (e == cudaSuccess)
-        e = cudaMalloc(&d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * (size_t)K);
+        e = cudaMalloc(&d_slots, sizeof(moe::MoERoutedSlot) * (size_t)K);
     if (e != cudaSuccess) {
         result.error_msg = "device scalar alloc failed";
         cudaFree(d_ids); cudaFree(d_pos); cudaFree(d_argmax);
@@ -2066,9 +2066,9 @@ cudaError_t RunExpGeneration(
             // handshakes per token the host wake latency is pure GPU idle
             // time (qwen_moe driver rule). Residency staging uses the
             // fused-store fast path (2 contiguous blobs per miss).
-            qwen_moe::QwenMoeRoutedSlot h_slots[16];
+            moe::MoERoutedSlot h_slots[16];
             int dev_slots[16] = {0};
-            cudaMemcpyAsync(h_slots, d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * K,
+            cudaMemcpyAsync(h_slots, d_slots, sizeof(moe::MoERoutedSlot) * K,
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready_ev, stream);
             {
@@ -2111,7 +2111,7 @@ cudaError_t RunExpGeneration(
                 // already holds dev_slot + segment scales, so upload the slot
                 // table directly and replace ~4 launches per expert with 4
                 // batch kernels + one layer activation quant.
-                qwen_moe::QwenMoeGvSlotDev tbl[16];
+                moe::MoEGvSlotDev tbl[16];
                 for (int k = 0; k < K; ++k) {
                     const auto &rec =
                         store.records[static_cast<size_t>(l)]
@@ -2128,14 +2128,14 @@ cudaError_t RunExpGeneration(
                 const int64_t s13_b =
                     static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
                 cudaMemcpyAsync(d_gemv_tbl, tbl,
-                                sizeof(qwen_moe::QwenMoeGvSlotDev) * K,
+                                sizeof(moe::MoEGvSlotDev) * K,
                                 cudaMemcpyHostToDevice, stream);
                 e = lsx_tc::LsxTcQuantizeActsNvfp4(stream, d_mixed, 1, H, d_xq,
                                                    d_xqs);
                 if (e == cudaSuccess) {
                     shared_xq = d_xq;
                     shared_xqs = d_xqs;
-                    e = qwen_moe::RunQwenMoeRoutedTcBatchTbl(
+                    e = moe::RunMoERoutedTcBatchTbl(
                         stream, cache, d_gemv_tbl, d_xq, d_xqs, K, H, I, w13_b,
                         s13_b, d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
                         d_qpack_b, d_qscales_b,
@@ -2146,7 +2146,7 @@ cudaError_t RunExpGeneration(
                         break;
                     }
                 } else {
-                    e = qwen_moe::RunQwenMoeRoutedFFN(
+                    e = moe::RunMoERoutedFFN(
                         stream, store, cache, l, h_slots, K, d_mixed, H, I,
                         d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
                         copy_stream ? ev_uploads : nullptr, ev_front);
@@ -2157,7 +2157,7 @@ cudaError_t RunExpGeneration(
                     }
                 }
             } else {
-                e = qwen_moe::RunQwenMoeRoutedFFN(
+                e = moe::RunMoERoutedFFN(
                     stream, store, cache, l, h_slots, K, d_mixed, H, I,
                     d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
                     copy_stream ? ev_uploads : nullptr, ev_front);
@@ -2169,7 +2169,7 @@ cudaError_t RunExpGeneration(
                     break;
                 }
             }
-            e = qwen_moe::RunQwenMoeSharedCombine(
+            e = moe::RunMoESharedCombine(
                 stream, lw.shared_w1, lw.shared_w2, lw.shared_w3,
                 lw.d_shared_gate, d_mixed, 1, H, SI, d_moe_acc,
                 d_si, d_sh, d_gate_val, d_act, shared_xq, shared_xqs);
@@ -2282,7 +2282,7 @@ cudaError_t RunExpGeneration(
                          static_cast<std::uint32_t>(i));
             }
         }
-        result.eos_terminated = qwen_moe::TruncateTokensAtEos(result.tokens, eos_id);
+        result.eos_terminated = moe::MoETruncateTokensAtEos(result.tokens, eos_id);
         // Publish the last step's fp32 logits row for parity harnesses.
         std::vector<float> hlast(static_cast<size_t>(V));
         cudaStreamSynchronize(stream);

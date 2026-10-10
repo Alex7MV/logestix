@@ -460,27 +460,8 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
 
 // ── Routed-expert host store ──────────────────────────────────────────────
 
-void QwenMoeExpertStore::Free()
-{
-    for (auto &p : h_slabs)
-        if (p) cudaFreeHost(p);
-    h_slabs.clear();
-    slab_bytes.clear();
-    records.clear();
-    if (d_seg_wgs) cudaFree(d_seg_wgs);
-    if (d_seg_bounds) cudaFree(d_seg_bounds);
-    d_seg_wgs = nullptr;
-    d_seg_bounds = nullptr;
-    if (d_gemv_meta) cudaFree(d_gemv_meta);
-    d_gemv_meta = nullptr;
-    h_gemv_meta.clear();
-    gemv_ready = false;
-    num_layers = 0;
-    num_experts = 0;
-}
-
-bool LoadQwenMoeExpertStore(const std::string &model_path,
-                            QwenMoeExpertStore &store, std::string &error)
+bool LoadMoEExpertStore(const std::string &model_path,
+                            lsxcommon::moe::MoEExpertStore &store, std::string &error)
 {
     namespace fs = std::filesystem;
     store.Free();
@@ -630,7 +611,7 @@ bool LoadQwenMoeExpertStore(const std::string &model_path,
     return true;
 }
 
-bool AllocateQwenMoeExpertCache(QwenMoeExpertStore &store, int slots,
+bool AllocateMoEExpertCache(moe::MoEExpertStore &store, int slots,
                                 QwenMoeExpertDeviceCache &cache,
                                 std::string &error)
 {
@@ -683,7 +664,7 @@ bool AllocateQwenMoeExpertCache(QwenMoeExpertStore &store, int slots,
     return true;
 }
 
-void FreeQwenMoeExpertCache(QwenMoeExpertDeviceCache &cache)
+void FreeMoEExpertCache(QwenMoeExpertDeviceCache &cache)
 {
     if (cache.d_base) {
         cudaFree(cache.d_base);
@@ -698,89 +679,6 @@ void FreeQwenMoeExpertCache(QwenMoeExpertDeviceCache &cache)
     cache.d_pack = nullptr;
     cache.d_scale = nullptr;
     cache.slots = 0;
-}
-
-int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
-                                QwenMoeExpertDeviceCache &cache,
-                                cudaStream_t stream, std::string &error,
-                                cudaStream_t h2d_stream, bool *missed,
-                                int *evicted_slot)
-{
-    if (missed) *missed = false;
-    if (evicted_slot) *evicted_slot = -1;
-    if (layer < 0 || layer >= store.num_layers || eid < 0 ||
-        eid >= store.num_experts) {
-        error = absl::StrCat("expert out of range: layer ", layer, " eid ", eid);
-        return -1;
-    }
-    const int flat = layer * store.num_experts + eid;
-    int slot = QwenMoeExpertCacheLookup(cache, flat);
-    if (slot >= 0) return slot;
-    slot = QwenMoeExpertCacheInsert(cache, flat, evicted_slot);
-    if (missed) *missed = true;
-
-    // No-handshake decode bookkeeping: mirror residency + scales so the
-    // batched GEMV path can compose its table entirely on device.
-    if (static_cast<int>(store.h_gemv_meta.size()) <
-        store.num_layers * store.num_experts)
-        store.h_gemv_meta.assign(
-            static_cast<size_t>(store.num_layers) * store.num_experts,
-            QwenMoeExpertMetaDev{-1, 0.f, 0.f, 0.f});
-    {
-        const auto &rec =
-            store.records[static_cast<size_t>(layer)]
-                         [static_cast<size_t>(eid)];
-        store.h_gemv_meta[static_cast<size_t>(flat)] =
-            QwenMoeExpertMetaDev{slot, rec.gs1, rec.gs2, rec.gs3};
-        store.gemv_ready = false;   // invalidate until re-uploaded
-    }
-
-    const uint8_t *slab = store.h_slabs[static_cast<size_t>(layer)];
-    if (!slab) {
-        error = "expert slab not allocated";
-        return -1;
-    }
-    const auto &r = store.records[static_cast<size_t>(layer)]
-                                  [static_cast<size_t>(eid)];
-    uint8_t *dst_pack =
-        cache.d_pack + static_cast<int64_t>(slot) * cache.pack_stride;
-    uint8_t *dst_scale =
-        cache.d_scale + static_cast<int64_t>(slot) * cache.scale_stride;
-    // Slot layout is FUSED for inference: [w13 = w1|w3][w2] and
-    // [s13 = s1|s3][s2] so the gate/up projections run as ONE GEMM with
-    // per-segment global scales (RunQwenMoeRoutedFFN). The pinned slab keeps
-    // the on-disk order; only this staging reorder differs.
-    cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
-    uint8_t *pk = dst_pack;
-    struct PackSeg { int64_t off, bytes; };
-    const PackSeg psegs[3] = {{r.w1_off, r.w1_bytes},
-                              {r.w3_off, r.w3_bytes},
-                              {r.w2_off, r.w2_bytes}};
-    for (const auto &seg : psegs) {
-        if (cudaMemcpyAsync(pk, slab + seg.off,
-                            static_cast<size_t>(seg.bytes),
-                            cudaMemcpyHostToDevice,
-                            copy_stream) != cudaSuccess) {
-            error = "expert H2D pack staging failed";
-            return -1;
-        }
-        pk += seg.bytes;
-    }
-    uint8_t *sc = dst_scale;
-    const PackSeg ssegs[3] = {{r.s1_off, r.s1_bytes},
-                              {r.s3_off, r.s3_bytes},
-                              {r.s2_off, r.s2_bytes}};
-    for (const auto &seg : ssegs) {
-        if (cudaMemcpyAsync(sc, slab + seg.off,
-                            static_cast<size_t>(seg.bytes),
-                            cudaMemcpyHostToDevice,
-                            copy_stream) != cudaSuccess) {
-            error = "expert H2D scale staging failed";
-            return -1;
-        }
-        sc += seg.bytes;
-    }
-    return slot;
 }
 
 } // namespace lsxcommon::qwen_moe

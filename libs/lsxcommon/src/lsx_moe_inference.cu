@@ -9,9 +9,11 @@
 // Protocol invariants: one stream end-to-end (no cudaDeviceSynchronize in the
 // generation loop), shared-memory RMW only by thread 0 behind barriers.
 
-#include "lsxcommon/qwen_moe_inference.h"
+#include "absl/strings/str_cat.h"
+
+#include "lsxcommon/expert_device_cache.h"
+#include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/qwen_inference.h"
-#include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
@@ -28,15 +30,15 @@
 #include <cuda_runtime.h>
 
 namespace lsxcommon {
-namespace qwen_moe {
+namespace moe {
 namespace {
 
 constexpr int kRouterBlock = 128;
 
-static_assert(sizeof(lsx_tc::LsxTcBatchSlot) == sizeof(QwenMoeGvSlotDev) &&
+static_assert(sizeof(lsx_tc::LsxTcBatchSlot) == sizeof(MoEGvSlotDev) &&
                   alignof(lsx_tc::LsxTcBatchSlot) ==
-                      alignof(QwenMoeGvSlotDev),
-              "LsxTcBatchSlot must stay layout-identical to QwenMoeGvSlotDev");
+                      alignof(MoEGvSlotDev),
+              "LsxTcBatchSlot must stay layout-identical to MoEGvSlotDev");
 
 // ── Router ────────────────────────────────────────────────────────────────
 
@@ -101,7 +103,7 @@ __device__ __forceinline__ float QwenRouterDotRow(
 // ~6.3us standalone / ~13us through the production entry (4x). The emitted
 // FP32 mul-add sequence is bit-identical (pinned by
 // "router decode-split matches prefill bit-exact" + the real-shape budget).
-__global__ void qwen_moe_router_dots_kernel(
+__global__ void moe_router_dots_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
     int H, float *__restrict__ logits, int E)
 {
@@ -156,9 +158,9 @@ __global__ void qwen_moe_router_dots_kernel(
 // cannot change the result), the denominator sum and the top-K insertion
 // stay sequential on thread 0 in the same ascending-e order, so selection
 // and coefficients remain bit-identical to the single-thread version.
-__global__ void qwen_moe_router_select_kernel(
+__global__ void moe_router_select_kernel(
     const float *__restrict__ logits, int K, int E,
-    QwenMoeRoutedSlot *__restrict__ slots)
+    MoERoutedSlot *__restrict__ slots)
 {
     const int t = blockIdx.x;
     extern __shared__ float sh[];
@@ -221,7 +223,7 @@ __global__ void qwen_moe_router_select_kernel(
     if (threadIdx.x == 0) {
         float sm = 0.f;
         for (int i = 0; i < K; ++i) sm += s_val[i];
-        QwenMoeRoutedSlot *out = slots + static_cast<int64_t>(t) * K;
+        MoERoutedSlot *out = slots + static_cast<int64_t>(t) * K;
         for (int i = 0; i < K; ++i) {
             out[i].eid = s_idx[i];
             out[i].coeff = s_val[i] / sm;
@@ -229,9 +231,9 @@ __global__ void qwen_moe_router_select_kernel(
     }
 }
 
-__global__ void qwen_moe_router_topk_kernel(
+__global__ void moe_router_topk_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
-    int H, int K, int E, QwenMoeRoutedSlot *__restrict__ slots)
+    int H, int K, int E, MoERoutedSlot *__restrict__ slots)
 {
     const int t = blockIdx.x;
     const __half *xr = x + static_cast<int64_t>(t) * H;
@@ -278,7 +280,7 @@ __global__ void qwen_moe_router_topk_kernel(
         }
         float s = 0.f;
         for (int i = 0; i < K && i <= n; ++i) s += val[i];
-        QwenMoeRoutedSlot *out = slots + static_cast<int64_t>(t) * K;
+        MoERoutedSlot *out = slots + static_cast<int64_t>(t) * K;
         for (int i = 0; i < K; ++i) {
             out[i].eid = idx[i];
             out[i].coeff = val[i] / s;
@@ -288,10 +290,10 @@ __global__ void qwen_moe_router_topk_kernel(
 
 } // namespace
 
-cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                                 const __nv_bfloat16 *router_w,
+cudaError_t RunMoERouterTopK(cudaStream_t stream,                                 const __nv_bfloat16 *router_w,
                                  const __half *normed,
                                  int seq, int E, int K, int H,
-                                 QwenMoeRoutedSlot *d_slots)
+                                 MoERoutedSlot *d_slots)
 {
     if (K > kMaxTopK)
         return cudaErrorInvalidValue;
@@ -310,11 +312,11 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
         if (le != cudaSuccess) return le;
         // 8 threads per expert (chain-parallel etalon walk): E*8 threads
         // across 128-thread blocks engage all SMs on the 1MB row stream.
-        qwen_moe_router_dots_kernel<<<(E * 8 + 127) / 128, 128, 0, stream>>>(
+        moe_router_dots_kernel<<<(E * 8 + 127) / 128, 128, 0, stream>>>(
             router_w, normed, H, d_logits, E);
         le = cudaGetLastError();
         if (le == cudaSuccess)
-            qwen_moe_router_select_kernel<<<seq, kRouterBlock,
+            moe_router_select_kernel<<<seq, kRouterBlock,
                                             sizeof(float) * E, stream>>>(
                 d_logits, K, E, d_slots);
         if (le != cudaSuccess) {
@@ -324,7 +326,7 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
         cudaFreeAsync(d_logits, stream);
         return cudaGetLastError();
     }
-    qwen_moe_router_topk_kernel<<<seq, kRouterBlock, smem, stream>>>(
+    moe_router_topk_kernel<<<seq, kRouterBlock, smem, stream>>>(
         router_w, normed, H, K, E, d_slots);
     return cudaGetLastError();
 }
@@ -335,7 +337,7 @@ namespace {
 // SwiGLU: unified kernels::SwigluKernel (lsx_kernels_act.cuh).
 
 // Deterministic ascending-k accumulation into an fp32 accumulator.
-__global__ void qwen_moe_coeff_add_kernel(const __half *__restrict__ y2,
+__global__ void moe_coeff_add_kernel(const __half *__restrict__ y2,
                                           float coeff, float *__restrict__ acc,
                                           int n)
 {
@@ -354,18 +356,18 @@ inline int EltGrid(int n) { return (n + kEltBlock - 1) / kEltBlock; }
 
 // Defined below (batched-GEMV section); lets the handshake routed-FFN
 // branch target the device-table core directly.
-cudaError_t RunQwenMoeRoutedGemmVBatchCore(
+cudaError_t RunMoERoutedGemmVBatchCore(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
-    const QwenMoeGvSlotDev *slots_dev, int k_slots,
+    const MoEGvSlotDev *slots_dev, int k_slots,
     int64_t w13_bytes, int64_t s13_bytes,
     int H, int I, const __half *d_x,
     __half *ygu, __half *hbuf, __half *ypart, float *acc);
 
-cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
-                                QwenMoeExpertDeviceCache &cache, int layer,
-                                const QwenMoeRoutedSlot *h_slots, int K,
+cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
+                                gpu::ExpertDeviceCache &cache, int layer,
+                                const MoERoutedSlot *h_slots, int K,
                                 const __half *d_x, int H, int I,
                                 float *d_acc, __half *d_yg, __half *d_yu,
                                 __half *d_y2, std::string &error,
@@ -378,7 +380,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 __half *ygu_batch,
                                 __half *hbuf_batch,
                                 __half *ypart_batch,
-                                QwenMoeGvSlotDev *d_gemv_tbl)
+                                MoEGvSlotDev *d_gemv_tbl)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
@@ -399,7 +401,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
     }
     for (int k = 0; k < K; ++k) {
         missed[k] = false;
-        dev_slots[k] = EnsureQwenMoeExpertResident(
+        dev_slots[k] = moe::EnsureMoEExpertResident(
             store, layer, h_slots[k].eid, cache, stream, error, copy_stream,
             copy_stream ? &missed[k] : nullptr);
         if (dev_slots[k] < 0) return cudaErrorInvalidValue;
@@ -421,7 +423,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
             static_cast<int64_t>(rec0.w1_bytes + rec0.w3_bytes);
         const int64_t s13_b =
             static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
-        QwenMoeGvSlotDev tbl[16];
+        MoEGvSlotDev tbl[16];
         for (int k = 0; k < K; ++k) {
             const auto &rec =
                 store.records[static_cast<size_t>(layer)]
@@ -434,12 +436,12 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         }
         // Scratch: reuse caller-provided arena slices when present; fall
         // back to async pool allocations otherwise (tests / ad-hoc calls).
-        QwenMoeGvSlotDev *tbl_d = d_gemv_tbl;
+        MoEGvSlotDev *tbl_d = d_gemv_tbl;
         __half *ygu_b = ygu_batch, *hbuf_b = hbuf_batch,
                *ypart_b = ypart_batch;
         bool owned = false;
         if (!tbl_d) {
-            if (cudaMallocAsync(&tbl_d, sizeof(QwenMoeGvSlotDev) * K,
+            if (cudaMallocAsync(&tbl_d, sizeof(MoEGvSlotDev) * K,
                                 stream) == cudaSuccess &&
                 cudaMallocAsync(reinterpret_cast<void **>(&ygu_b),
                                 static_cast<size_t>(K) * 2 * I *
@@ -460,9 +462,9 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
             }
         }
         if (!owned && tbl_d && ygu_b && hbuf_b && ypart_b) {
-            cudaMemcpyAsync(tbl_d, tbl, sizeof(QwenMoeGvSlotDev) * K,
+            cudaMemcpyAsync(tbl_d, tbl, sizeof(MoEGvSlotDev) * K,
                             cudaMemcpyHostToDevice, stream);
-            const cudaError_t be = RunQwenMoeRoutedGemmVBatchCore(
+            const cudaError_t be = RunMoERoutedGemmVBatchCore(
                 stream, cache.d_pack, cache.d_scale, cache.pack_stride,
                 cache.scale_stride, tbl_d, K, w13_b, s13_b, H, I, d_x,
                 ygu_b, hbuf_b, ypart_b, d_acc);
@@ -483,7 +485,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
 
     for (int k = 0; k < K; ++k) {
         // Ascending-k accumulation keeps the fp32 add order deterministic.
-        const QwenMoeRoutedSlot &slot = h_slots[k];
+        const MoERoutedSlot &slot = h_slots[k];
         const int dev_slot = dev_slots[k];
 
         const auto &rec = store.records[static_cast<size_t>(layer)]
@@ -493,7 +495,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         uint8_t *scale =
             cache.d_scale + static_cast<int64_t>(dev_slot) * cache.scale_stride;
         // Slot layout is STAGED FUSED: [w13 = w1|w3][w2] packed,
-        // [s13 = s1|s3][s2] scales (see EnsureQwenMoeExpertResident). Gate
+        // [s13 = s1|s3][s2] scales (see EnsureMoEExpertResident). Gate
         // and up run as ONE GEMM over N=2I; per-segment global scales
         // {gs1 | gs3} split at N/2 inside the kernel epilogue.
         const uint8_t *w13 = pack;
@@ -590,13 +592,13 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                        I, H, false) != cudaSuccess)
                 { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
         }
-        qwen_moe_coeff_add_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
+        moe_coeff_add_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
             d_y2, slot.coeff, d_acc, H);
     }
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
+cudaError_t RunMoEAccToFp16(cudaStream_t stream, const float *d_acc,
                                 __half *d_out, int n)
 {
     lsxcommon::kernels::F32toTKernel<__half><<<EltGrid(n), kEltBlock, 0, stream>>>(d_acc, d_out, n);
@@ -607,7 +609,7 @@ cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
 // Replaces the per-slot {w1,w3,w2} loop (K x 5 kernels/layer) with 4 launches:
 // w13 GEMV batch -> elementwise swiglu -> down GEMV batch (per-slot partials)
 // -> ordered coeff reduce. Same weight-streaming contract as the
-// qwen_nvfp4_gemv_kernel core: one warp owns a K-slice of one flat output
+// moe_nvfp4_gemv_kernel core: one warp owns a K-slice of one flat output
 // row, packed E2M1 nibbles stream via coalesced uint4 loads, partials merge
 // through a shfl tree + ordered shared-memory sum. Determinism contract:
 // fixed KP partitioning; the down stage writes per-slot partials (single
@@ -636,7 +638,7 @@ __global__ void moe_gemv_w13_batch_kernel(
     const uint8_t *__restrict__ pack_base,
     const uint8_t *__restrict__ scale_base,
     int64_t pack_stride, int64_t scale_stride,
-    const QwenMoeGvSlotDev *__restrict__ slots,
+    const MoEGvSlotDev *__restrict__ slots,
     int k_slots, int I, int H, __half *__restrict__ ygu)
 {
     constexpr int ROWS = kGemvBatchWarps / KP;
@@ -650,7 +652,7 @@ __global__ void moe_gemv_w13_batch_kernel(
     if (rflat < total) {
         const int s = rflat / (2 * I);
         const int r = rflat - s * 2 * I;
-        const QwenMoeGvSlotDev slot = slots[s];
+        const MoEGvSlotDev slot = slots[s];
         const float gs = (r < I) ? slot.gs1 : slot.gs3;
         acc = moe_gemv_dot(
                   x_row,
@@ -700,7 +702,7 @@ __global__ void moe_gemv_down_batch_kernel(
     const uint8_t *__restrict__ scale_base,
     int64_t pack_stride, int64_t scale_stride,
     int64_t w13_bytes, int64_t s13_bytes,
-    const QwenMoeGvSlotDev *__restrict__ slots,
+    const MoEGvSlotDev *__restrict__ slots,
     int k_slots, int I, int H, __half *__restrict__ ypart)
 {
     constexpr int ROWS = kGemvBatchWarps / KP;
@@ -714,7 +716,7 @@ __global__ void moe_gemv_down_batch_kernel(
     if (rflat < total) {
         const int s = rflat / H;
         const int r = rflat - s * H;
-        const QwenMoeGvSlotDev slot = slots[s];
+        const MoEGvSlotDev slot = slots[s];
         acc = moe_gemv_dot(
                   hbuf + static_cast<int64_t>(s) * I,
                   pack_base +
@@ -742,7 +744,7 @@ __global__ void moe_gemv_down_batch_kernel(
 // identical fp32 add order as the legacy per-slot coeff_add chain.
 __global__ void moe_gemv_reduce_batch_kernel(
     const __half *__restrict__ ypart,
-    const QwenMoeGvSlotDev *__restrict__ slots, int k_slots, int n_elems,
+    const MoEGvSlotDev *__restrict__ slots, int k_slots, int n_elems,
     float *__restrict__ acc)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -756,7 +758,7 @@ __global__ void moe_gemv_reduce_batch_kernel(
 
 // Slot-major batched swiglu-quant: gate ygu[s*2I + j], up ygu[s*2I + I + j]
 // -> h[s*I + j] + NVFP4 pack/scales at slot offsets. Per-16-group math is
-// the exact clone of qwen_swiglu_precise_quant_kernel (bit-identical).
+// the exact clone of moe_swiglu_precise_quant_kernel (bit-identical).
 __global__ void moe_swiglu_quant_batch_kernel(const __half *__restrict__ ygu,
                                               int k_slots, int I,
                                               __half *__restrict__ h,
@@ -817,15 +819,15 @@ int MoeGemvPickKp(int cols, int rows)
 // tbl[k] = {meta[d_routes[k].eid].*, coeff} -- composed fully on device so
 // the no-handshake decode path never reads router output back to host.
 __global__ void moe_gemv_gather_table_kernel(
-    const QwenMoeRoutedSlot *__restrict__ routes,
-    const QwenMoeExpertMetaDev *__restrict__ meta,
+    const MoERoutedSlot *__restrict__ routes,
+    const MoEExpertMetaDev *__restrict__ meta,
     int k_slots,
-    QwenMoeGvSlotDev *__restrict__ out)
+    MoEGvSlotDev *__restrict__ out)
 {
     const int k = threadIdx.x;
     if (k >= k_slots) return;   // launch width fixed at 32, K <= 16
-    const QwenMoeRoutedSlot r = routes[k];
-    const QwenMoeExpertMetaDev m = meta[r.eid];
+    const MoERoutedSlot r = routes[k];
+    const MoEExpertMetaDev m = meta[r.eid];
     out[k].dev_slot = m.dev_slot;
     out[k].gs1 = m.gs1;
     out[k].gs2 = m.gs2;
@@ -835,11 +837,11 @@ __global__ void moe_gemv_gather_table_kernel(
 
 } // namespace
 
-cudaError_t RunQwenMoeGemvGatherTable(
+cudaError_t RunMoEGemvGatherTable(
     cudaStream_t stream,
-    const QwenMoeRoutedSlot *d_slots, int k_slots,
-    const QwenMoeExpertMetaDev *d_meta,
-    QwenMoeGvSlotDev *d_tbl_out)
+    const MoERoutedSlot *d_slots, int k_slots,
+    const MoEExpertMetaDev *d_meta,
+    MoEGvSlotDev *d_tbl_out)
 {
     if (!d_slots || !d_meta || !d_tbl_out || k_slots <= 0 || k_slots > 16)
         return cudaErrorInvalidValue;
@@ -848,7 +850,7 @@ cudaError_t RunQwenMoeGemvGatherTable(
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenMoeSwigluQuantBatch(cudaStream_t stream, const __half *ygu,
+cudaError_t RunMoESwigluQuantBatch(cudaStream_t stream, const __half *ygu,
                                        int k_slots, int I, __half *h,
                                        uint8_t *packed, uint8_t *scales)
 {
@@ -869,9 +871,9 @@ namespace {
 // Preserves the w13 -> swiglu-quant -> w2 -> ascending reduce op order of the
 // legacy per-slot path (bit-exact per slot). The ev2..ev5 handles, when
 // non-null, mark stage boundaries for the LSX_PROBE_FFN diagnostic.
-cudaError_t RunQwenMoeRoutedTcChain(
-    cudaStream_t stream, const QwenMoeExpertDeviceCache &cache,
-    const QwenMoeGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
+cudaError_t RunMoERoutedTcChain(
+    cudaStream_t stream, const gpu::ExpertDeviceCache &cache,
+    const MoEGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
     int K, int H, int I, int64_t w13_bytes, int64_t s13_bytes, float *d_acc,
     __half *ygu_batch, __half *h_batch, __half *yp_batch,
     uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13,
@@ -884,7 +886,7 @@ cudaError_t RunQwenMoeRoutedTcChain(
         cache.scale_stride, tbl, K, H, 2 * I, ygu_batch, splitk13);
     if (e != cudaSuccess) return e;
     if (ev2) cudaEventRecord(ev2, stream);
-    e = RunQwenMoeSwigluQuantBatch(stream, ygu_batch, K, I, h_batch,
+    e = RunMoESwigluQuantBatch(stream, ygu_batch, K, I, h_batch,
                                    qpack_batch, qscales_batch);
     if (e != cudaSuccess) return e;
     if (ev3) cudaEventRecord(ev3, stream);
@@ -895,7 +897,7 @@ cudaError_t RunQwenMoeRoutedTcChain(
     if (e != cudaSuccess) return e;
     if (ev4) cudaEventRecord(ev4, stream);
     // Ascending-slot fp32 reduce -- the legacy coeff_add order (k=0..K-1);
-    // acc already seeded by the caller (qwen_moe_init_acc_kernel upstream or
+    // acc already seeded by the caller (moe_init_acc_kernel upstream or
     // a zero memset).
     moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
         yp_batch, d_tbl, K, H, d_acc);
@@ -905,14 +907,14 @@ cudaError_t RunQwenMoeRoutedTcChain(
 
 } // namespace
 
-cudaError_t RunQwenMoeRoutedTcBatch(
-    cudaStream_t stream, QwenMoeExpertStore &store,
-    const QwenMoeExpertDeviceCache &cache, int layer,
-    const QwenMoeRoutedSlot *d_routes, const uint8_t *xq, const uint8_t *xqs,
+cudaError_t RunMoERoutedTcBatch(
+    cudaStream_t stream, MoEExpertStore &store,
+    const gpu::ExpertDeviceCache &cache, int layer,
+    const MoERoutedSlot *d_routes, const uint8_t *xq, const uint8_t *xqs,
     int K, int H, int I, const __half *d_resid, float *d_acc,
     __half *ygu_batch, __half *h_batch, __half *yp_batch,
     uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13,
-    QwenMoeGvSlotDev *d_tbl)
+    MoEGvSlotDev *d_tbl)
 {
     if (!d_routes || !xq || !xqs || !d_resid || !d_acc || !ygu_batch ||
         !h_batch || !yp_batch || !qpack_batch || !qscales_batch || !d_tbl ||
@@ -935,12 +937,12 @@ cudaError_t RunQwenMoeRoutedTcBatch(
             cudaEventCreate(ev);
         cudaEventRecord(ev0, stream);
     }
-    cudaError_t e = RunQwenMoeGemvGatherTable(
+    cudaError_t e = RunMoEGemvGatherTable(
         stream, d_routes, K,
         store.d_gemv_meta + static_cast<int64_t>(layer) * E, d_tbl);
     if (e != cudaSuccess) return e;
     if (kProbe) cudaEventRecord(ev1, stream);
-    e = RunQwenMoeRoutedTcChain(stream, cache, d_tbl, xq, xqs, K, H, I,
+    e = RunMoERoutedTcChain(stream, cache, d_tbl, xq, xqs, K, H, I,
                                 w13_bytes, s13_bytes, d_acc, ygu_batch,
                                 h_batch, yp_batch, qpack_batch, qscales_batch,
                                 splitk13, ev2, ev3, ev4, ev5);
@@ -963,9 +965,9 @@ cudaError_t RunQwenMoeRoutedTcBatch(
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenMoeRoutedTcBatchTbl(
-    cudaStream_t stream, const QwenMoeExpertDeviceCache &cache,
-    const QwenMoeGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
+cudaError_t RunMoERoutedTcBatchTbl(
+    cudaStream_t stream, const gpu::ExpertDeviceCache &cache,
+    const MoEGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
     int K, int H, int I, int64_t w13_bytes, int64_t s13_bytes,
     float *d_acc, __half *ygu_batch, __half *h_batch, __half *yp_batch,
     uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13)
@@ -975,7 +977,7 @@ cudaError_t RunQwenMoeRoutedTcBatchTbl(
         K > kMaxTopK || H <= 0 || I <= 0 || (I & 15) != 0 ||
         w13_bytes <= 0 || s13_bytes <= 0)
         return cudaErrorInvalidValue;
-    return RunQwenMoeRoutedTcChain(stream, cache, d_tbl, xq, xqs, K, H, I,
+    return RunMoERoutedTcChain(stream, cache, d_tbl, xq, xqs, K, H, I,
                                    w13_bytes, s13_bytes, d_acc, ygu_batch,
                                    h_batch, yp_batch, qpack_batch,
                                    qscales_batch, splitk13, nullptr, nullptr,
@@ -985,11 +987,11 @@ cudaError_t RunQwenMoeRoutedTcBatchTbl(
 // Device-table variant consumed by the no-handshake decode path. Requires
 // the table to already live in device memory (built by the host in the
 // handshake flow or by moe_gemv_gather_table_kernel otherwise).
-cudaError_t RunQwenMoeRoutedGemmVBatchCore(
+cudaError_t RunMoERoutedGemmVBatchCore(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
-    const QwenMoeGvSlotDev *slots_dev, int k_slots,
+    const MoEGvSlotDev *slots_dev, int k_slots,
     int64_t w13_bytes, int64_t s13_bytes,
     int H, int I, const __half *d_x,
     __half *ygu, __half *hbuf, __half *ypart, float *acc)
@@ -1056,11 +1058,11 @@ cudaError_t RunQwenMoeRoutedGemmVBatchCore(
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenMoeRoutedGemmVBatch(
+cudaError_t RunMoERoutedGemmVBatch(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
-    const QwenMoeGvSlotDev *slots_host_tbl, int k_slots,
+    const MoEGvSlotDev *slots_host_tbl, int k_slots,
     int64_t w13_bytes, int64_t s13_bytes,
     int H, int I, const __half *d_x,
     __half *ygu, __half *hbuf, __half *ypart, float *acc)
@@ -1068,15 +1070,15 @@ cudaError_t RunQwenMoeRoutedGemmVBatch(
     // Handshake wrapper: builds the slot table on the host and uploads it
     // (tests / callers that already hold a host-side table).
     if (!slots_host_tbl) return cudaErrorInvalidValue;
-    QwenMoeGvSlotDev *d_tbl = nullptr;
+    MoEGvSlotDev *d_tbl = nullptr;
     cudaError_t e = cudaMalloc(&d_tbl,
-                               sizeof(QwenMoeGvSlotDev) * k_slots);
+                               sizeof(MoEGvSlotDev) * k_slots);
     if (e != cudaSuccess) return e;
     e = cudaMemcpyAsync(d_tbl, slots_host_tbl,
-                        sizeof(QwenMoeGvSlotDev) * k_slots,
+                        sizeof(MoEGvSlotDev) * k_slots,
                         cudaMemcpyHostToDevice, stream);
     if (e == cudaSuccess)
-        e = RunQwenMoeRoutedGemmVBatchCore(stream, d_pack_base, d_scale_base, pack_stride,
+        e = RunMoERoutedGemmVBatchCore(stream, d_pack_base, d_scale_base, pack_stride,
                               scale_stride, d_tbl, k_slots, w13_bytes,
                               s13_bytes, H, I, d_x, ygu, hbuf, ypart, acc);
     cudaFree(d_tbl);
@@ -1088,7 +1090,7 @@ cudaError_t RunQwenMoeRoutedGemmVBatch(
 // this flips on after one warm pass and then never reverts -- evictions are
 // impossible when cache.slots >= total experts, so the device mirror stays
 // authoritative without host readback.
-bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store)
+bool MoEGemvNohandshake(const MoEExpertStore &store)
 {
     const size_t flats =
         static_cast<size_t>(store.num_layers) * store.num_experts;
@@ -1098,14 +1100,14 @@ bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store)
     for (const auto &m : store.h_gemv_meta)
         if (m.dev_slot < 0) return false;   // warm-up incomplete
     // First complete mirror: upload once.
-    auto &s = const_cast<QwenMoeExpertStore &>(store);
+    auto &s = const_cast<MoEExpertStore &>(store);
     if (cudaMalloc(reinterpret_cast<void **>(&s.d_gemv_meta),
-                   flats * sizeof(QwenMoeExpertMetaDev)) != cudaSuccess) {
+                   flats * sizeof(moe::MoEExpertMetaDev)) != cudaSuccess) {
         s.d_gemv_meta = nullptr;
         return false;
     }
     if (cudaMemcpy(s.d_gemv_meta, s.h_gemv_meta.data(),
-                   flats * sizeof(QwenMoeExpertMetaDev),
+                   flats * sizeof(moe::MoEExpertMetaDev),
                    cudaMemcpyHostToDevice) != cudaSuccess) {
         cudaFree(s.d_gemv_meta);
         s.d_gemv_meta = nullptr;
@@ -1119,13 +1121,13 @@ bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store)
 // from d_slots + the device meta mirror, runs the batched chain, no host
 // synchronization at any point. Scratch slices are caller-owned when the
 // generation arena provides them; nulls fall back to cudaMallocAsync.
-cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
-    cudaStream_t stream, QwenMoeExpertStore &store,
-    QwenMoeExpertDeviceCache &cache, int layer,
-    const QwenMoeRoutedSlot *d_slots, int K,
+cudaError_t RunMoERoutedGemmVNoHandshake(
+    cudaStream_t stream, MoEExpertStore &store,
+    gpu::ExpertDeviceCache &cache, int layer,
+    const MoERoutedSlot *d_slots, int K,
     const __half *d_x, int H, int I, float *d_acc,
     __half *ygu_b, __half *hbuf_b, __half *ypart_b,
-    QwenMoeGvSlotDev *d_tbl,
+    MoEGvSlotDev *d_tbl,
     std::string &error)
 {
     const size_t flat_base =
@@ -1140,11 +1142,11 @@ cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
         error = "no-handshake scratch missing";
         return cudaErrorInvalidValue;
     }
-    cudaError_t e = RunQwenMoeGemvGatherTable(stream, d_slots, K,
+    cudaError_t e = RunMoEGemvGatherTable(stream, d_slots, K,
                                               store.d_gemv_meta + flat_base,
                                               d_tbl);
     if (e == cudaSuccess)
-        e = RunQwenMoeRoutedGemmVBatchCore(stream, cache.d_pack, cache.d_scale,
+        e = RunMoERoutedGemmVBatchCore(stream, cache.d_pack, cache.d_scale,
                               cache.pack_stride, cache.scale_stride, d_tbl,
                               K, w13_b, s13_b, H, I, d_x, ygu_b, hbuf_b,
                               ypart_b, d_acc);
@@ -1157,7 +1159,7 @@ namespace {
 // g[t] = sigmoid(dot(shared_gate_row, x[t])) — one block per token.
 // RMW isolation: the single output write happens on thread 0 after a
 // block-wide tree reduction in shared memory.
-__global__ void qwen_moe_shared_gate_kernel(const __half *__restrict__ gate,
+__global__ void moe_shared_gate_kernel(const __half *__restrict__ gate,
                                             const __half *__restrict__ x,
                                             int H, float *__restrict__ g_out)
 {
@@ -1178,7 +1180,7 @@ __global__ void qwen_moe_shared_gate_kernel(const __half *__restrict__ gate,
 }
 
 // out[j] = fp2h(acc[j]) + g[j/H] * y_shared[j]
-__global__ void qwen_moe_combine_kernel(const float *__restrict__ acc,
+__global__ void moe_combine_kernel(const float *__restrict__ acc,
                                         const float *__restrict__ g,
                                         const __half *__restrict__ y_shared,
                                         __half *__restrict__ out, int total,
@@ -1205,7 +1207,7 @@ __global__ void qwen_moe_combine_kernel(const float *__restrict__ acc,
         }                                                                     \
     } while (0)
 
-bool TruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id)
+bool MoETruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id)
 {
     if (eos_id < 0) return false;
     for (size_t i = 0; i < tokens.size(); ++i) {
@@ -1217,7 +1219,7 @@ bool TruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id)
     return false;
 }
 
-cudaError_t RunQwenMoeSharedCombine(
+cudaError_t RunMoESharedCombine(
     cudaStream_t stream, const qwen::QwenNvfp4Weight &sw1,
     const qwen::QwenNvfp4Weight &sw2, const qwen::QwenNvfp4Weight &sw3,
     const __half *d_shared_gate, const __half *d_x, int seq, int H, int SI,
@@ -1305,14 +1307,14 @@ cudaError_t RunQwenMoeSharedCombine(
                                false) != cudaSuccess)
         return cudaErrorInvalidValue;
     // Scalar gate per token.
-    qwen_moe_shared_gate_kernel<<<seq, kEltBlock, kEltBlock * sizeof(float),
+    moe_shared_gate_kernel<<<seq, kEltBlock, kEltBlock * sizeof(float),
                                   stream>>>(d_shared_gate, d_x, H, d_gate_val);
     cudaError_t ge = cudaGetLastError();
     if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG") && ge != cudaSuccess)
         std::fprintf(stderr, "[stage] shared_gate: %s\n",
                      cudaGetErrorString(ge));
     // Combine routed accumulation + gated shared expert.
-    qwen_moe_combine_kernel<<<EltGrid(seq * H), kEltBlock, 0, stream>>>(
+    moe_combine_kernel<<<EltGrid(seq * H), kEltBlock, 0, stream>>>(
         d_routed_acc, d_gate_val, d_scratch_h, d_out, seq * H, H);
     ge = cudaGetLastError();
     if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG") && ge != cudaSuccess)
@@ -1326,7 +1328,7 @@ namespace {
 
 // acc[i] = f32(residual[i]) — seeds the MoE fp32 accumulator with the
 // running residual so the final combine writes act + moe_out in one step.
-__global__ void qwen_moe_init_acc_kernel(const __half *__restrict__ resid,
+__global__ void moe_init_acc_kernel(const __half *__restrict__ resid,
                                          float *__restrict__ acc, int n)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1338,15 +1340,119 @@ __global__ void qwen_moe_init_acc_kernel(const __half *__restrict__ resid,
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 } // namespace
 
-cudaError_t RunQwenMoeAccInitForTest(cudaStream_t stream,
+cudaError_t RunMoEAccInitForTest(cudaStream_t stream,
                                      const __half *d_resid, float *d_acc,
                                      int n)
 {
     if (!d_resid || !d_acc || n <= 0) return cudaErrorInvalidValue;
-    qwen_moe_init_acc_kernel<<<(int)((n + 255) / 256), 256, 0, stream>>>(
+    moe_init_acc_kernel<<<(int)((n + 255) / 256), 256, 0, stream>>>(
         d_resid, d_acc, n);
     return cudaGetLastError();
 }
 
-} // namespace qwen_moe
+int EnsureMoEExpertResident(moe::MoEExpertStore &store, int layer, int eid,
+                                gpu::ExpertDeviceCache &cache,
+                                cudaStream_t stream, std::string &error,
+                                cudaStream_t h2d_stream, bool *missed,
+                                int *evicted_slot)
+{
+    if (missed) *missed = false;
+    if (evicted_slot) *evicted_slot = -1;
+    if (layer < 0 || layer >= store.num_layers || eid < 0 ||
+        eid >= store.num_experts) {
+        error = absl::StrCat("expert out of range: layer ", layer, " eid ", eid);
+        return -1;
+    }
+    const int flat = layer * store.num_experts + eid;
+    int slot = cache.Lookup(flat);
+    if (slot >= 0) return slot;
+    slot = cache.Insert(flat, evicted_slot);
+    if (missed) *missed = true;
+
+    // No-handshake decode bookkeeping: mirror residency + scales so the
+    // batched GEMV path can compose its table entirely on device.
+    if (static_cast<int>(store.h_gemv_meta.size()) <
+        store.num_layers * store.num_experts)
+        store.h_gemv_meta.assign(
+            static_cast<size_t>(store.num_layers) * store.num_experts,
+            MoEExpertMetaDev{-1, 0.f, 0.f, 0.f});
+    {
+        const auto &rec =
+            store.records[static_cast<size_t>(layer)]
+                         [static_cast<size_t>(eid)];
+        store.h_gemv_meta[static_cast<size_t>(flat)] =
+            moe::MoEExpertMetaDev{slot, rec.gs1, rec.gs2, rec.gs3};
+        store.gemv_ready = false;   // invalidate until re-uploaded
+    }
+
+    const uint8_t *slab = store.h_slabs[static_cast<size_t>(layer)];
+    if (!slab) {
+        error = "expert slab not allocated";
+        return -1;
+    }
+    const auto &r = store.records[static_cast<size_t>(layer)]
+                                  [static_cast<size_t>(eid)];
+    uint8_t *dst_pack =
+        cache.d_pack + static_cast<int64_t>(slot) * cache.pack_stride;
+    uint8_t *dst_scale =
+        cache.d_scale + static_cast<int64_t>(slot) * cache.scale_stride;
+    // Slot layout is FUSED for inference: [w13 = w1|w3][w2] and
+    // [s13 = s1|s3][s2] so the gate/up projections run as ONE GEMM with
+    // per-segment global scales (RunMoERoutedFFN). The pinned slab keeps
+    // the on-disk order; only this staging reorder differs.
+    cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
+    uint8_t *pk = dst_pack;
+    struct PackSeg { int64_t off, bytes; };
+    const PackSeg psegs[3] = {{r.w1_off, r.w1_bytes},
+                              {r.w3_off, r.w3_bytes},
+                              {r.w2_off, r.w2_bytes}};
+    for (const auto &seg : psegs) {
+        if (cudaMemcpyAsync(pk, slab + seg.off,
+                            static_cast<size_t>(seg.bytes),
+                            cudaMemcpyHostToDevice,
+                            copy_stream) != cudaSuccess) {
+            error = "expert H2D pack staging failed";
+            return -1;
+        }
+        pk += seg.bytes;
+    }
+    uint8_t *sc = dst_scale;
+    const PackSeg ssegs[3] = {{r.s1_off, r.s1_bytes},
+                              {r.s3_off, r.s3_bytes},
+                              {r.s2_off, r.s2_bytes}};
+    for (const auto &seg : ssegs) {
+        if (cudaMemcpyAsync(sc, slab + seg.off,
+                            static_cast<size_t>(seg.bytes),
+                            cudaMemcpyHostToDevice,
+                            copy_stream) != cudaSuccess) {
+            error = "expert H2D scale staging failed";
+            return -1;
+        }
+        sc += seg.bytes;
+    }
+    return slot;
+}
+
+// ── Routed-expert host store ───────────────────────────────────────────────
+
+void MoEExpertStore::Free()
+{
+    for (auto &p : h_slabs)
+        if (p) cudaFreeHost(p);
+    h_slabs.clear();
+    slab_bytes.clear();
+    records.clear();
+    if (d_seg_wgs) cudaFree(d_seg_wgs);
+    if (d_seg_bounds) cudaFree(d_seg_bounds);
+    d_seg_wgs = nullptr;
+    d_seg_bounds = nullptr;
+    if (d_gemv_meta) cudaFree(d_gemv_meta);
+    d_gemv_meta = nullptr;
+    h_gemv_meta.clear();
+    gemv_ready = false;
+    num_layers = 0;
+    num_experts = 0;
+}
+
+} // namespace moe
 } // namespace lsxcommon

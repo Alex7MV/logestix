@@ -96,8 +96,8 @@ TEST_CASE("ornith geometry mismatch rejected at load", "[ornith-moe-model]")
 TEST_CASE("ornith eos truncation helper", "[ornith-moe-decode]")
 {
     std::vector<int32_t> t{5, 6, 7, 8};
-    CHECK(ornith::TruncateTokensAtEos(t, 7) == true);
+    CHECK(ornith::MoETruncateTokensAtEos(t, 7) == true);
     CHECK((t == std::vector<int32_t>{5, 6, 7}));
     std::vector<int32_t> w{1};
-    CHECK(ornith::TruncateTokensAtEos(w, -1) == false);
+    CHECK(ornith::MoETruncateTokensAtEos(w, -1) == false);
 }

@@ -164,17 +164,17 @@ TEST_CASE("lifecycle MoE plan bounds for qwen3.5-35b-a3b", "[qwen-moe-model]")
 TEST_CASE("eos truncation helper", "[qwen-moe-decode]")
 {
     std::vector<int32_t> t{5, 6, 7, 8};
-    CHECK(qwen_moe::TruncateTokensAtEos(t, 7) == true);
+    CHECK(moe::MoETruncateTokensAtEos(t, 7) == true);
     CHECK((t == std::vector<int32_t>{5, 6, 7}));
     std::vector<int32_t> u{5, 6, 8};
-    CHECK(qwen_moe::TruncateTokensAtEos(u, 7) == false);
+    CHECK(moe::MoETruncateTokensAtEos(u, 7) == false);
     CHECK((u == std::vector<int32_t>{5, 6, 8}));
     std::vector<int32_t> v{7};
-    CHECK(qwen_moe::TruncateTokensAtEos(v, 7) == true);
+    CHECK(moe::MoETruncateTokensAtEos(v, 7) == true);
     CHECK(v.empty() == false);   // legacy loop KEEPS the EOS token
     CHECK((v == std::vector<int32_t>{7}));
     std::vector<int32_t> w{1};
-    CHECK(qwen_moe::TruncateTokensAtEos(w, -1) == false);  // disabled
+    CHECK(moe::MoETruncateTokensAtEos(w, -1) == false);  // disabled
 }
 
 // Kimi-race gate: two Infer calls on the same session must produce

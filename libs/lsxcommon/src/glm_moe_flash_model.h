@@ -47,7 +47,7 @@ private:
     void TeardownWeights() override;
 
     glm_moe_flash::FlashPinnedWeights pw_;
-    qwen_moe::QwenMoeExpertStore experts_;
+    moe::MoEExpertStore experts_;
     gpu::ExpertDeviceCache cache_{};
 };
 

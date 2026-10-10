@@ -3,7 +3,7 @@
 // GLM-5.3-Flash loader types. Per-layer weights are a KDA/DSA union:
 // KDA layers keep high-precision FP16 projections (converter policy), DSA
 // layers carry NVFP4 MLA projections + BF16 raw indexer/kv_b weights.
-// Routed experts reuse the generic pinned-slab store (QwenMoeExpertStore).
+// Routed experts reuse the generic pinned-slab store (moe::MoEExpertStore).
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -13,7 +13,7 @@
 
 #include "lsxcommon/qwen_inference_load.h"  // QwenNvfp4Weight
 #include "lsxcommon/qwen_moe_expert_cache.h"
-#include "lsxcommon/qwen_moe_load.h"  // QwenMoeExpertStore
+#include "lsxcommon/qwen_moe_load.h"  // moe::MoEExpertStore
 #include "lsxcommon/glm_moe_flash_convert.h"  // FlashTopology
 #include "lsxcommon/schema.h"  // TensorRecord
 
@@ -117,7 +117,7 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
 // Loads every experts/layer_NNN/exp_EEE.arrow under <model_path>/logestix/
 // into pinned host memory. Strict errors.
 bool LoadGlmFlashExpertStore(const std::string &model_path,
-                             qwen_moe::QwenMoeExpertStore &store,
+                             lsxcommon::moe::MoEExpertStore &store,
                              std::string &error);
 
 } // namespace glm_moe_flash

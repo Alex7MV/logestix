@@ -8,7 +8,7 @@
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/qwen_moe_expert_cache.h"
 #include "lsxcommon/qwen_moe_exp_convert.h"
-#include "lsxcommon/qwen_moe_load.h"  // QwenMoeExpertStore base + record types
+#include "lsxcommon/qwen_moe_load.h"  // moe::MoEExpertStore base + record types
 
 namespace lsxcommon::qwen_moe_exp {
 
@@ -136,17 +136,17 @@ void FreeQwen4ExpPinnedWeights(ExpPinnedWeights &pw);
 
 // Host-resident routed-expert payloads (pinned slabs), laid out per layer.
 // The generation context stages slices of these into the LRU device cache.
-// Record layout is IDENTICAL to qwen_moe::QwenMoeExpertRecord (fused staging
+// Record layout is IDENTICAL to lsxcommon::moe::MoEExpertRecord (fused staging
 // consumes both stores through the same kernels); aliasing the type makes
 // the pairing structural instead of convention.
-using ExpExpertRecord = qwen_moe::QwenMoeExpertRecord;
-using ExpExpertMetaDev = qwen_moe::QwenMoeExpertMetaDev;
+using ExpExpertRecord = moe::MoEExpertRecord;
+using ExpExpertMetaDev = moe::MoEExpertMetaDev;
 
-// Qwen3.8-Flash-Next expert store: EXTENDS qwen_moe::QwenMoeExpertStore so
-// the shared routed-expert kernels (RunQwenMoeRoutedFFN, RunQwenMoeRouterTopK,
-// EnsureQwenMoeExpertResident family) consume it directly — no
+// Qwen3.8-Flash-Next expert store: EXTENDS lsxcommon::moe::MoEExpertStore so
+// the shared routed-expert kernels (RunMoERoutedFFN, RunMoERouterTopK,
+// moe::EnsureMoEExpertResident family) consume it directly — no
 // reinterpret_cast pairing, no layout-drift bug class.
-struct ExpExpertStore : public qwen_moe::QwenMoeExpertStore {
+struct ExpExpertStore : public lsxcommon::moe::MoEExpertStore {
     // Single pinned arena backing every layer slab (one page-lock instead
     // of num_layers; per-slab cudaMallocHost cost ~660ms each on load).
     // All h_slabs entries point at arena_base; record offsets are global.

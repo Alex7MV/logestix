@@ -243,23 +243,23 @@ target_link_libraries(lsxcommon_qwen_cu
     arrow_cuda_shared
     absl::strings
 )
-add_library(lsxcommon_qwen_moe_cu OBJECT
-    src/qwen_moe_inference.cu
+add_library(lsxcommon_moe_cu OBJECT
+    src/lsx_moe_inference.cu
     src/qwen_moe_inference_pipeline.cu
 )
-set_target_properties(lsxcommon_qwen_moe_cu PROPERTIES
+set_target_properties(lsxcommon_moe_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
 # -fmad=false: bit-exact router/expert math (protocol invariant).
-target_compile_options(lsxcommon_qwen_moe_cu PRIVATE
+target_compile_options(lsxcommon_moe_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
-target_include_directories(lsxcommon_qwen_moe_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
-target_compile_definitions(lsxcommon_qwen_moe_cu PRIVATE ${LSXCOMMON_CU_DEFS})
-target_link_libraries(lsxcommon_qwen_moe_cu
+target_include_directories(lsxcommon_moe_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_moe_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_moe_cu
     "${CUDA_CUDART_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
@@ -477,7 +477,7 @@ target_compile_options(lsxcommon_cuda_reqs INTERFACE
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cuda_reqs)
 
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
-    lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
+    lsxcommon_qwen_cu lsxcommon_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
     lsxcommon_deepseek_v41_cu
     lsxcommon_nemotron_cu

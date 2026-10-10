@@ -1,8 +1,8 @@
 #pragma once
 // Qwen-MoE generation pipeline. Model-owned: it takes QwenMoePinnedWeights
 // and the qwen KV cache, so it stays family-named even though the kernels it
-// calls are a neutral layer (see qwen_moe_inference.h, renamed to the neutral
-// lsx_ name by the neutrality refactor).
+// calls are a neutral layer (see lsx_moe_inference.h, the neutral
+// routed-MoE kernel layer).
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -14,7 +14,7 @@
 #include "lsxcommon/qwen_inference_load.h"    // QwenKvCache
 #include "lsxcommon/qwen_moe_expert_cache.h"  // QwenMoeExpertDeviceCache
 #include "lsxcommon/qwen_moe_load.h"          // QwenMoePinnedWeights
-#include "lsxcommon/qwen_moe_inference.h"     // kernel entry points
+#include "lsxcommon/lsx_moe_inference.h"     // kernel entry points
 #include "lsxcommon/sampling.h"               // ISampler
 #include "lsxcommon/token_stream.h"           // GenerationStream
 
@@ -44,7 +44,7 @@ void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch);
 // handshake and final-logits publication.
 cudaError_t RunQwenMoeGeneration(
     cudaStream_t stream, const QwenMoePinnedWeights &pw,
-    QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
+    lsxcommon::moe::MoEExpertStore &store, QwenMoeExpertDeviceCache &cache,
     QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     lsxcommon::qwen::QwenGenerationResult &result,

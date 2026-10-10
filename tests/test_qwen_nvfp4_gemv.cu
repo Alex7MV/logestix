@@ -20,7 +20,7 @@
 #include <vector>
 
 #include "lsxcommon/qwen_inference.h"
-#include "lsxcommon/qwen_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/schema.h"
 #include <cmath>
 
@@ -456,7 +456,7 @@ void RunBatch(const BatchCase &c, std::vector<float> *acc_out)
 
     const float coeffs[4] = {0.75f, -0.5f, 1.25f, 0.0625f};
     const int eids[4] = {3, 0, 3, 1};
-    std::vector<lsxcommon::qwen_moe::QwenMoeGvSlotDev> slots(S);
+    std::vector<lsxcommon::moe::MoEGvSlotDev> slots(S);
     for (int k = 0; k < S; ++k) {
         // eids are designed for S=4 (duplicate-expert coverage); wrap modulo
         // S so smaller cases stay in bounds while keeping the duplicate pair.
@@ -494,9 +494,9 @@ void RunBatch(const BatchCase &c, std::vector<float> *acc_out)
     cudaMemcpy(acc, h_acc0.data(), static_cast<size_t>(H) * 4,
                cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedGemmVBatch(
+    REQUIRE(lsxcommon::moe::RunMoERoutedGemmVBatch(
                 nullptr, d_pack, d_scale, pack_stride, scale_stride,
-                reinterpret_cast<lsxcommon::qwen_moe::QwenMoeGvSlotDev *>(
+                reinterpret_cast<lsxcommon::moe::MoEGvSlotDev *>(
                     d_slots),
                 S, w13b, s13b, H, I, dx, ygu, hbuf, ypart, acc) ==
             cudaSuccess);
@@ -618,13 +618,13 @@ TEST_CASE("GemvGatherTable composes slot table from device inputs",
           "[qwen][gemm][nvfp4][gemv][batch]")
 {
     constexpr int E = 8, K = 5;
-    std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> routes(K);
+    std::vector<lsxcommon::moe::MoERoutedSlot> routes(K);
     const int eids[K] = {7, 2, 7, 0, 5};
     for (int k = 0; k < K; ++k) {
         routes[k].eid = eids[k];
         routes[k].coeff = 0.125f * (k + 1);
     }
-    std::vector<lsxcommon::qwen_moe::QwenMoeExpertMetaDev> meta(E);
+    std::vector<lsxcommon::moe::MoEExpertMetaDev> meta(E);
     for (int e = 0; e < E; ++e) {
         meta[e].dev_slot = 100 + e;
         meta[e].gs1 = 1.0f / float(1 << (e % 6));
@@ -632,9 +632,9 @@ TEST_CASE("GemvGatherTable composes slot table from device inputs",
         meta[e].gs3 = 1.0f / float(1 << ((e + 5) % 6));
     }
 
-    lsxcommon::qwen_moe::QwenMoeRoutedSlot *d_routes = nullptr;
-    lsxcommon::qwen_moe::QwenMoeExpertMetaDev *d_meta = nullptr;
-    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;
+    lsxcommon::moe::MoERoutedSlot *d_routes = nullptr;
+    lsxcommon::moe::MoEExpertMetaDev *d_meta = nullptr;
+    lsxcommon::moe::MoEGvSlotDev *d_tbl = nullptr;
     cudaMalloc(&d_routes, routes.size() * sizeof(routes[0]));
     cudaMalloc(&d_meta, meta.size() * sizeof(meta[0]));
     cudaMalloc(&d_tbl, K * sizeof(*d_tbl));
@@ -647,11 +647,11 @@ TEST_CASE("GemvGatherTable composes slot table from device inputs",
     cudaMemcpy(d_meta, meta.data(), meta.size() * sizeof(meta[0]),
                cudaMemcpyHostToDevice);
 
-    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeGemvGatherTable(
+    REQUIRE(lsxcommon::moe::RunMoEGemvGatherTable(
                 nullptr, d_routes, K, d_meta, d_tbl) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
-    std::vector<lsxcommon::qwen_moe::QwenMoeGvSlotDev> got(K);
+    std::vector<lsxcommon::moe::MoEGvSlotDev> got(K);
     cudaMemcpy(got.data(), d_tbl, K * sizeof(*d_tbl),
                cudaMemcpyDeviceToHost);
     for (int k = 0; k < K; ++k) {
@@ -672,7 +672,7 @@ TEST_CASE("GemvGatherTable composes slot table from device inputs",
 TEST_CASE("Batched GEMV core is CUDA-graph transparent",
           "[qwen][gemm][nvfp4][gemv][batch][graph]")
 {
-    using namespace lsxcommon::qwen_moe;
+    using namespace lsxcommon::moe;
     const int H = 128, I = 64, S = 2;   // I=64: slice=2 warps of chunks
     const int64_t w13b = static_cast<int64_t>(2 * I) * H / 2;
     const int64_t w2b = static_cast<int64_t>(H) * I / 2;
@@ -691,7 +691,7 @@ TEST_CASE("Batched GEMV core is CUDA-graph transparent",
         for (int64_t i = 0; i < scale_stride; ++i)
             sc[i] = static_cast<uint8_t>(128 + ((i + 7 * e) % 48));
     }
-    QwenMoeGvSlotDev tbl[S];
+    MoEGvSlotDev tbl[S];
     for (int k = 0; k < S; ++k) {
         tbl[k].dev_slot = k;
         tbl[k].gs1 = 0.25f;
@@ -704,16 +704,16 @@ TEST_CASE("Batched GEMV core is CUDA-graph transparent",
         hx[i] = __float2half(float((i % 9) - 4) * 0.25f);
 
     uint8_t *d_pack, *d_scale;
-    QwenMoeGvSlotDev *d_tblA = nullptr, *d_tblB = nullptr;
+    MoEGvSlotDev *d_tblA = nullptr, *d_tblB = nullptr;
     __half *dx, *yguA, *hbufA, *ypartA, *yguB, *hbufB, *ypartB;
     float *accA, *accB;
     cudaMalloc(&d_pack, hp.size());
     cudaMalloc(&d_scale, hs.size());
     cudaMemcpy(d_pack, hp.data(), hp.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_scale, hs.data(), hs.size(), cudaMemcpyHostToDevice);
-    auto alloc_set = [&](QwenMoeGvSlotDev **t, __half **g, __half **hb,
+    auto alloc_set = [&](MoEGvSlotDev **t, __half **g, __half **hb,
                          __half **yp, float **ac) {
-        cudaMalloc(t, sizeof(QwenMoeGvSlotDev) * S);
+        cudaMalloc(t, sizeof(MoEGvSlotDev) * S);
         cudaMalloc(reinterpret_cast<void **>(g),
                    static_cast<size_t>(S) * 2 * I * 2);
         cudaMalloc(reinterpret_cast<void **>(hb),
@@ -734,7 +734,7 @@ TEST_CASE("Batched GEMV core is CUDA-graph transparent",
     cudaMemcpy(accB, acc_seed.data(), H * 4, cudaMemcpyHostToDevice);
 
     // (a) Plain chain launch.
-    REQUIRE(RunQwenMoeRoutedGemmVBatchCore(
+    REQUIRE(RunMoERoutedGemmVBatchCore(
                 nullptr, d_pack, d_scale, pack_stride, scale_stride, d_tblA,
                 S, w13b, s13b, H, I, dx, yguA, hbufA, ypartA, accA) ==
             cudaSuccess);
@@ -749,7 +749,7 @@ TEST_CASE("Batched GEMV core is CUDA-graph transparent",
     REQUIRE(cudaStreamBeginCapture(gs,
                                    cudaStreamCaptureModeThreadLocal) ==
             cudaSuccess);
-    cudaError_t ce = RunQwenMoeRoutedGemmVBatchCore(
+    cudaError_t ce = RunMoERoutedGemmVBatchCore(
         gs, d_pack, d_scale, pack_stride, scale_stride, d_tblB, S, w13b,
         s13b, H, I, dx, yguB, hbufB, ypartB, accB);
     if (ce != cudaSuccess || cudaStreamEndCapture(gs, &graph) !=
@@ -829,7 +829,7 @@ void RunGemmaBatch(const int H, const int I, const int S, bool adversarial,
                                 : static_cast<uint8_t>(
                                       128 + ((i + 11 * e) % 48));
     }
-    std::vector<lsxcommon::qwen_moe::QwenMoeGvSlotDev> slots(S);
+    std::vector<lsxcommon::moe::MoEGvSlotDev> slots(S);
     for (int k = 0; k < S; ++k) {
         slots[k].dev_slot = k;
         slots[k].gs1 = static_cast<float>(1 << (k % 4)) / 256.0f;
@@ -842,7 +842,7 @@ void RunGemmaBatch(const int H, const int I, const int S, bool adversarial,
         hx[i] = __float2half(float((i % 7) - 3) * 0.25f);
 
     uint8_t *d_pack, *d_scale;
-    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;
+    lsxcommon::moe::MoEGvSlotDev *d_tbl = nullptr;
     cudaMalloc(&d_pack, hp.size());
     cudaMalloc(&d_scale, hs.size());
     cudaMalloc(&d_tbl, sizeof(*slots.data()) * S);

@@ -1,5 +1,5 @@
 #include "lsxcommon/qwen_moe_inference_pipeline.h"
-#include "lsxcommon/qwen_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/shared_experts.h"
@@ -90,7 +90,7 @@ void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch)
 
 cudaError_t RunQwenMoeGeneration(
     cudaStream_t stream, const QwenMoePinnedWeights &pw,
-    QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
+    lsxcommon::moe::MoEExpertStore &store, QwenMoeExpertDeviceCache &cache,
     QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
@@ -122,7 +122,7 @@ cudaError_t RunQwenMoeGeneration(
     result = qwen::QwenGenerationResult{};
 
     if (H <= 0 || V <= 0 || prompt.empty() || max_new <= 0 || eos_id < 0 ||
-        E <= 0 || K <= 0 || K > kMaxTopK || I <= 0 || SI <= 0 ||
+        E <= 0 || K <= 0 || K > moe::kMaxTopK || I <= 0 || SI <= 0 ||
         !pw.embed.d_packed || !pw.head.d_packed) {
         result.error_msg = "invalid MoE generation inputs";
         return cudaErrorInvalidValue;
@@ -175,9 +175,9 @@ cudaError_t RunQwenMoeGeneration(
         (size_t)SI,                      // d_si (shared scratch)
         (size_t)H,                       // d_sh
         // Batched-GEMV decode scratch (no-handshake / probe paths):
-        (size_t)kMaxTopK * 2 * I,        // d_ygu_batch [Ktop,2I]
-        (size_t)kMaxTopK * I,            // d_h_batch   [Ktop,I]
-        (size_t)kMaxTopK * H,            // d_yp_batch  [Ktop,H]
+        (size_t)moe::kMaxTopK * 2 * I,        // d_ygu_batch [Ktop,2I]
+        (size_t)moe::kMaxTopK * I,            // d_h_batch   [Ktop,I]
+        (size_t)moe::kMaxTopK * H,            // d_yp_batch  [Ktop,H]
     };
     size_t float_sz[] = {
         (size_t)max_seq * nv,   // d_gf
@@ -204,20 +204,20 @@ cudaError_t RunQwenMoeGeneration(
         ((static_cast<size_t>(H) / 2 + 63) / 64) * 64;
     const size_t xact_qs_bytes =
         (((static_cast<size_t>(H) + 15) / 16) + 63) / 64 * 64;
-    const size_t gemv_tbl_bytes = ((sizeof(QwenMoeGvSlotDev) *
-                                        static_cast<size_t>(kMaxTopK)) +
+    const size_t gemv_tbl_bytes = ((sizeof(moe::MoEGvSlotDev) *
+                                        static_cast<size_t>(moe::kMaxTopK)) +
                                    63) /
                                   64 * 64;
     // Batched TC routed chain (80-tok/s decode round): per-slot quant
     // outputs for the down GEMM + w13 split-K partials (arena slices).
     const int tc_splitk = lsx_tc::LsxTcBatchSplitK(H, 2 * I);
     const size_t qpack_b_bytes =
-        ((static_cast<size_t>(kMaxTopK) * I / 2) + 63) / 64 * 64;
+        ((static_cast<size_t>(moe::kMaxTopK) * I / 2) + 63) / 64 * 64;
     const size_t qscales_b_bytes =
-        ((static_cast<size_t>(kMaxTopK) * ((I + 15) / 16)) + 63) / 64 * 64;
+        ((static_cast<size_t>(moe::kMaxTopK) * ((I + 15) / 16)) + 63) / 64 * 64;
     const size_t tc_splitk_bytes =
         tc_splitk > 1
-            ? ((static_cast<size_t>(tc_splitk) * kMaxTopK * 2 * I * 4 + 63) /
+            ? ((static_cast<size_t>(tc_splitk) * moe::kMaxTopK * 2 * I * 4 + 63) /
                64) * 64
             : 64;
 
@@ -275,8 +275,8 @@ cudaError_t RunQwenMoeGeneration(
     uint8_t *d_qscales_scratch = d_qpack_scratch + qpack_bytes;
     uint8_t *d_xact_q = d_qscales_scratch + qscales_bytes;
     uint8_t *d_xact_qs = d_xact_q + xact_q_bytes;
-    QwenMoeGvSlotDev *d_gemv_tbl =
-        reinterpret_cast<QwenMoeGvSlotDev *>(d_xact_qs + xact_qs_bytes);
+    moe::MoEGvSlotDev *d_gemv_tbl =
+        reinterpret_cast<moe::MoEGvSlotDev *>(d_xact_qs + xact_qs_bytes);
     uint8_t *d_qpack_b = d_xact_qs + xact_qs_bytes + gemv_tbl_bytes;
     uint8_t *d_qscales_b = d_qpack_b + qpack_b_bytes;
     float *d_tc_splitk =
@@ -293,8 +293,8 @@ cudaError_t RunQwenMoeGeneration(
         cudaFree(d_argmax);
         return e;
     }
-    QwenMoeRoutedSlot *d_slots = nullptr;
-    e = cudaMalloc(&d_slots, sizeof(QwenMoeRoutedSlot) * static_cast<size_t>(K));
+    moe::MoERoutedSlot *d_slots = nullptr;
+    e = cudaMalloc(&d_slots, sizeof(moe::MoERoutedSlot) * static_cast<size_t>(K));
     if (e != cudaSuccess) {
         result.error_msg = "slots alloc";
         cudaFree(d_argmax);
@@ -304,11 +304,11 @@ cudaError_t RunQwenMoeGeneration(
 
     // Pinned staging: per-step {token,pos} H2D and per-layer routed slots D2H.
     int32_t *h_step = nullptr;
-    QwenMoeRoutedSlot *h_slots = nullptr;
+    moe::MoERoutedSlot *h_slots = nullptr;
     bool have_pinned =
         cudaMallocHost(&h_step, static_cast<size_t>(2 * (prompt.size() + max_new)) *
                                     sizeof(int32_t)) == cudaSuccess &&
-        cudaMallocHost(&h_slots, sizeof(QwenMoeRoutedSlot) *
+        cudaMallocHost(&h_slots, sizeof(moe::MoERoutedSlot) *
                                      static_cast<size_t>(K)) == cudaSuccess;
 
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
@@ -460,7 +460,7 @@ cudaError_t RunQwenMoeGeneration(
             if (e != cudaSuccess) return fail(e, "postnorm l" + std::to_string(l));
 
             // ── MoE FFN: router → routed experts → shared combine ──
-            e = RunQwenMoeRouterTopK(stream, reinterpret_cast<const __nv_bfloat16 *>(lw.d_router),
+            e = moe::RunMoERouterTopK(stream, reinterpret_cast<const __nv_bfloat16 *>(lw.d_router),
                                      d_postin, seq, E, K, H, d_slots);
             if (e != cudaSuccess) return fail(e, "router l" + std::to_string(l));
             {
@@ -470,7 +470,7 @@ cudaError_t RunQwenMoeGeneration(
                 // folds the seed into its reduce kernel (same fp32 order) and
                 // skips this launch.
                 const int64_t n = seq * H;
-                e = RunQwenMoeAccInitForTest(stream, d_act, d_moe_acc,
+                e = moe::RunMoEAccInitForTest(stream, d_act, d_moe_acc,
                                         static_cast<int>(n));
                 if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
             }
@@ -481,7 +481,7 @@ cudaError_t RunQwenMoeGeneration(
             // GEMV experimental route keeps priority when explicitly
             // requested via LSX_GEMV_EXPERTS.
             const bool moe_nohs_ready =
-                lsxcommon::qwen_moe::QwenMoeGemvNohandshake(store);
+                lsxcommon::moe::MoEGemvNohandshake(store);
             const bool tc_batch = kTcBatchGeom && moe_nohs_ready;
             const bool nohandshake = kGemvExpertsEnv && moe_nohs_ready;
             if (!tc_batch && !nohandshake) {
@@ -491,7 +491,7 @@ cudaError_t RunQwenMoeGeneration(
                 // handshakes per generation, host wake latency is pure GPU
                 // idle time.
                 cudaMemcpyAsync(h_slots, d_slots,
-                                sizeof(QwenMoeRoutedSlot) * K,
+                                sizeof(moe::MoERoutedSlot) * K,
                                 cudaMemcpyDeviceToHost, stream);
                 cudaEventRecord(tok_ready, stream);
                 {
@@ -501,7 +501,7 @@ cudaError_t RunQwenMoeGeneration(
                     (void)q;
                 }
             }
-            QwenMoeRoutedSlot *slots_host = h_slots;
+            moe::MoERoutedSlot *slots_host = h_slots;
             // Quantize the layer input ONCE for all experts + shared GEMMs
             // (TC path): removes ~8 redundant ActQuant passes per layer.
             // Buffers are persistent arena slices (round-20 pass) -- the
@@ -523,7 +523,7 @@ cudaError_t RunQwenMoeGeneration(
                 // swiglu-quant -> w2 batch TC GEMM -> ascending reduce.
                 // Bit-identical to the legacy per-slot chain (pinned by
                 // test_qwen_moe_kernels "[qwen-moe-tc-batch]").
-                e = RunQwenMoeRoutedTcBatch(
+                e = moe::RunMoERoutedTcBatch(
                     stream, store, cache, l, d_slots, xq, xqs, K, H, I,
                     d_act, d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
                     d_qpack_b, d_qscales_b,
@@ -543,13 +543,13 @@ cudaError_t RunQwenMoeGeneration(
                         cudaError_t cap = cudaStreamBeginCapture(
                             stream, cudaStreamCaptureModeThreadLocal);
                         if (cap == cudaSuccess) {
-                            cudaError_t s1 = RunQwenMoeGemvGatherTable(
+                            cudaError_t s1 = moe::RunMoEGemvGatherTable(
                                 stream, d_slots, K,
                                 store.d_gemv_meta + flat_base,
                                 d_gemv_tbl);
                             cudaError_t s2 =
                                 s1 == cudaSuccess
-                                    ? RunQwenMoeRoutedGemmVBatchCore(
+                                    ? moe::RunMoERoutedGemmVBatchCore(
                                           stream, cache.d_pack, cache.d_scale,
                                           cache.pack_stride,
                                           cache.scale_stride, d_gemv_tbl, K,
@@ -560,7 +560,7 @@ cudaError_t RunQwenMoeGeneration(
                                           H, I, d_postin, d_ygu_batch,
                                           d_h_batch, d_yp_batch, d_moe_acc)
                                     : s1;
-                            RunQwenMoeSharedCombine(stream, lw.shared_w1,
+                            moe::RunMoESharedCombine(stream, lw.shared_w1,
                                                     lw.shared_w2, lw.shared_w3,
                                                     lw.d_shared_gate,
                                                     d_postin, seq, H, SI,
@@ -597,13 +597,13 @@ cudaError_t RunQwenMoeGeneration(
                     }
                 }
                 if (!ffn_done && e == cudaSuccess) {
-                    e = RunQwenMoeRoutedGemmVNoHandshake(
+                    e = moe::RunMoERoutedGemmVNoHandshake(
                         stream, store, cache, l, d_slots, K, d_postin, H, I,
                         d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
                         d_gemv_tbl, moe_error);
                 }
             } else {
-                e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host,
+                e = moe::RunMoERoutedFFN(stream, store, cache, l, slots_host,
                                         K, d_postin, H, I, d_moe_acc, d_yg,
                                         d_yu, d_y2, moe_error,
                                         have_copy ? copy_stream : nullptr,
@@ -617,7 +617,7 @@ cudaError_t RunQwenMoeGeneration(
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
             if (skip_shared) { /* shared combine executed inside graph */ }
             else {
-            e = RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
+            e = moe::RunMoESharedCombine(stream, lw.shared_w1, lw.shared_w2,
                                         lw.shared_w3, lw.d_shared_gate,
                                         d_postin, seq, H, SI, d_moe_acc,
                                         d_si, d_sh, d_gate_val, d_act, xq,
@@ -714,7 +714,7 @@ cudaError_t RunQwenMoeGeneration(
                          static_cast<std::uint32_t>(i));
             }
         }
-        result.eos_terminated = TruncateTokensAtEos(result.tokens, eos_id);
+        result.eos_terminated = moe::MoETruncateTokensAtEos(result.tokens, eos_id);
         if (!result.tokens.empty()) tok = result.tokens.back();
     }
     (void)abort_stream;
@@ -737,7 +737,7 @@ cudaError_t RunQwenMoeGeneration(
 
         // Routing snapshot for the audited step (previous sampler fence has
         // already synchronized this stream).
-        cudaMemcpyAsync(h_slots, d_slots, sizeof(QwenMoeRoutedSlot) * K,
+        cudaMemcpyAsync(h_slots, d_slots, sizeof(moe::MoERoutedSlot) * K,
                         cudaMemcpyDeviceToHost, stream);
         cudaStreamSynchronize(stream);
 
@@ -777,11 +777,11 @@ cudaError_t RunQwenMoeGeneration(
                 lsxcommon::kernels::AddInPlaceKernel<__half>
                     <<<1, threads, 0, stream>>>(d_attn_out, d_act, H);
                 stamp();   // attn segment: norm + attention + residual add
-                RunQwenMoeRoutedFFN(stream, store, cache,
+                moe::RunMoERoutedFFN(stream, store, cache,
                                     static_cast<int>(l), h_slots, K,
                                     d_postin, H, I, d_moe_acc, d_yg, d_yu,
                                     d_y2, moe_error);
-                RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
+                moe::RunMoESharedCombine(stream, lw.shared_w1, lw.shared_w2,
                                         lw.shared_w3, lw.d_shared_gate,
                                         d_postin, 1, H, SI, d_moe_acc, d_si,
                                         d_sh, d_gate_val, d_act, nullptr,

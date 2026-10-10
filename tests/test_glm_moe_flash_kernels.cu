@@ -13,7 +13,7 @@
 #include "glm_moe_flash_device_math.h"
 #include "lsxcommon/glm_moe_flash_inference.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
-#include "lsxcommon/qwen_moe_inference.h"
+#include "lsxcommon/lsx_moe_inference.h"
 
 #include <cstdio>
 
@@ -341,11 +341,11 @@ TEST_CASE("flash router: sigmoid noaux_tc top-8 + renorm + scaling")
     // Device.
     uint8_t *d_gate, *d_x;
     float *d_bias;
-    qwen_moe::QwenMoeRoutedSlot *d_slots;
+    moe::MoERoutedSlot *d_slots;
     REQUIRE(cudaMalloc(&d_gate, gate.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_bias, bias.size() * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_x, x.size() * 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&d_slots, TOK * 8 * sizeof(qwen_moe::QwenMoeRoutedSlot))
+    REQUIRE(cudaMalloc(&d_slots, TOK * 8 * sizeof(moe::MoERoutedSlot))
             == cudaSuccess);
     REQUIRE(cudaMemcpy(d_gate, gate.data(), gate.size() * 2,
                        cudaMemcpyHostToDevice) == cudaSuccess);
@@ -357,7 +357,7 @@ TEST_CASE("flash router: sigmoid noaux_tc top-8 + renorm + scaling")
     cudaStreamCreate(&s);
     REQUIRE(RunFlashRouterTop8(s, d_gate, d_bias, d_x, TOK, H, E, d_slots)
             == cudaSuccess);
-    std::vector<qwen_moe::QwenMoeRoutedSlot> got(TOK * 8);
+    std::vector<moe::MoERoutedSlot> got(TOK * 8);
     REQUIRE(cudaMemcpyAsync(got.data(), d_slots,
                             got.size() * sizeof(got[0]),
                             cudaMemcpyDeviceToHost, s) == cudaSuccess);
@@ -446,11 +446,11 @@ TEST_CASE("flash router F16: full-size 288 experts smoke")
     for (auto &v : bias) v = ud(rng);
     uint8_t *d_gate, *d_x;
     float *d_bias;
-    qwen_moe::QwenMoeRoutedSlot *d_slots;
+    moe::MoERoutedSlot *d_slots;
     REQUIRE(cudaMalloc(&d_gate, gate.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_x, x.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_bias, E * 4) == cudaSuccess);
-    REQUIRE(cudaMalloc(&d_slots, TOK * 8 * sizeof(qwen_moe::QwenMoeRoutedSlot))
+    REQUIRE(cudaMalloc(&d_slots, TOK * 8 * sizeof(moe::MoERoutedSlot))
             == cudaSuccess);
     REQUIRE(cudaMemcpy(d_gate, gate.data(), gate.size() * 2,
                        cudaMemcpyHostToDevice) == cudaSuccess);
@@ -463,7 +463,7 @@ TEST_CASE("flash router F16: full-size 288 experts smoke")
     REQUIRE(RunFlashRouterTop8F16(s, d_gate, d_bias,
                                   reinterpret_cast<const __half *>(d_x), TOK,
                                   HH, E, d_slots) == cudaSuccess);
-    std::vector<qwen_moe::QwenMoeRoutedSlot> got(TOK * 8);
+    std::vector<moe::MoERoutedSlot> got(TOK * 8);
     REQUIRE(cudaMemcpyAsync(got.data(), d_slots,
                             got.size() * sizeof(got[0]),
                             cudaMemcpyDeviceToHost, s) == cudaSuccess);
@@ -568,7 +568,7 @@ TEST_CASE("flash_expf_glibc: exp(0)==1 on device")
 }
 
 // ── Routed-FFN real-shape harness (TDD: batched expert chain) ──────────────
-// Builds a synthetic 1-layer QwenMoeExpertStore at the frozen GLM routed
+// Builds a synthetic 1-layer lsxcommon::moe::MoEExpertStore at the frozen GLM routed
 // geometry (H=4096, I=2048, E=8) plus an 8-slot device cache, then exercises
 // the production RunFlashRoutedFFN entry. The per-expert path launches 8x4
 // kernels per call; the batched chain does it in 4. Budget test pins the
@@ -576,14 +576,14 @@ TEST_CASE("flash_expf_glibc: exp(0)==1 on device")
 namespace {
 
 struct RealRoutedHarness {
-    qwen_moe::QwenMoeExpertStore store;
+    moe::MoEExpertStore store;
     qwen_moe::QwenMoeExpertDeviceCache cache;
     int H = 4096, I = 2048, S = 8;
     const uint8_t *slab = nullptr;
     __half *dx = nullptr, *yg = nullptr, *yu = nullptr, *y2 = nullptr;
     __half *ygu = nullptr, *hbuf = nullptr, *ypart = nullptr;
     float *acc = nullptr;
-    qwen_moe::QwenMoeGvSlotDev *tbl = nullptr;
+    moe::MoEGvSlotDev *tbl = nullptr;
     int64_t pk = 0, sk = 0;
 
     bool Build()
@@ -603,7 +603,7 @@ struct RealRoutedHarness {
         store.num_experts = S;
         store.h_slabs.push_back(pinned);
         store.slab_bytes.push_back(slab_bytes);
-        store.records.assign(1, std::vector<qwen_moe::QwenMoeExpertRecord>(E));
+        store.records.assign(1, std::vector<lsxcommon::moe::MoEExpertRecord>(E));
         for (int e = 0; e < E; ++e) {
             const int64_t base = e * per_expert;
             auto &r = store.records[0][e];
@@ -622,7 +622,7 @@ struct RealRoutedHarness {
             r.gs1 = r.gs2 = r.gs3 = 1.0f;
         }
         std::string err;
-        if (!qwen_moe::AllocateQwenMoeExpertCache(store, S, cache, err))
+        if (!qwen_moe::AllocateMoEExpertCache(store, S, cache, err))
             return false;
         if (cudaMalloc(&dx, static_cast<size_t>(H) * 2) != cudaSuccess ||
             cudaMalloc(&yg, static_cast<size_t>(2 * I) * 2) != cudaSuccess ||
@@ -633,7 +633,7 @@ struct RealRoutedHarness {
             cudaMalloc(&hbuf, static_cast<size_t>(S) * I * 2) != cudaSuccess ||
             cudaMalloc(&ypart, static_cast<size_t>(S) * H * 2) != cudaSuccess ||
             cudaMalloc(&acc, static_cast<size_t>(H) * 4) != cudaSuccess ||
-            cudaMalloc(&tbl, sizeof(qwen_moe::QwenMoeGvSlotDev) * S) !=
+            cudaMalloc(&tbl, sizeof(moe::MoEGvSlotDev) * S) !=
                 cudaSuccess)
             return false;
         cudaMemset(dx, 0, static_cast<size_t>(H) * 2);
@@ -642,7 +642,7 @@ struct RealRoutedHarness {
 
     void Free()
     {
-        qwen_moe::FreeQwenMoeExpertCache(cache);
+        qwen_moe::FreeMoEExpertCache(cache);
         if (slab) cudaFreeHost(const_cast<uint8_t *>(slab));
         cudaFree(dx); cudaFree(yg); cudaFree(yu); cudaFree(y2);
         cudaFree(ygu); cudaFree(hbuf); cudaFree(ypart); cudaFree(acc);
@@ -652,7 +652,7 @@ struct RealRoutedHarness {
 
     cudaError_t Call(cudaStream_t s)
     {
-        qwen_moe::QwenMoeRoutedSlot slots[8];
+        moe::MoERoutedSlot slots[8];
         for (int k = 0; k < S; ++k) {
             slots[k].eid = k;
             slots[k].coeff = 1.0f / S;

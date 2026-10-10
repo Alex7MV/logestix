@@ -324,7 +324,7 @@ TEST_CASE("glm-5.3-flash calls the neutral NVFP4 layer directly",
     // The qwen-named GEMM shims (RunQwenNvfp4Gemm*) are qwen-family call-site
     // aliases over lsx_nvfp4. A glm model must not depend on them: flash
     // kernels call lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm directly. The
-    // shared slot/result TYPES (QwenMoeRoutedSlot, QwenGenerationResult)
+    // shared slot/result TYPES (MoERoutedSlot, QwenGenerationResult)
     // remain legitimate cross-model data carriers.
     for (const char *f : {"glm_moe_flash_inference.cu",
                           "glm_moe_flash_model.cpp"}) {

@@ -33,7 +33,7 @@ namespace {
 // per-step arenas, and CUDA context overhead.
 constexpr size_t kFlashGenReserveBytes = size_t{3} << 30;
 
-int FlashExpertSlotBytes(const qwen_moe::QwenMoeExpertStore &store)
+int FlashExpertSlotBytes(const lsxcommon::moe::MoEExpertStore &store)
 {
     size_t max_pack = 0, max_scale = 0;
     for (int l = 0; l < store.num_layers; ++l) {
@@ -52,7 +52,7 @@ int FlashExpertSlotBytes(const qwen_moe::QwenMoeExpertStore &store)
     return static_cast<int>(pack + scale);
 }
 
-int ResolveExpertSlots(const qwen_moe::QwenMoeExpertStore &store)
+int ResolveExpertSlots(const lsxcommon::moe::MoEExpertStore &store)
 {
     const int max_slots = store.num_layers * store.num_experts;
     int slots = 64;  // legacy floor: top-k per-layer working set headroom
@@ -130,7 +130,7 @@ bool Glm5NextFlashModel::Load()
                                    FlashExpertSlotBytes(experts_) >> 20),
             " MiB); pre-cache free=", static_cast<long long>(free_b >> 20),
             " MiB total=", static_cast<long long>(total_b >> 20), " MiB"));
-        if (!qwen_moe::AllocateQwenMoeExpertCache(experts_, slots, cache_,
+        if (!qwen_moe::AllocateMoEExpertCache(experts_, slots, cache_,
                                                   error)) {
             log::error("[glm-flash-model] expert cache alloc failed: "
                        + error);
@@ -217,7 +217,7 @@ void Glm5NextFlashModel::TeardownWeights()
 {
     pw_.Free();
     experts_.Free();
-    qwen_moe::FreeQwenMoeExpertCache(cache_);
+    qwen_moe::FreeMoEExpertCache(cache_);
     TeardownContext();
 }
 

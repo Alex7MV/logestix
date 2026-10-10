@@ -1162,7 +1162,7 @@ __global__ void qwen_moe_combine_kernel(const float *__restrict__ acc,
         }                                                                     \
     } while (0)
 
-bool TruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id)
+bool MoETruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id)
 {
     if (eos_id < 0) return false;
     for (size_t i = 0; i < tokens.size(); ++i) {
@@ -1996,7 +1996,7 @@ cudaError_t RunOrnithMoeGeneration(
                          static_cast<std::uint32_t>(i));
             }
         }
-        result.eos_terminated = TruncateTokensAtEos(result.tokens, eos_id);
+        result.eos_terminated = MoETruncateTokensAtEos(result.tokens, eos_id);
         if (!result.tokens.empty()) tok = result.tokens.back();
     }
     kv->last_tok = tok;

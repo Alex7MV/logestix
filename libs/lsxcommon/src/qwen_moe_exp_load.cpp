@@ -1202,7 +1202,7 @@ int EnsureQwen4ExpExpertResident(ExpExpertStore &store, int layer, int eid,
     // exactly: [w13 = w1|w3][w2] packed and [s13 = s1|s3][s2] scales are each
     // ONE contiguous blob on the host, so miss staging is 2 memcpyAsync total
     // (pack + scales) instead of 6 segment copies. The gate/up projections
-    // then run as ONE GEMM with per-segment global scales (RunQwenMoeRoutedFFN).
+    // then run as ONE GEMM with per-segment global scales (RunMoERoutedFFN).
     cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
     const int64_t pack_blob = r.w1_bytes + r.w3_bytes + r.w2_bytes;
     const int64_t scale_blob = r.s1_bytes + r.s3_bytes + r.s2_bytes;

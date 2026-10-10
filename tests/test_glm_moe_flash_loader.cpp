@@ -113,7 +113,7 @@ TEST_CASE("LoadGlmFlashExpertStore: synthetic MoE layer slabs")
     fs::remove_all(fix.out);
     REQUIRE(fix.Convert().ok());
 
-    qwen_moe::QwenMoeExpertStore store;
+    moe::MoEExpertStore store;
     std::string error;
     REQUIRE(LoadGlmFlashExpertStore(fix.out.string(), store, error));
     // Only layer 3 carries experts in the fixture: compact store slots
@@ -133,9 +133,9 @@ TEST_CASE("LoadGlmFlashExpertStore: synthetic MoE layer slabs")
     fs::remove_all(fix.out, ec);
 }
 
-TEST_CASE("AllocateQwenMoeExpertCache: LRU eviction bookkeeping")
+TEST_CASE("AllocateMoEExpertCache: LRU eviction bookkeeping")
 {
-    qwen_moe::QwenMoeExpertStore store;
+    moe::MoEExpertStore store;
     store.num_layers = 1;
     store.num_experts = 4;
     store.records.resize(1);
@@ -165,7 +165,7 @@ TEST_CASE("AllocateQwenMoeExpertCache: LRU eviction bookkeeping")
     }
     gpu::ExpertDeviceCache cache;
     std::string error;
-    REQUIRE(qwen_moe::AllocateQwenMoeExpertCache(store, 2, cache, error));
+    REQUIRE(qwen_moe::AllocateMoEExpertCache(store, 2, cache, error));
     REQUIRE(cache.slots == 2);
     // LRU: insert flat 0 and 1 -> touch 0 -> insert 2 evicts 1 (LRU).
     REQUIRE(qwen_moe::QwenMoeExpertCacheInsert(cache, 0) >= 0);
@@ -174,6 +174,6 @@ TEST_CASE("AllocateQwenMoeExpertCache: LRU eviction bookkeeping")
     REQUIRE(qwen_moe::QwenMoeExpertCacheInsert(cache, 2) >= 0);
     REQUIRE(qwen_moe::QwenMoeExpertCacheLookup(cache, 1) == -1);
     REQUIRE(qwen_moe::QwenMoeExpertCacheLookup(cache, 0) >= 0);
-    qwen_moe::FreeQwenMoeExpertCache(cache);
+    qwen_moe::FreeMoEExpertCache(cache);
     cudaFreeHost(slab);
 }
