@@ -3,7 +3,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -267,6 +269,66 @@ TEST_CASE("ornith HF converter roundtrip strips vision and defers MTP",
                                        ornithtest::OrnithCfg().linear_value_head_dim,
                                1,
                                ornithtest::OrnithCfg().linear_conv_kernel_dim});
+}
+
+TEST_CASE("ornith HF fused experts: rows [0,I) become w1, rows [I,2I) become w3",
+          "[ornith][convert]")
+{
+    const auto &c = ornithtest::OrnithCfg();
+    const int E = c.num_experts;
+    const int I = c.moe_intermediate_size;
+    const int H = c.hidden_size;
+
+    // The fused gate_up_proj [E,2I,H] split is the one numeric transform whose
+    // result nothing read back: the other converter tests stop at "the file
+    // exists". Stamp the halves so they are structurally DISTINGUISHABLE in
+    // the NVFP4 scale bytes -- no FP4 decoding, and no dependence on the
+    // global-scale convention:
+    //   rows [0,I)  (gate) constant 1.0  -> every block shares one amax, so
+    //                                       all w1 block-scale bytes are equal
+    //   rows [I,2I) (up)   varies per 16 -> w3 block-scale bytes are not
+    // The asymmetry is the point: a gate/up swap makes w1 the varying half,
+    // which a symmetric A/B comparison could not detect.
+    constexpr int64_t kBlock = 16;
+    auto tensors = ornithtest::BuildSyntheticOrnithHfTensors();
+    for (auto &t : tensors) {
+        if (t.name.find("mlp.experts.gate_up_proj") == std::string::npos)
+            continue;
+        t.data = synthtest::MakeBf16Values(
+            static_cast<int64_t>(E) * 2 * I * H, [=](int64_t i) {
+                const int64_t row = (i / H) % (2 * I);
+                if (row < I) return 1.0f;  // uniform gate half
+                return 0.1f + 0.2f * static_cast<float>((i / kBlock) % 4);
+            });
+    }
+
+    TempDir src("split_src"), out("split_out");
+    fs::create_directories(src.path);
+    synthtest::WriteSafetensors(src.path, "model.safetensors", tensors);
+    ornithtest::WriteOrnithConfig(src.path);
+    const auto st = lsxcommon::ornith::ConvertOrnithMoeModel(
+        src.path.string(), out.path.string());
+    INFO("convert status: " << st.ToString());
+    REQUIRE(st.ok());
+
+    auto batch = lsxcommon::ReadRecordBatchFromFile(
+        out.path / "logestix" / "experts" / "layer_0" / "exp_0.arrow");
+    REQUIRE(batch.ok());
+    auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch);
+    REQUIRE(pe.ok());
+    REQUIRE(!pe->w1_scales.empty());
+    REQUIRE(!pe->w3_scales.empty());
+
+    const bool w1_uniform =
+        std::all_of(pe->w1_scales.begin(), pe->w1_scales.end(),
+                    [&](uint8_t b) { return b == pe->w1_scales.front(); });
+    const bool w3_uniform =
+        std::all_of(pe->w3_scales.begin(), pe->w3_scales.end(),
+                    [&](uint8_t b) { return b == pe->w3_scales.front(); });
+
+    // w1 came from the uniform gate half; w3 from the varying up half.
+    CHECK(w1_uniform);
+    CHECK_FALSE(w3_uniform);
 }
 
 TEST_CASE("ornith frozen gate accepts real geometry and rejects a mutation",
