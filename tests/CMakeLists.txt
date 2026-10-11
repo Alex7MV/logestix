@@ -1307,6 +1307,18 @@ set_tests_properties(test_xing_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_xing_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Mistral-Small-4-119B converter test (MLA / 128-expert MoE classifier) ──
+add_executable(test_mistral_moe_convert test_mistral_moe_convert.cpp)
+target_include_directories(test_mistral_moe_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_mistral_moe_convert PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_convert COMMAND test_mistral_moe_convert)
+set_tests_properties(test_mistral_moe_convert PROPERTIES LABELS convert)
+set_tests_properties(test_mistral_moe_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_mistral_moe_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Xing4.0-29B-A4B selfcheck + FSI/CODE/DET golden parity gates ──
 add_executable(test_xing_moe_selfcheck test_xing_moe_selfcheck.cpp)
 target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)

@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing|mistral)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|flash|36|v41|nvfp4)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -50,7 +50,7 @@ const std::vector<std::string>& FamilyStems()
 {
     static const std::vector<std::string> v =
         {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat",
-         "ornith", "granite", "mimo", "phi", "alice", "xing"};
+         "ornith", "granite", "mimo", "phi", "alice", "xing", "mistral"};
     return v;
 }
 
@@ -72,6 +72,7 @@ bool AllowedCommon(const std::string& stem)
         "mimo_tool_format",          // MiMo ChatML + <tool_call> codec
         "alice_tool_format",         // AliceAI native chat/tool codec
         "xing_moe_tool_format",       // Xing4.0 <_user>/<_bot> + ZWSP tool codec
+        "mistral_moe_tool_format",    // Mistral [INST]/[TOOL_CALLS] codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
 }

@@ -41,6 +41,7 @@ enum class Pipeline {
     kMimo,
     kAlice,
     kXing,
+    kMistral,
     kGeneric,
     kError,
 };
@@ -75,6 +76,7 @@ struct Flags {
     bool mimo = false;
     bool alice = false;
     bool xing = false;
+    bool mistral = false;
 };
 
 struct Resolution {
