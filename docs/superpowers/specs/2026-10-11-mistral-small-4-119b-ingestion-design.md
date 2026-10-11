@@ -247,3 +247,23 @@ per `nvfp4-blackwell-conventions`. Stage 7 is model-neutral infrastructure.
 
 See `ingesting-a-model`. All four guard registries updated in the same commit as
 the files they police; `ctest -L convert|fast|inference|perf` run per stage.
+
+## Progress (2026-10-11 session)
+
+| stage | state | evidence |
+|---|---|---|
+| 0 triage | **done** | this document |
+| 1 converter | **done** | `de471a6` — `test_mistral_moe_convert` (4 cases, `convert`, TIMEOUT 120) |
+| 3 loader | **done** | `5677f51` — `test_mistral_moe_loader` (`fast`, SKIP 4) |
+| 4b tool codec | **done** | `ee77017` — `test_mistral_moe_tool_framing` (`fast`) |
+| 2 repack | folded into the converter (experts are repacked verbatim) | covered by the converter test |
+| 4 tokenizer | reuse `BuildTokenizerArrowFiles` | exercised by selfcheck |
+| 5 kernels/inference | **not started** | see `docs/OPEN_TASKS.md` §T |
+| 6 shared-mem sandbox | **not started** | folded into stage 5 |
+| 7 passport/translator | **not started** | model-neutral infrastructure |
+| 8 SelfCheck + FSI/CODE/DET + perf | **not started** | needs stage 5 |
+| guards | naming token added; passport/suite/lifecycle rows pending the model | `test_code_naming_guard` green |
+
+The fast suite is green at 93/93 on this branch. The remaining CUDA work
+(stages 5–8) is the bulk of the ingestion and is catalogued in
+`docs/OPEN_TASKS.md` §T for a dedicated session.

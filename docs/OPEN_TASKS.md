@@ -817,6 +817,34 @@ product or numerics decision, not a patch.
   scalars rather than the pinned-weight bundle, then the cache and result
   structs can go neutral too. Separate change; nothing blocks on it.
 
+## T. Mistral-Small-4-119B-2603-NVFP4 ingestion — later stages (2026-10-11)
+
+- **Branch** `feat/mistral-small-4-119b`; design
+  `docs/superpowers/specs/2026-10-11-mistral-small-4-119b-ingestion-design.md`.
+- **Landed (verified, green):** stage 0 triage; stage 1 converter
+  (`mistral_moe_convert.{h,cpp}`, `lsxforge --mistral`, synthetic `convert` test);
+  stage 3 loader (`mistral_moe_load.{h,cpp}`, synthetic loader test); stage 4b
+  tool codec (`mistral_moe_tool_format.{h,cpp}`, framing test). Frozen passport
+  `mistral_moe_constants.h`. Fast suite 93/93.
+- **Remaining — stage 5 (kernels/inference):** MLA decode (BF16 q_a/q_b/kv_a/kv_b/o
+  projections through the neutral `lsx_gemv` GEMV), plain RMSNorm, split-half
+  YaRN RoPE with the Llama-4 logit temperature, per-layer KV cache, routed MoE
+  through the neutral `lsx_moe_inference` store + `RunMoERouterTopK` +
+  `RunMoERouted*`, and an ungated shared expert (Mistral's shared expert is
+  added, NOT sigmoid-gated — `RunMoESharedCombine` cannot be used as-is). Do
+  NOT reuse GigaChat's MLA: it is NVFP4, interleaved RoPE and output-gated.
+  Verify the Yarn `apply_scale:false` and `llama_4_scaling` semantics against
+  mistral-common/vLLM before trusting output.
+- **Remaining — stages 6–8:** shared-mem sandbox; passport/translator;
+  `MistralSmall4MoeModel` + registration; SelfCheck/FSI/CODE/DET goldens + perf
+  baseline; the four guard registries (`test_model_independence_guard.cpp`
+  `kPassports`/`consumers`/`kLifecycle`, `test_model_suite_guard.cpp` `Suites()`
+  + tool verdict). The guard rows are deliberately NOT added yet: adding a
+  `kPassports`/`Suites()` row before the model exists fails CI, so the family is
+  currently unregistered (only its files exist, all tests green).
+- **Not started, needed for real-weight acceptance:** the converted vault tree
+  (`lsxforge --mistral`) and the single-prompt framing.
+
 ## Archive
 ## Archive
 
