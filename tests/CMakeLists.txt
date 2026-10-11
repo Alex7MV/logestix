@@ -1331,6 +1331,13 @@ set_tests_properties(test_mistral_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_mistral_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Mistral-Small-4-119B native tool framing (host-only) ──
+add_executable(test_mistral_moe_tool_framing test_mistral_moe_tool_framing.cpp)
+target_link_libraries(test_mistral_moe_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_tool_framing COMMAND test_mistral_moe_tool_framing)
+set_tests_properties(test_mistral_moe_tool_framing PROPERTIES LABELS fast)
+
 # ── Xing4.0-29B-A4B selfcheck + FSI/CODE/DET golden parity gates ──
 add_executable(test_xing_moe_selfcheck test_xing_moe_selfcheck.cpp)
 target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
