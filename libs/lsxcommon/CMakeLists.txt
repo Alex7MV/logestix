@@ -88,6 +88,7 @@ add_library(lsxcommon STATIC
     src/xing_moe_model.cpp
     src/xing_moe_tool_format.cpp
     src/mistral_moe_convert.cpp
+    src/mistral_moe_load.cpp
     src/qwen_moe_exp_load.cpp
     src/qwen_moe_exp_model.cpp
     src/qwen_moe_load.cpp

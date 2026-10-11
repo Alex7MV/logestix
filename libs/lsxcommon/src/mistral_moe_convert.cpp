@@ -313,6 +313,16 @@ MistralTopology mistral_load_topology(const std::string &index_json_path)
         scan_lists("dense_layers", top.dense_layers);
         std::sort(top.moe_layers.begin(), top.moe_layers.end());
         std::sort(top.dense_layers.begin(), top.dense_layers.end());
+        const size_t fp = text.find("\"format\"");
+        if (fp != std::string::npos)
+        {
+            const size_t q1 = text.find('"', text.find(':', fp) + 1);
+            const size_t q2 =
+                q1 == std::string::npos ? std::string::npos
+                                        : text.find('"', q1 + 1);
+            if (q2 != std::string::npos)
+                top.format = text.substr(q1 + 1, q2 - q1 - 1);
+        }
         return top;
     }
 

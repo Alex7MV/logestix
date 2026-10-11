@@ -159,8 +159,9 @@ inline std::vector<FakeTensor> BuildSyntheticMistralModel(
                                  synthtest::MakeBf16(g.heads *
                                                      (g.qk_nope + g.v_head) *
                                                      g.kv_lora)});
-        out.push_back(FakeTensor{p + "attention.wo.weight", "BF16", Sh(H, H),
-                                 synthtest::MakeBf16(H * H)});
+        out.push_back(FakeTensor{p + "attention.wo.weight", "BF16",
+                                 Sh(H, g.heads * g.v_head),
+                                 synthtest::MakeBf16(H * g.heads * g.v_head)});
         out.push_back(FakeTensor{p + "attention_norm.weight", "BF16", Sh1(H),
                                  synthtest::MakeBf16(H)});
         out.push_back(FakeTensor{p + "ffn_norm.weight", "BF16", Sh1(H),

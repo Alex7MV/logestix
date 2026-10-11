@@ -1319,6 +1319,18 @@ set_tests_properties(test_mistral_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_mistral_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Mistral-Small-4-119B loader test (dense BF16 graph upload) ──
+add_executable(test_mistral_moe_loader test_mistral_moe_loader.cpp)
+target_include_directories(test_mistral_moe_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_mistral_moe_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_loader COMMAND test_mistral_moe_loader)
+set_tests_properties(test_mistral_moe_loader PROPERTIES LABELS fast)
+set_tests_properties(test_mistral_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_mistral_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Xing4.0-29B-A4B selfcheck + FSI/CODE/DET golden parity gates ──
 add_executable(test_xing_moe_selfcheck test_xing_moe_selfcheck.cpp)
 target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
