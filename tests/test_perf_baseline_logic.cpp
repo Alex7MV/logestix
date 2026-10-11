@@ -338,7 +338,8 @@ std::set<std::string> PerfCaseModels(const std::string &test_src)
               std::string("qwen3.6-35b"), std::string("qwen3.8-flash-next"),
               std::string("nemotron"), std::string("mimo"), std::string("gigachat"),
               std::string("granite"), std::string("phi-4"), std::string("ornith"),
-              std::string("alice"), std::string("xing")}) {
+              std::string("alice"), std::string("xing"),
+              std::string("mistral")}) {
             if (m[1].str().find(mid) != std::string::npos) out.insert(mid);
         }
         begin = m.suffix().first;

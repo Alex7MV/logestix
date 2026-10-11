@@ -1350,6 +1350,56 @@ set_tests_properties(test_mistral_moe_model PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_mistral_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Mistral-Small-4-119B kernel-level test (MLA/RoPE/attention) ──
+add_executable(test_mistral_moe_kernels test_mistral_moe_kernels.cpp)
+target_include_directories(test_mistral_moe_kernels PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_mistral_moe_kernels PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_kernels COMMAND test_mistral_moe_kernels)
+set_tests_properties(test_mistral_moe_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_mistral_moe_kernels PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Mistral-Small-4-119B selfcheck (real weights; SKIP 4 without vault) ──
+add_executable(test_mistral_moe_selfcheck test_mistral_moe_selfcheck.cpp)
+target_include_directories(test_mistral_moe_selfcheck PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_mistral_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_selfcheck COMMAND test_mistral_moe_selfcheck)
+set_tests_properties(test_mistral_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Mistral-Small-4-119B FSI/CODE/DET golden gates (SKIP 4 without vault) ──
+add_executable(test_mistral_moe_fsi_selfcheck test_mistral_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_mistral_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_mistral_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_fsi_selfcheck COMMAND test_mistral_moe_fsi_selfcheck)
+set_tests_properties(test_mistral_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_mistral_moe_code_selfcheck test_mistral_moe_code_selfcheck.cpp)
+target_compile_definitions(test_mistral_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_mistral_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_code_selfcheck COMMAND test_mistral_moe_code_selfcheck)
+set_tests_properties(test_mistral_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_mistral_moe_det_selfcheck test_mistral_moe_det_selfcheck.cpp)
+target_compile_definitions(test_mistral_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_mistral_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_det_selfcheck COMMAND test_mistral_moe_det_selfcheck)
+set_tests_properties(test_mistral_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Xing4.0-29B-A4B selfcheck + FSI/CODE/DET golden parity gates ──
 add_executable(test_xing_moe_selfcheck test_xing_moe_selfcheck.cpp)
 target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -2503,6 +2553,15 @@ set_tests_properties(test_perf_baseline_alice_foundation_80b_a3b PROPERTIES
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=AliceAI-Foundation-80B-A3B-Base")
 set_tests_properties(test_perf_baseline_alice_foundation_80b_a3b
+    PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_mistral_small_4
+         COMMAND test_perf_baseline "perf baseline: mistral-small-4-119b")
+set_tests_properties(test_perf_baseline_mistral_small_4 PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Mistral-Small-4-119B-2603-NVFP4")
+set_tests_properties(test_perf_baseline_mistral_small_4
     PROPERTIES LABELS perf)
 
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────

@@ -277,6 +277,25 @@ procedure — `perf-tuning-a-model`.
   `gemma_dense_model.{h,cpp}`; format tag `logestix-gemma-dense`; converted in
   place with `lsxforge --gemma4dense`; CODE 3/3, DET 3/3, FSI 2/3 (FSI-01 is the
   same NVFP4-borderline class as the 26B).
+  Mistral-Small-4-119B-2603-NVFP4 (independent family `mistral`: MLA
+  q_lora 1024 / kv_lora 256 / qk_nope 64 / qk_rope 64 / v_head 128 + 128-expert
+  top-4 MoE with one **ungated** shared expert, every layer MoE
+  (first_k_dense_replace 0), split-half YaRN factor 128 over an 8192 original
+  window with a Llama-4 logit temperature; source is the Mistral "consolidated"
+  layout — `params.json` + `consolidated-*.safetensors`, attention/norms/router
+  BF16, routed+shared experts already NVFP4 `weight_packed`/`weight_scale`/
+  `weight_global_scale`; `mistral_moe_constants.h` (frozen passport),
+  `mistral_moe_convert.{h,cpp}` (strips the vision tower, repacks the experts
+  verbatim), `mistral_moe_load.{h,cpp}` (BF16 dense graph + neutral host expert
+  store), `mistral_moe_inference.{h,cu}` (MLA decode: neutral BF16 GEMV
+  projections, plain RMSNorm, split-half YaRN RoPE, per-head attention over a
+  `KvCacheGeometry` cache, neutral MoE, ungated shared expert),
+  `mistral_moe_model.{h,cpp}`, `mistral_moe_tool_format.{h,cpp}` (native
+  `[INST]`/`[TOOL_CALLS]name[ARGS]{json}` codec); format tag
+  `logestix-mistral-nvfp4`; converted with `lsxforge --mistral`; knob
+  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt
+  (source safetensors not yet captured) and the perf baseline is unmeasured
+  pending a converted vault tree — `docs/OPEN_TASKS.md` §T.
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

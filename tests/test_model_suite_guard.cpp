@@ -338,6 +338,16 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_alice_moe_code_selfcheck"}},
           {"perf", {"test_perf_baseline_alice_foundation_80b_a3b"}},
           {"det", {"test_alice_moe_det_selfcheck"}}}},
+        {"mistral-small-4-119b",
+         {{"convert", {"test_mistral_moe_convert"}},
+          {"load", {"test_mistral_moe_loader"}},
+          {"model", {"test_mistral_moe_model", "test_mistral_moe_tool_framing"}},
+          {"kernels", {"test_mistral_moe_kernels"}},
+          {"selfcheck", {"test_mistral_moe_selfcheck"}},
+          {"fsi", {"test_mistral_moe_fsi_selfcheck"}},
+          {"code", {"test_mistral_moe_code_selfcheck"}},
+          {"perf", {"test_perf_baseline_mistral_small_4"}},
+          {"det", {"test_mistral_moe_det_selfcheck"}}}},
     };
     return v;
 }
@@ -756,6 +766,8 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // Xing has a native renderer verified against its chat_template.jinja
         // (not the generic Hermes fallback), so it is named here.
         {"xing4.0-29b-a4b", {"test_xing_tool_framing"}},
+        // Mistral Small 4 ships a native [INST]/[TOOL_CALLS] template.
+        {"mistral-small-4-119b", {"test_mistral_moe_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.
@@ -887,6 +899,11 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "nemotron-3.5-lightning-30b-a3b-nvfp4:code",
         "nemotron-3.5-lightning-30b-a3b-nvfp4:det",
         "nemotron-3.5-lightning-30b-a3b-nvfp4:fsi",
+        // Mistral-Small-4 FSI/CODE/DET goldens are captured from the source
+        // safetensors model, which is not yet converted here; declared debt.
+        "mistral-small-4-119b:code",
+        "mistral-small-4-119b:det",
+        "mistral-small-4-119b:fsi",
     };
 
     const fs::path root(LSX_SOURCE_DIR);

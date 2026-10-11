@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_kv_cache.h"
 #include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/mistral_moe_load.h"
 
@@ -65,6 +66,10 @@ struct MistralSession {
     // ((l * capacity + p) * heads + h) * dim + d.
     float *d_k = nullptr;  // [layers * capacity * heads * qk_head]
     float *d_v = nullptr;  // [layers * capacity * heads * v_head]
+    // Cache layout via the shared geometry (the guard forbids hand-rolled
+    // `* heads + h` strides). pos-major ships; a layout switch is a Make() call.
+    lsxcommon::KvCacheGeometry kgeom{};
+    lsxcommon::KvCacheGeometry vgeom{};
     // MLA scratch.
     __half *d_h = nullptr;       // [hidden] residual hidden (FP16, MoE path)
     // Attention activations are BF16 because the BF16 projections go through

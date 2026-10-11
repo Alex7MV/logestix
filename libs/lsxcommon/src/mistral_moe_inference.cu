@@ -10,6 +10,7 @@
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/lsx_gemv.h"
+#include "lsxcommon/lsx_kv_cache.h"
 #include "lsxcommon/log.h"
 
 #include <cuda_bf16.h>
@@ -160,32 +161,35 @@ __global__ void rope_k_kernel(float *krot, int rope, const float *cos_t,
 
 // ── KV cache write (K = [k_nope | k_rope], V = kv_b's v slice) ──────────────
 __global__ void kv_write_kernel(const float *kv_b, const float *k_rope,
-                                int heads, int nope, int v_head, int qk_head,
-                                float *K, float *V, int layer, int pos,
-                                int capacity)
+                                int nope, lsxcommon::KvCacheGeometry kg,
+                                lsxcommon::KvCacheGeometry vg, float *K,
+                                float *V, int layer, int pos)
 {
+    const int heads = static_cast<int>(kg.kv_heads);
+    const int qk_head = static_cast<int>(kg.head_dim);
+    const int v_head = static_cast<int>(vg.head_dim);
     const int h = blockIdx.x;
     for (int d = threadIdx.x; d < qk_head; d += blockDim.x)
     {
         float k = (d < nope) ? kv_b[h * (nope + v_head) + d]
                              : k_rope[d - nope];
-        K[((static_cast<int64_t>(layer) * capacity + pos) * heads + h) *
-              qk_head +
-          d] = k;
+        K[kg.Offset(layer, h, pos, d)] = k;
     }
     for (int d = threadIdx.x; d < v_head; d += blockDim.x)
-        V[((static_cast<int64_t>(layer) * capacity + pos) * heads + h) *
-              v_head +
-          d] = kv_b[h * (nope + v_head) + nope + d];
+        V[vg.Offset(layer, h, pos, d)] = kv_b[h * (nope + v_head) + nope + d];
 }
 
 // ── MLA attention: one block per head, softmax over [0, pos] ────────────────
 __global__ void mla_attn_kernel(const float *q, const float *K, const float *V,
-                                int heads, int qk_head, int v_head, int layer,
+                                lsxcommon::KvCacheGeometry kg,
+                                lsxcommon::KvCacheGeometry vg, int layer,
                                 int pos, int capacity, float scale, float temp,
                                 float *scores, float *out)
 {
     __shared__ float red[256];
+    const int heads = static_cast<int>(kg.kv_heads);
+    const int qk_head = static_cast<int>(kg.head_dim);
+    const int v_head = static_cast<int>(vg.head_dim);
     const int h = blockIdx.x;
     const int t = threadIdx.x;
     float *sc = scores + static_cast<int64_t>(h) * capacity;
@@ -193,9 +197,7 @@ __global__ void mla_attn_kernel(const float *q, const float *K, const float *V,
 
     for (int p = t; p <= pos; p += blockDim.x)
     {
-        const float *kp =
-            K + ((static_cast<int64_t>(layer) * capacity + p) * heads + h) *
-                    qk_head;
+        const float *kp = K + kg.Offset(layer, h, p);
         float s = 0.0f;
         for (int d = 0; d < qk_head; ++d) s += qh[d] * kp[d];
         sc[p] = s * scale * temp;
@@ -231,10 +233,7 @@ __global__ void mla_attn_kernel(const float *q, const float *K, const float *V,
     {
         float acc = 0.0f;
         for (int p = 0; p <= pos; ++p)
-            acc += sc[p] *
-                   V[((static_cast<int64_t>(layer) * capacity + p) * heads + h) *
-                         v_head +
-                     d];
+            acc += sc[p] * V[vg.Offset(layer, h, p, d)];
         out[static_cast<int64_t>(h) * v_head + d] = acc * inv;
     }
 }
@@ -318,15 +317,20 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
     const int H = dims.hidden;
     const int V = dims.vocab;
     const int heads = dims.heads;
+    // pos-major (the repo default): [layer][pos][head][dim].
+    s.kgeom = lsxcommon::KvCacheGeometry::Make(
+        lsxcommon::KvCacheLayout::kPosMajor, capacity, heads, dims.qk_head,
+        dims.layers);
+    s.vgeom = lsxcommon::KvCacheGeometry::Make(
+        lsxcommon::KvCacheLayout::kPosMajor, capacity, heads, dims.v_head,
+        dims.layers);
     auto alloc = [](void **p, size_t bytes) -> cudaError_t {
         return cudaMalloc(p, bytes);
     };
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_k),
-                     static_cast<size_t>(dims.layers) * capacity * heads *
-                         dims.qk_head * sizeof(float)));
+                     static_cast<size_t>(s.kgeom.Elements()) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_v),
-                     static_cast<size_t>(dims.layers) * capacity * heads *
-                         dims.v_head * sizeof(float)));
+                     static_cast<size_t>(s.vgeom.Elements()) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_h), H * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_norm), H * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_q_lat),
@@ -426,7 +430,7 @@ cudaError_t UploadMistralYarnTables(cudaStream_t stream, int capacity,
                                cudaMemcpyHostToDevice, stream));
     MISTRAL_CK(cudaMemcpyAsync(*dst_rs, sin_t.data(), n * sizeof(float),
                                cudaMemcpyHostToDevice, stream));
-    return cudaGetLastError();
+    return cudaSuccess;
 }
 
 void MistralReadLogits(const MistralSession &s, float *host_logits,
@@ -515,10 +519,10 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
         }
         // KV write + attention.
         MISTRAL_LAUNCH(kv_write_kernel<<<heads, 128, 0, stream>>>(
-            s.d_kv_b, s.d_kv + kvl, heads, nope, vh, qk, s.d_k, s.d_v, l, pos,
-            s.capacity));
+            s.d_kv_b, s.d_kv + kvl, nope, s.kgeom, s.vgeom, s.d_k, s.d_v, l,
+            pos));
         MISTRAL_LAUNCH(mla_attn_kernel<<<heads, 128, 0, stream>>>(
-            s.d_q, s.d_k, s.d_v, heads, qk, vh, l, pos, s.capacity,
+            s.d_q, s.d_k, s.d_v, s.kgeom, s.vgeom, l, pos, s.capacity,
             dims.attn_scale, temp, s.d_scores, s.d_attn));
         // o_proj + residual
         MISTRAL_LAUNCH(f32_to_bf16_kernel<<<grid(heads * vh), t256, 0, stream>>>(

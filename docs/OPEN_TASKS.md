@@ -821,29 +821,29 @@ product or numerics decision, not a patch.
 
 - **Branch** `feat/mistral-small-4-119b`; design
   `docs/superpowers/specs/2026-10-11-mistral-small-4-119b-ingestion-design.md`.
-- **Landed (verified, green):** stage 0 triage; stage 1 converter
-  (`mistral_moe_convert.{h,cpp}`, `lsxforge --mistral`, synthetic `convert` test);
-  stage 3 loader (`mistral_moe_load.{h,cpp}`, synthetic loader test); stage 4b
-  tool codec (`mistral_moe_tool_format.{h,cpp}`, framing test). Frozen passport
-  `mistral_moe_constants.h`. Fast suite 93/93.
-- **Remaining — stage 5 (kernels/inference):** MLA decode (BF16 q_a/q_b/kv_a/kv_b/o
-  projections through the neutral `lsx_gemv` GEMV), plain RMSNorm, split-half
-  YaRN RoPE with the Llama-4 logit temperature, per-layer KV cache, routed MoE
-  through the neutral `lsx_moe_inference` store + `RunMoERouterTopK` +
-  `RunMoERouted*`, and an ungated shared expert (Mistral's shared expert is
-  added, NOT sigmoid-gated — `RunMoESharedCombine` cannot be used as-is). Do
-  NOT reuse GigaChat's MLA: it is NVFP4, interleaved RoPE and output-gated.
-  Verify the Yarn `apply_scale:false` and `llama_4_scaling` semantics against
-  mistral-common/vLLM before trusting output.
-- **Remaining — stages 6–8:** shared-mem sandbox; passport/translator;
-  `MistralSmall4MoeModel` + registration; SelfCheck/FSI/CODE/DET goldens + perf
-  baseline; the four guard registries (`test_model_independence_guard.cpp`
-  `kPassports`/`consumers`/`kLifecycle`, `test_model_suite_guard.cpp` `Suites()`
-  + tool verdict). The guard rows are deliberately NOT added yet: adding a
-  `kPassports`/`Suites()` row before the model exists fails CI, so the family is
-  currently unregistered (only its files exist, all tests green).
-- **Not started, needed for real-weight acceptance:** the converted vault tree
-  (`lsxforge --mistral`) and the single-prompt framing.
+- **Landed (verified, green):** stages 0–5 + 4b. Stage 1 converter
+  (`mistral_moe_convert.{h,cpp}`, `lsxforge --mistral`, synthetic `convert`
+  test); stage 3 loader (`mistral_moe_load.{h,cpp}`, synthetic loader test);
+  stage 4b tool codec (`mistral_moe_tool_format.{h,cpp}`, framing test); stage 5
+  MLA+MoE decode (`mistral_moe_inference.{h,cu}` + `mistral_moe_model.{h,cpp}`,
+  registered `mistral-small-4-119b`), kernels + model tests green. Frozen
+  passport `mistral_moe_constants.h`. Four guard registries extended
+  (`test_model_independence_guard` `kPassports`/`consumers`/`kLifecycle`,
+  `test_model_suite_guard` `Suites()` + tool verdict + golden debt,
+  `test_perf_baseline_logic` mid list, `test_code_naming_guard` family token).
+  Fast suite 93/93; `test_mistral_*` (convert/loader/tool/kernels/model) green.
+- **Remaining — real-weight acceptance:** convert the vault tree
+  (`lsxforge --mistral`, ~62 GiB) and run `test_mistral_moe_selfcheck` +
+  `test_mistral_moe_fsi/code/det_selfcheck` (four S* targets currently SKIP) and
+  `test_perf_baseline_mistral_small_4`. The perf baseline entry is an unmeasured
+  placeholder (0 t/s) and must be re-seeded by running the target.
+- **Semantics to verify on the first real run** (stage 0.6): the split-half YaRN
+  `apply_scale:false` tables and the Llama-4 logit temperature
+  (`1 + beta*log(floor(pos/orig)+1)`); the MLA q/kv split order; and whether the
+  router renormalises before the ungated shared expert is added. A wrong guess
+  here silently decodes garbage past 8192 tokens.
+- **Not started:** FSI/CODE/DET golden capture from the source safetensors
+  (`tools/*_capture.py`) and the single-prompt framing.
 
 ## Archive
 ## Archive

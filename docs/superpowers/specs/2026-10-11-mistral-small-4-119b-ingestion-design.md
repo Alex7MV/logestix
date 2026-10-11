@@ -258,12 +258,13 @@ the files they police; `ctest -L convert|fast|inference|perf` run per stage.
 | 4b tool codec | **done** | `ee77017` — `test_mistral_moe_tool_framing` (`fast`) |
 | 2 repack | folded into the converter (experts are repacked verbatim) | covered by the converter test |
 | 4 tokenizer | reuse `BuildTokenizerArrowFiles` | exercised by selfcheck |
-| 5 kernels/inference | **not started** | see `docs/OPEN_TASKS.md` §T |
-| 6 shared-mem sandbox | **not started** | folded into stage 5 |
-| 7 passport/translator | **not started** | model-neutral infrastructure |
-| 8 SelfCheck + FSI/CODE/DET + perf | **not started** | needs stage 5 |
-| guards | naming token added; passport/suite/lifecycle rows pending the model | `test_code_naming_guard` green |
+| 5 kernels/inference | **done** | `mistral_moe_inference.{h,cu}`, `mistral_moe_model.{h,cpp}`; `test_mistral_moe_kernels`, `test_mistral_moe_model` green |
+| 6 shared-mem sandbox | folded into stage 5 (fixed-order block reductions, no atomics into the logits) | kernel determinism test |
+| 7 passport/translator | model-neutral infrastructure | — |
+| 8 SelfCheck + FSI/CODE/DET + perf | **targets wired, SKIP 4** | `test_mistral_moe_selfcheck` + fsi/code/det + `test_perf_baseline_mistral_small_4`; goldens declared debt, baseline unmeasured |
+| guards | **done** | naming, independence (passport/consumers/lifecycle), suite (row + tool verdict + golden debt), perf pairing, labels |
 
-The fast suite is green at 93/93 on this branch. The remaining CUDA work
-(stages 5–8) is the bulk of the ingestion and is catalogued in
-`docs/OPEN_TASKS.md` §T for a dedicated session.
+The fast suite is green at 93/93; the `test_mistral_*` inference targets are
+green (the four real-weight gates SKIP without a converted vault tree). The
+remaining work is real-weight acceptance plus golden capture and the measured
+perf baseline — `docs/OPEN_TASKS.md` §T.

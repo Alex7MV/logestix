@@ -114,6 +114,9 @@ const PerfModel kXing = {
 const PerfModel kAlice = {
     "alice-foundation-80b-a3b", "AliceAI-Foundation-80B-A3B-Base",
     "The capital of France is", 2048};
+const PerfModel kMistral = {
+    "mistral-small-4-119b", "Mistral-Small-4-119B-2603-NVFP4",
+    "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -432,4 +435,9 @@ TEST_CASE("perf baseline: phi-4", "[perf]")
 TEST_CASE("perf baseline: alice-foundation-80b-a3b", "[perf]")
 {
     RunPerfModel(kAlice);
+}
+
+TEST_CASE("perf baseline: mistral-small-4-119b", "[perf]")
+{
+    RunPerfModel(kMistral);
 }
