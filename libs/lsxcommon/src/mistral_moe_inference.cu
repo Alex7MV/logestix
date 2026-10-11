@@ -6,10 +6,12 @@
 
 #include "mistral_moe_constants.h"
 #include "lsx_device_math.h"
+#include "lsx_kernels_act.cuh"
 
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/lsx_gemv.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/lsx_kv_cache.h"
 #include "lsxcommon/log.h"
 
@@ -57,6 +59,18 @@ __global__ void bf16_to_f16_kernel(const __nv_bfloat16 *src, __half *dst, int n)
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x)
         dst[i] = __float2half(__bfloat162float(src[i]));
+}
+__global__ void bf16_to_f32_kernel(const __nv_bfloat16 *src, float *dst, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x)
+        dst[i] = __bfloat162float(src[i]);
+}
+__global__ void f32_copy_kernel(const float *src, float *dst, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x)
+        dst[i] = src[i];
 }
 __global__ void f32_to_f16_kernel(const float *src, __half *dst, int n)
 {
@@ -130,6 +144,17 @@ __global__ void add_f32_inplace_kernel(float *a, const float *b, int n)
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x)
         a[i] += b[i];
+}
+// acc += y * alpha^2 (y carries the SwiGLU prescale's 1/alpha^2 factor).
+__global__ void acc_add_half_scaled_kernel(float *acc, const __half *b,
+                                           const float *alpha, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x)
+    {
+        const float a = *alpha;
+        acc[i] += __half2float(b[i]) * a * a;
+    }
 }
 __global__ void acc_add_half_kernel(float *acc, const __half *b, int n)
 {
@@ -345,6 +370,8 @@ void FreeMistralSession(MistralSession &s)
     drop(s.d_post);
     drop(s.d_moe_acc);
     drop(s.d_shared);
+    drop(s.d_shared_alpha);
+    drop(s.d_swi_scratch);
     drop(s.d_mlp_scratch);
     drop(s.d_yg);
     drop(s.d_yu);
@@ -355,7 +382,39 @@ void FreeMistralSession(MistralSession &s)
     drop(s.d_scores);
     drop(s.d_logits);
     lsxcommon::moe::FreeMoEExpertCache(s.cache);
-    s = MistralSession{};
+    // Reset the pointers in place. `s = MistralSession{}` would construct a
+    // temporary whose ~MistralSession re-enters this function (infinite
+    // recursion) now that the session owns its teardown.
+    s.d_k = nullptr;
+    s.d_v = nullptr;
+    s.d_h = nullptr;
+    s.d_norm = nullptr;
+    s.d_q_lat = nullptr;
+    s.d_q_lat16 = nullptr;
+    s.d_q = nullptr;
+    s.d_kv = nullptr;
+    s.d_kv_lat16 = nullptr;
+    s.d_kv_b = nullptr;
+    s.d_attn = nullptr;
+    s.d_attn16 = nullptr;
+    s.d_attn_out = nullptr;
+    s.d_post = nullptr;
+    s.d_moe_acc = nullptr;
+    s.d_shared = nullptr;
+    s.d_shared_alpha = nullptr;
+    s.d_swi_scratch = nullptr;
+    s.d_mlp_scratch = nullptr;
+    s.d_yg = nullptr;
+    s.d_yu = nullptr;
+    s.d_y2 = nullptr;
+    s.d_slots = nullptr;
+    s.h_slots = nullptr;
+    s.d_router_logits = nullptr;
+    s.d_scores = nullptr;
+    s.d_logits = nullptr;
+    s.capacity = 0;
+    s.vocab = 0;
+    s.length = 0;
 }
 
 cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
@@ -381,7 +440,7 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
                      static_cast<size_t>(s.kgeom.Elements()) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_v),
                      static_cast<size_t>(s.vgeom.Elements()) * sizeof(float)));
-    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_h), H * sizeof(__half)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_h), H * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_norm), H * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_q_lat),
                      dims.q_lora * sizeof(float)));
@@ -404,6 +463,9 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_post), H * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_moe_acc), H * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_shared), H * sizeof(__half)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_shared_alpha), sizeof(float)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_swi_scratch),
+                     (static_cast<size_t>(dims.moe_inter) + 2) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_mlp_scratch),
                      2 * dims.moe_inter * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_yg),
@@ -493,6 +555,91 @@ void MistralReadLogits(const MistralSession &s, float *host_logits,
                     cudaMemcpyDeviceToHost, stream);
 }
 
+cudaError_t MistralSharedExpert(cudaStream_t stream,
+                                const lsx_nvfp4::LsxNvfp4Weight &gate,
+                                const lsx_nvfp4::LsxNvfp4Weight &up,
+                                const lsx_nvfp4::LsxNvfp4Weight &down,
+                                const __half *x, __half *y, __half *scratch,
+                                float *d_alpha_out, float *d_swi_scratch)
+{
+    if (!gate.d_packed || !up.d_packed || !down.d_packed || !gate.d_scales ||
+        !up.d_scales || !down.d_scales || gate.rows <= 0 || gate.cols <= 0 ||
+        up.rows != gate.rows || up.cols != gate.cols || down.rows <= 0 ||
+        down.cols != gate.rows)
+        return cudaErrorInvalidValue;
+
+    const int I = gate.rows;
+    const int t256 = 256;
+    // Drain any stale CUDA error from unrelated host-side work so the
+    // cudaGetLastError() checks below only ever report this call's own
+    // failures (see the same drain in MistralDecodeStep).
+    cudaGetLastError();
+    __half *g_out = scratch;
+    __half *u_out = scratch + I;
+    const auto gemv = [&stream](const lsx_nvfp4::LsxNvfp4Weight &w,
+                                const __half *in, __half *out) {
+        return lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+            stream, in, w.d_packed, w.d_scales, w.global_scale, out, w.cols,
+            w.rows, false);
+    };
+    cudaError_t e = gemv(gate, x, g_out);
+    if (e != cudaSuccess) return e;
+    e = gemv(up, x, u_out);
+    if (e != cudaSuccess) return e;
+
+    // Overflow-proof SwiGLU, same contract as the neutral scalar routed path:
+    // the product is evaluated in FP32 and stored to the FP16 activation
+    // buffer under a power-of-two prescale. alpha == 1 whenever the product
+    // fits FP16, making this bit-identical to the plain SwigluKernel there.
+    // This model carries massive activations, so the FP16 ceiling is reachable.
+    float *sw_f32 = nullptr, *d_alpha = nullptr, *d_inv_alpha = nullptr;
+    const bool own_swi = (d_swi_scratch == nullptr);
+    if (own_swi)
+    {
+        const size_t sw_bytes = static_cast<size_t>(I) * sizeof(float);
+        cudaError_t me = cudaMallocAsync(&sw_f32, sw_bytes, stream);
+        if (me == cudaSuccess)
+            me = cudaMallocAsync(&d_alpha, 2 * sizeof(float), stream);
+        if (me != cudaSuccess)
+        {
+            if (sw_f32) cudaFreeAsync(sw_f32, stream);
+            return cudaErrorInvalidValue;
+        }
+    }
+    else
+    {
+        sw_f32 = d_swi_scratch;
+        d_alpha = d_swi_scratch + I;
+    }
+    d_inv_alpha = d_alpha + 1;
+    ::lsxcommon::kernels::SwigluF32Kernel<<<(I + t256 - 1) / t256, t256, 0, stream>>>(
+        g_out, u_out, sw_f32, I);
+    ::lsxcommon::kernels::SwigluAbsMaxKernel<<<1, t256, 0, stream>>>(sw_f32, d_alpha, I);
+    ::lsxcommon::kernels::SwigluAlphaKernel<<<1, 32, 0, stream>>>(d_alpha, d_alpha, d_inv_alpha);
+    ::lsxcommon::kernels::SwigluStoreScaledKernel<<<(I + t256 - 1) / t256, t256, 0, stream>>>(
+        sw_f32, d_inv_alpha, g_out, I);
+    e = cudaGetLastError();
+    if (e == cudaSuccess) e = gemv(down, g_out, y);
+    if (e != cudaSuccess)
+    {
+        cudaFreeAsync(sw_f32, stream);
+        cudaFreeAsync(d_alpha, stream);
+        return e;
+    }
+    if (d_alpha_out)
+    {
+        if (cudaMemcpyAsync(d_alpha_out, d_alpha, sizeof(float),
+                           cudaMemcpyDeviceToDevice, stream) != cudaSuccess)
+            e = cudaErrorInvalidValue;
+    }
+    if (own_swi)
+    {
+        cudaFreeAsync(sw_f32, stream);
+        cudaFreeAsync(d_alpha, stream);
+    }
+    return e;
+}
+
 cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
                               const MistralDims &dims, MistralSession &s,
                               int token_id, const float *d_rc,
@@ -511,10 +658,15 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
     const int I = dims.moe_inter;
     const float eps = dims.rms_eps;
     const int t256 = 256;
+    // Drain any stale CUDA error left by unrelated host-side work (the weight
+    // loader's pinned staging leaves one on the synthetic fixture). MISTRAL_CK /
+    // MISTRAL_LAUNCH report cudaGetLastError(), which would otherwise fail this
+    // step on an error raised before it was entered.
+    cudaGetLastError();
     const auto grid = [&](int n) { return (n + t256 - 1) / t256; };
 
     // Embedding row (BF16) -> FP16 hidden.
-    MISTRAL_LAUNCH(bf16_to_f16_kernel<<<grid(H), t256, 0, stream>>>(
+    MISTRAL_LAUNCH(bf16_to_f32_kernel<<<grid(H), t256, 0, stream>>>(
         pw.embed.data + static_cast<int64_t>(token_id) * H, s.d_h, H));
 
     // llama-4 logit temperature for this query position.
@@ -532,7 +684,7 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
     {
         const auto &lw = pw.layers[static_cast<size_t>(l)];
         // input norm
-        MISTRAL_LAUNCH(rms_norm_kernel<__half><<<1, t256, 0, stream>>>(
+        MISTRAL_LAUNCH(rms_norm_kernel<float><<<1, t256, 0, stream>>>(
             s.d_h, lw.input_ln, nullptr, nullptr, s.d_norm, H, eps, 2));
         // q_a
         MISTRAL_CK(lsxcommon::gemv::RunLxGemmVec(
@@ -583,15 +735,14 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
             stream, lw.wo.data, s.d_attn16, 1, H, heads * vh,
             lsxcommon::gemv::LxDtype::kBF16, lsxcommon::gemv::LxDtype::kBF16,
             1.0f, s.d_attn_out, lsxcommon::gemv::LxDtype::kF32, 0.0f));
-        MISTRAL_LAUNCH(f16_to_f32_kernel<<<grid(H), t256, 0, stream>>>(
+        MISTRAL_LAUNCH(f32_copy_kernel<<<grid(H), t256, 0, stream>>>(
             s.d_h, s.d_moe_acc, H));
         MISTRAL_LAUNCH(add_f32_inplace_kernel<<<grid(H), t256, 0, stream>>>(
             s.d_moe_acc, s.d_attn_out, H));
-        MISTRAL_LAUNCH(f32_to_f16_kernel<<<grid(H), t256, 0, stream>>>(
+        MISTRAL_LAUNCH(f32_copy_kernel<<<grid(H), t256, 0, stream>>>(
             s.d_moe_acc, s.d_h, H));
-
         // post norm (FP16: the MoE FFN takes __half).
-        MISTRAL_LAUNCH(rms_norm_kernel<__half><<<1, t256, 0, stream>>>(
+        MISTRAL_LAUNCH(rms_norm_kernel<float><<<1, t256, 0, stream>>>(
             s.d_h, lw.post_ln, nullptr, s.d_post, nullptr, H, eps, 1));
 
         // Router: BF16 gate via the neutral GEMV, then the softmax/top-K on the
@@ -642,31 +793,27 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
         }
 
         // acc = residual (pre-MoE hidden), then routed experts + shared expert.
-        MISTRAL_CK(lsxcommon::moe::RunMoEAccInitForTest(stream, s.d_h,
-                                                        s.d_moe_acc, H));
+        MISTRAL_LAUNCH(f32_copy_kernel<<<grid(H), t256, 0, stream>>>(
+            s.d_h, s.d_moe_acc, H));
         std::string moe_error;
         MISTRAL_CK(lsxcommon::moe::RunMoERoutedFFN(
             stream, pw.expert_store, s.cache, l, s.h_slots, K, s.d_post, H, I,
             s.d_moe_acc, s.d_yg, s.d_yu, s.d_y2, moe_error));
-        // shared expert (UNGATED: added directly, unlike Qwen/Ornith).
-        {
-            lsxcommon::attn::LayerWeights slw;
-            slw.loaded = true;
-            slw.mlp_gate = lw.shared_gate;
-            slw.mlp_up = lw.shared_up;
-            slw.mlp_down = lw.shared_down;
-            MISTRAL_CK(lsxcommon::qwen::RunAttnMLP(stream, slw, 1, s.d_post,
-                                                   s.d_shared,
-                                                   s.d_mlp_scratch));
-        }
-        MISTRAL_LAUNCH(acc_add_half_kernel<<<grid(H), t256, 0, stream>>>(
-            s.d_moe_acc, s.d_shared, H));
-        MISTRAL_LAUNCH(f32_to_f16_kernel<<<grid(H), t256, 0, stream>>>(
+        // Shared expert (UNGATED: added directly, unlike Qwen/Ornith).
+        MISTRAL_CK(MistralSharedExpert(stream, lw.shared_gate, lw.shared_up,
+                                      lw.shared_down, s.d_post, s.d_shared,
+                                      s.d_mlp_scratch, s.d_shared_alpha,
+                                      s.d_swi_scratch));
+        // The shared branch carries the SwiGLU prescale's 1/alpha^2; fold it
+        // back in here, in the FP32 accumulator.
+        MISTRAL_LAUNCH(acc_add_half_scaled_kernel<<<grid(H), t256, 0, stream>>>(
+            s.d_moe_acc, s.d_shared, s.d_shared_alpha, H));
+        MISTRAL_LAUNCH(f32_copy_kernel<<<grid(H), t256, 0, stream>>>(
             s.d_moe_acc, s.d_h, H));
     }
 
     // final norm + lm_head.
-    MISTRAL_LAUNCH(rms_norm_kernel<__half><<<1, t256, 0, stream>>>(
+    MISTRAL_LAUNCH(rms_norm_kernel<float><<<1, t256, 0, stream>>>(
         s.d_h, pw.final_norm, nullptr, nullptr, s.d_norm, H, eps, 2));
     MISTRAL_CK(lsxcommon::gemv::RunLxGemmVec(
         stream, pw.head.data, s.d_norm, 1, dims.vocab, H,

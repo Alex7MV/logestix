@@ -9,9 +9,11 @@
 #include "mistral_moe_constants.h"
 #include "lsxcommon/mistral_moe_tool_format.h"
 
+#include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_attn_inference.h"   // DecideSession (shared, model-neutral)
 #include "lsxcommon/model_runtime.h"
+#include "lsxcommon/resource_governor.h"
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/synthetic_geometry.h"
 
@@ -151,12 +153,13 @@ bool MistralSmall4MoeModel::Load()
         size_t free_bytes = 0, total_bytes = 0;
         if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess)
         {
-            const size_t reserve = static_cast<size_t>(2) << 30;
-            const size_t budget =
-                free_bytes > reserve ? free_bytes - reserve : free_bytes / 2;
-            if (per_expert > 0)
-                slots = static_cast<int>(std::min<size_t>(
-                    total_experts, budget / per_expert));
+            // Shared estimator (8 GiB calibrated reserve + the resolved
+            // expert_slots_pct knob). A local budget with a smaller reserve
+            // over-commits VRAM and starves the KV/session arena at decode
+            // time (the 2048-token bench OOMs with 1838 slots).
+            slots = lifecycle::ExpertCacheSlots(
+                free_bytes, per_expert, total_experts,
+                perf::CurrentKnobs().expert_slots_pct);
         }
     }
     if (slots <= 0) slots = 4;

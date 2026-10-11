@@ -845,23 +845,61 @@ product or numerics decision, not a patch.
      (`gemv::RunLxGemmVec` BF16 + softmax/top-K in `mistral_moe_inference.cu`).
      This may be a real defect in the neutral seq==1 router path — worth a
      separate look (it is not exercised here by any other family at E=128).
-- **Blocking defect — real-weight decode diverges to NaN at layer 32.** With
-  routing fixed, the 36-layer decode runs but diverges: the residual stream is
-  fine through layer 3 (max |h| ~13), then **layer 4's routed expert adds a
-  414-magnitude output to a ~13 seed** (`routed_max=414` vs `seed_max=12.7`,
-  measured after `RunMoERoutedFFN`), the residual jumps to ~430, stays ~490
-  through layer 31, and goes all-NaN at layer 32. The attention output itself is
-  small throughout (`attn_out_max` <= 0.84 at layers 0-6), so the amplifier is
-  the MoE, not the attention. The logits are NaN and the greedy sampler returns
-  -1 (empty output on both selfcheck prompts). Next step: check whether the
-  layer-4 expert dequant/offsets are right (compare `weight_packed/scale/gs` for
-  the selected eids against the source) and whether the neutral MoE's F16
-  swiglu intermediate overflows at ~490-scale activations (the synthetic path
-  stays O(1) and passes).
-- **Remaining after that:** `test_mistral_moe_selfcheck` Paris + stress, the
-  four S* golden gates (SKIP without goldens; FSI/CODE/DET capture from the
-  source safetensors via `tools/*_capture.py` is not started), and the perf
-  baseline (placeholder 0 t/s — re-seed by running the target).
+- **Real-weight decode: fixed (2026-10-12).** `test_mistral_moe_selfcheck`
+  passes (Paris + tool round-trip + 3 bit-exact stress cycles); `--bench`
+  completes 2048 tokens at **14.68 t/s** (Release, `r3` and `perf` both;
+  the `linux-debug` preset is 45 t/s but a Debug binary is not a valid perf
+  record — `test_perf_baseline` SKIPs outside `NDEBUG`); SelfCheck passes in **both** the auto
+  and `--bit-exact` (`FastMathMode::kOff`) modes. The layer-4 "outlier" that
+  this entry previously reported was a **measurement artefact** — the expert is
+  a genuine massive-activation expert (host reference at layer 4 confirms
+  routed max 411.9 vs the 403.8 the GPU produced). Five real defects, each
+  isolated against a host NVFP4 reference built from the source safetensors:
+  1. **Shared expert through the BF16 GEMV.** `attn::RunAttnMLP` reinterpreted
+     the shared expert's E2M1 nibbles as BF16: shared rms 0.0080 vs the host
+     reference 0.3495 (**44x** under-contribution). Fixed by running the
+     neutral NVFP4 seq==1 GEMV (`MistralSharedExpert`, the Xing pattern —
+     `RunMoESharedCombine` is gated and does not apply, this model's shared
+     expert is ungated). Regression test
+     `test_mistral_moe_kernels` "matches the host NVFP4 reference" (mutation
+     checked: reverting the scale makes it fail).
+  2. **Autodetect name mismatch.** The converter wrote
+     `"model": "Mistral-Small-4-119B-2603"`, which `detect_model_type`
+     normalizes to `mistral-small-4-119b-2603` — not the registered kType, so
+     `lsxbenchmark`/`lsxfabric` could not resolve the model by path at all.
+  3. **Expert-cache VRAM over-commit.** A hand-rolled budget with a 2 GiB
+     reserve resolved 1838 slots (~25 GiB) and the 2048-token bench OOMed on
+     the KV arena. Now the shared `lifecycle::ExpertCacheSlots` (8 GiB
+     calibrated reserve + the `expert_slots_pct` knob) → 1382 slots.
+  4. **FP16 SwiGLU overflow (the actual NaN).** This model carries massive
+     activations: layer 32 expert 67 reaches `|silu(g)*u| = 2.5e5` against the
+     FP16 ceiling of 65504 — exactly 4 values overflow, and the inf propagated
+     through the down projection into the residual. The scalar (non-TC) MoE
+     path stores that product in FP16. `RunMoERoutedFFN` and
+     `MistralSharedExpert` now evaluate the product in FP32 and store it under
+     a power-of-two prescale, folded back in the FP32 accumulator
+     (`SwigluF32Kernel`/`SwigluAbsMaxKernel`/`SwigluAlphaKernel`/
+     `SwigluStoreScaledKernel` in `lsx_kernels_act.cuh`, plus
+     `moe_coeff_add_scaled_kernel` / `acc_add_half_scaled_kernel`). It is a
+     **provable no-op for every existing model** (alpha == 1 whenever the
+     product fits FP16, and the value expression is the same F32 silu). The TC
+     path was already immune — it quantizes from FP32 — which is why only
+     `--bit-exact` diverged. Regression test: "survives an FP16-overflowing
+     SwiGLU" (mutation checked).
+  5. **FP16 residual + session leak.** The residual itself reaches ~2.4e5 at
+     layer 32 (host reference), past FP16 range, so `d_h` is now FP32 (the
+     norms and the `d_post` hand-off are unchanged). And `~MistralSession` now
+     frees — without it every `Infer` leaked the dense graph + expert cache and
+     the *second* request OOMed. (`FreeMistralSession` resets the pointers in
+     place; `s = MistralSession{}` recursed infinitely once the destructor
+     owned teardown.)
+- **Residual defect still open (neutral layer, low priority):**
+  `RunMoERouterTopK`'s seq==1 dots path returns a NaN logit on finite real
+  inputs (host f64 of the same data is finite, max 7.97). Mistral works around
+  it with a host-side router; no other family exercises that path at E=128.
+- **Still open:** the four S* golden gates (FSI/CODE/DET SKIP without goldens —
+  capture from the source safetensors via `tools/*_capture.py` is not started).
+  FSI/CODE/DET are declared debt in `test_model_suite_guard`.
 
 ## Archive
 ## Archive

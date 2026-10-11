@@ -63,11 +63,14 @@ TEST_CASE("mistral selfcheck answers Paris", "[mistral][inference]")
     if (!r.ok) FAIL(r.error_msg);
     REQUIRE(r.ok);
     REQUIRE(!r.gen_tokens.empty());
-    INFO("output: '" << r.output_text << "'");
+    std::string gen_ids;
+    for (int32_t t : r.gen_tokens) gen_ids += std::to_string(t) + " ";
+    INFO("gen_tokens: [" << gen_ids << "] output: '" << r.output_text << "'");
     REQUIRE(r.output_text.find("Paris") != std::string::npos);
 
     const int cycles = Cycles();
     auto sc0 = model->SelfCheck(req);
+    INFO("selfcheck error: '" << sc0.error_msg << "'");
     REQUIRE(sc0.ok);
     REQUIRE(sc0.selfcheck_passed);
     const std::vector<float> &ref_logits = sc0.final_logits;

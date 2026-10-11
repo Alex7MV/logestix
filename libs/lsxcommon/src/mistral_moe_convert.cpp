@@ -667,7 +667,9 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
     if (!f) return arrow::Status::IOError("cannot write model.index.json");
     f << "{\n";
     f << "  \"format\": \"logestix-mistral-nvfp4\",\n";
-    f << "  \"model\": \"Mistral-Small-4-119B-2603\",\n";
+    // Must normalize (detect_model_type) to exactly frozen::kType, otherwise
+    // path auto-detection in lsxbenchmark/lsxfabric cannot resolve the family.
+    f << "  \"model\": \"Mistral-Small-4-119B\",\n";
     f << "  \"num_layers\": " << observed_layers << ",\n";
     f << "  \"experts_per_layer\": " << num_experts << ",\n";
     f << "  \"hidden_size\": " << hidden << ",\n";

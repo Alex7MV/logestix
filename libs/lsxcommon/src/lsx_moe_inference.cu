@@ -358,6 +358,17 @@ __global__ void moe_coeff_add_kernel(const __half *__restrict__ y2,
     acc[i] += coeff * __half2float(y2[i]);
 }
 
+__global__ void moe_coeff_add_scaled_kernel(const __half *__restrict__ y2,
+                                            float coeff,
+                                            const float *__restrict__ alpha,
+                                            float *__restrict__ acc, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float a = *alpha;
+    acc[i] += coeff * (a * a) * __half2float(y2[i]);
+}
+
 // F32->FP16 convert: unified kernels::F32toTKernel (lsx_kernels_math.cuh).
 
 constexpr int kEltBlock = 256;
@@ -392,7 +403,8 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                                 __half *ygu_batch,
                                 __half *hbuf_batch,
                                 __half *ypart_batch,
-                                MoEGvSlotDev *d_gemv_tbl)
+                                MoEGvSlotDev *d_gemv_tbl,
+                                float *d_swi_scratch)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
@@ -598,11 +610,58 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
             if (qe != cudaSuccess)
                 { error = "w2 prequant gemm failed"; return cudaErrorInvalidValue; }
         } else {
-            ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
-                <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
-            if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
-                                       I, H, false) != cudaSuccess)
+            // Overflow-proof scalar SwiGLU: the product is evaluated in FP32
+            // and stored to the FP16 activation buffer under a power-of-two
+            // prescale, folded back into y2 by alpha^2. Identical result when
+            // the product fits FP16 (alpha == 1).
+            float *sw_f32 = nullptr, *d_alpha = nullptr, *d_inv_alpha = nullptr;
+            const bool own_swi = (d_swi_scratch == nullptr);
+            if (own_swi)
+            {
+                const size_t sw_bytes = static_cast<size_t>(I) * sizeof(float);
+                cudaError_t me = cudaMallocAsync(&sw_f32, sw_bytes, stream);
+                if (me == cudaSuccess)
+                    me = cudaMallocAsync(&d_alpha, 2 * sizeof(float), stream);
+                if (me != cudaSuccess)
+                {
+                    if (sw_f32) cudaFreeAsync(sw_f32, stream);
+                    error = "swiglu scratch failed";
+                    return cudaErrorInvalidValue;
+                }
+            }
+            else
+            {
+                sw_f32 = d_swi_scratch;
+                d_alpha = d_swi_scratch + I;
+            }
+            d_inv_alpha = d_alpha + 1;
+            ::lsxcommon::kernels::SwigluF32Kernel<<<EltGrid(I), kEltBlock, 0, stream>>>(
+                d_yg, d_yu, sw_f32, I);
+            ::lsxcommon::kernels::SwigluAbsMaxKernel<<<1, kEltBlock, 0, stream>>>(sw_f32,
+                                                                   d_alpha, I);
+            ::lsxcommon::kernels::SwigluAlphaKernel<<<1, 32, 0, stream>>>(d_alpha, d_alpha,
+                                                          d_inv_alpha);
+            ::lsxcommon::kernels::SwigluStoreScaledKernel<<<EltGrid(I), kEltBlock, 0, stream>>>(
+                sw_f32, d_inv_alpha, d_yg, I);
+            cudaError_t se = cudaGetLastError();
+            if (se == cudaSuccess)
+                se = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2,
+                                                 d_y2, 1, I, H, false);
+            if (se == cudaSuccess)
+            {
+                // Fold the 1/alpha^2 back in inside the FP32 accumulator.
+                moe_coeff_add_scaled_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
+                    d_y2, slot.coeff, d_alpha, d_acc, H);
+                se = cudaGetLastError();
+            }
+            if (own_swi)
+            {
+                cudaFreeAsync(sw_f32, stream);
+                cudaFreeAsync(d_alpha, stream);
+            }
+            if (se != cudaSuccess)
                 { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
+            continue;   // accumulator already updated above
         }
         moe_coeff_add_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
             d_y2, slot.coeff, d_acc, H);

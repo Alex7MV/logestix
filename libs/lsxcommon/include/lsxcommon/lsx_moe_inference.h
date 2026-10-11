@@ -125,7 +125,12 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream,
                                 __half *ygu_batch = nullptr,
                                 __half *hbuf_batch = nullptr,
                                 __half *ypart_batch = nullptr,
-                                MoEGvSlotDev *d_gemv_tbl = nullptr);
+                                MoEGvSlotDev *d_gemv_tbl = nullptr,
+                                // Optional caller-owned arena for the overflow-
+                                // proof scalar SwiGLU: I floats for the FP32
+                                // product plus 2 floats for alpha/inv_alpha.
+                                // nullptr keeps the cudaMallocAsync fallback.
+                                float *d_swi_scratch = nullptr);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunMoEAccToFp16(cudaStream_t stream, const float *d_acc,

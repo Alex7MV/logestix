@@ -71,7 +71,10 @@ struct MistralSession {
     lsxcommon::KvCacheGeometry kgeom{};
     lsxcommon::KvCacheGeometry vgeom{};
     // MLA scratch.
-    __half *d_h = nullptr;       // [hidden] residual hidden (FP16, MoE path)
+    // Residual hidden, FP32. This model carries massive activations: the layer-32
+    // top expert drives the residual to ~2.4e5 (host reference), past the FP16
+    // ceiling of 65504, so an FP16 residual silently saturates (or NaNs) there.
+    float *d_h = nullptr;         // [hidden]
     // Attention activations are BF16 because the BF16 projections go through
     // the neutral GEMV, which only accepts same-dtype operands.
     __nv_bfloat16 *d_norm = nullptr;    // [hidden] normed input (BF16)
@@ -87,7 +90,9 @@ struct MistralSession {
     __half *d_post = nullptr;    // [hidden] post-normed MoE input (FP16)
     // MoE scratch (neutral store handles the routed experts).
     float *d_moe_acc = nullptr;      // [hidden] F32 accumulator
-    __half *d_shared = nullptr;      // [hidden] shared expert output
+    __half *d_shared = nullptr;
+    float *d_shared_alpha = nullptr;   // device-side SwiGLU prescale
+    float *d_swi_scratch = nullptr;   // [I+2] FP32 SwiGLU arena (routed+shared)      // [hidden] shared expert output
     __half *d_mlp_scratch = nullptr; // [2 * moe_inter]
     __half *d_yg = nullptr;          // [moe_inter]
     __half *d_yu = nullptr;
@@ -99,6 +104,10 @@ struct MistralSession {
     float *d_logits = nullptr;       // [vocab]
     lsxcommon::gpu::ExpertDeviceCache cache;
 
+        // Session teardown must run on destruction: Infer() resets the unique_ptr
+    // between requests, and without this the dense graph + expert cache leak
+    // every call (the second Infer OOMs).
+    ~MistralSession() { Free(); }
     void Free();
 };
 
@@ -118,6 +127,29 @@ cudaError_t UploadMistralYarnTables(cudaStream_t stream, int capacity,
                                     const std::vector<float> &cos_t,
                                     const std::vector<float> &sin_t,
                                     float **dst_rc, float **dst_rs);
+
+// Shared expert (ungated SwiGLU, NVFP4) over one token:
+//   y = w2 . (silu(w1 . x) * (w3 . x))
+// @p scratch holds 2 * w1.rows FP16 elements (gate then up).
+//
+// This MUST run the neutral NVFP4 seq==1 GEMV. Routing these NVFP4 views
+// through the BF16 dense GEMV (attn::RunAttnMLP) reinterprets E2M1 nibbles
+// as BF16 and under-contributes the branch ~44x; the decode step then drifts
+// and NaNs in the deep layers. Exported so the numeric contract is unit-tested
+// against a host NVFP4 reference (test_mistral_moe_kernels).
+//
+// The SwiGLU product is stored into the FP16 buffer under a power-of-two
+// prescale (this model overflows FP16 there), so @p y carries a 1/alpha^2
+// factor. When @p d_alpha_out is non-null it receives the device-side alpha
+// the caller must fold into its FP32 accumulator; pass nullptr to consume the
+// unscaled y (test/diagnostic use).
+cudaError_t MistralSharedExpert(cudaStream_t stream,
+                                const lsx_nvfp4::LsxNvfp4Weight &gate,
+                                const lsx_nvfp4::LsxNvfp4Weight &up,
+                                const lsx_nvfp4::LsxNvfp4Weight &down,
+                                const __half *x, __half *y, __half *scratch,
+                                float *d_alpha_out = nullptr,
+                                float *d_swi_scratch = nullptr);
 
 // One decode step. `token_id` selects the embedding row, `pos` is the absolute
 // KV position. Writes the next-token logits into s.d_logits.

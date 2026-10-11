@@ -63,5 +63,78 @@ __global__ void SwigluSigKernel(const T* __restrict__ g_in,
     out[i] = detail::CastOut<T>(__fmul_rn(sig, __fmul_rn(g, u)));
 }
 
+// ── Overflow-proof SwiGLU → FP16 activation ────────────────────────────────
+// silu(g)*u is evaluated in FP32 and stored into the FP16 activation buffer
+// under a power-of-two prescale `inv_alpha`; `alpha` is then folded back into
+// the down projection's output, so the accumulated result is unchanged.
+//
+// Why: models with massive activations overflow the FP16 ceiling (65504) in
+// the PRODUCT even when gate and up each fit -- Mistral-Small-4-119B layer 32
+// expert 67 reaches |silu(g)*u| = 2.5e5. The inf propagated through the down
+// GEMM into the residual stream and NaN'd the whole stack in bit-exact mode
+// (the TC path quantizes from FP32 and is immune). Used by the scalar MoE
+// branches in lsx_moe_inference.cu and by Mistral's ungated shared expert.
+//
+// When every product fits, alpha == 1 and both kernels are exact no-ops: the
+// value expression is the same F32 silu the scalar SwigluKernel computes, so
+// the result is bit-identical.
+// Leaves 4x headroom below the FP16 ceiling of 65504 for the scaled value.
+constexpr float kSwiFp16Headroom = 16384.0f;
+
+__global__ inline void SwigluF32Kernel(const __half *__restrict__ g,
+                                       const __half *__restrict__ u,
+                                       float *__restrict__ sw, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float gf = __half2float(g[i]);
+    const float uf = __half2float(u[i]);
+    sw[i] = __fdiv_rn(gf, __fadd_rn(1.0f, ExpF<ExpFlavor::Precise>(-gf))) * uf;
+}
+
+__global__ inline void SwigluAbsMaxKernel(const float *__restrict__ sw,
+                                          float *__restrict__ absmax, int n)
+{
+    __shared__ float red[256];
+    float m = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        m = fmaxf(m, fabsf(sw[i]));
+    red[threadIdx.x] = m;
+    __syncthreads();
+    for (int s = blockDim.x >> 1; s > 0; s >>= 1)
+    {
+        if (threadIdx.x < s)
+            red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + s]);
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *absmax = red[0];
+}
+
+// alpha = smallest power of two with absmax/alpha <= kSwiFp16Headroom.
+__global__ inline void SwigluAlphaKernel(const float *__restrict__ absmax,
+                                         float *__restrict__ alpha,
+                                         float *__restrict__ inv_alpha)
+{
+    if (threadIdx.x || blockIdx.x) return;
+    const float a = *absmax;
+    int k = 0;
+    if (a > kSwiFp16Headroom)
+    {
+        float t = kSwiFp16Headroom;
+        while (t < a && k < 60) { t *= 2.0f; ++k; }
+    }
+    *alpha = ldexpf(1.0f, k);
+    *inv_alpha = ldexpf(1.0f, -k);
+}
+
+__global__ inline void SwigluStoreScaledKernel(const float *__restrict__ sw,
+                                               const float *__restrict__ inv_alpha,
+                                               __half *__restrict__ y, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    y[i] = __float2half(sw[i] * (*inv_alpha));
+}
+
 } // namespace kernels
 } // namespace lsxcommon
