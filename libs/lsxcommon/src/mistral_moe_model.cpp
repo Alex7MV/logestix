@@ -325,6 +325,9 @@ gpu::InferenceResult MistralSmall4MoeModel::Infer(const ModelRequest &req)
     if (run != cudaSuccess)
     {
         r.error_msg = runtime::CombineGenError(run, gen_error);
+        log::error(absl::StrCat("[mistral-model] Infer run=",
+                                static_cast<int>(run), " err='", r.error_msg,
+                                "' gen_error='", gen_error, "'"));
         r.ok = false;
         return r;
     }

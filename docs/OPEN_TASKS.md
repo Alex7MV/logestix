@@ -832,18 +832,33 @@ product or numerics decision, not a patch.
   `test_model_suite_guard` `Suites()` + tool verdict + golden debt,
   `test_perf_baseline_logic` mid list, `test_code_naming_guard` family token).
   Fast suite 93/93; `test_mistral_*` (convert/loader/tool/kernels/model) green.
-- **Remaining — real-weight acceptance:** convert the vault tree
-  (`lsxforge --mistral`, ~62 GiB) and run `test_mistral_moe_selfcheck` +
-  `test_mistral_moe_fsi/code/det_selfcheck` (four S* targets currently SKIP) and
-  `test_perf_baseline_mistral_small_4`. The perf baseline entry is an unmeasured
-  placeholder (0 t/s) and must be re-seeded by running the target.
-- **Semantics to verify on the first real run** (stage 0.6): the split-half YaRN
-  `apply_scale:false` tables and the Llama-4 logit temperature
-  (`1 + beta*log(floor(pos/orig)+1)`); the MLA q/kv split order; and whether the
-  router renormalises before the ungated shared expert is added. A wrong guess
-  here silently decodes garbage past 8192 tokens.
-- **Not started:** FSI/CODE/DET golden capture from the source safetensors
-  (`tools/*_capture.py`) and the single-prompt framing.
+- **Real-weight conversion: done.** `lsxforge --mistral` converted the vault
+  tree in place (`<model>/logestix/`, 66 GiB, 4608 experts, 222 vision tensors
+  stripped, tokenizer arrows written) in ~75 s. The loader then loads it
+  (70 s: dense BF16 graph 4.7 GiB + 56 GiB pinned expert store). Two real bugs
+  were fixed on the way:
+  1. `weight_global_scale` is a **divisor** (`w = nibble*scale/gs`), not the
+     repo's multiply — the converter now stores `1/weight_global_scale`.
+  2. The neutral `RunMoERouterTopK` seq==1 dots path produced a NaN logit on
+     finite real inputs (host f64 of the same data is finite, max 7.97), which
+     fed a NaN through the MoE. The family now routes on the **host**
+     (`gemv::RunLxGemmVec` BF16 + softmax/top-K in `mistral_moe_inference.cu`).
+     This may be a real defect in the neutral seq==1 router path — worth a
+     separate look (it is not exercised here by any other family at E=128).
+- **Blocking defect — real-weight decode diverges to NaN.** With routing fixed,
+  the 36-layer decode runs but the residual stream grows large (max |h| ~4 at
+  layer 0 -> ~446 by layer 6, stable ~490, token-dependent) and overflows to
+  NaN at layer ~32 (all-NaN `d_h`), so the logits are NaN and the greedy
+  sampler returns -1 (empty output, both selfcheck prompts). A correct
+  pre-norm decoder should keep the RMS-normed sub-layer inputs O(1); the
+  per-layer increment scaling with |h| points at the MLA attention (or the
+  fused residual) rather than the MoE. Diagnose by instrumenting the
+  layer-0..6 attention output magnitude vs the input norm; the first suspect is
+  the attention scale / split-half RoPE / `kv_write` split.
+- **Remaining after that:** `test_mistral_moe_selfcheck` Paris + stress, the
+  four S* golden gates (SKIP without goldens; FSI/CODE/DET capture from the
+  source safetensors via `tools/*_capture.py` is not started), and the perf
+  baseline (placeholder 0 t/s — re-seed by running the target).
 
 ## Archive
 ## Archive

@@ -70,6 +70,55 @@ __global__ void f32_to_bf16_kernel(const float *src, __nv_bfloat16 *dst, int n)
          i += gridDim.x * blockDim.x)
         dst[i] = __float2bfloat16(src[i]);
 }
+__global__ void f16_to_bf16_kernel(const __half *src, __nv_bfloat16 *dst, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += gridDim.x * blockDim.x)
+        dst[i] = __float2bfloat16(__half2float(src[i]));
+}
+
+// Mistral router: softmax over ALL experts, top-K (value desc, index asc),
+// renormalized coeffs. Single deterministic thread; E <= 512.
+__global__ void mistral_router_kernel(const float *logits, int E, int K,
+                                      lsxcommon::moe::MoERoutedSlot *slots)
+{
+    if (threadIdx.x != 0) return;
+    float p[512];
+    float m = -INFINITY;
+    for (int e = 0; e < E; ++e) m = fmaxf(m, logits[e]);
+    float z = 0.0f;
+    for (int e = 0; e < E; ++e)
+    {
+        p[e] = ExpfGlibc(logits[e] - m);
+        z += p[e];
+    }
+    bool used[512];
+    for (int e = 0; e < E; ++e) used[e] = false;
+    float sm = 0.0f;
+    int chosen[16];
+    for (int k = 0; k < K; ++k)
+    {
+        int best = -1;
+        float bv = -1.0f;
+        for (int e = 0; e < E; ++e)
+        {
+            if (used[e]) continue;
+            if (best < 0 || p[e] > bv)
+            {
+                best = e;
+                bv = p[e];
+            }
+        }
+        used[best] = true;
+        chosen[k] = best;
+        sm += bv;
+    }
+    for (int k = 0; k < K; ++k)
+    {
+        slots[k].eid = chosen[k];
+        slots[k].coeff = p[chosen[k]] / sm;
+    }
+}
 __global__ void f16_to_f32_kernel(const __half *src, float *dst, int n)
 {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -302,6 +351,7 @@ void FreeMistralSession(MistralSession &s)
     drop(s.d_y2);
     drop(s.d_slots);
     drop(s.h_slots);
+    drop(s.d_router_logits);
     drop(s.d_scores);
     drop(s.d_logits);
     lsxcommon::moe::FreeMoEExpertCache(s.cache);
@@ -363,6 +413,8 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_y2), H * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_slots),
                      dims.top_k * sizeof(lsxcommon::moe::MoERoutedSlot)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_router_logits),
+                     static_cast<size_t>(dims.experts) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_scores),
                      static_cast<size_t>(heads) * capacity * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_logits),
@@ -538,18 +590,56 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
         MISTRAL_LAUNCH(f32_to_f16_kernel<<<grid(H), t256, 0, stream>>>(
             s.d_moe_acc, s.d_h, H));
 
-        // post norm (FP16: the MoE router/FFN take __half).
+        // post norm (FP16: the MoE FFN takes __half).
         MISTRAL_LAUNCH(rms_norm_kernel<__half><<<1, t256, 0, stream>>>(
             s.d_h, lw.post_ln, nullptr, s.d_post, nullptr, H, eps, 1));
 
-        // router (neutral: softmax over all experts, top-K, renorm)
-        MISTRAL_CK(lsxcommon::moe::RunMoERouterTopK(
-            stream, lw.router, s.d_post, 1, E, K, H, s.d_slots));
-        // Host needs the ids to stage experts (streaming store).
-        MISTRAL_CK(cudaMemcpyAsync(
-            s.h_slots, s.d_slots, K * sizeof(lsxcommon::moe::MoERoutedSlot),
-            cudaMemcpyDeviceToHost, stream));
+        // Router: BF16 gate via the neutral GEMV, then the softmax/top-K on the
+        // HOST (deterministic, correctness-first). RunMoERoutedFFN takes the
+        // slot table from host memory, so no device router buffer is needed.
+        MISTRAL_LAUNCH(f16_to_bf16_kernel<<<grid(H), t256, 0, stream>>>(
+            s.d_post, s.d_norm, H));
+        MISTRAL_CK(lsxcommon::gemv::RunLxGemmVec(
+            stream, lw.router, s.d_norm, 1, E, H,
+            lsxcommon::gemv::LxDtype::kBF16, lsxcommon::gemv::LxDtype::kBF16,
+            1.0f, s.d_router_logits, lsxcommon::gemv::LxDtype::kF32, 0.0f));
+        std::vector<float> rlogits(static_cast<size_t>(E));
+        MISTRAL_CK(cudaMemcpyAsync(rlogits.data(), s.d_router_logits,
+                                   E * sizeof(float), cudaMemcpyDeviceToHost,
+                                   stream));
         MISTRAL_CK(cudaStreamSynchronize(stream));
+        {
+            float mx = -INFINITY;
+            for (int e = 0; e < E; ++e) mx = std::max(mx, rlogits[e]);
+            std::vector<float> p(static_cast<size_t>(E));
+            float z = 0.0f;
+            for (int e = 0; e < E; ++e)
+            {
+                p[e] = std::exp(rlogits[e] - mx);
+                z += p[e];
+            }
+            std::vector<bool> used(static_cast<size_t>(E), false);
+            float sm = 0.0f;
+            int chosen[16];
+            for (int k = 0; k < K; ++k)
+            {
+                int best = -1;
+                float bv = -1.0f;
+                for (int e = 0; e < E; ++e)
+                {
+                    if (used[e]) continue;
+                    if (best < 0 || p[e] > bv) { best = e; bv = p[e]; }
+                }
+                used[best] = true;
+                chosen[k] = best;
+                sm += bv;
+            }
+            for (int k = 0; k < K; ++k)
+            {
+                s.h_slots[k].eid = chosen[k];
+                s.h_slots[k].coeff = p[chosen[k]] / sm;
+            }
+        }
 
         // acc = residual (pre-MoE hidden), then routed experts + shared expert.
         MISTRAL_CK(lsxcommon::moe::RunMoEAccInitForTest(stream, s.d_h,

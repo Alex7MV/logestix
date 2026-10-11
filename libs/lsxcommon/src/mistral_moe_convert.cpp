@@ -541,7 +541,13 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
                     if (raw.size() != 4)
                         return arrow::Status::Invalid("bad global scale: ",
                                                       t.name);
-                    std::memcpy(&q->global_scale, raw.data(), 4);
+                    float gs = 0.0f;
+                    std::memcpy(&gs, raw.data(), 4);
+                    // compressed-tensors `weight_global_scale` is a DIVISOR:
+                    // w = nibble * block_scale / weight_global_scale. The repo
+                    // contour multiplies by its stored global_scale, so store
+                    // the reciprocal.
+                    q->global_scale = (gs != 0.0f) ? 1.0f / gs : 0.0f;
                 }
                 break;
             }
@@ -571,7 +577,9 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
                     if (raw.size() != 4)
                         return arrow::Status::Invalid("bad global scale: ",
                                                       t.name);
-                    std::memcpy(&q->global_scale, raw.data(), 4);
+                    float gs = 0.0f;
+                    std::memcpy(&gs, raw.data(), 4);
+                    q->global_scale = (gs != 0.0f) ? 1.0f / gs : 0.0f;
                 }
                 break;
             }
