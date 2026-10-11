@@ -1338,6 +1338,18 @@ target_link_libraries(test_mistral_moe_tool_framing PRIVATE lsxcommon
 add_test(NAME test_mistral_moe_tool_framing COMMAND test_mistral_moe_tool_framing)
 set_tests_properties(test_mistral_moe_tool_framing PROPERTIES LABELS fast)
 
+# ── Mistral-Small-4-119B model stage (decode pipeline) ──
+add_executable(test_mistral_moe_model test_mistral_moe_model.cpp)
+target_include_directories(test_mistral_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_mistral_moe_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_model COMMAND test_mistral_moe_model)
+set_tests_properties(test_mistral_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_mistral_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Xing4.0-29B-A4B selfcheck + FSI/CODE/DET golden parity gates ──
 add_executable(test_xing_moe_selfcheck test_xing_moe_selfcheck.cpp)
 target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)

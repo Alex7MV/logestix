@@ -74,35 +74,35 @@ cudaError_t UploadBf16Raw(const lsxcommon::TensorView &v,
     return cudaSuccess;
 }
 
-cudaError_t UploadNvfp4(const lsxcommon::PackedExpertView &v,
+cudaError_t UploadNvfp4(const lsxcommon::PackedExpert &pe,
                         lsx_nvfp4::LsxNvfp4Weight &w1,
                         lsx_nvfp4::LsxNvfp4Weight &w2,
                         lsx_nvfp4::LsxNvfp4Weight &w3, std::size_t &accounted)
 {
-    auto one = [&](const uint8_t *packed, int64_t pbytes, const uint8_t *scales,
-                   int64_t sbytes, float gs,
+    auto one = [&](const std::vector<uint8_t> &packed,
+                   const std::vector<uint8_t> &scales,
+                   const std::vector<int64_t> &shape, float gs,
                    lsx_nvfp4::LsxNvfp4Weight &out) -> cudaError_t {
         const uint8_t *p = nullptr, *s = nullptr;
-        cudaError_t e = UploadBytes(packed, static_cast<size_t>(pbytes), &p,
-                                    accounted);
+        cudaError_t e = UploadBytes(packed.data(), packed.size(), &p, accounted);
         if (e != cudaSuccess) return e;
-        e = UploadBytes(scales, static_cast<size_t>(sbytes), &s, accounted);
+        e = UploadBytes(scales.data(), scales.size(), &s, accounted);
         if (e != cudaSuccess) return e;
         out.d_packed = p;
-        out.packed_bytes = pbytes;
+        out.packed_bytes = static_cast<int64_t>(packed.size());
         out.d_scales = s;
-        out.scale_bytes = sbytes;
+        out.scale_bytes = static_cast<int64_t>(scales.size());
         out.global_scale = gs;
+        out.rows = shape.size() > 0 ? static_cast<int>(shape[0]) : 0;
+        out.cols = shape.size() > 1 ? static_cast<int>(shape[1]) : 1;
         return cudaSuccess;
     };
-    cudaError_t e = one(v.w1_packed, v.w1_packed_bytes, v.w1_scales,
-                        v.w1_scale_bytes, v.w1_global_scale, w1);
+    cudaError_t e = one(pe.w1_packed, pe.w1_scales, pe.w1_shape,
+                        pe.w1_global_scale, w1);
     if (e != cudaSuccess) return e;
-    e = one(v.w2_packed, v.w2_packed_bytes, v.w2_scales, v.w2_scale_bytes,
-            v.w2_global_scale, w2);
+    e = one(pe.w2_packed, pe.w2_scales, pe.w2_shape, pe.w2_global_scale, w2);
     if (e != cudaSuccess) return e;
-    return one(v.w3_packed, v.w3_packed_bytes, v.w3_scales, v.w3_scale_bytes,
-               v.w3_global_scale, w3);
+    return one(pe.w3_packed, pe.w3_scales, pe.w3_shape, pe.w3_global_scale, w3);
 }
 
 long long JsonInt(const std::string &text, const std::string &key,
@@ -121,6 +121,15 @@ long long JsonInt(const std::string &text, const std::string &key,
 struct IndexInfo {
     long long num_layers = 0;
     long long experts_per_layer = 0;
+    long long hidden = 0;
+    long long heads = 0;
+    long long q_lora = 0;
+    long long kv_lora = 0;
+    long long qk_nope = 0;
+    long long qk_rope = 0;
+    long long v_head = 0;
+    long long moe_inter = 0;
+    long long top_k = 0;
     std::string format;
     std::string error_msg;
 };
@@ -140,6 +149,15 @@ IndexInfo ReadIndex(const fs::path &p)
     ix.format = mistral_load_topology(p.string()).format;
     ix.num_layers = JsonInt(text, "num_layers", 0);
     ix.experts_per_layer = JsonInt(text, "experts_per_layer", 0);
+    ix.hidden = JsonInt(text, "hidden_size", 0);
+    ix.heads = JsonInt(text, "num_attention_heads", 0);
+    ix.q_lora = JsonInt(text, "q_lora_rank", 0);
+    ix.kv_lora = JsonInt(text, "kv_lora_rank", 0);
+    ix.qk_nope = JsonInt(text, "qk_nope_head_dim", 0);
+    ix.qk_rope = JsonInt(text, "qk_rope_head_dim", 0);
+    ix.v_head = JsonInt(text, "v_head_dim", 0);
+    ix.moe_inter = JsonInt(text, "moe_intermediate_size", 0);
+    ix.top_k = JsonInt(text, "num_experts_per_tok", 0);
     if (ix.format != "logestix-mistral-nvfp4")
     {
         ix.error_msg = absl::StrCat("unexpected format tag '", ix.format,
@@ -213,6 +231,15 @@ cudaError_t LoadMistralWeights(const std::string &model_path,
     }
     pw.num_layers = static_cast<int>(ix.num_layers);
     pw.num_experts = static_cast<int>(ix.experts_per_layer);
+    pw.hidden = static_cast<int>(ix.hidden);
+    pw.heads = static_cast<int>(ix.heads);
+    pw.q_lora = static_cast<int>(ix.q_lora);
+    pw.kv_lora = static_cast<int>(ix.kv_lora);
+    pw.qk_nope = static_cast<int>(ix.qk_nope);
+    pw.qk_rope = static_cast<int>(ix.qk_rope);
+    pw.v_head = static_cast<int>(ix.v_head);
+    pw.moe_inter = static_cast<int>(ix.moe_inter);
+    pw.top_k = static_cast<int>(ix.top_k);
 
     std::size_t accounted = 0;
 
@@ -240,12 +267,18 @@ cudaError_t LoadMistralWeights(const std::string &model_path,
     }
 
     // ── shared experts (NVFP4, one record per layer) ───────────────────────
-    auto shared = lsxcommon::LoadSharedExpertBatchViews(base / "pinned" /
-                                                        "shared_experts.arrow");
-    if (!shared.ok())
+    auto shared_batch =
+        lsxcommon::ReadRecordBatchFromFile(base / "pinned" / "shared_experts.arrow");
+    if (!shared_batch.ok())
     {
         error = "cannot read pinned/shared_experts.arrow: " +
-                shared.status().ToString();
+                shared_batch.status().ToString();
+        return cudaErrorInvalidValue;
+    }
+    auto shared = lsxcommon::SharedExpertSchema::UnpackBatch(*shared_batch);
+    if (!shared.ok())
+    {
+        error = "cannot unpack pinned/shared_experts.arrow";
         return cudaErrorInvalidValue;
     }
 
@@ -298,7 +331,7 @@ cudaError_t LoadMistralWeights(const std::string &model_path,
     }
 
     // ── shared expert NVFP4 rows ───────────────────────────────────────────
-    if (shared->layers.size() < static_cast<size_t>(pw.num_layers))
+    if (shared->size() < static_cast<size_t>(pw.num_layers))
     {
         error = "shared_experts.arrow has fewer rows than layers";
         return cudaErrorInvalidValue;
@@ -307,13 +340,21 @@ cudaError_t LoadMistralWeights(const std::string &model_path,
     {
         auto &lw = pw.layers[static_cast<size_t>(l)];
         const cudaError_t e = UploadNvfp4(
-            shared->layers[static_cast<size_t>(l)], lw.shared_gate,
+            (*shared)[static_cast<size_t>(l)], lw.shared_gate,
             lw.shared_down, lw.shared_up, accounted);
         if (e != cudaSuccess)
         {
             error = "shared expert upload failed";
             return e;
         }
+        // The Arrow schema carries no shape; the geometry comes from the index.
+        // w1/w3: [I, H]; w2: [H, I].
+        lw.shared_gate.rows = pw.moe_inter;
+        lw.shared_gate.cols = pw.hidden;
+        lw.shared_up.rows = pw.moe_inter;
+        lw.shared_up.cols = pw.hidden;
+        lw.shared_down.rows = pw.hidden;
+        lw.shared_down.cols = pw.moe_inter;
     }
 
     // ── routed experts (host pinned store, streamed on demand) ────────────

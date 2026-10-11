@@ -90,6 +90,7 @@ add_library(lsxcommon STATIC
     src/mistral_moe_convert.cpp
     src/mistral_moe_load.cpp
     src/mistral_moe_tool_format.cpp
+    src/mistral_moe_model.cpp
     src/qwen_moe_exp_load.cpp
     src/qwen_moe_exp_model.cpp
     src/qwen_moe_load.cpp
@@ -295,6 +296,28 @@ target_link_libraries(lsxcommon_xing_cu
     absl::strings
 )
 
+# Mistral-Small-4-119B MLA + MoE decode kernels.
+add_library(lsxcommon_mistral_cu OBJECT
+    src/mistral_moe_inference.cu
+)
+set_target_properties(lsxcommon_mistral_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_mistral_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_mistral_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_mistral_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_mistral_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 # Tensor-core NVFP4 fast path (audit Phase 3, F-01): kind::mxf4nvf4 PTX
 # assembles ONLY on the arch-'a' targets, so this object lib carries its own
 # --generate-code set (sm_120a / sm_121a). Plain sm_120/121 SASS for the
@@ -490,6 +513,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_phi_cu
     lsxcommon_alice_cu
     lsxcommon_xing_cu
+    lsxcommon_mistral_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.

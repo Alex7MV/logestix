@@ -18,13 +18,34 @@ namespace mistraltest {
 
 using synthtest::FakeTensor;
 
-// One byte per element (U8 packed nibbles / F8_E4M3 scales).
+// One byte per element (U8 packed E2M1 nibbles). Every nibble pattern is a
+// valid E2M1 value, so arbitrary bytes are safe here.
 inline std::vector<uint8_t> MakeRaw(int64_t n)
 {
     std::vector<uint8_t> out(static_cast<size_t>(n));
     for (int64_t i = 0; i < n; ++i)
         out[static_cast<size_t>(i)] = static_cast<uint8_t>((i * 7 + 1) & 0xff);
     return out;
+}
+
+// F8_E4M3 block scales. MUST be finite: 0x7F is the E4M3 NaN and would poison
+// the whole dequant (NaN * global_scale is still NaN). 0x38..0x3F is a stable
+// run of finite E4M3 values (2^0 near 1.0).
+inline std::vector<uint8_t> MakeScales(int64_t n)
+{
+    std::vector<uint8_t> out(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i)
+        out[static_cast<size_t>(i)] =
+            static_cast<uint8_t>(0x38 + (i & 0x7));
+    return out;
+}
+
+// BF16 weights with NORMAL magnitudes (the raw MakeBf16 bit pattern is a
+// denormal that underflows to zero once converted to FP16).
+inline std::vector<uint8_t> MakeBf16Small(int64_t n)
+{
+    return synthtest::MakeBf16Values(
+        n, [](int64_t i) { return 0.05f * static_cast<float>((i % 13) - 6); });
 }
 
 inline std::vector<int64_t> Sh(int64_t a, int64_t b) { return {a, b}; }
@@ -37,17 +58,20 @@ struct MistralSynthGeom {
     // hidden and expert_hidden are multiples of 16 so the NVFP4 per-16 block
     // scales are non-empty (a 0-block tensor is a malformed fixture, not an
     // architecture).
-    int64_t hidden = 32;
+    // hidden and expert_hidden are multiples of 32 so the neutral NVFP4 MoE
+    // GEMV path (K % 32) is eligible; all widths are multiples of 16 for the
+    // NVFP4 per-16 block scales.
+    int64_t hidden = 64;
     int64_t layers = 2;
     int64_t heads = 2;
-    int64_t q_lora = 8;
-    int64_t kv_lora = 8;
-    int64_t qk_nope = 4;
-    int64_t qk_rope = 4;
-    int64_t v_head = 4;
-    int64_t expert_hidden = 16;
+    int64_t q_lora = 16;
+    int64_t kv_lora = 16;
+    int64_t qk_nope = 8;
+    int64_t qk_rope = 8;
+    int64_t v_head = 8;
+    int64_t expert_hidden = 32;
     int64_t experts = 2;
-    int64_t vocab = 32;
+    int64_t vocab = 64;
 };
 
 inline void WriteMistralParams(const std::filesystem::path &dir,
@@ -111,13 +135,13 @@ inline void AddExpertTensors(std::vector<FakeTensor> &out,
                                  MakeRaw(s.packed)});
         out.push_back(FakeTensor{absl::StrCat(prefix, ".", s.name, ".weight_scale"),
                                  "F8_E4M3", Sh(s.scale_rows, s.scale_cols),
-                                 MakeRaw(s.scales)});
+                                 MakeScales(s.scales)});
         out.push_back(FakeTensor{
             absl::StrCat(prefix, ".", s.name, ".weight_global_scale"), "F32",
-            Sh1(1), synthtest::MakeF32(1)});
+            Sh1(1), synthtest::MakeF32Values(1, [](int64_t) { return 1.0f; })});
         out.push_back(FakeTensor{
             absl::StrCat(prefix, ".", s.name, ".input_global_scale"), "F32",
-            Sh1(1), synthtest::MakeF32(1)});
+            Sh1(1), synthtest::MakeF32Values(1, [](int64_t) { return 1.0f; })});
     }
 }
 
@@ -130,44 +154,44 @@ inline std::vector<FakeTensor> BuildSyntheticMistralModel(
 
     // Globals.
     out.push_back(FakeTensor{"tok_embeddings.weight", "BF16", Sh(g.vocab, H),
-                             synthtest::MakeBf16(g.vocab * H)});
+                             MakeBf16Small(g.vocab * H)});
     out.push_back(FakeTensor{"output.weight", "BF16", Sh(g.vocab, H),
-                             synthtest::MakeBf16(g.vocab * H)});
+                             MakeBf16Small(g.vocab * H)});
     out.push_back(FakeTensor{"norm.weight", "BF16", Sh1(H),
-                             synthtest::MakeBf16(H)});
+                             MakeBf16Small(H)});
 
     for (int64_t l = 0; l < g.layers; ++l)
     {
         const std::string p = absl::StrCat("layers.", l, ".");
         out.push_back(FakeTensor{p + "attention.wq_a.weight", "BF16",
                                  Sh(g.q_lora, H),
-                                 synthtest::MakeBf16(g.q_lora * H)});
+                                 MakeBf16Small(g.q_lora * H)});
         out.push_back(FakeTensor{p + "attention.q_a_norm.weight", "BF16",
                                  Sh1(g.q_lora),
-                                 synthtest::MakeBf16(g.q_lora)});
+                                 MakeBf16Small(g.q_lora)});
         out.push_back(FakeTensor{p + "attention.wq_b.weight", "BF16",
                                  Sh(g.heads * qk, g.q_lora),
-                                 synthtest::MakeBf16(g.heads * qk * g.q_lora)});
+                                 MakeBf16Small(g.heads * qk * g.q_lora)});
         out.push_back(FakeTensor{p + "attention.wkv_a_with_mqa.weight", "BF16",
                                  Sh(g.kv_lora + g.qk_rope, H),
-                                 synthtest::MakeBf16((g.kv_lora + g.qk_rope) * H)});
+                                 MakeBf16Small((g.kv_lora + g.qk_rope) * H)});
         out.push_back(FakeTensor{p + "attention.kv_a_norm.weight", "BF16",
                                  Sh1(g.kv_lora),
-                                 synthtest::MakeBf16(g.kv_lora)});
+                                 MakeBf16Small(g.kv_lora)});
         out.push_back(FakeTensor{p + "attention.wkv_b.weight", "BF16",
                                  Sh(g.heads * (g.qk_nope + g.v_head), g.kv_lora),
-                                 synthtest::MakeBf16(g.heads *
+                                 MakeBf16Small(g.heads *
                                                      (g.qk_nope + g.v_head) *
                                                      g.kv_lora)});
         out.push_back(FakeTensor{p + "attention.wo.weight", "BF16",
                                  Sh(H, g.heads * g.v_head),
-                                 synthtest::MakeBf16(H * g.heads * g.v_head)});
+                                 MakeBf16Small(H * g.heads * g.v_head)});
         out.push_back(FakeTensor{p + "attention_norm.weight", "BF16", Sh1(H),
-                                 synthtest::MakeBf16(H)});
+                                 MakeBf16Small(H)});
         out.push_back(FakeTensor{p + "ffn_norm.weight", "BF16", Sh1(H),
-                                 synthtest::MakeBf16(H)});
+                                 MakeBf16Small(H)});
         out.push_back(FakeTensor{p + "gate.weight", "BF16", Sh(g.experts, H),
-                                 synthtest::MakeBf16(g.experts * H)});
+                                 MakeBf16Small(g.experts * H)});
         for (int64_t e = 0; e < g.experts; ++e)
             AddExpertTensors(out,
                              absl::StrCat(p, "experts.", e), g, g.expert_hidden);
@@ -176,13 +200,13 @@ inline std::vector<FakeTensor> BuildSyntheticMistralModel(
 
     // Vision ballast (stripped + counted).
     out.push_back(FakeTensor{"vision_encoder.patch_conv.weight", "BF16",
-                             Sh(4, 4), synthtest::MakeBf16(16)});
+                             Sh(4, 4), MakeBf16Small(16)});
     out.push_back(FakeTensor{"vision_language_adapter.w_in.weight", "BF16",
-                             Sh(4, 4), synthtest::MakeBf16(16)});
+                             Sh(4, 4), MakeBf16Small(16)});
     out.push_back(FakeTensor{"patch_merger.merging_layer.weight", "BF16",
-                             Sh(4, 4), synthtest::MakeBf16(16)});
+                             Sh(4, 4), MakeBf16Small(16)});
     out.push_back(FakeTensor{"pre_mm_projector_norm.weight", "BF16", Sh1(4),
-                             synthtest::MakeBf16(4)});
+                             MakeBf16Small(4)});
     return out;
 }
 

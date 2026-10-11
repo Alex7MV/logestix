@@ -55,6 +55,17 @@ struct MistralPinnedWeights {
     std::string model_path;
     int num_layers = 0;
     int num_experts = 0;
+    // Geometry carried from the converted index (so a synthetic fixture steps
+    // at its own widths, not the frozen ones).
+    int hidden = 0;
+    int heads = 0;
+    int q_lora = 0;
+    int kv_lora = 0;
+    int qk_nope = 0;
+    int qk_rope = 0;
+    int v_head = 0;
+    int moe_inter = 0;
+    int top_k = 0;
     MistralBf16Weight embed;   // BF16 [vocab, H]
     MistralBf16Weight head;    // BF16 [vocab, H]
     const __nv_bfloat16 *final_norm = nullptr;  // BF16 [H]

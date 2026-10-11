@@ -381,10 +381,12 @@ arrow::Status WriteBatchOr(
 }
 
 // Build one NVFP4 PackedExpert from three already-quantized projections.
-// The source logical [rows, cols] is recovered from the packed shape (cols/2).
+// w1/w3 are [I, H], w2 is [H, I] (the caller passes the logical shapes so the
+// loader/kernels can size the GEMMs; the packed bytes are I*H/2 etc).
 arrow::Status BuildPackedExpert(const QuantProjection &w1,
                                 const QuantProjection &w2,
-                                const QuantProjection &w3, PackedExpert &out)
+                                const QuantProjection &w3,
+                                int64_t I, int64_t H, PackedExpert &out)
 {
     out.w1_packed = w1.packed;
     out.w1_scales = w1.scales;
@@ -395,6 +397,9 @@ arrow::Status BuildPackedExpert(const QuantProjection &w1,
     out.w3_packed = w3.packed;
     out.w3_scales = w3.scales;
     out.w3_global_scale = w3.global_scale;
+    out.w1_shape = {I, H};
+    out.w3_shape = {I, H};
+    out.w2_shape = {H, I};
     return arrow::Status::OK();
 }
 
@@ -596,7 +601,8 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
             return arrow::Status::Invalid("incomplete expert ", layer, "/",
                                           expert);
         PackedExpert pe;
-        ARROW_RETURN_NOT_OK(BuildPackedExpert(side.w1, side.w2, side.w3, pe));
+        ARROW_RETURN_NOT_OK(BuildPackedExpert(side.w1, side.w2, side.w3,
+                                              expert_hidden, hidden, pe));
         const fs::path dir =
             base / "experts" / absl::StrCat("layer_", layer);
         fs::create_directories(dir, ec);
@@ -613,8 +619,8 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
         for (auto &[layer, side] : shared)
         {
             ARROW_RETURN_NOT_OK(
-                BuildPackedExpert(side.w1, side.w2, side.w3,
-                                  rows[static_cast<size_t>(layer)]));
+                BuildPackedExpert(side.w1, side.w2, side.w3, expert_hidden,
+                                  hidden, rows[static_cast<size_t>(layer)]));
         }
         ARROW_RETURN_NOT_OK(WriteBatchOr(
             SharedExpertSchema::MakeBatch(rows),
@@ -656,6 +662,15 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
     f << "  \"model\": \"Mistral-Small-4-119B-2603\",\n";
     f << "  \"num_layers\": " << observed_layers << ",\n";
     f << "  \"experts_per_layer\": " << num_experts << ",\n";
+    f << "  \"hidden_size\": " << hidden << ",\n";
+    f << "  \"num_attention_heads\": " << n_heads << ",\n";
+    f << "  \"q_lora_rank\": " << q_lora << ",\n";
+    f << "  \"kv_lora_rank\": " << kv_lora << ",\n";
+    f << "  \"qk_nope_head_dim\": " << qk_nope << ",\n";
+    f << "  \"qk_rope_head_dim\": " << qk_rope << ",\n";
+    f << "  \"v_head_dim\": " << v_head << ",\n";
+    f << "  \"moe_intermediate_size\": " << expert_hidden << ",\n";
+    f << "  \"num_experts_per_tok\": " << top_k << ",\n";
     f << "  \"context_length\": " << JsonInt(pt, "max_position_embeddings", 0)
       << ",\n";
     f << "  \"rope_theta\": " << 10000 << ",\n";
