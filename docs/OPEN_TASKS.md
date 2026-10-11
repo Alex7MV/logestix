@@ -845,16 +845,19 @@ product or numerics decision, not a patch.
      (`gemv::RunLxGemmVec` BF16 + softmax/top-K in `mistral_moe_inference.cu`).
      This may be a real defect in the neutral seq==1 router path — worth a
      separate look (it is not exercised here by any other family at E=128).
-- **Blocking defect — real-weight decode diverges to NaN.** With routing fixed,
-  the 36-layer decode runs but the residual stream grows large (max |h| ~4 at
-  layer 0 -> ~446 by layer 6, stable ~490, token-dependent) and overflows to
-  NaN at layer ~32 (all-NaN `d_h`), so the logits are NaN and the greedy
-  sampler returns -1 (empty output, both selfcheck prompts). A correct
-  pre-norm decoder should keep the RMS-normed sub-layer inputs O(1); the
-  per-layer increment scaling with |h| points at the MLA attention (or the
-  fused residual) rather than the MoE. Diagnose by instrumenting the
-  layer-0..6 attention output magnitude vs the input norm; the first suspect is
-  the attention scale / split-half RoPE / `kv_write` split.
+- **Blocking defect — real-weight decode diverges to NaN at layer 32.** With
+  routing fixed, the 36-layer decode runs but diverges: the residual stream is
+  fine through layer 3 (max |h| ~13), then **layer 4's routed expert adds a
+  414-magnitude output to a ~13 seed** (`routed_max=414` vs `seed_max=12.7`,
+  measured after `RunMoERoutedFFN`), the residual jumps to ~430, stays ~490
+  through layer 31, and goes all-NaN at layer 32. The attention output itself is
+  small throughout (`attn_out_max` <= 0.84 at layers 0-6), so the amplifier is
+  the MoE, not the attention. The logits are NaN and the greedy sampler returns
+  -1 (empty output on both selfcheck prompts). Next step: check whether the
+  layer-4 expert dequant/offsets are right (compare `weight_packed/scale/gs` for
+  the selected eids against the source) and whether the neutral MoE's F16
+  swiglu intermediate overflows at ~490-scale activations (the synthetic path
+  stays O(1) and passes).
 - **Remaining after that:** `test_mistral_moe_selfcheck` Paris + stress, the
   four S* golden gates (SKIP without goldens; FSI/CODE/DET capture from the
   source safetensors via `tools/*_capture.py` is not started), and the perf
