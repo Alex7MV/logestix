@@ -931,47 +931,57 @@ product or numerics decision, not a patch.
   wrong scale. After the one-line fix (`coeff * alpha`, not `coeff * alpha*alpha`)
   both modes agree, and the regression test now pins `|got|max / |ref|max` to
   within 5% so a scale error cannot pass again.
-- **OPEN — auto (TC) mode computes layer 32's routed accumulator ~1.6e16x off
-  the host reference; kOff is correct. Cause not yet established.**
-  An earlier note on this entry claimed the routed FFN's `tc_fused` branch
-  quantized the SwiGLU through a saturating E4M3 block scale and attenuated the
-  layer-32 expert ~94x. **That claim was wrong and is retracted.** This model
-  never calls `qwen::SetQwenTcFastMath` (every other TC family does, in its
-  model class), so `RunMoERoutedFFN`'s `tc_fused` guard is false in *both*
-  numeric modes and the routed SwiGLU always uses the overflow-proof scalar
-  path. Measured on real weights (Paris, layer 32, expert 67):
-  - `kOff` — routed accumulator max 223746.5 vs host 237798.1, `corr 1.0`.
-  - `kAuto` — routed accumulator max 3.821e21 vs host 237798.1, `corr 0.999891`,
-    i.e. right shape, catastrophically wrong scale.
-  A partial edit implementing the prescale inside the `tc_fused` branch moved
-  neither number, which is the evidence that branch is not on this path; it was
-  reverted rather than left as unvalidated shared code.
-  What *does* differ between the modes: in `kAuto` the `LsxFastMathScope`
-  leaves the engine-init policy globals alone (TC on), so the routed GEMMs go
-  through `RunLsxNvfp4Gemm`'s fast-math dispatch, whose TC W4A4 kernel
-  quantizes the activation internally (`ActQuantKernel`, E4M3 block scale,
-  `FloatToE4m3(absmax / 6)`, max finite 448). `--bit-exact` (`kOff`) forces
-  that off, which is why kOff matches. Layer 32's activation is far past the
-  E4M3 span, so that quantizer cannot represent it — but saturation alone
-  explains a ~6-94x **attenuation**, not a 1.6e16 **inflation**, so it is a
-  contributing factor rather than the established root cause. Finding the
-  inflation is the next step; the per-16 block scale is the prime suspect.
-  Why it was not caught: Paris passes in *both* modes and the bench runs, so the
-  suite is green over a layer whose accumulator is off by 16 orders of
-  magnitude. This is the clearest instance yet of `docs/OPEN_ENDEDNESS.md`'s
-  argument — the missing instrument is a numeric-class test that compares a
-  **layer accumulator against a host oracle**, not more assertions on output
-  text. The layer-32 host-oracle probe used to find this is a scratch script,
-  not a committed test; making it one is part of the fix.
-  **Fix sketch (not applied here):** prescale the activation by a power of two
-  before the W4A4 quantizer and fold exactly one reciprocal factor into the
-  FP32 accumulator, as the scalar path already does. The awkward part is that
-  `alpha` is only known on the device while `RunLsxTcGemmPreQuant` takes its
-  global scale as a host float, so this means threading a device-side scale
-  into the shared TC GEMM — which serves qwen / gemma / glm / mimo / xing as
-  well. Every one of those families' weights is present under
-  `/mnt/llm_models/models/`, so the change can and must be validated on all of
-  them, not extrapolated from Mistral alone.
+- **FIXED — the tensor-core routed FFN overflowed its SwiGLU activation to
+  FP16 inf, costing layer 32 ~52x. Root cause, fix and instrument below.**
+  The tensor-core branch of `RunMoERoutedFFN` fused SwiGLU into the NVFP4
+  activation quantizer (`RunAttnSwigluPreciseQuantInternal`). That kernel does
+  `const __half hv = __float2half(sig * g * u);` — it rounds the product to
+  **FP16 before quantizing**, and FP16 tops out at 65504. Mistral-Small-4 layer
+  32 expert 67 reaches `|silu(g)*u| = 2.5e5` from entirely ordinary FP16
+  projections (max 444 and 568), so the store overflowed to `+inf`, the block
+  `absmax` became `inf`, `FloatToE4m3(inf)` saturated the block scale, and every
+  nibble in the tile quantized from an infinite value. The scalar path was
+  immune because it keeps the product in FP32 under a power-of-two prescale.
+  Measured on real weights (Paris, layer 32, routed accumulator vs a host
+  oracle over the source safetensors):
+
+  | mode | before | after |
+  |---|---|---|
+  | `kOff` | ratio 0.9998, corr 1.000000 | unchanged (ratio 0.9998) |
+  | `kAuto` (TC) | **ratio 0.0192**, corr 0.975 | **ratio 0.9932, corr 1.000000** |
+
+  Fix: `RunAttnSwigluPreScaledQuantInternal` keeps the product in FP32, reduces a
+  global `absmax` with an atomic, prescales by the smallest power of two that
+  brings it inside both the FP16 and the E4M3-block-scale span, and publishes
+  `alpha` in a second slot so `moe_coeff_add_scaled_kernel` folds one reciprocal
+  factor into the FP32 accumulator. Two launches instead of one, no host
+  synchronization (`alpha` is device-only while `RunLsxTcGemmPreQuant` takes a
+  host float). `alpha == 1` is a bit-exact no-op, so every other family is
+  unchanged — pinned by a dedicated bit-identity test, and re-verified on real
+  weights for Qwen3.6-35B-A3B, Gemma-4-26B-A4B, Xing4.0-29B-A4B and
+  Ornith-1.5-35B-A3B, each in both numeric classes. (GLM-5.3-Flash is present
+  only as an unconverted HF checkpoint, so it could not be run here.)
+  **Why it survived a green suite:** Paris passes in both modes and the bench
+  runs, so the suite was green over a layer whose accumulator was off by 52x.
+  Nothing compared a *layer accumulator* against an oracle — only final text.
+  That gap is now covered by `test_qwen_nvfp4_gemv`: one case forces a
+  Mistral-shaped massive activation and asserts the recovered magnitude, one
+  asserts bit-identity in the normal range, one asserts a seq==1 projection is
+  invariant to a power-of-two activation prescale. Both of the first two fail
+  against the old kernel.
+
+  Two earlier diagnoses of this entry were wrong and are retracted here, since
+  the record is the point: (1) "the E4M3 block scale saturates, attenuating the
+  expert 94x" — the scale does saturate, but only *because* the FP16 store
+  already went to inf; and (2) "Mistral never takes the `tc_fused` branch, so
+  the default path is unaffected" — false, because `qwen::SetQwenTcFastMath` is
+  an inline alias for `lsx_nvfp4::SetLsxTcFastMath`, the very global the
+  engine-init perf policy sets (`gpu_perf.cpp`), so `kAuto` leaves it `true` and
+  `kOff` forces it `false`. Checking whether the *model class* calls the setter
+  says nothing about the value in force. `LSX_PERF_AUTO=0` (which pins the
+  legacy bit-exact policy, `tc=false`) is the cheap one-flag bisect for "is this
+  the fast-math path?", and it puts layer 32 back at ratio 0.9998.
+
 - **Still open — the four S* golden gates, with the capture now understood.**
   Capture tooling improved first: `tools/fsi_capture.py` gained `--template-only`
   (the source is unrunnable), and `det`/`code` gained a `chat_template` override

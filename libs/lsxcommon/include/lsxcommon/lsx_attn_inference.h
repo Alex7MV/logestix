@@ -211,6 +211,20 @@ cudaError_t RunAttnSwigluPreciseQuantInternal(cudaStream_t stream,
                                               __half *y, uint8_t *packed,
                                               uint8_t *scales, int64_t n);
 
+// Overflow-proof twin of the above for models whose SwiGLU intermediate
+// overflows FP16 (>65504), which the fused kernel stores to before quantizing
+// and which then poisons the block scale and every nibble. Keeps the product
+// in FP32, prescales by a power of two, and reports the alpha so the caller
+// folds one reciprocal factor into its FP32 accumulator; bit-exact when the
+// activation already fits (alpha == 1).
+//
+// @p sw_f32 is n floats of caller-owned scratch (the scalar path's SwiGLU
+// arena works). @p d_alpha needs two floats: slot 0 is scratch for the
+// activation absmax (reset to 0 here), slot 1 receives the chosen alpha.
+cudaError_t RunAttnSwigluPreScaledQuantInternal(
+    cudaStream_t stream, const __half *a, const __half *b, float *sw_f32,
+    __half *y, uint8_t *packed, uint8_t *scales, int64_t n, float *d_alpha);
+
 // ── Generation ──────────────────────────────────────────────────────────────
 
 } // namespace qwen

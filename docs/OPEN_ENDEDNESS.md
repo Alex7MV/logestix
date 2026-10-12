@@ -114,7 +114,7 @@ evidence came from*:
 | Residual needs FP32 (reaches ~2.4e5 at layer 32) | Same | Same host reference |
 | Converter wrote a `model` name the factory never registered | All synthetic tests green | `detect_model_type` run against the real index |
 | 2 GiB VRAM reserve instead of 8 GiB | Model loaded and answered SelfCheck | The 2048-token bench OOMed on the KV arena |
-| auto mode computes one layer's routed accumulator 1.6e16x off the host reference | Paris and the bench green in both modes | Comparing a **layer accumulator** against a host oracle (only the final text is checked today) |
+| the tensor-core routed FFN overflowed a massive-activation SwiGLU product to FP16 inf, costing one layer 52x | Paris and the bench green in both modes | Forcing a Mistral-shaped activation through the quantizer and checking the recovered *magnitude*, not the output text |
 
 Three points follow, and they are the content of this document.
 

@@ -462,7 +462,7 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_shared), H * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_shared_alpha), sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_swi_scratch),
-                     (static_cast<size_t>(dims.moe_inter) + 2) * sizeof(float)));
+                     (static_cast<size_t>(dims.moe_inter) + 4) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_mlp_scratch),
                      2 * dims.moe_inter * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_yg),
@@ -759,28 +759,6 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
         MISTRAL_CK(lsxcommon::moe::RunMoERoutedFFN(
             stream, pw.expert_store, s.cache, l, s.h_slots, K, s.d_post, H, I,
             s.d_moe_acc, s.d_yg, s.d_yu, s.d_y2, moe_error));
-        if (std::getenv("MISTRAL_DUMP32") &&
-            l == atoi(std::getenv("MISTRAL_DUMP32"))) {
-            static int done = 0;
-            if (!done) { done = 1;
-                std::vector<__half> hp(H);
-                cudaMemcpyAsync(hp.data(), s.d_post, H*2, cudaMemcpyDeviceToHost, stream);
-                std::vector<float> hacc(H);
-                cudaMemcpyAsync(hacc.data(), s.d_moe_acc, H*4, cudaMemcpyDeviceToHost, stream);
-                std::vector<float> hh(H);
-                cudaMemcpyAsync(hh.data(), s.d_h, H*4, cudaMemcpyDeviceToHost, stream);
-                cudaStreamSynchronize(stream);
-                FILE *f = std::fopen("/tmp/opencode/mistral/d32.bin","wb");
-                int meta[8] = {l, H, K, 0,0,0,0,0}; float cf[8] = {0};
-                for (int k=0;k<K;++k){ meta[3+k]=s.h_slots[k].eid; cf[k]=s.h_slots[k].coeff; }
-                std::fwrite(meta,4,8,f); std::fwrite(cf,4,8,f);
-                std::fwrite(hp.data(),2,H,f);
-                std::fwrite(hacc.data(),4,H,f);
-                std::fwrite(hh.data(),4,H,f); std::fclose(f);
-                fprintf(stderr,"[dump32] eids=%d,%d,%d,%d\n",meta[3],meta[4],meta[5],meta[6]);
-            }
-        }
-
         // Shared expert (UNGATED: added directly, unlike Qwen/Ornith).
         MISTRAL_CK(MistralSharedExpert(stream, lw.shared_gate, lw.shared_up,
                                       lw.shared_down, s.d_post, s.d_shared,

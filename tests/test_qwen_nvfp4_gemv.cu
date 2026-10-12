@@ -422,6 +422,217 @@ TEST_CASE("lsx_nvfp4::RunLsxNvfp4Gemm fast-math seq==1 dispatch reaches GEMV "
 
 
 
+// The per-16 activation block scale is E4M3 (largest finite value 448), so a
+// block needing absmax/6 > 448 saturates FloatToE4m3 and reconstructs ~6x too
+// small. Mistral-Small-4 layer 32 expert 67 reaches |silu(g)*u| = 2.5e5 from
+// perfectly ordinary FP16 projections (max 444 and 568), i.e. a block scale of
+// 42099 -- 94x past the representable range.
+TEST_CASE("pre-scaled swiglu+quant keeps massive activations representable",
+          "[qwen][gemm][nvfp4][gemv]")
+{
+    const int n = 2048;
+    std::vector<__half> ha(n), hb(n);
+    std::vector<float> href(n);
+    for (int i = 0; i < n; ++i) {
+        const float g = 100.0f + 344.0f * float(i % 997) / 997.0f;   // <= 444
+        const float u = 100.0f + 468.0f * float(i % 389) / 389.0f;   // <= 568
+        ha[i] = __float2half(g);
+        hb[i] = __float2half(u);
+        href[i] = (g / (1.0f + std::exp(-g))) * u;   // FP32 reference
+    }
+    float ref_absmax = 0.0f;
+    for (int i = 0; i < n; ++i)
+        ref_absmax = std::max(ref_absmax, std::fabs(href[i]));
+
+    __half *da, *db, *dy;
+    uint8_t *dp, *ds;
+    float *dsw, *dalpha;
+    REQUIRE(cudaMalloc(&da, n * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&db, n * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy, n * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dp, static_cast<size_t>(n) / 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, static_cast<size_t>(n) / 16) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dsw, n * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dalpha, 2 * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(da, ha.data(), n * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(db, hb.data(), n * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+
+    REQUIRE(lsxcommon::qwen::RunAttnSwigluPreScaledQuantInternal(
+                nullptr, da, db, dsw, dy, dp, ds, n, dalpha) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<uint8_t> hp(static_cast<size_t>(n) / 2), hs(static_cast<size_t>(n) / 16);
+    std::vector<float> halpha(2);
+    cudaMemcpy(hp.data(), dp, hp.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(hs.data(), ds, hs.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(halpha.data(), dalpha, 2 * sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Smallest power of two bringing ref_absmax within 448 * 6.
+    float want = 1.0f;
+    while (ref_absmax / want > 448.0f * 6.0f) want *= 2.0f;
+    INFO("ref_absmax=" << ref_absmax);
+    // slot 0 = global absmax, slot 1 = the alpha the caller must fold back.
+    CHECK(halpha[0] > 0.0f);
+    CHECK(halpha[1] == want);
+
+    // Dequantize with the published alpha and compare against the FP32
+    // reference: E2M1 is ~1/8 relative on a 4-bit grid, so the magnitude
+    // must land within a few percent, not lose a factor of 94.
+    float got_absmax = 0.0f;
+    for (int b = 0; b < n / 16; ++b) {
+        const float sc = E4M3ScaleToFloatHost(hs[b]) * halpha[1];
+        for (int i = 0; i < 16; ++i) {
+            const int e = b * 16 + i;
+            const uint8_t byte = hp[e >> 1];
+            const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
+            got_absmax = std::max(got_absmax,
+                                  std::fabs(kE2M1TestTable[nib] * sc));
+        }
+    }
+    INFO("got_absmax=" << got_absmax);
+    CHECK(std::abs(got_absmax - ref_absmax) / ref_absmax < 0.1f);
+
+    cudaFree(da); cudaFree(db); cudaFree(dy);
+    cudaFree(dp); cudaFree(ds); cudaFree(dalpha); cudaFree(dsw);
+}
+
+// Bit-identity in the normal range: when the activation fits, the pre-scaled
+// entry point must be indistinguishable from the fused one, so every other
+// family keeps its current numerics bit-for-bit.
+TEST_CASE("pre-scaled swiglu+quant is bit-identical when the activation fits",
+          "[qwen][gemm][nvfp4][gemv]")
+{
+    const int n = 2048;
+    std::vector<__half> ha(n), hb(n);
+    for (int i = 0; i < n; ++i) {
+        ha[i] = __float2half(float((i % 11) - 5) * 0.5f);
+        hb[i] = __float2half(float((i % 7) - 3) * 0.25f);
+    }
+    __half *da, *db, *y1, *y2;
+    uint8_t *p1, *s1, *p2, *s2;
+    float *dsw, *dalpha;
+    REQUIRE(cudaMalloc(&da, n * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&db, n * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&y1, n * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&y2, n * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&p1, n / 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&s1, n / 16) == cudaSuccess);
+    REQUIRE(cudaMalloc(&p2, n / 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&s2, n / 16) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dsw, n * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dalpha, 2 * sizeof(float)) == cudaSuccess);
+    cudaMemcpy(da, ha.data(), n * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(db, hb.data(), n * 2, cudaMemcpyHostToDevice);
+
+    REQUIRE(lsxcommon::qwen::RunAttnSwigluPreciseQuantInternal(
+                nullptr, da, db, y1, p1, s1, n) == cudaSuccess);
+    REQUIRE(lsxcommon::qwen::RunAttnSwigluPreScaledQuantInternal(
+                nullptr, da, db, dsw, y2, p2, s2, n, dalpha) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<uint8_t> a(n / 2), b(n / 2), c(n / 16), d(n / 16);
+    float alpha[2];
+    cudaMemcpy(a.data(), p1, a.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(b.data(), p2, b.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(c.data(), s1, c.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(d.data(), s2, d.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(alpha, dalpha, sizeof(alpha), cudaMemcpyDeviceToHost);
+    CHECK(alpha[1] == 1.0f);
+    CHECK(std::memcmp(a.data(), b.data(), a.size()) == 0);
+    CHECK(std::memcmp(c.data(), d.data(), c.size()) == 0);
+
+    cudaFree(da); cudaFree(db); cudaFree(y1); cudaFree(y2);
+    cudaFree(p1); cudaFree(s1); cudaFree(p2); cudaFree(s2);
+    cudaFree(dalpha); cudaFree(dsw);
+}
+
+// Activation-magnitude contract: a seq==1 projection is a dot product, so
+// pre-multiplying the activation by 2^j and dividing the weight global scale
+// by the same 2^j must leave the result unchanged. The scalar SlpMulExact /
+// tile kernel is trivially scale-equivariant because every operation is
+// linear; this pins that the fast-math dispatch preserves it too.
+//
+// This is not academic. Mistral-Small-4 layer 32 expert 67 reaches
+// |silu(g)*u| = 2.5e5, which the scalar SwiGLU stores into FP16 under a
+// power-of-two prescale (d_yg <= 16384) before the projections. A kernel
+// that branches on activation magnitude, or that clamps/renormalizes, turns
+// that prescale into a silent scale error on the default path.
+TEST_CASE("seq1 GEMV projection is invariant to power-of-two activation prescale",
+          "[qwen][gemm][nvfp4][gemv]")
+{
+    // Mistral routed-FFN shapes (w1/w3: 2048x4096, w2: 4096x2048) plus the
+    // dense shapes they share the dispatcher with.
+    const int shapes[][2] = {{2048, 4096}, {4096, 2048}, {4096, 4096}};
+    const int shifts[] = {1, 4, 8, 12};
+
+    // Pin the fast-math dispatch explicitly: the production `kAuto` policy
+    // resolves exactly this pair (rtx5090 seq1_gemv + tc fast math), and the
+    // property under test is only meaningful on the dispatching path.
+    lsxcommon::qwen::SetQwenTcFastMath(true);
+    lsxcommon::qwen::SetQwenSeq1Gemv(true);
+
+    for (const auto &sh : shapes) {
+        const int K = sh[0], N = sh[1];
+        std::vector<__half> hx(K);
+        std::vector<uint8_t> hp(static_cast<size_t>(K) * N / 2),
+            hs(static_cast<size_t>(K) * N / 16);
+        for (int i = 0; i < K; ++i)
+            hx[i] = __float2half(float((i % 11) - 5) * 0.5f);
+        for (size_t i = 0; i < hp.size(); ++i)
+            hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+        for (size_t i = 0; i < hs.size(); ++i)
+            hs[i] = static_cast<uint8_t>(128 + (i % 48));
+
+        __half *dx, *d_base, *d_prescaled;
+        uint8_t *dp, *ds;
+        REQUIRE(cudaMalloc(&dx, static_cast<size_t>(K) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, hp.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, hs.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&d_base, static_cast<size_t>(N) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&d_prescaled, static_cast<size_t>(N) * 2) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+
+        std::vector<__half> base(N), pres(N);
+        // Reference: unscaled activation.
+        {
+            REQUIRE(cudaMemcpy(dx, hx.data(), static_cast<size_t>(K) * 2,
+                               cudaMemcpyHostToDevice) == cudaSuccess);
+            REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
+                        nullptr, dx, dp, ds, 1.0e-3f, d_base, 1, K, N, false) == cudaSuccess);
+            REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+            REQUIRE(cudaMemcpy(base.data(), d_base, static_cast<size_t>(N) * 2,
+                               cudaMemcpyDeviceToHost) == cudaSuccess);
+        }
+
+        for (int j : shifts) {
+            const float f = std::ldexp(1.0f, j);
+            std::vector<__half> hscaled(K);
+            for (int i = 0; i < K; ++i)
+                hscaled[i] = __float2half(__half2float(hx[i]) * f);
+            REQUIRE(cudaMemcpy(dx, hscaled.data(), static_cast<size_t>(K) * 2,
+                               cudaMemcpyHostToDevice) == cudaSuccess);
+            REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
+                        nullptr, dx, dp, ds, 1.0e-3f / f, d_prescaled, 1, K, N, false) ==
+                    cudaSuccess);
+            REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+            REQUIRE(cudaMemcpy(pres.data(), d_prescaled, static_cast<size_t>(N) * 2,
+                               cudaMemcpyDeviceToHost) == cudaSuccess);
+            INFO("K=" << K << " N=" << N << " shift=" << j);
+            // Exact: scaling both operands by a power of two scales every
+            // partial product exactly, so the FP16 results must match bitwise.
+            CHECK(std::memcmp(base.data(), pres.data(), N * sizeof(__half)) == 0);
+        }
+
+        cudaFree(dx); cudaFree(dp); cudaFree(ds);
+        cudaFree(d_base); cudaFree(d_prescaled);
+    }
+    lsxcommon::qwen::SetQwenSeq1Gemv(false);
+    lsxcommon::qwen::SetQwenTcFastMath(false);
+}
+
+
+
 // ── Batched routed-expert GEMV chain (round-19 next lever) ─────────────────
 // Ground truth = the already-pinned single-row GEMV entry called per stage
 // (gate / up slices of w13, then down), eliminating hand-math reference

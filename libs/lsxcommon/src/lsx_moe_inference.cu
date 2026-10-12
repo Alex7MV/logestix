@@ -597,17 +597,60 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                     return cudaErrorInvalidValue;
                 }
             }
-            cudaError_t qe = qwen::RunAttnSwigluPreciseQuantInternal(
-                stream, d_yg, d_yu, d_yg, ap, as, I);
+            // Overflow-proof producer-fused swiglu+quant. The per-16 block
+            // scale is E4M3 (max finite 448), so an activation needing
+            // absmax/6 > 448 saturates and reconstructs ~6x too small --
+            // Mistral-Small-4 layer 32 expert 67 reaches 2.5e5 and loses ~52x
+            // of its contribution. Prescaling by a power of two and folding
+            // the reciprocal into the FP32 accumulator below fixes it, and is
+            // bit-exact when alpha == 1 (every other family).
+            // FP32 SwiGLU arena: the fused kernel stores the product to FP16
+            // before quantizing, which overflows to inf for massive-activation
+            // models and poisons the block scale.
+            float *alpha_slot = d_swi_scratch ? (d_swi_scratch + I + 2)
+                                              : nullptr;
+            float *sw_f32 = d_swi_scratch;
+            const bool own_alpha = (alpha_slot == nullptr);
+            bool own_swi = false;
+            if (own_alpha) {
+                // Standalone caller with no arena: one FP32 buffer + two
+                // scalars for absmax/alpha.
+                if (cudaMallocAsync(&sw_f32, static_cast<size_t>(I) * sizeof(float),
+                                    stream) != cudaSuccess ||
+                    cudaMallocAsync(&alpha_slot, 2 * sizeof(float), stream) !=
+                        cudaSuccess) {
+                    if (sw_f32) cudaFreeAsync(sw_f32, stream);
+                    if (own_scratch) {
+                        cudaFreeAsync(ap, stream);
+                        cudaFreeAsync(as, stream);
+                    }
+                    error = "tc swiglu scratch failed";
+                    return cudaErrorInvalidValue;
+                }
+                own_swi = true;
+            }
+            cudaError_t qe = qwen::RunAttnSwigluPreScaledQuantInternal(
+                stream, d_yg, d_yu, sw_f32, d_yg, ap, as, I, alpha_slot);
             if (qe == cudaSuccess)
                 qe = lsx_tc::RunLsxTcGemmPreQuant(
                     stream, ap, as, w2, s2, rec.gs2, d_y2, 1, I, H, false);
+            if (qe == cudaSuccess) {
+                // Fold the 1/alpha back in inside the FP32 accumulator.
+                moe_coeff_add_scaled_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
+                    d_y2, slot.coeff, alpha_slot + 1, d_acc, H);
+                qe = cudaGetLastError();
+            }
             if (own_scratch) {
                 cudaFreeAsync(ap, stream);
                 cudaFreeAsync(as, stream);
             }
+            if (own_swi) {
+                cudaFreeAsync(sw_f32, stream);
+                cudaFreeAsync(alpha_slot, stream);
+            }
             if (qe != cudaSuccess)
                 { error = "w2 prequant gemm failed"; return cudaErrorInvalidValue; }
+            continue;   // accumulator already updated above
         } else {
             // Overflow-proof scalar SwiGLU: the product is evaluated in FP32
             // and stored to the FP16 activation buffer under a power-of-two

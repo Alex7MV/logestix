@@ -1035,6 +1035,124 @@ __global__ void qwen_swiglu_precise_quant_kernel(
     }
 }
 
+// ── Overflow-proof swiglu + NVFP4 activation quantization ──────────────────
+// The fused kernel above stores the SwiGLU product to FP16 before quantizing:
+//     const __half hv = __float2half(sig * g * u);
+// FP16 tops out at 65504, so any model with massive activations overflows it
+// to +inf, and the inf then poisons the whole block -- absmax becomes inf,
+// FloatToE4m3(inf) saturates the block scale, and every nibble quantizes from
+// an infinite value. Mistral-Small-4-119B layer 32 expert 67 reaches
+// |silu(g)*u| = 2.5e5 from perfectly ordinary FP16 projections (max 444 and
+// 568), which measured ~52x low in the layer accumulator on the tensor-core
+// path while the scalar path was exact.
+//
+// Fix: keep the product in FP32, prescale it by a power of two so both the
+// FP16 store and the E4M3 block scale are representable, and hand the
+// reciprocal to the caller to fold into its FP32 accumulator. Two launches
+// instead of one, and no host synchronization -- alpha is only known on the
+// device, while the TC GEMM entry takes its scale as a host float.
+//
+// Bit-exact no-op when the activation already fits (alpha == 1): the FP32
+// product is the same value the fused kernel computed before rounding it.
+
+// Smallest power of two bringing the product within both spans: FP16 (65504)
+// and the E4M3 block scale (448 * 6, the E2M1 grid's maximum).
+__device__ __forceinline__ float SwigluPrescaleAlpha(float absmax)
+{
+    int k = 0;
+    if (absmax > 0.0f) {
+        float t = 448.0f * 6.0f;
+        while (t < absmax && k < 60) { t *= 2.0f; ++k; }
+    }
+    return ldexpf(1.0f, k);
+}
+
+// Stage 1: the FP32 SwiGLU product (no FP16 store, so no overflow) plus a
+// global absmax reduction.
+__global__ void swiglu_f32_absmax_kernel(
+    const __half *__restrict__ a, const __half *__restrict__ b,
+    float *__restrict__ sw_f32, float *__restrict__ absmax_io, int64_t n)
+{
+    const int64_t base =
+        (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 16;
+    if (base >= n) return;
+    const int len = static_cast<int>(
+        min(static_cast<long long>(16), static_cast<long long>(n - base)));
+    for (int i = 0; i < len; ++i) {
+        const float g = __half2float(a[base + i]);
+        const float u = __half2float(b[base + i]);
+        const float sig = __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-g)));
+        const float sw = __fmul_rn(sig, __fmul_rn(g, u));
+        sw_f32[base + i] = sw;
+        // absmax is non-negative, so the int-domain atomicMax is the float
+        // ordering (IEEE-754 non-negatives compare like their bit patterns).
+        atomicMax(reinterpret_cast<int *>(absmax_io), __float_as_int(fabsf(sw)));
+    }
+}
+
+// Stage 2: prescale, store FP16, then the canonical per-16 codec unchanged.
+__global__ void swiglu_quant_prescaled_kernel(
+    const float *__restrict__ sw_f32, __half *__restrict__ y,
+    uint8_t *__restrict__ packed, uint8_t *__restrict__ scales,
+    float *__restrict__ absmax_io, int64_t n)
+{
+    const int64_t base =
+        (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 16;
+    // Every block reads slot 0 (the absmax) for the whole launch, so alpha is
+    // published in a separate slot: overwriting slot 0 here would race with
+    // blocks that have not started yet.
+    const float alpha = SwigluPrescaleAlpha(*absmax_io);
+    const float inv_alpha = 1.0f / alpha;
+    if (blockIdx.x == 0 && threadIdx.x == 0) absmax_io[1] = alpha;
+    if (base >= n) return;
+    const int len = static_cast<int>(
+        min(static_cast<long long>(16), static_cast<long long>(n - base)));
+
+    float vals[16];
+    float absmax = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const float v = sw_f32[base + i] * inv_alpha;
+        vals[i] = v;
+        y[base + i] = __float2half(v);
+        absmax = fmaxf(absmax, fabsf(v));
+    }
+    const uint8_t sb = lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
+    scales[base / 16] = sb;
+    const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
+    const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
+    for (int i = 0; i < len; i += 2) {
+        const uint8_t lo =
+            lsxcommon::kernels::QuantizeE2m1TieUp(vals[i] * inv);
+        const uint8_t hi = (i + 1 < len)
+                               ? lsxcommon::kernels::QuantizeE2m1TieUp(
+                                     vals[i + 1] * inv)
+                               : 0;
+        packed[(base + i) / 2] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+}
+
+cudaError_t RunAttnSwigluPreScaledQuantInternal(
+    cudaStream_t stream, const __half *a, const __half *b, float *sw_f32,
+    __half *y, uint8_t *packed, uint8_t *scales, int64_t n, float *d_alpha)
+{
+    if (!a || !b || !sw_f32 || !y || !packed || !scales || !d_alpha || n <= 0)
+        return cudaErrorInvalidValue;
+    const int threads = 256;
+    const int64_t groups = (n + 15) / 16;
+    const int blocks = static_cast<int>((groups + threads - 1) / threads);
+    // Slot 0 accumulates across launches via atomicMax; the absmax domain is
+    // non-negative, so zero is the correct identity.
+    cudaError_t e = cudaMemsetAsync(d_alpha, 0, sizeof(float), stream);
+    if (e != cudaSuccess) return e;
+    swiglu_f32_absmax_kernel<<<blocks, threads, 0, stream>>>(a, b, sw_f32,
+                                                             d_alpha, n);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    swiglu_quant_prescaled_kernel<<<blocks, threads, 0, stream>>>(
+        sw_f32, y, packed, scales, d_alpha, n);
+    return cudaGetLastError();
+}
+
 cudaError_t RunAttnSwigluPreciseQuantInternal(cudaStream_t stream,
                                              const __half *a, const __half *b,
                                              __half *y, uint8_t *packed,
