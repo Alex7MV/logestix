@@ -999,7 +999,12 @@ product or numerics decision, not a patch.
   legacy bit-exact policy, `tc=false`) is the cheap one-flag bisect for "is this
   the fast-math path?", and it puts layer 32 back at ratio 0.9998.
 
-- **Still open — the four S* golden gates, with the capture now understood.**
+- **Still open — the three FSI/CODE/DET golden gates, with the capture now
+  understood.** (The old heading said "the four S* golden gates"; there is no
+  S1..S4 scheme anywhere in this file, the body and
+  `test_model_suite_guard.cpp` both enumerate exactly these three, and the body
+  already said "three permanently-red gates" -- the count in the heading was
+  the only stale part.)
   Capture tooling improved first: `tools/fsi_capture.py` gained `--template-only`
   (the source is unrunnable), and `det`/`code` gained a `chat_template` override
   in `OVERRIDES`. Findings:
