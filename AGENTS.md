@@ -16,6 +16,14 @@ only genuinely open work; resolved items move to a dated snapshot in
 `fast` label is green (86/86); `inference` is not, and the reasons are
 catalogued there rather than left to be rediscovered.
 
+Why the open list is never empty and why a green suite is a sample rather than
+a proof — `docs/OPEN_ENDEDNESS.md`. A system cannot certify its own correctness
+from within, so every numeric claim needs an external oracle (upstream
+`modeling_*.py`, a host reimplementation over the source safetensors, the second
+numeric mode, a sanitizer, a mutational check). When a defect survives a green
+suite, the first question is **which instrument is missing** — more assertions
+in the same class will not find it.
+
 ## Dependencies
 
 | Dependency | Version | Source | Type |

@@ -37,6 +37,18 @@ Each of us took a step in the right direction, and together we reached a goal th
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 | cpp-httplib | v0.58.0 | FetchContent (host-only HTTP) | Header-only |
 
+### 📐 Why there is no "finished" state
+
+Guarantees here are established by comparison against something stronger than the
+engine itself — an upstream `modeling_*.py`, a host reimplementation over the
+source safetensors, a second numeric mode, a sanitizer, a mutational check —
+because a system cannot certify its own correctness from within. This is
+Gödel's incompleteness argument read as an engineering constraint, and it is
+the reason [`docs/OPEN_ENDEDNESS.md`](docs/OPEN_ENDEDNESS.md) exists and the
+reason `docs/OPEN_TASKS.md` is never empty. What we *do* promise is enumerated
+as reproducibility levels with their "not guaranteed" cells written down in
+[`docs/numeric-contract.md`](docs/numeric-contract.md).
+
 ## Prerequisites
 
 - CMake 3.25+ (for CMakePresets)
