@@ -378,7 +378,6 @@ void FreeMistralSession(MistralSession &s)
     drop(s.d_y2);
     drop(s.d_slots);
     drop(s.h_slots);
-    drop(s.d_router_logits);
     drop(s.d_scores);
     drop(s.d_logits);
     lsxcommon::moe::FreeMoEExpertCache(s.cache);
@@ -409,7 +408,6 @@ void FreeMistralSession(MistralSession &s)
     s.d_y2 = nullptr;
     s.d_slots = nullptr;
     s.h_slots = nullptr;
-    s.d_router_logits = nullptr;
     s.d_scores = nullptr;
     s.d_logits = nullptr;
     s.capacity = 0;
@@ -475,8 +473,6 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_y2), H * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_slots),
                      dims.top_k * sizeof(lsxcommon::moe::MoERoutedSlot)));
-    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_router_logits),
-                     static_cast<size_t>(dims.experts) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_scores),
                      static_cast<size_t>(heads) * capacity * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_logits),
@@ -745,52 +741,17 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
         MISTRAL_LAUNCH(rms_norm_kernel<float><<<1, t256, 0, stream>>>(
             s.d_h, lw.post_ln, nullptr, s.d_post, nullptr, H, eps, 1));
 
-        // Router: BF16 gate via the neutral GEMV, then the softmax/top-K on the
-        // HOST (deterministic, correctness-first). RunMoERoutedFFN takes the
-        // slot table from host memory, so no device router buffer is needed.
-        MISTRAL_LAUNCH(f16_to_bf16_kernel<<<grid(H), t256, 0, stream>>>(
-            s.d_post, s.d_norm, H));
-        MISTRAL_CK(lsxcommon::gemv::RunLxGemmVec(
-            stream, lw.router, s.d_norm, 1, E, H,
-            lsxcommon::gemv::LxDtype::kBF16, lsxcommon::gemv::LxDtype::kBF16,
-            1.0f, s.d_router_logits, lsxcommon::gemv::LxDtype::kF32, 0.0f));
-        std::vector<float> rlogits(static_cast<size_t>(E));
-        MISTRAL_CK(cudaMemcpyAsync(rlogits.data(), s.d_router_logits,
-                                   E * sizeof(float), cudaMemcpyDeviceToHost,
-                                   stream));
+        // Router: the neutral device entry (moe::RunMoERouterTopK) -- softmax
+        // over all E logits, top-K, renormalise, HF-parity selection with a
+        // lower-index tie-break. The slot table lands on the device, which is
+        // where the expert store is keyed, so it is staged back to the host
+        // (RunMoERoutedFFN takes host slots) with one K-entry D2H copy.
+        MISTRAL_CK(lsxcommon::moe::RunMoERouterTopK(
+            stream, lw.router, s.d_post, 1, E, K, H, s.d_slots));
+        MISTRAL_CK(cudaMemcpyAsync(s.h_slots, s.d_slots,
+                                   K * sizeof(lsxcommon::moe::MoERoutedSlot),
+                                   cudaMemcpyDeviceToHost, stream));
         MISTRAL_CK(cudaStreamSynchronize(stream));
-        {
-            float mx = -INFINITY;
-            for (int e = 0; e < E; ++e) mx = std::max(mx, rlogits[e]);
-            std::vector<float> p(static_cast<size_t>(E));
-            float z = 0.0f;
-            for (int e = 0; e < E; ++e)
-            {
-                p[e] = std::exp(rlogits[e] - mx);
-                z += p[e];
-            }
-            std::vector<bool> used(static_cast<size_t>(E), false);
-            float sm = 0.0f;
-            int chosen[16];
-            for (int k = 0; k < K; ++k)
-            {
-                int best = -1;
-                float bv = -1.0f;
-                for (int e = 0; e < E; ++e)
-                {
-                    if (used[e]) continue;
-                    if (best < 0 || p[e] > bv) { best = e; bv = p[e]; }
-                }
-                used[best] = true;
-                chosen[k] = best;
-                sm += bv;
-            }
-            for (int k = 0; k < K; ++k)
-            {
-                s.h_slots[k].eid = chosen[k];
-                s.h_slots[k].coeff = p[chosen[k]] / sm;
-            }
-        }
 
         // acc = residual (pre-MoE hidden), then routed experts + shared expert.
         MISTRAL_LAUNCH(f32_copy_kernel<<<grid(H), t256, 0, stream>>>(

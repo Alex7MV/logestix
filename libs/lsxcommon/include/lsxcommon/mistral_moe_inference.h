@@ -99,7 +99,6 @@ struct MistralSession {
     __half *d_y2 = nullptr;          // [hidden]
     lsxcommon::moe::MoERoutedSlot *d_slots = nullptr;  // [top_k]
     lsxcommon::moe::MoERoutedSlot *h_slots = nullptr;  // [top_k] pinned
-    float *d_router_logits = nullptr;  // [experts] F32
     float *d_scores = nullptr;       // [heads * capacity] attention scratch
     float *d_logits = nullptr;       // [vocab]
     lsxcommon::gpu::ExpertDeviceCache cache;

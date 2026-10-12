@@ -129,11 +129,14 @@ Three points follow, and they are the content of this document.
    real-weight SelfCheck failed — with `NaN` logits and empty output. That is a
    true signal, but it does not localise a cause: the investigation went through
    several hypotheses — a global-scale convention error, which turned out to be
-   **real**; a `NaN` logit from the neutral `RunMoERouterTopK` seq==1 path on
-   finite real inputs, worked around with a host-side router and **never
-   diagnosed to root cause**; and a "layer-4 expert outlier", which was a
-   **measurement artefact** of our own instrumentation — before the
-   external reference isolated the actual cause. Two of the diagnostic probes
+   **real**; a "`NaN` from the neutral `RunMoERouterTopK` seq==1 path", which
+   turned out to be **a mis-attribution**: the NaN was defect 1 propagating
+   into the router's *input* one layer later, and the neutral router has
+   always been correct on this geometry; and a "layer-4 expert outlier", also
+   a **measurement artefact** of our own instrumentation — before the
+   external reference isolated the actual cause. Two of the three hypotheses
+   were wrong, and one of them had been written down as a defect in the neutral
+   layer and carried across sessions. Two of the diagnostic probes
    used during that search were themselves wrong — one read a buffer before the
    kernel that fills it, and one raced the non-blocking compute stream — and
    both had to be found and corrected before they reported anything. Every real

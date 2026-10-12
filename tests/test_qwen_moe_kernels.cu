@@ -240,6 +240,79 @@ TEST_CASE("router top-k matches host replica", "[qwen-moe-router]")
     cudaStreamDestroy(stream);
 }
 
+TEST_CASE("router decode-split (seq==1) matches host replica",
+          "[qwen-moe-router]")
+{
+    // Coverage gap this pins: "router top-k matches host replica" exercises
+    // seq==5, i.e. the PREFILL kernel (moe_router_topk_kernel). The decode
+    // entry (seq==1) takes a different two-stage path -- moe_router_dots_kernel
+    // + moe_router_select_kernel -- and had no reference comparison at all.
+    // Shapes sweep the Mistral-Small-4-119B router geometry (E=128, H=4096,
+    // top-4) plus the small/E-odd cases that change the grid and the
+    // vectorisation predicate.
+    struct Shape { int E, K, H; };
+    const Shape shapes[] = {
+        {128, 4, 4096},   // Mistral-Small-4-119B
+        {128, 8, 2048},   // Qwen3.5-MoE class
+        {60, 4, 1024},    // E*8 not a multiple of the 128-thread block
+        {16, 2, 256},
+        {8, 2, 64},
+        {128, 4, 132},    // H not a multiple of 8 -> scalar dot path
+    };
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    for (const auto &sh : shapes)
+    {
+        const int E = sh.E, K = sh.K, H = sh.H;
+        CAPTURE(E, K, H);
+        std::vector<__nv_bfloat16> w(static_cast<size_t>(E) * H);
+        std::vector<__half> x(H);
+        for (size_t i = 0; i < w.size(); ++i)
+            w[i] = __float2bfloat16(((float)(i * 37 % 251) / 251.0f) - 0.5f);
+        for (size_t i = 0; i < x.size(); ++i)
+            x[i] = __float2half(sinf(static_cast<float>(i)) * 0.5f);
+
+        __nv_bfloat16 *d_w = nullptr;
+        __half *d_x = nullptr;
+        lsxcommon::moe::MoERoutedSlot *d_slots = nullptr;
+        REQUIRE(cudaMalloc(&d_w, w.size() * sizeof(__nv_bfloat16)) ==
+                cudaSuccess);
+        REQUIRE(cudaMalloc(&d_x, x.size() * sizeof(__half)) == cudaSuccess);
+        REQUIRE(cudaMalloc(&d_slots, sizeof(lsxcommon::moe::MoERoutedSlot) *
+                                        static_cast<size_t>(K)) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d_w, w.data(), w.size() * sizeof(__nv_bfloat16),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d_x, x.data(), x.size() * sizeof(__half),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+
+        REQUIRE(lsxcommon::moe::RunMoERouterTopK(stream, d_w, d_x, 1, E, K, H,
+                                                 d_slots) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+        std::vector<lsxcommon::moe::MoERoutedSlot> got(K);
+        REQUIRE(cudaMemcpy(got.data(), d_slots, got.size() * sizeof(got[0]),
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        std::vector<lsxcommon::moe::MoERoutedSlot> want;
+        HostRouter(w, x, 1, E, K, H, want);
+
+        for (size_t i = 0; i < want.size(); ++i)
+        {
+            INFO("slot " << i);
+            // A NaN coefficient fails both checks; check finiteness first so a
+            // regression reports as "not finite" rather than a bogus eid diff.
+            REQUIRE(std::isfinite(got[i].coeff));
+            CHECK(got[i].eid == want[i].eid);
+            CHECK(std::fabs(got[i].coeff - want[i].coeff) < 1e-5f);
+        }
+
+        cudaFree(d_w);
+        cudaFree(d_x);
+        cudaFree(d_slots);
+    }
+    cudaStreamDestroy(stream);
+}
+
 #include "test_qwen_moe_fixture.h"
 #include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/schema.h"

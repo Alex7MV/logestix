@@ -893,10 +893,25 @@ product or numerics decision, not a patch.
      the *second* request OOMed. (`FreeMistralSession` resets the pointers in
      place; `s = MistralSession{}` recursed infinitely once the destructor
      owned teardown.)
-- **Residual defect still open (neutral layer, low priority):**
-  `RunMoERouterTopK`'s seq==1 dots path returns a NaN logit on finite real
-  inputs (host f64 of the same data is finite, max 7.97). Mistral works around
-  it with a host-side router; no other family exercises that path at E=128.
+- **CLOSED — the "neutral router NaN" was a mis-attribution, not a defect
+  (2026-10-12).** This entry previously recorded
+  `RunMoERouterTopK`'s seq==1 path as returning a NaN logit on finite real
+  inputs. It does not. The NaN was the shared-expert FP16 overflow propagating
+  into the *next* layer's `d_post`, which is the router's input — i.e. a
+  downstream symptom of defect 1, measured before that defect was found. With
+  the shared expert fixed, the neutral device router runs this family on real
+  weights at its real geometry (E=128, H=4096, top-4) in **both** numeric
+  modes; the host-side router workaround has been removed.
+  The investigation did surface a **real coverage gap**: the only router
+  reference test covered `seq=5`, i.e. the *prefill* kernel. The seq==1 decode
+  entry (`moe_router_dots_kernel` + `moe_router_select_kernel`) had no
+  reference comparison at all, which is why a wrong answer there would have
+  been invisible. Now pinned by "router decode-split (seq==1) matches host
+  replica" (`test_qwen_moe_kernels`), sweeping E=128/H=4096, E=128/H=2048,
+  E=60 (grid not a multiple of the 128-thread block), E=16, E=8 and H=132
+  (H not a multiple of 8, the scalar dot path). That test passes unmodified on
+  the current neutral code, which is the evidence that the kernel was never
+  the problem.
 - **Still open:** the four S* golden gates (FSI/CODE/DET SKIP without goldens —
   capture from the source safetensors via `tools/*_capture.py` is not started).
   FSI/CODE/DET are declared debt in `test_model_suite_guard`.
