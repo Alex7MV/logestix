@@ -365,8 +365,7 @@ __global__ void moe_coeff_add_scaled_kernel(const __half *__restrict__ y2,
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    const float a = *alpha;
-    acc[i] += coeff * (a * a) * __half2float(y2[i]);
+    acc[i] += coeff * (*alpha) * __half2float(y2[i]);
 }
 
 // F32->FP16 convert: unified kernels::F32toTKernel (lsx_kernels_math.cuh).
@@ -612,8 +611,8 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
         } else {
             // Overflow-proof scalar SwiGLU: the product is evaluated in FP32
             // and stored to the FP16 activation buffer under a power-of-two
-            // prescale, folded back into y2 by alpha^2. Identical result when
-            // the product fits FP16 (alpha == 1).
+            // prescale, folded back in the FP32 accumulator. Identical result
+            // when the product fits FP16 (alpha == 1).
             float *sw_f32 = nullptr, *d_alpha = nullptr, *d_inv_alpha = nullptr;
             const bool own_swi = (d_swi_scratch == nullptr);
             if (own_swi)
@@ -649,7 +648,7 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                                                  d_y2, 1, I, H, false);
             if (se == cudaSuccess)
             {
-                // Fold the 1/alpha^2 back in inside the FP32 accumulator.
+                // Fold the 1/alpha back in inside the FP32 accumulator.
                 moe_coeff_add_scaled_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
                     d_y2, slot.coeff, d_alpha, d_acc, H);
                 se = cudaGetLastError();

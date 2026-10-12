@@ -34,6 +34,14 @@ OVERRIDES = {
     # wrong; low-effort thinking answers all three correctly. Its chat template
     # lives in chat_template.jinja (not tokenizer_config).
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
+    # Mistral-Small-4-119B ships the Mistral "consolidated" layout: params.json
+    # (no config.json, no model_type) plus consolidated-*.safetensors with
+    # NVFP4-packed MoE experts. transformers cannot construct it at all, so the
+    # golden is template-derived and the deviation is recorded in `source`.
+    "mistral-small-4-119b": {
+        "unrunnable": "consolidated layout (params.json, no config.json) + "
+                      "NVFP4-packed experts",
+    },
     # qwen3.8-27b is a Qwen3_5 VLM checkpoint; the text language model is
     # loaded directly (loader remaps the model.language_model prefix) and
     # sharded GPU+CPU because 27B bf16 does not fit 32 GiB VRAM.
@@ -44,7 +52,8 @@ OVERRIDES = {
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
-           "device_map": None, "loader": None, "system": None}
+           "device_map": None, "loader": None, "system": None,
+           "unrunnable": None}
 
 _QWEN4_NGRAM_ROWS = 2500012  # rows per PLE n-gram shard (128 shards)
 
@@ -306,10 +315,71 @@ def _frame_messages(opts, body):
     return messages
 
 
-def capture(model, model_type, out, max_new_tokens, device_map=None):
+def _auto_model():
+    """Lazy import: --template-only must not need the model classes at all."""
+    from transformers import AutoModelForCausalLM
+    return AutoModelForCausalLM
+
+
+def capture_from_template(tok, opts, prompts, model, model_type, out,
+                          max_new_tokens, transformers, torch):
+    """Template-derived golden: no source model is executed.
+
+    For checkpoints whose SOURCE cannot be run locally -- a proprietary
+    architecture, a consolidated layout with no HF config, a vendor-only
+    inference stack -- the answer recorded in the golden is the canonical one
+    from tools/<set>_prompts.json rather than the source model's own
+    generation. This is a deliberate, recorded deviation (see the skill's
+    "when the source cannot run locally"), not a silent one: `source` records
+    why, and the captured `input_ids` still come from the model's own
+    tokenizer and chat template, so the converted path is guarded on the same
+    prompt the source would have seen.
+    """
+    cases = []
+    for p in prompts:
+        prompt_text = p["body"]
+        if getattr(tok, "chat_template", None):
+            kwargs = {"tokenize": False, "add_generation_prompt": True}
+            if opts.get("enable_thinking") is not None:
+                kwargs["enable_thinking"] = opts["enable_thinking"]
+            if opts.get("low_effort"):
+                kwargs["low_effort"] = True
+            try:
+                prompt_text = tok.apply_chat_template(
+                    _frame_messages(opts, p["body"]), **kwargs)
+            except TypeError:
+                kwargs.pop("enable_thinking", None)
+                prompt_text = tok.apply_chat_template(
+                    _frame_messages(opts, p["body"]), **kwargs)
+        ids = tok(prompt_text, return_tensors="pt").input_ids[0].tolist()
+        got = extract(p["kind"], p["anchor"], p["expected"])
+        if not got:
+            raise SystemExit("%s: empty template extraction" % p["id"])
+        if got.count("(") != got.count(")"):
+            raise SystemExit("%s: unbalanced parentheses %r" % (p["id"], got))
+        cases.append({"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
+                      "input_ids": ids, "max_new_tokens": max_new_tokens,
+                      "expected": got, "raw": p["expected"]})
+    golden = {
+        "format": "logestix-fsi-golden", "version": 1,
+        "model_type": model_type,
+        "source": "prompt-template (source not runnable locally: %s)"
+                  % (opts.get("unrunnable") or "custom architecture/layout"),
+        "runtime": "tokenizer.json + chat_template.jinja (transformers %s / torch %s)"
+                   % (transformers.__version__, torch.__version__),
+        "prompts": cases}
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(golden, fh, indent=2)
+        fh.write("\n")
+    print("wrote", out, "(template-derived; source not executed)")
+
+
+def capture(model, model_type, out, max_new_tokens, device_map=None,
+            template_only=False):
     import torch
     import transformers
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
     opts = dict(GENERIC)
     opts.update(OVERRIDES.get(model_type, {}))
@@ -325,7 +395,12 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         if os.path.exists(jinja):
             with open(jinja, encoding="utf-8") as fh:
                 tok.chat_template = fh.read()
-    if opts.get("loader") == "qwen3_5":
+    if template_only:
+        return capture_from_template(tok, opts, prompts, model, model_type,
+                                     out, max_new_tokens, transformers, torch)
+    if template_only:
+        lm = None
+    elif opts.get("loader") == "qwen3_5":
         lm = _load_qwen3_5(model)
         if opts.get("device_map"):
             lm = _dispatch_auto(lm, ["Qwen3_5DecoderLayer"])
@@ -339,7 +414,7 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
             load_kwargs["dtype"] = opts["dtype"]
         if opts.get("device_map"):
             load_kwargs["device_map"] = opts["device_map"]
-        lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
+        lm = _auto_model().from_pretrained(model, **load_kwargs)
         lm.eval()
 
         device = opts.get("device")
@@ -373,7 +448,9 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
                 print("chat_template failed, using raw prompt:", exc,
                       file=sys.stderr)
                 prompt_text = p["body"]
-        ids = tok(prompt_text, return_tensors="pt").input_ids.to(lm.device)
+        ids = tok(prompt_text, return_tensors="pt").input_ids
+        if lm is not None:
+            ids = ids.to(lm.device)
         with torch.no_grad():
             out_ids = lm.generate(ids, do_sample=False,
                                   max_new_tokens=max_new_tokens)
@@ -413,6 +490,10 @@ def main():
     ap.add_argument("--type")
     ap.add_argument("--out")
     ap.add_argument("--max-new-tokens", type=int, default=512)
+    ap.add_argument("--template-only", action="store_true",
+                    help="derive the golden from the prompt template without "
+                         "executing the source model (records the deviation in "
+                         "`source`); for checkpoints transformers cannot load")
     ap.add_argument("--device-map", default=None,
                     help="transformers device_map (requires accelerate); use "
                          "'auto' for FP8/large models on a big-VRAM host")
@@ -423,7 +504,7 @@ def main():
     if not (args.model and args.type and args.out):
         ap.error("--model, --type and --out are required unless --selftest")
     capture(args.model, args.type, args.out, args.max_new_tokens,
-            args.device_map)
+            args.device_map, args.template_only)
 
 
 if __name__ == "__main__":

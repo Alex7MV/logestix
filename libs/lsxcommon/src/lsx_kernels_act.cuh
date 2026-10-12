@@ -65,8 +65,9 @@ __global__ void SwigluSigKernel(const T* __restrict__ g_in,
 
 // ── Overflow-proof SwiGLU → FP16 activation ────────────────────────────────
 // silu(g)*u is evaluated in FP32 and stored into the FP16 activation buffer
-// under a power-of-two prescale `inv_alpha`; `alpha` is then folded back into
-// the down projection's output, so the accumulated result is unchanged.
+// under a power-of-two prescale `inv_alpha = 1/alpha`. Only the ACTIVATION is
+// scaled, so the consumer's down projection returns `out / alpha` and the
+// caller folds back a single factor of alpha in its FP32 accumulator.
 //
 // Why: models with massive activations overflow the FP16 ceiling (65504) in
 // the PRODUCT even when gate and up each fit -- Mistral-Small-4-119B layer 32

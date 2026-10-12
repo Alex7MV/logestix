@@ -145,16 +145,15 @@ __global__ void add_f32_inplace_kernel(float *a, const float *b, int n)
          i += gridDim.x * blockDim.x)
         a[i] += b[i];
 }
-// acc += y * alpha^2 (y carries the SwiGLU prescale's 1/alpha^2 factor).
+// acc += y * alpha (y carries the SwiGLU prescale's 1/alpha factor: only the
+// activation was scaled, so the down projection returns out/alpha -- one factor,
+// not alpha^2).
 __global__ void acc_add_half_scaled_kernel(float *acc, const __half *b,
                                            const float *alpha, int n)
 {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x)
-    {
-        const float a = *alpha;
-        acc[i] += __half2float(b[i]) * a * a;
-    }
+        acc[i] += __half2float(b[i]) * (*alpha);
 }
 __global__ void acc_add_half_kernel(float *acc, const __half *b, int n)
 {
@@ -760,13 +759,35 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
         MISTRAL_CK(lsxcommon::moe::RunMoERoutedFFN(
             stream, pw.expert_store, s.cache, l, s.h_slots, K, s.d_post, H, I,
             s.d_moe_acc, s.d_yg, s.d_yu, s.d_y2, moe_error));
+        if (std::getenv("MISTRAL_DUMP32") &&
+            l == atoi(std::getenv("MISTRAL_DUMP32"))) {
+            static int done = 0;
+            if (!done) { done = 1;
+                std::vector<__half> hp(H);
+                cudaMemcpyAsync(hp.data(), s.d_post, H*2, cudaMemcpyDeviceToHost, stream);
+                std::vector<float> hacc(H);
+                cudaMemcpyAsync(hacc.data(), s.d_moe_acc, H*4, cudaMemcpyDeviceToHost, stream);
+                std::vector<float> hh(H);
+                cudaMemcpyAsync(hh.data(), s.d_h, H*4, cudaMemcpyDeviceToHost, stream);
+                cudaStreamSynchronize(stream);
+                FILE *f = std::fopen("/tmp/opencode/mistral/d32.bin","wb");
+                int meta[8] = {l, H, K, 0,0,0,0,0}; float cf[8] = {0};
+                for (int k=0;k<K;++k){ meta[3+k]=s.h_slots[k].eid; cf[k]=s.h_slots[k].coeff; }
+                std::fwrite(meta,4,8,f); std::fwrite(cf,4,8,f);
+                std::fwrite(hp.data(),2,H,f);
+                std::fwrite(hacc.data(),4,H,f);
+                std::fwrite(hh.data(),4,H,f); std::fclose(f);
+                fprintf(stderr,"[dump32] eids=%d,%d,%d,%d\n",meta[3],meta[4],meta[5],meta[6]);
+            }
+        }
+
         // Shared expert (UNGATED: added directly, unlike Qwen/Ornith).
         MISTRAL_CK(MistralSharedExpert(stream, lw.shared_gate, lw.shared_up,
                                       lw.shared_down, s.d_post, s.d_shared,
                                       s.d_mlp_scratch, s.d_shared_alpha,
                                       s.d_swi_scratch));
-        // The shared branch carries the SwiGLU prescale's 1/alpha^2; fold it
-        // back in here, in the FP32 accumulator.
+        // The shared branch carries the SwiGLU prescale's 1/alpha; fold it back
+        // in here, in the FP32 accumulator.
         MISTRAL_LAUNCH(acc_add_half_scaled_kernel<<<grid(H), t256, 0, stream>>>(
             s.d_moe_acc, s.d_shared, s.d_shared_alpha, H));
         MISTRAL_LAUNCH(f32_copy_kernel<<<grid(H), t256, 0, stream>>>(

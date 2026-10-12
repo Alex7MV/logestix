@@ -18,6 +18,19 @@ PROMPTS = os.path.join(HERE, "code_prompts.json")
 
 # Per-model capture overrides keyed by model type. Absent -> generic defaults.
 OVERRIDES = {
+    # Mistral-Small-4-119B ships the Mistral "consolidated" layout: params.json
+    # (no config.json, no model_type) plus consolidated-*.safetensors with
+    # NVFP4-packed MoE experts. transformers cannot construct it, so the golden
+    # is template-derived and the deviation is recorded in `source`.
+    "mistral-small-4-119b": {
+        "unrunnable": "consolidated layout (params.json, no config.json) + "
+                      "NVFP4-packed experts",
+        # Frame exactly as the engine does (RenderText: BOS + [INST]...[/INST],
+        # no vendor system turn). The checkpoint's default system prompt tells
+        # the model to deflect every data-shaped request to "use tools", which
+        # suppresses all three answer gates regardless of the weights.
+        "chat_template": "{%- for m in messages %}{%- if m.role == 'user' %}{{ bos_token }}[INST] {{ m.content }} [/INST]{%- endif %}{%- endfor %}",
+    },
     # ornith-1.5-35b-a3b is served with a leading system turn (its model
     # class injects one when the caller omits it); without it the safety
     # alignment refuses the FSI-02 financial prompt. Thinking stays off so
@@ -40,7 +53,8 @@ OVERRIDES = {
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
-           "device_map": None, "loader": None, "system": None}
+           "device_map": None, "loader": None, "system": None,
+           "chat_template": None}
 
 _QWEN4_NGRAM_ROWS = 2500012  # rows per PLE n-gram shard (128 shards)
 
@@ -431,6 +445,8 @@ def template_golden(model, model_type, out, max_new_tokens):
         if os.path.exists(jinja):
             with open(jinja, encoding="utf-8") as fh:
                 tok.chat_template = fh.read()
+    if opts.get("chat_template"):
+        tok.chat_template = opts["chat_template"]
 
     cases = []
     for p in prompts:

@@ -912,9 +912,55 @@ product or numerics decision, not a patch.
   (H not a multiple of 8, the scalar dot path). That test passes unmodified on
   the current neutral code, which is the evidence that the kernel was never
   the problem.
-- **Still open:** the four S* golden gates (FSI/CODE/DET SKIP without goldens —
-  capture from the source safetensors via `tools/*_capture.py` is not started).
-  FSI/CODE/DET are declared debt in `test_model_suite_guard`.
+- **FOUND AND FIXED — the bit-exact MoE path multiplied every layer by alpha
+  (2026-10-12).** Chasing the golden gates turned up a real defect in the
+  overflow-proof SwiGLU above: it divides the activation by `alpha` once, so the
+  down projection returns `out / alpha`, but the FP32 accumulator folded back
+  `alpha**2`. Every layer's MoE output was therefore `alpha`=16x too large at
+  Mistral's layer 32, compounding down the stack.
+  **Why nothing caught it:** the Paris SelfCheck still passed in both modes (a
+  memorised completion survives large numeric error), the bench still ran, and
+  the new shared-expert regression test asserted `cos > 0.99` — **cosine is
+  invariant under a uniform scale, so it returned exactly 1.0 for a 16x-wrong
+  answer.** Mutation testing had verified that the *prescale* was present, not
+  that its factor was right.
+  The tell was end-to-end, not numeric: on "Repeat exactly this text: ABCDEFG"
+  bit-exact mode returned `The output output output` while the auto (TC) mode
+  returned `HIJKLMNOPQRSTUVWXYZ`. Host-oracle confirmation at layer 32: the GPU
+  accumulator was 16.0x the reference with `corr = 0.999997`, i.e. right shape,
+  wrong scale. After the one-line fix (`coeff * alpha`, not `coeff * alpha*alpha`)
+  both modes agree, and the regression test now pins `|got|max / |ref|max` to
+  within 5% so a scale error cannot pass again.
+- **Still open — the four S* golden gates, with the capture now understood.**
+  Capture tooling improved first: `tools/fsi_capture.py` gained `--template-only`
+  (the source is unrunnable), and `det`/`code` gained a `chat_template` override
+  in `OVERRIDES`. Findings:
+  1. **The source cannot run.** `AutoConfig.from_pretrained` fails — the
+     checkpoint has `params.json`, no `config.json`, no `model_type`, and
+     NVFP4-packed experts. So a template-derived golden is the only option, and
+     it cannot establish *parity*; it can only assert the converted path's own
+     answers.
+  2. **The vendor default system prompt suppresses every answer gate.** It
+     instructs "when the user's request requires up-to-date or specific data, you
+     must use the available tools". With it, all nine prompts answer "It seems
+     like you're asking about a specific date, you can use tools to fetch ...".
+     The model is *complying*; the engine's own `RenderText` does not inject
+     that turn, so capturing with a `chat_template` override (BOS + `[INST]`...,
+     no system turn) is what matches what we run.
+  3. **Re-framed, the converted model is coherent but off-format, and the two
+     numeric modes disagree on these prompts.** DET determinism PASSES
+     (`runs=3 deterministic=true`, byte-identical) and answers are on-topic —
+     DET-02 correctly reasons "The word that starts with the character 'C' and
+     ends with the character 'C'" toward `CATASTROPHIC` — but no prompt emits the
+     canonical token/formula, several collapse into repetition loops, and the
+     auto and bit-exact modes diverge (auto returns `.`, bit-exact returns a
+     full sentence) on DET-01.
+  **Decision: the goldens are NOT committed.** Shipping three permanently-red
+  gates trains people to ignore red, and with the source unrunnable a
+  template-derived golden asserts nothing about parity that the Paris SelfCheck
+  does not already cover more cheaply. FSI/CODE/DET remain declared debt in
+  `test_model_suite_guard`. Closing them needs either a runnable source
+  (vendor stack) or a documented answer-format contract from the operator.
 
 ## Archive
 ## Archive

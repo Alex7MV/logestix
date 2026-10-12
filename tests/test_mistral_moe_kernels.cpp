@@ -420,6 +420,7 @@ TEST_CASE("Mistral shared expert survives an FP16-overflowing SwiGLU",
     constexpr int I = 128;
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    cudaGetLastError();   // drain stale host-side error (see MistralSharedExpert)
     auto gen = [](size_t n, float scale, uint32_t seed) {
         std::vector<float> v(n);
         uint32_t s = seed;
@@ -520,7 +521,7 @@ TEST_CASE("Mistral shared expert survives an FP16-overflowing SwiGLU",
     double max_abs_err = 0.0, dot = 0.0, ref_sq = 0.0;
     for (int k = 0; k < H; ++k)
     {
-        const double got = __half2float(hy[k]) * double(alpha) * double(alpha);
+        const double got = __half2float(hy[k]) * double(alpha);
         REQUIRE(std::isfinite(got));
         max_abs_err = std::max(max_abs_err, std::fabs(got - ref[k]));
         dot += got * ref[k];
@@ -530,15 +531,27 @@ TEST_CASE("Mistral shared expert survives an FP16-overflowing SwiGLU",
     float ref_rms = 0.0f;
     for (float v : ref) ref_rms += v * v;
     ref_rms = std::sqrt(ref_rms / H);
+    // Scale-sensitive assertions. Cosine alone CANNOT catch a wrong prescale
+    // fold-back: a uniform factor leaves cos == 1.0 exactly. That is how an
+    // alpha^2 fold-back shipped once -- the shared-expert test below passed
+    // with cos 0.99 while every layer's MoE output was alpha=16x too large,
+    // which compounded per layer until the model stopped following instructions
+    // (it still passed the Paris SelfCheck, being a memorised completion).
+    const double ref_max =
+        *std::max_element(ref.begin(), ref.end());
+    double got_max = 0.0;
+    for (int k = 0; k < H; ++k)
+        got_max = std::max(got_max, std::fabs(__half2float(hy[k]) * double(alpha)));
+    const double ratio = got_max / std::max(ref_max, 1e-30);
     INFO("swiglu|max|=" << sw_max << " alpha=" << alpha << " cos=" << cos
-         << " ref_rms=" << ref_rms << " max_abs_err=" << max_abs_err);
-    // The regression is the overflow itself: before the prescale these outputs
-    // were inf/NaN. Assert finiteness, that the prescale engaged, and that the
-    // result still tracks the reference (cosine). A per-element absolute bound
-    // is not meaningful here -- the down dot is cancellation-heavy, so its
-    // elementwise error is dominated by F16 rounding of the stored weights.
+         << " |ref|max=" << ref_max << " |got|max|=" << got_max
+         << " ratio=" << ratio << " max_abs_err=" << max_abs_err);
     REQUIRE(alpha > 1.0f);          // product exceeded FP16 -> prescale engaged
     REQUIRE(cos > 0.99);
+    REQUIRE(std::isfinite(got_max));
+    // Exactly one factor of alpha, not two: pin the magnitude to a few percent.
+    REQUIRE(ratio > 0.95);
+    REQUIRE(ratio < 1.05);
     (void)max_abs_err; (void)ref_rms;
 
     cudaFree(pk_g); cudaFree(sc_g); cudaFree(pk_u); cudaFree(sc_u);
