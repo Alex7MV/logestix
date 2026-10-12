@@ -970,6 +970,23 @@ product or numerics decision, not a patch.
   invariant to a power-of-two activation prescale. Both of the first two fail
   against the old kernel.
 
+  **Cost of the fix, accepted deliberately:** the quantizer is now two launches
+  instead of one, so the TC branch pays one extra launch per slot per layer —
+  4 slots x 48 layers = 192 extra launches per token, about 1 ms against a
+  ~22 ms token. Measured in Release at the canonical 2048-token protocol:
+  `perf` (kAuto) 47.13 -> **45.02 t/s (-4.5%)**, re-recorded in
+  `perf_baselines.json` at commit `cb60207`; `r3` (kOff) is unaffected at 14.68
+  because `kOff` forces `tc=false` and never enters this branch. The guard
+  flagged the drop as DEGRADED and refused to move the reference on its own,
+  which is the intended behaviour — the cause was identified (launch overhead,
+  not bandwidth: the FP32 round-trip is 8 B/element against multi-MB expert
+  tiles) and only then was the number changed by hand. A 4.5% decode cost is a
+  fair price for a 52x error, but it is a standing cost, so a cheaper shape is
+  available if it ever matters: hoist the reduction out of the per-slot loop
+  (2 launches per layer instead of 8) by quantizing all K slots in one pass.
+  Not done — it is a restructuring of `RunMoERoutedFFN` for 4.5%, which does not
+  justify the regression risk across the five families that share this path.
+
   Two earlier diagnoses of this entry were wrong and are retracted here, since
   the record is the point: (1) "the E4M3 block scale saturates, attenuating the
   expert 94x" — the scale does saturate, but only *because* the FP16 store

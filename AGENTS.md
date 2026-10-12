@@ -301,9 +301,15 @@ procedure — `perf-tuning-a-model`.
   `mistral_moe_model.{h,cpp}`, `mistral_moe_tool_format.{h,cpp}` (native
   `[INST]`/`[TOOL_CALLS]name[ARGS]{json}` codec); format tag
   `logestix-mistral-nvfp4`; converted with `lsxforge --mistral`; knob
-  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt
-  (source safetensors not yet captured) and the perf baseline is unmeasured
-  pending a converted vault tree — `docs/OPEN_TASKS.md` §T.
+  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt:
+  the consolidated source is not runnable by Transformers (`params.json`, no
+  `config.json`, no `model_type`), so no parity oracle can be captured, and the
+  goldens are deliberately not committed rather than shipped permanently red —
+  `docs/OPEN_TASKS.md` §T. The converted vault tree exists and the perf
+  baselines are recorded (`perf` 45.02 t/s at commit `cb60207`, `r3` 14.68,
+  RTX 5090/Linux, 2048-token protocol); `perf` carries an accepted -4.5% for
+  the overflow-proof TC SwiGLU quantizer (one extra launch per slot per layer),
+  `r3` is unaffected.
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

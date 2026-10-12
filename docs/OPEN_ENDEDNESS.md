@@ -83,11 +83,17 @@ be explicit about which parts of this repository satisfy the hypotheses.
 
 The decisive row is the third one. A codebase with no arithmetic would evade
 Theorem 1. Ours does arithmetic everywhere, and specifically does *scale
-arithmetic whose intermediate magnitudes are unbounded a priori* — `gs` is
-~10⁴–10⁵, the block scale saturates E4M3 at 448, the product of the two is
-carried in FP16 whose ceiling is 65504. These are exactly the statements for
-which "this value does not overflow" is a property we must prove about all
-inputs, and cannot.
+arithmetic whose intermediate magnitudes are unbounded a priori*. The
+worked example is the routed FFN's SwiGLU activation, and it is worth stating
+in the right causal order, because getting that order wrong is how the defect
+below survived three separate diagnoses. `gs` runs ~10⁴–10⁵, the per-16 block
+scale is E4M3 whose largest finite value is 448, and the activation is carried
+in FP16 whose ceiling is 65504. All three are unbounded a priori. What the
+first two diagnoses got backwards: the FP16 store overflows **first**, and the
+E4M3 scale saturates only as a consequence of the `inf` it is handed. Fixing
+the block scale without fixing the store would have left the same bug in place.
+These are exactly the statements for which "this value does not overflow" is a
+property we must prove about all inputs, and cannot.
 
 The mapping fails, and the theorem does not apply, where the system is finite
 and the property is decidable. A schema validator, a guard test that scans for
