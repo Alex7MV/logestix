@@ -114,6 +114,7 @@ evidence came from*:
 | Residual needs FP32 (reaches ~2.4e5 at layer 32) | Same | Same host reference |
 | Converter wrote a `model` name the factory never registered | All synthetic tests green | `detect_model_type` run against the real index |
 | 2 GiB VRAM reserve instead of 8 GiB | Model loaded and answered SelfCheck | The 2048-token bench OOMed on the KV arena |
+| TC activation quantizer saturates (E4M3 max 448 vs a needed 42099), attenuating one layer-32 expert by 94x | Paris and the bench green in both modes | Reading the block-scale requirement out of the host reference |
 
 Three points follow, and they are the content of this document.
 

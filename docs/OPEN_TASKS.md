@@ -931,6 +931,32 @@ product or numerics decision, not a patch.
   wrong scale. After the one-line fix (`coeff * alpha`, not `coeff * alpha*alpha`)
   both modes agree, and the regression test now pins `|got|max / |ref|max` to
   within 5% so a scale error cannot pass again.
+- **OPEN — the TC activation quantizer saturates on this model's massive
+  activations, silently attenuating the layer-32 expert by ~94x (default path).**
+  The routed FFN's tensor-core path quantizes the SwiGLU activation per 16
+  elements with an E4M3 block scale (`qwen_swiglu_precise_quant_kernel`:
+  `FloatToE4m3(absmax / 6)`). E4M3FN's largest finite value is **448**, and
+  layer 32 expert 67 needs `absmax/6 = 42099`, so `FloatToE4m3` takes its
+  `e > 8 -> 0x7E` saturation branch. The activation is then reconstructed as
+  `nib * 448` (max 2688) against a true absmax of 252593 — **94x too small**, i.e.
+  the expert's contribution is effectively dropped on the *default* (`kAuto`)
+  path. The scalar path is immune (that is what the overflow-proof SwiGLU above
+  fixed); only the TC quantizer lacks the prescale.
+  Why it was not caught: Paris passes in both modes, the bench runs, and the
+  shared expert is unaffected — the defect is confined to one expert in one
+  layer, which only shows up on prompts that need it (this is the second-largest
+  remaining numeric-mode divergence, alongside the `.` vs sentence difference
+  on DET-01).
+  **Fix sketch (not applied here):** prescale the activation by a power of two
+  before quantizing and fold the reciprocal into the down projection, exactly as
+  the scalar path does. The awkward part is that `alpha` is only known on the
+  device, and `lsx_tc::RunLsxTcGemmPreQuant` takes its global scale as a host
+  float — so the fix means threading a device-side scale into the shared TC
+  GEMM, which serves qwen / gemma / glm / mimo / xing as well. Only Mistral's
+  real weights are on this machine, so that change cannot be validated for the
+  other five families here; it is recorded rather than guessed at. A cheaper
+  partial mitigation (a fixed per-model activation prescale) would be exact
+  whenever the activation stays in range and must be measured, not assumed.
 - **Still open — the four S* golden gates, with the capture now understood.**
   Capture tooling improved first: `tools/fsi_capture.py` gained `--template-only`
   (the source is unrunnable), and `det`/`code` gained a `chat_template` override
