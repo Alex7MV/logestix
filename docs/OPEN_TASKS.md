@@ -1032,8 +1032,42 @@ product or numerics decision, not a patch.
   gates trains people to ignore red, and with the source unrunnable a
   template-derived golden asserts nothing about parity that the Paris SelfCheck
   does not already cover more cheaply. FSI/CODE/DET remain declared debt in
-  `test_model_suite_guard`. Closing them needs either a runnable source
-  (vendor stack) or a documented answer-format contract from the operator.
+`test_model_suite_guard`. Closing them needs either a runnable source
+   (vendor stack) or a documented answer-format contract from the operator.
+
+## U. granite-4.2-30b tool round-trip RED again at `31998bf` (found 2026-10-13)
+
+`test_granite_dense_selfcheck`'s second test case ("end-to-end tool
+round-trip", real weights) fails at HEAD:
+
+```
+CHECK( calls[0].name == "get_weather" )   with expansion: "get_weather.x" == "get_weather"
+```
+
+The model emits `get_weather.x` — it puts the `.x` into its **own reasoning
+text** first ("We have tool: get_weather.x, …"), then into
+`<function>get_weather.x</function>` and into the bare
+`{"name": "get_weather.x", …}` object. So the parse path is not at fault: the
+divergence is in the greedy generation. The first test case is unaffected
+(`Paris`, `top1_tok=12366`, `logits_hash=3d1604aa75c99a1f` stable over 3
+cycles), and FSI/CODE/DET are green.
+
+**Not an Arrow regression.** Found while bumping Arrow 25.0.1 -> 26.0.0, so it
+was attributed with a control: a second tree at the *same* commit (`31998bf`)
+built against **Arrow 25.0.1** produces the identical `get_weather.x` **and the
+identical `logits_hash=3d1604aa75c99a1f`** — the Arrow bump is bit-identical
+on this path.
+
+**Where the suspicion points instead:** the granite tool round-trip was
+"recovered" on 2026-10-07
+(`open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md`, archive row
+L/M/N), and 9 commits have landed in `libs/lsxcommon` since — including three
+that touch the shared attention layer granite decodes through (neutral-layer
+split `2b4b41c`/`65db1c7`, `00e22ec` TC mxf4nvf4 GEMM tile fix, `f99008b`
+`__host__ __device__` KV-geometry helpers). Which of them moved this token is
+**not yet established** — the missing instrument is a generation-level oracle
+(the token ids of the 256-token round-trip, plus the logit margin at the flip
+step), not another pass/fail on the same assertion.
 
 ## Archive
 ## Archive

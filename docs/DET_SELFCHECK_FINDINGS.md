@@ -21,12 +21,13 @@ only supplies `input_ids` and logs agreement.
 | qwen3.8-flash-next | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 | gemma-4-26b-a4b-it | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 | deepseek-v4.1-flash | **wired** | PASS | PASS | PASS | `deterministic=true` all |
-| phi-4 | **wired** | PASS | PASS | PASS | `deterministic=true` all |
+| phi-4 | **wired** | PASS | **RED** (see §phi-4, `OPEN_TASKS.md` §O) | PASS | `deterministic=true` all |
 | qwen3.8-27b | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 
 **The determinism stress-test passed in every case** (18 prompt×family
-combinations, byte-identical `gen_tokens` across 3 runs), and the extracted
-canonical token matched the template for all 18.
+combinations, byte-identical `gen_tokens` across 3 runs); the extracted
+canonical token matched the template for all 18 **except phi-4 DET-02**
+(`CATASTROPHIC` -> `CRITICAL`, still deterministic 3/3).
 
 ### Prompt update (2026-09-27): DET-TEST-02 / DET-TEST-03
 
