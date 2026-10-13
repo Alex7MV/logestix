@@ -88,7 +88,7 @@ env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
   - `libs/lsxcommon/src/lsx_reduce.cuh` — model-neutral warp-shuffle block max reduction (`lsxcommon::kernels::BlockMaxShfl`); `qwen_reduce.cuh` aliases it
   - `libs/lsxcommon/include/lsxcommon/synthetic_geometry.h` — `lsxcommon::SyntheticGeometryAllowed()`: the single test-only `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` gate, shared by every converter, loader and `ModelBase` (`env && env[0] == '1'`)
   - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode tables (E2M1/E8M0), routed-expert FFN
-  - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-accelerated quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; CCCL thrust for global max)
+  - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-accelerated quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; no thrust call — the global max is a hand-written reduction)
   - `libs/lsxcommon/src/model_runtime.cpp` — `runtime::RunCliBenchmark` (lsxbenchmark --bench): real generation via IModel::Infer on args.fast_math_mode, report tokens/t/s/ttft/resident
   - `libs/lsxcommon/include/lsxcommon/model_engine.h` + `src/model_engine.cpp` — `InferenceEngine` (strict singleton) + RAII `Session` (`InitializeEngine`→`CreateModel`/`Run`→`ShutdownEngine`); host-sterile (no CUDA types)
   - `libs/lsxcommon/include/lsxcommon/model_base.h` + `src/model_base.cpp` — `ModelBase` (shared `IModel` base: Load/Unload/Inspect/BuildPromptInputIds/SelfCheck skeleton)

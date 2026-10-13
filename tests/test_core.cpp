@@ -45,17 +45,17 @@
 #include <memory>
 #include <cstring>
 
-TEST_CASE("Apache Arrow pinned version 25.0.1 matches loaded shared library", "[dependencies][arrow]") {
+TEST_CASE("Apache Arrow pinned version 26.0.0 matches loaded shared library", "[dependencies][arrow]") {
     // Compile-time headers and the loaded shared library must stay in lockstep
-    STATIC_REQUIRE(ARROW_VERSION == 25000001);
-    REQUIRE(std::string(ARROW_VERSION_STRING) == "25.0.1");
+    STATIC_REQUIRE(ARROW_VERSION == 26 * 1000000 + 0 * 1000 + 0);
+    REQUIRE(std::string(ARROW_VERSION_STRING) == "26.0.0");
 
     const auto& build_info = arrow::GetBuildInfo();
     REQUIRE(build_info.version == ARROW_VERSION);
-    REQUIRE(build_info.version_major == 25);
+    REQUIRE(build_info.version_major == 26);
     REQUIRE(build_info.version_minor == 0);
-    REQUIRE(build_info.version_patch == 1);
-    REQUIRE(build_info.version_string == "25.0.1");
+    REQUIRE(build_info.version_patch == 0);
+    REQUIRE(build_info.version_string == "26.0.0");
 }
 
 TEST_CASE("Apache Arrow deep memory and serialization validation", "[dependencies][arrow]") {
@@ -434,10 +434,10 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
     STATIC_REQUIRE(std::string_view(CPPHTTPLIB_VERSION) == "0.58.0");
 
     // NVIDIA CCCL (submodule)
-    STATIC_REQUIRE(CCCL_VERSION == 3 * 1000000 + 4 * 1000 + 2);
+    STATIC_REQUIRE(CCCL_VERSION == 3 * 1000000 + 5 * 1000 + 0);
     STATIC_REQUIRE(CCCL_MAJOR_VERSION == 3);
-    STATIC_REQUIRE(CCCL_MINOR_VERSION == 4);
-    STATIC_REQUIRE(CCCL_PATCH_VERSION == 2);
+    STATIC_REQUIRE(CCCL_MINOR_VERSION == 5);
+    STATIC_REQUIRE(CCCL_PATCH_VERSION == 0);
 
     // abseil-cpp (FetchContent). The LTS macros exist only on LTS tags, so a
     // non-LTS pin (e.g. a master commit) is a hard error here rather than a

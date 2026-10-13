@@ -16,6 +16,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- Bumped Apache Arrow 25.0.1 -> 26.0.0 (FetchContent pin `apache-arrow-26.0.0`;
+  Arrow now bundles Boost 1.92.0 and xsimd 14.2.0).
+- Bumped NVIDIA CCCL 3.4.2 -> 3.5.0 (submodule `third_party/cccl`, `28101b07…`).
 - Translated `AGENTS.md`, `.opencode/skills/*` and documentation to English.
 - Removed vendored NVIDIA documentation dumps; they are now referenced from the
   `nvidia-cuda-docs` MCP (`docs/NVIDIA_DOCS.md`).

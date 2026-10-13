@@ -89,8 +89,8 @@ libzmq vendors a few small components with separate permissive licenses
 
 | Dependency | Version | Source | Integration | Local modifications |
 |---|---|---|---|---|
-| Apache Arrow | 25.0.1 | https://github.com/apache/arrow.git (`apache-arrow-25.0.1`) | FetchContent (shared) | no |
-| NVIDIA CCCL (Thrust/libcu++/cudax/CUB) | 3.4.2 | https://github.com/NVIDIA/cccl.git | submodule `third_party/cccl` (`d3601220…`) | no |
+| Apache Arrow | 26.0.0 | https://github.com/apache/arrow.git (`apache-arrow-26.0.0`) | FetchContent (shared) | no |
+| NVIDIA CCCL (Thrust/libcu++/cudax/CUB) | 3.5.0 | https://github.com/NVIDIA/cccl.git | submodule `third_party/cccl` (`28101b07…`) | no |
 | FlatBuffers | v25.12.19 | https://github.com/google/flatbuffers.git | submodule `third_party/flatbuffers` (`7e163021…`) | no |
 | libzmq | 4.3.5 | https://github.com/zeromq/libzmq.git | submodule `third_party/libzmq` (`622fc6dd…`) | no |
 | simdjson | v4.6.11 | https://github.com/simdjson/simdjson.git | submodule `third_party/simdjson` (`f5de14f0…`) | no |
@@ -98,8 +98,8 @@ libzmq vendors a few small components with separate permissive licenses
 | abseil-cpp | 20260817.0 | https://github.com/abseil/abseil-cpp.git | FetchContent | yes — `crc32_x86_arm_combined_simd.h`, `str_format/checker.h` |
 | Catch2 | v3.16.0 | https://github.com/catchorg/Catch2.git | FetchContent (test-only) | no |
 | cpp-httplib | v0.58.0 | https://github.com/yhirose/cpp-httplib.git | FetchContent (host-only HTTP, header-only) | yes — `HTTPLIB_REQUIRE_OPENSSL`/`ZLIB`/`BROTLI` OFF |
-| Boost | 1.88.0 (bundled by Arrow) | https://github.com/boostorg/boost.git | FetchContent (transitive) | yes — `multiprecision/.../literals.hpp` |
-| xsimd | (bundled by Arrow) | https://github.com/xtensor-stack/xsimd.git | FetchContent (transitive) | no |
+| Boost | 1.92.0 (bundled by Arrow 26; not fetched in this configuration — the patch below only fires if Arrow resolves Boost) | https://github.com/boostorg/boost.git | FetchContent (transitive) | yes — `multiprecision/.../literals.hpp` |
+| xsimd | 14.2.0 (bundled by Arrow) | https://github.com/xtensor-stack/xsimd.git | FetchContent (transitive) | no |
 | Unicode Character Database | 16.0.0 | https://www.unicode.org/Public/16.0.0/ucd | generated `libs/lsxcommon/src/unicode_tables.inc` | derived data (see `tools/generate_unicode_tables.ps1`) |
 
 ### Notes on modified dependencies

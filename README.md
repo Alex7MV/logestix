@@ -27,12 +27,12 @@ Each of us took a step in the right direction, and together we reached a goal th
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
-| Apache Arrow | 25.0.1 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
+| Apache Arrow | 26.0.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
 | spdlog | 1.17.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
-| NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
+| NVIDIA CCCL | 3.5.0 | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 | cpp-httplib | v0.58.0 | FetchContent (host-only HTTP) | Header-only |

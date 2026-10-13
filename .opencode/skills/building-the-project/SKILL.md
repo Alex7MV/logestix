@@ -60,7 +60,7 @@ cmake --build build/linux-release-znver4-aocc -j 160
 ctest --test-dir build/linux-release-znver4-aocc
 ```
 
-### AOCC: two flags the tree needs on CMake 4.2 + Arrow 25.0.1
+### AOCC: two flags the tree needs on CMake 4.2 + Arrow 26.0.0
 
 Configuring this tree with the command above **fails at the Generate step** on
 CMake 4.2:
@@ -83,7 +83,7 @@ cmake ... -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH="$AR" \
 Both are load-bearing, and dropping either fails differently:
 
 - **`BUILD_WITH_INSTALL_RPATH=ON` alone is a trap.** It fixes the Generate step but
-  the binaries then cannot load `libarrow.so.2500` / `libarrow_cuda.so.2500`
+  the binaries then cannot load `libarrow.so.2600` / `libarrow_cuda.so.2600`
   (`error while loading shared libraries`) — the build-tree RPATH that used to point
   at `_deps/arrow-build/release` is gone. Hence the explicit `CMAKE_INSTALL_RPATH`
   pointing at that same directory. Verify with

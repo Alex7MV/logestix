@@ -56,13 +56,13 @@ Abseil-specific build patches (crc32 SIMD, format checker) live in the
 
 ## Dependency patches (idempotent, applied after FetchContent)
 
-- **Arrow 25 + its Boost 1.88 on MSVC/C++20**: `literals.hpp` fails with
+- **Arrow's bundled Boost (1.92.0 in Arrow 26) on MSVC/C++20**: `literals.hpp` fails with
   `operator""_cppi` / `_cppui` sized-literal redefinition. Remove the four
   `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after the Arrow
   download.
 - **Arrow warnings on GCC 15**: set `BUILD_WARNING_LEVEL=PRODUCTION`. GCC 15
   promotes previously-ignored warnings to errors (`-Werror=unused-parameter`
-  in Arrow 25 under the default CHECKIN debug level); PRODUCTION never adds
+  in Arrow under the default CHECKIN debug level); PRODUCTION never adds
   `-Werror`.
 - Pattern for every patch: search for a marker string and rewrite at configure
   time, because the pinned dependency tag re-fetches on a fresh configure (so
@@ -110,7 +110,7 @@ two of them are machine-enforced.
 
 1. **The pin.**
    - FetchContent (root `CMakeLists.txt`) `GIT_TAG`: Arrow
-     (`apache-arrow-25.0.1`), spdlog (`v1.17.0`), abseil (`20260817.0`), Catch2
+     (`apache-arrow-26.0.0`), spdlog (`v1.17.0`), abseil (`20260817.0`), Catch2
      (`v3.16.0`).
    - Submodules under `third_party/`: flatbuffers, libzmq, simdjson, cccl — move
      the gitlink (`git -C third_party/<dep> checkout <tag>`) and commit the
@@ -134,7 +134,7 @@ becomes a **silent no-op**:
 | patch | target | what it does |
 |---|---|---|
 | `CMAKE_PROJECT_INCLUDE` policy file | Arrow / xsimd | forces `cmake_minimum_required(3.5)` so CMake 4.x does not reject the nested sub-project |
-| Boost 1.88 multiprecision `literals.hpp` | MSVC + C++20 | removes the `operator""_cppi` sized-literal redefinition |
+| Boost 1.92 multiprecision `literals.hpp` | MSVC + C++20 | removes the `operator""_cppi` sized-literal redefinition (a no-op with this tree's Arrow flags — Boost is never fetched; keep it for builds that turn Arrow's tests/testing on) |
 | bundled fmt (in spdlog) | nvcc 13.x on Windows | replaces the `U"…"` `fractional_part_rounding_thresholds` literal (code points > U+10FFFF, rejected by the nvcc front end) with a `uint32_t` array; marker `gNvccRoundingThresholds` |
 | abseil crc32 SIMD | MSVC + `/arch:AVX512` | disables the GCC/Clang-only VPCLMULQDQ inline asm |
 | abseil str_format checker | Clang/AOCC | `#if 0 &&` so a fmt-style `{}` is not a hard compile error |
