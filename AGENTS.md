@@ -295,8 +295,9 @@ procedure — `perf-tuning-a-model`.
   BF16, routed+shared experts already NVFP4 `weight_packed`/`weight_scale`/
   `weight_global_scale`; `mistral_moe_constants.h` (frozen passport),
   `mistral_moe_convert.{h,cpp}` (strips the vision tower, repacks the experts
-  verbatim), `mistral_moe_load.{h,cpp}` (BF16 dense graph + neutral host expert
-  store), `mistral_moe_inference.{h,cu}` (MLA decode: neutral BF16 GEMV
+  verbatim), `mistral_moe_load.{h,cpp}` (BF16 dense graph + the neutral MoE
+  layer's host expert store — `MoEExpertStore`, i.e. all-experts pinned slabs,
+  NOT the neutral `ExpertStore`: `docs/OPEN_TASKS.md` §V), `mistral_moe_inference.{h,cu}` (MLA decode: neutral BF16 GEMV
   projections, plain RMSNorm, split-half YaRN RoPE, per-head attention over a
   `KvCacheGeometry` cache, neutral MoE, ungated shared expert),
   `mistral_moe_model.{h,cpp}`, `mistral_moe_tool_format.{h,cpp}` (native

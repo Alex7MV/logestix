@@ -1069,6 +1069,67 @@ split `2b4b41c`/`65db1c7`, `00e22ec` TC mxf4nvf4 GEMM tile fix, `f99008b`
 (the token ids of the 256-token round-trip, plus the logit margin at the flip
 step), not another pass/fail on the same assertion.
 
+## V. Routed-expert host storage: the arena is retired; two follow-ups remain (2026-10-14)
+
+**The migration itself is closed** — the arena is gone for qwen MoE / Ornith /
+Mistral / qwen3.8-flash-next, with measurements, gates and the guard test in
+[`open-tasks/2026-10-14-expert-store-arena-retired.md`](open-tasks/2026-10-14-expert-store-arena-retired.md).
+Headline: qwen3.6 17.5 → **7.0 GB** at unchanged 141 t/s; qwen3.8 63.6 →
+**10.9 GB** with load 73.7 → 9.9 s. What is left is not the storage change but
+two consequences it exposed:
+
+### V1. qwen3.8-flash-next decode lost 3.5x — pinned H2D staging, and it cannot be faked
+
+32.1 → 9.2 t/s after the arena went away, reproducible at cap 4096. Isolated with
+one extra run: mapping **all** 24576 experts *without* pinning gives 26.7 GB and
+17.3 t/s, so about half the loss is evict/re-parse and half is the DMA path. The
+retired arena was not merely memory — it was page-locked H2D staging.
+
+**`cudaHostRegister` is not a way to get it back.** Attempted and reverted: page-
+locking the LRU-held entries in place fails on **every** entry
+(`registered=0 failed=512`) because a file-backed MAP_SHARED mapping is not
+registrable. Three separate sticky-CUDA-error traps make this look like
+something else, and all three are worth writing down:
+
+1. `cudaHostRegister` rejects a start that is not page-aligned, and an expert
+   payload begins at an arbitrary offset inside the mapping;
+2. the six payload spans of one expert are adjacent in that file, so aligning
+   each down to a page makes neighbours **overlap**, and registering an
+   already-registered range returns `cudaErrorHostMemoryAlreadyRegistered`;
+3. unregistering a range that was never registered also raises a sticky error —
+   so a failed load looks like "generation dies right after a successful load",
+   with nothing in the message pointing at pinning.
+
+**The viable path is the one kimi/gemma already use**: pinned memory has to be
+its own allocation, not a registered file mapping, i.e. copy the warm set into an
+anonymous arena and `cudaHostRegister` that (`ExpertStore::PinChunked`). Bounding
+that arena by `max_open` instead of the model is what is missing. Expected
+result, from the three measured points: ~cap x expert size of **pinned**
+(unreclaimable) memory with decode back near 32 t/s.
+
+Until that exists the trade stands as measured, so **do not raise qwen3.8's
+default cap** and do not silently ship it: qwen3.6/Ornith/Mistral are a clean win
+(-60% RSS at unchanged throughput), qwen3.8 is not.
+
+### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
+
+This was written from a single measurement (Mistral 65.6 GB at cap 512, 1024 and
+4096) and it does **not** hold up. Re-measured with the same prompt, twice each:
+
+| `max_open` | peak RSS |
+|---|---|
+| 64 | 3.2 GB |
+| 512 | 7.0 GB / 7.0 GB |
+| 8192 (≥ all 4608 experts) | 31.1 GB / 31.2 GB |
+
+So RSS is monotone in the cap and saturates at the whole tree, exactly as
+designed; the geometry pass reads each expert once through `DecodeEntry`, which
+takes Arrow **views** (`GetView(0)` = pointer + size) and never touches a payload
+page. Confirmed from the other side: with generation disabled by a failing run,
+the same load peaked at 1.8 GB — the 10.9 GB at cap 4096 is paid during decode,
+not during load. The earlier 65.6 GB figure was an artifact; there is no
+page-cache defect here and no metadata-in-`model.index.json` work is needed.
+
 ## Archive
 ## Archive
 
@@ -1083,6 +1144,7 @@ investigation trail:
 | E1 — 14 test executables were one binary | per-`.cu` object libraries |
 | G1 — toolkit mismatch caught only after the build | configure-time check in `CMakeLists.txt` |
 | A2 — MiMo wrong top-1 | closed 2026-10-02: no implementation bug, the checkpoint is bad (vendor oracle matches) — [`open-tasks/2026-10-02-mimo-closed.md`](open-tasks/2026-10-02-mimo-closed.md) |
+| 2026-10-14 | Routed-expert host storage: the all-experts-in-pinned-slabs arena retired for qwen MoE / Ornith / Mistral / qwen3.8-flash-next | `MoEExpertRecord` reduced to immutable geometry, payload moved to the neutral `ExpertStore`, six-segment staging from mmap views; qwen3.6 17.5 → 7.0 GB at unchanged 141 t/s, qwen3.8 63.6 → 10.9 GB and load 73.7 → 9.9 s; `test_expert_store_guard` locks it. Two consequences stay open as §V1 (qwen3.8 decode 32.1 → 9.2 t/s, pinned-vs-pageable H2D) and §V2 (Mistral 65.6 GB regardless of `max_open`: the geometry pass faults the whole tree into page cache) - [`open-tasks/2026-10-14-expert-store-arena-retired.md`](open-tasks/2026-10-14-expert-store-arena-retired.md) |
 | 2026-10-10 | Neutral routed-MoE layer + ornith de-duplication + the shared TC M-tile defect | `TcGemmKernel` wrote only rows `[0,16)` of its 64-row M tile (`wm` computed, never used) - fixed in all four row computations, TC shape sweep extended to seq 17/18/33/64; `ornith_moe_inference.cu` (2182 lines, 97% copy, already drifted) deleted in favour of the neutral `lsx_moe_inference` layer, expert-store loader cluster de-duplicated across qwen/glm-flash/ornith (-2776 lines); Ornith fused-expert split and gemma `final_logits` now read back by tests - [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md) |
 | Inference-conformance review (9 deviations) | all fixed in dedicated commits |
 | "Closed in this session" list | 15 items, all closed |

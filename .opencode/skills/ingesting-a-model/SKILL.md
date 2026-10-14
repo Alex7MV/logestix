@@ -42,6 +42,12 @@ end.
 - **No abseil containers in `.cu`/`.cuh`-reachable headers.** Containers and
   streams in device TUs stay `std::`.
 - **Norms and biases are never quantized** — they stay FP16/BF16.
+- **Host storage is the neutral `ExpertStore`, and Arrow is zero-copy.** A family
+  NEVER writes its own routed-expert host container, and NEVER keeps Arrow
+  payloads as owning `std::vector<uint8_t>` records when they are retained past
+  the upload. The rule, the two sanctioned storage shapes and the measured cost
+  of breaking it are in **"Host-side weight storage — ExpertStore and Arrow
+  zero-copy"** below; it is the single largest host-RAM defect class in the repo.
 - **Model independence.** Each model opens
   `LsxFastMathScope(EffectiveFastMathMode(cfg_))` inside its own `Infer`.
 - **Shared lifecycle contract.** The model TU that owns the generation body
@@ -170,6 +176,11 @@ fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
 - Routed/shared MoE experts are packed per expert; keep the repo layout so the
   inference kernels can consume it unchanged (no repack at upload unless
   documented).
+- Decide the **host** side of that expert set now, not at the end: on disk the
+  layout is fixed, but whether it is read as mmap views or materialized into
+  host RAM is the loader's decision, and it is the difference between a bounded
+  and an unbounded host footprint. See **"Host-side weight storage —
+  `ExpertStore` and Arrow zero-copy"** below (rules R1/R2).
 
 ### 3. Registration in the factory (LsxModelFactory)
 
@@ -317,6 +328,88 @@ An ingested model is **not done** without it.
   `SKIP_RETURN_CODE 4`) is `Verifying a numeric change` in
   `perf-tuning-a-model`.
 
+## Host-side weight storage — `ExpertStore` and Arrow zero-copy
+
+The routed-expert set is the largest thing a model owns, and it is the one place
+where a loader can silently trade tens of gigabytes of host RAM for nothing.
+Two rules, both machine-visible in `expert_store.h`:
+
+**R1 — the host expert store is the neutral `ExpertStore<TEntry>`, never a
+family-private container.** Declare a view struct whose field order matches what
+the shared `ExpertStore<TEntry>::DecodeEntry()` aggregate-fills, alias it
+(`using XExpertDb = gpu::expert_store::ExpertStore<XExpertEntry>;`), and expose
+`load_*_expert_index` / `ensure_*_expert_resident` / `free_*_expert_index`.
+`ExpertStore` keeps the `mmap` + `RecordBatch` alive in `mmaps`/`batches` and
+bounds how many entries stay mapped via `max_open`, so touching an expert costs
+one mmap + IPC parse and **no heap copy**. The entry must stay a view: it is
+`static_assert`ed trivially-copyable and ≤128 bytes. Do NOT reintroduce an
+owning per-family map — that is precisely the `AliceExpertHost` shape that
+existed in alice until 4d98fe2 (`std::unordered_map` of owning `PackedExpert`,
+no eviction).
+
+**R2 — Arrow reads are mmap-backed views unless the payload dies with the
+upload.** Every file read goes through `arrow::io::MemoryMappedFile::Open`
+(never `ReadableFile::Open`), and a retained payload must come from a view
+reader — `LoadTensorBatchViews` / `LoadDenseNvfp4BatchViews` /
+`LoadSharedExpertBatchViews`, or `ExpertStore::Load` — never from
+`PinnedSchema::UnpackBatch` / `ExpertSchema::UnpackBatch` /
+`DenseNvfp4Schema::UnpackBatch`, whose `TensorRecord`/`PackedExpert`/
+`DenseNvfp4Record` each own a `std::vector<uint8_t>` **copy** of the tensor.
+`UnpackBatch` is legitimate exactly when the record is transient (converted to
+BF16/F32, uploaded, freed in the same scope). The reference implementation of
+R2's validation is `tokenizer.cpp`: it `dynamic_pointer_cast`s the columns and
+checks every buffer against the mapping bounds (`in_range`) before storing raw
+pointers, so a non-mmap Arrow buffer fails loudly instead of being copied.
+
+Two sanctioned storage shapes, both on the neutral store:
+
+- **views + LRU** (default). `max_open` caps *mapped file*, so host memory is
+  bounded by the cap, not by the model. Geometry (`num_layers`,
+  `experts_per_layer`) is a **parameter** taken from the loaded
+  `model.index.json` — never a second copy of the passport constants, or the
+  synthetic fixture (8×4) breaks against the real model (48×512).
+- **`PinChunked` views** (documented exception). When the expert set is small
+  enough to pin and a pinned H2D staging buffer is genuinely wanted, pin the
+  store's own chunks — `ExpertStore::PinChunked<kStream|kSplitFence>` — rather
+  than materializing a second copy. Kimi (542 GiB) and Gemma (12.5 GiB) do this;
+  both remain bounded and are not the pattern to copy blindly.
+
+Forbidden, and the reason: a pinned arena that holds **every** expert for the
+life of the session. That design shipped in five models and cost the expert
+tree on disk in host RAM — qwen3.8-flash-next **64 GiB** (plus a second full
+disk pass), mistral **61 GiB**, qwen3.6 / ornith **17 GiB** each — and survived
+review because a 750 GB host makes `cudaMallocHost` of tens of gigabytes
+succeed silently. Alice's identical-class bug (an unbounded owning map) cost
+1.7 MB of heap per expert and showed as a monotonic RSS climb, 8.3 → 12.7 →
+18.0 GB peak over 32/128/512 generated tokens. All of it was retired on
+2026-10-14 (qwen3.6 17.5 → 7.0 GB at unchanged throughput; qwen3.8 63.6 →
+10.9 GB) — `docs/open-tasks/2026-10-14-expert-store-arena-retired.md`.
+
+Two consequences of the fix are still open in `docs/OPEN_TASKS.md` §V, and both
+are traps for the next family:
+
+- **§V1 — the arena was pinned H2D staging, not just memory.** Mapping every
+  expert without page-locking costs 1.9x decode on a big-expert model
+  (32.1 → 17.3 t/s) and pinning it all costs another 1.9x (→ 32.1). If your
+  family's decode is expert-staging-bound, `max_open` alone is the wrong lever;
+  you want a bounded pinned window.
+- **§V1 — you cannot fake pinned H2D over mmap views.** `cudaHostRegister`
+  fails on a file-backed mapping (measured: every entry refused), and getting it
+  wrong produces sticky CUDA errors that present as "generation fails right after
+  a successful load". Pinned memory must be its own allocation: copy the warm
+  set into an anonymous arena and register that, i.e. `PinChunked`, bounded by
+  `max_open` rather than by the model.
+- **§V2 (closed, not reproduced) — `max_open` does bound RSS**, monotone and
+  saturating at the whole tree (Mistral 3.2 / 7.0 / 31.1 GB at cap 64 / 512 /
+  8192), and a geometry pass costs no payload pages because `DecodeEntry` takes
+  Arrow views. If a family measures otherwise, repeat the measurement before
+  believing it: the first version of that finding came from a single run and was
+  an artifact. Both rules are machine-checked by
+`tests/test_expert_store_guard.cpp` (label `fast`) — it is the test that fails
+when a family reintroduces an owning expert store, and its
+`"the detector catches the alice defect"` case is what proves the check is not
+vacuous.
+
 ## Model code file-naming convention
 
 ```
@@ -360,6 +453,7 @@ without updating them fails CI.
 | `test_ctest_labels_guard.cpp` | — (just label new tests) | every test carries a label in the same commit |
 | `test_model_suite_guard.cpp` (golden case) | fsi/code/det **golden files**, or an explicit `kGoldenDebt` entry | a parity stage whose golden is absent SKIPs, and a SKIP is indistinguishable from a pass — this is how gemma reported SUCCESS on two stages that never ran |
 | `test_absl_format_guard.cpp` | — | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
+| `test_expert_store_guard.cpp` | only if you migrate a **legacy** model off `MoEExpertStore` — then delete its rows from `kLegacyConsumers` | the host routed-expert store is the neutral `ExpertStore`, never a family-private OWNING container: no owning map of `PackedExpert`/`TensorRecord`/`DenseNvfp4Record`/`SharedExpertRecord`, no `…ExpertHost`/`…ExpertTable` identifier, every `*ExpertEntry` view file aliases `ExpertStore<`, and the legacy all-experts-in-pinned-slabs store cannot spread to a new family. Enforces R1/R2 below |
 
 ## Definition of done
 
@@ -379,7 +473,10 @@ without updating them fails CI.
 - [ ] perf entry in `tests/perf/perf_baselines.json` + `TEST_CASE` in
       `test_perf_baseline.cpp` + `add_test` target in `tests/CMakeLists.txt` (label
       `perf`, `SKIP_RETURN_CODE 4`).
-- [ ] All four guard registries above updated.
+- [ ] All guard registries above updated.
+- [ ] Routed experts are read through the neutral `ExpertStore` (R1/R2 below):
+      `test_expert_store_guard` green, and a new family that needs the expert
+      host store must NOT appear in that test's `kLegacyConsumers`.
 - [ ] `AGENTS.md` Structure section gets the new files; `test_model_suite_guard`
       and `test_code_naming_guard` green.
 
@@ -393,7 +490,7 @@ ctest --preset linux-debug-inference                        # model/CUDA sweep
 cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake   # dry-run router
 ```
 
-The four guard tests above MUST be green before the model is considered
+The guard tests above MUST be green before the model is considered
 ingested.
 
 ## Common mistakes
@@ -426,3 +523,12 @@ ingested.
   synthetic converted fixtures).
 - Borrowing another family's test fixture instead of
   `tests/test_synth_checkpoint.h`.
+- Writing a family-private routed-expert host container (a `std::unordered_map`
+  of owning `PackedExpert`, a private pinned arena) instead of aliasing the
+  neutral `ExpertStore`. This is the highest-cost mistake in the list and it is
+  invisible on a big host: alice's version cost ~21 MB of RSS per generated
+  token and the qwen/mistral arena loaders retain 17–64 GiB of pinned RAM each,
+  yet all of them load without an error. See the host-storage section above.
+- Keeping a `UnpackBatch` record alive past the scope that uploads it — the
+  record owns a full `std::vector<uint8_t>` copy of the tensor. Read it as a
+  view when the payload is retained.

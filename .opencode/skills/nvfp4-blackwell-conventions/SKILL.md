@@ -94,6 +94,26 @@ attribution, budget tests, baselines) is the `perf-tuning-a-model` skill.
   copies; zero-copy through `CudaMemoryManager`.
 - **simdjson + libzmq**: wrap `zmq::message_t` straight into
   `simdjson::ondemand::parser` — no intermediate `std::string`.
+- **Arrow file reads are mmap-backed, always.** Open with
+  `arrow::io::MemoryMappedFile::Open` (never `ReadableFile::Open`), then either
+  keep raw pointers into the mapping or `std::move` the payload out before the
+  mapping dies. A retained payload must come from a **view** reader —
+  `LoadTensorBatchViews` / `LoadDenseNvfp4BatchViews` / `LoadSharedExpertBatchViews`
+  / `ExpertStore::Load`. The `*::UnpackBatch` family returns **owning**
+  `std::vector<uint8_t>` records (`TensorRecord`, `PackedExpert`,
+  `DenseNvfp4Record`): correct only for a payload consumed in the same scope
+  (converted to BF16/F32, uploaded, freed), never for one kept alive.
+- **Verify zero-copy instead of assuming it.** Cast the columns
+  (`dynamic_pointer_cast` to the concrete `Array` type) and check each buffer
+  against the mapping bounds before storing its pointer — the `in_range` checks
+  in `libs/lsxcommon/src/tokenizer.cpp` are the reference. Without them, an
+  Arrow build that hands back heap buffers silently reintroduces the copy you
+  thought you removed.
+- **Routed-expert host memory goes through the neutral `ExpertStore`**
+  (`include/lsxcommon/expert_store.h`), whose `max_open` bounds mapped file.
+  The full rule set, the two sanctioned storage shapes and the measured cost of
+  the forbidden ones are in the `ingesting-a-model` skill, section **"Host-side
+  weight storage — `ExpertStore` and Arrow zero-copy"**.
 
 ## Never guess an API
 
