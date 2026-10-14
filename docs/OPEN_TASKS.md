@@ -1129,15 +1129,34 @@ precondition that fewer slots can never satisfy.
 
 Ruled out since: the storage representation (both chains reach the same staged
 weights), mirror staleness, the TC fast-math flag (the batched output is
-identical with it on and off), slot capacity, and the degenerate geometry (I=16
-gives the same failure as a realistic I=128, 47 assertions, one failing on the
-same comparison).
+identical with it on and off), slot capacity, and the degenerate geometry
+(I=16 fails the same way a realistic I=128 does).
 
-**The missing instrument** is a single-route, single-expert comparison with the
-intermediates compared stage by stage (ygu -> h -> yp), which is where this
-should be picked up: none of the checks above look at the values between the two
-fused GEMMs, and that is precisely where a TC-vs-legacy disagreement would
-appear. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
+**Localised to the first fused GEMM.** Comparing the intermediates stage by
+stage at H=64, I=16, K=2 (routes {3,0.6},{3,0.4}) shows the two chains already
+disagree on the w13 output, before swiglu and before the reduce:
+
+| stage1 slice | differing | example seq | example batch |
+|---|---|---|---|
+| gate, slot 0 | 16/16 | 2592 | 1103 |
+| up, slot 0 | 0/16 | 0 | 0 |
+| gate, slot 1 | 16/16 | -617 | 416.5 |
+
+So it is `RunLsxTcGemmBatch13` against the legacy per-slot GEMM, not the
+batching, the reduce or the coefficient handling -- and the gap is not a
+coefficient scale factor (no ratio between the pairs reproduces 0.6 or 0.4).
+
+Neither implementation accepts the test's whole shape space: at H=128 the
+SEQUENTIAL chain outputs all zeros for the same comparison, so raising H is not
+a way to make the case meaningful either. Whatever shape is used next has to be
+one both paths support.
+
+**The missing instrument** is now narrower than a stage-by-stage diff (done,
+above): the next step is a single-route, single-expert case at a shape both
+implementations support, comparing the w13 output against a host reference for
+the same expert -- which decides whether the batched GEMM or the legacy one is
+the wrong one. That question is still open, and the real-model gates do not
+answer it because decode never runs this comparison. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
 and DET pass on real weights, and those paths do not run this comparison.
 
 ### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
