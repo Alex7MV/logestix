@@ -1,14 +1,28 @@
 // AliceAI selfcheck: "The capital of France is" must answer "Paris". Loads the
-// real converted model from LSX_TEST_ALICE_ROOT; SKIPs when absent.
+// real converted model from LSX_TEST_ALICE_ROOT, else from the vault path;
+// SKIPs when neither is present.
 #include <catch2/catch_test_macros.hpp>
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/model.h>
+#include <lsxcommon/path_registry.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace {
+
+// Same resolution as the fsi/code/det siblings: the env var wins, otherwise the
+// converted model is looked up in the vault. Resolving only from the env made
+// this gate SKIP silently after conversion, where the sibling gates run.
+std::filesystem::path ModelRoot()
+{
+    if (const char *env = std::getenv("LSX_TEST_ALICE_ROOT"))
+        return std::filesystem::path(env);
+    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
+           "AliceAI-Foundation-80B-A3B-Base";
+}
 
 std::string DecodeFirst(const lsxcommon::ArrowTokenizerDb &tok,
                         const std::vector<int32_t> &ids)
@@ -26,12 +40,13 @@ std::string DecodeFirst(const lsxcommon::ArrowTokenizerDb &tok,
 
 TEST_CASE("alice selfcheck answers Paris", "[alice][inference]")
 {
-    const char *root = std::getenv("LSX_TEST_ALICE_ROOT");
-    if (!root) SKIP("LSX_TEST_ALICE_ROOT not set");
+    const std::filesystem::path root = ModelRoot();
+    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+        SKIP("alice converted model directory not present");
 
     lsxcommon::EnsureModelRegistry();
     lsxcommon::ModelInitConfig cfg;
-    cfg.model_path = root;
+    cfg.model_path = root.string();
     cfg.model_type = "alice-foundation-80b-a3b";
     cfg.fast_math_mode = lsxcommon::FastMathMode::kOff;
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
