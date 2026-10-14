@@ -686,7 +686,13 @@ TEST_CASE("generation driver deterministic on synthetic model", "[ornith-moe-gen
     std::string err;
     REQUIRE(lsxcommon::ornith::LoadOrnithMoeDenseWeights(out.string(), pw, stream, err));
     REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
-    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
+    // The batched path composes its table from the residency mirror and
+    // MoEGemvNohandshake only certifies it under FULL residency, so this case
+    // must be able to hold every expert: the synthetic model is 4 layers x
+    // 8 experts = 32 flats. Fewer slots evicts while warming, the mirror
+    // correctly invalidates, and the "full residency" precondition can
+    // never be met -- which is a broken setup, not a kernel defect.
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 32, cache, err));
 
     lsxcommon::ornith::OrnithMoeGenScratch gen_scratch;
     REQUIRE(lsxcommon::ornith::EnsureOrnithMoeScratch(stream, pw, gen_scratch) ==
@@ -888,7 +894,12 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     std::string err;
     REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     lsxcommon::ornith::OrnithMoeExpertDeviceCache cache;
-    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
+    // Full residency is a precondition of the batched path (it composes its table
+    // from the residency mirror, and MoEGemvNohandshake certifies only a complete
+    // one). The synthetic model is 4 layers x 8 experts = 32 flats, so the cache
+    // must be able to hold all of them; fewer slots evict while warming and the
+    // precondition becomes unsatisfiable -- a broken setup, not a kernel defect.
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 32, cache, err));
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);

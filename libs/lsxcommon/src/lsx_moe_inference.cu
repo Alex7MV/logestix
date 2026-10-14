@@ -1491,11 +1491,27 @@ int EnsureMoEExpertResident(moe::MoEExpertStore &store, int layer, int eid,
     const int flat = layer * store.num_experts + eid;
     int slot = cache.Lookup(flat);
     if (slot >= 0) return slot;
-    slot = cache.Insert(flat, evicted_slot);
+    int evicted_flat = -1;
+    slot = cache.Insert(flat, evicted_slot, &evicted_flat);
     if (missed) *missed = true;
 
     // No-handshake decode bookkeeping: mirror residency + scales so the
     // batched GEMV path can compose its table entirely on device.
+    //
+    // The displaced flat must lose its mirror entry HERE. The batched entry
+    // points compose their table from h_gemv_meta without re-checking the
+    // device cache, so a stale entry keeps naming a slot that has just been
+    // handed to a different expert -- which is a silent wrong-expert read, not
+    // a miss. The sequential chain is immune because it asks for residency per
+    // route at call time, which is why this only ever showed up as the batched
+    // chain disagreeing with it.
+    if (evicted_flat >= 0 &&
+        evicted_flat < static_cast<int>(store.h_gemv_meta.size())) {
+        MoEExpertMetaDev &stale =
+            store.h_gemv_meta[static_cast<size_t>(evicted_flat)];
+        stale.dev_slot = -1;
+        store.gemv_ready = false;
+    }
     if (static_cast<int>(store.h_gemv_meta.size()) <
         store.num_layers * store.num_experts)
         store.h_gemv_meta.assign(

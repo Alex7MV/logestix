@@ -117,9 +117,15 @@ struct ExpertDeviceCache {
     // counts one miss. Returns the slot index. When non-null, *evicted_slot
     // receives the recycled slot index on an eviction (else -1); the caller
     // must fence any in-flight reader of that slot before overwriting it.
-    int Insert(int flat, int *evicted_slot = nullptr)
+    // @p evicted_flat  the flat that was displaced from the evicted slot, or
+    // -1. The caller needs the FLAT, not just the slot: anything that mirrors
+    // residency (moe::MoEExpertStore::h_gemv_meta) must invalidate that entry,
+    // or it keeps pointing at a slot that now holds a different expert.
+    int Insert(int flat, int *evicted_slot = nullptr,
+               int *evicted_flat = nullptr)
     {
         if (evicted_slot) *evicted_slot = -1;
+        if (evicted_flat) *evicted_flat = -1;
         int slot = -1;
         if (h_free) {
             if (h_free_top > 0) slot = h_free[--h_free_top];
@@ -133,6 +139,7 @@ struct ExpertDeviceCache {
             slot = h_prev ? h_lru_back : h_lru[slots - 1];
             const int victim = h_slot_owner[slot];
             if (victim >= 0 && victim < total_experts) h_slot_of[victim] = -1;
+            if (evicted_flat) *evicted_flat = victim;
             if (h_prev) DlUnlink(slot);
             if (evicted_slot) *evicted_slot = slot;
         }

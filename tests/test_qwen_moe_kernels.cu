@@ -754,7 +754,6 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     cudaStreamCreate(&stream);
     std::string err;
     REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeDenseWeights(out.string(), pw, stream, err));
-    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     lsxcommon::qwen_moe::QwenMoeGenScratch gen_scratch;
@@ -957,7 +956,13 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     std::string err;
     REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
-    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
+    // The batched path composes its table from the residency mirror and
+    // MoEGemvNohandshake only certifies it under FULL residency, so this case
+    // must be able to hold every expert: the synthetic model is 4 layers x
+    // 8 experts = 32 flats. Fewer slots evict while warming, the mirror
+    // correctly invalidates, and the precondition can never be met -- a broken
+    // setup, not a kernel defect.
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 32, cache, err));
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -1048,6 +1053,16 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
                cudaMemcpyDeviceToHost);
     cudaMemcpy(acc_batch.data(), d_acc_batch, H * sizeof(float),
                cudaMemcpyDeviceToHost);
+    {
+        int nd = 0; float worst = 0.f; int wi = -1;
+        for (int i = 0; i < H; ++i)
+            if (acc_seq[i] != acc_batch[i]) { ++nd;
+                if (std::fabs(acc_seq[i]-acc_batch[i]) > worst) {
+                    worst = std::fabs(acc_seq[i]-acc_batch[i]); wi = i; } }
+        WARN("DIFF n=" << nd << "/" << H << " worst=" << worst << " @" << wi
+             << " seq=" << (wi>=0?acc_seq[wi]:0.f)
+             << " batch=" << (wi>=0?acc_batch[wi]:0.f));
+    }
     CHECK(std::memcmp(acc_seq.data(), acc_batch.data(),
                       H * sizeof(float)) == 0);
 
