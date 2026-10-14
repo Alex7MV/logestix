@@ -1150,7 +1150,7 @@ Measured against the fp16 core as reference:
 
 relerr 1.0 is exactly the error of a zero vector: the batched GEMM writes
 nothing, while the other two agree bit-for-bit and are non-zero. The N-tile
-hypothesis (N must be a multiple of kTileN=64) was tested and is **wrong** — a
+hypothesis (N must be a multiple of kTileN=64) was tested and is **wrong** -- a
 full 64-wide tile fails the same way.
 
 Earlier narrowing that still holds: the divergence is in the w13 output, before
@@ -1158,7 +1158,17 @@ swiglu and before the reduce (gate slot 0 differs 16/16, up half identical
 zeros in both), so batching, the reduce and coefficient handling are all
 excluded. It is also not eviction, slot capacity or the TC fast-math flag.
 
-**The production path IS live, and it changes real generations.** `tc_batch` is
+Read so far in `TcGemmKernel`, all consistent and all still not the cause: the
+output store is masked by `r0 < seq` and the batch dispatch passes `seq = 1`,
+which is right for decode (one token, N columns); `RunLsxTcGemmBatch13` passes
+`w_off = s_off = 0`, which is right for the fused slot; `wm = warp >> 1` gives
+the four 16-row M-warps of the 64-row tile that the 2026-10-10 M-tile fix
+restored. So the zero must come from inside the MMA path -- the per-slot scale
+taken from `batch_slots[slot].gs*`, the weight TMA descriptor, or the
+accumulation over K -- and telling those apart needs a targeted dump at the
+failing shape, not more reading.
+
+The production path IS live, and it changes real generations.** `tc_batch` is
 enabled when TC fast-math is on (the default perf policy), the segment scales
 exist, and neither LSX_GEMV_EXPERTS nor LSX_TC_BATCH_OFF is set -- so qwen MoE
 and ornith decode through `RunMoERoutedTcBatch` and the real-weight gates pass
