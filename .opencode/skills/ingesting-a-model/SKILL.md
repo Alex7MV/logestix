@@ -388,27 +388,20 @@ succeed silently. Alice's identical-class bug (an unbounded owning map) cost
 Two consequences of the fix are still open in `docs/OPEN_TASKS.md` §V, and both
 are traps for the next family:
 
-- **§V1 — the arena was pinned H2D staging, not just memory.** Mapping every
-  expert without page-locking costs 1.9x decode on a big-expert model
-  (32.1 → 17.3 t/s) and pinning it all costs another 1.9x (→ 32.1). If your
-  family's decode is expert-staging-bound, `max_open` alone is the wrong lever;
-  you want a bounded pinned window.
-- **§V1 — you cannot fake pinned H2D over mmap views.** `cudaHostRegister`
-  fails on a file-backed mapping (measured: every entry refused), and getting it
-  wrong produces sticky CUDA errors that present as "generation fails right after
-  a successful load". Pinned memory must be its own allocation: copy the warm
-  set into an anonymous arena and register that, i.e. `PinChunked`, bounded by
-  `max_open` rather than by the model.
+- **§V1 — a pinned arena is not waste when the decode working set IS the
+  model.** If every token routes to experts spread over the whole expert set,
+  an LRU cap below that means nearly every touch is a re-mapped, unpinned
+  expert, and pinning the cap buys nothing (measured: 9.2 t/s either way) while
+  pinning everything costs 2x the arena because the views stay mapped beside the
+  pinned copy. Check your working set against `max_open` before migrating; the
+  store is a win only when it fits. And `cudaHostRegister` cannot pin a
+  file-backed mapping at all, so a "cheap pin over the views" is not an option.
 - **§V2 (closed, not reproduced) — `max_open` does bound RSS**, monotone and
   saturating at the whole tree (Mistral 3.2 / 7.0 / 31.1 GB at cap 64 / 512 /
   8192), and a geometry pass costs no payload pages because `DecodeEntry` takes
   Arrow views. If a family measures otherwise, repeat the measurement before
   believing it: the first version of that finding came from a single run and was
-  an artifact. Both rules are machine-checked by
-`tests/test_expert_store_guard.cpp` (label `fast`) — it is the test that fails
-when a family reintroduces an owning expert store, and its
-`"the detector catches the alice defect"` case is what proves the check is not
-vacuous.
+  an artifact.
 
 ## Model code file-naming convention
 

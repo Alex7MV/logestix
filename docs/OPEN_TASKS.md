@@ -1078,38 +1078,39 @@ Headline: qwen3.6 17.5 → **7.0 GB** at unchanged 141 t/s; qwen3.8 63.6 →
 **10.9 GB** with load 73.7 → 9.9 s. What is left is not the storage change but
 two consequences it exposed:
 
-### V1. qwen3.8-flash-next decode lost 3.5x — pinned H2D staging, and it cannot be faked
+### V1. RESOLVED (negative): the arena is required when the working set is the whole expert set
 
-32.1 → 9.2 t/s after the arena went away, reproducible at cap 4096. Isolated with
-one extra run: mapping **all** 24576 experts *without* pinning gives 26.7 GB and
-17.3 t/s, so about half the loss is evict/re-parse and half is the DMA path. The
-retired arena was not merely memory — it was page-locked H2D staging.
+Tried the bounded pinned window §V1 called for, measured it, and it does not
+work. qwen3.8-flash-next, real weights, `/usr/bin/time -v`, same prompt:
 
-**`cudaHostRegister` is not a way to get it back.** Attempted and reverted: page-
-locking the LRU-held entries in place fails on **every** entry
-(`registered=0 failed=512`) because a file-backed MAP_SHARED mapping is not
-registrable. Three separate sticky-CUDA-error traps make this look like
-something else, and all three are worth writing down:
+| configuration | peak RSS | throughput |
+|---|---|---|
+| pinned arena (original) | 63.6 GB | 32.1 t/s |
+| views, cap 4096 | 10.9 GB | 9.2 t/s |
+| views + pinned window, cap 2048 | 10.9 GB | **9.2 t/s — no speedup** |
+| views + pinned window, cap 24576 | 127.2 GB | 29.0 t/s |
 
-1. `cudaHostRegister` rejects a start that is not page-aligned, and an expert
-   payload begins at an arbitrary offset inside the mapping;
-2. the six payload spans of one expert are adjacent in that file, so aligning
-   each down to a page makes neighbours **overlap**, and registering an
-   already-registered range returns `cudaErrorHostMemoryAlreadyRegistered`;
-3. unregistering a range that was never registered also raises a sticky error —
-   so a failed load looks like "generation dies right after a successful load",
-   with nothing in the message pointing at pinning.
+The window pins 5400 MiB in 754 ms and buys nothing, because the decode working
+set is LARGER than the cap: nearly every touch is an expert that was evicted
+and re-mapped, hence unpinned. Speed only returns when essentially everything is
+pinned — and then the mmap views are still mapped beside the pinned copy, so it
+costs 2x the arena (127 vs 63.6 GB) for slightly less speed. For a model whose
+decode working set is the whole expert set the arena is the right design, and
+the migration is a net loss. This is a resource constraint, not a defect.
 
-**The viable path is the one kimi/gemma already use**: pinned memory has to be
-its own allocation, not a registered file mapping, i.e. copy the warm set into an
-anonymous arena and `cudaHostRegister` that (`ExpertStore::PinChunked`). Bounding
-that arena by `max_open` instead of the model is what is missing. Expected
-result, from the three measured points: ~cap x expert size of **pinned**
-(unreclaimable) memory with decode back near 32 t/s.
+`cudaHostRegister` over the mmap views is not a way back: refused for every
+entry (`registered=0 failed=512`), because a file-backed MAP_SHARED mapping is
+not registrable. Three sticky-CUDA-error traps on the way there, each of which
+presents as "generation dies right after a successful load" with nothing in the
+message pointing at pinning: (1) a non-page-aligned start is rejected; (2) the
+six payload spans of one expert are adjacent in the file, so aligning each down
+to a page makes neighbours overlap and the second registration returns
+`cudaErrorHostMemoryAlreadyRegistered`; (3) unregistering a range that was never
+registered also raises a sticky error.
 
-Until that exists the trade stands as measured, so **do not raise qwen3.8's
-default cap** and do not silently ship it: qwen3.6/Ornith/Mistral are a clean win
-(-60% RSS at unchanged throughput), qwen3.8 is not.
+qwen3.8 is therefore back on its arena (63.6 GB, 32.0 t/s re-measured). The
+neutral store stays for qwen MoE / Ornith / Mistral, whose working set fits the
+cap: 17.5 → 7.0 GB at unchanged throughput.
 
 ### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
 
@@ -1144,7 +1145,7 @@ investigation trail:
 | E1 — 14 test executables were one binary | per-`.cu` object libraries |
 | G1 — toolkit mismatch caught only after the build | configure-time check in `CMakeLists.txt` |
 | A2 — MiMo wrong top-1 | closed 2026-10-02: no implementation bug, the checkpoint is bad (vendor oracle matches) — [`open-tasks/2026-10-02-mimo-closed.md`](open-tasks/2026-10-02-mimo-closed.md) |
-| 2026-10-14 | Routed-expert host storage: the all-experts-in-pinned-slabs arena retired for qwen MoE / Ornith / Mistral / qwen3.8-flash-next | `MoEExpertRecord` reduced to immutable geometry, payload moved to the neutral `ExpertStore`, six-segment staging from mmap views; qwen3.6 17.5 → 7.0 GB at unchanged 141 t/s, qwen3.8 63.6 → 10.9 GB and load 73.7 → 9.9 s; `test_expert_store_guard` locks it. Two consequences stay open as §V1 (qwen3.8 decode 32.1 → 9.2 t/s, pinned-vs-pageable H2D) and §V2 (Mistral 65.6 GB regardless of `max_open`: the geometry pass faults the whole tree into page cache) - [`open-tasks/2026-10-14-expert-store-arena-retired.md`](open-tasks/2026-10-14-expert-store-arena-retired.md) |
+| 2026-10-14 | Routed-expert host storage: the arena retired for qwen MoE / Ornith / Mistral | `MoEExpertRecord` reduced to immutable geometry, payload moved to the neutral `ExpertStore`, six-segment staging from mmap views; qwen3.6 17.5 → 7.0 GB at unchanged 141 t/s, qwen3.8 was tried on the neutral store and REVERTED to its arena — the decode working set is the whole expert set, so a bounded pinned window gives no speedup (9.2 t/s) and pinning everything costs 127 GB against the arena's 63.6 GB; `test_expert_store_guard` locks what did migrate - [`open-tasks/2026-10-14-expert-store-arena-retired.md`](open-tasks/2026-10-14-expert-store-arena-retired.md) |
 | 2026-10-10 | Neutral routed-MoE layer + ornith de-duplication + the shared TC M-tile defect | `TcGemmKernel` wrote only rows `[0,16)` of its 64-row M tile (`wm` computed, never used) - fixed in all four row computations, TC shape sweep extended to seq 17/18/33/64; `ornith_moe_inference.cu` (2182 lines, 97% copy, already drifted) deleted in favour of the neutral `lsx_moe_inference` layer, expert-store loader cluster de-duplicated across qwen/glm-flash/ornith (-2776 lines); Ornith fused-expert split and gemma `final_logits` now read back by tests - [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md) |
 | Inference-conformance review (9 deviations) | all fixed in dedicated commits |
 | "Closed in this session" list | 15 items, all closed |
