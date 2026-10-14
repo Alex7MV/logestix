@@ -18,7 +18,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 - Bumped Apache Arrow 25.0.1 -> 26.0.0 (FetchContent pin `apache-arrow-26.0.0`;
   Arrow now bundles Boost 1.92.0 and xsimd 14.2.0).
-- Bumped NVIDIA CCCL 3.4.2 -> 3.5.0 (submodule `third_party/cccl`, `28101b07…`).
+- NVIDIA CCCL is no longer a submodule: it is taken from the CUDA toolkit
+  bundle (`<include>/cccl`) and **band-guarded** (configure-time in the root
+  `CMakeLists.txt` + `test_core.cpp`). This removes the `-I` shadowing that made
+  every `.cu` — including the toolkit's own transitively-included `<nv/target>` —
+  compile against our copy, which could silently invert on a toolkit bump. The
+  brief 3.4.2 -> 3.5.0 submodule bump is superseded by this.
 - Translated `AGENTS.md`, `.opencode/skills/*` and documentation to English.
 - Removed vendored NVIDIA documentation dumps; they are now referenced from the
   `nvidia-cuda-docs` MCP (`docs/NVIDIA_DOCS.md`).
@@ -27,6 +32,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 ### Removed
 
 - Tracked CTest artifact `Testing/Temporary/CTestCostData.txt` (now gitignored).
+- `third_party/cccl` submodule — CCCL now comes from the CUDA toolkit bundle
+  (band-guarded at configure time).
 
 ### Added
 

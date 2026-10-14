@@ -33,16 +33,20 @@ in the same class will not find it.
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
-| NVIDIA CCCL | 3.5.0 | submodule (`third_party/cccl`) | Header-only |
+| NVIDIA CCCL | from CUDA Toolkit (accepted band 3.2.x–3.5.x) | CUDA Toolkit bundle (`<include>/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 | cpp-httplib | v0.58.0 | FetchContent (host-only HTTP) | Header-only |
 
 Versions are enforced by code: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
 versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, cpp-httplib,
-CCCL, abseil — the latter via `ABSL_LTS_RELEASE_VERSION`, so a non-LTS pin will
-not build); there is no guard for `flatbuffers`/`libzmq`. The dependency bump
-procedure
+abseil — the latter via `ABSL_LTS_RELEASE_VERSION`, so a non-LTS pin will
+not build); there is no guard for `flatbuffers`/`libzmq`. CCCL is deliberately not
+pinned: it is taken from the CUDA toolkit bundle and **band-guarded** instead
+(configure-time check in the root `CMakeLists.txt` + the same band in
+`test_core.cpp`), so a toolkit bump that moves CCCL outside the validated window
+fails configure rather than silently swapping the libcu++ under the whole tree.
+The dependency bump procedure
 (pin the submodule/FetchContent `GIT_TAG` + guard + AGENTS/README tables
 + re-check after-fetch patches) — skill `cuda-cmake-build-gotchas`.
 
@@ -349,8 +353,9 @@ procedure — `perf-tuning-a-model`.
   (`FastMathMode::kOff`); the only app with a numeric mode.
 - `tests/` — Catch2 v3.16.0 suite; labels `fast`/`convert`/`inference`/`perf`
   (see § Test) + model/naming/absl/toolchain guard tests.
-- `third_party/cccl/`, `third_party/flatbuffers/`, `third_party/libzmq/`,
-  `third_party/simdjson/` — submodules.
+- `third_party/flatbuffers/`, `third_party/libzmq/`, `third_party/simdjson/` —
+  submodules. CCCL is not vendored: it comes from the CUDA toolkit bundle
+  (`<include>/cccl`), band-guarded at configure time (root `CMakeLists.txt`).
 
 The full per-file inventory (by family and subsystem: suite membership and
 assertions, selfcheck env vars, model perf details) — skill

@@ -433,11 +433,13 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
     // cpp-httplib (FetchContent, host-only HTTP). Pin enforced here.
     STATIC_REQUIRE(std::string_view(CPPHTTPLIB_VERSION) == "0.58.0");
 
-    // NVIDIA CCCL (submodule)
-    STATIC_REQUIRE(CCCL_VERSION == 3 * 1000000 + 5 * 1000 + 0);
-    STATIC_REQUIRE(CCCL_MAJOR_VERSION == 3);
-    STATIC_REQUIRE(CCCL_MINOR_VERSION == 5);
-    STATIC_REQUIRE(CCCL_PATCH_VERSION == 0);
+    // NVIDIA CCCL — no longer vendored: it comes from the CUDA toolkit bundle
+    // (<toolkit-include>/cccl). The validated band is defined once in the root
+    // CMakeLists.txt and shared here (and with the configure-time guard) as
+    // LSX_CCCL_VERSION_{MIN,MAX}; a toolkit whose CCCL leaves the band fails at
+    // configure, and this pins the compiled TU to the same window.
+    STATIC_REQUIRE(CCCL_VERSION >= LSX_CCCL_VERSION_MIN);
+    STATIC_REQUIRE(CCCL_VERSION < LSX_CCCL_VERSION_MAX);
 
     // abseil-cpp (FetchContent). The LTS macros exist only on LTS tags, so a
     // non-LTS pin (e.g. a master commit) is a hard error here rather than a

@@ -32,7 +32,7 @@ Each of us took a step in the right direction, and together we reached a goal th
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
-| NVIDIA CCCL | 3.5.0 | submodule (`third_party/cccl`) | Header-only |
+| NVIDIA CCCL | from CUDA Toolkit (band 3.2.x–3.5.x) | CUDA Toolkit bundle (`<include>/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 | cpp-httplib | v0.58.0 | FetchContent (host-only HTTP) | Header-only |
@@ -132,7 +132,7 @@ Real-model tests SKIP gracefully when the checkpoint is absent
   - `loader` — Arrow file loading, CUDA pinned memory registration, E4M3 scale decoding
   - `tokenizer` / `pretokenizer` / `unicode` — BPE tokenizer, word-level pre-tokenization, Unicode classification
   - `tokenizer_convert` — tokenizer Arrow files (string `"a b"` and array `["a","b"]` merges, byte_to_token_id, bos/eos/pad)
-  - `safetensors_gpu` — GPU-accelerated tensor quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; CCCL thrust for global max)
+  - `safetensors_gpu` — GPU-accelerated tensor quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; global max is a hand-written reduction, no thrust)
   - `glm_convert` — GLM-5.2 classifier, Topology, `ConvertGlmModel`, `SaveGlmPinnedTensors`, `WriteGlmModelIndex` (extended `logestix-glm` format)
   - `glm_inference_load` — host GLM loader: `LoadGlmPinnedWeights` (BF16→FP16 upload), `GlmLayerWeights`/`GlmPinnedWeights`
   - `glm_v5_model` — `GlmV5Model` (IModel, registry `glm-5.2`); 79-layer Infer (dense 0-2 + IndexShare attention + MoE router + NVFP4 experts 3-77 + MTP 78)
@@ -158,7 +158,7 @@ Real-model tests SKIP gracefully when the checkpoint is absent
   - `test_glm_*` — GLM-5.2 converter/loader/model/compute/inference/full-loop tests
   - `test_mosaic_network` — lsxnetwork (FrameQueue SPSC, zero-copy)
   - `test_integrated_pipeline` — TaskMosaic orchestrator (GLM + DeepSeek burst)
-- `third_party/cccl/` — NVIDIA CCCL
+- CCCL — not vendored; comes from the CUDA toolkit bundle (`<include>/cccl`), band-guarded at configure time
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
 - `third_party/simdjson/` — simdjson v4.6.11

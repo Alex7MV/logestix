@@ -30,6 +30,55 @@ if(DEFINED CUDAToolkit_VERSION AND DEFINED CMAKE_CUDA_COMPILER_VERSION)
     endif()
 endif()
 
+# ── CCCL provenance + band guard ──────────────────────────────────────────────
+# CCCL is not vendored: it comes from the CUDA toolkit bundle at
+# <toolkit-include>/cccl (cub/cuda/nv/thrust). A submodule used to shadow it via
+# -I order, so every .cu — including the toolkit's own transitively-included
+# <nv/target> — compiled against our copy; a toolkit bump could then silently
+# invert that (an older submodule shadowing a newer toolkit bundle). Delegating
+# to the toolkit removes the shadow. This guard keeps the discipline: a toolkit
+# whose CCCL moves outside the validated band fails here, at configure time,
+# rather than silently changing the libcu++ under the whole tree. Widen the band
+# only after re-validating (fast suite + a device selfcheck).
+if(NOT DEFINED CUDAToolkit_INCLUDE_DIRS)
+    message(FATAL_ERROR "find_package(CUDAToolkit) provided no include directories")
+endif()
+list(GET CUDAToolkit_INCLUDE_DIRS 0 _lsx_cuda_inc)
+# Band = the CCCL minors the repository accepts from the toolkit. Floor tracks
+# the CTK floor (13.2 -> CCCL 3.2.0, see test_cuda_toolkit_guard); ceiling is the
+# first unvalidated minor — a forward jump past it forces a deliberate
+# re-validation (fast suite + a device selfcheck) before the band is widened.
+set(LSX_CCCL_BAND_MIN 3002000)
+set(LSX_CCCL_BAND_MAX 3006000)
+# CUDA 13 bundles CCCL under <include>/cccl (cub/cuda/nv/thrust); other layouts
+# (and some Windows installs) place it at the include root. Accept either so the
+# guard does not false-fail on a valid toolkit.
+set(LSX_CCCL_INCLUDE_DIR "")
+foreach(_lsx_cccl_candidate "${_lsx_cuda_inc}/cccl" "${_lsx_cuda_inc}")
+    if(EXISTS "${_lsx_cccl_candidate}/cuda/std/__cccl/version.h")
+        set(LSX_CCCL_INCLUDE_DIR "${_lsx_cccl_candidate}")
+        break()
+    endif()
+endforeach()
+if(NOT LSX_CCCL_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "CCCL not found under ${_lsx_cuda_inc} or ${_lsx_cuda_inc}/cccl. CUDA Toolkit "
+        "${CUDAToolkit_VERSION} is expected to bundle CCCL (cub/cuda/nv/thrust).")
+endif()
+file(STRINGS "${LSX_CCCL_INCLUDE_DIR}/cuda/std/__cccl/version.h" _lsx_cccl_line
+     REGEX "#define CCCL_VERSION ")
+string(REGEX MATCH "[0-9]+" _lsx_cccl_version "${_lsx_cccl_line}")
+if(_lsx_cccl_version LESS ${LSX_CCCL_BAND_MIN}
+   OR NOT _lsx_cccl_version LESS ${LSX_CCCL_BAND_MAX})
+    message(FATAL_ERROR
+        "Bundled CCCL ${_lsx_cccl_version} (CUDA Toolkit ${CUDAToolkit_VERSION}) is "
+        "outside the validated band [${LSX_CCCL_BAND_MIN}, ${LSX_CCCL_BAND_MAX}). "
+        "Re-validate on this toolkit (fast suite + a device selfcheck), then widen "
+        "the band in CMakeLists.txt and tests/CMakeLists.txt.")
+endif()
+message(STATUS
+    "CCCL from CUDA toolkit: ${_lsx_cccl_version} (band ${LSX_CCCL_BAND_MIN}..${LSX_CCCL_BAND_MAX})")
+
 # ── Standards ────────────────────────────────────────────────────────────────
 
 # C++20 is the baseline for all code (including CUDA via

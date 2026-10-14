@@ -112,18 +112,24 @@ two of them are machine-enforced.
    - FetchContent (root `CMakeLists.txt`) `GIT_TAG`: Arrow
      (`apache-arrow-26.0.0`), spdlog (`v1.17.0`), abseil (`20260817.0`), Catch2
      (`v3.16.0`).
-   - Submodules under `third_party/`: flatbuffers, libzmq, simdjson, cccl — move
-     the gitlink (`git -C third_party/<dep> checkout <tag>`) and commit the
-     updated submodule pointer.
+   - Submodules under `third_party/`: flatbuffers, libzmq, simdjson — move the
+     gitlink (`git -C third_party/<dep> checkout <tag>`) and commit the updated
+     submodule pointer.
+   - CCCL is **not** pinned: it comes from the CUDA Toolkit bundle
+     (`<include>/cccl`) and is **band-guarded** (configure-time in the root
+     `CMakeLists.txt` + the same band in `test_core.cpp`). A toolkit bump that
+     moves CCCL outside the band fails configure; widen the band only after
+     re-validating (fast suite + a device selfcheck).
 2. **The guard** — `tests/test_core.cpp` → `TEST_CASE("pinned dependency
-   versions")` asserts Arrow / spdlog / simdjson / Catch2 / CCCL / abseil with
+   versions")` asserts Arrow / spdlog / simdjson / Catch2 / abseil with
    `STATIC_REQUIRE` (abseil through `ABSL_LTS_RELEASE_VERSION`, which exists
    only on LTS tags — a non-LTS pin fails to compile by design), so a bump
    without updating it either fails to compile or fails the test. `flatbuffers`,
    `libzmq` and the system cuBLAS are **not** guarded — check those by hand.
 3. **The documentation tables** — both `AGENTS.md` and `README.md` carry a
    dependency table; update them here too. They have drifted before: the CCCL row
-   read "3.3 (latest)" while the submodule and the guard were already at 3.4.2.
+   read "3.3 (latest)" while the pin was already at 3.4.2 (CCCL is now
+   toolkit-provided and band-guarded, but the tables still track it).
 
 ### Then re-verify the patch-after-fetch blocks
 

@@ -18,8 +18,8 @@ pinned version.
 | Component | Version | License | Usage |
 |---|---|---|---|
 | Apache Arrow | 26.0.0 | Apache-2.0 | runtime (`arrow.dll`, `arrow_cuda.dll`) |
-| NVIDIA CCCL (Thrust / libcu++ / cudax) | 3.5.0 | Apache-2.0 with LLVM Exception | runtime (header-only) |
-| CUB (part of CCCL) | 3.5.0 | BSD-3-Clause | runtime (header-only) |
+| NVIDIA CCCL (Thrust / libcu++ / cudax) | from CUDA Toolkit (band 3.2.x–3.5.x) | Apache-2.0 with LLVM Exception | build-only (provided by the CUDA Toolkit; not redistributed) |
+| CUB (part of CCCL) | from CUDA Toolkit | BSD-3-Clause | build-only (provided by the CUDA Toolkit; not redistributed) |
 | FlatBuffers | v25.12.19 | Apache-2.0 | runtime (static) |
 | libzmq | v4.3.5 | MPL-2.0 | runtime (static) |
 | simdjson | v4.6.11 | Apache-2.0 and MIT | runtime (static) |
@@ -131,11 +131,13 @@ its NOTICE file:
 
 --- end Apache Arrow NOTICE.txt ---
 
-### 1.2 NVIDIA CCCL 3.5.0 (Thrust, libcu++, cudax, CUB)
+### 1.2 NVIDIA CCCL (Thrust, libcu++, cudax, CUB) — provided by the CUDA Toolkit
 
-The complete upstream `LICENSE` is reproduced below. It contains the
-Apache-2.0 grant, the LLVM Exceptions that apply to libcu++/cudax, and
-the BSD-3-Clause license that applies to CUB.
+CCCL is no longer vendored: it comes from the CUDA Toolkit bundle
+(`<include>/cccl`) and is band-guarded at configure time; it is not
+redistributed with logestix. The upstream `LICENSE` is retained below for
+reference — it contains the Apache-2.0 grant, the LLVM Exceptions that apply
+to libcu++/cudax, and the BSD-3-Clause license that applies to CUB.
 
 --- begin CCCL LICENSE ---
 
@@ -1533,7 +1535,8 @@ The following are used only for building or testing and are not
 redistributed as part of the product binaries:
 
 - CMake (BSD-3-Clause)
-- CUDA Toolkit / nvcc (NVIDIA CUDA Toolkit EULA)
+- CUDA Toolkit / nvcc (NVIDIA CUDA Toolkit EULA), including the bundled CCCL
+  (Thrust / libcu++ / CUB / cudax, at `<include>/cccl`) — not redistributed.
 - Ninja (Apache-2.0)
 - Autoconf/Automake/Libtool helper scripts bundled inside submodules
   (`config.guess`, `ax_*.m4`), made available under the GNU GPL or

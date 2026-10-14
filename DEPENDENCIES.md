@@ -90,7 +90,7 @@ libzmq vendors a few small components with separate permissive licenses
 | Dependency | Version | Source | Integration | Local modifications |
 |---|---|---|---|---|
 | Apache Arrow | 26.0.0 | https://github.com/apache/arrow.git (`apache-arrow-26.0.0`) | FetchContent (shared) | no |
-| NVIDIA CCCL (Thrust/libcu++/cudax/CUB) | 3.5.0 | https://github.com/NVIDIA/cccl.git | submodule `third_party/cccl` (`28101b07…`) | no |
+| NVIDIA CCCL (Thrust/libcu++/cudax/CUB) | from CUDA Toolkit (band 3.2.x–3.5.x) | bundled with the CUDA Toolkit (`<include>/cccl`) — not redistributed | build-only dependency, band-guarded at configure time | no |
 | FlatBuffers | v25.12.19 | https://github.com/google/flatbuffers.git | submodule `third_party/flatbuffers` (`7e163021…`) | no |
 | libzmq | 4.3.5 | https://github.com/zeromq/libzmq.git | submodule `third_party/libzmq` (`622fc6dd…`) | no |
 | simdjson | v4.6.11 | https://github.com/simdjson/simdjson.git | submodule `third_party/simdjson` (`f5de14f0…`) | no |
