@@ -1132,31 +1132,47 @@ weights), mirror staleness, the TC fast-math flag (the batched output is
 identical with it on and off), slot capacity, and the degenerate geometry
 (I=16 fails the same way a realistic I=128 does).
 
-**Localised to the first fused GEMM.** Comparing the intermediates stage by
-stage at H=64, I=16, K=2 (routes {3,0.6},{3,0.4}) shows the two chains already
-disagree on the w13 output, before swiglu and before the reduce:
+**Localised, then identified: `RunLsxTcGemmBatch13` writes ZEROS where the
+other two implementations agree exactly.** Three implementations were run on
+the same expert, same NVFP4 activations, same staged weights (K=1, one route,
+eid 3, coeff 1):
 
-| stage1 slice | differing | example seq | example batch |
-|---|---|---|---|
-| gate, slot 0 | 16/16 | 2592 | 1103 |
-| up, slot 0 | 0/16 | 0 | 0 |
-| gate, slot 1 | 16/16 | -617 | 416.5 |
+* the per-slot TC GEMM (`RunMoERoutedFFN` with xq/xqs),
+* the fp16 V-batch core (the same entry point with xq/xqs nulled),
+* the batched TC GEMM (`RunMoERoutedTcBatch` -> `RunLsxTcGemmBatch13`).
 
-So it is `RunLsxTcGemmBatch13` against the legacy per-slot GEMM, not the
-batching, the reduce or the coefficient handling -- and the gap is not a
-coefficient scale factor (no ratio between the pairs reproduces 0.6 or 0.4).
+Measured against the fp16 core as reference:
 
-Neither implementation accepts the test's whole shape space: at H=128 the
-SEQUENTIAL chain outputs all zeros for the same comparison, so raising H is not
-a way to make the case meaningful either. Whatever shape is used next has to be
-one both paths support.
+| shape | relerr, per-slot TC | relerr, batched TC |
+|---|---|---|
+| H=64, I=16 (N=32) | **0** | **1** |
+| H=64, I=32 (N=64 = kTileN) | **0** | **1** |
 
-**The missing instrument** is now narrower than a stage-by-stage diff (done,
-above): the next step is a single-route, single-expert case at a shape both
-implementations support, comparing the w13 output against a host reference for
-the same expert -- which decides whether the batched GEMM or the legacy one is
-the wrong one. That question is still open, and the real-model gates do not
-answer it because decode never runs this comparison. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
+relerr 1.0 is exactly the error of a zero vector: the batched GEMM writes
+nothing, while the other two agree bit-for-bit and are non-zero. The N-tile
+hypothesis (N must be a multiple of kTileN=64) was tested and is **wrong** — a
+full 64-wide tile fails the same way.
+
+Earlier narrowing that still holds: the divergence is in the w13 output, before
+swiglu and before the reduce (gate slot 0 differs 16/16, up half identical
+zeros in both), so batching, the reduce and coefficient handling are all
+excluded. It is also not eviction, slot capacity or the TC fast-math flag.
+
+**Unresolved and important**: real-model decode passes FSI/CODE/DET on qwen MoE
+and ornith, so either decode does not actually take this entry point (the
+sequential one has a branch that routes to the fp16 V-batch core when the caller
+supplies batch scratch, which the generation arena may well supply), or the
+kernel is only broken at these small shapes. That is the question to answer
+next, and it decides whether this is a test fixture problem or a production
+defect.
+
+**The missing instrument**, now that three implementations have been compared:
+the production path itself. Find whether `RunMoERoutedTcBatch` is ever reached by
+real decode (grep the generation call sites for which scratch arguments it
+passes -- `RunMoERoutedFFN` silently routes to the fp16 V-batch core when batch
+scratch is supplied), and if it is, run one real-weight token through it. A
+kernel that writes zeros and a kernel that is never called look identical from
+the synthetic tests alone. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
 and DET pass on real weights, and those paths do not run this comparison.
 
 ### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
