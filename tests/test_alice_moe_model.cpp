@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "test_alice_moe_fixture.h"
@@ -111,10 +112,52 @@ TEST_CASE("alice synthetic generation is deterministic", "[alice][model]")
     REQUIRE(st.ok());
 
     {
-        lsxcommon::alice::AliceExpertHost host(out.string());
-        const auto *pe = host.Get(0, 0);
-        REQUIRE(pe != nullptr);
-        REQUIRE(!pe->w1_packed.empty());
+        // The routed-expert store must be the neutral zero-copy ExpertStore:
+        // view-only entries, mmap-backed, and bounded by an LRU. The previous
+        // AliceExpertHost copied every expert it touched into an unbounded
+        // map, which cost ~1.7 MB of host heap per expert for the life of the
+        // session — measured on real weights as a monotonic RSS climb
+        // (8.3 -> 12.7 -> 18.0 GB peak over 32/128/512 generated tokens).
+        static_assert(std::is_trivially_copyable_v<
+                          lsxcommon::alice::AliceExpertEntry>,
+                      "AliceExpertEntry must be a view, never an owner");
+        static_assert(sizeof(lsxcommon::alice::AliceExpertEntry) <= 128,
+                      "AliceExpertEntry must hold pointers, not byte buffers");
+
+        // max_open = 2 up front: Load() warms at most that many, so the
+        // eviction assertions below exercise the real LRU path.
+        auto db = lsxcommon::alice::load_alice_expert_index(
+            out.string(), alicetest::kLayers, alicetest::kExperts, 2);
+        REQUIRE(db.entries.size() > 0);
+        REQUIRE(db.num_layers == alicetest::kLayers);
+        REQUIRE(db.experts_per_layer == alicetest::kExperts);
+
+        cudaStream_t stream = nullptr;
+        lsxcommon::alice::ensure_alice_expert_resident(db, 0, 0, stream);
+        const lsxcommon::alice::AliceExpertEntry &e = db.entries[0];
+        REQUIRE(e.host_w1 != nullptr);
+        REQUIRE(e.host_w2 != nullptr);
+        REQUIRE(e.host_w3 != nullptr);
+        REQUIRE(e.w1_bytes > 0);
+        REQUIRE(e.w1_global_scale > 0.0f);
+        // Zero-copy: the keepalive (mmap + RecordBatch) is still held, so the
+        // pointers above are views into the mapping, not owned copies.
+        REQUIRE(db.batches[0] != nullptr);
+        REQUIRE(db.mmaps[0] != nullptr);
+        const uint8_t *w1 = e.host_w1;
+        // Re-touching a resident expert hands back the identical view rather
+        // than re-parsing or re-copying.
+        lsxcommon::alice::ensure_alice_expert_resident(db, 0, 0, stream);
+        REQUIRE(db.entries[0].host_w1 == w1);
+
+        // Bounded: over max_open the LRU tail is retired instead of growing a
+        // new mapping — this is the property that caps host memory.
+        lsxcommon::alice::ensure_alice_expert_resident(db, 0, 1, stream);
+        lsxcommon::alice::ensure_alice_expert_resident(db, 0, 2, stream);
+        REQUIRE(db.entries[0].host_w1 == nullptr);  // evicted
+        REQUIRE(db.entries[1].host_w1 != nullptr);
+        REQUIRE(db.entries[2].host_w1 != nullptr);
+        lsxcommon::alice::free_alice_expert_index(db);
     }
 
     lsxcommon::EnsureModelRegistry();

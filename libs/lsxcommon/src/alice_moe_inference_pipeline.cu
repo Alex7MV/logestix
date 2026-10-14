@@ -81,12 +81,12 @@ struct ExpertCache {
            off_w2s = 0;
     size_t len_w1p = 0, len_w1s = 0, len_w2p = 0, len_w2s = 0;
 
-    bool Init(cudaStream_t s, const PackedExpert &ex, int want)
+    bool Init(cudaStream_t s, const AliceExpertEntry &ex, int want)
     {
-        len_w1p = ex.w1_packed.size();
-        len_w1s = ex.w1_scales.size();
-        len_w2p = ex.w2_packed.size();
-        len_w2s = ex.w2_scales.size();
+        len_w1p = static_cast<size_t>(ex.w1_bytes);
+        len_w1s = static_cast<size_t>(ex.w1_scales_bytes);
+        len_w2p = static_cast<size_t>(ex.w2_bytes);
+        len_w2s = static_cast<size_t>(ex.w2_scales_bytes);
         if (len_w1p == 0 || len_w2p == 0) return false;
         off_w1p = 0;
         off_w1s = off_w1p + len_w1p;
@@ -114,7 +114,7 @@ struct ExpertCache {
     }
 
     // Returns the slot index for (layer, expert), uploading on a miss.
-    int Get(cudaStream_t s, int layer, int expert, const PackedExpert &pe)
+    int Get(cudaStream_t s, int layer, int expert, const AliceExpertEntry &pe)
     {
         const int32_t key = layer * 100000 + expert;
         auto it = map.find(key);
@@ -135,17 +135,17 @@ struct ExpertCache {
             map.erase(tbl[static_cast<size_t>(slot)].first);
         }
         uint8_t *base = pool + static_cast<size_t>(slot) * stride;
-        cudaMemcpyAsync(base + off_w1p, pe.w1_packed.data(), len_w1p,
+        cudaMemcpyAsync(base + off_w1p, pe.host_w1, len_w1p,
                         cudaMemcpyHostToDevice, s);
-        cudaMemcpyAsync(base + off_w1s, pe.w1_scales.data(), len_w1s,
+        cudaMemcpyAsync(base + off_w1s, pe.host_w1_scales, len_w1s,
                         cudaMemcpyHostToDevice, s);
-        cudaMemcpyAsync(base + off_w3p, pe.w3_packed.data(), len_w1p,
+        cudaMemcpyAsync(base + off_w3p, pe.host_w3, len_w1p,
                         cudaMemcpyHostToDevice, s);
-        cudaMemcpyAsync(base + off_w3s, pe.w3_scales.data(), len_w1s,
+        cudaMemcpyAsync(base + off_w3s, pe.host_w3_scales, len_w1s,
                         cudaMemcpyHostToDevice, s);
-        cudaMemcpyAsync(base + off_w2p, pe.w2_packed.data(), len_w2p,
+        cudaMemcpyAsync(base + off_w2p, pe.host_w2, len_w2p,
                         cudaMemcpyHostToDevice, s);
-        cudaMemcpyAsync(base + off_w2s, pe.w2_scales.data(), len_w2s,
+        cudaMemcpyAsync(base + off_w2s, pe.host_w2_scales, len_w2s,
                         cudaMemcpyHostToDevice, s);
         tbl[static_cast<size_t>(slot)].first = key;
         tbl[static_cast<size_t>(slot)].second = ++clk;
@@ -204,7 +204,7 @@ inline cudaError_t AddInto(cudaStream_t s, __half *acc, const __half *b, int n)
 } // namespace
 
 cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw,
-                               AliceExpertHost &experts,
+                               AliceExpertDb &experts,
                                const std::vector<int32_t> &prompt, int max_new,
                                int eos_id, AliceGenerationResult &result,
                                lsxcommon::sample::ISampler &sampler,
@@ -274,8 +274,11 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
     std::string stage = "start";
     ExpertCache ec;
     {
-        const PackedExpert *sample = experts.Get(0, 0);
-        if (!sample || !ec.Init(stream, *sample, E * L)) {
+        ensure_alice_expert_resident(experts, 0, 0, stream);
+        const AliceExpertEntry *sample = experts.entries.empty()
+                                             ? nullptr
+                                             : &experts.entries[0];
+        if (!sample || !sample->host_w1 || !ec.Init(stream, *sample, E * L)) {
             result.error_msg = "expert device cache init failed";
             return cudaErrorMemoryAllocation;
         }
@@ -420,26 +423,31 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
             cudaStreamSynchronize(stream);
             cudaMemsetAsync(acc, 0, HID * sizeof(__half), stream);
             for (int k = 0; k < TOPK; ++k) {
-                const PackedExpert *pe = experts.Get(l, hidx[k]);
-                if (!pe) {
+                ensure_alice_expert_resident(experts, l, hidx[k], stream);
+                const size_t pe_idx = static_cast<size_t>(l) *
+                                          static_cast<size_t>(E) +
+                                      static_cast<size_t>(hidx[k]);
+                if (pe_idx >= experts.entries.size() ||
+                    experts.entries[pe_idx].host_w1 == nullptr) {
                     result.error_msg = "missing routed expert layer=" +
                                        std::to_string(l) + " e=" +
                                        std::to_string(hidx[k]);
                     return cudaErrorInvalidValue;
                 }
-                const int slot = ec.Get(stream, l, hidx[k], *pe);
+                const AliceExpertEntry &pe = experts.entries[pe_idx];
+                const int slot = ec.Get(stream, l, hidx[k], pe);
                 if (slot < 0) {
                     result.error_msg = "expert device cache miss (no slot)";
                     return cudaErrorMemoryAllocation;
                 }
                 const uint8_t *ebase =
                     ec.pool + static_cast<size_t>(slot) * ec.stride;
-                stage="moe_expert_w1"; e = ExpertGemmSlot(stream, ec, ebase, 1, mixed, mgate, MI, HID, pe->w1_global_scale);
+                stage="moe_expert_w1"; e = ExpertGemmSlot(stream, ec, ebase, 1, mixed, mgate, MI, HID, pe.w1_global_scale);
                 if (e) return e;
-                stage="moe_expert_w3"; e = ExpertGemmSlot(stream, ec, ebase, 3, mixed, mup, MI, HID, pe->w3_global_scale);
+                stage="moe_expert_w3"; e = ExpertGemmSlot(stream, ec, ebase, 3, mixed, mup, MI, HID, pe.w3_global_scale);
                 if (e) return e;
                 e = RunAliceSwiGLU(stream, mgate, mup, mact, MI); if (e) return e;
-                stage="moe_expert_w2"; e = ExpertGemmSlot(stream, ec, ebase, 2, mact, mdown, HID, MI, pe->w2_global_scale);
+                stage="moe_expert_w2"; e = ExpertGemmSlot(stream, ec, ebase, 2, mact, mdown, HID, MI, pe.w2_global_scale);
                 if (e) return e;
                 axpy_kernel<<<(HID + kBlock - 1) / kBlock, kBlock, 0, stream>>>(
                     acc, mdown, hw[(size_t)k], HID);

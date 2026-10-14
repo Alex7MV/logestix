@@ -54,7 +54,9 @@ bool AliceFoundation80BModel::Load()
         return AbortLoad();
     }
     cudaStreamSynchronize(stream());
-    experts_ = std::make_unique<alice::AliceExpertHost>(cfg_.model_path);
+    experts_ = std::make_unique<alice::AliceExpertDb>(
+        alice::load_alice_expert_index(cfg_.model_path, top_.num_layers,
+                                       top_.num_experts));
     weights_loaded_ = true;
     resident_bytes_ = pw_.resident_bytes;
     // Governor accounting (lifecycle-unification II): the pinned dense set is
@@ -154,7 +156,10 @@ bool AliceFoundation80BModel::ParseToolCalls(
 
 void AliceFoundation80BModel::TeardownWeights()
 {
-    experts_.reset();
+    if (experts_) {
+        alice::free_alice_expert_index(*experts_);
+        experts_.reset();
+    }
     if (weights_loaded_) {
         alice::FreeAlicePinnedWeights(pw_);
         weights_loaded_ = false;

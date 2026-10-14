@@ -353,23 +353,37 @@ bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
     return true;
 }
 
-const PackedExpert *AliceExpertHost::Get(int layer, int expert)
+AliceExpertDb load_alice_expert_index(const std::string &model_path,
+                                      int num_layers, int experts_per_layer,
+                                      size_t max_open)
 {
-    const std::int64_t key =
-        static_cast<std::int64_t>(layer) * 100000 + expert;
-    auto it = cache_.find(key);
-    if (it != cache_.end()) return &it->second;
-    const fs::path p = fs::path(root_) / "logestix" / "experts" /
-                       ("layer_" + std::to_string(layer)) /
-                       ("exp_" + std::to_string(expert) + ".arrow");
-    auto batch = ReadRecordBatchFromFile(p);
-    if (!batch.ok()) return nullptr;
-    auto rows = ExpertSchema::UnpackBatch(*batch);
-    if (!rows.ok()) return nullptr;
-    auto [ins, ok] = cache_.emplace(key, std::move(*rows));
-    (void)ok;
-    return &ins->second;
+    AliceExpertDb db;
+    // No per-model parser: the shared ExpertStore<TEntry>::DecodeEntry()
+    // extracts the nine ExpertSchema columns into AliceExpertEntry.
+    db.num_layers = num_layers;
+    db.experts_per_layer = experts_per_layer;
+    db.first_moe_layer = 0;   // every layer routes (block-4 full-attn too)
+    db.log_prefix = "[alice_load] ";
+    db.mmap_fail_verb = "expert mmap fail ";
+    db.emit_diag = false;
+    db.log_batch_fails = true;
+    // Bound the mapped set. Alice carries 48x512 experts (~38 GiB of NVFP4),
+    // far more than any other family, so the store default (65536 = map
+    // everything) is not appropriate here: an explicit cap keeps the host
+    // mapping bounded and lets the LRU retire the tail. Each entry is a file
+    // mmap, so what the cap bounds is mapped file, not heap.
+    db.max_open = max_open ? max_open : kAliceExpertMaxOpen;
+    db.Load(model_path, /*fallback=*/true);
+    return db;
 }
+
+void ensure_alice_expert_resident(AliceExpertDb &db, int layer, int expert,
+                                  cudaStream_t stream)
+{
+    db.EnsureResident(layer, expert, stream);
+}
+
+void free_alice_expert_index(AliceExpertDb &db) { db.Free(); }
 
 bool AliceTopologyMatchesFrozen(const AliceMoeTopology &top)
 {

@@ -6,9 +6,9 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "lsxcommon/expert_store.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/schema.h"
 
@@ -117,16 +117,47 @@ bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
                             cudaStream_t stream);
 void FreeAlicePinnedWeights(AlicePinnedWeights &pw);
 
-// Host-resident routed-expert store with lazy per-expert arrow loading.
-class AliceExpertHost {
-public:
-    explicit AliceExpertHost(std::string root) : root_(std::move(root)) {}
-    // Returns nullptr on missing/corrupt file.
-    const PackedExpert *Get(int layer, int expert);
-
-private:
-    std::string root_;
-    std::unordered_map<std::int64_t, PackedExpert> cache_;
+// Host-resident routed-expert store: the neutral zero-copy ExpertStore, not a
+// family-private owning map. Entries are non-owning views into a file mmap (the
+// RecordBatch + mmap are kept alive by the store), so touching an expert costs
+// one mmap + IPC parse and no heap copy, and the LRU bounds how many stay
+// mapped at once.
+struct AliceExpertEntry {
+    const uint8_t *host_w1 = nullptr;
+    const uint8_t *host_w2 = nullptr;
+    const uint8_t *host_w3 = nullptr;
+    const uint8_t *host_w1_scales = nullptr;
+    const uint8_t *host_w2_scales = nullptr;
+    const uint8_t *host_w3_scales = nullptr;
+    float w1_global_scale = 1.0f;
+    float w2_global_scale = 1.0f;
+    float w3_global_scale = 1.0f;
+    int64_t w1_bytes = 0;
+    int64_t w2_bytes = 0;
+    int64_t w3_bytes = 0;
+    int64_t w1_scales_bytes = 0;
+    int64_t w2_scales_bytes = 0;
+    int64_t w3_scales_bytes = 0;
 };
+
+using AliceExpertDb = gpu::expert_store::ExpertStore<AliceExpertEntry>;
+
+// Opens <root>/logestix/experts (or <root>/experts) and warms the store. The
+// geometry comes from the caller (the loaded model.index.json, which
+// LoadAliceTopology has already checked against the frozen passport) so the
+// store never hardcodes a second copy of the numbers. Every Alice layer is MoE
+// (the full-attention layer of each 4-block still routes), so first_moe_layer
+// is 0.
+// @p max_open  cap on simultaneously mapped experts (0 selects
+// kAliceExpertMaxOpen). Entries are file mmaps, so the cap bounds mapped file,
+// not heap.
+constexpr size_t kAliceExpertMaxOpen = 4096;
+AliceExpertDb load_alice_expert_index(const std::string &model_path,
+                                      int num_layers, int experts_per_layer,
+                                      size_t max_open = kAliceExpertMaxOpen);
+// Maps the expert in if absent, retiring the LRU tail past max_open.
+void ensure_alice_expert_resident(AliceExpertDb &db, int layer, int expert,
+                                  cudaStream_t stream);
+void free_alice_expert_index(AliceExpertDb &db);
 
 } // namespace lsxcommon::alice

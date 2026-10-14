@@ -40,7 +40,7 @@ protected:
 
     alice::AliceMoeTopology top_;
     alice::AlicePinnedWeights pw_;
-    std::unique_ptr<alice::AliceExpertHost> experts_;
+    std::unique_ptr<alice::AliceExpertDb> experts_;
     bool weights_loaded_ = false;
 };
 

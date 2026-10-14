@@ -27,7 +27,7 @@ struct AliceGenerationResult {
 // token-by-token (fresh KV cache + KDA state per step, full O(T^2) attention).
 // Routed experts stream from the host store on demand.
 cudaError_t RunAliceGeneration(
-    cudaStream_t stream, const AlicePinnedWeights &pw, AliceExpertHost &experts,
+    cudaStream_t stream, const AlicePinnedWeights &pw, AliceExpertDb &experts,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     AliceGenerationResult &result,
     lsxcommon::sample::ISampler &sampler = lsxcommon::sample::DefaultSampler(),

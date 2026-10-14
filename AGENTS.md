@@ -237,7 +237,8 @@ procedure — `perf-tuning-a-model`.
   because the exponential KDA gate amplifies their quantization), the
   model-neutral **SentencePiece-BPE** tokenizer bridge
   (`BuildTokenizerArrowFilesSentencePiece` + `tokenizer_kind="sp-bpe"`),
-  `alice_moe_load.{h,cpp}` (pinned graph + `AliceExpertHost` lazy host store),
+  `alice_moe_load.{h,cpp}` (pinned graph + the neutral zero-copy
+  `ExpertStore` routed-expert store, `AliceExpertDb`),
   `alice_moe_kernels.{h,cu}` (ZC-RMSNorm / AttnRes depth-softmax / sigmoid
   top-k router / SwiGLU / KDA conv+delta recurrence), `alice_moe_inference.{h,cu}`
   (gated full attention: per-head q/gate split + ZC q/k norm + partial RoPE +
