@@ -1158,15 +1158,28 @@ swiglu and before the reduce (gate slot 0 differs 16/16, up half identical
 zeros in both), so batching, the reduce and coefficient handling are all
 excluded. It is also not eviction, slot capacity or the TC fast-math flag.
 
-Read so far in `TcGemmKernel`, all consistent and all still not the cause: the
+**The slot table is not the problem.** Dumped from device after the batch call:
+`dev_slot=0`, `gs1 = gs2 = gs3 = 0.0833333`, `coeff = 0.6 / 0.4`, matching
+`records[0][3]` exactly -- both routes correctly resolve to the same slot. The
+batched epilogue scales each output column by `batch_slots[slot].gs1` (cols <
+N/2) or `gs3`, so zeros in the table would have produced the observed all-zero
+output; the table is sound, which leaves the MMA/TMA path itself.
+
+Read so far in `TcGemmKernel`, all consistent and none of them the cause: the
 output store is masked by `r0 < seq` and the batch dispatch passes `seq = 1`,
-which is right for decode (one token, N columns); `RunLsxTcGemmBatch13` passes
-`w_off = s_off = 0`, which is right for the fused slot; `wm = warp >> 1` gives
-the four 16-row M-warps of the 64-row tile that the 2026-10-10 M-tile fix
-restored. So the zero must come from inside the MMA path -- the per-slot scale
-taken from `batch_slots[slot].gs*`, the weight TMA descriptor, or the
-accumulation over K -- and telling those apart needs a targeted dump at the
-failing shape, not more reading.
+right for decode (one token across N columns); `RunLsxTcGemmBatch13` passes
+`w_off = s_off = 0`, right for the fused slot; `wm = warp >> 1` gives the four
+16-row M-warps of the 64-row tile restored by the 2026-10-10 M-tile fix.
+
+**A measurement caveat that invalidates part of this record.** Two "I=128"
+observations in this file -- "at I=128 the sequential and fp16 paths produce
+zeros while the batch is non-zero", and the N-tile conclusion drawn from it --
+are WRONG: changing `I` inside the test case does not change the synthetic
+checkpoint, so the kernel was run with I=128 parameters against I=16 weights
+(`records[0][0].w1_bytes` stayed 512 = 64x16/2 while the case declared I=128).
+The same self-inflicted failure as editing a test by line number earlier in this
+session. Those runs say nothing about the batched path and are retracted; only
+the I=16 (fixture-native) and real-weight results stand.
 
 The production path IS live, and it changes real generations.** `tc_batch` is
 enabled when TC fast-math is on (the default perf policy), the segment scales
