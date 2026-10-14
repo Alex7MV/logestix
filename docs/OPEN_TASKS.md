@@ -1238,7 +1238,39 @@ pipeline comment claims ("bit-identical, pinned by test_qwen_moe_kernels") is
 false, and that the batched path has never actually been verified against a
 logits-level oracle.
 
-**The missing instrument**, stated after the above: a comparison finer than the
+**The missing instrument**, stated after the above:
+
+**Verification pass (re-checked every claim in this section from scratch).**
+
+Confirmed, through instrumentation the tests own rather than ad-hoc probes:
+
+* `test_qwen_moe_kernels` at I=16: `DIFF n=64/64 worst=1.26e6 @20 seq=-1.27e6
+  batch=-4547.5`; at I=512: `DIFF n=64/64 worst=4.28e6 @34 seq=4.28e6
+  batch=1594.8`. Every element differs, catastrophically. `test_ornith_moe_kernels`
+  fails the same way.
+* Real weights, identical prompt ("The capital of France is"), only the knob
+  changed: batch ON -> "Paris is a major tourist destination, attracting
+  millions of visitors each"; batch OFF -> "Paris is located in the north-central
+  part of France, along the Seine River." Deterministic, reproduced.
+* SelfCheck/FSI/DET for qwen3.6 **pass with the batch on** (34s / 56.7s / 91.2s)
+  **and FSI passes with it off** (56.9s). The gates genuinely cannot see this.
+* Perf, 256 tokens: 166.7 vs 81.5 t/s, 2.04x -- reproduced.
+* TMA row-width hypothesis refuted (I=512, rowB=256, test-own DIFF above).
+
+**Correction to this section's own earlier claim.** It said the legacy path is
+"bit-identical to the fp16 core at every geometry tested". That is a KERNEL-level
+result (the neutral `RunMoERoutedFFN` fp16 backend vs its per-slot TC backend on
+the same inputs), and it stands. It does NOT make the legacy path the faithful
+PRODUCTION reference, and this section should not have implied it: the obvious
+production control, `LSX_PERF_AUTO=0`, resets the whole knob set
+(`gpu_perf.cpp` `r = {LsxPerfKnobs{}, kLegacy}`: split-K, GEMV MiB, expert slots,
+dual-stream, not just fast-math) and produces `"The capital of France is London.
+The capital of France is Berlin."` -- nonsense from an uncontrolled config, not a
+clean fp16 oracle. So "which side is faithful in production" remains UNRESOLVED;
+what is established is only that the two TC paths disagree, deterministically,
+and that the acceptance gates cannot tell them apart.
+
+ a comparison finer than the
 canonical answer. The goldens prove the batched path is adequate, the red test
 and the real-weight A/B prove it is not identical to the legacy path, and only a
 logits-level oracle (or the fp16 core as reference) can say which one is
