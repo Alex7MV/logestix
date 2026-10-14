@@ -1510,62 +1510,106 @@ int EnsureMoEExpertResident(moe::MoEExpertStore &store, int layer, int eid,
         store.gemv_ready = false;   // invalidate until re-uploaded
     }
 
-    // Payload from the neutral store's mmap view: map it in (evicting the LRU
-    // tail past max_open) and stage the six segments. The retired arena made
-    // [w13 = w1|w3] and [s13 = s1|s3] contiguous on the host, so staging was
-    // fewer, larger copies; with views it is 6 segment copies, which costs a
-    // few microseconds on a miss and 17-61 GiB of host RAM not at all.
-    EnsureMoEExpertView(store.experts, layer, eid, stream);
     const size_t eidx = static_cast<size_t>(layer) *
                             static_cast<size_t>(store.num_experts) +
                         static_cast<size_t>(eid);
-    if (eidx >= store.experts.entries.size() ||
-        store.experts.entries[eidx].host_w1 == nullptr) {
-        error = absl::StrCat("expert host view unavailable: layer ", layer,
-                             " eid ", eid);
-        return -1;
-    }
-    const MoEExpertEntry &v = store.experts.entries[eidx];
+    cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
     uint8_t *dst_pack =
         cache.d_pack + static_cast<int64_t>(slot) * cache.pack_stride;
     uint8_t *dst_scale =
         cache.d_scale + static_cast<int64_t>(slot) * cache.scale_stride;
-    // Slot layout stays FUSED for inference: [w13 = w1|w3][w2] and
-    // [s13 = s1|s3][s2] so the gate/up projections run as ONE GEMM with
-    // per-segment global scales (RunMoERoutedFFN). Only the SOURCE is no
-    // longer one contiguous host blob.
-    cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
-    struct Seg { const uint8_t *src; int64_t bytes; };
-    // Segment ORDER is load-bearing: the device slot is FUSED for inference,
-    // [w13 = w1|w3][w2] and [s13 = s1|s3][s2], which is what the batched
-    // kernels size off (records[..][0].w1_bytes + w3_bytes for the w13 region).
-    // The pre-ExpertStore staging was already segment-wise over the arena with
-    // this same order, so nothing about the layout moves.
-    const Seg psegs[3] = {{v.host_w1, v.w1_bytes},
-                          {v.host_w3, v.w3_bytes},
-                          {v.host_w2, v.w2_bytes}};
-    const Seg ssegs[3] = {{v.host_w1_scales, v.w1_scales_bytes},
-                          {v.host_w3_scales, v.w3_scales_bytes},
-                          {v.host_w2_scales, v.w2_scales_bytes}};
-    uint8_t *pk = dst_pack;
-    for (const auto &seg : psegs) {
-        if (cudaMemcpyAsync(pk, seg.src, static_cast<size_t>(seg.bytes),
-                            cudaMemcpyHostToDevice,
-                            copy_stream) != cudaSuccess) {
-            error = "expert H2D pack staging failed";
+
+    // Two storage representations share this record type: the neutral view
+    // store (qwen MoE, ornith, mistral) and the legacy pinned arena (glm-5.3-
+    // flash, docs/OPEN_TASKS.md §V). Pick whichever actually holds the payload
+    // rather than assuming one, or a family that was not migrated stops staging
+    // entirely and the failure surfaces as cudaErrorUnknown from the kernel.
+    // Decide by WHICH STORE IS POPULATED, then map before probing: a cold entry
+    // has a null pointer until EnsureMoEExpertView maps it, so probing first
+    // makes every first-touch look "unavailable" (ornith prestage died on
+    // layer 0 eid 0 that way).
+    const bool view_backed = eidx < store.experts.entries.size() &&
+                             !store.experts.entries.empty();
+    if (view_backed) {
+        EnsureMoEExpertView(store.experts, layer, eid, stream);
+        if (store.experts.entries[eidx].host_w1 == nullptr) {
+            error = absl::StrCat("expert host view unavailable: layer ", layer,
+                                 " eid ", eid);
             return -1;
         }
-        pk += seg.bytes;
-    }
-    uint8_t *sc = dst_scale;
-    for (const auto &seg : ssegs) {
-        if (cudaMemcpyAsync(sc, seg.src, static_cast<size_t>(seg.bytes),
-                            cudaMemcpyHostToDevice,
-                            copy_stream) != cudaSuccess) {
-            error = "expert H2D scale staging failed";
+        const MoEExpertEntry &v = store.experts.entries[eidx];
+        // Segment ORDER is load-bearing: the device slot is FUSED for
+        // inference, [w13 = w1|w3][w2] and [s13 = s1|s3][s2], which is what the
+        // batched kernels size off (records[..][0].w1_bytes + w3_bytes for the
+        // w13 region). The pre-ExpertStore staging was already segment-wise
+        // with this same order, so nothing about the layout moves.
+        struct Seg { const uint8_t *src; int64_t bytes; };
+        const Seg psegs[3] = {{v.host_w1, v.w1_bytes},
+                              {v.host_w3, v.w3_bytes},
+                              {v.host_w2, v.w2_bytes}};
+        const Seg ssegs[3] = {{v.host_w1_scales, v.w1_scales_bytes},
+                              {v.host_w3_scales, v.w3_scales_bytes},
+                              {v.host_w2_scales, v.w2_scales_bytes}};
+        uint8_t *pk = dst_pack;
+        for (const auto &seg : psegs) {
+            if (cudaMemcpyAsync(pk, seg.src, static_cast<size_t>(seg.bytes),
+                                cudaMemcpyHostToDevice,
+                                copy_stream) != cudaSuccess) {
+                error = "expert H2D pack staging failed";
+                return -1;
+            }
+            pk += seg.bytes;
+        }
+        uint8_t *sc = dst_scale;
+        for (const auto &seg : ssegs) {
+            if (cudaMemcpyAsync(sc, seg.src, static_cast<size_t>(seg.bytes),
+                                cudaMemcpyHostToDevice,
+                                copy_stream) != cudaSuccess) {
+                error = "expert H2D scale staging failed";
+                return -1;
+            }
+            sc += seg.bytes;
+        }
+    } else {
+        const uint8_t *slab = static_cast<size_t>(layer) < store.h_slabs.size()
+                                 ? store.h_slabs[static_cast<size_t>(layer)]
+                                 : nullptr;
+        if (!slab) {
+            error = absl::StrCat("expert host payload unavailable: layer ",
+                                 layer, " eid ", eid);
             return -1;
         }
-        sc += seg.bytes;
+        const auto &r = store.records[static_cast<size_t>(layer)]
+                                      [static_cast<size_t>(eid)];
+        struct Seg { int64_t off; int64_t bytes; };
+        const Seg psegs[3] = {{r.slab_w1_off, r.w1_bytes},
+                              {r.slab_w3_off, r.w3_bytes},
+                              {r.slab_w2_off, r.w2_bytes}};
+        const Seg ssegs[3] = {{r.slab_s1_off, r.s1_bytes},
+                              {r.slab_s3_off, r.s3_bytes},
+                              {r.slab_s2_off, r.s2_bytes}};
+        uint8_t *pk = dst_pack;
+        for (const auto &seg : psegs) {
+            if (cudaMemcpyAsync(pk, slab + seg.off,
+                                static_cast<size_t>(seg.bytes),
+                                cudaMemcpyHostToDevice,
+                                copy_stream) != cudaSuccess) {
+                error = "expert H2D pack staging failed";
+                return -1;
+            }
+            pk += seg.bytes;
+        }
+        uint8_t *sc = dst_scale;
+        for (const auto &seg : ssegs) {
+            if (cudaMemcpyAsync(sc, slab + seg.off,
+                                static_cast<size_t>(seg.bytes),
+                                cudaMemcpyHostToDevice,
+                                copy_stream) != cudaSuccess) {
+                error = "expert H2D scale staging failed";
+                return -1;
+            }
+            sc += seg.bytes;
+        }
     }
     return slot;
 }
@@ -1725,7 +1769,8 @@ bool AllocateMoEExpertCache(MoEExpertStore &store, int slots,
                                 std::string &error)
 {
     if (slots <= 0 || store.num_layers <= 0 || store.num_experts <= 0 ||
-        store.experts.entries.empty() || store.records.empty()) {
+        store.records.empty() ||
+        (store.experts.entries.empty() && store.h_slabs.empty())) {
         error = "expert store not loaded";
         return false;
     }

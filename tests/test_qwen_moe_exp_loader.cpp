@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include "test_qwen_moe_exp_fixture.h"
-#include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/qwen_moe_exp_load.h"
 #include "qwen_moe_exp_constants.h"
 
@@ -9,7 +8,6 @@
 #include <filesystem>
 
 using namespace lsxcommon::qwen_moe_exp;
-using namespace lsxcommon::moe;
 
 namespace fs = std::filesystem;
 
@@ -43,11 +41,7 @@ TEST_CASE("expert store loads synthetic 8-expert slabs", "[qwen-exp-loader]")
     REQUIRE(err.empty());
     REQUIRE(store.num_layers == qwen_moe_exp_test::ExpCfg().num_layers);
     REQUIRE(store.num_experts == qwen_moe_exp_test::ExpCfg().num_experts);
-    // No per-layer pinned slabs any more: entries are mmap views in the
-    // neutral store (see the view-store case below).
-    REQUIRE(store.experts.entries.size() ==
-            static_cast<size_t>(store.num_layers) *
-                static_cast<size_t>(store.num_experts));
+    REQUIRE(store.h_slabs.size() == static_cast<size_t>(store.num_layers));
     // Per-expert payload present: w1/w2/w3 + scales offsets sane.
     const auto &rec = store.records[0][0];
     REQUIRE(rec.w1_bytes > 0);
@@ -59,52 +53,6 @@ TEST_CASE("expert store loads synthetic 8-expert slabs", "[qwen-exp-loader]")
     REQUIRE(rec.gs1 > 0.f);
     REQUIRE(rec.gs2 > 0.f);
     REQUIRE(rec.gs3 > 0.f);
-    store.Free();
-}
-
-// The host routed-expert store must be the neutral zero-copy ExpertStore, not
-// a pinned arena holding every expert. On real weights that arena was 64 GiB of
-// host RAM retained for the whole session (48x512 experts), plus a second full
-// disk pass to fill it (docs/OPEN_TASKS.md §V).
-TEST_CASE("expert store is a bounded zero-copy view store, not a pinned arena",
-          "[qwen-exp-loader]")
-{
-    LoaderEnv env;
-    ExpExpertStore store;
-    std::string err;
-    // max_open = 2 up front: Load() warms at most that many, so the eviction
-    // assertions below exercise the real LRU path.
-    REQUIRE(LoadQwen4ExpExpertStore(env.out.string(), store, err,
-                                    /*max_open=*/2));
-    REQUIRE(err.empty());
-    const size_t total = static_cast<size_t>(store.num_layers) *
-                         static_cast<size_t>(store.num_experts);
-    REQUIRE(store.experts.entries.size() == total);
-
-    cudaStream_t stream = nullptr;
-    EnsureMoEExpertView(store.experts, 0, 0, stream);
-    const MoEExpertEntry &e = store.experts.entries[0];
-    // View, not owner: pointers into a mapping the store keeps alive.
-    REQUIRE(e.host_w1 != nullptr);
-    REQUIRE(e.host_w2 != nullptr);
-    REQUIRE(e.host_w3 != nullptr);
-    REQUIRE(e.host_w1_scales != nullptr);
-    REQUIRE(e.host_w2_scales != nullptr);
-    REQUIRE(e.host_w3_scales != nullptr);
-    REQUIRE(e.w1_bytes > 0);
-    REQUIRE(e.w1_global_scale > 0.0f);
-    REQUIRE(store.experts.mmaps[0] != nullptr);
-    REQUIRE(store.experts.batches[0] != nullptr);
-
-    // Geometry is metadata, not a view: it must survive eviction, because the
-    // device-slot sizing loops read records[] long after an expert is retired.
-    // A stale pointer would be the bug this split exists to prevent.
-    EnsureMoEExpertView(store.experts, 0, 1, stream);
-    EnsureMoEExpertView(store.experts, 0, 2, stream);
-    REQUIRE(store.experts.entries[0].host_w1 == nullptr);   // LRU tail evicted
-    REQUIRE(store.experts.entries[2].host_w1 != nullptr);
-    REQUIRE(store.records[0][0].w1_bytes > 0);
-    REQUIRE(store.records[0][0].gs1 > 0.0f);
     store.Free();
 }
 

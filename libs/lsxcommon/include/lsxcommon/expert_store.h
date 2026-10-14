@@ -66,6 +66,10 @@ struct ExpertStore {
     // writes exp_<e>.arrow zero-padded to 3 digits. Only the file NAME differs
     // — the payload schema is ExpertSchema for every family.
     bool zero_pad_expert_names = false;
+    // PinChunked chunk size (0 = the 16 GiB default). A window pinned from the
+    // LRU warm set is a few GiB, and allocating whole 16 GiB chunks for it
+    // would lock 4x the memory it is meant to save.
+    int64_t pin_chunk_bytes = 0;
     std::string error_msg;
 
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
@@ -428,6 +432,8 @@ struct ExpertStore {
 #if defined(__unix__) || defined(__APPLE__)
         if (entries.empty()) return false;
         constexpr int64_t kPinChunkBytes = int64_t{16} << 30;
+        const int64_t chunk_bytes =
+            pin_chunk_bytes > 0 ? pin_chunk_bytes : kPinChunkBytes;
         auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
         auto t0 = std::chrono::steady_clock::now();
 
@@ -461,7 +467,7 @@ struct ExpertStore {
                           + aln(en.w2_bytes) + aln(en.w1_scales_bytes)
                           + aln(en.w3_scales_bytes) + aln(en.w2_scales_bytes);
                 }
-                if (cur != 0 && cur + block > kPinChunkBytes) {
+                if (cur != 0 && cur + block > chunk_bytes) {
                     ++chunk_idx;
                     cur = 0;
                 }
@@ -508,7 +514,7 @@ struct ExpertStore {
                     const int i = next.fetch_add(1);
                     if (i >= n_chunks) return;
                     void *chunk = mmap(nullptr,
-                                       static_cast<size_t>(kPinChunkBytes),
+                                       static_cast<size_t>(chunk_bytes),
                                        PROT_READ | PROT_WRITE,
                                        MAP_PRIVATE | MAP_ANONYMOUS
                                            | MAP_NORESERVE,
@@ -516,7 +522,7 @@ struct ExpertStore {
                     if (chunk == MAP_FAILED) continue;
                     pinned_pools[static_cast<size_t>(i)] = chunk;
                     pinned_chunk_sizes[static_cast<size_t>(i)] =
-                        static_cast<size_t>(kPinChunkBytes);
+                        static_cast<size_t>(chunk_bytes);
                 }
             };
             if (n_threads <= 0)
@@ -532,14 +538,14 @@ struct ExpertStore {
             if (!c) all_ok = false;
         if (!all_ok) {
             for (void *c : pinned_pools)
-                if (c) munmap(c, static_cast<size_t>(kPinChunkBytes));
+                if (c) munmap(c, static_cast<size_t>(chunk_bytes));
             pinned_pools.clear();
             pinned_registered.clear();
             pinned_chunk_sizes.clear();
             return false;
         }
         pinned_bytes = static_cast<std::size_t>(n_chunks)
-                     * static_cast<std::size_t>(kPinChunkBytes);
+                     * static_cast<std::size_t>(chunk_bytes);
 
         // Phase 3 — parallel fault-at-write span copies.
         {
