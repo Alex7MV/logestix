@@ -1463,6 +1463,18 @@ cudaError_t RunMoEAccInitForTest(cudaStream_t stream,
     return cudaGetLastError();
 }
 
+void EnsureMoEExpertView(moe::MoEExpertDb &db, int layer, int eid,
+                         cudaStream_t stream)
+{
+    if (layer < 0 || layer >= db.num_layers || eid < 0 ||
+        eid >= db.experts_per_layer)
+        return;
+    const size_t idx = static_cast<size_t>(layer) *
+                           static_cast<size_t>(db.experts_per_layer) +
+                       static_cast<size_t>(eid);
+    if (idx < db.entries.size()) db.EnsureResident(layer, eid, stream);
+}
+
 int EnsureMoEExpertResident(moe::MoEExpertStore &store, int layer, int eid,
                                 gpu::ExpertDeviceCache &cache,
                                 cudaStream_t stream, std::string &error,
@@ -1498,30 +1510,46 @@ int EnsureMoEExpertResident(moe::MoEExpertStore &store, int layer, int eid,
         store.gemv_ready = false;   // invalidate until re-uploaded
     }
 
-    const uint8_t *slab = store.h_slabs[static_cast<size_t>(layer)];
-    if (!slab) {
-        error = "expert slab not allocated";
+    // Payload from the neutral store's mmap view: map it in (evicting the LRU
+    // tail past max_open) and stage the six segments. The retired arena made
+    // [w13 = w1|w3] and [s13 = s1|s3] contiguous on the host, so staging was
+    // fewer, larger copies; with views it is 6 segment copies, which costs a
+    // few microseconds on a miss and 17-61 GiB of host RAM not at all.
+    EnsureMoEExpertView(store.experts, layer, eid, stream);
+    const size_t eidx = static_cast<size_t>(layer) *
+                            static_cast<size_t>(store.num_experts) +
+                        static_cast<size_t>(eid);
+    if (eidx >= store.experts.entries.size() ||
+        store.experts.entries[eidx].host_w1 == nullptr) {
+        error = absl::StrCat("expert host view unavailable: layer ", layer,
+                             " eid ", eid);
         return -1;
     }
-    const auto &r = store.records[static_cast<size_t>(layer)]
-                                  [static_cast<size_t>(eid)];
+    const MoEExpertEntry &v = store.experts.entries[eidx];
     uint8_t *dst_pack =
         cache.d_pack + static_cast<int64_t>(slot) * cache.pack_stride;
     uint8_t *dst_scale =
         cache.d_scale + static_cast<int64_t>(slot) * cache.scale_stride;
-    // Slot layout is FUSED for inference: [w13 = w1|w3][w2] and
+    // Slot layout stays FUSED for inference: [w13 = w1|w3][w2] and
     // [s13 = s1|s3][s2] so the gate/up projections run as ONE GEMM with
-    // per-segment global scales (RunMoERoutedFFN). The pinned slab keeps
-    // the on-disk order; only this staging reorder differs.
+    // per-segment global scales (RunMoERoutedFFN). Only the SOURCE is no
+    // longer one contiguous host blob.
     cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
+    struct Seg { const uint8_t *src; int64_t bytes; };
+    // Segment ORDER is load-bearing: the device slot is FUSED for inference,
+    // [w13 = w1|w3][w2] and [s13 = s1|s3][s2], which is what the batched
+    // kernels size off (records[..][0].w1_bytes + w3_bytes for the w13 region).
+    // The pre-ExpertStore staging was already segment-wise over the arena with
+    // this same order, so nothing about the layout moves.
+    const Seg psegs[3] = {{v.host_w1, v.w1_bytes},
+                          {v.host_w3, v.w3_bytes},
+                          {v.host_w2, v.w2_bytes}};
+    const Seg ssegs[3] = {{v.host_w1_scales, v.w1_scales_bytes},
+                          {v.host_w3_scales, v.w3_scales_bytes},
+                          {v.host_w2_scales, v.w2_scales_bytes}};
     uint8_t *pk = dst_pack;
-    struct PackSeg { int64_t off, bytes; };
-    const PackSeg psegs[3] = {{r.w1_off, r.w1_bytes},
-                              {r.w3_off, r.w3_bytes},
-                              {r.w2_off, r.w2_bytes}};
     for (const auto &seg : psegs) {
-        if (cudaMemcpyAsync(pk, slab + seg.off,
-                            static_cast<size_t>(seg.bytes),
+        if (cudaMemcpyAsync(pk, seg.src, static_cast<size_t>(seg.bytes),
                             cudaMemcpyHostToDevice,
                             copy_stream) != cudaSuccess) {
             error = "expert H2D pack staging failed";
@@ -1530,12 +1558,8 @@ int EnsureMoEExpertResident(moe::MoEExpertStore &store, int layer, int eid,
         pk += seg.bytes;
     }
     uint8_t *sc = dst_scale;
-    const PackSeg ssegs[3] = {{r.s1_off, r.s1_bytes},
-                              {r.s3_off, r.s3_bytes},
-                              {r.s2_off, r.s2_bytes}};
     for (const auto &seg : ssegs) {
-        if (cudaMemcpyAsync(sc, slab + seg.off,
-                            static_cast<size_t>(seg.bytes),
+        if (cudaMemcpyAsync(sc, seg.src, static_cast<size_t>(seg.bytes),
                             cudaMemcpyHostToDevice,
                             copy_stream) != cudaSuccess) {
             error = "expert H2D scale staging failed";
@@ -1597,101 +1621,77 @@ bool LoadMoEExpertStore(const std::string &model_path,
     }
     store.num_layers = max_layer + 1;
     store.records.resize(static_cast<size_t>(store.num_layers));
-    store.h_slabs.assign(static_cast<size_t>(store.num_layers), nullptr);
-    store.slab_bytes.assign(static_cast<size_t>(store.num_layers), 0);
 
+    // Expert count from the files in the first layer dir; every later layer
+    // must have the same count or the store geometry would lie.
+    if (store.num_experts <= 0) {
+        int e_max = -1;
+        const fs::path first_dir = experts_dir / absl::StrCat("layer_", 0);
+        for (fs::directory_iterator it(first_dir), dit; it != dit; ++it) {
+            const std::string name = it->path().filename().string();
+            if (name.rfind("exp_", 0) != 0) continue;
+            const std::size_t dot = name.find('.');
+            if (dot == std::string::npos) continue;
+            int e = 0;
+            if (absl::SimpleAtoi(name.substr(4, dot - 4), &e))
+                e_max = std::max(e_max, e);
+        }
+        store.num_experts = e_max + 1;
+    }
+    if (store.num_experts <= 0) {
+        error = absl::StrCat("no expert files in layer_0 under ",
+                             experts_dir.string());
+        return false;
+    }
+
+    // Geometry pass only. The payload is NOT staged: the neutral store maps it
+    // on demand (max_open entries), so host memory tracks the cap instead of
+    // the whole expert set (17 GiB for qwen MoE / ornith, 61 GiB for mistral —
+    // docs/OPEN_TASKS.md §V).
+    moe::MoEExpertDb &db = store.experts;
+    db.num_layers = store.num_layers;
+    db.experts_per_layer = store.num_experts;
+    // max_open IS the host-memory knob now: peak mapped bytes ~ max_open x
+    // expert size (and warm-up cost scales with it). Overridable so an operator
+    // can trade RSS against re-mapping churn without a rebuild.
+    db.max_open = kMoEExpertMaxOpen;
+    if (const char *env = std::getenv("LSX_MOE_EXPERT_MAX_OPEN")) {
+        const long v = std::atol(env);
+        if (v > 0) db.max_open = static_cast<size_t>(v);
+    }
+    db.first_moe_layer = 0;  // every layer routes in these families
+    if (!db.Load(model_path, /*fallback=*/true)) {
+        error = absl::StrCat("expert store load failed: ", model_path);
+        return false;
+    }
+
+    cudaStream_t map_stream = nullptr;
     for (int l = 0; l < store.num_layers; ++l) {
-        const fs::path layer_dir = experts_dir / absl::StrCat("layer_", l);
-
-        // Expert count from files present in layer 0; strict afterwards.
-        int E = store.num_experts;
-        if (E <= 0) {
-            E = 0;
-            for (fs::directory_iterator it(layer_dir), end; it != end; ++it) {
-                const std::string name = it->path().filename().string();
-                if (name.rfind("exp_", 0) == 0 && name.find(".arrow") != std::string::npos) {
-                    int e = 0;
-                    if (absl::SimpleAtoi(name.substr(4, name.find('.') - 4), &e))
-                        E = std::max(E, e + 1);
-                }
-            }
-            store.num_experts = E;
-        }
-        if (E <= 0) {
-            error = absl::StrCat("no expert files in layer_", l);
-            return false;
-        }
-
-        // Build all records, staging payloads once (single disk pass), then
-        // one pinned slab per layer.
-        struct StagedExpert {
-            std::vector<uint8_t> w1, w2, w3, s1, s2, s3;
-        };
-        std::vector<StagedExpert> staged(static_cast<size_t>(E));
         auto &recs = store.records[static_cast<size_t>(l)];
-        recs.assign(static_cast<size_t>(E), {});
-        size_t total = 0;
-        for (int e = 0; e < E; ++e) {
-            const std::string path =
-                (layer_dir / absl::StrCat("exp_", e, ".arrow")).string();
-            auto batch_res = ReadRecordBatchFromFile(path);
-            if (!batch_res.ok()) {
-                error = absl::StrCat("read failed: ", path);
+        recs.assign(static_cast<size_t>(store.num_experts), {});
+        for (int e = 0; e < store.num_experts; ++e) {
+            EnsureMoEExpertView(db, l, e, map_stream);
+            const size_t idx = static_cast<size_t>(l) *
+                                   static_cast<size_t>(store.num_experts) +
+                               static_cast<size_t>(e);
+            if (idx >= db.entries.size() || !db.entries[idx].host_w1) {
+                error = absl::StrCat("expert read failed: layer_", l, "/exp_", e);
                 return false;
             }
-            auto pe_res = ExpertSchema::UnpackBatch(*batch_res);
-            if (!pe_res.ok()) {
-                error = absl::StrCat("unpack failed: ", path);
-                return false;
-            }
-            auto &pe = *pe_res;
-            auto &st = staged[static_cast<size_t>(e)];
-            st.w1 = std::move(pe.w1_packed);
-            st.w2 = std::move(pe.w2_packed);
-            st.w3 = std::move(pe.w3_packed);
-            st.s1 = std::move(pe.w1_scales);
-            st.s2 = std::move(pe.w2_scales);
-            st.s3 = std::move(pe.w3_scales);
+            const MoEExpertEntry &v = db.entries[idx];
             auto &r = recs[static_cast<size_t>(e)];
-            r.w1_off = total; r.w1_bytes = static_cast<int64_t>(st.w1.size());
-            total += r.w1_bytes;
-            r.w2_off = total; r.w2_bytes = static_cast<int64_t>(st.w2.size());
-            total += r.w2_bytes;
-            r.w3_off = total; r.w3_bytes = static_cast<int64_t>(st.w3.size());
-            total += r.w3_bytes;
-            r.gs1 = pe.w1_global_scale;
-            r.gs2 = pe.w2_global_scale;
-            r.gs3 = pe.w3_global_scale;
-            // Scales stored after the packed region with 16B alignment.
-            total = AlignUp(total, 16);
-            r.s1_off = total; r.s1_bytes = static_cast<int64_t>(st.s1.size()); total += r.s1_bytes;
-            r.s2_off = total; r.s2_bytes = static_cast<int64_t>(st.s2.size()); total += r.s2_bytes;
-            r.s3_off = total; r.s3_bytes = static_cast<int64_t>(st.s3.size()); total += r.s3_bytes;
+            r.w1_bytes = v.w1_bytes;
+            r.w2_bytes = v.w2_bytes;
+            r.w3_bytes = v.w3_bytes;
+            r.s1_bytes = v.w1_scales_bytes;
+            r.s2_bytes = v.w2_scales_bytes;
+            r.s3_bytes = v.w3_scales_bytes;
+            r.gs1 = v.w1_global_scale;
+            r.gs2 = v.w2_global_scale;
+            r.gs3 = v.w3_global_scale;
         }
-        store.slab_bytes[static_cast<size_t>(l)] = total;
-
-        uint8_t *slab = nullptr;
-        if (cudaMallocHost(reinterpret_cast<void **>(&slab), total) !=
-            cudaSuccess) {
-            error = absl::StrCat("pinned slab alloc failed (layer ", l, ")");
-            return false;
-        }
-        store.h_slabs[static_cast<size_t>(l)] = slab;
-
-        for (int e = 0; e < E; ++e) {
-            const auto &st = staged[static_cast<size_t>(e)];
-            const auto &r = recs[static_cast<size_t>(e)];
-            std::memcpy(slab + r.w1_off, st.w1.data(), r.w1_bytes);
-            std::memcpy(slab + r.w2_off, st.w2.data(), r.w2_bytes);
-            std::memcpy(slab + r.w3_off, st.w3.data(), r.w3_bytes);
-            std::memcpy(slab + r.s1_off, st.s1.data(), r.s1_bytes);
-            std::memcpy(slab + r.s2_off, st.s2.data(), r.s2_bytes);
-            std::memcpy(slab + r.s3_off, st.s3.data(), r.s3_bytes);
-        }
-        staged.clear();
-        staged.shrink_to_fit();
-        log::info(absl::StrCat("[qwen_moe_load] layer_", l, ": ", E,
-                               " experts, ", total >> 10, " KiB pinned"));
+        log::info(absl::StrCat("[moe_load] layer_", l, ": ",
+                               store.num_experts, " experts mapped (views)"));
     }
 
     // Device-side per-expert {gs1, gs3} pairs for the fused w13 GEMM
@@ -1725,7 +1725,7 @@ bool AllocateMoEExpertCache(MoEExpertStore &store, int slots,
                                 std::string &error)
 {
     if (slots <= 0 || store.num_layers <= 0 || store.num_experts <= 0 ||
-        store.h_slabs.empty() || !store.h_slabs[0]) {
+        store.experts.entries.empty() || store.records.empty()) {
         error = "expert store not loaded";
         return false;
     }

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "lsxcommon/expert_device_cache.h"
+#include "lsxcommon/expert_store.h"
 #include "lsxcommon/lsx_attn_inference.h"
 
 namespace lsxcommon::moe {
@@ -41,17 +42,68 @@ inline constexpr int kMaxTopK = 16;
 
 // Host-resident routed-expert payloads (pinned slabs), laid out per layer.
 // The generation context stages slices of these into the LRU device cache.
+// Per-expert GEOMETRY (immutable metadata), not a pointer into host memory.
+// The payload lives in MoEExpertDb and is mapped on demand, so an entry here
+// must stay valid for the whole session even after the payload has been
+// retired by the LRU — the device-slot sizing loops read these numbers
+// independently of residency.
 struct MoEExpertRecord {
-    // Byte ranges inside the owning layer slab (packed w1|w2|w3 first, then
-    // E4M3 scales s1|s2|s3).
-    int64_t w1_off = 0, w1_bytes = 0;
-    int64_t w2_off = 0, w2_bytes = 0;
-    int64_t w3_off = 0, w3_bytes = 0;
-    int64_t s1_off = 0, s1_bytes = 0;
-    int64_t s2_off = 0, s2_bytes = 0;
-    int64_t s3_off = 0, s3_bytes = 0;
+    int64_t w1_bytes = 0;
+    int64_t w2_bytes = 0;
+    int64_t w3_bytes = 0;
+    int64_t s1_bytes = 0;
+    int64_t s2_bytes = 0;
+    int64_t s3_bytes = 0;
     float gs1 = 1.f, gs2 = 1.f, gs3 = 1.f;
+
+    // Byte offset inside a PINNED ARENA (the pre-ExpertStore storage, still
+    // used only by glm-5.3-flash — see docs/OPEN_TASKS.md §V). Zero for an
+    // arena-free store, whose payload is reached through MoEExpertDb instead.
+    // The slab_* prefix is deliberate: reading these on a view-backed store
+    // would be a stale-pointer bug, so the name has to say "arena" on sight.
+    int64_t slab_w1_off = 0;
+    int64_t slab_w2_off = 0;
+    int64_t slab_w3_off = 0;
+    int64_t slab_s1_off = 0;
+    int64_t slab_s2_off = 0;
+    int64_t slab_s3_off = 0;
 };
+
+// View into one expert's mmap, in the field order the shared
+// ExpertStore<TEntry>::DecodeEntry() aggregate-fills. Never owns bytes.
+struct MoEExpertEntry {
+    const uint8_t *host_w1 = nullptr;
+    const uint8_t *host_w2 = nullptr;
+    const uint8_t *host_w3 = nullptr;
+    const uint8_t *host_w1_scales = nullptr;
+    const uint8_t *host_w2_scales = nullptr;
+    const uint8_t *host_w3_scales = nullptr;
+    float w1_global_scale = 1.0f;
+    float w2_global_scale = 1.0f;
+    float w3_global_scale = 1.0f;
+    int64_t w1_bytes = 0;
+    int64_t w2_bytes = 0;
+    int64_t w3_bytes = 0;
+    int64_t w1_scales_bytes = 0;
+    int64_t w2_scales_bytes = 0;
+    int64_t w3_scales_bytes = 0;
+};
+
+// The neutral zero-copy host store. max_open bounds how many experts stay
+// mapped at once, so host memory is a function of the cap, not of the model.
+using MoEExpertDb = gpu::expert_store::ExpertStore<MoEExpertEntry>;
+
+// Cap on simultaneously mapped experts for the shared MoE loader. Sized so a
+// routing burst stays resident without pinning the whole expert set: qwen MoE
+// and ornith are 17 GiB each, mistral 61 GiB (docs/OPEN_TASKS.md §V).
+constexpr size_t kMoEExpertMaxOpen = 4096;
+
+// Maps expert (layer, eid) into host memory, retiring the LRU tail past
+// max_open; a no-op when already resident. Distinct from
+// EnsureMoEExpertResident below, which stages an ALREADY-MAPPED expert into a
+// device slot.
+void EnsureMoEExpertView(MoEExpertDb &db, int layer, int eid,
+                         cudaStream_t stream);
 
 // Per-expert static device meta for no-handshake decode (16 B): residency
 // slot index + the three global scales. Maintained by
@@ -63,7 +115,14 @@ struct alignas(16) MoEExpertMetaDev {
 };
 
 struct MoEExpertStore {
-    // [num_layers] pinned slabs; slab l holds num_experts records back to back.
+    // The neutral zero-copy host store: mmap views, LRU-bounded. This REPLACED
+    // per-layer pinned slabs holding every expert for the life of the session
+    // (17 GiB for qwen MoE / ornith, 61 GiB for mistral — see
+    // docs/OPEN_TASKS.md §V). records[] keeps only the immutable geometry.
+    MoEExpertDb experts;
+    // LEGACY arena storage — glm-5.3-flash only (docs/OPEN_TASKS.md §V). Empty
+    // for every arena-free store. Deleted together with the slab_* offsets
+    // when that family migrates.
     std::vector<uint8_t *> h_slabs;
     std::vector<size_t> slab_bytes;
     std::vector<std::vector<MoEExpertRecord>> records;  // [layers][expert]

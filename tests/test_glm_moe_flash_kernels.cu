@@ -17,8 +17,13 @@
 
 #include <cstdio>
 
-using namespace lsxcommon;
 using namespace lsxcommon::glm_moe_flash;
+// NB: no blanket `using namespace lsxcommon` here — it makes the C math
+// ::log ambiguous inside CUDA's own math_functions.hpp now that the neutral
+// MoE header pulls Arrow in. Qualify the few names this test needs instead.
+namespace moe = lsxcommon::moe;
+namespace qwen_moe = lsxcommon::qwen_moe;
+namespace gpu = lsxcommon::gpu;
 
 namespace {
 
@@ -607,17 +612,17 @@ struct RealRoutedHarness {
         for (int e = 0; e < E; ++e) {
             const int64_t base = e * per_expert;
             auto &r = store.records[0][e];
-            r.w1_off = base;
+            r.slab_w1_off = base;
             r.w1_bytes = pk;
-            r.w2_off = base + pk;
+            r.slab_w2_off = base + pk;
             r.w2_bytes = pk;
-            r.w3_off = base + 2 * pk;
+            r.slab_w3_off = base + 2 * pk;
             r.w3_bytes = pk;
-            r.s1_off = base + 3 * pk;
+            r.slab_s1_off = base + 3 * pk;
             r.s1_bytes = sk;
-            r.s2_off = base + 3 * pk + sk;
+            r.slab_s2_off = base + 3 * pk + sk;
             r.s2_bytes = sk;
-            r.s3_off = base + 3 * pk + 2 * sk;
+            r.slab_s3_off = base + 3 * pk + 2 * sk;
             r.s3_bytes = sk;
             r.gs1 = r.gs2 = r.gs3 = 1.0f;
         }

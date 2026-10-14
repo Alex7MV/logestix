@@ -62,6 +62,10 @@ struct ExpertStore {
     // math stays full-layer (layer*experts_per_layer+eid) so callers need no
     // remap; the dense slots just stay empty.
     int first_moe_layer = 0;
+    // Expert file naming: most converters write exp_<e>.arrow; glm-5.3-flash
+    // writes exp_<e>.arrow zero-padded to 3 digits. Only the file NAME differs
+    // — the payload schema is ExpertSchema for every family.
+    bool zero_pad_expert_names = false;
     std::string error_msg;
 
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
@@ -109,8 +113,13 @@ struct ExpertStore {
                 size_t idx = static_cast<size_t>(layer) *
                                  static_cast<size_t>(experts_per_layer) +
                              static_cast<size_t>(exp);
+                char num[16];
+                if (zero_pad_expert_names)
+                    std::snprintf(num, sizeof(num), "%03d", exp);
+                else
+                    std::snprintf(num, sizeof(num), "%d", exp);
                 paths[idx] = (exp_dir / ("layer_" + std::to_string(layer)) /
-                              ("exp_" + std::to_string(exp) + ".arrow")).string();
+                              (std::string("exp_") + num + ".arrow")).string();
             }
         }
 
@@ -283,6 +292,28 @@ struct ExpertStore {
         return true;
     }
 
+    // ── pinned resident payload ─────────────────────────────────────────
+    // cudaHostRegister on the six payload spans of one mapped expert. The
+    // spans are disjoint sub-ranges of the file mapping, so registering them
+    // individually keeps the lock to payload rather than file padding.
+    // cudaHostRegister rejects a range whose start is not page-aligned, and an
+    // expert payload starts at an arbitrary offset inside the file mapping — so
+    // each span is rounded DOWN to the page boundary and its length extended to
+    // cover the tail. Adjacent spans of one file therefore overlap by at most a
+    // page, which the driver accepts.
+    // Page-aligned, COALESCED spans of one expert's payload.
+    //
+    // Two constraints, both learned the hard way:
+    //  - cudaHostRegister rejects a start that is not page-aligned, and an
+    //    expert payload begins at an arbitrary offset inside the file mapping;
+    //  - the six spans of one expert are ADJACENT in that file, so rounding
+    //    each one down to a page makes neighbouring spans overlap. Registering
+    //    an already-registered page range returns
+    //    cudaErrorHostMemoryAlreadyRegistered, which is sticky and takes down
+    //    every later CUDA call in the process — it presented as "generation
+    //    fails right after a successful load", with no hint about pinning.
+    // So: align down, sort, merge, and register the disjoint result. Pin and
+    // unpin must use the SAME helper or the bookkeeping drifts.
     // Touch a resident entry or parse it, evicting the LRU tail under max_open.
     // The caller's stream is synchronized ONCE, only before the first eviction
     // (pre-munmap barrier for in-flight cudaMemcpyAsync reading host mmap).

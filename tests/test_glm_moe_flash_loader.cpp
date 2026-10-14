@@ -149,17 +149,17 @@ TEST_CASE("AllocateMoEExpertCache: LRU eviction bookkeeping")
     store.slab_bytes.push_back(64);
     for (int e = 0; e < 4; ++e) {
         auto &r = store.records[0][e];
-        r.w1_off = e * 16;
+        r.slab_w1_off = e * 16;
         r.w1_bytes = 16;
-        r.w2_off = e * 16;
+        r.slab_w2_off = e * 16;
         r.w2_bytes = 0;
-        r.w3_off = e * 16;
+        r.slab_w3_off = e * 16;
         r.w3_bytes = 0;
-        r.s1_off = e * 16;
+        r.slab_s1_off = e * 16;
         r.s1_bytes = 0;
-        r.s2_off = e * 16;
+        r.slab_s2_off = e * 16;
         r.s2_bytes = 0;
-        r.s3_off = e * 16;
+        r.slab_s3_off = e * 16;
         r.s3_bytes = 0;
         r.gs1 = r.gs2 = r.gs3 = 1.0f;
     }

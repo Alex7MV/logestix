@@ -756,26 +756,26 @@ bool LoadGlmFlashExpertStore(const std::string &model_path,
             st.s2 = std::move(pe.w2_scales);
             st.s3 = std::move(pe.w3_scales);
             auto &r = recs[static_cast<size_t>(e)];
-            r.w1_off = total;
+            r.slab_w1_off = total;
             r.w1_bytes = static_cast<int64_t>(st.w1.size());
             total += r.w1_bytes;
-            r.w2_off = total;
+            r.slab_w2_off = total;
             r.w2_bytes = static_cast<int64_t>(st.w2.size());
             total += r.w2_bytes;
-            r.w3_off = total;
+            r.slab_w3_off = total;
             r.w3_bytes = static_cast<int64_t>(st.w3.size());
             total += r.w3_bytes;
             r.gs1 = pe.w1_global_scale;
             r.gs2 = pe.w2_global_scale;
             r.gs3 = pe.w3_global_scale;
             total = AlignUp(total, 16);
-            r.s1_off = total;
+            r.slab_s1_off = total;
             r.s1_bytes = static_cast<int64_t>(st.s1.size());
             total += r.s1_bytes;
-            r.s2_off = total;
+            r.slab_s2_off = total;
             r.s2_bytes = static_cast<int64_t>(st.s2.size());
             total += r.s2_bytes;
-            r.s3_off = total;
+            r.slab_s3_off = total;
             r.s3_bytes = static_cast<int64_t>(st.s3.size());
             total += r.s3_bytes;
         }
@@ -791,17 +791,17 @@ bool LoadGlmFlashExpertStore(const std::string &model_path,
         for (int e = 0; e < E; ++e) {
             const auto &st = staged[static_cast<size_t>(e)];
             const auto &r = recs[static_cast<size_t>(e)];
-            if (r.w1_bytes) memcpy(slab + r.w1_off, st.w1.data(),
+            if (r.w1_bytes) memcpy(slab + r.slab_w1_off, st.w1.data(),
                                    static_cast<size_t>(r.w1_bytes));
-            if (r.w2_bytes) memcpy(slab + r.w2_off, st.w2.data(),
+            if (r.w2_bytes) memcpy(slab + r.slab_w2_off, st.w2.data(),
                                    static_cast<size_t>(r.w2_bytes));
-            if (r.w3_bytes) memcpy(slab + r.w3_off, st.w3.data(),
+            if (r.w3_bytes) memcpy(slab + r.slab_w3_off, st.w3.data(),
                                    static_cast<size_t>(r.w3_bytes));
-            if (r.s1_bytes) memcpy(slab + r.s1_off, st.s1.data(),
+            if (r.s1_bytes) memcpy(slab + r.slab_s1_off, st.s1.data(),
                                    static_cast<size_t>(r.s1_bytes));
-            if (r.s2_bytes) memcpy(slab + r.s2_off, st.s2.data(),
+            if (r.s2_bytes) memcpy(slab + r.slab_s2_off, st.s2.data(),
                                    static_cast<size_t>(r.s2_bytes));
-            if (r.s3_bytes) memcpy(slab + r.s3_off, st.s3.data(),
+            if (r.s3_bytes) memcpy(slab + r.slab_s3_off, st.s3.data(),
                                    static_cast<size_t>(r.s3_bytes));
         }
     }

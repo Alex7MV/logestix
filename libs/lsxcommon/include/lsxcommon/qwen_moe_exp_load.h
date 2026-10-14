@@ -146,20 +146,22 @@ using ExpExpertMetaDev = moe::MoEExpertMetaDev;
 // the shared routed-expert kernels (RunMoERoutedFFN, RunMoERouterTopK,
 // moe::EnsureMoEExpertResident family) consume it directly — no
 // reinterpret_cast pairing, no layout-drift bug class.
+// Inherits the neutral mmap-view store (moe::MoEExpertDb) — a 64 GiB pinned
+// arena with a double disk pass used to back this store; see
+// docs/OPEN_TASKS.md §V.
 struct ExpExpertStore : public lsxcommon::moe::MoEExpertStore {
-    // Single pinned arena backing every layer slab (one page-lock instead
-    // of num_layers; per-slab cudaMallocHost cost ~660ms each on load).
-    // All h_slabs entries point at arena_base; record offsets are global.
-    uint8_t *arena_base = nullptr;
-    size_t arena_bytes = 0;
-
     void Free();
 };
 
-// Loads every experts/layer_<l>/exp_<e>.arrow under
-// <model_path>/logestix/ into pinned host memory. Strict errors.
+// Opens every experts/layer_<l>/exp_<e>.arrow under <model_path>/logestix/ as
+// mmap views in the neutral store and reads each expert once for its geometry.
+// Strict errors.
+// @p max_open  cap on simultaneously mapped experts (0 selects
+// kQwenExpExpertMaxOpen); bounds mapped file, not heap.
+constexpr size_t kQwenExpExpertMaxOpen = 4096;
 bool LoadQwen4ExpExpertStore(const std::string &model_path,
-                             ExpExpertStore &store, std::string &error);
+                             ExpExpertStore &store, std::string &error,
+                             size_t max_open = kQwenExpExpertMaxOpen);
 
 // Allocates the LRU device cache sized to the largest expert payload.
 bool AllocateQwen4ExpExpertCache(ExpExpertStore &store, int slots,

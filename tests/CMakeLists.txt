@@ -5271,6 +5271,17 @@ target_compile_definitions(test_absl_container_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_ABSC}\"")
 add_test(NAME test_absl_container_guard COMMAND test_absl_container_guard)
 
+# Guard: routed-expert host storage — no family-private OWNING expert
+# container; every entry view must alias the neutral ExpertStore; the legacy
+# all-experts-in-pinned-slabs store (MoEExpertStore) must not spread. Host-only
+# static scan; the machine check for ingesting-a-model R1/R2.
+add_executable(test_expert_store_guard test_expert_store_guard.cpp)
+target_link_libraries(test_expert_store_guard PRIVATE Catch2::Catch2WithMain)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_ESG)
+target_compile_definitions(test_expert_store_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_ESG}\"")
+add_test(NAME test_expert_store_guard COMMAND test_expert_store_guard)
+
 # Guard: license compliance — no GPL/LGPL/AGPL/copyleft headers or SPDX license
 # tags in first-party source (would block the commercial Enterprise license).
 # Host-only static scan of libs/, apps/, tests/ and tools/.
@@ -6133,6 +6144,7 @@ set_tests_properties(
     test_code_naming_guard
     test_absl_format_guard
     test_absl_container_guard
+    test_expert_store_guard
     test_license_guard
     test_kimi_moe_expert_cache
     test_model_independence_guard
