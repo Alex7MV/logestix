@@ -1158,21 +1158,41 @@ swiglu and before the reduce (gate slot 0 differs 16/16, up half identical
 zeros in both), so batching, the reduce and coefficient handling are all
 excluded. It is also not eviction, slot capacity or the TC fast-math flag.
 
-**Unresolved and important**: real-model decode passes FSI/CODE/DET on qwen MoE
-and ornith, so either decode does not actually take this entry point (the
-sequential one has a branch that routes to the fp16 V-batch core when the caller
-supplies batch scratch, which the generation arena may well supply), or the
-kernel is only broken at these small shapes. That is the question to answer
-next, and it decides whether this is a test fixture problem or a production
-defect.
+**The production path IS live, and it changes real generations.** `tc_batch` is
+enabled when TC fast-math is on (the default perf policy), the segment scales
+exist, and neither LSX_GEMV_EXPERTS nor LSX_TC_BATCH_OFF is set -- so qwen MoE
+and ornith decode through `RunMoERoutedTcBatch` and the real-weight gates pass
+through it. Measured on Qwen3.6-35B-A3B with `lsxfabric --testprompt`, after a
+determinism control (two runs of one configuration produce identical text, so
+the harness is not the source of variation):
 
-**The missing instrument**, now that three implementations have been compared:
-the production path itself. Find whether `RunMoERoutedTcBatch` is ever reached by
-real decode (grep the generation call sites for which scratch arguments it
-passes -- `RunMoERoutedFFN` silently routes to the fp16 V-batch core when batch
-scratch is supplied), and if it is, run one real-weight token through it. A
-kernel that writes zeros and a kernel that is never called look identical from
-the synthetic tests alone. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
+| configuration | output |
+|---|---|
+| default (batched TC on), run 1 | "Paris is a major tourist destination, attracting millions of visitors each" |
+| default, run 2 | identical |
+| `LSX_TC_BATCH_OFF=1` (legacy per-slot), run 1 | "Paris is located in the north-central part of France, along the Seine River..." |
+| `LSX_TC_BATCH_OFF=1`, run 2 | identical |
+
+So the two paths disagree **deterministically on real weights**, not only on the
+synthetic case. That makes the red test a true alarm rather than a fixture
+artifact, and it matches the claim in the pipeline comment ("bit-identical to
+the legacy per-slot chain, pinned by test_qwen_moe_kernels") being false in
+production.
+
+Which path is faithful is still open, and the parity gates cut both ways:
+FSI/CODE/DET are captured from the source safetensors (an external oracle) and
+pass WITH the batched path on, so it is adequate but demonstrably not bit-
+identical; DET only checks run-to-run stability within one configuration, so a
+systematically different path passes it. Deciding needs an oracle finer than the
+canonical answer -- e.g. a logits-hash comparison against the fp16 core, which
+the per-slot TC path already matches exactly on synthetic shapes.
+
+**The missing instrument**, stated after the above: a comparison finer than the
+canonical answer. The goldens prove the batched path is adequate, the red test
+and the real-weight A/B prove it is not identical to the legacy path, and only a
+logits-level oracle (or the fp16 core as reference) can say which one is
+faithful. Until that exists the batched TC MoE path should be treated as
+unverified in production, and LSX_TC_BATCH_OFF=1 is the known-good fallback. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
 and DET pass on real weights, and those paths do not run this comparison.
 
 ### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
