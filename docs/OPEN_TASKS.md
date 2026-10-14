@@ -1069,48 +1069,15 @@ split `2b4b41c`/`65db1c7`, `00e22ec` TC mxf4nvf4 GEMM tile fix, `f99008b`
 (the token ids of the 256-token round-trip, plus the logit margin at the flip
 step), not another pass/fail on the same assertion.
 
-## V. Routed-expert host storage: the arena is retired; two follow-ups remain (2026-10-14)
+## V. Routed-expert host storage: the arena is retired; one follow-up remains (2026-10-14)
 
 **The migration itself is closed** — the arena is gone for qwen MoE / Ornith /
 Mistral / qwen3.8-flash-next, with measurements, gates and the guard test in
 [`open-tasks/2026-10-14-expert-store-arena-retired.md`](open-tasks/2026-10-14-expert-store-arena-retired.md).
 Headline: qwen3.6 17.5 → **7.0 GB** at unchanged 141 t/s; qwen3.8 63.6 →
-**10.9 GB** with load 73.7 → 9.9 s. What is left is not the storage change but
-two consequences it exposed:
-
-### V1. RESOLVED (negative): the arena is required when the working set is the whole expert set
-
-Tried the bounded pinned window §V1 called for, measured it, and it does not
-work. qwen3.8-flash-next, real weights, `/usr/bin/time -v`, same prompt:
-
-| configuration | peak RSS | throughput |
-|---|---|---|
-| pinned arena (original) | 63.6 GB | 32.1 t/s |
-| views, cap 4096 | 10.9 GB | 9.2 t/s |
-| views + pinned window, cap 2048 | 10.9 GB | **9.2 t/s — no speedup** |
-| views + pinned window, cap 24576 | 127.2 GB | 29.0 t/s |
-
-The window pins 5400 MiB in 754 ms and buys nothing, because the decode working
-set is LARGER than the cap: nearly every touch is an expert that was evicted
-and re-mapped, hence unpinned. Speed only returns when essentially everything is
-pinned — and then the mmap views are still mapped beside the pinned copy, so it
-costs 2x the arena (127 vs 63.6 GB) for slightly less speed. For a model whose
-decode working set is the whole expert set the arena is the right design, and
-the migration is a net loss. This is a resource constraint, not a defect.
-
-`cudaHostRegister` over the mmap views is not a way back: refused for every
-entry (`registered=0 failed=512`), because a file-backed MAP_SHARED mapping is
-not registrable. Three sticky-CUDA-error traps on the way there, each of which
-presents as "generation dies right after a successful load" with nothing in the
-message pointing at pinning: (1) a non-page-aligned start is rejected; (2) the
-six payload spans of one expert are adjacent in the file, so aligning each down
-to a page makes neighbours overlap and the second registration returns
-`cudaErrorHostMemoryAlreadyRegistered`; (3) unregistering a range that was never
-registered also raises a sticky error.
-
-qwen3.8 is therefore back on its arena (63.6 GB, 32.0 t/s re-measured). The
-neutral store stays for qwen MoE / Ornith / Mistral, whose working set fits the
-cap: 17.5 → 7.0 GB at unchanged throughput.
+**10.9 GB** with load 73.7 → 9.9 s. V1 is now resolved (negative) and archived —
+[`open-tasks/2026-10-14-qwen38-arena-required-negative.md`](open-tasks/2026-10-14-qwen38-arena-required-negative.md).
+One consequence the change exposed stays open:
 
 ### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
 
@@ -1132,13 +1099,13 @@ not during load. The earlier 65.6 GB figure was an artifact; there is no
 page-cache defect here and no metadata-in-`model.index.json` work is needed.
 
 ## Archive
-## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
 investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-14 | qwen3.8-flash-next: the arena is required (V1, negative) | The bounded pinned window buys nothing when the decode working set is the whole expert set: views cap 4096 = 10.9 GB but 9.2 t/s, pinned window cap 2048 the same, and pinning everything costs 127 GB for 29 t/s. `cudaHostRegister` over file-backed MAP_SHARED views is refused. qwen3.8 stays on its arena (63.6 GB, 32.0 t/s, re-measured) - [`open-tasks/2026-10-14-qwen38-arena-required-negative.md`](open-tasks/2026-10-14-qwen38-arena-required-negative.md) |
 | 2026-10-14 | Batched TC MoE swiglu overflowed FP16 | `moe_swiglu_quant_batch_kernel` stored `silu(gate)*up` to FP16 before quantizing, so any product above 65504 became `+inf` and saturated the block scale; the per-slot path had been fixed for this long before, the batched path never had. Stage-by-stage the GEMM was bit-exact (`nd=0/32`) — the bug was the swiglu between `w13` and `w2` (`h=inf`). Fixed with a per-slot power-of-two prescale folded back in the reduce; both kernel cases green with assertions untouched (998/877), real Qwen3.6 batch-on/off now identical, gates still pass. Also repaired the `LoadMoEExpertStore` line `bad0792` had deleted - [`open-tasks/2026-10-14-moe-batch-swiglu-overflow-closed.md`](open-tasks/2026-10-14-moe-batch-swiglu-overflow-closed.md) |
 | B1 — expert pinning not implemented on Windows | platform-gated in `test_kimi_moe_loader.cpp` |
 | D1 — no test drove `RunGlmFlashGeneration` | real-model generation case added |
