@@ -1112,6 +1112,34 @@ qwen3.8 is therefore back on its arena (63.6 GB, 32.0 t/s re-measured). The
 neutral store stays for qwen MoE / Ornith / Mistral, whose working set fits the
 cap: 17.5 → 7.0 GB at unchanged throughput.
 
+### V3. `test_qwen_moe_kernels` / `test_ornith_moe_kernels`: the batched TC chain and the legacy chain disagree (found 2026-10-14, after bad0792)
+
+Both cases ("tc batch routed ffn matches legacy chain bitwise") compare
+`RunMoERoutedFFN` (sequential, per-route, asks for residency at call time)
+against `RunMoERoutedTcBatch` (composes its slot table from the residency
+mirror). They disagree qualitatively: 64 of 64 elements differ, and the batched
+result sits at -4547.5 where the sequential one is -1.27e6. Not an
+accumulation-order reassociation.
+
+Chasing it fixed two real defects on the way (`bad0792`): the residency mirror
+was never invalidated on device-slot eviction, so it named slots that had moved
+to another expert — a silent wrong-expert read in every streamed model; and both
+cases warmed 32 experts into 8 slots while asserting a full-residency
+precondition that fewer slots can never satisfy.
+
+Ruled out since: the storage representation (both chains reach the same staged
+weights), mirror staleness, the TC fast-math flag (the batched output is
+identical with it on and off), slot capacity, and the degenerate geometry (I=16
+gives the same failure as a realistic I=128, 47 assertions, one failing on the
+same comparison).
+
+**The missing instrument** is a single-route, single-expert comparison with the
+intermediates compared stage by stage (ygu -> h -> yp), which is where this
+should be picked up: none of the checks above look at the values between the two
+fused GEMMs, and that is precisely where a TC-vs-legacy disagreement would
+appear. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
+and DET pass on real weights, and those paths do not run this comparison.
+
 ### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
 
 This was written from a single measurement (Mistral 65.6 GB at cap 512, 1024 and
