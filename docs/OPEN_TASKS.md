@@ -1169,14 +1169,28 @@ sound, so the cause is inside the MMA/TMA path.
 to be rebuilt when I changes -- `moe_intermediate_size=128` written to
 config.json, `records[0][0].w1_bytes = 4096` (= 64 x 128 / 2, was 512):
 
-| geometry | ||fp16|| | relerr, per-slot TC | relerr, batched TC |
-|---|---|---|---|
-| I=16 (fixture default) | non-zero | **0** | **1.00** (all zeros) |
-| I=128 (fixture rebuilt, verified) | 9518 | **0** | **1.71** (wrong, not zeros) |
+| geometry | row bytes | w1_bytes | ||fp16|| | relerr, per-slot TC | relerr, batched TC |
+|---|---|---|---|---|---|
+| I=16 (fixture default) | 8 | 512 | non-zero | **0** | **1.00** (all zeros) |
+| I=128 (rebuilt, verified) | 64 | 4096 | 9518 | **0** | **1.71** |
+| I=512 (rebuilt, verified) | 256 | 16384 | 15378.7 | **0** | **1.75** |
 
-So the batched path is wrong at two independent valid geometries with two
-different signatures, while the per-slot TC path matches the fp16 core exactly at
-both. This is not a fixture artifact.
+Each row is a separately rebuilt checkpoint -- `w1_bytes` confirms the weights
+really changed (512 = 64x16/2, 4096 = 64x128/2, 16384 = 64x512/2), and the
+runner refuses to interpret a run whose fixture was not rebuilt.
+
+**The TMA row-width hypothesis is refuted.** It predicted the batched path would
+start working once the packed weight row reached a multiple of 128 bytes. I=512
+gives exactly 256 bytes per row -- a production-shaped row -- and the batched
+path is still wrong (relerr 1.75), while the per-slot path is still exact. The
+failure is not a small-shape artefact.
+
+The batched path is wrong at **every** geometry tested, including one whose row
+width matches production, with two different failure signatures (zeros at I=16,
+wrong values above it); the per-slot TC path matches the fp16 core exactly at all
+three. Combined with the real-weight divergence this is now a family-level
+defect, not a synthetic curiosity: the 2x the batched path buys is being paid for
+with wrong arithmetic.
 
 The production path IS live, and it changes real generations.** `tc_batch` is
 enabled when TC fast-math is on (the default perf policy), the segment scales
