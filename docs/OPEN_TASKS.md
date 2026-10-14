@@ -1160,26 +1160,23 @@ excluded. It is also not eviction, slot capacity or the TC fast-math flag.
 
 **The slot table is not the problem.** Dumped from device after the batch call:
 `dev_slot=0`, `gs1 = gs2 = gs3 = 0.0833333`, `coeff = 0.6 / 0.4`, matching
-`records[0][3]` exactly -- both routes correctly resolve to the same slot. The
-batched epilogue scales each output column by `batch_slots[slot].gs1` (cols <
-N/2) or `gs3`, so zeros in the table would have produced the observed all-zero
-output; the table is sound, which leaves the MMA/TMA path itself.
+`records[0][3]` exactly -- both routes correctly resolve to the same slot. Since
+the batched epilogue scales every output column by that table's `gs1`/`gs3`, a
+zeroed table would have produced the observed all-zero output; the table is
+sound, so the cause is inside the MMA/TMA path.
 
-Read so far in `TcGemmKernel`, all consistent and none of them the cause: the
-output store is masked by `r0 < seq` and the batch dispatch passes `seq = 1`,
-right for decode (one token across N columns); `RunLsxTcGemmBatch13` passes
-`w_off = s_off = 0`, right for the fused slot; `wm = warp >> 1` gives the four
-16-row M-warps of the 64-row tile restored by the 2026-10-10 M-tile fix.
+**Confirmed at a second, CORRECTLY built geometry.** The fixture really does have
+to be rebuilt when I changes -- `moe_intermediate_size=128` written to
+config.json, `records[0][0].w1_bytes = 4096` (= 64 x 128 / 2, was 512):
 
-**A measurement caveat that invalidates part of this record.** Two "I=128"
-observations in this file -- "at I=128 the sequential and fp16 paths produce
-zeros while the batch is non-zero", and the N-tile conclusion drawn from it --
-are WRONG: changing `I` inside the test case does not change the synthetic
-checkpoint, so the kernel was run with I=128 parameters against I=16 weights
-(`records[0][0].w1_bytes` stayed 512 = 64x16/2 while the case declared I=128).
-The same self-inflicted failure as editing a test by line number earlier in this
-session. Those runs say nothing about the batched path and are retracted; only
-the I=16 (fixture-native) and real-weight results stand.
+| geometry | ||fp16|| | relerr, per-slot TC | relerr, batched TC |
+|---|---|---|---|
+| I=16 (fixture default) | non-zero | **0** | **1.00** (all zeros) |
+| I=128 (fixture rebuilt, verified) | 9518 | **0** | **1.71** (wrong, not zeros) |
+
+So the batched path is wrong at two independent valid geometries with two
+different signatures, while the per-slot TC path matches the fp16 core exactly at
+both. This is not a fixture artifact.
 
 The production path IS live, and it changes real generations.** `tc_batch` is
 enabled when TC fast-math is on (the default perf policy), the segment scales
@@ -1209,6 +1206,23 @@ identical; DET only checks run-to-run stability within one configuration, so a
 systematically different path passes it. Deciding needs an oracle finer than the
 canonical answer -- e.g. a logits-hash comparison against the fp16 core, which
 the per-slot TC path already matches exactly on synthetic shapes.
+
+**What it costs to be safe.** Measured on Qwen3.6-35B-A3B, 256 tokens:
+batched TC **166.9 t/s**, legacy per-slot **82.1 t/s** -- the unverified path is
+**2.03x** faster. So "fall back to the verified path" is not free, and the
+decision is a real trade, not a cleanup:
+
+* the batched path is 2x faster, passes the external-oracle gates
+  (FSI/CODE/DET, captured from the source safetensors) and deterministically
+  produces different generations than the legacy path;
+* the legacy path is bit-identical to the fp16 core at every geometry tested
+  and 2x slower.
+
+Nothing here says the batched path is wrong at PRODUCTION geometry -- the
+synthetic failures are all at shapes no real model has. It says the invariant the
+pipeline comment claims ("bit-identical, pinned by test_qwen_moe_kernels") is
+false, and that the batched path has never actually been verified against a
+logits-level oracle.
 
 **The missing instrument**, stated after the above: a comparison finer than the
 canonical answer. The goldens prove the batched path is adequate, the red test
