@@ -265,11 +265,17 @@ cudaError_t RunMoERoutedGemmVNoHandshake(
 
 // Batched decode swiglu-quant: per slot s, gate = ygu[s*2I + j],
 // up = ygu[s*2I + I + j]; h[s] = silu(gate)*up (FP16) + NVFP4 encode of h.
-// Bit-identical to per-slot RunAttnSwigluQuant (same 16-group math).
+// Overflow-proof: the product stays FP32, each slot is prescaled by a power
+// of two so neither the FP16 store nor the E4M3 block scale saturates, and
+// the reciprocal is written to slot_prescale[s] for the reduce to fold back
+// in (1.0 when the slot already fits). slot_absmax is scratch the caller
+// zeroes first (kMaxTopK floats). Matches the per-slot
+// RunAttnSwigluPreScaledQuantInternal bit-for-bit.
 cudaError_t RunMoESwigluQuantBatch(cudaStream_t stream,
                                        const __half *ygu, int k_slots, int I,
                                        __half *h, uint8_t *packed,
-                                       uint8_t *scales);
+                                       uint8_t *scales, float *slot_absmax,
+                                       float *slot_prescale);
 
 // Batched TC routed-expert chain (no host readback): gather (device table)
 // -> w13 batch TC GEMM -> batched swiglu-quant -> w2 batch TC GEMM ->

@@ -754,6 +754,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     cudaStreamCreate(&stream);
     std::string err;
     REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeDenseWeights(out.string(), pw, stream, err));
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
     REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 8, cache, err));
 
     lsxcommon::qwen_moe::QwenMoeGenScratch gen_scratch;

@@ -858,25 +858,53 @@ __global__ void moe_gemv_down_batch_kernel(
 __global__ void moe_gemv_reduce_batch_kernel(
     const __half *__restrict__ ypart,
     const MoEGvSlotDev *__restrict__ slots, int k_slots, int n_elems,
-    float *__restrict__ acc)
+    float *__restrict__ acc, const float *__restrict__ slot_prescale)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_elems) return;
     float t = acc[i];
-    for (int s = 0; s < k_slots; ++s)
-        t += slots[s].coeff * __half2float(ypart[static_cast<int64_t>(s) *
-                                                       n_elems + i]);
+    for (int s = 0; s < k_slots; ++s) {
+        // slot_prescale[s] undoes the overflow-proof swiglu's per-slot power-
+        // of-two prescale (1.0 when the slot fit FP16). Same factor the per-
+        // slot chain folds via moe_coeff_add_scaled_kernel.
+        const float scale = slot_prescale ? slot_prescale[s] : 1.0f;
+        t += slots[s].coeff * scale *
+             __half2float(ypart[static_cast<int64_t>(s) * n_elems + i]);
+    }
     acc[i] = t;
 }
 
-// Slot-major batched swiglu-quant: gate ygu[s*2I + j], up ygu[s*2I + I + j]
-// -> h[s*I + j] + NVFP4 pack/scales at slot offsets. Per-16-group math is
-// the exact clone of moe_swiglu_precise_quant_kernel (bit-identical).
-__global__ void moe_swiglu_quant_batch_kernel(const __half *__restrict__ ygu,
-                                              int k_slots, int I,
-                                              __half *__restrict__ h,
-                                              uint8_t *__restrict__ packed,
-                                              uint8_t *__restrict__ scales)
+// Smallest power of two bringing the SwiGLU product within both the FP16 store
+// span (65504) and the E4M3 per-block scale span (448 * 6 = 2688, the E2M1
+// grid's maximum). Mirrors qwen::SwigluPrescaleAlpha in lsx_attn_inference.cu.
+__device__ __forceinline__ float MoeSwigluPrescaleAlpha(float absmax)
+{
+    int k = 0;
+    if (absmax > 0.0f) {
+        float t = 448.0f * 6.0f;
+        while (t < absmax && k < 60) { t *= 2.0f; ++k; }
+    }
+    return ldexpf(1.0f, k);
+}
+
+// Slot-major batched swiglu-quant, overflow-proof. The naive fused form
+// stores silu(gate)*up to FP16 before quantizing; any model with massive
+// activations (e.g. Mistral-Small-4 layer 32 expert 67 reaches 2.5e5) then
+// overflows to +inf, which poisons absmax -> the E4M3 block scale saturates
+// and every nibble quantizes from an infinite value. The per-slot path was
+// fixed for exactly this (RunAttnSwigluPreScaledQuantInternal); the batched
+// path kept the old form, so the two disagreed on every such activation --
+// this cost test_qwen_moe_kernels/test_ornith_moe_kernels their bitwise case
+// and diverged real Qwen/Ornith generations.
+//
+// Two launches instead of one: (A) the FP32 product inside each slot's
+// absmax, (B) prescale by a per-slot power of two, store FP16, quantize from
+// the FP32 value, and publish the reciprocal to fold back in the FP32
+// accumulator. Bit-exact no-op when the slot already fits (alpha == 1), which
+// is all but the massive-activation experts.
+__global__ void moe_swiglu_absmax_batch_kernel(const __half *__restrict__ ygu,
+                                               int k_slots, int I,
+                                               float *__restrict__ slot_absmax)
 {
     const int64_t groups_per_slot = (I + 15) / 16;
     const int64_t g = static_cast<int64_t>(blockIdx.x) * blockDim.x +
@@ -886,6 +914,37 @@ __global__ void moe_swiglu_quant_batch_kernel(const __half *__restrict__ ygu,
     const int j0 = static_cast<int>((g - static_cast<int64_t>(s) *
                                               groups_per_slot) * 16);
     const int len = (j0 + 16 <= I) ? 16 : (I - j0);
+    float mx = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const float gv = __half2float(
+            ygu[static_cast<int64_t>(s) * 2 * I + j0 + i]);
+        const float uv = __half2float(
+            ygu[static_cast<int64_t>(s) * 2 * I + I + j0 + i]);
+        const float sig = __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-gv)));
+        const float sw = __fmul_rn(sig, __fmul_rn(gv, uv));
+        mx = fmaxf(mx, fabsf(sw));
+    }
+    // Non-negative domain: the int-domain atomicMax matches the float order.
+    atomicMax(reinterpret_cast<int *>(slot_absmax + s), __float_as_int(mx));
+}
+
+__global__ void moe_swiglu_quant_prescaled_batch_kernel(
+    const __half *__restrict__ ygu, int k_slots, int I,
+    __half *__restrict__ h, uint8_t *__restrict__ packed,
+    uint8_t *__restrict__ scales, const float *__restrict__ slot_absmax,
+    float *__restrict__ slot_prescale)
+{
+    const int64_t groups_per_slot = (I + 15) / 16;
+    const int64_t g = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (g >= static_cast<int64_t>(k_slots) * groups_per_slot) return;
+    const int s = static_cast<int>(g / groups_per_slot);
+    const int j0 = static_cast<int>((g - static_cast<int64_t>(s) *
+                                              groups_per_slot) * 16);
+    const int len = (j0 + 16 <= I) ? 16 : (I - j0);
+    const float alpha = MoeSwigluPrescaleAlpha(slot_absmax[s]);
+    const float inv_alpha = 1.0f / alpha;
+    if (j0 == 0) slot_prescale[s] = alpha;
 
     float vals[16];
     float absmax = 0.0f;
@@ -895,11 +954,11 @@ __global__ void moe_swiglu_quant_batch_kernel(const __half *__restrict__ ygu,
         const float uv = __half2float(
             ygu[static_cast<int64_t>(s) * 2 * I + I + j0 + i]);
         const float sig = __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-gv)));
-        const __half hv =
-            __float2half(__fmul_rn(sig, __fmul_rn(gv, uv)));
-        h[static_cast<int64_t>(s) * I + j0 + i] = hv;
-        vals[i] = __half2float(hv);
-        absmax = fmaxf(absmax, fabsf(vals[i]));
+        const float v =
+            __fmul_rn(inv_alpha, __fmul_rn(sig, __fmul_rn(gv, uv)));
+        vals[i] = v;
+        h[static_cast<int64_t>(s) * I + j0 + i] = __float2half(v);
+        absmax = fmaxf(absmax, fabsf(v));
     }
     const uint8_t sb =
         lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
@@ -965,16 +1024,24 @@ cudaError_t RunMoEGemvGatherTable(
 
 cudaError_t RunMoESwigluQuantBatch(cudaStream_t stream, const __half *ygu,
                                        int k_slots, int I, __half *h,
-                                       uint8_t *packed, uint8_t *scales)
+                                       uint8_t *packed, uint8_t *scales,
+                                       float *slot_absmax,
+                                       float *slot_prescale)
 {
-    if (!ygu || !h || !packed || !scales || k_slots <= 0 || k_slots > 16 ||
-        I <= 0)
+    if (!ygu || !h || !packed || !scales || !slot_absmax || !slot_prescale ||
+        k_slots <= 0 || k_slots > kMaxTopK || I <= 0)
         return cudaErrorInvalidValue;
     const int64_t groups =
         static_cast<int64_t>(k_slots) * ((I + 15) / 16);
-    moe_swiglu_quant_batch_kernel<<<static_cast<int>((groups + 255) / 256),
-                                    256, 0, stream>>>(ygu, k_slots, I, h,
-                                                      packed, scales);
+    const int blocks = static_cast<int>((groups + 255) / 256);
+    // slot_absmax is zeroed by the caller (the absmax domain is non-negative,
+    // so zero is the correct atomicMax identity).
+    moe_swiglu_absmax_batch_kernel<<<blocks, 256, 0, stream>>>(ygu, k_slots, I,
+                                                               slot_absmax);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    moe_swiglu_quant_prescaled_batch_kernel<<<blocks, 256, 0, stream>>>(
+        ygu, k_slots, I, h, packed, scales, slot_absmax, slot_prescale);
     return cudaGetLastError();
 }
 
@@ -984,6 +1051,21 @@ namespace {
 // Preserves the w13 -> swiglu-quant -> w2 -> ascending reduce op order of the
 // legacy per-slot path (bit-exact per slot). The ev2..ev5 handles, when
 // non-null, mark stage boundaries for the LSX_PROBE_FFN diagnostic.
+// Persistent per-slot scratch for the overflow-proof batched swiglu: the
+// first kMaxTopK floats are the per-slot absmax (atomicMax accumulator, zeroed
+// per call) and the next kMaxTopK are the per-slot power-of-two prescale that
+// the reduce folds back in. Allocated once; the decode path is single-threaded
+// per stream, and the buffer is written and read within one chain.
+float *EnsureSwigluSlotScratch()
+{
+    static float *p = nullptr;
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    if (!p && cudaMalloc(&p, sizeof(float) * 2 * kMaxTopK) != cudaSuccess)
+        p = nullptr;
+    return p;
+}
+
 cudaError_t RunMoERoutedTcChain(
     cudaStream_t stream, const gpu::ExpertDeviceCache &cache,
     const MoEGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
@@ -999,8 +1081,15 @@ cudaError_t RunMoERoutedTcChain(
         cache.scale_stride, tbl, K, H, 2 * I, ygu_batch, splitk13);
     if (e != cudaSuccess) return e;
     if (ev2) cudaEventRecord(ev2, stream);
+    float *slot_scratch = EnsureSwigluSlotScratch();
+    if (!slot_scratch) return cudaErrorMemoryAllocation;
+    float *slot_absmax = slot_scratch;
+    float *slot_prescale = slot_scratch + kMaxTopK;
+    e = cudaMemsetAsync(slot_absmax, 0, sizeof(float) * K, stream);
+    if (e != cudaSuccess) return e;
     e = RunMoESwigluQuantBatch(stream, ygu_batch, K, I, h_batch,
-                                   qpack_batch, qscales_batch);
+                                   qpack_batch, qscales_batch, slot_absmax,
+                                   slot_prescale);
     if (e != cudaSuccess) return e;
     if (ev3) cudaEventRecord(ev3, stream);
     e = lsx_tc::RunLsxTcGemmBatchDown(
@@ -1011,9 +1100,9 @@ cudaError_t RunMoERoutedTcChain(
     if (ev4) cudaEventRecord(ev4, stream);
     // Ascending-slot fp32 reduce -- the legacy coeff_add order (k=0..K-1);
     // acc already seeded by the caller (moe_init_acc_kernel upstream or
-    // a zero memset).
+    // a zero memset). slot_prescale folds the swiglu prescale back in.
     moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
-        yp_batch, d_tbl, K, H, d_acc);
+        yp_batch, d_tbl, K, H, d_acc, slot_prescale);
     if (ev5) cudaEventRecord(ev5, stream);
     return cudaGetLastError();
 }
@@ -1166,8 +1255,10 @@ cudaError_t RunMoERoutedGemmVBatchCore(
     }
     if (e != cudaSuccess) return e;
 
+    // LSX_GEMV_EXPERTS path: fp16 activations with no quantized prescale, so
+    // no per-slot fold (slot_prescale == nullptr == scale 1).
     moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
-        ypart, slots_dev, k_slots, H, acc);
+        ypart, slots_dev, k_slots, H, acc, nullptr);
     return cudaGetLastError();
 }
 

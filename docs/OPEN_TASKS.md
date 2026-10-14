@@ -1270,13 +1270,40 @@ clean fp16 oracle. So "which side is faithful in production" remains UNRESOLVED;
 what is established is only that the two TC paths disagree, deterministically,
 and that the acceptance gates cannot tell them apart.
 
- a comparison finer than the
-canonical answer. The goldens prove the batched path is adequate, the red test
-and the real-weight A/B prove it is not identical to the legacy path, and only a
-logits-level oracle (or the fp16 core as reference) can say which one is
-faithful. Until that exists the batched TC MoE path should be treated as
-unverified in production, and LSX_TC_BATCH_OFF=1 is the known-good fallback. The real models are unaffected — qwen MoE and ornith selfcheck, FSI, CODE
-and DET pass on real weights, and those paths do not run this comparison.
+### RESOLVED 2026-10-14 — the batched swiglu stored to FP16 before quantizing
+
+The divergence was NOT in the GEMM. Stage-by-stage, with the tests' own
+instrumentation: the batched `w13` output is bit-exact to the per-slot GEMM for
+every slot (`nd=0/32`), but the batched `w2` output is wrong (`nd=64/64`, relerr
+1.33) — and the stage between them, the swiglu, produced an `h` of `inf`.
+
+`moe_swiglu_quant_batch_kernel` computed `silu(gate)*up`, stored it to FP16
+*before* quantizing, then took the block absmax from the rounded value. When the
+product exceeds 65504 (super common for massive-activation experts:
+Mistral-Small-4 layer 32 expert 67 reaches 2.5e5) it overflows to +inf, absmax
+becomes inf, `FloatToE4m3(inf)` saturates the block scale, and every nibble
+quantizes from an infinite value. The per-slot path already had the fix
+(`RunAttnSwigluPreScaledQuantInternal`: FP32 product, per-slot power-of-two
+prescale, reciprocal folded back in the accumulator); the batched path kept the
+old form. Both test cases' geometry drives the product past 65504, so the case
+failed somewhere no real shape made it obvious — and real Qwen/Ornith
+generations diverged because they hit the same overflow.
+
+Fix: `moe_swiglu_absmax_batch_kernel` (FP32 product, per-slot absmax) +
+`moe_swiglu_quant_prescaled_batch_kernel` (per-slot power-of-two prescale, FP16
+store, quantize from FP32, publish the reciprocal), and the batched reduce folds
+`slot_prescale[s]` in exactly as `moe_coeff_add_scaled_kernel` does. Bit-exact
+no-op when a slot already fits (alpha == 1). Both `test_qwen_moe_kernels` and
+`test_ornith_moe_kernels` are green with the assertions untouched (998 and 877
+assertions), real Qwen3.6 batch-on and batch-off now emit identical text, and
+SelfCheck/FSI/DET still pass. Cost: one extra elementwise launch per layer,
+Qwen3.6 256-token bench 166.7 -> 161.3 t/s (2.04x -> 1.98x over the legacy
+81.5 t/s path, which is unchanged).
+
+Also repaired here: commit `bad0792` had accidentally deleted
+`LoadMoEExpertStore` from the "generation driver deterministic" case while
+editing the sibling's slot count, so that case had been failing on an unloaded
+store since.
 
 ### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads
 
