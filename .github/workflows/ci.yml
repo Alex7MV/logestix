@@ -28,7 +28,16 @@ jobs:
 
       - name: First-party language policy (English only)
         run: |
-          if git grep -lP '[\x{0400}-\x{04FF}]' -- ':!third_party' ':!*.ttf'; then
+          # Excluded: non-authored data/artifacts that legitimately carry
+          # non-English text — tests/fixtures (tokenizer goldens, arbitrary
+          # scripts by nature) and docs/superpowers (historical plan/spec
+          # artifacts that quote verbatim model template strings). Authored
+          # source and code must still embed such strings as escapes (see
+          # libs/lsxcommon/src/alice_tool_format.cpp kToolsPrefix), so those
+          # stay in scope.
+          if git grep -lP '[\x{0400}-\x{04FF}]' -- \
+              ':!third_party' ':!*.ttf' \
+              ':!tests/fixtures/**' ':!docs/superpowers/**'; then
             echo "::error::Cyrillic text found in first-party files; the repository is English-only."
             exit 1
           fi

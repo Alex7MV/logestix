@@ -32,13 +32,16 @@ def main() -> int:
     sp = spm.SentencePieceProcessor(model_file=model)
     bos = sp.bos_id()
 
+    # Non-English prompts are the point of the parity oracle (the model must
+    # tokenize arbitrary scripts). They are written as escapes so this source
+    # file stays ASCII, per the repository language policy.
     prompts = [
         "The capital of France is",
-        "Привет, мир! Как дела?",
+        "\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440! \u041a\u0430\u043a \u0434\u0435\u043b\u0430?",
         "def f(x):\n    return x ** 2\n",
         "  leading and trailing  ",
         "emoji \U0001F600 and tabs\there",
-        "Статья 105 Уголовного кодекса Российской Федерации",
+        "\u0421\u0442\u0430\u0442\u044c\u044f 105 \u0423\u0433\u043e\u043b\u043e\u0432\u043d\u043e\u0433\u043e \u043a\u043e\u0434\u0435\u043a\u0441\u0430 \u0420\u043e\u0441\u0441\u0438\u0439\u0441\u043a\u043e\u0439 \u0424\u0435\u0434\u0435\u0440\u0430\u0446\u0438\u0438",
         "1 2 3 4 5 6 7 8 9 10",
         "",
     ]
