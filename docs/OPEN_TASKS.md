@@ -1098,6 +1098,40 @@ the same load peaked at 1.8 GB — the 10.9 GB at cap 4096 is paid during decode
 not during load. The earlier 65.6 GB figure was an artifact; there is no
 page-cache defect here and no metadata-in-`model.index.json` work is needed.
 
+## W. Throughput baselines read low on a heat-soaked GPU — cooldown added (2026-10-15)
+
+`test_perf_baseline` measured phi-4 r3 at 117.2–118.0 t/s against a 122.26
+reference (-3.9%, DEGRADED) and qwen3.8-flash-next perf at 43.14 against 44.85
+(-3.8%, DEGRADED) — reproducibly, with a free, idle GPU. Neither is a code or
+artifact regression:
+
+- The **same Release-AOCC binary** re-measures the references when the card is
+  left to cool: phi r3 back within tolerance; qwen3.8 isolated `lsxbenchmark`
+  44.8 (reference 44.85).
+- qwen3.8's reference was recorded 2026-10-14 **on this same build**, artifact
+  unchanged since 2026-10-07; the driver (`595.91.07 -> 595.99.02`, 2026-10-08),
+  kernel (`7.0.0-34 -> -38`, 2026-10-02) and CUDA toolkit (`13.4.2 -> 13.4.3`,
+  2026-10-13) updates all predate it, so the "old toolchain" hypothesis is
+  retracted by that control.
+- Under load the SM clock settles at **~2812 MHz against a 3150 MHz maximum**
+  (600 W power cap, 64–76 °C): one 35–45 s decode heat-soaks the card, so
+  back-to-back targets read low. A fixed threshold *below* the resting
+  temperature never works — returning to the ~40 °C idle floor is a **plateau**
+  taking ~2–3 min (traced 70 -> 40 °C).
+
+**Fix:** `lsxcommon::perf::CoolDownGpu` (NVML, resolved at runtime like the
+power sampler) waits until the GPU temperature **plateaus at its running
+minimum** — as cool as the ambient allows — with a timeout, before each
+`RunPerfModel`. It runs once per target, before the perf->r3 pair, so the
+within-target protocol is unchanged. Knob `LSX_PERF_COOLDOWN_TIMEOUT_S`
+(default 300; 0 disables). Verified: phi-4 and qwen3.8-flash-next pass
+back-to-back; fast suite 94/94.
+
+**Still open (the §B class):** a genuinely warm room whose plateau sits above
+what the reference needs cannot be cooled into tolerance — no oracle separates
+"the room is warm" from "the code regressed" at 3%. The cooldown removes the
+back-to-back component, not the ambient one.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

@@ -164,6 +164,15 @@ struct MeasureResult {
     int power_samples = 0;
 };
 
+// ctest pins the vault subdir via env (one model per process); a direct binary
+// run falls back to the struct value.
+fs::path ModelDir(const PerfModel &m)
+{
+    const char *subdir_env = std::getenv("LSX_PERF_VAULT_SUBDIR");
+    return fs::path(lsxcommon::lsx_model_models_dir()) /
+           (subdir_env != nullptr ? subdir_env : m.vault_subdir);
+}
+
 std::optional<MeasureResult> MeasureModel(const PerfModel &m,
                                           const std::string &mode)
 {
@@ -173,12 +182,7 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m,
     // perf baseline, so SKIP (ctest SKIP_RETURN_CODE 4) instead of failing.
     SKIP("perf baseline requires a Release build (NDEBUG)");
 #endif
-    // The ctest entry pins the vault subdir via env (per-model process);
-    // direct binary runs fall back to the struct value.
-    const char *subdir_env = std::getenv("LSX_PERF_VAULT_SUBDIR");
-    const fs::path model_dir =
-        fs::path(lsxcommon::lsx_model_models_dir()) /
-        (subdir_env != nullptr ? subdir_env : m.vault_subdir);
+    const fs::path model_dir = ModelDir(m);
     std::error_code ec;
     if (!fs::exists(model_dir / "logestix" / "model.index.json", ec)) {
         SKIP(("vault model missing: " + model_dir.string()).c_str());
@@ -320,8 +324,29 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
     }
 }
 
+// The GPU heat-soaks within one 35-45 s decode and then settles ~11% below its
+// max SM clock (measured 2812/3150 MHz), costing ~4% of t/s. Back-to-back perf
+// targets therefore read low and look DEGRADED against a reference recorded on
+// a cool card. Cool between targets: CoolDownGpu waits until the temperature
+// plateaus (as cool as the ambient allows; it takes ~2-3 min to return to the
+// ~40 C idle floor here). LSX_PERF_COOLDOWN_TIMEOUT_S caps the wait (0
+// disables). Called once per target, before the perf->r3 pair, so the
+// within-target protocol the baselines were recorded with is unchanged.
+void CooldownBetweenTargets()
+{
+    int timeout_s = 300;
+    if (const char *e = std::getenv("LSX_PERF_COOLDOWN_TIMEOUT_S"))
+        timeout_s = std::atoi(e);
+    lsxcommon::perf::CoolDownGpu(timeout_s);
+}
+
 void RunPerfModel(const PerfModel &m)
 {
+    // Cool before the perf->r3 pair, but only when the model is present (an
+    // absent vault SKIPs immediately — no point holding the GPU cool first).
+    std::error_code ec;
+    if (fs::exists(ModelDir(m) / "logestix" / "model.index.json", ec))
+        CooldownBetweenTargets();
     // Two numeric modes, one mechanism: "perf" (kAuto) and "r3" (kOff,
     // bit-exact). Both are recorded in perf_baselines.json, keyed by mode.
     for (const char *mode : {"perf", "r3"}) {

@@ -25,6 +25,8 @@ struct NvmlApi {
     nvmlReturn_t (*get_handle)(unsigned int, nvmlDevice_t *) = nullptr;
     nvmlReturn_t (*power_usage)(nvmlDevice_t, unsigned int *) = nullptr;
     nvmlReturn_t (*enforced_limit)(nvmlDevice_t, unsigned int *) = nullptr;
+    nvmlReturn_t (*temperature)(nvmlDevice_t, nvmlTemperatureSensors_t,
+                                unsigned int *) = nullptr;
     nvmlDevice_t device = nullptr;
     bool ready = false;
 };
@@ -65,6 +67,8 @@ NvmlApi &Api()
             LoadSymbol(a.handle, "nvmlDeviceGetPowerUsage"));
         a.enforced_limit = reinterpret_cast<decltype(a.enforced_limit)>(
             LoadSymbol(a.handle, "nvmlDeviceGetEnforcedPowerLimit"));
+        a.temperature = reinterpret_cast<decltype(a.temperature)>(
+            LoadSymbol(a.handle, "nvmlDeviceGetTemperature"));
         if (a.init == nullptr || a.get_handle == nullptr ||
             a.power_usage == nullptr)
             return a;
@@ -103,6 +107,54 @@ bool ReadGpuPowerWatts(double &out_w)
     if (api.power_usage(api.device, &milliwatts) != NVML_SUCCESS) return false;
     out_w = static_cast<double>(milliwatts) / 1000.0;
     return true;
+}
+
+bool ReadGpuTemperatureC(double &out_c)
+{
+    NvmlApi &api = Api();
+    if (!api.ready || api.temperature == nullptr) return false;
+    unsigned int celsius = 0;
+    if (api.temperature(api.device, NVML_TEMPERATURE_GPU, &celsius) !=
+        NVML_SUCCESS)
+        return false;
+    out_c = static_cast<double>(celsius);
+    return true;
+}
+
+bool CooldownStep(CooldownState &s, bool have_temp, double temp_c,
+                  int stable_polls, double eps_c)
+{
+    if (!have_temp) return true;  // not measurable -> never block
+    if (!s.have_min || temp_c < s.min_c - eps_c)
+    {
+        s.min_c = temp_c;  // still shedding heat: restart the plateau counter
+        s.have_min = true;
+        s.flat = 0;
+    }
+    else
+    {
+        ++s.flat;
+    }
+    return s.flat >= (stable_polls > 0 ? stable_polls : 1);
+}
+
+bool CoolDownGpu(int timeout_s, int poll_ms, int stable_polls, double eps_c,
+                 std::function<bool(double &)> reader)
+{
+    if (timeout_s <= 0) return true;  // disabled
+    if (!reader) reader = ReadGpuTemperatureC;
+    const int poll = poll_ms > 0 ? poll_ms : 3000;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(timeout_s);
+    CooldownState state;
+    for (;;)
+    {
+        double celsius = 0.0;
+        const bool have = reader(celsius);
+        if (CooldownStep(state, have, celsius, stable_polls, eps_c)) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(poll));
+    }
 }
 
 bool GpuPowerAvailable() { return Api().ready; }

@@ -10,10 +10,14 @@
 #include "lsxcommon/gpu_power.h"
 
 using lsxcommon::perf::ComputePowerStats;
+using lsxcommon::perf::CooldownState;
+using lsxcommon::perf::CooldownStep;
+using lsxcommon::perf::CoolDownGpu;
 using lsxcommon::perf::GpuPowerAvailable;
 using lsxcommon::perf::GpuPowerSampler;
 using lsxcommon::perf::PowerStats;
 using lsxcommon::perf::ReadGpuPowerWatts;
+using lsxcommon::perf::ReadGpuTemperatureC;
 
 TEST_CASE("ComputePowerStats: empty is invalid", "[gpu_power]")
 {
@@ -79,6 +83,73 @@ TEST_CASE("GpuPowerSampler: never started returns invalid", "[gpu_power]")
     GpuPowerSampler sampler([](double &) { return true; }, 1);
     const PowerStats s = sampler.Stop();
     REQUIRE_FALSE(s.valid);
+}
+
+TEST_CASE("CooldownStep: unreadable temperature ends the wait", "[gpu_power]")
+{
+    CooldownState s;
+    REQUIRE(CooldownStep(s, false, 0.0, 3, 0.5));
+}
+
+TEST_CASE("CooldownStep: ends on a plateau at the running minimum",
+          "[gpu_power]")
+{
+    CooldownState s;
+    // A falling reading restarts the plateau counter ...
+    REQUIRE_FALSE(CooldownStep(s, true, 70.0, 3, 0.5));
+    REQUIRE_FALSE(CooldownStep(s, true, 65.0, 3, 0.5));
+    REQUIRE_FALSE(CooldownStep(s, true, 60.0, 3, 0.5));
+    // ... equal readings build it ...
+    REQUIRE_FALSE(CooldownStep(s, true, 60.0, 3, 0.5));
+    REQUIRE_FALSE(CooldownStep(s, true, 60.0, 3, 0.5));
+    // ... and the third stable poll ends the wait.
+    REQUIRE(CooldownStep(s, true, 60.0, 3, 0.5));
+}
+
+TEST_CASE("CooldownStep: a reading above the minimum keeps counting",
+          "[gpu_power]")
+{
+    CooldownState s;
+    REQUIRE_FALSE(CooldownStep(s, true, 55.0, 2, 0.5));
+    REQUIRE_FALSE(CooldownStep(s, true, 56.0, 2, 0.5));
+    REQUIRE(CooldownStep(s, true, 56.0, 2, 0.5));
+}
+
+TEST_CASE("CoolDownGpu: disabled or unreadable returns immediately",
+          "[gpu_power]")
+{
+    REQUIRE(CoolDownGpu(0, 1));
+    REQUIRE(CoolDownGpu(5, 1, 3, 0.5, [](double &) { return false; }));
+}
+
+TEST_CASE("CoolDownGpu: waits until the reader plateaus", "[gpu_power]")
+{
+    double t = 70.0;
+    auto reader = [&t](double &out) {
+        out = t;
+        if (t > 60.0) t -= 5.0;  // cool, then hold at 60
+        return true;
+    };
+    REQUIRE(CoolDownGpu(5, 1, 3, 0.5, reader));
+}
+
+TEST_CASE("CoolDownGpu: a never-settling reader times out", "[gpu_power]")
+{
+    double t = 200.0;
+    auto reader = [&t](double &out) {
+        out = t;
+        t -= 1.0;  // always falling -> never plateaus
+        return true;
+    };
+    REQUIRE_FALSE(CoolDownGpu(1, 1, 3, 0.5, reader));
+}
+
+TEST_CASE("NVML: live temperature read is plausible", "[gpu_power]")
+{
+    double c = -1.0;
+    if (!ReadGpuTemperatureC(c)) SKIP("NVML temperature unavailable");
+    REQUIRE(c >= -50.0);
+    REQUIRE(c < 200.0);
 }
 
 TEST_CASE("NVML: live board power read is plausible", "[gpu_power]")

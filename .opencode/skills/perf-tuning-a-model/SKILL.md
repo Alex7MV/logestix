@@ -195,6 +195,15 @@ Rules that bite:
   through `ENVIRONMENT`.
 - **Ordering**: run perf last, after every other GPU task (host-resource
   policy).
+- **The harness auto-cools between targets.** One 35–45 s decode heat-soaks the
+  card (SM settles ~2812/3150 MHz under the 600 W cap) and the next target
+  reads ~4% low → false DEGRADED. `test_perf_baseline` calls
+  `perf::CoolDownGpu` (NVML) before each `RunPerfModel` and waits for the
+  temperature to **plateau at its running minimum** (~2–3 min back to the
+  ~40 °C floor). `LSX_PERF_COOLDOWN_TIMEOUT_S` caps it (default 300; 0
+  disables). It removes the back-to-back component only — a genuinely warm room
+  whose plateau is above the reference stays unreachable (`docs/OPEN_TASKS.md`
+  §W).
 - **Missing vault → SKIP, not fail** (`SKIP_RETURN_CODE 4` per target). A model
   with a JSON entry but no ctest target is unguarded — when you ingest a model,
   add both (the `ingesting-a-model` skill's Definition of done).

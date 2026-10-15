@@ -13,6 +13,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   (`libs/lsxcommon/src/path_registry.cpp`).
 - `THIRD_PARTY_NOTICES`, `DEPENDENCIES.md` and a first-party license guard test.
 - This changelog.
+- Between-target GPU cooldown for `test_perf_baseline`: `perf::CoolDownGpu`
+  (`libs/lsxcommon/src/gpu_power.cpp`, NVML read + a plateau wait) runs before
+  each perf target, so a heat-soaked card no longer reads ~4% low and
+  false-DEGRADEs against the references (`docs/OPEN_TASKS.md` §W).
 
 ### Changed
 
