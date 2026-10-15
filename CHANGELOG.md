@@ -18,6 +18,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 - Bumped Apache Arrow 25.0.1 -> 26.0.0 (FetchContent pin `apache-arrow-26.0.0`;
   Arrow now bundles Boost 1.92.0 and xsimd 14.2.0).
+- Bumped simdjson v4.6.11 -> v5.0.5 (submodule `third_party/simdjson`; the
+  `test_core.cpp` version guard now asserts 5.0.5).
+- Bumped cpp-httplib v0.58.0 -> v0.61.0 (FetchContent pin; the `test_core.cpp`
+  `CPPHTTPLIB_VERSION` guard now asserts 0.61.0).
+- Bumped Catch2 v3.16.0 -> v3.16.1 (FetchContent pin; the `test_core.cpp`
+  `CATCH_VERSION_PATCH` guard now asserts 1).
 - NVIDIA CCCL is no longer a submodule: it is taken from the CUDA toolkit
   bundle (`<include>/cccl`) and **band-guarded** (configure-time in the root
   `CMakeLists.txt` + `test_core.cpp`). This removes the `-I` shadowing that made

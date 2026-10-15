@@ -121,7 +121,7 @@ two of them are machine-enforced.
 1. **The pin.**
    - FetchContent (root `CMakeLists.txt`) `GIT_TAG`: Arrow
      (`apache-arrow-26.0.0`), spdlog (`v1.17.0`), abseil (`20260817.0`), Catch2
-     (`v3.16.0`).
+     (`v3.16.1`).
    - Submodules under `third_party/`: flatbuffers, libzmq, simdjson — move the
      gitlink (`git -C third_party/<dep> checkout <tag>`) and commit the updated
      submodule pointer.

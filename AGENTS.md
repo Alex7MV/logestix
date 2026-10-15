@@ -32,11 +32,11 @@ in the same class will not find it.
 | spdlog | 1.17.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
+| simdjson | v5.0.5 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | from CUDA Toolkit (accepted band 3.2.x–3.5.x) | CUDA Toolkit bundle (`<include>/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
-| Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
-| cpp-httplib | v0.58.0 | FetchContent (host-only HTTP) | Header-only |
+| Catch2 | v3.16.1 | FetchContent (test only) | Header-only |
+| cpp-httplib | v0.61.0 | FetchContent (host-only HTTP) | Header-only |
 
 Versions are enforced by code: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
 versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, cpp-httplib,
@@ -351,7 +351,7 @@ procedure — `perf-tuning-a-model`.
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`
   (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
   (`FastMathMode::kOff`); the only app with a numeric mode.
-- `tests/` — Catch2 v3.16.0 suite; labels `fast`/`convert`/`inference`/`perf`
+- `tests/` — Catch2 v3.16.1 suite; labels `fast`/`convert`/`inference`/`perf`
   (see § Test) + model/naming/absl/toolchain guard tests.
 - `third_party/flatbuffers/`, `third_party/libzmq/`, `third_party/simdjson/` —
   submodules. CCCL is not vendored: it comes from the CUDA toolkit bundle
@@ -416,7 +416,7 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
   (see `numeric-conformance-audit.md`).
 - `lsxnetwork` — STATIC; simdjson, libzmq-static and Threads PUBLIC
   (a STATIC library re-exports link dependencies), spdlog PRIVATE.
-- Every app in `apps/*/` links `lsxcommon` PRIVATE; Catch2 v3.16.0
+- Every app in `apps/*/` links `lsxcommon` PRIVATE; Catch2 v3.16.1
   via FetchContent when `BUILD_TESTING=ON`.
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` **Win32 only**
   (`if(WIN32)` before `add_subdirectory`) — on Linux the binaries stay in

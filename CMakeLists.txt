@@ -362,7 +362,7 @@ if(BUILD_TESTING)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY "https://github.com/catchorg/Catch2.git"
-        GIT_TAG        "v3.16.0"
+        GIT_TAG        "v3.16.1"
     )
     FetchContent_MakeAvailable(Catch2)
 endif()
@@ -377,7 +377,7 @@ set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE INTERNAL "")
 FetchContent_Declare(
     httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-    GIT_TAG        "v0.58.0"
+    GIT_TAG        "v0.61.0"
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(httplib)

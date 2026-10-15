@@ -93,11 +93,11 @@ libzmq vendors a few small components with separate permissive licenses
 | NVIDIA CCCL (Thrust/libcu++/cudax/CUB) | from CUDA Toolkit (band 3.2.x–3.5.x) | bundled with the CUDA Toolkit (`<include>/cccl`) — not redistributed | build-only dependency, band-guarded at configure time | no |
 | FlatBuffers | v25.12.19 | https://github.com/google/flatbuffers.git | submodule `third_party/flatbuffers` (`7e163021…`) | no |
 | libzmq | 4.3.5 | https://github.com/zeromq/libzmq.git | submodule `third_party/libzmq` (`622fc6dd…`) | no |
-| simdjson | v4.6.11 | https://github.com/simdjson/simdjson.git | submodule `third_party/simdjson` (`f5de14f0…`) | no |
+| simdjson | v5.0.5 | https://github.com/simdjson/simdjson.git | submodule `third_party/simdjson` (`9c003534…`) | no |
 | spdlog | 1.17.0 | https://github.com/gabime/spdlog.git | FetchContent | yes — bundled `fmt/format.h` patched for NVCC 13.x |
 | abseil-cpp | 20260817.0 | https://github.com/abseil/abseil-cpp.git | FetchContent | yes — `crc32_x86_arm_combined_simd.h`, `str_format/checker.h` |
-| Catch2 | v3.16.0 | https://github.com/catchorg/Catch2.git | FetchContent (test-only) | no |
-| cpp-httplib | v0.58.0 | https://github.com/yhirose/cpp-httplib.git | FetchContent (host-only HTTP, header-only) | yes — `HTTPLIB_REQUIRE_OPENSSL`/`ZLIB`/`BROTLI` OFF |
+| Catch2 | v3.16.1 | https://github.com/catchorg/Catch2.git | FetchContent (test-only) | no |
+| cpp-httplib | v0.61.0 | https://github.com/yhirose/cpp-httplib.git | FetchContent (host-only HTTP, header-only) | yes — `HTTPLIB_REQUIRE_OPENSSL`/`ZLIB`/`BROTLI` OFF |
 | Boost | 1.92.0 (bundled by Arrow 26; not fetched in this configuration — the patch below only fires if Arrow resolves Boost) | https://github.com/boostorg/boost.git | FetchContent (transitive) | yes — `multiprecision/.../literals.hpp` |
 | xsimd | 14.2.0 (bundled by Arrow) | https://github.com/xtensor-stack/xsimd.git | FetchContent (transitive) | no |
 | Unicode Character Database | 16.0.0 | https://www.unicode.org/Public/16.0.0/ucd | generated `libs/lsxcommon/src/unicode_tables.inc` | derived data (see `tools/generate_unicode_tables.ps1`) |
