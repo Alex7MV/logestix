@@ -1,5 +1,6 @@
-// AliceAI native chat/tool codec test (host-only). Uses the real
-// SentencePiece tokenizer.model under LSX_TEST_ALICE_ROOT; SKIPs when absent.
+// AliceAI native chat/tool codec test (host-only). Uses the real SentencePiece
+// tokenizer.model from the checkpoint (LSX_TEST_ALICE_ROOT if set, else the
+// vault); SKIPs when absent.
 #include <catch2/catch_test_macros.hpp>
 
 #include <arrow/io/file.h>
@@ -10,6 +11,7 @@
 
 #include <lsxcommon/alice_tool_format.h>
 #include <lsxcommon/converter.h>
+#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace fs = std::filesystem;
@@ -21,11 +23,20 @@ using lsxcommon::ToolSpec;
 
 namespace {
 
+// Same resolution as the sibling inference gates (selfcheck/fsi/code/det): the
+// env var wins, otherwise the checkpoint is looked up in the vault. Resolving
+// only from the env made this gate SKIP silently after conversion.
+fs::path AliceTokenModelDir()
+{
+    if (const char *env = std::getenv("LSX_TEST_ALICE_ROOT"))
+        return fs::path(env);
+    return fs::path(lsxcommon::lsx_model_models_dir()) /
+           "AliceAI-Foundation-80B-A3B-Base";
+}
+
 bool BuildDb(ArrowTokenizerDb &db, fs::path &out)
 {
-    const char *root = std::getenv("LSX_TEST_ALICE_ROOT");
-    if (!root) return false;
-    const fs::path spm = fs::path(root) / "tokenizer.model";
+    const fs::path spm = AliceTokenModelDir() / "tokenizer.model";
     if (!fs::exists(spm)) return false;
     out = fs::temp_directory_path() / "alice_tool_tok";
     fs::remove_all(out);
@@ -59,7 +70,7 @@ TEST_CASE("alice native tool frame renders the template markers", "[alice][fast]
 {
     ArrowTokenizerDb db;
     fs::path out;
-    if (!BuildDb(db, out)) SKIP("LSX_TEST_ALICE_ROOT not set");
+    if (!BuildDb(db, out)) SKIP("alice tokenizer.model not present");
 
     ChatConversation conv;
     conv.messages.push_back({"system", "You are helpful.", "", {}});

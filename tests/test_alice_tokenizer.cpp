@@ -1,9 +1,12 @@
 // Model-neutral SentencePiece-BPE tokenizer backend parity (AliceAI).
 // Builds the arrow artifacts from the checkpoint's tokenizer.model and checks
 // them against goldens captured from the real sentencepiece processor.
+// The checkpoint is located via LSX_TEST_ALICE_ROOT (if set), else the vault;
+// SKIPs when the model or its tokenizer.model is absent.
 #include <catch2/catch_test_macros.hpp>
 #include <arrow/io/file.h>
 #include <lsxcommon/converter.h>
+#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 #include <simdjson.h>
 
@@ -20,6 +23,17 @@ namespace fs = std::filesystem;
 #endif
 
 namespace {
+
+// Same resolution as the sibling inference gates (selfcheck/fsi/code/det): the
+// env var wins, otherwise the checkpoint is looked up in the vault. Resolving
+// only from the env made this gate SKIP silently after conversion.
+fs::path AliceTokenModelDir()
+{
+    if (const char *env = std::getenv("LSX_TEST_ALICE_ROOT"))
+        return fs::path(env);
+    return fs::path(lsxcommon::lsx_model_models_dir()) /
+           "AliceAI-Foundation-80B-A3B-Base";
+}
 
 bool LoadAliceDb(lsxcommon::ArrowTokenizerDb &db, const fs::path &out)
 {
@@ -66,10 +80,8 @@ std::string Decode(const lsxcommon::ArrowTokenizerDb &db,
 
 TEST_CASE("sp-bpe builder parses the real tokenizer.model", "[alice][fast]")
 {
-    const char *root = std::getenv("LSX_TEST_ALICE_ROOT");
-    if (!root) SKIP("LSX_TEST_ALICE_ROOT not set");
-    const fs::path src = fs::path(root) / "tokenizer.model";
-    if (!fs::exists(src)) SKIP("tokenizer.model not present");
+    const fs::path src = AliceTokenModelDir() / "tokenizer.model";
+    if (!fs::exists(src)) SKIP("alice tokenizer.model not present");
 
     const fs::path out = fs::temp_directory_path() / "alice_tok_meta";
     fs::remove_all(out);
@@ -92,10 +104,8 @@ TEST_CASE("sp-bpe builder parses the real tokenizer.model", "[alice][fast]")
 
 TEST_CASE("sp-bpe encode/decode matches sentencepiece goldens", "[alice][fast]")
 {
-    const char *root = std::getenv("LSX_TEST_ALICE_ROOT");
-    if (!root) SKIP("LSX_TEST_ALICE_ROOT not set");
-    const fs::path src = fs::path(root) / "tokenizer.model";
-    if (!fs::exists(src)) SKIP("tokenizer.model not present");
+    const fs::path src = AliceTokenModelDir() / "tokenizer.model";
+    if (!fs::exists(src)) SKIP("alice tokenizer.model not present");
 
     const fs::path out = fs::temp_directory_path() / "alice_tok_meta";
     fs::create_directories(out);
