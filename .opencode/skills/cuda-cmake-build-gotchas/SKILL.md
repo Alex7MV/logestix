@@ -26,9 +26,19 @@ Abseil-specific build patches (crc32 SIMD, format checker) live in the
   enabled the language — not a licence to enable CUDA from a subdirectory.)
 - Discover the toolkit with `find_package(CUDAToolkit)`; it works on Linux and
   Windows. Never hardcode `C:/Program Files/...` paths.
-- Pre-C++-policy sub-dependencies need
-  `CMAKE_POLICY_VERSION_MINIMUM=3.5` (Arrow's xsimd). Set it in
-  `CMakePresets.json` `cacheVariables`; no manual env var.
+- Pre-C++-policy sub-dependencies need `CMAKE_POLICY_VERSION_MINIMUM=3.5`
+  (CMake ≥4.0). The root `CMakeLists.txt` sets it as a normal variable before
+  `FetchContent` (inherited by in-process nested projects); the `windows-*`
+  presets also carry it in `cacheVariables`; no manual env var.
+- **Never inject `cmake_minimum_required(VERSION 3.5)`** to get CMake-4
+  compatibility (e.g. via `CMAKE_PROJECT_INCLUDE`). Such a file is included as
+  the last step of *every* `project()` call and resets that scope's policy
+  version to 3.5, flipping CMP0076/CMP0091 — and all other post-3.5 policies —
+  back to OLD. Symptom (VS generator only): Arrow's bundled uriparser aborts at
+  its own `cmake_policy(GET CMP0091)` check ("behavior is '' rather than 'NEW',
+  mis-compilation detected") and Boost fails to find its relative
+  `extra/*.natvis` sources (CMP0076). The fix is to delete the injection and
+  keep only `CMAKE_POLICY_VERSION_MINIMUM`.
 - Set `CMAKE_RUNTIME_OUTPUT_DIRECTORY` to `${CMAKE_BINARY_DIR}/bin` **before**
   `add_subdirectory` — the `POST_BUILD` `arrow.dll` copies target that dir.
 - **Isolate NVCC by putting every `.cu` into its own OBJECT library** and
@@ -161,6 +171,7 @@ patches fire on only one of them, then run `ctest -L fast` for the guard.
 | Host flag applied to device code | flag came from `add_compile_options` or an ungated INTERFACE library instead of `CMAKE_CXX_FLAGS` / generator expressions |
 | Nested `enable_language(CUDA)` error under CMake 4.x | CUDA must be enabled at the top level |
 | `cmake_minimum_required`/policy error from a fetched dependency | `CMAKE_POLICY_VERSION_MINIMUM=3.5` |
+| uriparser `SEND_ERROR "Policy CMP0091 behavior is '' rather than 'NEW'"`, or Boost "Cannot find source file … `.natvis`" (VS generator) | a `cmake_minimum_required(VERSION 3.5)` injected via `CMAKE_PROJECT_INCLUDE` lowered the nested sub-project's policies; delete the injection, keep only `CMAKE_POLICY_VERSION_MINIMUM` |
 | Sized-literal redefinition in Boost `literals.hpp` under C++20 | Arrow/Boost patch not applied after fetch |
 | `-Werror` in a third-party build under GCC 15 | missing `BUILD_WARNING_LEVEL=PRODUCTION` |
 | Host-only test TU cannot find CUDA headers | the included header's CUDA surface is not `#if defined(LOGESTIX_HAS_CUDA) || defined(__CUDACC__)`-guarded |

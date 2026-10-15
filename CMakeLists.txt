@@ -151,15 +151,20 @@ endif()
 
 include(FetchContent)
 
-# CMAKE 4.x COMPATIBILITY HACK (for xsimd/Arrow):
-# Ensures CMake 4.x does not block dependencies that require a policy below 3.5
-# We use CMAKE_PROJECT_INCLUDE so the file applies to the project() of any nested
-# ExternalProject (including xsimd_ep), not just the current project.
-set(CMAKE_PROJECT_INCLUDE "${CMAKE_BINARY_DIR}/cmake_policy.cmake")
-file(WRITE "${CMAKE_BINARY_DIR}/cmake_policy.cmake"
-    "cmake_minimum_required(VERSION 3.5)\n"
-    "set(CMAKE_POLICY_VERSION_MINIMUM 3.5)\n"
-)
+# CMake 4.x compatibility for old bundled sub-projects (Arrow's uriparser /
+# Boost / xsimd may still call cmake_minimum_required(VERSION <3.5), which
+# CMake 4 rejects). Use the documented mechanism: CMAKE_POLICY_VERSION_MINIMUM
+# raises the *effective* minimum only for projects that ask below the floor; it
+# does NOT change the policy version of projects that already ask at or above
+# it. A normal variable set here is inherited by the in-process nested projects
+# (Arrow and its add_subdirectory/FetchContent deps).
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+# Do NOT reintroduce an injected `cmake_minimum_required(VERSION 3.5)` (e.g. via
+# CMAKE_PROJECT_INCLUDE): such a file is included as the last step of *every*
+# project() call and resets that scope's policy version to 3.5, flipping
+# CMP0076/CMP0091 — and every other post-3.5 policy — back to OLD. Under the VS
+# generator that mis-compiles Arrow's bundled uriparser (CMP0091, MSVC runtime
+# library) and breaks Boost's relative extra/*.natvis sources (CMP0076).
 
 # Hard-disable heavy and unneeded modules to speed up the build
 set(ARROW_BUILD_TESTS OFF CACHE INTERNAL "Disable Arrow tests")
