@@ -745,12 +745,30 @@ product or numerics decision, not a patch.
   documented single-model-at-a-time engine invariant with a guard test.
 
 ### E1a. Cooperative-cancel is pinned end-to-end for 5 of 18 families
+- **2026-10-16 audit — this item was understated, and it was not only a missing
+  test.** `kLifecycle`'s abort marker was the literal string `abort_flag`, which
+  every family satisfies by merely *assigning* the field
+  (`gs.abort_flag = req.abort_flag;`). It could not tell "the flag was handed
+  over" from "the flag is read", so the marker proved nothing. Separately, 12 of
+  the 22 rows named only the `Infer` TU while their Emit/abort polls live in an
+  unlisted device pipeline, so the check ran against code that makes no such
+  decision. Both are fixed: the marker now requires a poll
+  (`gs.Aborted()`/`gs->Aborted()`) and every row names the TU owning its
+  generation loop (`869cb10`).
+- That stricter marker immediately caught the case E1a did not describe:
+  **qwen3.8-flash-next never polled the flag at all.** `RunExpGeneration`
+  (`qwen_moe_exp_inference.cu`) took the `GenerationStream`, emitted every token
+  through it, and called `Aborted()` zero times in the whole driver, so a
+  cancelled request ran to `max_gen_tokens`. Fixed in the same commit; it is the
+  only one of 22 families that did not route the call.
 - `GenerationStream::Aborted()` has unit coverage (`tests/test_generation_stream.cpp`,
   `tests/test_model_engine.cpp`), and five families now assert that a raised
   flag stops a real decode: alice, mimo (the two that reported the bug), kimi,
-  qwen3.8-27b and qwen3.5-35b-a3b. The other 13 route the same
+  qwen3.8-27b and qwen3.5-35b-a3b. The other 17 route the same
   `GenerationStream::Aborted()` call but no test asserts it — a family could
-  check the flag in the wrong place and stay green.
+  check the flag in the wrong place and stay green. **qwen3.8-flash-next is the
+  one to add first:** it is the family this audit proved was unguarded, so it is
+  the one whose regression the static marker cannot rule out on its own.
 - Measured 2026-10-02 (TDD coverage audit), re-measured 2026-10-03 after the
   qwen_moe work. Streaming-order assertions cover 18/18; cancel coverage 5/18.
 - The shared helper the audit asked for now exists in
@@ -762,7 +780,42 @@ product or numerics decision, not a patch.
   token count, otherwise EOS truncation on random weights makes it pass for the
   wrong reason.
 - **Next step:** call those two helpers from each remaining family's model-stage
-  target. Mechanical, ~15 lines per family.
+  target. Mechanical, ~15 lines per family. Needs a machine with the converted
+  weights (these are `inference`-label targets against the vault).
+
+### E1b. The residency lock is a `shared_lock`, so it does not serialise Infer
+- Found 2026-10-16 (lifecycle audit). `ModelBase::RunUnderResidencyLock`
+  (`model_base.h:132`) takes `std::shared_lock`. A shared lock admits any number
+  of holders at once, so it orders `Infer` against `Unload()`'s unique lock and
+  nothing else.
+- The comments claim more. Eleven families and the guard's own rationale
+  (`test_model_independence_guard.cpp`, "session state ... is mutated before the
+  residency lock is taken — two concurrent Infer calls would free the KV the
+  other decodes from") assert that moving session mutation inside the lock stops
+  a concurrent `Infer` from freeing another's KV cache. It does not: two
+  concurrent `Infer` calls both hold the shared lock simultaneously. The
+  ordering check the guard performs is therefore real but proves less than its
+  comment claims.
+- Latent, not live: every dispatch path is sequential (orchestrator: one
+  consumer thread; `lsxfabric --serve`: one request at a time).
+- **Not changed because it is a semantics decision, not a patch.** Either make
+  the generation scope exclusive (serialises generation — measure before
+  choosing) or state the one-`Infer`-per-instance precondition explicitly and
+  correct the eleven comments. The second is honest and cheap; the first is a
+  performance decision.
+
+### E1c. qwen3.8-flash-next streams in one bulk drain at the end
+- Found 2026-10-16. `RunExpGeneration` generates the whole `max_gen_tokens`
+  budget and only then emits, in a single pass (`qwen_moe_exp_inference.cu`,
+  "Bulk token drain"). A streaming consumer sees nothing until the request
+  finishes, and EOS does not stop the loop early either — truncation happens
+  after the drain.
+- Every other family emits per step. The per-token host readback this driver
+  already performs (it feeds the PLE n-gram history) is exactly what an
+  incremental `Emit` needs, so the change is small — but it alters observed
+  behaviour, so it needs an `inference`-label run against real weights.
+- Interacts with E1a: incremental emit is the thing that makes an abort
+  observable to a streaming caller, so fix this with the cancel assertion.
 
 ### E2. `alice` publishes the FIRST logits row; every other family the LAST
 - `alice_moe_inference_pipeline.cu:492` fills `final_logits` when
