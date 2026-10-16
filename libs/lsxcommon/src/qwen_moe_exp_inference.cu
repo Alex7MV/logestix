@@ -1867,6 +1867,15 @@ cudaError_t RunExpGeneration(
     }
 
     for (int step = 0; step < total_steps; ++step) {
+        // Abort contract (shared lifecycle contract, ModelBase): every
+        // generation loop polls the flag per step, so a cancel stops the
+        // request instead of running it to max_gen_tokens. This driver used
+        // to emit tokens but never poll, so `req.abort_flag` was accepted and
+        // silently ignored - the one family whose abort path was dead while
+        // the lifecycle guard stayed green, because the guard accepted the
+        // `abort_flag = ` assignment as proof. The bulk drain below then
+        // published a full-length answer for a cancelled request.
+        if (gs && gs->Aborted()) break;
         const int kv_base = kv->kv_rows;
         full_idx = 0;
         lin_idx = 0;
@@ -2220,9 +2229,24 @@ cudaError_t RunExpGeneration(
                                 cudaMemcpyDeviceToHost, stream);
                 cudaEventRecord(tok_ready_ev, stream);
                 {
-                    cudaError_t q;
-                    while ((q = cudaEventQuery(tok_ready_ev)) ==
-                           cudaErrorNotReady) {}
+                    // Spinning on cudaEventQuery is forward-progress conforming
+                    // (CUDA guarantees that REPEATED query calls make device
+                    // progress, so this cannot hang), but the status must not
+                    // be dropped: a sticky launch failure from the decode step
+                    // makes this return an error, and swallowing it fed a -1
+                    // token back into the model - garbage output in place of a
+                    // reported CUDA failure.
+                    cudaError_t q = cudaEventQuery(tok_ready_ev);
+                    while (q == cudaErrorNotReady)
+                    {
+                        q = cudaEventQuery(tok_ready_ev);
+                    }
+                    if (q != cudaSuccess)
+                    {
+                        result.error_msg = "token readback: " +
+                                           std::string(cudaGetErrorString(q));
+                        break;
+                    }
                 }
                 token_history.push_back(h_tok);
                 if (token_history.size() > 64)

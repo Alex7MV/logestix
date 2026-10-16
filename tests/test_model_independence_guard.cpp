@@ -376,29 +376,48 @@ TEST_CASE("every family model wires the shared lifecycle contract",
     // ValidateGeometry names the shared base instead) plus, when the model
     // delegates the whole run to a device pipeline TU, that pipeline.
     //
+    // Naming the pipeline is not optional bookkeeping. Twelve rows listed only
+    // the Infer TU while their Emit/abort polls lived in an unlisted .cu, so
+    // the marker check ran against code that makes no such decision: it passed
+    // families whose generation loop was never read at all. A row may omit a
+    // pipeline only when the loop really is host-side - which is the case for
+    // nemotron (x2), gigachat, mimo, xing and mistral, whose Infer bodies step
+    // the session themselves and therefore poll gs.Aborted() in the same TU
+    // that wires gs.
+    //
     // Extend this registry in the SAME commit as a new model's Infer.
     struct LifecycleRow {
         const char *model_type;
         std::vector<const char *> path;  // TUs forming the generation path
     };
     const std::vector<LifecycleRow> kLifecycle = {
-        {"glm-5.2", {"glm_moe_model.cpp"}},
-        {"glm-5.3-flash", {"glm_moe_flash_model.cpp"}},
+        {"glm-5.2", {"glm_moe_model.cpp", "glm_moe_inference.cu"}},
+        {"glm-5.3-flash",
+         {"glm_moe_flash_model.cpp", "glm_moe_flash_inference.cu"}},
         {"deepseek-v4-flash",
          {"deepseek_moe_model.cpp", "deepseek_moe_inference_pipeline.cu"}},
         {"deepseek-v4.1-flash",
          {"deepseek_moe_v41_model.cpp", "deepseek_moe_v41_inference_pipeline.cu"}},
-        {"qwen3.5-9b", {"qwen_base_model.cpp"}},
-        {"qwen3.8-27b", {"qwen_base_model.cpp"}},
-        {"qwen3.5-35b-a3b", {"qwen_moe_model.cpp"}},
-        {"qwen3.6-35b-a3b", {"qwen_moe_model.cpp"}},
-        {"qwen3.8-flash-next", {"qwen_moe_exp_model.cpp"}},
-        {"gemma-4-26b-a4b-it", {"gemma_base_model.cpp"}},
-        {"gemma-4-31b-it", {"gemma_dense_model.cpp"}},
-        {"kimi-k2.7-code", {"kimi_moe_model.cpp"}},
-        {"ornith-1.5-35b-a3b", {"ornith_moe_model.cpp"}},
-        {"granite-4.2-30b", {"granite_dense_model.cpp"}},
-        {"phi-4", {"phi_dense_model.cpp"}},
+        {"qwen3.5-9b", {"qwen_base_model.cpp",
+                        "qwen_dense_inference_pipeline.cu"}},
+        {"qwen3.8-27b", {"qwen_base_model.cpp",
+                         "qwen_dense_inference_pipeline.cu"}},
+        {"qwen3.5-35b-a3b", {"qwen_moe_model.cpp",
+                             "qwen_moe_inference_pipeline.cu"}},
+        {"qwen3.6-35b-a3b", {"qwen_moe_model.cpp",
+                             "qwen_moe_inference_pipeline.cu"}},
+        {"qwen3.8-flash-next", {"qwen_moe_exp_model.cpp",
+                                "qwen_moe_exp_inference.cu"}},
+        {"gemma-4-26b-a4b-it",
+         {"gemma_base_model.cpp", "gemma_moe_inference.cu"}},
+        {"gemma-4-31b-it",
+         {"gemma_dense_model.cpp", "gemma_dense_inference.cu"}},
+        {"kimi-k2.7-code", {"kimi_moe_model.cpp", "kimi_moe_inference.cu"}},
+        {"ornith-1.5-35b-a3b",
+         {"ornith_moe_model.cpp", "ornith_moe_inference_pipeline.cu"}},
+        {"granite-4.2-30b",
+         {"granite_dense_model.cpp", "granite_dense_inference.cu"}},
+        {"phi-4", {"phi_dense_model.cpp", "phi_dense_inference.cu"}},
         {"nemotron-3.5-lightning-30b-a3b", {"nemotron_moe_model.cpp"}},
         {"nemotron-3.5-lightning-30b-a3b-nvfp4",
          {"nemotron_moe_nvfp4_model.cpp", "nemotron_moe_model.cpp"}},
@@ -424,7 +443,15 @@ TEST_CASE("every family model wires the shared lifecycle contract",
          // An actual INVOCATION — a GenerationStream that is only accepted
          // and then discarded (`(void)gs;`) does not satisfy the contract.
          {"gs->Emit", "GenerationStream gs", "token_callback("}},
-        {"abort", {"abort_flag"}},
+        // An actual POLL, not the field assignment. `gs.abort_flag =
+        // req.abort_flag;` only proves the flag was handed to the handle; the
+        // contract is that the generation loop READS it, so that an abort
+        // request stops the request instead of running to max_gen_tokens. That
+        // is why `abort_flag` (the previous spelling) was not enough: every
+        // family satisfies it by construction, including one that never
+        // polled - which is exactly how qwen3.8-flash-next shipped with a
+        // dead abort path under a green guard.
+        {"abort", {"gs.Aborted()", "gs->Aborted()"}},
         {"context-teardown", {"TeardownContext"}},
         {"governor-lease", {"AcquirePermanentWeights", "AcquireExpertCacheLease"}},
         {"output-text", {"DecodeGeneratedText", "output_text"}},
