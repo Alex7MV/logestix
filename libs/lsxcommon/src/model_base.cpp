@@ -1,6 +1,7 @@
 #include "lsxcommon/model_base.h"
 
 #include "lsxcommon/gpu_perf.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/perf_calibration.h"
 
 #include <absl/strings/str_format.h>
@@ -21,6 +22,10 @@ void ModelBase::Unload()
     // what makes "unload during inference" safe instead of a teardown racing
     // the decode (freed weights / destroyed stream).
     std::unique_lock<std::shared_mutex> lock(residency_mutex_);
+    // Weights are about to be freed: invalidate every process-lifetime cache
+    // keyed by a weight's device address, so a later model that lands on a
+    // recycled address cannot inherit this one's entries (OPEN_TASKS E1d).
+    lsx_tc::BumpLsxTcWeightEpoch();
     TeardownWeights();
     permanent_lease_ = {};
     expert_cache_lease_ = {};
@@ -34,6 +39,7 @@ bool ModelBase::AbortLoad()
     // The canonical Load-failure tail tears down subclass state; serialize it
     // with any residency reader exactly like Unload().
     std::unique_lock<std::shared_mutex> lock(residency_mutex_);
+    lsx_tc::BumpLsxTcWeightEpoch();  // partial weights are freed: see Unload
     TeardownWeights();
     permanent_lease_ = {};
     expert_cache_lease_ = {};
@@ -168,6 +174,10 @@ bool ModelBase::CheckGeometryFields(const char *tag,
 
 void ModelBase::FinishLoad()
 {
+    // Weights are now resident at addresses CUDA will later recycle: start a
+    // fresh cache generation so no entry can outlive the weights it was built
+    // from (OPEN_TASKS E1d).
+    lsx_tc::BumpLsxTcWeightEpoch();
     // Perf policy: one-time local calibration on unknown GPUs (no committed
     // base entry, no vault cache). Runs after weights are resident so the
     // device is warm; result lands in perf-cache/<gpu-key>.json.

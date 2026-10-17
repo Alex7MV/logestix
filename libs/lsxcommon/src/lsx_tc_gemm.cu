@@ -173,6 +173,17 @@ cudaError_t GetWeightTmaMap(const uint8_t *w_packed, int N, int k_half,
     const WeightMapKey key{w_packed, k_half, N};
     {
         std::lock_guard<std::mutex> lk(g_tma_mu);
+        // A tensor map ENCODES the device global address, and the key is that
+        // address - which CUDA recycles across model lifetimes. Serving a map
+        // built for a previous model's weights would have TMA load through a
+        // freed address, so the weight epoch invalidates the whole map (see
+        // LsxTcWeightEpoch / OPEN_TASKS E1d).
+        static unsigned long long g_tma_epoch = 0;
+        const unsigned long long epoch = LsxTcWeightEpoch();
+        if (g_tma_epoch != epoch) {
+            g_tma_cache.clear();
+            g_tma_epoch = epoch;
+        }
         for (auto &kv : g_tma_cache)
             if (kv.first == key) { *out = kv.second; return cudaSuccess; }
     }
@@ -1070,26 +1081,42 @@ bool LsxTcRuntimeSupported()
     return prop.major == 12;
 }
 
+// Weight epoch — see the contract in lsx_tc_gemm.h. Starts at 1 so a zero-epoch
+// entry can never look current.
+std::atomic<unsigned long long> g_weight_epoch{1};
+
+unsigned long long LsxTcWeightEpoch()
+{
+    return g_weight_epoch.load(std::memory_order_acquire);
+}
+
+void BumpLsxTcWeightEpoch()
+{
+    g_weight_epoch.fetch_add(1, std::memory_order_release);
+}
+
 // Persistent fused-GEMM output scratch keyed by the cached packed-weight
-// pointer (LsxTcBuildFusedGemmWeights cache holds the pointers for the process
-// lifetime, so the key is stable). Removes per-layer-per-step
-// cudaMallocAsync/FreeAsync pairs in the linear-attn decode path.
+// pointer AND the weight epoch. The pointer alone is not a stable key: CUDA
+// recycles device addresses across model lifetimes, so a new model can land on a
+// freed key and inherit another model's buffer (OPEN_TASKS E1d).
 __half *LsxTcFusedOutputScratch(const void *packed_key, int n_half)
 {
     struct FusedOutScratch {
         const void *key;
+        unsigned long long epoch;
         __half *buf;
     };
     static std::mutex mu;
     static std::vector<FusedOutScratch> cache;
+    const unsigned long long epoch = LsxTcWeightEpoch();
     std::lock_guard<std::mutex> lk(mu);
-    for (auto &c : cache)
-        if (c.key == packed_key) return c.buf;
+    for (const auto &c : cache)
+        if (c.key == packed_key && c.epoch == epoch) return c.buf;
     __half *buf = nullptr;
     if (cudaMalloc(&buf, sizeof(__half) * static_cast<size_t>(n_half)) !=
         cudaSuccess)
         return nullptr;
-    cache.push_back({packed_key, buf});
+    cache.push_back({packed_key, epoch, buf});
     return buf;
 }
 
@@ -1347,6 +1374,18 @@ cudaError_t LsxTcBuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
 
     std::lock_guard<std::mutex> lk(g_fw_mu);
     FusedSegKey key{{p1, p2, p3, p4}, {n1, n2, n3, n4}, k_half, k_chunks};
+    // Same device-address hazard as the shared-expert sh_cache: these keys are
+    // the SOURCE weight addresses, which CUDA recycles across model lifetimes,
+    // so after a weight epoch bump a new model can hit an entry built from the
+    // previous model's weights. Drop the previous generation's entries; the
+    // buffers are intentionally not freed (an instance may still be in flight,
+    // and the leak is pre-existing and bounded).
+    static unsigned long long g_fw_epoch = 0;
+    const unsigned long long epoch = LsxTcWeightEpoch();
+    if (g_fw_epoch != epoch) {
+        g_fw_cache.clear();
+        g_fw_epoch = epoch;
+    }
     for (auto &kv : g_fw_cache)
         if (kv.first.p[0] == key.p[0] && kv.first.p[1] == key.p[1] &&
             kv.first.p[2] == key.p[2] && kv.first.p[3] == key.p[3] &&

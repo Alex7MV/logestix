@@ -99,9 +99,33 @@ int LsxSplitKGridMin();
 // sm_12x runtime probe (cached): mxf4nvf4 TC path availability.
 bool LsxTcRuntimeSupported();
 
+// ── Weight-epoch: process-lifetime caches keyed by DEVICE POINTER ──────────
+// The fused-GEMM caches below (and the shared-expert `sh_cache` in
+// lsx_moe_inference.cu) key on the device address of a weight buffer and hold
+// their entries for the process lifetime. That key is NOT stable: CUDA recycles
+// device addresses, so a model loaded after another one was unloaded can land on
+// a freed address and silently inherit entries built from the PREVIOUS model's
+// weights — a different answer for the same request (OPEN_TASKS E1d).
+//
+// ModelBase bumps this epoch in FinishLoad() and in Unload()/AbortLoad(), i.e.
+// whenever model weights become resident or are released. Every cached entry
+// records the epoch it was built at and is treated as a miss after a bump, so a
+// recycled address can never be served from a stale entry. Rebuilding produces
+// values identical to the ones it replaces (the fused weights are a pure
+// function of the source weights), so this costs a rebuild, never numerics.
+//
+// Deliberately NOT a free-on-bump: releasing another instance's fused buffers
+// could pull memory out from under its in-flight kernels. The leak is
+// pre-existing (these entries were never freed) and bounded by
+// models x layers, not by steps.
+unsigned long long LsxTcWeightEpoch();
+
+// Call once per weight lifetime change; see the note above.
+void BumpLsxTcWeightEpoch();
+
 // Persistent fused-GEMM output scratch keyed by the cached packed-weight
-// pointer (process-lifetime; the LsxTcBuildFusedGemmWeights cache guarantees key
-// stability). Returns nullptr on allocation failure.
+// pointer AND the weight epoch (a pointer alone is not a stable key — see
+// LsxTcWeightEpoch). Returns nullptr on allocation failure.
 __half *LsxTcFusedOutputScratch(const void *packed_key, int n_half);
 
 // Batched seq==1 TC GEMM over routed-expert cache slots (gate|up fused

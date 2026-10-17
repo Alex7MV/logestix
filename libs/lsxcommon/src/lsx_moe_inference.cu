@@ -1448,12 +1448,29 @@ cudaError_t RunMoESharedCombine(
             int n;
         };
         static std::unordered_map<const void *, FusedShared> sh_cache;
+        // The cache is keyed by sw1.d_packed, a DEVICE ADDRESS. CUDA recycles
+        // device addresses, so a model loaded after another one was unloaded can
+        // land on a freed key and inherit the previous model's fused weights —
+        // a different answer for the same request, from weights that were never
+        // the ones asked for (OPEN_TASKS E1d). The weight epoch, bumped by
+        // ModelBase on every weight lifetime change, makes such an entry a miss;
+        // rebuilding yields identical values because the fused weights are a
+        // pure function of the source weights, so this costs a rebuild only.
+        static unsigned long long sh_cache_epoch = 0;
+        const unsigned long long epoch = lsx_tc::LsxTcWeightEpoch();
         const uint8_t *fp = nullptr, *fs = nullptr;
         const float *fw = nullptr;
         const int *fb_dummy = nullptr;
         int fn = 0;
         {
             std::lock_guard<std::mutex> lk(sh_mu);
+            if (sh_cache_epoch != epoch) {
+                // Drop the previous generation's entries. Their device buffers
+                // are intentionally NOT freed: another instance could still have
+                // kernels in flight, and the leak is pre-existing and bounded.
+                sh_cache.clear();
+                sh_cache_epoch = epoch;
+            }
             auto it = sh_cache.find(sw1.d_packed);
             if (it == sh_cache.end()) {
                 cudaError_t be = lsx_tc::LsxTcBuildFusedGemmWeights(
