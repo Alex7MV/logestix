@@ -122,10 +122,14 @@ protected:
     bool CheckGeometryFields(const char *tag, const GeoFieldCheck *fields,
                              size_t n) const;
 
-    // Runs `fn` under the shared residency lock: unload-during-inference and
-    // parallel dispatch serialize behind a unique_lock, while generation
-    // itself stays shared-safe. Every Infer implementation MUST
-    // route its generation call through this helper (uniform preamble).
+    // Runs `fn` under the shared residency lock: unload-during-inference
+    // serializes behind a unique_lock. NOTE what this does NOT do: the lock is
+    // shared, so it admits any number of holders at once and does not serialize
+    // Infer against Infer. One `Infer` per instance at a time is a precondition
+    // of this helper (OPEN_TASKS E1b), not something the lock provides; every
+    // dispatch path is sequential today (orchestrator: one consumer thread;
+    // `lsxfabric --serve`: one request at a time). Every Infer implementation
+    // MUST route its generation call through this helper (uniform preamble).
     template <typename F>
     auto RunUnderResidencyLock(F &&fn) -> decltype(fn())
     {

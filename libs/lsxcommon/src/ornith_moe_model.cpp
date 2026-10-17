@@ -282,8 +282,11 @@ gpu::InferenceResult OrnithMoeModelBase::RunInferShared(const ModelRequest &req)
     // session policy (mirrors QwenBaseModel): a request whose input_ids
     // match the previous call's generated tail continues the KV cache;
     // anything else starts fresh. Creating, decoding through and publishing
-    // that state under the lock keeps two concurrent Infer calls from freeing
-    // each other's cache.
+    // that state under the lock. The lock is shared, so it orders this request against Unload()'s unique
+    // lock and does NOT serialise Infer against Infer - two concurrent
+    // Infer calls on one instance both hold it. One Infer per instance at
+    // a time is a precondition (OPEN_TASKS E1b), and that is what keeps
+    // them from freeing each other's cache.
     return RunUnderResidencyLock([&]() -> gpu::InferenceResult {
         const qwen::SessionDecision session = qwen::DecideSession(
             kv_ && kv_->allocated(),

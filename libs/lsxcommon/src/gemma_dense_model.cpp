@@ -132,8 +132,12 @@ gpu::InferenceResult Gemma4_31BDenseModel::Infer(const ModelRequest &req)
     gs.abort_flag = req.abort_flag;
 
     // The whole request runs inside ONE shared-lock scope: creating,
-    // allocating, decoding through and publishing the KV state under the lock
-    // means two concurrent Infer calls can never free each other's cache.
+    // allocating, decoding through and publishing the KV state under the lock.
+    // The lock is shared, so it orders this request against Unload()'s unique
+    // lock and does NOT serialise Infer against Infer - two concurrent
+    // Infer calls on one instance both hold it. One Infer per instance at
+    // a time is a precondition (OPEN_TASKS E1b), and that is what keeps
+    // them from freeing each other's cache.
     return RunUnderResidencyLock([&]() -> gpu::InferenceResult {
         kv_.reset();
         kv_ = std::make_unique<gemma_dense::GemmaDenseKvCache>();

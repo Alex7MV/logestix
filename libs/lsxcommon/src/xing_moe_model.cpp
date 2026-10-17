@@ -187,7 +187,11 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
 
     const cudaError_t run = RunUnderResidencyLock([&] {
         // Session state is created, decoded through and published INSIDE the
-        // lock, so a concurrent Infer cannot free the cache this one reads.
+        // lock. The lock is shared, so it orders this request against
+        // Unload()'s unique lock and does NOT serialise Infer against Infer -
+        // two concurrent Infer calls on one instance both hold it. One Infer
+        // per instance at a time is a precondition (OPEN_TASKS E1b), and that
+        // is what keeps them from freeing each other's cache.
         const qwen::SessionDecision session = qwen::DecideSession(
             session_ && session_->length > 0,
             session_ ? session_->token_id : -1, session_tail_, req.input_ids);

@@ -280,8 +280,11 @@ gpu::InferenceResult QwenMoeModelBase::RunInferShared(const ModelRequest &req)
     int kv_slots = 0;
     // Incremental session policy (mirrors QwenBaseModel), entirely inside one
     // shared-lock scope: the KV state is created, decoded through and
-    // published under the lock so concurrent Infer calls cannot free the
-    // cache the other one reads.
+    // published under the lock. The lock is shared, so it orders this request against Unload()'s unique
+    // lock and does NOT serialise Infer against Infer - two concurrent
+    // Infer calls on one instance both hold it. One Infer per instance at
+    // a time is a precondition (OPEN_TASKS E1b), and that is what keeps
+    // them from freeing each other's cache.
     cudaError_t e = RunUnderResidencyLock([&] {
         const qwen::SessionDecision session = qwen::DecideSession(
             kv_ && kv_->allocated(),

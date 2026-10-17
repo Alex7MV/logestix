@@ -109,8 +109,11 @@ gpu::InferenceResult Phi4Model::Infer(const ModelRequest &req)
     // The whole request runs inside ONE shared-lock scope. Incremental
     // session policy: a request matching the previous call's generated tail
     // continues from {kv_->last_tok}; anything else restarts. Creating,
-    // decoding through and publishing the KV state under the lock keeps two
-    // concurrent Infer calls from freeing each other's cache.
+    // decoding through and publishing the KV state under the lock. The lock is shared, so it orders this request against Unload()'s unique
+    // lock and does NOT serialise Infer against Infer - two concurrent
+    // Infer calls on one instance both hold it. One Infer per instance at
+    // a time is a precondition (OPEN_TASKS E1b), and that is what keeps
+    // them from freeing each other's cache.
     return RunUnderResidencyLock([&]() -> gpu::InferenceResult {
         const bool continuation =
             kv_ && kv_->allocated() && !session_tail_.empty() &&

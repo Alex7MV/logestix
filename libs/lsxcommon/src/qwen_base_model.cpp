@@ -104,8 +104,11 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     // session policy (spec item 15): a request whose input_ids exactly match
     // the previous call's generated tail continues the KV cache from
     // {kv_->last_tok}; anything else starts a fresh one. Creating, decoding
-    // through and publishing that state all happen under the lock, so two
-    // concurrent Infer calls can never free the cache the other one reads.
+    // through and publishing that state all happen under the lock. The lock is shared, so it orders this request against Unload()'s unique
+    // lock and does NOT serialise Infer against Infer - two concurrent
+    // Infer calls on one instance both hold it. One Infer per instance at
+    // a time is a precondition (OPEN_TASKS E1b), and that is what keeps
+    // them from freeing each other's cache.
     return RunUnderResidencyLock([&]() -> gpu::InferenceResult {
         const qwen::SessionDecision session = qwen::DecideSession(
             kv_ && kv_->allocated(),
