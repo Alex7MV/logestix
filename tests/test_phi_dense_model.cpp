@@ -80,3 +80,24 @@ TEST_CASE("phi model loads, infers and is deterministic",
     model->Unload();
     std::filesystem::remove_all(tmp);
 }
+
+// Cooperative cancel (OPEN_TASKS §E1a): a raised abort_flag must stop the phi
+// decode loop, not run the full budget and publish it.
+TEST_CASE("phi honours cooperative cancel", "[phi][model][lifecycle]")
+{
+    auto tmp = BuildConvertedFixture();
+
+    ModelInitConfig cfg;
+    cfg.model_path = tmp.string();
+    cfg.model_type = "phi-4";
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {10, 11, 12, 13, 14};
+    ExpectCooperativeCancelStops(*model, req);
+
+    model->Unload();
+    std::filesystem::remove_all(tmp);
+}

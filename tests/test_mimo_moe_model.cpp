@@ -79,7 +79,7 @@ TEST_CASE("mimo Infer streams one chunk per generated token",
     fs::remove_all(out.parent_path());
 }
 
-TEST_CASE("mimo Infer honours a pre-set abort flag", "[mimo][model][lifecycle]")
+TEST_CASE("mimo Infer honours cooperative cancel", "[mimo][model][lifecycle]")
 {
     const fs::path out = BuildConverted();
     lsxcommon::ModelInitConfig cfg;
@@ -89,16 +89,10 @@ TEST_CASE("mimo Infer honours a pre-set abort flag", "[mimo][model][lifecycle]")
     REQUIRE(m != nullptr);
     REQUIRE(m->Load());
 
-    std::atomic<bool> abort{true};
     lsxcommon::ModelRequest req;
     req.input_ids = {1, 2, 3, 4};
-    req.max_gen_tokens = 8;
-    req.abort_flag = &abort;
-    const auto r = m->Infer(req);
-    INFO(r.error_msg);
-    CHECK(r.ok);
-    // Cancellation must stop the decode well before the requested budget.
-    CHECK(static_cast<int>(r.gen_tokens.size()) < req.max_gen_tokens);
+    // OPEN_TASKS §E1a: pre-set and mid-generation abort both must stop.
+    ExpectCooperativeCancelStops(*m, req);
 
     m->Unload();
     fs::remove_all(out.parent_path());

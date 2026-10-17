@@ -6012,6 +6012,29 @@ endif()
 add_test(NAME test_qwen_moe_exp_selfcheck COMMAND test_qwen_moe_exp_selfcheck)
 set_tests_properties(test_qwen_moe_exp_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# §E1c early-EOS gate. Its own executable on purpose: the gate is only a pure
+# function of its inputs in a fresh process (OPEN_TASKS §E1d).
+add_executable(test_qwen_moe_exp_eos_selfcheck test_qwen_moe_exp_eos_selfcheck.cpp)
+target_link_libraries(test_qwen_moe_exp_eos_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_qwen_moe_exp_eos_selfcheck PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_exp_eos_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_eos_selfcheck>"
+    )
+    add_custom_command(TARGET test_qwen_moe_exp_eos_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_eos_selfcheck>"
+    )
+endif()
+add_test(NAME test_qwen_moe_exp_eos_selfcheck COMMAND test_qwen_moe_exp_eos_selfcheck)
+set_tests_properties(test_qwen_moe_exp_eos_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_qwen_moe_exp_eos_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # Guard: model independence — unique frozen passports, no cross-model
 # geometry borrowing (host-only, no lsxcommon deps).
 add_executable(test_model_independence_guard test_model_independence_guard.cpp)

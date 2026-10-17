@@ -93,9 +93,10 @@ TEST_CASE("nemotron-nvfp4 Infer runs the hybrid pipeline end-to-end on a tiny mo
     CHECK(r.final_logits.size() == 32);
     ExpectStreamMatchesTokens(*model, req);
 
-    // Cooperative cancel (shared lifecycle contract): a pre-set abort flag must
-    // stop the decode well short of the budget.
-    ExpectPreSetAbortStops(*model, req, /*budget=*/24);
+    // Cooperative cancel (shared lifecycle contract, OPEN_TASKS §E1a): a raised
+    // abort flag must stop the decode both before the first step and from the
+    // token callback mid-generation.
+    ExpectCooperativeCancelStops(*model, req, /*budget=*/24);
     model->Unload();
 }
 

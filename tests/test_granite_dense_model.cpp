@@ -80,3 +80,24 @@ TEST_CASE("granite model loads, infers and is deterministic",
     model->Unload();
     std::filesystem::remove_all(tmp);
 }
+
+// Cooperative cancel (OPEN_TASKS §E1a): a raised abort_flag must stop the
+// granite decode loop, which is what `lsxfabric --serve` cancels against.
+TEST_CASE("granite honours cooperative cancel", "[granite][model][lifecycle]")
+{
+    auto tmp = BuildConvertedFixture();
+
+    ModelInitConfig cfg;
+    cfg.model_path = tmp.string();
+    cfg.model_type = "granite-4.2-30b";
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {10, 11, 12, 13, 14};
+    ExpectCooperativeCancelStops(*model, req);
+
+    model->Unload();
+    std::filesystem::remove_all(tmp);
+}

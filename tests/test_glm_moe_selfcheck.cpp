@@ -23,6 +23,8 @@
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
+#include "test_streaming_assert.h"
+
 namespace {
 
 constexpr int kStressCycles = 3;
@@ -130,6 +132,11 @@ TEST_CASE(
         CHECK(std::memcmp(sc.final_logits.data(), ref_logits.data(),
                           ref_logits.size() * sizeof(float)) == 0);
     }
+
+    // Cooperative cancel (OPEN_TASKS §E1a): RunGlmRealGeneration polls the flag
+    // per step; a cancelled request must stop short of the budget. SKIPs with
+    // the rest of this case when GLM-5.2 is absent.
+    ExpectCooperativeCancelStops(*m, req);
 
     m->Unload();
 }

@@ -121,6 +121,11 @@ TEST_CASE("Ornith-1.5-35B-A3B SelfCheck: 'The capital of France is' -> "
     // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
     ExpectStreamMatchesTokens(*m, req);
 
+    // Cooperative cancel (OPEN_TASKS §E1a): the ornith pipeline polls the flag
+    // at the batched EOS fence, so a cancelled request must stop short of the
+    // budget instead of publishing it.
+    ExpectCooperativeCancelStops(*m, req);
+
     m->Unload();
 }
 

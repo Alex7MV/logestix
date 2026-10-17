@@ -500,11 +500,17 @@ TEST_CASE("every family model wires the shared lifecycle contract",
     }
     // Incremental-session families keep persistent decode state (the KV cache
     // plus the generated tail). Creating, resetting or publishing that state
-    // OUTSIDE the shared residency lock lets a concurrent Infer free the cache
-    // the other one is decoding from — the lock only helps if the state it
-    // protects is mutated under it. Structural check, scoped to the Infer
-    // body: the lock must be opened before the first session mutation there
-    // (a Load-time lock elsewhere in the file does not protect Infer state).
+    // must happen INSIDE the lock scope that owns the generation, so the state
+    // is created, decoded through and published together.
+    //
+    // What this check does NOT claim: that the lock makes concurrent Infer
+    // calls safe. RunUnderResidencyLock takes a SHARED lock, so two Infer calls
+    // on one instance both hold it and neither excludes the other (E1b). This
+    // is a structural check on ordering and scope only: the session mutations
+    // must not sit outside the scope that decodes through them. It is scoped to
+    // the Infer body - the lock must be opened before the first session
+    // mutation there (a Load-time lock elsewhere in the file does not protect
+    // Infer state).
     for (const auto &row : kLifecycle) {
         std::string text;
         for (const char *tu : row.path) text += ReadFile(kSrcDir / tu);
@@ -524,9 +530,11 @@ TEST_CASE("every family model wires the shared lifecycle contract",
                 violations.push_back(absl::StrCat(
                     row.model_type, " (", absl::StrJoin(row.path, "+"),
                     "): session state '", stateful,
-                    "' is mutated before the residency lock is taken — two "
-                    "concurrent Infer calls would free the KV the other "
-                    "decodes from"));
+                    "' is mutated before the residency lock is taken — the "
+                    "session state it protects must be created, decoded through "
+                    "and published inside the one lock scope (note: the shared "
+                    "lock orders this against Unload(), not against a second "
+                    "Infer — see OPEN_TASKS E1b)"));
             }
         }
     }

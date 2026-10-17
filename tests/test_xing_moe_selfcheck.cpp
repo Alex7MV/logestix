@@ -8,6 +8,7 @@
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/model_factory.h>
 
+#include "test_streaming_assert.h"
 #include "test_tool_roundtrip.h"
 
 #include <algorithm>
@@ -101,6 +102,11 @@ TEST_CASE("xing selfcheck answers Paris", "[xing][inference]")
                             ref_logits.size() * sizeof(float)) == 0);
         REQUIRE(sc.first_gen_tok_id == sc0.first_gen_tok_id);
     }
+
+    // Cooperative cancel (OPEN_TASKS §E1a): the xing decode loop polls the flag
+    // per step, so a cancelled request must stop short of the budget.
+    ExpectCooperativeCancelStops(*model, req);
+
     model->Unload();
 }
 

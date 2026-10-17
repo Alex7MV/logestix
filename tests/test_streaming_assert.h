@@ -89,3 +89,60 @@ inline void ExpectCallbackAbortStops(lsxcommon::IModel &model,
     CHECK(res.gen_tokens.size() < budget);
     CHECK(chunks <= res.gen_tokens.size());
 }
+
+// The whole cooperative-cancel gate, in the three runs E1a asks for: the
+// pre-set poll, the mid-generation poll raised from the token callback (the
+// real `--serve` path), and the control that proves the family really would
+// have produced the full budget. EOS is forced off in all three (`ignore_eos`,
+// which every family maps to a sentinel no token equals), because on random
+// weights an EOS hit could shorten a run for a reason unrelated to the abort,
+// and the "strictly fewer than budget" check would then pass for the wrong
+// reason. With EOS off, the only way a run can stop early is the abort flag, so
+// the control run picking up exactly `budget` tokens makes the two cancel runs
+// meaningful. The control runs last so the cancel runs see a fresh session.
+template <typename Model>
+inline void ExpectCooperativeCancelStops(Model &model,
+                                         const lsxcommon::ModelRequest &base,
+                                         std::size_t budget = 24,
+                                         std::size_t stop_after = 2)
+{
+    lsxcommon::ModelRequest b = base;
+    b.max_gen_tokens = static_cast<std::int32_t>(budget);
+    b.ignore_eos = true;
+
+    {
+        std::atomic<bool> flag{true};
+        lsxcommon::ModelRequest req = b;
+        req.abort_flag = &flag;
+        std::size_t chunks = 0;
+        req.token_callback = [&](const lsxcommon::TokenChunk &) { ++chunks; };
+        const auto res = model.Infer(req);
+        REQUIRE(res.ok);
+        CHECK(res.gen_tokens.size() < budget);
+        CHECK(chunks <= res.gen_tokens.size());
+    }
+    {
+        std::atomic<bool> flag{false};
+        lsxcommon::ModelRequest req = b;
+        req.abort_flag = &flag;
+        std::size_t chunks = 0;
+        req.token_callback = [&](const lsxcommon::TokenChunk &) {
+            if (++chunks >= stop_after)
+                flag.store(true, std::memory_order_release);
+        };
+        const auto res = model.Infer(req);
+        REQUIRE(res.ok);
+        CHECK(chunks >= 1);
+        CHECK(res.gen_tokens.size() < budget);
+        CHECK(chunks <= res.gen_tokens.size());
+    }
+    {
+        std::size_t chunks = 0;
+        lsxcommon::ModelRequest req = b;
+        req.token_callback = [&](const lsxcommon::TokenChunk &) { ++chunks; };
+        const auto res = model.Infer(req);
+        REQUIRE(res.ok);
+        CHECK(res.gen_tokens.size() == budget);
+        CHECK(chunks == res.gen_tokens.size());
+    }
+}

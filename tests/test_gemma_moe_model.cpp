@@ -83,6 +83,26 @@ TEST_CASE("factory creates registered gemma model on synthetic fixture",
     fs::remove_all(out.parent_path());
 }
 
+// Cooperative cancel (OPEN_TASKS §E1a): gemma-4-26b-a4b-it must drop a raised
+// abort_flag mid-decode, not run the full budget and publish it.
+TEST_CASE("gemma MoE honours cooperative cancel", "[gemma][model][lifecycle]") {
+    auto out = MakeConvertedSynthetic();
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = out.string();
+    cfg.model_type = "gemma-4-26b-a4b-it";
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = {0, 3, 5, 7};
+    ExpectCooperativeCancelStops(*model, req);
+
+    model->Unload();
+    fs::remove_all(out.parent_path());
+}
+
 
 TEST_CASE("gemma expert index parsed once across Infers", "[gemma][model]") {
     auto out = MakeConvertedSynthetic();

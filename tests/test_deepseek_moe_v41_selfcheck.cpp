@@ -65,6 +65,10 @@ TEST_CASE("deepseek-v41 flash selfcheck: Paris, 3 bit-exact cycles")
     sreq.max_gen_tokens = 2;
     ExpectStreamMatchesTokens(*model, sreq);
 
+    // Cooperative cancel (OPEN_TASKS §E1a): the v4.1 pipeline polls per step
+    // and breaks on Aborted(), so a cancelled request must not run to budget.
+    ExpectCooperativeCancelStops(*model, sreq);
+
     model->Unload();
 }
 

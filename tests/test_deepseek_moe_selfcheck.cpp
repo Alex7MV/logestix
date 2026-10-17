@@ -104,6 +104,10 @@ TEST_CASE("DeepSeek-V4-Flash SelfCheck: 'The capital of France is' -> 'Paris', "
     // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
     ExpectStreamMatchesTokens(*m, req);
 
+    // Cooperative cancel (OPEN_TASKS §E1a): the pipeline polls per step and
+    // breaks on Aborted(), so a cancelled request must not run to the budget.
+    ExpectCooperativeCancelStops(*m, req);
+
     m->Unload();
 }
 

@@ -77,20 +77,9 @@ TEST_CASE("Qwen3.8-27B model factory registration and generation")
     // that breaks only the 27B geometry is caught here.
     ExpectStreamMatchesTokens(*model, req);
 
-    {
-        std::atomic<bool> abort{true};
-        lsxcommon::ModelRequest areq = req;
-        areq.max_gen_tokens = 8;
-        areq.abort_flag = &abort;
-        std::vector<std::uint32_t> chunks;
-        areq.token_callback = [&](const lsxcommon::TokenChunk &c) {
-            chunks.push_back(c.token_id);
-        };
-        const auto ar = model->Infer(areq);
-        CHECK(ar.ok);
-        CHECK(ar.gen_tokens.size() < static_cast<std::size_t>(areq.max_gen_tokens));
-        CHECK(chunks.size() == ar.gen_tokens.size());
-    }
+    // Cooperative cancel (OPEN_TASKS §E1a): pre-set and mid-generation abort
+    // both must stop the decode before the budget.
+    ExpectCooperativeCancelStops(*model, req);
 
     model->Unload();
     remove_all(tmp);

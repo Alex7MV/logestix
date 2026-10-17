@@ -92,6 +92,31 @@ TEST_CASE("nemotron Infer runs the hybrid pipeline end-to-end on a tiny model",
     model->Unload();
 }
 
+// Cooperative cancel (OPEN_TASKS §E1a): nemotron steps the session host-side,
+// so it must poll the abort flag there and drop a cancelled decode.
+TEST_CASE("nemotron honours cooperative cancel",
+          "[nemotron][model][lifecycle]")
+{
+    SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    const auto src = nemotrontest::MakeTempDir("nm_cancel_src");
+    const auto dst = nemotrontest::MakeTempDir("nm_cancel_dst");
+    nemotrontest::WriteNemotronCheckpoint(src);
+    REQUIRE(nemotron_moe::ConvertNemotronModel(src.string(), dst.string()).ok());
+
+    ModelInitConfig cfg;
+    cfg.model_path = dst.string();
+    cfg.model_type = NemotronHModel::kType;
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {1, 2, 3};
+    ExpectCooperativeCancelStops(*model, req);
+
+    model->Unload();
+}
+
 TEST_CASE("nemotron Load rejects a frozen-geometry mismatch", "[nemotron][model]")
 {
     SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "0");

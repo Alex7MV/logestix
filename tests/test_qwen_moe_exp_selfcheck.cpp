@@ -108,9 +108,21 @@ TEST_CASE("Qwen3.8-Flash-Next SelfCheck: 'The capital of France is' -> 'Paris', 
     // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
     ExpectStreamMatchesTokens(*m, req);
 
+    // Cooperative cancel (OPEN_TASKS §E1a / §E1c). This is the family the
+    // lifecycle audit proved was unguarded, and the callback half of this gate
+    // is specifically the E1c gate: the flag is raised from inside the token
+    // callback, which can only stop the decode if tokens are published per step
+    // instead of in one bulk drain after the whole budget has been generated.
+    ExpectCooperativeCancelStops(*m, req);
+
     m->Unload();
 }
 
+// OPEN_TASKS §E1c: the driver used to generate the whole max_gen_tokens budget
+// and truncate at the first EOS afterwards, so the tokens after EOS were decoded
+// and thrown away, and a streaming consumer saw nothing until the whole budget
+// had run. This prompt reaches EOS on the 5th generated token, so a 64-token
+// budget separates the two behaviours cleanly.
 TEST_CASE("Qwen3.8-Flash-Next end-to-end tool round-trip (real weights)",
           "[qwen38][model][tool][real-model]")
 {

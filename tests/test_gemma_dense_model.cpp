@@ -119,7 +119,7 @@ TEST_CASE("factory creates the registered gemma dense model", "[gemma_dense][mod
     fs::remove_all(out.parent_path());
 }
 
-TEST_CASE("gemma dense honours a pre-set abort flag", "[gemma_dense][model]") {
+TEST_CASE("gemma dense honours cooperative cancel", "[gemma_dense][model]") {
     auto out = MakeConvertedSynthetic();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
@@ -130,7 +130,8 @@ TEST_CASE("gemma dense honours a pre-set abort flag", "[gemma_dense][model]") {
 
     lsxcommon::ModelRequest req;
     req.input_ids = {0, 3, 5, 7};
-    ExpectPreSetAbortStops(*model, req, 24);
+    // OPEN_TASKS §E1a: pre-set and mid-generation abort both must stop.
+    ExpectCooperativeCancelStops(*model, req, 24);
 
     model->Unload();
     fs::remove_all(out.parent_path());

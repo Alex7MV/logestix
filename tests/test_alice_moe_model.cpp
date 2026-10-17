@@ -243,20 +243,16 @@ TEST_CASE("alice Infer streams one chunk per generated token",
     model->Unload();
 }
 
-TEST_CASE("alice Infer honours a pre-set abort flag",
+TEST_CASE("alice Infer honours cooperative cancel",
           "[alice][model][lifecycle]")
 {
     auto model = LoadSyntheticAlice("abort");
-    std::atomic<bool> abort{true};
     lsxcommon::ModelRequest req;
     req.input_ids = {1, 5, 7};
-    req.max_gen_tokens = 4;
-    req.abort_flag = &abort;
-    const auto r = model->Infer(req);
-    if (!r.ok) FAIL(r.error_msg);
-    CHECK(r.ok);
-    // Cancellation must stop the decode well before the requested budget.
-    CHECK(r.gen_tokens.size() < static_cast<std::size_t>(req.max_gen_tokens));
+    // OPEN_TASKS §E1a: a flag raised before Infer and one raised from the token
+    // callback mid-generation must both stop the decode short of the budget,
+    // and the control proves the same budget otherwise runs to completion.
+    ExpectCooperativeCancelStops(*model, req);
     model->Unload();
 }
 

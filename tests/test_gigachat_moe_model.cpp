@@ -50,6 +50,27 @@ TEST_CASE("gigachat model loads a synthetic converted fixture",
     m.Unload();
 }
 
+// Cooperative cancel (OPEN_TASKS §E1a): the decode loop runs host-side (one
+// Infer per step), so it must poll the abort flag there and stop a cancelled
+// request instead of publishing the full budget.
+TEST_CASE("gigachat honours cooperative cancel", "[gigachat][model][lifecycle]")
+{
+    const auto root = gigachattest::MakeTempDir("gc_cancel");
+    gigachattest::WriteGigaChatCheckpoint(root);
+    REQUIRE(gigachat::ConvertGigaChatModel(root.string(), root.string()).ok());
+
+    ModelInitConfig cfg;
+    cfg.model_path = root.string();
+    GigaChat35Model m(cfg);
+    REQUIRE(m.Load());
+
+    ModelRequest req;
+    req.input_ids = {1};
+    ExpectCooperativeCancelStops(m, req);
+
+    m.Unload();
+}
+
 TEST_CASE("gigachat chatml-v5 framing uses the right sentinels",
           "[gigachat][model]")
 {

@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "test_mistral_moe_fixture.h"
+#include "test_streaming_assert.h"
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/mistral_moe_convert.h"
@@ -125,5 +126,24 @@ TEST_CASE("Mistral streaming reaches the token callback", "[mistral][inference]"
     const auto r = model->Infer(req);
     REQUIRE(r.ok);
     REQUIRE(emitted == static_cast<int>(r.gen_tokens.size()));
+    model->Unload();
+}
+
+// Cooperative cancel (OPEN_TASKS §E1a): the MLA decode loop runs host-side
+// (one Infer per step), so it must poll the abort flag there and stop a
+// cancelled request instead of publishing the full budget.
+TEST_CASE("Mistral honours cooperative cancel", "[mistral][inference][lifecycle]")
+{
+    if (!GpuAvailable()) std::exit(4);
+    EnsureModelRegistry();
+    const fs::path root = BuildConverted();
+
+    auto model = MakeModel(root);
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {5, 7, 9};
+    ExpectCooperativeCancelStops(*model, req);
+
     model->Unload();
 }

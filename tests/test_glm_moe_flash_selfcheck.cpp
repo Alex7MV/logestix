@@ -91,6 +91,10 @@ TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
     sreq.max_gen_tokens = 2;
     ExpectStreamMatchesTokens(*model, sreq);
 
+    // Cooperative cancel (OPEN_TASKS §E1a): the flash driver polls per step, so
+    // both the pre-set and mid-generation abort paths must stop the decode.
+    ExpectCooperativeCancelStops(*model, sreq);
+
     model->Unload();
 }
 

@@ -144,3 +144,34 @@ TEST_CASE("device-fed decode run-to-run determinism (qwen3.6)",
     m->Unload();
     qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
 }
+
+// Cooperative cancel (OPEN_TASKS §E1a): a raised abort_flag must stop the
+// decode loop. qwen3.5 asserts this on the shared MoE pipeline; 3.6 must pin it
+// on its own geometry so a change that breaks only this variant is caught.
+TEST_CASE("qwen3.6-35b-a3b honours cooperative cancel",
+          "[qwen36-model][qwen36-decode]")
+{
+    ConvertedModel36 fx;
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        fx.in / "tokenizer.json",
+        std::filesystem::copy_options::overwrite_existing);
+    REQUIRE(
+        qwen_moe_36::ConvertQwen36MoeModel(fx.in.string(), fx.out.string()).ok());
+
+    ModelInitConfig cfg;
+    cfg.model_type = Qwen36MoeModel::kType;
+    cfg.model_path = fx.out.string();
+    cfg.fast_math = true;
+    auto m = LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    ModelRequest req;
+    req.input_ids = {1, 2, 3, 4, 5};
+    ExpectCooperativeCancelStops(*m, req);
+
+    m->Unload();
+    qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+}

@@ -71,3 +71,35 @@ TEST_CASE("Qwen V5 model factory registration and generation")
     model->Unload();
     remove_all(tmp);
 }
+
+// Cooperative cancel (OPEN_TASKS §E1a): the shared lifecycle contract promises
+// that a raised `abort_flag` stops the decode loop, which is what
+// `lsxfabric --serve` relies on. Pinned here on the shared QwenBaseModel path.
+TEST_CASE("qwen3.5-9b honours cooperative cancel",
+          "[qwen][model][lifecycle]")
+{
+    auto tmp = temp_directory_path() / "qwen_model_cancel";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = qwentest::BuildSyntheticQwenModel();
+    qwentest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    qwentest::WriteConfig(tmp);
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        tmp / "tokenizer.json");
+    REQUIRE(lsxcommon::qwen::ConvertQwenModel(tmp.string(), tmp.string()).ok());
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = tmp.string();
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = {0, 1, 2, 3};
+    ExpectCooperativeCancelStops(*model, req);
+
+    model->Unload();
+    remove_all(tmp);
+}

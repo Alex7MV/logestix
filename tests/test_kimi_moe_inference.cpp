@@ -77,21 +77,10 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
     // req.token_callback serves an empty stream.
     ExpectStreamMatchesTokens(*m, req);
 
-    // Cooperative cancellation must stop the decode before the budget.
-    {
-        std::atomic<bool> abort{true};
-        lsxcommon::ModelRequest areq = req;
-        areq.max_gen_tokens = 8;
-        areq.abort_flag = &abort;
-        std::vector<std::uint32_t> chunks;
-        areq.token_callback = [&](const lsxcommon::TokenChunk &c) {
-            chunks.push_back(c.token_id);
-        };
-        const auto ar = m->Infer(areq);
-        if (!ar.ok) FAIL("aborted Infer failed: " + ar.error_msg);
-        CHECK(ar.gen_tokens.size() < static_cast<std::size_t>(areq.max_gen_tokens));
-        CHECK(chunks.size() == ar.gen_tokens.size());
-    }
+    // Cooperative cancellation must stop the decode before the budget, both
+    // when the flag is pre-set and when it is raised mid-generation from the
+    // token callback (the real --serve path). OPEN_TASKS §E1a.
+    ExpectCooperativeCancelStops(*m, req);
     REQUIRE(!r1.final_logits.empty());
 
     auto r2 = m->Infer(req);
