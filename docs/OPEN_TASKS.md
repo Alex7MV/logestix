@@ -745,7 +745,7 @@ numerics choice, not a patch.
 §E1e, found while closing §E1a, was fixed the same day and moved to
 [`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md).
 
-### E1. `LsxFastMathScope` assumes sequential cross-model dispatch
+### E1. `LsxFastMathScope` assumes sequential cross-model dispatch — closed 2026-10-17 by a guard test
 - The kernel-routing toggles are process-global (`std::atomic<bool>`, so no UB
   — `libs/lsxcommon/src/lsx_inference_nvfp4.cu:18`), and every model asserts
   its own policy per `Infer`. Two models inferring **concurrently** would flip
@@ -753,9 +753,19 @@ numerics choice, not a patch.
 - Today every dispatch path is sequential (orchestrator: one consumer thread;
   `lsxfabric --serve`: one request at a time), and the assumption is written
   down in `lsx_inference_nvfp4.h:57`. So this is latent, not live.
-- **Next step if it ever matters:** per-stream routing state (a device-side
-  policy handle passed down the launch chain) instead of process globals, or a
-  documented single-model-at-a-time engine invariant with a guard test.
+- **Resolved by the decision not to plan parallel dispatch, so the assumption is
+  made machine-checked rather than left as a comment.** `LsxFastMathScope`
+  maintains a process-global depth counter (`Detail::ActiveFastMathScopeDepth`,
+  inline in the header so the guard needs no lsxcommon link). Two scopes open at
+  once logs a loud `VIOLATION` naming E1 instead of silently producing wrong
+  numerics. Same-thread nesting counts as depth and is NOT flagged — nesting is
+  legitimate sequential dispatch; only a second *thread* is a violation.
+- Pinned by two guard cases in `tests/test_lsx_nvfp4_dispatch.cu`:
+  - depth tracks live scopes and returns to zero, and `kAuto` correctly does not
+    open a scope while `kOn`/`kOff` do;
+  - a second thread opening a scope while the main thread holds one is observed
+    at depth 2 — so the counter is proven to be shared state, not a constant or a
+    per-thread value, and the guard is not vacuous.
 
 ### E2. `alice` publishes the FIRST logits row; every other family the LAST
 - `alice_moe_inference_pipeline.cu:492` fills `final_logits` when

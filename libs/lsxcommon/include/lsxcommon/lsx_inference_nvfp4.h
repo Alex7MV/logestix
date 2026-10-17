@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <cstdio>
+
 // ── Model-neutral NVFP4 inference layer ─────────────────────────────────────
 // Shared GEMM/codec primitives of the NVFP4 quantization stack. Multiple
 // model families (Qwen dense/MoE, GLM-5.3-Flash, DeepSeek TC epilogue) build
@@ -100,6 +103,29 @@ bool LsxDualStreamStaging();
 // call and restore the previous process state afterwards. The orchestrator
 // dispatches sequentially (a single Infer at a time), so the scope cannot
 // straddle two models' inferences.
+// Sequential-dispatch invariant guard (OPEN_TASKS E1).
+//
+// The two kernel-routing toggles are process-global because CUDA selects kernels
+// per launch and there is no per-model device context. That is safe ONLY while
+// dispatch is sequential: one Infer at a time, so each model asserts its policy
+// via LsxFastMathScope for a window no other model is inside. Concurrent
+// multi-model dispatch would have two scopes overlapping, and the inner one's
+// save/restore would silently repoint the other's kernel routing mid-decode —
+// wrong numerics, no crash. There is no parallel dispatch planned, so instead of
+// moving the state per-stream we make the assumption MACHINE-CHECKED: a
+// process-global depth counter tracks live scopes and trips an invariant (logged
+// loudly, and pinned by a guard test) the moment two are ever open at once.
+//
+// EnterFastMathScope/LeaveFastMathScope and the depth accessor are defined in the
+// header so they are visible to the guard test without linking lsxcommon.
+namespace Detail {
+// Inline in this header (definitions below) so the guard stays host-only and
+// needs no lsxcommon link.
+inline void EnterFastMathScope();
+inline void LeaveFastMathScope();
+inline int ActiveFastMathScopeDepth();
+} // namespace Detail
+
 class LsxFastMathScope {
 public:
     // Legacy bool pair (unchanged semantics).
@@ -108,6 +134,7 @@ public:
     {
         SetLsxTcFastMath(tc_fast_math);
         SetLsxSeq1Gemv(seq1_gemv);
+        Detail::EnterFastMathScope();
     }
     // Tri-state: kAuto leaves the process globals untouched (the engine-init
     // perf policy stands); kOn/kOff force the pair for the scope and restore
@@ -123,12 +150,14 @@ public:
             SetLsxTcFastMath(false);
             SetLsxSeq1Gemv(false);
         }
+        if (active_) Detail::EnterFastMathScope();
     }
     ~LsxFastMathScope()
     {
         if (!active_) return;
         SetLsxTcFastMath(prev_tc_);
         SetLsxSeq1Gemv(prev_gemv_);
+        Detail::LeaveFastMathScope();
     }
     LsxFastMathScope(const LsxFastMathScope &) = delete;
     LsxFastMathScope &operator=(const LsxFastMathScope &) = delete;
@@ -138,6 +167,45 @@ private:
     bool prev_gemv_;
     bool active_;
 };
+
+// ── Sequential-dispatch guard implementation ───────────────────────────────
+namespace Detail {
+namespace {
+// Live LsxFastMathScope count. Relaxed is enough: the guard only needs to see
+// that the count is 1 in the single-dispatch case; the trip below is a log, not
+// a synchronization primitive.
+std::atomic<int>& FastMathDepth()
+{
+    static std::atomic<int> depth{0};
+    return depth;
+}
+} // namespace
+
+inline void EnterFastMathScope()
+{
+    const int d = FastMathDepth().fetch_add(1, std::memory_order_relaxed) + 1;
+    if (d > 1)
+    {
+        // E1: this is the first moment the sequential-dispatch assumption is
+        // observably false. Two models are inside the kernel-routing scope at
+        // once, so the inner save/restore will repoint the outer's routing
+        // mid-decode. Loud by design: it must not be a silent wrong-numerics bug.
+        std::fprintf(stderr,
+                     "[lsx_inference_nvfp4] VIOLATION: %d concurrent "
+                     "LsxFastMathScope instances (E1 invariant: dispatch is "
+                     "sequential). Kernel routing is process-global; concurrent "
+                     "multi-model Infer produces wrong numerics.\n",
+                     d);
+    }
+}
+
+inline void LeaveFastMathScope()
+{
+    FastMathDepth().fetch_sub(1, std::memory_order_relaxed);
+}
+
+inline int ActiveFastMathScopeDepth() { return FastMathDepth().load(std::memory_order_relaxed); }
+} // namespace Detail
 
 // ── NVFP4 dense GEMM ────────────────────────────────────────────────────────
 // y[t][n] = sum_k x[t*K+k] * dequant(packed[n*K+k], scales, gs).

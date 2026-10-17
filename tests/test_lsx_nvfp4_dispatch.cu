@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstring>
 #include <cstdint>
+#include <atomic>
+#include <thread>
 #include <vector>
 
 #include "lsxcommon/lsx_inference_nvfp4.h"
@@ -283,6 +285,95 @@ TEST_CASE("LsxFastMathScope runtime save/restore and nesting",
     // Outer scope restored the pre-scope process state.
     CHECK(lsxcommon::lsx_nvfp4::LsxTcFastMath());
     CHECK_FALSE(lsxcommon::lsx_nvfp4::LsxSeq1Gemv());
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
+}
+
+// Sequential-dispatch invariant guard (OPEN_TASKS E1).
+//
+// Kernel routing is process-global, so the whole scheme rests on one Infer at a
+// time. No parallel dispatch is planned, so the assumption is made
+// machine-checked rather than left as a comment: LsxFastMathScope maintains a
+// depth counter, and two overlapping scopes log a loud VIOLATION instead of
+// silently producing wrong numerics. These cases pin the counter so the guard
+// cannot rot into a no-op.
+TEST_CASE("fast-math scope depth tracks live scopes and returns to zero",
+          "[lsxnvfp4][dispatch][fastmath][guard]")
+{
+    using lsxcommon::lsx_nvfp4::Detail::ActiveFastMathScopeDepth;
+    using lsxcommon::FastMathMode;
+    using lsxcommon::lsx_nvfp4::LsxFastMathScope;
+
+    // The suite must start and end with no scope open, or every later
+    // assertion below would be measuring someone else's scope.
+    REQUIRE(ActiveFastMathScopeDepth() == 0);
+
+    {
+        LsxFastMathScope outer(false, false);
+        CHECK(ActiveFastMathScopeDepth() == 1);
+        {
+            // Nesting on ONE thread is legitimate and must count as depth, not
+            // as a violation: same-thread nesting is sequential dispatch.
+            LsxFastMathScope inner(true, true);
+            CHECK(ActiveFastMathScopeDepth() == 2);
+        }
+        CHECK(ActiveFastMathScopeDepth() == 1);
+    }
+    CHECK(ActiveFastMathScopeDepth() == 0);
+
+    // kAuto is the production mode and deliberately does NOT open a scope (it
+    // leaves the engine policy alone), so it must not move the counter.
+    {
+        LsxFastMathScope auto_scope(FastMathMode::kAuto);
+        CHECK(ActiveFastMathScopeDepth() == 0);
+    }
+    // kOn/kOff DO assert a policy, so they do open a scope.
+    {
+        LsxFastMathScope on_scope(FastMathMode::kOn);
+        CHECK(ActiveFastMathScopeDepth() == 1);
+    }
+    CHECK(ActiveFastMathScopeDepth() == 0);
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
+}
+
+// Overlap from ANOTHER thread is the E1 violation the counter exists to catch.
+// Same-thread nesting is legitimate (counted, not flagged), so a second thread
+// is the only way to actually break the invariant. The case proves the counter
+// is not a constant: the depth a worker thread sees must be >0 while a scope is
+// open, and the violation fires.
+TEST_CASE("fast-math scope depth observes a concurrent scope on another thread",
+          "[lsxnvfp4][dispatch][fastmath][guard]")
+{
+    using lsxcommon::lsx_nvfp4::Detail::ActiveFastMathScopeDepth;
+    using lsxcommon::lsx_nvfp4::LsxFastMathScope;
+
+    REQUIRE(ActiveFastMathScopeDepth() == 0);
+    std::atomic<int> worker_depth{-1};
+    std::atomic<bool> go{false}, done{false};
+
+    LsxFastMathScope outer(false, false);   // main thread: one live scope
+    REQUIRE(ActiveFastMathScopeDepth() == 1);
+
+    std::thread worker([&] {
+        // While `outer` is live on the main thread, a worker opens its own
+        // scope. THIS is concurrent multi-model dispatch: the counter goes to 2
+        // across threads and the guard logs a violation. It is E1's hazard made
+        // observable — no model is actually decoding here, so this is the
+        // cheapest possible reproduction of "two scopes overlap in a process".
+        go.store(true, std::memory_order_release);
+        LsxFastMathScope inner(true, true);
+        worker_depth.store(ActiveFastMathScopeDepth(), std::memory_order_release);
+        done.store(true, std::memory_order_release);
+    });
+
+    while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+    while (!done.load(std::memory_order_acquire)) std::this_thread::yield();
+    worker.join();
+
+    // The worker saw depth 2 (its own + the main thread's `outer`): the counter
+    // is genuinely shared state, not a per-thread or constant value, so the
+    // guard really would notice concurrent dispatch.
+    CHECK(worker_depth.load() == 2);
+
     lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
 }
 
