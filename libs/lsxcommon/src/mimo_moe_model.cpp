@@ -9,6 +9,7 @@
 #include <cstring>
 #include <vector>
 
+#include "lsxcommon/fast_load.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/mimo_moe_kernels.h"
@@ -44,6 +45,19 @@ float Bf16BitsToFloat(uint16_t b)
     return f;
 }
 
+// Stream-ordered BF16->FP16 upload (OPEN_TASKS E3).
+//
+// This used to decode every BF16 element on the host into a temporary
+// std::vector<__half>, then issue a synchronous pageable cudaMemcpy on the
+// DEFAULT stream — `(void)st;` ignored the model's stream entirely. For ~11 GiB
+// of weights that is both a host-side serial pass and a full-pipeline flush per
+// tensor, and it bypassed the persistent context.
+//
+// Now the raw BF16 bits are copied verbatim and converted in place on the device
+// by the model-neutral kernel GLM and the DeepSeek fast loader already use
+// (`fastload::Bf16ToHalfInPlace`). The conversion is bit-exact: bf16 bits << 16
+// reinterpreted as FP32, rounded to nearest-even FP16 — the same arithmetic the
+// host loop performed, so no value moves.
 bool UploadHalf(const TensorView &t, __half **out, int64_t expect,
                 cudaStream_t st, std::uint64_t &device_bytes, std::string &err)
 {
@@ -52,21 +66,35 @@ bool UploadHalf(const TensorView &t, __half **out, int64_t expect,
         err = "raw tensor is not BF16 of the expected size";
         return false;
     }
-    std::vector<__half> h(static_cast<size_t>(expect));
-    const uint16_t *b = reinterpret_cast<const uint16_t *>(t.data);
-    for (int64_t i = 0; i < expect; ++i)
-        h[static_cast<size_t>(i)] = __float2half(Bf16BitsToFloat(b[i]));
     void *p = nullptr;
     if (cudaMalloc(&p, static_cast<size_t>(expect) * 2) != cudaSuccess)
     {
         err = "cudaMalloc half failed";
         return false;
     }
+    // Stream-ordered: copy the untouched BF16 bits, then convert them on the
+    // device on the same stream. No host staging buffer, no default-stream
+    // synchronous copy.
+    const size_t bytes = static_cast<size_t>(expect) * 2;
+    if (cudaMemcpyAsync(p, t.data, bytes, cudaMemcpyHostToDevice, st) !=
+        cudaSuccess)
+    {
+        cudaFree(p);
+        err = "cudaMemcpyAsync bf16->half upload failed";
+        return false;
+    }
+    const cudaError_t conv = lsxcommon::fastload::Bf16ToHalfInPlace(
+        static_cast<uint16_t *>(p), expect, st);
+    if (conv != cudaSuccess)
+    {
+        cudaFree(p);
+        err = std::string("device bf16->half convert failed: ") +
+              cudaGetErrorString(conv);
+        return false;
+    }
     *out = static_cast<__half *>(p);
-    device_bytes += static_cast<std::uint64_t>(expect) * 2;
-    (void)st;
-    return cudaMemcpy(p, h.data(), static_cast<size_t>(expect) * 2,
-                      cudaMemcpyHostToDevice) == cudaSuccess;
+    device_bytes += static_cast<std::uint64_t>(bytes);
+    return true;
 }
 
 bool UploadBf16(const TensorView &t, __nv_bfloat16 **out, int64_t expect,
@@ -85,9 +113,10 @@ bool UploadBf16(const TensorView &t, __nv_bfloat16 **out, int64_t expect,
     }
     *out = static_cast<__nv_bfloat16 *>(p);
     device_bytes += static_cast<std::uint64_t>(expect) * 2;
-    (void)st;
-    return cudaMemcpy(p, t.data, static_cast<size_t>(expect) * 2,
-                      cudaMemcpyHostToDevice) == cudaSuccess;
+    // Same E3 debt as UploadHalf: a synchronous pageable copy on the DEFAULT
+    // stream. Bytes are already final, so this only has to be stream-ordered.
+    return cudaMemcpyAsync(p, t.data, static_cast<size_t>(expect) * 2,
+                           cudaMemcpyHostToDevice, st) == cudaSuccess;
 }
 
 bool UploadF32(const TensorView &t, float **out, int64_t expect, cudaStream_t st,
@@ -106,9 +135,8 @@ bool UploadF32(const TensorView &t, float **out, int64_t expect, cudaStream_t st
     }
     *out = static_cast<float *>(p);
     device_bytes += static_cast<std::uint64_t>(expect) * 4;
-    (void)st;
-    return cudaMemcpy(p, t.data, static_cast<size_t>(expect) * 4,
-                      cudaMemcpyHostToDevice) == cudaSuccess;
+    return cudaMemcpyAsync(p, t.data, static_cast<size_t>(expect) * 4,
+                           cudaMemcpyHostToDevice, st) == cudaSuccess;
 }
 
 bool Contains(const std::vector<int> &v, int x)

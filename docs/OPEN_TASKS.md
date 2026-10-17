@@ -735,6 +735,11 @@ product or numerics decision, not a patch.
 §E1a (cooperative cancel), §E1b (the residency lock) and §E1c (qwen3.8's bulk
 drain) were closed on 2026-10-17 and moved to
 [`open-tasks/2026-10-17-lifecycle-abort-contract-closed.md`](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md).
+§E3, the last purely technical item in this cluster (mimo's host-side BF16→FP16
+upload), was fixed the same day and moved to
+[`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md).
+§E1, §E2 and §E4 below remain open **by decision** — each needs a product or
+numerics choice, not a patch.
 §E1d, found while closing §E1c, was fixed the same day and moved to
 [`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md).
 §E1e, found while closing §E1a, was fixed the same day and moved to
@@ -763,16 +768,6 @@ drain) were closed on 2026-10-17 and moved to
 - **Not changed because it would move alice's DET/FSI goldens**, which are
   captured from real weights. Decide the fleet-wide semantics first, then
   re-capture the affected goldens in one commit.
-
-### E3. `mimo` loads its weights through a host-side BF16→FP16 conversion
-- `UploadHalf` (`mimo_moe_model.cpp:47`) decodes every BF16 tensor into a
-  temporary host `std::vector`, then issues a synchronous pageable
-  `cudaMemcpy` on the default stream — `(void)st;` ignores the model's stream.
-  For ~11 GiB of weights this is slow and bypasses the persistent context.
-- Correctness is fine and MiMo's perf gate is withdrawn (vendor checkpoint
-  defect, A2), so this is a load-time cost only. Fixing it properly means a
-  device-side BF16→FP16 kernel + stream-ordered upload, i.e. the same fast-load
-  path GLM uses (`glm_moe_load.cu::GlmBf16ToHalfInPlace`).
 
 ### E4. Temperature / top_p are accepted and ignored by the OpenAI surface
 - `ModelRequest` (`libs/lsxcommon/include/lsxcommon/model.h:52`) has no
@@ -1127,6 +1122,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-17 | mimo uploaded weights through a host-side BF16→FP16 pass (E3) | `UploadHalf` decoded every BF16 element into a host `std::vector<__half>` and issued a synchronous pageable `cudaMemcpy` on the DEFAULT stream — `(void)st;` ignored the model's stream. Routed to the existing model-neutral device kernel `fastload::Bf16ToHalfInPlace` (the one GLM and the DeepSeek fast loader use), stream-ordered, with no host staging buffer. Bit-exact: the kernel is the same arithmetic the host loop ran, and `test_deepseek_moe_load_fast.cu` already pins it against a host reference including ragged tails. `UploadBf16`/`UploadF32` had the same `(void)st;` defect with no conversion involved and became stream-ordered too - [`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md) |
 | 2026-10-17 | gemma-MoE synthetic decode failed at once and reported `ok=true` (E1e) | `RunGemmaGeneration` ended by assigning the last-step logits read-back status back to `e`, so any error raised inside the decode loop was overwritten by a successful copy: `ok=true`, empty `error_msg`, and an answer truncated at the step the loop died on. The loop itself was correct. Combined with a synthetic fixture whose `moe_intermediate_size` was 16 while the routed-GEMV chain requires K % 32 == 0, the synthetic MoE decode had never actually run. Fixed both: the decode status is preserved and the copy is best-effort; the fixture intermediate is a documented 32-multiple (the dense one already carried that comment). `test_gemma_moe_model` now carries the full cooperative-cancel gate. This is what exposed it: every gemma-MoE synthetic assertion was satisfied by one token - [`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md) |
 | 2026-10-17 | A second model instance decoded from the previous one's fused GEMM weights (E1d) | Four process-lifetime caches in the shared neutral layers (`sh_cache`, `g_fw_cache`, `g_tma_cache`, `LsxTcFusedOutputScratch`) are keyed by a weight's DEVICE ADDRESS and never invalidated; CUDA recycles addresses across model lifetimes, so an instance created after another was unloaded inherited entries built from the previous model's weights. Measured: the same request answered with a 5-token EOS on a fresh instance and 32 tokens of unrelated text on the next one. Fixed with a monotonic weight epoch bumped by `ModelBase` on every weight lifetime change; rebuilding is value-identical, so no golden moved. The TMA map was the sharpest case - a stale hit loads through a freed address. `test_qwen_moe_exp_eos_selfcheck` gained the cross-instance gate - [`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md) |
 | 2026-10-17 | Lifecycle audit: E1a/E1b/E1c closed | Cooperative cancel now pinned for all 22 `kLifecycle` families via a shared gate (pre-set + callback + control); the guard's abort marker now requires a poll and every row names the TU owning its generation loop. **Two real defects found by the work**: a cancel poisoned the NEXT qwen3.8-flash-next request (sticky `cudaEventElapsedTime` on an unrecorded event), and that driver emitted one bulk drain at the end - now per-step, with early EOS stop. E1b resolved by documentation: the shared lock orders `Infer` against `Unload()` only, so eight family comments and the guard rationale were corrected to name the one-`Infer`-per-instance precondition. It also surfaced §E1d, a separate determinism defect, fixed the same day - [`open-tasks/2026-10-17-lifecycle-abort-contract-closed.md`](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md) |
