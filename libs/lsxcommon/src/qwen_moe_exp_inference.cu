@@ -1827,6 +1827,14 @@ cudaError_t RunExpGeneration(
     cudaEventCreate(&t_ttft_ev);
     cudaEventCreate(&t_stop_ev);
     if (t_start_ev) cudaEventRecord(t_start_ev, stream);
+    // t_ttft_ev is recorded only when the first token's forward completes, so a
+    // request cancelled before any token leaves it unrecorded. Calling
+    // cudaEventElapsedTime on an unrecorded event sets a STICKY
+    // cudaErrorInvalidResourceHandle that the next request's first checked
+    // launch then reports as its own failure (an aborted run poisoning the
+    // following one). Track the record explicitly and skip the read when it
+    // never happened.
+    bool ttft_recorded = false;
     std::vector<int32_t> token_history;  // PLE n-gram context (grows)
     const int prompt_steps = static_cast<int>(prompt.size());
 
@@ -2214,7 +2222,10 @@ cudaError_t RunExpGeneration(
             exp_record_token_kernel<<<1, 1, 0, stream>>>(d_tokens, generated,
                                                          d_argmax);
             // TTFT: the first generated token's forward is complete.
-            if (generated == 0 && t_ttft_ev) cudaEventRecord(t_ttft_ev, stream);
+            if (generated == 0 && t_ttft_ev) {
+                cudaEventRecord(t_ttft_ev, stream);
+                ttft_recorded = true;
+            }
             if (step + 1 < total_steps)
                 exp_feed_token_kernel<<<1, 1, 0, stream>>>(d_ids, d_argmax);
             // The PLE n-gram context lives on the host (mmap gather): pull
@@ -2223,8 +2234,8 @@ cudaError_t RunExpGeneration(
             // the last prompt token, the n-gram freezes, and the hidden
             // state collapses into repetition loops (root-caused vs the
             // HF greedy reference: gen0 parity cos=0.91, gen1 cos=-0.04).
+            int32_t h_tok = -1;
             {
-                int32_t h_tok = -1;
                 cudaMemcpyAsync(&h_tok, d_argmax, sizeof(int32_t),
                                 cudaMemcpyDeviceToHost, stream);
                 cudaEventRecord(tok_ready_ev, stream);
@@ -2285,7 +2296,30 @@ cudaError_t RunExpGeneration(
                              idx[2], val[2], idx[3], val[3], idx[4],
                              val[4]);
             }
+            // Streaming contract (OPEN_TASKS §E1c): publish the token now, not
+            // in a bulk drain after the whole budget has been generated. This
+            // readback already existed for the PLE n-gram history, so it costs
+            // nothing extra; without it a `--serve` consumer saw nothing until
+            // the request finished, and a flag raised from the token callback
+            // could not stop the decode (it was only read after generation had
+            // already run to max_gen_tokens). EOS is not published, matching the
+            // contract the bulk drain had.
+            if (gs && h_tok != eos_id) {
+                gs->Emit(static_cast<std::uint32_t>(h_tok),
+                         static_cast<std::uint32_t>(generated));
+            }
+            const bool eos_hit = h_tok == eos_id;
             ++generated;
+            // EOS terminates generation here rather than after the fact: the
+            // tokens after it could never reach the consumer (the drain stopped
+            // at the first EOS), so decoding them was pure waste. Greedy
+            // decoding makes this an observation, not a behaviour change - the
+            // published token list is unchanged, because every token before the
+            // EOS depends only on the tokens before it.
+            if (eos_hit) {
+                result.eos_terminated = true;
+                break;
+            }
         } else {
             cur = prompt[step + 1];
             if (h_ids)
@@ -2294,20 +2328,18 @@ cudaError_t RunExpGeneration(
         }
     }
 
-    // Bulk token drain.
+    // Assemble the published token list from the recorded history and publish
+    // the last step's logits row. The tokens were already streamed above.
     if (generated > 0) {
         std::vector<int32_t> hgen(static_cast<size_t>(generated));
         cudaMemcpy(hgen.data(), d_tokens, sizeof(int32_t) * (size_t)generated,
                    cudaMemcpyDeviceToHost);
         result.tokens.assign(hgen.begin(), hgen.end());
-        if (gs) {
-            for (int i = 0; i < generated; ++i) {
-                if (hgen[i] == eos_id) break;
-                gs->Emit(static_cast<std::uint32_t>(hgen[i]),
-                         static_cast<std::uint32_t>(i));
-            }
-        }
-        result.eos_terminated = moe::MoETruncateTokensAtEos(result.tokens, eos_id);
+        // A no-op on the early-stop path (EOS is the last recorded token); kept
+        // for the paths that still reach the budget without an EOS, and because
+        // it is the single definition of the truncation contract.
+        result.eos_terminated = result.eos_terminated ||
+                                moe::MoETruncateTokensAtEos(result.tokens, eos_id);
         // Publish the last step's fp32 logits row for parity harnesses.
         std::vector<float> hlast(static_cast<size_t>(V));
         cudaStreamSynchronize(stream);
@@ -2323,7 +2355,7 @@ cudaError_t RunExpGeneration(
             cudaSuccess)
             result.total_ms = ms_total;
         float ms_ttft = 0.f;
-        if (t_ttft_ev &&
+        if (t_ttft_ev && ttft_recorded &&
             cudaEventElapsedTime(&ms_ttft, t_start_ev, t_ttft_ev) ==
                 cudaSuccess)
             result.ttft_ms = ms_ttft;
