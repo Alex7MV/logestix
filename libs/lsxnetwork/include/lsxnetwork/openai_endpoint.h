@@ -109,7 +109,23 @@ public:
                          std::string& out) const;
 
     /// Parses a `POST /v1/chat/completions` request body. String members are
-    /// owned. Unknown fields (tools, temperature, ...) are ignored.
+    /// owned. Unknown fields (tools, ...) are ignored.
+    ///
+    /// SAMPLING IS NOT IMPLEMENTED, and this is not an accident — read the field
+    /// as "accepted and served greedily", not as "understood":
+    ///   * `temperature`, `top_p`, `top_k`, `n`, `seed`, `presence_penalty`,
+    ///     `frequency_penalty` and `logprobs` are parsed as unknown and
+    ///     DISCARDED. Every family decodes argmax (`sample::GreedySampler`), so
+    ///     a request carrying `"temperature": 0.7` is served exactly as if the
+    ///     field were absent.
+    ///   * This is stable and deliberate, not a silent partial rollout: the
+    ///     engine is a bit-exactness/parity machine (see OPEN_TASKS §E4), where
+    ///     a sampling kernel would make generations non-reproducible and would
+    ///     invalidate the DET/FSI/CODE goldens captured from the source
+    ///     checkpoints. Greedy is the numeric class those gates pin.
+    ///   * To honour sampling, follow the plan in OPEN_TASKS §E4: plumb the
+    ///     fields into `ModelRequest` and `sample::ISampler` (a real sampling
+    ///     CUDA kernel, not just a scalar), through the v2 fabric wire frame.
     simdjson::error_code ParseChatRequest(const char* data, std::size_t size,
                                           std::size_t capacity,
                                           ChatRequest& out) const;

@@ -738,56 +738,46 @@ drain) were closed on 2026-10-17 and moved to
 §E3, the last purely technical item in this cluster (mimo's host-side BF16→FP16
 upload), was fixed the same day and moved to
 [`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md).
-§E1, §E2 and §E4 below remain open **by decision** — each needs a product or
-numerics choice, not a patch.
+§E1 (sequential-dispatch guard) and §E2 (alice logits row) were closed on
+2026-10-17 and moved to
+[`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md).
+§E4 below is documented and carries an implementation plan.
 §E1d, found while closing §E1c, was fixed the same day and moved to
 [`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md).
 §E1e, found while closing §E1a, was fixed the same day and moved to
 [`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md).
 
-### E1. `LsxFastMathScope` assumes sequential cross-model dispatch — closed 2026-10-17 by a guard test
-- The kernel-routing toggles are process-global (`std::atomic<bool>`, so no UB
-  — `libs/lsxcommon/src/lsx_inference_nvfp4.cu:18`), and every model asserts
-  its own policy per `Infer`. Two models inferring **concurrently** would flip
-  each other's kernel routing mid-decode: silently wrong numerics, no crash.
-- Today every dispatch path is sequential (orchestrator: one consumer thread;
-  `lsxfabric --serve`: one request at a time), and the assumption is written
-  down in `lsx_inference_nvfp4.h:57`. So this is latent, not live.
-- **Resolved by the decision not to plan parallel dispatch, so the assumption is
-  made machine-checked rather than left as a comment.** `LsxFastMathScope`
-  maintains a process-global depth counter (`Detail::ActiveFastMathScopeDepth`,
-  inline in the header so the guard needs no lsxcommon link). Two scopes open at
-  once logs a loud `VIOLATION` naming E1 instead of silently producing wrong
-  numerics. Same-thread nesting counts as depth and is NOT flagged — nesting is
-  legitimate sequential dispatch; only a second *thread* is a violation.
-- Pinned by two guard cases in `tests/test_lsx_nvfp4_dispatch.cu`:
-  - depth tracks live scopes and returns to zero, and `kAuto` correctly does not
-    open a scope while `kOn`/`kOff` do;
-  - a second thread opening a scope while the main thread holds one is observed
-    at depth 2 — so the counter is proven to be shared state, not a constant or a
-    per-thread value, and the guard is not vacuous.
+### E4. `temperature` / `top_p` are accepted and ignored by the OpenAI surface
+- **Status 2026-10-17: documented, implementation planned (below).** `ModelRequest`
+  (`libs/lsxcommon/include/lsxcommon/model.h:64`) has no sampling fields and
+  every family decodes argmax (`sample::GreedySampler`), so a request carrying
+  `"temperature": 0.7` through the TaskMosaic bridge is served greedily. Nothing
+  regressed; this was always the behaviour.
+- **Documented where a client will actually read it:**
+  `openai_endpoint.h:112` now spells out that `temperature`, `top_p`, `top_k`,
+  `n`, `seed`, `presence_penalty`, `frequency_penalty` and `logprobs` are parsed
+  as unknown and DISCARDED, that this is deliberate, and that greedy is the
+  numeric class the DET/FSI/CODE goldens pin.
+- **Why greedy is the right default to keep, not an oversight:** this engine is
+  a bit-exactness/parity machine. A sampling kernel makes generations
+  non-reproducible by construction and would invalidate every golden captured
+  from the source checkpoints. Any future sampling work must therefore be
+  opt-in and numeric-class-aware, not a silent default.
+- **Plan when it comes up (sized by reading the code, not guessed):**
 
-### E2. `alice` publishes the FIRST logits row; every other family the LAST
-- `alice_moe_inference_pipeline.cu:492` fills `final_logits` when
-  `first_token < 0`, so `InferenceResult::final_logits` is the row of the
-  first generated token. All other families publish the last row
-  (`qwen_inference.cu:2263`, `granite_dense_inference.cu:987`,
-  `nemotron_moe_model.cpp:226` "Keep the last step's logits row").
-- Within alice this is self-consistent (its DET gate compares it to itself),
-  but it makes any cross-model logits/hashes comparison apples-to-oranges.
-- **Not changed because it would move alice's DET/FSI goldens**, which are
-  captured from real weights. Decide the fleet-wide semantics first, then
-  re-capture the affected goldens in one commit.
+  | layer | work | size |
+  |---|---|---|
+  | `ModelRequest` | add `temperature`, `top_p`, `top_k`, `seed` | trivial |
+  | `sample::ISampler` | the real work: a temperature/top-p CUDA sampling kernel (softmax + multinomial + RNG). Today it is a pure argmax interface — this is a new numeric primitive, not a refactor | **the bulk** |
+  | call sites | thread the request fields into `Sample()`: **12** driver files (`qwen_*`, `glm_*`, `deepseek_*`, `ornith`, `phi`, `granite`, `gemma_*`, `mistral`, `xing`, `mimo`, `kimi`, `nemotron`) | mechanical but wide |
+  | v2 wire protocol | `FabricRequestView` (`fabric_wire.h`) + `Submit()` + server-side `mreq` in `fabric_server.cpp` + client in `chat_bridge.cpp`. **Changes the wire frame**, so v2 backward compatibility needs a decision | medium, needs a version call |
+  | numeric-class policy | decide whether sampling is allowed in `kAuto` (production) or only under an explicit mode; DET/FSI/CODE must pin greedy | a decision, not code |
 
-### E4. Temperature / top_p are accepted and ignored by the OpenAI surface
-- `ModelRequest` (`libs/lsxcommon/include/lsxcommon/model.h:52`) has no
-  sampling fields and every family decodes argmax, so a request with
-  `"temperature": 0.7` through the TaskMosaic bridge is served greedily. This
-  is currently only documented in `openai_endpoint.h:112`
-  ("Unknown fields (tools, temperature, ...) are ignored").
-- **Next step:** either document it in the bridge's own API docs next to the
-  endpoint, or plumb `temperature`/`top_p` into `ModelRequest` and the
-  `sample::ISampler` implementations. Not a regression — nothing regressed.
+  So: implementing it is a **sampling feature plus a wire-format change**, not a
+  small plumbing fix. That is why documenting is the right call for now.
+- **Next step (when scheduled):** start from the `ISampler` kernel + the
+  numeric-class policy, decide the wire-format version, then the 12 call sites
+  are mechanical.
 
 ## S. Attention layer neutral; only the KV session keeps a qwen name (2026-10-10, updated)
 
@@ -1132,6 +1122,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-17 | Sequential-dispatch invariant made machine-checked (E1) + alice aligned to the fleet logits contract (E2) | **E1:** with no parallel dispatch planned, the process-global kernel-routing toggles' single-dispatch assumption is now enforced — `LsxFastMathScope` keeps a depth counter and logs a loud violation on overlap, pinned by two guard cases (one spawns a second thread to prove the counter is shared state, so the guard is not vacuous). **E2:** alice now publishes the LAST logits row like every other family (it published the FIRST). The original worry — that this would move alice's DET/FSI goldens — was wrong: those harnesses read `gen_tokens`, never `final_logits`, so nothing was re-captured. Real-weight alice selfcheck/DET/FSI/CODE all green. [`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md) |
 | 2026-10-17 | mimo uploaded weights through a host-side BF16→FP16 pass (E3) | `UploadHalf` decoded every BF16 element into a host `std::vector<__half>` and issued a synchronous pageable `cudaMemcpy` on the DEFAULT stream — `(void)st;` ignored the model's stream. Routed to the existing model-neutral device kernel `fastload::Bf16ToHalfInPlace` (the one GLM and the DeepSeek fast loader use), stream-ordered, with no host staging buffer. Bit-exact: the kernel is the same arithmetic the host loop ran, and `test_deepseek_moe_load_fast.cu` already pins it against a host reference including ragged tails. `UploadBf16`/`UploadF32` had the same `(void)st;` defect with no conversion involved and became stream-ordered too - [`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md) |
 | 2026-10-17 | gemma-MoE synthetic decode failed at once and reported `ok=true` (E1e) | `RunGemmaGeneration` ended by assigning the last-step logits read-back status back to `e`, so any error raised inside the decode loop was overwritten by a successful copy: `ok=true`, empty `error_msg`, and an answer truncated at the step the loop died on. The loop itself was correct. Combined with a synthetic fixture whose `moe_intermediate_size` was 16 while the routed-GEMV chain requires K % 32 == 0, the synthetic MoE decode had never actually run. Fixed both: the decode status is preserved and the copy is best-effort; the fixture intermediate is a documented 32-multiple (the dense one already carried that comment). `test_gemma_moe_model` now carries the full cooperative-cancel gate. This is what exposed it: every gemma-MoE synthetic assertion was satisfied by one token - [`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md) |
 | 2026-10-17 | A second model instance decoded from the previous one's fused GEMM weights (E1d) | Four process-lifetime caches in the shared neutral layers (`sh_cache`, `g_fw_cache`, `g_tma_cache`, `LsxTcFusedOutputScratch`) are keyed by a weight's DEVICE ADDRESS and never invalidated; CUDA recycles addresses across model lifetimes, so an instance created after another was unloaded inherited entries built from the previous model's weights. Measured: the same request answered with a 5-token EOS on a fresh instance and 32 tokens of unrelated text on the next one. Fixed with a monotonic weight epoch bumped by `ModelBase` on every weight lifetime change; rebuilding is value-identical, so no golden moved. The TMA map was the sharpest case - a stale hit loads through a freed address. `test_qwen_moe_exp_eos_selfcheck` gained the cross-instance gate - [`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md) |

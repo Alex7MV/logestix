@@ -528,10 +528,17 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
         }
         if (result.first_token < 0) {
             result.first_token = best;
-            result.final_logits.resize(VOCAB);
-            for (int i = 0; i < VOCAB; ++i)
-                result.final_logits[(size_t)i] = __half2float(hlog[(size_t)i]);
         }
+        // Publish the LAST step's fp32 logits row, matching the fleet-wide
+        // contract (OPEN_TASKS §E2: every other family publishes the last row,
+        // e.g. qwen_inference.cu / granite_dense_inference.cu / nemotron_moe_model.cpp).
+        // This used to freeze the FIRST row (`first_token < 0`); overwriting on
+        // every step keeps only the final one. Alice previously held the first
+        // row, which made any cross-model logits/hash comparison
+        // apples-to-oranges.
+        result.final_logits.resize(VOCAB);
+        for (int i = 0; i < VOCAB; ++i)
+            result.final_logits[(size_t)i] = __half2float(hlog[(size_t)i]);
         result.tokens.push_back(best);
         // One chunk per decoded token, then honour a cooperative cancel
         // before the next forward (lsxfabric --serve / TaskMosaic streaming).
