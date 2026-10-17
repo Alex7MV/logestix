@@ -735,7 +735,8 @@ product or numerics decision, not a patch.
 §E1a (cooperative cancel), §E1b (the residency lock) and §E1c (qwen3.8's bulk
 drain) were closed on 2026-10-17 and moved to
 [`open-tasks/2026-10-17-lifecycle-abort-contract-closed.md`](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md).
-§E1d below was found while closing §E1c and is new.
+§E1d, found while closing §E1c, was fixed the same day and moved to
+[`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md).
 
 ### E1. `LsxFastMathScope` assumes sequential cross-model dispatch
 - The kernel-routing toggles are process-global (`std::atomic<bool>`, so no UB
@@ -749,49 +750,33 @@ drain) were closed on 2026-10-17 and moved to
   policy handle passed down the launch chain) instead of process globals, or a
   documented single-model-at-a-time engine invariant with a guard test.
 
-### E1d. qwen3.8-flash-next's answer depends on what ran before it in the process
-- Found 2026-10-17 while gating §E1c. Pre-existing, unrelated to the §E1c
-  change, and more serious than it: **the same request with the same weights returns a
-  different answer depending on the request that preceded it in the process.**
-  Measured on the real weights (RTX 5090), prompt "Say nothing at all.",
-  `max_gen_tokens=64`:
-  - first request in the process → EOS on the 5th generated token;
-  - after a 2-token request (the Paris selfcheck) in the same process → a 64-token
-    explanation of the idiom, no EOS.
-- Not explained by expert-cache residency: pinning
-  `LSX_QWEN38_EXPERT_CACHE_SLOTS` (1024) does not remove it, and neither does a
-  warm-up request at the same budget. Zeroing the whole generation arena changes
-  nothing either, so it is not stale arena contents.
-- **Narrowed to the model instance, not the request.** Within ONE instance the
-  driver is stable: five consecutive requests, with an unrelated short request
-  interleaved, all returned the identical result. The trigger is a *completed
-  `Infer` on a previous model instance*: Load/Unload with no Infer leaves the
-  next instance correct, Load → one Infer → Unload makes the next instance
-  answer differently (EOS on token 5 instead of 8).
-- **Suspect identified, not yet fixed.** Disabling the cross-call lookup in the
-  process-global fused-shared-expert cache (`sh_cache`, keyed by the *device
-  pointer* `sw1.d_packed`, in `RunMoESharedCombine`) makes the second instance
-  correct again, reproducibly. Its comment — and the sibling
-  `LsxTcFusedOutputScratch` in `lsx_tc_gemm.cu` — assume the key is stable for
-  the process lifetime ("the LsxTcBuildFusedGemmWeights cache holds the pointers
-  for the process lifetime, so the key is stable"). That assumption is what
-  breaks: CUDA recycles device addresses across model lifetimes, so a new model
-  can land on a freed key and inherit entries built from the previous model.
-- Separately, the same class of pressure shows up in the other direction: the
-  cache is sized from free VRAM at `Load`, and at `LSX_QWEN38_EXPERT_CACHE_SLOTS=8192`
-  the Paris selfcheck itself fails on real weights (256, 1024 and 5350 pass).
-- **Why the DET gate does not see it:** DET runs its stress cycles against one
-  loaded model with one residency setting, so it is deterministic within a
-  configuration and blind across configurations.
-- **Next step:** bisect further — the trigger is narrowed to "a completed
-  `Infer` on a previous model instance", not to a request shape. Then either key
-  those caches on an owner-scoped identity (the pinned-weights object owns the
-  fused buffers and frees them) or remove them and re-measure; both touch the
-  shared-expert hot path of every MoE family, so neither can be landed without
-  re-running the DET/FSI/CODE goldens of the families that use it. Until then,
-  the §E1c EOS gate lives in its own binary, which is a workaround for the
-  test, not a fix. The measurement trail is in the
-  [2026-10-17 snapshot](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md).
+### E1e. gemma-4-26b-a4b-it synthetic decode fails at once and reports `ok=true`
+- Found 2026-10-17 while wiring the §E1a cancel gate for gemma-MoE. Pre-existing,
+  not caused by the lifecycle work (reproduced with all of it reverted).
+- On the synthetic converted fixture, `GemmaBaseModel::Infer` returns
+  **exactly one token with `ok=true`, `error_msg` empty and `eos_terminated`
+  false, for any `max_gen_tokens`**. The log shows `[gemma] nohs3: invalid
+  argument` (a `cudaErrorInvalidValue` from the routed-expert path) and the
+  decode loop breaks on it **without propagating it** — so the caller is told the
+  request succeeded while the model produced a single token from the prefill.
+- Why nothing caught it: every gemma-MoE synthetic assertion is satisfied by one
+  token. `test_gemma_moe_model` asserts `gen_tokens.size() >= 1 && <= 2` with
+  `max_gen_tokens = 2`, and the determinism check compares two runs of the same
+  broken path. A swallowed error that produces a stable, short answer is
+  indistinguishable from a working decode through those assertions.
+- **Consequence for §E1a:** the cooperative-cancel gate could NOT be added to
+  `test_gemma_moe_model`. The gate's control run (same budget, no flag, must
+  produce the full token count) is what makes the two cancel assertions
+  meaningful, and it fails here for a reason unrelated to cancellation — the
+  decode never starts. Adding the gate without the control would have been a
+  test that passes for the wrong reason. The gate was removed from that file;
+  gemma-4-31b-it (dense) does carry the full gate and passes.
+- **Next step:** make the routed-expert failure propagate (set `error_msg` and
+  return the status) instead of breaking silently, then fix the `nohs3`
+  geometry error itself. Only after the synthetic decode runs can the §E1a gate
+  come back. Both are worth doing on their own merits: the swallowed error
+  affects every synthetic and real gemma-MoE request, since `ok=true` with a
+  silently truncated answer is the worst shape this API can take.
 
 ### E2. `alice` publishes the FIRST logits row; every other family the LAST
 - `alice_moe_inference_pipeline.cu:492` fills `final_logits` when
@@ -1168,7 +1153,8 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
-| 2026-10-17 | Lifecycle audit: E1a/E1b/E1c closed | Cooperative cancel now pinned for all 22 `kLifecycle` families via a shared gate (pre-set + callback + control); the guard's abort marker now requires a poll and every row names the TU owning its generation loop. **Two real defects found by the work**: a cancel poisoned the NEXT qwen3.8-flash-next request (sticky `cudaEventElapsedTime` on an unrecorded event), and that driver emitted one bulk drain at the end - now per-step, with early EOS stop. E1b resolved by documentation: the shared lock orders `Infer` against `Unload()` only, so eight family comments and the guard rationale were corrected to name the one-`Infer`-per-instance precondition. §E1d (a new determinism defect found while gating §E1c) stays open - [`open-tasks/2026-10-17-lifecycle-abort-contract-closed.md`](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md) |
+| 2026-10-17 | A second model instance decoded from the previous one's fused GEMM weights (E1d) | Four process-lifetime caches in the shared neutral layers (`sh_cache`, `g_fw_cache`, `g_tma_cache`, `LsxTcFusedOutputScratch`) are keyed by a weight's DEVICE ADDRESS and never invalidated; CUDA recycles addresses across model lifetimes, so an instance created after another was unloaded inherited entries built from the previous model's weights. Measured: the same request answered with a 5-token EOS on a fresh instance and 32 tokens of unrelated text on the next one. Fixed with a monotonic weight epoch bumped by `ModelBase` on every weight lifetime change; rebuilding is value-identical, so no golden moved. The TMA map was the sharpest case - a stale hit loads through a freed address. `test_qwen_moe_exp_eos_selfcheck` gained the cross-instance gate - [`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md) |
+| 2026-10-17 | Lifecycle audit: E1a/E1b/E1c closed | Cooperative cancel now pinned for all 22 `kLifecycle` families via a shared gate (pre-set + callback + control); the guard's abort marker now requires a poll and every row names the TU owning its generation loop. **Two real defects found by the work**: a cancel poisoned the NEXT qwen3.8-flash-next request (sticky `cudaEventElapsedTime` on an unrecorded event), and that driver emitted one bulk drain at the end - now per-step, with early EOS stop. E1b resolved by documentation: the shared lock orders `Infer` against `Unload()` only, so eight family comments and the guard rationale were corrected to name the one-`Infer`-per-instance precondition. It also surfaced §E1d, a separate determinism defect, fixed the same day - [`open-tasks/2026-10-17-lifecycle-abort-contract-closed.md`](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md) |
 | 2026-10-14 | qwen3.8-flash-next: the arena is required (V1, negative) | The bounded pinned window buys nothing when the decode working set is the whole expert set: views cap 4096 = 10.9 GB but 9.2 t/s, pinned window cap 2048 the same, and pinning everything costs 127 GB for 29 t/s. `cudaHostRegister` over file-backed MAP_SHARED views is refused. qwen3.8 stays on its arena (63.6 GB, 32.0 t/s, re-measured) - [`open-tasks/2026-10-14-qwen38-arena-required-negative.md`](open-tasks/2026-10-14-qwen38-arena-required-negative.md) |
 | 2026-10-14 | Batched TC MoE swiglu overflowed FP16 | `moe_swiglu_quant_batch_kernel` stored `silu(gate)*up` to FP16 before quantizing, so any product above 65504 became `+inf` and saturated the block scale; the per-slot path had been fixed for this long before, the batched path never had. Stage-by-stage the GEMM was bit-exact (`nd=0/32`) — the bug was the swiglu between `w13` and `w2` (`h=inf`). Fixed with a per-slot power-of-two prescale folded back in the reduce; both kernel cases green with assertions untouched (998/877), real Qwen3.6 batch-on/off now identical, gates still pass. Also repaired the `LoadMoEExpertStore` line `bad0792` had deleted - [`open-tasks/2026-10-14-moe-batch-swiglu-overflow-closed.md`](open-tasks/2026-10-14-moe-batch-swiglu-overflow-closed.md) |
 | B1 — expert pinning not implemented on Windows | platform-gated in `test_kimi_moe_loader.cpp` |

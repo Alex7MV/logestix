@@ -123,3 +123,65 @@ TEST_CASE("qwen3.8-flash-next stops on EOS instead of running the budget",
 
     m->Unload();
 }
+
+// E1d regression: a fresh model instance's answer must not depend on what the
+// PREVIOUS instance in this process did. The driver reaches it through a shared
+// neutral layer whose fused-GEMM caches are keyed by a weight's DEVICE ADDRESS
+// and held for the process lifetime; CUDA recycles addresses across model
+// lifetimes, so instance 2 could land on instance 1's freed key and decode from
+// instance 1's fused weights. Measured before the fix: with a completed Infer on
+// instance 1, the same request answered differently (EOS on token 8 instead of
+// 5). DET cannot catch this - its stress cycles share one instance and one
+// residency, so it is deterministic within a configuration and blind across
+// them. This case is the cross-configuration oracle.
+TEST_CASE("qwen3.8-flash-next answers identically from a second model instance",
+          "[qwen38][model][lifecycle][real-model]")
+{
+    const std::filesystem::path model_dir = ConvertedPath();
+    if (!std::filesystem::exists(model_dir / "logestix" / "pinned"))
+        SKIP("Qwen3.8-Flash-Next converted model directory not present");
+
+    const ScopedEnv slots("LSX_QWEN38_EXPERT_CACHE_SLOTS", "1024");
+
+    auto make = [&] {
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = model_dir.string();
+        cfg.model_type = lsxcommon::Qwen38FlashNextModel::kType;
+        auto m = lsxcommon::LsxModelFactory::Create(cfg);
+        REQUIRE(m != nullptr);
+        REQUIRE(m->Load());
+        return m;
+    };
+    // The request under test, and a DIFFERENT one used only to give instance 1
+    // a generation of its own before it goes away.
+    auto run = [](lsxcommon::IModel &m, const char *prompt, int max_gen) {
+        lsxcommon::ModelRequest req;
+        req.max_gen_tokens = max_gen;
+        REQUIRE(m.BuildPromptInputIds(m.Tokenizer(), prompt, req.input_ids));
+        return m.Infer(req);
+    };
+
+    auto first = make();
+    const auto reference = run(*first, "Say nothing at all.", 32);
+    REQUIRE(reference.ok);
+
+    // Instance 1 now decodes something else and is destroyed. Its weights go
+    // back to the allocator, so instance 2 is the case that used to differ.
+    const auto warm = run(*first, "The capital of France is", 2);
+    REQUIRE(warm.ok);
+    first->Unload();
+
+    auto second = make();
+    const auto replay = run(*second, "Say nothing at all.", 32);
+    INFO("reference: gen=" << reference.gen_tokens.size()
+                           << " kv=" << reference.kv_slots_used
+                           << " [" << reference.output_text.substr(0, 80) << "]");
+    INFO("replay:    gen=" << replay.gen_tokens.size()
+                           << " kv=" << replay.kv_slots_used
+                           << " [" << replay.output_text.substr(0, 80) << "]");
+    REQUIRE(replay.ok);
+    CHECK(replay.gen_tokens == reference.gen_tokens);
+    CHECK(replay.kv_slots_used == reference.kv_slots_used);
+    CHECK(replay.output_text == reference.output_text);
+    second->Unload();
+}
