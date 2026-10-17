@@ -2746,11 +2746,22 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         if (gs && gs->Aborted()) break;
     }
 
-    // Capture the last-step logits (D2H).
+    // A failure raised inside the decode loop must survive the trailing copy.
+    // Assigning that copy's status straight to `e` reset a sticky decode error
+    // to cudaSuccess, so the caller saw ok=true for an answer that had been
+    // truncated mid-generation - measured on the synthetic fixture, where the
+    // routed-GEMV shape gate (k_down % 32) rejected a 16-wide intermediate and
+    // the loop broke on it (OPEN_TASKS §E1e).
+    const cudaError_t decode_e = e;
+
+    // Capture the last-step logits (D2H). Best-effort: it neither masks nor
+    // resurrects the decode status.
     out.final_logits.resize(static_cast<size_t>(V));
-    e = cudaMemcpyAsync(out.final_logits.data(), ws.d_logits,
-                        V * sizeof(float), cudaMemcpyDeviceToHost, stream);
-    if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
+    cudaError_t fl = cudaMemcpyAsync(out.final_logits.data(), ws.d_logits,
+                                     V * sizeof(float), cudaMemcpyDeviceToHost,
+                                     stream);
+    if (fl == cudaSuccess) fl = cudaStreamSynchronize(stream);
+    e = (decode_e != cudaSuccess) ? decode_e : fl;
 
     out.total_ms =
         std::chrono::duration<double, std::milli>(

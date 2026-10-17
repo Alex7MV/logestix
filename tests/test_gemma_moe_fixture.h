@@ -39,7 +39,12 @@ struct GemmaTestConfig {
     // MoE.
     int num_experts = 8;
     int top_k_experts = 2;
-    int moe_intermediate_size = 16;
+    // 32-multiple, same reason as `intermediate_size` above: the routed-GEMV
+    // chain rejects a K that is not a multiple of 32
+    // (`RunRoutedGemvBatchSeg`: `(k_down & 31) != 0`), and K_down is the MoE
+    // intermediate. At 16 the decode failed on the first layer and the failure
+    // was swallowed (OPEN_TASKS §E1e), so the synthetic MoE decode never ran.
+    int moe_intermediate_size = 32;
 
     double rms_norm_eps = 1e-6;
     double partial_rotary_factor = 0.25;

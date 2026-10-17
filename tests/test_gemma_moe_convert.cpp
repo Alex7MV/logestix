@@ -97,7 +97,7 @@ TEST_CASE("gemma topology parse + convert happy path", "[gemma][convert]") {
     CHECK(top.vocab_size == 64);
     CHECK(top.num_experts == 8);
     CHECK(top.top_k_experts == 2);
-    CHECK(top.moe_intermediate_size == 16);
+    CHECK(top.moe_intermediate_size == 32);  // 32-multiple: routed-GEMV K
     CHECK(top.num_global_key_value_heads == 1);
     CHECK(top.global_head_dim == 32);
     CHECK(top.sliding_window == 8);

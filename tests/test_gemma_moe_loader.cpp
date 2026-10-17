@@ -103,11 +103,11 @@ TEST_CASE("gemma expert store resolves all synthetic experts",
             INFO("layer " << l << " expert " << e);
             // w1=gate [MI,H] -> packed bytes MI*H/2
             CHECK(ent.host_w1 != nullptr);
-            CHECK(ent.w1_bytes == static_cast<int64_t>(16 * 64 / 2));
+            CHECK(ent.w1_bytes == static_cast<int64_t>(32 * 64 / 2));
             CHECK(ent.host_w3 != nullptr);
-            CHECK(ent.w3_bytes == static_cast<int64_t>(16 * 64 / 2));
+            CHECK(ent.w3_bytes == static_cast<int64_t>(32 * 64 / 2));
             CHECK(ent.host_w2 != nullptr);
-            CHECK(ent.w2_bytes == static_cast<int64_t>(64 * 16 / 2));
+            CHECK(ent.w2_bytes == static_cast<int64_t>(64 * 32 / 2));
             CHECK(ent.w1_scales_bytes > 0);
             CHECK(ent.w1_global_scale > 0.f);
             CHECK(ent.w2_global_scale > 0.f);
