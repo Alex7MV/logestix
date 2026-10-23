@@ -10,6 +10,7 @@
      "observed_min": 1687, "observed_max": 1688,
      "note": "float4 grid-stride read of a 335 MB buffer, 94% of the 1792 GB/s spec peak. A floor on the MEASUREMENT, not a perf claim: it is the reference point every KV-read bandwidth number is divided by, so a broken probe (throttling, wrong device, occupancy collapse) would silently make any ratio fiction."},
     {"name": "xing.mhc.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 17.5576, "observed_min": 12.5344, "observed_max": 13.0056, "samples": 5, "date": "2026-10-04", "note": "3 launches, hidden=3584, hc_mult=4 (proj 24 blocks + warp-Sinkhorn gates + wide collapse)"},
-    {"name": "xing.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 8.16264, "observed_min": 5.38848, "observed_max": 6.0464, "samples": 5, "date": "2026-10-04", "note": "projection one block per expert (64 blocks x 32 lanes) + top-k block; 64 experts x hidden 3584"}
+    {"name": "xing.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 8.16264, "observed_min": 5.38848, "observed_max": 6.0464, "samples": 5, "date": "2026-10-04", "note": "projection one block per expert (64 blocks x 32 lanes) + top-k block; 64 experts x hidden 3584"},
+    {"name": "ornith.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 14.0, "observed_min": 11.73, "observed_max": 11.80, "samples": 3, "date": "2026-10-23", "note": "E=256, H=2048, K=8, seq=1; two-stage dots+select at 128 threads/block. A 64-thread launch was neutral (11.73 vs 11.80 us, E2E unchanged) and was reverted; budget leaves ~19% headroom for clock/occupancy variation."}
   ]
 }

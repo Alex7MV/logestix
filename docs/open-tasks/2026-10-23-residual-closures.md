@@ -92,7 +92,23 @@ Rejected alternative: keep the streaming GEMV off and re-seed r3 at ~19 t/s
 (correct but 5.7x slower); it makes the strict mode useless for the main use case
 and does not improve determinism.
 
-Residual, not caused by this change: `test_perf_baseline_ornith` perf mode reads
-**160.2 t/s** against its 167.06 reference (95.9%). This is the non-strict (TC)
-path, which this change does not touch; tracked as §Y in the live file.
+### Ornith perf-mode 167.06 -> 160.2 (closed as a documented cost)
+
+`test_perf_baseline_ornith` read 160.0/160.1 t/s on two cooled runs against
+167.06. Attribution: the reference is from `36eddff` (2026-10-07), before the
+neutral routed-MoE migration (`c3ddc4b`) and the overflow-proof batched SwiGLU
+quantizer (`8e34314`). That commit explicitly records the cost: "one extra
+elementwise launch per layer (Qwen3.6 256-token: 166.7 -> 161.3 t/s)" — the
+same ~4% seen here, so the gap is a deliberate correctness fix (massive
+activations no longer overflow FP16 and poison the block scale), not a new
+regression. The perf entry was re-seeded to **160.20 t/s** with the measured
+TTFT/power evidence, and the harness then re-seeded r3 from 12.70 to
+**72.02 t/s** on the new strict route.
+
+Router investigation (negative): the decode router is ~10% of GPU time, but
+changing its launch from 128 to 64 threads per block moved the isolated kernel
+only 11.80 -> 11.73 us and left E2E unchanged (160.5 vs 160.0); reverted.
+`ornith.router.decode` had no budget row (the test SKIPped); a row was added
+with 11.84 us observed and a 14.0 us max, so the real-shape router is now
+guarded instead of silently skipped.
 
