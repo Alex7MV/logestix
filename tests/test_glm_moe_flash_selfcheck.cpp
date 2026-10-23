@@ -61,15 +61,19 @@ TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
     REQUIRE(model->Load());
 
     ModelRequest req;
+    // The family's own SelfCheck owns the Paris policy (this checkpoint closes
+    // an empty `<think>` block before answering, so the window is not 2
+    // tokens); go through it exactly like `lsxbenchmark --selfcheck` does.
+    REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
+                                       "The capital of France is",
+                                       req.input_ids));
     req.max_gen_tokens = 2;
     int cycles = 3;
     if (const char *env = std::getenv("LSX_TEST_GLM_SELFCHECK_CYCLES"))
         cycles = std::atoi(env);
     std::vector<float> first_logits;
     for (int c = 0; c < cycles; ++c) {
-        auto r = runtime::RunParisSelfCheck(
-            *model, req,
-            runtime::ParisSelfCheckOptions{.frame_prompt = true});
+        auto r = model->SelfCheck(req);
         INFO("cycle " << c << ": '" << r.error_msg << "' tokens="
                       << r.gen_tokens.size());
         REQUIRE(r.ok);
@@ -149,7 +153,9 @@ TEST_CASE("GLM-5.3-Flash generation with LSX_TRACE_FLASH set "
 
     ModelRequest req;
     req.input_ids = ids;
-    req.max_gen_tokens = 4;
+    // The model answers after closing an empty `<think>` block, so "Paris"
+    // lands a few tokens into the answer (measured, not assumed).
+    req.max_gen_tokens = 32;
     std::vector<int32_t> streamed;
     req.token_callback = [&](const TokenChunk &c) {
         streamed.push_back(static_cast<int32_t>(c.token_id));

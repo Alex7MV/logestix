@@ -117,6 +117,7 @@ inline void ExpectCooperativeCancelStops(Model &model,
         std::size_t chunks = 0;
         req.token_callback = [&](const lsxcommon::TokenChunk &) { ++chunks; };
         const auto res = model.Infer(req);
+        INFO("pre-set abort: " << res.error_msg);
         REQUIRE(res.ok);
         CHECK(res.gen_tokens.size() < budget);
         CHECK(chunks <= res.gen_tokens.size());
@@ -131,6 +132,7 @@ inline void ExpectCooperativeCancelStops(Model &model,
                 flag.store(true, std::memory_order_release);
         };
         const auto res = model.Infer(req);
+        INFO("mid-generation abort: " << res.error_msg);
         REQUIRE(res.ok);
         CHECK(chunks >= 1);
         CHECK(res.gen_tokens.size() < budget);
@@ -141,6 +143,7 @@ inline void ExpectCooperativeCancelStops(Model &model,
         lsxcommon::ModelRequest req = b;
         req.token_callback = [&](const lsxcommon::TokenChunk &) { ++chunks; };
         const auto res = model.Infer(req);
+        INFO("control: " << res.error_msg);
         REQUIRE(res.ok);
         CHECK(res.gen_tokens.size() == budget);
         CHECK(chunks == res.gen_tokens.size());

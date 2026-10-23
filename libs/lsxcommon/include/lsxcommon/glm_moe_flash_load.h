@@ -1,9 +1,11 @@
 #pragma once
 
 // GLM-5.3-Flash loader types. Per-layer weights are a KDA/DSA union:
-// KDA layers keep high-precision FP16 projections (converter policy), DSA
-// layers carry NVFP4 MLA projections + BF16 raw indexer/kv_b weights.
-// Routed experts reuse the generic pinned-slab store (moe::MoEExpertStore).
+// KDA layers carry NVFP4 q/k/v/o projections (the four [4096,8192] pairs
+// dominated the device graph; the recurrence scalars - A_log, dt_bias,
+// conv1d, b/f/g projections, o_norm - stay FP16/F32), DSA layers carry
+// NVFP4 MLA projections + BF16 raw indexer/kv_b weights. Routed experts
+// reuse the generic pinned-slab store (moe::MoEExpertStore).
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 

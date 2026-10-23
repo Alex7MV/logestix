@@ -377,7 +377,9 @@ __global__ void flash_l2norm_qk_kernel(__half *q, __half *k, int dim,
 // decay over key dim only: threads = heads*dim (8192).
 //   beta[h]    = sigmoid(b_proj[h])                       (per head)
 //   dt[h,l]    = f_b[h,l] + dt_bias[h,l]
-//   gdecay[h,l]= exp(-exp(A_log[h]) * softplus(dt[h,l]))
+//   gdecay[h,l]= exp(lower_bound * sigmoid(exp(A_log[h]) * dt[h,l]))
+//                (linear_attn_config.gate_lower_bound = -5, the Kimi-Delta
+//                style bounded forget gate; NOT a softplus decay)
 __global__ void flash_kda_gating_kernel(const __half *__restrict__ b_proj_out,
                                         const __half *__restrict__ f_out,
                                         const float *__restrict__ A_log,
@@ -2114,12 +2116,16 @@ cudaError_t RunGlmFlashGeneration(
             result.tokens.push_back(h_tok);
             if (gs) gs->Emit(static_cast<std::uint32_t>(h_tok),
                              static_cast<std::uint32_t>(result.tokens.size() - 1));
-            if (gs && gs->Aborted()) break;
+            // Count (and time) the token BEFORE the abort check: the token is
+            // decoded and streamed either way, and a cancelled request must
+            // report ok with a short result, not "unknown error" with an empty
+            // message (the shared cancel gate asserts exactly that).
             // TTFT: first generated token's forward is complete (the stream
             // was just synchronized on the argmax readback).
             if (generated == 0 && t_ttft) cudaEventRecord(t_ttft, stream);
             cur = h_tok;
             ++generated;
+            if (gs && gs->Aborted()) break;
             bool eos_hit = false;
             for (int id : eos_ids)
                 if (h_tok == id) eos_hit = true;
