@@ -3,7 +3,7 @@
   "version": 1,
   "model_type": "glm-5.3-flash",
   "source": "prompt-template (glm5_next source not runnable locally: FP8 + unknown arch)",
-  "runtime": "tokenizer.json + chat_template.jinja (transformers 5.15.1)",
+  "runtime": "tokenizer.json + chat_template.jinja (transformers 5.15.1); max_new_tokens=512: this checkpoint reasons at Max effort before answering, and 128 cut every deliberation mid-sentence (measured 2026-10-23)",
   "prompts": [
     {
       "id": "FSI-TEST-01",
@@ -158,7 +158,7 @@
         154828,
         154841
       ],
-      "max_new_tokens": 128,
+      "max_new_tokens": 512,
       "ignore_eos": true,
       "expected": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))",
       "raw": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))"
@@ -367,7 +367,7 @@
         154828,
         154841
       ],
-      "max_new_tokens": 128,
+      "max_new_tokens": 512,
       "ignore_eos": true,
       "expected": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C",
       "raw": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C"
@@ -490,7 +490,7 @@
         154828,
         154841
       ],
-      "max_new_tokens": 128,
+      "max_new_tokens": 512,
       "ignore_eos": true,
       "expected": "Drawdown>Threshold",
       "raw": "Drawdown>Threshold"

@@ -176,29 +176,35 @@ near-tie on the very first token, flipped by the few-percent NVFP4
 requantization — not a systematic degradation. The gate stays red (source
 parity); the decision itself is inherent to greedy decoding at this margin.
 
-## P. GLM-5.3-Flash FSI-TEST-02 RED after the E4M3FN re-conversion (2026-10-07)
+## P2. GLM-5.3-Flash decode: 12.79 t/s against the 14.89 t/s baseline (2026-10-23)
 
-Re-converting GLM-5.3-Flash after the E4M3FN (subnormal) block-scale codec
-change makes `test_glm_moe_flash_fsi_selfcheck` FSI-TEST-02 fail. The prompt
-asks for a single-line expression and names the expected template; the
-converted model instead deliberates (`Let me analyze this request carefully…`),
-echoes the initial state and the template inside its reasoning, and never emits
-a clean answer line. The FSI extractor's "first `anchor=…` line" rule then
-picks the reasoning's `Balance_Alpha=100000000`. FSI-01/03 and
-Paris/CODE/DET stay green.
+Re-converting the family on this host (it had no `logestix/` tree) closed the
+functional gates but not the perf reference. `test_perf_baseline_glm_5_3_flash`
+reports **DEGRADED**: `baseline=14.89 t/s, actual=12.7921 (85.91%)` at 2048
+tokens, and the DRAM copy probe reads **1524.23 vs 1524.09 GB/s** — the
+environment is not the cause (the oracle's whole point). A canonical
+`lsxbenchmark --bench --max-gen 2048` on the same tree and build: **13.0 t/s**,
+TTFT 1154 ms, resident 7083 MiB, expert hit rate 46.6% (1555 slots, ~21 GiB).
 
-Not a token budget: the same failure reproduces at 128 (committed golden), 512
-(drifts into numerically evaluating the expression) and 2048 (still
-deliberating). It is a behavioural divergence from the offline requantization
-of a borderline compliance prompt — the same family as §J (gemma) and §O (phi).
-The golden is template-derived (the `glm5_next` source cannot run locally), so
-there is no source answer to compare against; leaving it red rather than
-rewriting the extractor/golden keeps the DSA-path guard honest.
+Not re-seeded: the reference stays until the loss is attributed.
 
-**Next step if revisited:** run the FSI-02 prompt through the pre-E4M3
-conversion of the same tree (or the `glm5_next` source if it ever becomes
-loadable) to confirm the pre-codec tree answered and the flip is purely the
-offline encoder.
+Where the time goes (nsys, 256 tokens at 16.0 t/s): GPU kernels hold **28%** of
+the wall time, so the step is H2D/miss-bound, not kernel-bound. Top kernels:
+`moe_gemv_w13_batch` 19.5%, `moe_gemv_down_batch` 12.2%,
+`flash_mla_attn_kernel` 12.0%, `lsx_nvfp4_gemv_warprow` 10.3%,
+`hc_pre_finalize` 7.5%, `flash_gemv_f16` 5.3%. 186 experts are re-uploaded per
+token (2.6 GB at 14.2 MB each), which at the observed ~33 GB/s effective H2D is
+most of the 66-78 ms step.
+
+**Next step:** bisect the neutral-path commits the family shares —
+`8e34314` (batched SwiGLU prescale), `bad0792` (residency mirror), `f0a97e1`
+(ExpertStore), `ffa1879` (strict streaming GEMV route), `754a88c` (hoisted
+prequant) — with the canonical 2048 measurement (5.5 min per point, one at a
+time), and profile `RunFlashRoutedFFN`'s staging path against the 2026-09-27
+build if the bisect is flat. A hit-rate difference is the leading hypothesis
+(45% now; the baseline entry has no hit-rate field), so record hits/misses per
+token alongside t/s. Anything that changes numerics is out of scope for this
+item — this is a bandwidth/staging question.
 
 ## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
 
@@ -483,6 +489,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-23 | GLM-5.3-Flash audited end to end and re-converted | `§P` **retracted**: the FSI red was a 128-token budget on a reasoning checkpoint — at 512 all three prompts pass with their canonical answers (the recorded "reproduces at 512 and 2048" claim is false on this conversion), so the golden's budget moved to match CODE/DET's 512 and no expectation was rewritten. Three real defects fixed in the family: the single-prompt path bypassed the chat template (raw BPE default), the renderer had drifted from `chat_template.jinja` (newlines after every turn, tool calls on the wrong line, tools block without the template's layout) and the cooperative-cancel counter incremented after the abort check, so a cancelled request reported `ok=false`/`unknown error`. SelfCheck now owns the family's answer window (the model closes an empty `<think>` before answering). New instrument: the real inventory is classified and the passport reconciled against `config.json` (39,522 assertions). Real weights: Paris ×3 bit-exact, tool round-trip, streaming/cancel, FSI/CODE/DET 3/3 each. Perf did not recover (new §P2) — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |
 | 2026-10-23 | §I closed (and §H with it): the non-split attention dot was a half-row bug, not FMA | `AttnHalfDotRow` consumed two `__half2` per step under a `hd >> 2` bound, so every score dot covered half the head (64 of 128); X16 (`f7cc177`) fixed the bound for the split path, and the 2026-10-06 non-split experiment predates it, which is the whole of the "compiler/FMA" story. The helper now sits outside the anonymous namespace and the non-split kernel calls it: Qwen3.6-35B-A3B SelfCheck/FSI/CODE/DET, Qwen3.5-9B SelfCheck, Alice and Ornith FSI/CODE/DET and gemma-MoE DET all pass (gemma FSI/CODE keep the known §J divergences). Alice, which only ever reached the non-split kernel, gains **+2.0%** (interleaved A/B: 45.6/45.4 vs 44.5/44.6 t/s) - [`open-tasks/2026-10-23-non-split-attn-dot-closed.md`](open-tasks/2026-10-23-non-split-attn-dot-closed.md) |
 | 2026-10-23 | Doc hygiene: the non-defect records moved out (B, D1, F, G, E, V2) | These were not open work: `B` is the resolved GPU-keyed-budget mechanism, `D1` was closed as not-a-regression (batched expert GEMV 1.34-1.44x in isolation, no pipeline cost), `F` measured the opposite of a ramp (Xing falls 27% / 42% across a session), `G` is the completed vectorisation ledger (qwen +4.8%, gemma +3.0%, gigachat 0%; the non-split half remains §I), `E`'s last subsection (E4) closed the same day, and `V2` was refuted (`max_open` bounds RSS monotonically, 3.2 / 7.0 / 31.1 GB at cap 64 / 512 / 8192). Kept for their method notes, not as tasks — [`open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md`](open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md) |
 | 2026-10-23 | E4 closed: opt-in sampling end to end | `SamplingParams` in `ModelRequest`; a deterministic device sampler (exact radix top-k, conservative 4096-bin top-p, counter-based RNG) behind `SamplerFor`, with greedy bit-identical and every fused-argmax family keeping its fast path via `ISampler::IsGreedy()`. Wire v3 carries the fields and v2 requests still decode as greedy; TaskMosaic/Fabric plumb them; a guard scans every `Infer` for `SamplerFor(req.sampling)`. `test_sampling` pins the distribution, the top-k set and seed reproducibility — [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md) |

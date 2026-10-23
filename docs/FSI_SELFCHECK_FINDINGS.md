@@ -29,7 +29,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
 | DeepSeek-V4.1-Flash | not capturable locally — `deepseek_v41` is not in transformers 5.15.1 and the release ships its **own inference stack** (`inference/model.py`, `convert.py`, `generate.py`; tilelang FP8/FP4 kernels, tensor-parallel, target 2×80 GB GPU), not HF remote code. Do not confuse it with the flat FP8 + FP4 MoE checkpoint in the vault. |
-| GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
+| GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 (template-derived golden; **green 3/3 at a 512-token budget since 2026-10-23**, see the update below) |
 | Qwen3.5-35B-A3B | captured (all 3 exact) on **CPU**, no `OVERRIDES` entry — see below |
 | GLM-5.2, Kimi-K2.7-Code | source absent from the vault |
 
@@ -470,6 +470,30 @@ runs green (~283 s) instead of SKIPping.
 > deliberating). FSI-01/03 and Paris/CODE/DET stay green. A behavioural
 > divergence from the offline requantization; tracked in `OPEN_TASKS.md`
 > section P. The template-derived golden is left unchanged.
+
+### Update 2026-10-23: §P retracted — it was the 128-token budget
+
+A fresh conversion of the same source (the vault had no `logestix/` tree at
+all) reproduced the 128-token behaviour exactly — and showed that the budget
+was the whole story:
+
+| case | 128 tokens (committed golden) | 512 tokens |
+|---|---|---|
+| FSI-01 | pass | pass |
+| FSI-02 | `Balance_Alpha=100000000` (prompt echo) | `Balance_Alpha=((100000000*Rate_A-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C` (pass) |
+| FSI-03 | `` — deliberation cut mid-sentence | `Drawdown>Threshold` (pass) |
+
+The 2026-10-07 note above ("not a token budget — reproduces at 512 and 2048")
+does **not** reproduce: at 512 every prompt emits its canonical line. The
+reason CODE and DET were green all along is that both already used
+`max_new_tokens = 512`; FSI's golden was the only one at 128. The golden's
+budget is now 512 for all three prompts, the expectations are unchanged, and
+`test_glm_moe_flash_fsi_selfcheck` passes 3/3 on real weights.
+
+The lesson worth keeping: for a checkpoint that reasons at Max effort, a
+token budget is part of the *harness contract*, not a free parameter — a
+reasoning model cut mid-trace produces a plausible anchor line (the echo) that
+looks exactly like a semantic divergence.
 
 ## Normalization contract implemented here
 
