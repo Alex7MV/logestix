@@ -698,8 +698,8 @@ TEST_CASE("generation driver deterministic on synthetic model", "[ornith-moe-gen
     REQUIRE(lsxcommon::ornith::EnsureOrnithMoeScratch(stream, pw, gen_scratch) ==
             cudaSuccess);
 
-    auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
-        lsxcommon::qwen::QwenKvCache kv;
+    auto run_once = [&](lsxcommon::qwen::GenerationResult &r) {
+        lsxcommon::qwen::KvCache kv;
         lsxcommon::sample::GreedySampler sampler;
         std::vector<int32_t> prompt = {1, 2, 3};
         return lsxcommon::ornith::RunOrnithMoeGeneration(
@@ -707,7 +707,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[ornith-moe-gen
             /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
     };
 
-    lsxcommon::qwen::QwenGenerationResult r1, r2;
+    lsxcommon::qwen::GenerationResult r1, r2;
     cudaError_t e1 = run_once(r1);
     if (e1 != cudaSuccess) WARN(r1.error_msg);
     REQUIRE(e1 == cudaSuccess);
@@ -1040,8 +1040,8 @@ TEST_CASE("generation driver fallback parity under partial residency",
     REQUIRE(lsxcommon::ornith::EnsureOrnithMoeScratch(stream, pw, gen_scratch) ==
             cudaSuccess);
 
-    auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
-        lsxcommon::qwen::QwenKvCache kv;
+    auto run_once = [&](lsxcommon::qwen::GenerationResult &r) {
+        lsxcommon::qwen::KvCache kv;
         lsxcommon::sample::GreedySampler sampler;
         std::vector<int32_t> prompt = {1, 2, 3};
         return lsxcommon::ornith::RunOrnithMoeGeneration(
@@ -1049,7 +1049,7 @@ TEST_CASE("generation driver fallback parity under partial residency",
             /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
     };
 
-    lsxcommon::qwen::QwenGenerationResult r1, r2;
+    lsxcommon::qwen::GenerationResult r1, r2;
     cudaError_t e1 = run_once(r1);
     if (e1 != cudaSuccess) WARN(r1.error_msg);
     REQUIRE(e1 == cudaSuccess);

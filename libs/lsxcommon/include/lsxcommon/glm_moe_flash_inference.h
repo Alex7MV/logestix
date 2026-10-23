@@ -15,7 +15,7 @@
 
 #include "lsxcommon/glm_moe_flash_load.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/lsx_attn_inference.h"     // lsx_nvfp4::LsxNvfp4Weight, QwenGenerationResult
+#include "lsxcommon/lsx_attn_inference.h"     // lsx_nvfp4::LsxNvfp4Weight, GenerationResult
 #include "lsxcommon/lsx_moe_inference.h"  // MoERoutedSlot
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/token_stream.h"
@@ -171,7 +171,7 @@ cudaError_t RunGlmFlashGeneration(
     cudaStream_t stream, const FlashPinnedWeights &pw,
     lsxcommon::moe::MoEExpertStore &store, gpu::ExpertDeviceCache &cache,
     const std::vector<int32_t> &prompt, int max_new,
-    const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result,
+    const std::vector<int> &eos_ids, qwen::GenerationResult &result,
     sample::ISampler &sampler,
     const lsxcommon::GenerationStream *gs = nullptr);
 

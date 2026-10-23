@@ -119,7 +119,7 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
     return RunUnderResidencyLock([&] {
         return gpu::RunInferenceModel(
             cfg_.model_path, req.input_ids, req.max_gen_tokens, *tok_db_, pw_,
-            lsxcommon::sample::DefaultSampler(), stream(),
+            lsxcommon::sample::SamplerFor(req.sampling), stream(),
             req.ignore_eos, &gs);
     });
 }

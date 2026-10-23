@@ -551,64 +551,12 @@ upload), was fixed the same day and moved to
 §E1 (sequential-dispatch guard) and §E2 (alice logits row) were closed on
 2026-10-17 and moved to
 [`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md).
-§E4 below is documented and carries an implementation plan.
+§E4 (opt-in sampling) was implemented on 2026-10-23 and moved to
+[`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md).
 §E1d, found while closing §E1c, was fixed the same day and moved to
 [`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md).
 §E1e, found while closing §E1a, was fixed the same day and moved to
 [`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md).
-
-### E4. `temperature` / `top_p` are accepted and ignored by the OpenAI surface
-- **Status 2026-10-17: documented, implementation planned (below).** `ModelRequest`
-  (`libs/lsxcommon/include/lsxcommon/model.h:64`) has no sampling fields and
-  every family decodes argmax (`sample::GreedySampler`), so a request carrying
-  `"temperature": 0.7` through the TaskMosaic bridge is served greedily. Nothing
-  regressed; this was always the behaviour.
-- **Documented where a client will actually read it:**
-  `openai_endpoint.h:112` now spells out that `temperature`, `top_p`, `top_k`,
-  `n`, `seed`, `presence_penalty`, `frequency_penalty` and `logprobs` are parsed
-  as unknown and DISCARDED, that this is deliberate, and that greedy is the
-  numeric class the DET/FSI/CODE goldens pin.
-- **Why greedy is the right default to keep, not an oversight:** this engine is
-  a bit-exactness/parity machine. A sampling kernel makes generations
-  non-reproducible by construction and would invalidate every golden captured
-  from the source checkpoints. Any future sampling work must therefore be
-  opt-in and numeric-class-aware, not a silent default.
-- **Plan when it comes up (sized by reading the code, not guessed):**
-
-  | layer | work | size |
-  |---|---|---|
-  | `ModelRequest` | add `temperature`, `top_p`, `top_k`, `seed` | trivial |
-  | `sample::ISampler` | the real work: a temperature/top-p CUDA sampling kernel (softmax + multinomial + RNG). Today it is a pure argmax interface — this is a new numeric primitive, not a refactor | **the bulk** |
-  | call sites | thread the request fields into `Sample()`: **12** driver files (`qwen_*`, `glm_*`, `deepseek_*`, `ornith`, `phi`, `granite`, `gemma_*`, `mistral`, `xing`, `mimo`, `kimi`, `nemotron`) | mechanical but wide |
-  | v2 wire protocol | `FabricRequestView` (`fabric_wire.h`) + `Submit()` + server-side `mreq` in `fabric_server.cpp` + client in `chat_bridge.cpp`. **Changes the wire frame**, so v2 backward compatibility needs a decision | medium, needs a version call |
-  | numeric-class policy | decide whether sampling is allowed in `kAuto` (production) or only under an explicit mode; DET/FSI/CODE must pin greedy | a decision, not code |
-
-  So: implementing it is a **sampling feature plus a wire-format change**, not a
-  small plumbing fix. That is why documenting is the right call for now.
-- **Next step (when scheduled):** start from the `ISampler` kernel + the
-  numeric-class policy, decide the wire-format version, then the 12 call sites
-  are mechanical.
-
-## S. Attention layer neutral; only the KV session keeps a qwen name (2026-10-10, updated)
-
-- **What landed (Phase 5, 2026-10-11):** `qwen_inference.{h,cu}` is now
-  `lsx_attn_inference.{h,cu}` in `lsxcommon::attn`, and the neutrality guard
-  enforces it. `QwenLayerWeights` became the neutral `attn::LayerWeights`
-  (`lsx_inference_load.h`); the kernels take a neutral `attn::AttnGeometry`
-  instead of the `QwenTopology` passport (they read exactly 12 of its scalars
-  and none of its vectors/strings/vram). Two pure-passthrough GEMM shims were
-  deleted outright. Bit-identical on real weights; throughput unchanged
-  (ornith 167.3 vs 167.06 t/s baseline at 2048).
-- **What is still qwen-named on purpose (Phase 5b):** `QwenKvCache`,
-  `QwenGenerationResult` and the shared fast-math aliases
-  (`QwenTcFastMath`/`SetQwenTcFastMath`/`QwenSeq1Gemv`/`QwenGemmLarge`/
-  `QwenFastMathScope`). Three families hold a `QwenKvCache`, so renaming it
-  into a qwen-owned header would make Ornith depend on another family --
-  worse than today, for a cosmetic gain. `QwenKvCache::Allocate` also still
-  takes `QwenPinnedWeights`.
-- **Next step (5b):** change `QwenKvCache::Allocate`/`EnsureCapacity` to take
-  scalars rather than the pinned-weight bundle, then the cache and result
-  structs can go neutral too. Separate change; nothing blocks on it.
 
 ## T. Mistral-Small-4-119B-2603-NVFP4 ingestion — later stages (2026-10-11)
 
@@ -763,22 +711,12 @@ upload), was fixed the same day and moved to
   invariant to a power-of-two activation prescale. Both of the first two fail
   against the old kernel.
 
-  **Cost of the fix, accepted deliberately:** the quantizer is now two launches
-  instead of one, so the TC branch pays one extra launch per slot per layer —
-  4 slots x 48 layers = 192 extra launches per token, about 1 ms against a
-  ~22 ms token. Measured in Release at the canonical 2048-token protocol:
-  `perf` (kAuto) 47.13 -> **45.02 t/s (-4.5%)**, re-recorded in
-  `perf_baselines.json` at commit `cb60207`; `r3` (kOff) is unaffected at 14.68
-  because `kOff` forces `tc=false` and never enters this branch. The guard
-  flagged the drop as DEGRADED and refused to move the reference on its own,
-  which is the intended behaviour — the cause was identified (launch overhead,
-  not bandwidth: the FP32 round-trip is 8 B/element against multi-MB expert
-  tiles) and only then was the number changed by hand. A 4.5% decode cost is a
-  fair price for a 52x error, but it is a standing cost, so a cheaper shape is
-  available if it ever matters: hoist the reduction out of the per-slot loop
-  (2 launches per layer instead of 8) by quantizing all K slots in one pass.
-  Not done — it is a restructuring of `RunMoERoutedFFN` for 4.5%, which does not
-  justify the regression risk across the five families that share this path.
+  **Cost of the fix: reduced on 2026-10-23.** The extra prequant launches
+  are hoisted (three per layer for all K slots, bit-identical), removing
+  the standing cost: Mistral 41.3 -> 42.2 t/s at 2048. The scratch and the
+  measurement are in
+  [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md).
+  The rest of §T (the three golden gates) is still open.
 
   Two earlier diagnoses of this entry were wrong and are retracted here, since
   the record is the point: (1) "the E4M3 block scale saturates, attenuating the
@@ -858,50 +796,6 @@ the same load peaked at 1.8 GB — the 10.9 GB at cap 4096 is paid during decode
 not during load. The earlier 65.6 GB figure was an artifact; there is no
 page-cache defect here and no metadata-in-`model.index.json` work is needed.
 
-## W. Throughput baselines read low on a heat-soaked GPU — cooldown added (2026-10-15)
-
-`test_perf_baseline` measured phi-4 r3 at 117.2–118.0 t/s against a 122.26
-reference (-3.9%, DEGRADED) and qwen3.8-flash-next perf at 43.14 against 44.85
-(-3.8%, DEGRADED) — reproducibly, with a free, idle GPU. Neither is a code or
-artifact regression:
-
-- The **same Release-AOCC binary** re-measures the references when the card is
-  left to cool: phi r3 back within tolerance; qwen3.8 isolated `lsxbenchmark`
-  44.8 (reference 44.85).
-- qwen3.8's reference was recorded 2026-10-14 **on this same build**, artifact
-  unchanged since 2026-10-07; the driver (`595.91.07 -> 595.99.02`, 2026-10-08),
-  kernel (`7.0.0-34 -> -38`, 2026-10-02) and CUDA toolkit (`13.4.2 -> 13.4.3`,
-  2026-10-13) updates all predate it, so the "old toolchain" hypothesis is
-  retracted by that control.
-- Under load the SM clock settles at **~2812 MHz against a 3150 MHz maximum**
-  (600 W power cap, 64–76 °C): one 35–45 s decode heat-soaks the card, so
-  back-to-back targets read low. A fixed threshold *below* the resting
-  temperature never works — returning to the ~40 °C idle floor is a **plateau**
-  taking ~2–3 min (traced 70 -> 40 °C).
-
-**Fix:** `lsxcommon::perf::CoolDownGpu` (NVML, resolved at runtime like the
-power sampler) waits until the GPU temperature **plateaus at its running
-minimum** — as cool as the ambient allows — with a timeout, before each
-`RunPerfModel`. It runs once per target, before the perf->r3 pair, so the
-within-target protocol is unchanged. Knob `LSX_PERF_COOLDOWN_TIMEOUT_S`
-(default 300; 0 disables). Verified: phi-4 and qwen3.8-flash-next pass
-back-to-back; fast suite 94/94.
-
-**Second measurement defect, fixed 2026-10-23:** `test_perf_baseline` did not
-call `Core::Initialize`, so unlike every app it ran with spdlog's synchronous
-default logger. On the same binary, prompt and 2048-token protocol it read
-134.4 t/s where `lsxbenchmark` read 146.6 (reproduced both ways; adding the
-initialization makes them agree). The harness now initializes the logging core,
-so a baseline measures the path users run. Consequence: every other family's
-committed row was recorded on the slower path and is ~9% low; the next run of
-that target re-seeds it upward automatically (a higher reading is `kUpdate`,
-not a failure), so they are conservative floors in the meantime.
-
-**Still open (the §B class):** a genuinely warm room whose plateau sits above
-what the reference needs cannot be cooled into tolerance — no oracle separates
-"the room is warm" from "the code regressed" at 3%. The cooldown removes the
-back-to-back component, not the ambient one.
-
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -909,6 +803,10 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-23 | E4 closed: opt-in sampling end to end | `SamplingParams` in `ModelRequest`; a deterministic device sampler (exact radix top-k, conservative 4096-bin top-p, counter-based RNG) behind `SamplerFor`, with greedy bit-identical and every fused-argmax family keeping its fast path via `ISampler::IsGreedy()`. Wire v3 carries the fields and v2 requests still decode as greedy; TaskMosaic/Fabric plumb them; a guard scans every `Infer` for `SamplerFor(req.sampling)`. `test_sampling` pins the distribution, the top-k set and seed reproducibility — [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md) |
+| 2026-10-23 | S/5b closed: KV session is neutral | `KvCache::Allocate`/`EnsureCapacity` take `attn::KvGeometry`; `QwenKvCache`/`QwenGenerationResult` became `attn::KvCache`/`attn::GenerationResult`; the per-request shallow pinned-weight view is gone; KV parity stays bit-exact — [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md) |
+| 2026-10-23 | §T cost closed: hoisted routed prequant | Batched SwiGLU prescale+quant for all K slots (three launches per layer instead of per slot), bit-identical to the per-slot chain (`memcmp` test that also asserts the branch ran). Mistral 41.3 -> 42.2 t/s; `LSX_MOE_TC_HOIST=0` keeps the old path. The three Mistral goldens remain declared debt — [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md) |
+| 2026-10-23 | §W closed: the environment oracle | A 512 MiB DRAM-bound copy probe (a 64 MiB probe measured L2 speed and was rejected) is recorded as a synthetic baseline entry; `AttributeDegrade` classifies a low model reading as ENVIRONMENT only when the probe is also down by at least as much. Perf suite re-seeded on 2026-10-23: the 10-23 strict-mode re-seeds reached the rows that had not been re-run (alice r3 10.14 -> 44.25, mistral r3 14.68 -> 41.57, qwen3.8-flash-next r3 6.40 -> 26.47, gemma-31b r3 41.00 -> 47.21, phi-4 r3 122.26 -> 128.68), nemotron-nvfp4 has baselines (127.27 / 120.35) — [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md) |
 | 2026-10-23 | r3/bit-exact restored to streaming GEMV; qwen3.6 closed | The strict mode had been made correct by disabling `gemv_large`, which dropped qwen3.5-9b r3 from 111 to 19.3 t/s. The strict scope now pins the large-N and <=32 MiB streaming GEMV as its canonical route (`LsxBitExactMode`), ignores `LSX_GEMV_LARGE`/`LSX_GEMV_MAX_MIB`, and routes qkv/z through it for every H. Re-seeded r3 references: qwen3.5-9b **111.06 -> 147.0**, qwen3.8-27b **39.03 -> 52.27**, qwen3.6-35B-A3B **13.32 -> 73.39**. SelfCheck/FSI/CODE/DET for all three plus Ornith are green; the TC path stays off. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-23 | Ornith perf baseline re-seeded (documented cost) | 167.06 -> **160.20 t/s** on two cooled runs. The reference predates the neutral MoE migration and the overflow-proof batched SwiGLU (`8e34314`), whose own note records the same ~4% cost (Qwen3.6 166.7 -> 161.3); this is the accepted correctness fix, not a regression. r3 was then re-seeded 12.70 -> **72.02**. A router launch-geometry experiment (128 -> 64 threads) was neutral (160.5 vs 160.0) and reverted; `ornith.router.decode` now has a 14.0 us max budget row (11.84 us observed) instead of SKIPping. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-23 | C1 closed: GPU budget tests serialized | `RESOURCE_LOCK "gpu"` added to all kernel-budget suites (plus Ornith, now budget-bearing) in `tests/CMakeLists.txt`; a `ctest -j` sweep can no longer overlap two latency/bandwidth samples. The measured flake was contention: five concurrent copies failed 4/5, 80 solo runs were green. Best-of-5 remains the second layer. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |

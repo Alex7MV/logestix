@@ -6,6 +6,8 @@
 
 #include <simdjson.h>
 
+#include "lsxnetwork/fabric_wire.h"  // RequestSampling
+
 #include "lsxnetwork/openai_endpoint.h"  // ChatInputMessage / ChatToolDef / ChatToolCall
 
 namespace lsxnetwork {
@@ -22,6 +24,7 @@ struct AnthropicRequest {
     std::vector<ChatToolDef> tools;
     std::string tool_choice;
     std::vector<std::string> stop_sequences;
+    RequestSampling sampling;
 };
 
 simdjson::error_code ParseAnthropicRequest(const char* data, std::size_t size,

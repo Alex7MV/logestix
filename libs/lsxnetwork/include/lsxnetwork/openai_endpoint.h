@@ -7,6 +7,8 @@
 
 #include <simdjson.h>
 
+#include "lsxnetwork/fabric_wire.h"  // RequestSampling
+
 namespace lsxnetwork {
 
 /// Extraction result for an OpenAI `/v1/chat/completions` document.
@@ -72,6 +74,9 @@ struct ChatRequest {
     int max_tokens = 0;
     std::vector<std::string> stop;
     bool include_usage = false;
+    // Opt-in sampling (v3 fabric frame). temperature <= 0 keeps greedy, the
+    // numeric class the parity goldens pin.
+    RequestSampling sampling;
 };
 
 struct LegacyCompletionRequest {
@@ -81,6 +86,7 @@ struct LegacyCompletionRequest {
     int max_tokens = 0;
     std::vector<std::string> stop;
     bool include_usage = false;
+    RequestSampling sampling;
 };
 
 /// Maps raw incoming OpenAI chat-completion JSON onto a `ChatCompletion`.
@@ -111,21 +117,18 @@ public:
     /// Parses a `POST /v1/chat/completions` request body. String members are
     /// owned. Unknown fields (tools, ...) are ignored.
     ///
-    /// SAMPLING IS NOT IMPLEMENTED, and this is not an accident — read the field
-    /// as "accepted and served greedily", not as "understood":
-    ///   * `temperature`, `top_p`, `top_k`, `n`, `seed`, `presence_penalty`,
-    ///     `frequency_penalty` and `logprobs` are parsed as unknown and
-    ///     DISCARDED. Every family decodes argmax (`sample::GreedySampler`), so
-    ///     a request carrying `"temperature": 0.7` is served exactly as if the
-    ///     field were absent.
-    ///   * This is stable and deliberate, not a silent partial rollout: the
-    ///     engine is a bit-exactness/parity machine (see OPEN_TASKS §E4), where
-    ///     a sampling kernel would make generations non-reproducible and would
-    ///     invalidate the DET/FSI/CODE goldens captured from the source
-    ///     checkpoints. Greedy is the numeric class those gates pin.
-    ///   * To honour sampling, follow the plan in OPEN_TASKS §E4: plumb the
-    ///     fields into `ModelRequest` and `sample::ISampler` (a real sampling
-    ///     CUDA kernel, not just a scalar), through the v2 fabric wire frame.
+    /// SAMPLING IS OPT-IN, GREEDY REMAINS THE DEFAULT:
+    ///   * `temperature`, `top_p`, `top_k` and `seed` are parsed into
+    ///     `ChatRequest::sampling` and forwarded on the v3 fabric request
+    ///     frame. A positive `temperature` selects `sample::SamplingSampler`;
+    ///     an absent/zero temperature keeps `sample::GreedySampler`, the
+    ///     bit-exact class the DET/FSI/CODE goldens pin.
+    ///   * `n`, `presence_penalty`, `frequency_penalty` and `logprobs` are still
+    ///     parsed as unknown and DISCARDED (a single completion is returned).
+    ///   * top_p/top_k are only consulted when temperature > 0. top_k is exact
+    ///     (ties at the k-th value are kept); top_p resolves a 4096-bin
+    ///     nucleus and keeps the boundary bin, so the retained mass is >= p
+    ///     and overshoots by at most one bin.
     simdjson::error_code ParseChatRequest(const char* data, std::size_t size,
                                           std::size_t capacity,
                                           ChatRequest& out) const;

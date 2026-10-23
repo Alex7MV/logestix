@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lsxcommon/token_stream.h"
+#include "lsxcommon/sampling.h"
 #include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/kimi_moe_load.h"
 #include "lsxcommon/lsx_tc_gemm.h"
@@ -133,6 +134,8 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
                               int max_gen_tokens, KimiGenerationResult &gen,
                               KimiExpertCacheState *cache, int eos_id,
                               bool fast_math = false,
+                              lsxcommon::sample::ISampler &sampler =
+                                  lsxcommon::sample::DefaultSampler(),
                               const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace kimi

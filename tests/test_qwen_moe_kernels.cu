@@ -762,8 +762,8 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeScratch(stream, pw, gen_scratch) ==
             cudaSuccess);
 
-    auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
-        lsxcommon::qwen::QwenKvCache kv;
+    auto run_once = [&](lsxcommon::qwen::GenerationResult &r) {
+        lsxcommon::qwen::KvCache kv;
         lsxcommon::sample::GreedySampler sampler;
         std::vector<int32_t> prompt = {1, 2, 3};
         return lsxcommon::qwen_moe::RunQwenMoeGeneration(
@@ -771,7 +771,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
             /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
     };
 
-    lsxcommon::qwen::QwenGenerationResult r1, r2;
+    lsxcommon::qwen::GenerationResult r1, r2;
     cudaError_t e1 = run_once(r1);
     if (e1 != cudaSuccess) WARN(r1.error_msg);
     REQUIRE(e1 == cudaSuccess);
@@ -1019,6 +1019,52 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
                 d_acc_seq, d_yg, d_yu, d_y2, err, nullptr, nullptr, nullptr,
                 d_xq, d_xqs) == cudaSuccess);
 
+    // Hoisted prequant (three launches per layer instead of three per slot):
+    // the same per-slot alpha distribution, so the accumulator must be
+    // bitwise equal to the per-slot reference above.
+    __half *d_ygu_hoist = nullptr;
+    uint8_t *d_qpack_h = nullptr, *d_qscales_h = nullptr;
+    float *d_sw_h = nullptr, *d_alpha_h = nullptr, *d_acc_hoist = nullptr;
+    cudaMalloc(&d_ygu_hoist, static_cast<size_t>(K) * 2 * I * 2);
+    cudaMalloc(&d_qpack_h, static_cast<size_t>(K) * I / 2);
+    cudaMalloc(&d_qscales_h, static_cast<size_t>(K) * (I / 16));
+    cudaMalloc(&d_sw_h, static_cast<size_t>(K) * I * sizeof(float));
+    cudaMalloc(&d_alpha_h, 2 * static_cast<size_t>(K) * sizeof(float));
+    cudaMalloc(&d_acc_hoist, H * 4);
+    cudaMemsetAsync(d_acc_hoist, 0, H * 4, stream);
+    REQUIRE(lsxcommon::moe::RunMoEAccInitForTest(
+                stream, d_postin, d_acc_hoist, H) == cudaSuccess);
+    const lsxcommon::moe::MoERoutedTcScratch hoist_scratch{
+        d_qpack_h, d_qscales_h, d_sw_h, d_alpha_h};
+    REQUIRE(lsxcommon::moe::RunMoERoutedFFN(
+                stream, store, cache, 0, routes.data(), K, d_postin, H, I,
+                d_acc_hoist, d_yg, d_yu, d_y2, err, nullptr, nullptr, nullptr,
+                d_xq, d_xqs, nullptr, nullptr, d_ygu_hoist, d_h_batch,
+                d_yp_batch, nullptr, nullptr, &hoist_scratch) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    {
+        std::vector<float> a(H), b(H), alpha(2 * K, 0.f);
+        cudaMemcpy(a.data(), d_acc_seq, H * sizeof(float),
+                   cudaMemcpyDeviceToHost);
+        cudaMemcpy(b.data(), d_acc_hoist, H * sizeof(float),
+                   cudaMemcpyDeviceToHost);
+        CHECK(std::memcmp(a.data(), b.data(), H * sizeof(float)) == 0);
+        // Non-zero alpha proves the hoisted branch ran (the per-slot
+        // fallback never touches this caller scratch).
+        cudaMemcpy(alpha.data(), d_alpha_h, 2 * K * sizeof(float),
+                   cudaMemcpyDeviceToHost);
+        for (int k = 0; k < K; ++k) {
+            INFO("hoisted prequant slot " << k);
+            CHECK(alpha[2 * k + 1] > 0.f);
+        }
+    }
+    cudaFree(d_ygu_hoist);
+    cudaFree(d_qpack_h);
+    cudaFree(d_qscales_h);
+    cudaFree(d_sw_h);
+    cudaFree(d_alpha_h);
+    cudaFree(d_acc_hoist);
+
     // Batched chain: warm the mirror, gather on device, run the batch.
     for (int e = 0; e < store.num_experts; ++e)
         REQUIRE(lsxcommon::moe::EnsureMoEExpertResident(
@@ -1115,8 +1161,8 @@ TEST_CASE("generation driver fallback parity under partial residency",
     REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeScratch(stream, pw, gen_scratch) ==
             cudaSuccess);
 
-    auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
-        lsxcommon::qwen::QwenKvCache kv;
+    auto run_once = [&](lsxcommon::qwen::GenerationResult &r) {
+        lsxcommon::qwen::KvCache kv;
         lsxcommon::sample::GreedySampler sampler;
         std::vector<int32_t> prompt = {1, 2, 3};
         return lsxcommon::qwen_moe::RunQwenMoeGeneration(
@@ -1124,7 +1170,7 @@ TEST_CASE("generation driver fallback parity under partial residency",
             /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
     };
 
-    lsxcommon::qwen::QwenGenerationResult r1, r2;
+    lsxcommon::qwen::GenerationResult r1, r2;
     cudaError_t e1 = run_once(r1);
     if (e1 != cudaSuccess) WARN(r1.error_msg);
     REQUIRE(e1 == cudaSuccess);

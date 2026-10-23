@@ -196,7 +196,7 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
         const cudaError_t ge = gemma::RunGemmaGeneration(
             st, pw_, expert_db, gen_input, req.max_gen_tokens, eos_ids,
             pw_.top.error_msg.empty() ? pw_.top.final_logit_softcapping : 0.f,
-            gen, *kv_, gen_ctx_, &gs);
+            gen, *kv_, gen_ctx_, sample::SamplerFor(req.sampling), &gs);
         if (ge != cudaSuccess)
             lsxcommon::log::error(
                 "[gemma-model] RunGemmaGeneration rc=" +

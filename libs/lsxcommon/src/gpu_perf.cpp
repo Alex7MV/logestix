@@ -384,5 +384,66 @@ bool EnsureCalibrated(const GpuPerfProfile &gpu,
     return true;
 }
 
+
+double MeasureMemoryBandwidthGbs(int mib)
+{
+    if (mib <= 0) mib = 512;
+    const size_t bytes = static_cast<size_t>(mib) << 20;
+    static thread_local void *src = nullptr;
+    static thread_local void *dst = nullptr;
+    static thread_local size_t cap = 0;
+    if (cap < bytes) {
+        if (src != nullptr) cudaFree(src);
+        if (dst != nullptr) cudaFree(dst);
+        src = nullptr;
+        dst = nullptr;
+        cap = 0;
+        if (cudaMalloc(&src, bytes) != cudaSuccess) return 0.0;
+        if (cudaMalloc(&dst, bytes) != cudaSuccess) {
+            cudaFree(src);
+            src = nullptr;
+            return 0.0;
+        }
+        cap = bytes;
+    }
+    cudaStream_t s = nullptr;
+    if (cudaStreamCreate(&s) != cudaSuccess) return 0.0;
+    double best_gbs = 0.0;
+    bool ok = cudaMemsetAsync(src, 0, bytes, s) == cudaSuccess;
+    if (ok) {
+        // Warm the copy engine / TLB once before timing.
+        ok = cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, s) ==
+             cudaSuccess;
+    }
+    cudaEvent_t start = nullptr, stop = nullptr;
+    if (ok) {
+        ok = cudaEventCreate(&start) == cudaSuccess &&
+             cudaEventCreate(&stop) == cudaSuccess;
+    }
+    for (int rep = 0; ok && rep < 3; ++rep) {
+        if (cudaEventRecord(start, s) != cudaSuccess ||
+            cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, s) !=
+                cudaSuccess ||
+            cudaEventRecord(stop, s) != cudaSuccess ||
+            cudaEventSynchronize(stop) != cudaSuccess) {
+            ok = false;
+            break;
+        }
+        float ms = 0.0f;
+        if (cudaEventElapsedTime(&ms, start, stop) != cudaSuccess || ms <= 0.0f) {
+            ok = false;
+            break;
+        }
+        // A D2D copy reads and writes `bytes`: count both directions.
+        const double gbs = 2.0 * static_cast<double>(bytes) /
+                           (static_cast<double>(ms) * 1e6);
+        if (gbs > best_gbs) best_gbs = gbs;
+    }
+    if (start != nullptr) cudaEventDestroy(start);
+    if (stop != nullptr) cudaEventDestroy(stop);
+    cudaStreamDestroy(s);
+    return ok ? best_gbs : 0.0;
+}
+
 } // namespace perf
 } // namespace lsxcommon

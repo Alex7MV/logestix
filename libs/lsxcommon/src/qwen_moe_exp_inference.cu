@@ -1557,8 +1557,8 @@ cudaError_t RunExpGeneration(
     std::vector<qwen_moe_exp::ExpQsaIndexerState> &qsa,
     const std::vector<qwen_moe_exp::ExpPleShardView> &ple_shards,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
-    qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
-    qwen::QwenKvCache *kv,
+    qwen::GenerationResult &result, lsxcommon::sample::ISampler &sampler,
+    qwen::KvCache *kv,
     const lsxcommon::GenerationStream *gs)
 {
     using namespace lsxcommon::qwen_moe_exp;
@@ -1579,7 +1579,7 @@ cudaError_t RunExpGeneration(
     const int HCH = H * hc;
     const int rotary_dim =
         static_cast<int>(HD * top.partial_rotary_factor);
-    result = qwen::QwenGenerationResult{};
+    result = qwen::GenerationResult{};
 
     if (H <= 0 || V <= 0 || prompt.empty() || max_new <= 0 || eos_id < 0 ||
         E <= 0 || K <= 0 || I <= 0 || SI <= 0 || !pw.embed.d_packed ||
@@ -1589,16 +1589,12 @@ cudaError_t RunExpGeneration(
     }
     const int max_seq = static_cast<int>(prompt.size()) + max_new;
 
-    // Shallow dense view for the reused KV cache machinery.
-    qwen::QwenPinnedWeights kv_view;
-    kv_view.top = top;
-    kv_view.layers.resize(pw.layers.size());
-    for (size_t l = 0; l < pw.layers.size(); ++l)
-        kv_view.layers[l] = pw.layers[l].attn;
     {
+        const attn::KvGeometry kv_geom = qwen::MakeKvGeometry(top);
         cudaError_t ce = kv->allocated()
-                             ? kv->EnsureCapacity(kv_view, kv->kv_rows + max_new, stream)
-                             : kv->Allocate(kv_view, max_seq, stream);
+                             ? kv->EnsureCapacity(kv_geom, kv->kv_rows + max_new,
+                                                  stream)
+                             : kv->Allocate(kv_geom, max_seq, stream);
         if (ce != cudaSuccess) {
             result.error_msg = "kv cache alloc failed";
             return ce;
@@ -1681,9 +1677,14 @@ cudaError_t RunExpGeneration(
         tc_splitk > 1
             ? ((static_cast<size_t>(tc_splitk) * K * 2 * I * 4 + 63) / 64) * 64
             : 64;
+    // Hoisted per-layer SwiGLU prequant: K*I FP32 products + 2*K alpha slots.
+    const size_t sw_batch_bytes =
+        ((static_cast<size_t>(K) * I + 2 * static_cast<size_t>(K)) *
+             sizeof(float) +
+         63) / 64 * 64;
     const size_t extra_bytes = xq_bytes + xqs_bytes + qpack_b_bytes +
                                qscales_b_bytes + gemv_tbl_bytes +
-                               tc_splitk_bytes;
+                               tc_splitk_bytes + sw_batch_bytes;
     const size_t half_bytes =
         ((half_elems * sizeof(__half)) + 255) & ~static_cast<size_t>(255);
     const size_t float_bytes =
@@ -1757,6 +1758,9 @@ cudaError_t RunExpGeneration(
                                                        qscales_b_bytes);
     float *d_tc_splitk = reinterpret_cast<float *>(
         reinterpret_cast<uint8_t *>(d_gemv_tbl) + gemv_tbl_bytes);
+    float *d_sw_batch = reinterpret_cast<float *>(
+        reinterpret_cast<uint8_t *>(d_tc_splitk) + tc_splitk_bytes);
+    float *d_alpha_batch = d_sw_batch + static_cast<size_t>(K) * I;
 
     int32_t *d_ids = nullptr, *d_pos = nullptr, *d_argmax = nullptr,
             *d_tokens = nullptr;
@@ -2123,6 +2127,8 @@ cudaError_t RunExpGeneration(
             // Routed accumulation runs acc += coeff * y2 per expert; the fp32
             // accumulator must be zeroed per layer (the arena is persistent).
             cudaMemsetAsync(d_moe_acc, 0, sizeof(float) * H, stream);
+            const moe::MoERoutedTcScratch tc_scratch{
+                d_qpack_b, d_qscales_b, d_sw_batch, d_alpha_batch};
             const uint8_t *shared_xq = nullptr, *shared_xqs = nullptr;
             static const bool no_ffn_sbatch =
                 std::getenv("LSX_EXP_FFN_NOSBATCH") != nullptr;
@@ -2171,7 +2177,9 @@ cudaError_t RunExpGeneration(
                     e = moe::RunMoERoutedFFN(
                         stream, store, cache, l, h_slots, K, d_mixed, H, I,
                         d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
-                        copy_stream ? ev_uploads : nullptr, ev_front);
+                        copy_stream ? ev_uploads : nullptr, ev_front, nullptr,
+                        nullptr, nullptr, nullptr, d_ygu_batch, d_h_batch,
+                        d_yp_batch, d_gemv_tbl, nullptr, &tc_scratch);
                     if (e != cudaSuccess) {
                         result.error_msg =
                             "experts l" + std::to_string(l) + ": " + ffn_err;
@@ -2182,7 +2190,9 @@ cudaError_t RunExpGeneration(
                 e = moe::RunMoERoutedFFN(
                     stream, store, cache, l, h_slots, K, d_mixed, H, I,
                     d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
-                    copy_stream ? ev_uploads : nullptr, ev_front);
+                    copy_stream ? ev_uploads : nullptr, ev_front, nullptr,
+                    nullptr, nullptr, nullptr, d_ygu_batch, d_h_batch,
+                    d_yp_batch, d_gemv_tbl, nullptr, &tc_scratch);
                 if (e != cudaSuccess) {
                     result.error_msg = "experts l" + std::to_string(l) +
                                        " kb" + std::to_string(kv_base) + " mt" +

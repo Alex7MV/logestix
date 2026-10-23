@@ -359,6 +359,9 @@ TEST_CASE("perf registry: every baseline entry has a measuring TEST_CASE",
         PerfCaseModels(ReadAll(root + "/tests/test_perf_baseline.cpp"));
     std::vector<std::string> orphans;
     for (const auto &m : baselines) {
+        // The environment probe is a synthetic row (no model, no TEST_CASE);
+        // it is maintained by test_perf_baseline's probe protocol instead.
+        if (m == "__gpu_probe__") continue;
         // The case names a display stem (e.g. "glm-5.3-flash"), which is a
         // prefix-stable match: every model_type in the table appears verbatim
         // inside some case name.
@@ -424,3 +427,26 @@ TEST_CASE("perf registry: every perf TEST_CASE has a registered ctest target",
     INFO("perf target drift:\n" << joined);
     REQUIRE(unwired.empty());
 }
+
+TEST_CASE("environment attribution needs the probe to explain the loss",
+          "[perf-baseline][logic]")
+{
+    using lsxcommon::perf_baseline::AttributeDegrade;
+    using lsxcommon::perf_baseline::PerfCause;
+    // No probe -> no oracle -> a code regression.
+    CHECK(AttributeDegrade(0.90, 0.0) == PerfCause::kCode);
+    // Probe nominal -> the model's loss is code.
+    CHECK(AttributeDegrade(0.90, 1.00) == PerfCause::kCode);
+    // Probe down as much as the model -> environment.
+    CHECK(AttributeDegrade(0.90, 0.89) == PerfCause::kEnvironment);
+    CHECK(AttributeDegrade(0.96, 0.95) == PerfCause::kEnvironment);
+    // Probe down but NOT enough to explain the model -> code (the oracle must
+    // never mask a regression).
+    CHECK(AttributeDegrade(0.85, 0.96) == PerfCause::kCode);
+    CHECK(AttributeDegrade(0.80, 0.90) == PerfCause::kCode);
+    // A probe inside noise (>= 97%) is not an environment signal on its own.
+    CHECK(AttributeDegrade(0.94, 0.975) == PerfCause::kCode);
+    // A large probe loss always explains a smaller model loss.
+    CHECK(AttributeDegrade(0.97, 0.80) == PerfCause::kEnvironment);
+}
+

@@ -375,6 +375,11 @@ void FreeMistralSession(MistralSession &s)
     drop(s.d_yg);
     drop(s.d_yu);
     drop(s.d_y2);
+    drop(s.d_ygu_batch);
+    drop(s.d_qpack_b);
+    drop(s.d_qscales_b);
+    drop(s.d_sw_batch);
+    drop(s.d_alpha_batch);
     drop(s.d_slots);
     // h_slots is page-locked (cudaMallocHost), so it must not go through
     // cudaFree: that returned cudaErrorInvalidValue on every teardown.
@@ -407,6 +412,11 @@ void FreeMistralSession(MistralSession &s)
     s.d_yg = nullptr;
     s.d_yu = nullptr;
     s.d_y2 = nullptr;
+    s.d_ygu_batch = nullptr;
+    s.d_qpack_b = nullptr;
+    s.d_qscales_b = nullptr;
+    s.d_sw_batch = nullptr;
+    s.d_alpha_batch = nullptr;
     s.d_slots = nullptr;
     s.h_slots = nullptr;
     s.d_scores = nullptr;
@@ -472,6 +482,18 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_yu),
                      dims.moe_inter * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_y2), H * sizeof(__half)));
+    const int K = dims.top_k;
+    const int I = dims.moe_inter;
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_ygu_batch),
+                     static_cast<size_t>(K) * 2 * I * sizeof(__half)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_qpack_b),
+                     static_cast<size_t>(K) * (I / 2)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_qscales_b),
+                     static_cast<size_t>(K) * ((I + 15) / 16)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_sw_batch),
+                     static_cast<size_t>(K) * I * sizeof(float)));
+    MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_alpha_batch),
+                     2 * static_cast<size_t>(K) * sizeof(float)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_slots),
                      dims.top_k * sizeof(lsxcommon::moe::MoERoutedSlot)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_scores),
@@ -758,9 +780,13 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
         MISTRAL_LAUNCH(f32_copy_kernel<<<grid(H), t256, 0, stream>>>(
             s.d_h, s.d_moe_acc, H));
         std::string moe_error;
+        const lsxcommon::moe::MoERoutedTcScratch tc_scratch{
+            s.d_qpack_b, s.d_qscales_b, s.d_sw_batch, s.d_alpha_batch};
         MISTRAL_CK(lsxcommon::moe::RunMoERoutedFFN(
             stream, pw.expert_store, s.cache, l, s.h_slots, K, s.d_post, H, I,
-            s.d_moe_acc, s.d_yg, s.d_yu, s.d_y2, moe_error));
+            s.d_moe_acc, s.d_yg, s.d_yu, s.d_y2, moe_error, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, s.d_ygu_batch,
+            nullptr, nullptr, nullptr, nullptr, &tc_scratch));
         // Shared expert (UNGATED: added directly, unlike Qwen/Ornith).
         MISTRAL_CK(MistralSharedExpert(stream, lw.shared_gate, lw.shared_up,
                                       lw.shared_down, s.d_post, s.d_shared,

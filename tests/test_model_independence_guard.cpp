@@ -642,6 +642,41 @@ TEST_CASE("KV cache layout goes through the shared geometry", "[guard][fast]")
     CHECK(violations.empty());
 }
 
+TEST_CASE("every family threads the request sampling policy",
+          "[independence]")
+{
+    // E4 was "temperature/top_p accepted and silently ignored". The fix is
+    // only as good as its coverage, so this scans every model TU that defines
+    // Infer(const ModelRequest&) and requires it to derive its sampler from
+    // req.sampling -- directly, or through the one shared RunInferShared path
+    // (qwen MoE / nemotron), which is checked to do it.
+    int checked = 0;
+    for (const auto &entry : fs::directory_iterator(kSrcDir)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".cpp")
+            continue;
+        const std::string text = ReadFile(entry.path());
+        if (text.find("::Infer(const ModelRequest &req)") == std::string::npos)
+            continue;
+        const bool direct =
+            text.find("SamplerFor(req.sampling)") != std::string::npos;
+        const bool delegated =
+            text.find("RunInferShared(req)") != std::string::npos;
+        INFO(entry.path().filename()
+             << " must sample from req.sampling (directly or via the shared "
+                "RunInferShared)");
+        REQUIRE((direct || delegated));
+        ++checked;
+    }
+    INFO("scanned " << checked << " Infer definitions");
+    REQUIRE(checked >= 20);
+
+    for (const char *base : {"qwen_moe_model.cpp", "nemotron_moe_model.cpp"}) {
+        const std::string text = ReadFile(kSrcDir / base);
+        INFO(base << " is a RunInferShared base and must thread req.sampling");
+        REQUIRE(text.find("SamplerFor(req.sampling)") != std::string::npos);
+    }
+}
+
 TEST_CASE("perf layer is model-neutral (no family stem)", "[independence][perf]")
 {
     // gpu_perf / perf_calibration are model-neutral infrastructure
@@ -715,7 +750,6 @@ TEST_CASE("the attention kernel layer is model-neutral in name and deps",
     static const char *kAllowed[] = {
         "QwenTcFastMath",  "SetQwenTcFastMath", "QwenSeq1Gemv",
         "SetQwenSeq1Gemv", "QwenGemmLarge",     "QwenGemmLargeActive",
-        "QwenKvCache",     "QwenGenerationResult",
             "QwenFastMathScope"};
 
     for (const fs::path &p : {hdr, cu}) {

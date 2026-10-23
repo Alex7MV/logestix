@@ -115,17 +115,17 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
             kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
         if (!session.is_continuation) {
             kv_.reset();
-            kv_ = std::make_unique<qwen::QwenKvCache>();
+            kv_ = std::make_unique<qwen::KvCache>();
             session_tail_.clear();
         }
 
-        qwen::QwenGenerationResult gen;
+        qwen::GenerationResult gen;
         const int eos_id = (req.ignore_eos || !tok_db_)
                                ? lsxcommon::kIgnoreEosTokenId
                                : tok_db_->eos_id;
         const cudaError_t e = qwen::RunQwenGeneration(
             st, pw_, session.gen_input, req.max_gen_tokens, eos_id, gen,
-            lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
+            lsxcommon::sample::SamplerFor(req.sampling), kv_.get(), &gs);
         if (e != cudaSuccess) {
             r.error_msg = runtime::CombineGenError(e, gen.error_msg);
             r.ok = false;

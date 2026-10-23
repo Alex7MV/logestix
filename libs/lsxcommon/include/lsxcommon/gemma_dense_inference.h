@@ -26,6 +26,7 @@
 #include "lsxcommon/gemma_dense_load.h"
 #include "lsxcommon/lsx_kv_cache.h"
 #include "lsxcommon/token_stream.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon {
 namespace gemma_dense {
@@ -169,6 +170,7 @@ cudaError_t RunGemmaDenseGeneration(
     const std::vector<std::int32_t> &input_ids, int max_gen_tokens,
     const std::vector<int> &eos_ids, GemmaDenseGenerationResult &out,
     GemmaDenseKvCache &kv, GemmaDenseGenContext *ctx = nullptr,
+    lsxcommon::sample::ISampler &sampler = lsxcommon::sample::DefaultSampler(),
     const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace gemma_dense

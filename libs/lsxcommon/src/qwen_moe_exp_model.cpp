@@ -247,7 +247,7 @@ gpu::InferenceResult Qwen38FlashNextModel::Infer(const ModelRequest &req)
         r.error_msg = "topology not parsed";
         return r;
     }
-    qwen::QwenGenerationResult gen;
+    qwen::GenerationResult gen;
     lsxcommon::GenerationStream gs;
     gs.on_token = req.token_callback ? &req.token_callback : nullptr;
     gs.abort_flag = req.abort_flag;
@@ -266,13 +266,13 @@ gpu::InferenceResult Qwen38FlashNextModel::Infer(const ModelRequest &req)
             req.input_ids);
         if (!session.is_continuation) {
             kv_.reset();
-            kv_ = std::make_unique<qwen::QwenKvCache>();
+            kv_ = std::make_unique<qwen::KvCache>();
             session_tail_.clear();
         }
         const cudaError_t ge = qwen_moe_exp::RunExpGeneration(
             stream(), pw_, experts_, cache_, ple_state_, qsa_, ple_shards_,
             session.gen_input, req.max_gen_tokens, eos_id, gen,
-            lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
+            lsxcommon::sample::SamplerFor(req.sampling), kv_.get(), &gs);
         if (ge != cudaSuccess || !gen.ok) {
             kv_.reset();
             session_tail_.clear();

@@ -2539,6 +2539,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                                int max_gen_tokens, const std::vector<int> &eos_ids,
                                float softcap, GemmaGenerationResult &out,
                                GemmaKvCache &kv, GemmaGenContext *ctx,
+                               lsxcommon::sample::ISampler &sampler,
                                const lsxcommon::GenerationStream *gs)
 {
     out = GemmaGenerationResult{};
@@ -2676,11 +2677,23 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         g_expert_db = nullptr;
         return e;
     }
-    e = cudaMemcpyAsync(ws.h_arg, ws.d_argmax, 4, cudaMemcpyDeviceToHost,
-                        stream);
-    if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
-    e = cudaStreamSynchronize(stream);
-    if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
+    {
+        int32_t sampled = -1;
+        float sampled_maxv = 0.0f;
+        if (!sampler.IsGreedy()) {
+            const cudaError_t se = lsxcommon::sample::SampleToHost(
+                stream, sampler, ws.d_logits, static_cast<int>(V),
+                lsxcommon::sample::LogitType::kF32, &sampled, &sampled_maxv);
+            if (se != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return se; }
+            ws.h_arg[0] = sampled;
+        } else {
+            e = cudaMemcpyAsync(ws.h_arg, ws.d_argmax, 4,
+                                cudaMemcpyDeviceToHost, stream);
+            if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
+            e = cudaStreamSynchronize(stream);
+            if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
+        }
+    }
     const double ttft_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t0)
@@ -2747,11 +2760,21 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                                      ws.d_logits, ws.d_lg_best,
                                      ws.d_lg_idx);
         if (e != cudaSuccess) break;
-        e = cudaMemcpyAsync(ws.h_arg, ws.d_argmax, 4, cudaMemcpyDeviceToHost,
-                            stream);
-        if (e != cudaSuccess) break;
-        e = cudaStreamSynchronize(stream);
-        if (e != cudaSuccess) break;
+        if (!sampler.IsGreedy()) {
+            int32_t sampled = -1;
+            float sampled_maxv = 0.0f;
+            e = lsxcommon::sample::SampleToHost(
+                stream, sampler, ws.d_logits, static_cast<int>(V),
+                lsxcommon::sample::LogitType::kF32, &sampled, &sampled_maxv);
+            if (e != cudaSuccess) break;
+            ws.h_arg[0] = sampled;
+        } else {
+            e = cudaMemcpyAsync(ws.h_arg, ws.d_argmax, 4,
+                                cudaMemcpyDeviceToHost, stream);
+            if (e != cudaSuccess) break;
+            e = cudaStreamSynchronize(stream);
+            if (e != cudaSuccess) break;
+        }
         tok = ws.h_arg[0];
         out.tokens.push_back(tok);
         if (gs)

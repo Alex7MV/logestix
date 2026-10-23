@@ -84,5 +84,17 @@ PerfVerdict JudgePerfLen(const std::optional<double> &baseline,
                          double actual, int actual_len, int baseline_len,
                          double tolerance_pct = 3.0);
 
+// Why a measurement read below its reference. The model does not certify its
+// own environment, so a second, model-independent instrument decides: a fixed
+// device-to-device copy probe tracks the card's thermal/power state. A degraded
+// model reading is attributed to the environment only when the probe is ALSO
+// down (below kProbeDegradeRatio) by at least the model's own loss; anything
+// else stays a code regression, so the oracle can never mask one.
+enum class PerfCause { kCode, kEnvironment };
+
+inline constexpr double kProbeDegradeRatio = 0.97;
+
+PerfCause AttributeDegrade(double model_ratio, double probe_ratio);
+
 } // namespace perf_baseline
 } // namespace lsxcommon

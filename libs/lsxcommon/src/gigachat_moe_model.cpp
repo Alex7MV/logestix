@@ -244,6 +244,7 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
         cudaEventRecord(ev.first, stream());
 
         const int eos = idx_.eos_token_id;
+        auto &sampler = sample::SamplerFor(req.sampling);
         int generated = 0;
         for (int step = 0; step < req.max_gen_tokens; ++step)
         {
@@ -259,6 +260,16 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
             int next = 0;
             for (size_t i = 1; i < logits.size(); ++i)
                 if (logits[i] > logits[static_cast<size_t>(next)]) next = static_cast<int>(i);
+            if (!sampler.IsGreedy()) {
+                float sampled_maxv = 0.0f;
+                const cudaError_t se = sample::SampleToHost(
+                    stream(), sampler, d_logits_, static_cast<int>(logits.size()),
+                    sample::LogitType::kF32, &next, &sampled_maxv);
+                if (se != cudaSuccess) {
+                    r.error_msg = "sampling failed";
+                    return r;
+                }
+            }
             r.gen_tokens.push_back(next);
             ++generated;
             if (step == 0)

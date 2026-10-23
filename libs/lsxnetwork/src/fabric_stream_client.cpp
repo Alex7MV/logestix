@@ -41,10 +41,11 @@ int FabricStreamClient::Connect(const char* endpoint,
 
 bool FabricStreamClient::Submit(std::uint32_t request_id,
                                 std::span<const std::int32_t> input_ids,
-                                std::uint32_t max_gen) {
+                                std::uint32_t max_gen,
+                                const RequestSampling &sampling) {
     if (!Connected()) return false;
     const std::vector<std::byte> frame =
-        EncodeFabricRequest(request_id, input_ids, max_gen);
+        EncodeFabricRequest(request_id, input_ids, max_gen, sampling);
     return dealer_->Send(frame.data(), frame.size(), 0) ==
            static_cast<int>(frame.size());
 }

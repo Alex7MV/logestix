@@ -32,7 +32,8 @@ public:
 
     /// Sends the request frame. Returns false on transport error.
     bool Submit(std::uint32_t request_id,
-                std::span<const std::int32_t> input_ids, std::uint32_t max_gen);
+                std::span<const std::int32_t> input_ids, std::uint32_t max_gen,
+                const RequestSampling &sampling = {});
 
     /// Receives the next stream frame. kTimeout means no frame within
     /// @p timeout_ms; kMalformed means the frame failed to decode.

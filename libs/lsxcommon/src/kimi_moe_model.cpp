@@ -111,6 +111,7 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
                                        req.input_ids, req.max_gen_tokens,
                                        gen, &expert_cache_,
                                        req.ignore_eos ? lsxcommon::kIgnoreEosTokenId : Tokenizer().eos_id, fast_math,
+                                       lsxcommon::sample::SamplerFor(req.sampling),
                                        &gs);
     });
     if (err != cudaSuccess || !gen.ok) {

@@ -154,7 +154,7 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
         return glm::RunGlmRealGeneration(stream(), pw_, experts_,
                                          req.input_ids, req.max_gen_tokens,
                                          gen,
-                                         lsxcommon::sample::DefaultSampler(),
+                                         lsxcommon::sample::SamplerFor(req.sampling),
                                          &gs);
     });
     if (err != cudaSuccess || !gen.ok) {

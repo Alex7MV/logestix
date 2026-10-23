@@ -163,7 +163,7 @@ gpu::InferenceResult Gemma4_31BDenseModel::Infer(const ModelRequest &req)
         gemma_dense::GemmaDenseGenerationResult gen;
         const cudaError_t ge = gemma_dense::RunGemmaDenseGeneration(
             st, pw_, req.input_ids, req.max_gen_tokens, eos_ids, gen, *kv_,
-            gen_ctx_, &gs);
+            gen_ctx_, sample::SamplerFor(req.sampling), &gs);
         if (ge != cudaSuccess || !gen.ok) {
             lsxcommon::log::error(
                 "[gemma-dense-model] RunGemmaDenseGeneration rc=" +

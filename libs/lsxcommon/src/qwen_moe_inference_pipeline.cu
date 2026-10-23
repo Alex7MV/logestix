@@ -95,8 +95,8 @@ cudaError_t RunQwenMoeGeneration(
     lsxcommon::moe::MoEExpertStore &store, QwenMoeExpertDeviceCache &cache,
     QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
-    qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
-    qwen::QwenKvCache *kv,
+    qwen::GenerationResult &result, lsxcommon::sample::ISampler &sampler,
+    qwen::KvCache *kv,
     const lsxcommon::GenerationStream *gs)
 {
     if (!kv)
@@ -121,7 +121,7 @@ cudaError_t RunQwenMoeGeneration(
     const int I = pw.moe_top.moe_intermediate_size;
     const int SI = pw.moe_top.shared_expert_intermediate_size;
     const int rotary_dim = static_cast<int>(HD * top.partial_rotary_factor);
-    result = qwen::QwenGenerationResult{};
+    result = qwen::GenerationResult{};
 
     if (H <= 0 || V <= 0 || prompt.empty() || max_new <= 0 || eos_id < 0 ||
         E <= 0 || K <= 0 || K > moe::kMaxTopK || I <= 0 || SI <= 0 ||
@@ -131,17 +131,12 @@ cudaError_t RunQwenMoeGeneration(
     }
     const int max_seq = static_cast<int>(prompt.size()) + max_new;
 
-    // KV cache via a shallow dense view (dims/pointers only).
-    qwen::QwenPinnedWeights kv_view;
-    kv_view.top = top;
-    kv_view.layers.resize(pw.layers.size());
-    for (size_t l = 0; l < pw.layers.size(); ++l)
-        kv_view.layers[l] = pw.layers[static_cast<size_t>(l)].attn;
     {
+        const attn::KvGeometry kv_geom = qwen::MakeKvGeometry(top);
         cudaError_t ce = kv->allocated()
-                             ? kv->EnsureCapacity(kv_view, kv->kv_rows + max_new,
+                             ? kv->EnsureCapacity(kv_geom, kv->kv_rows + max_new,
                                                   stream)
-                             : kv->Allocate(kv_view, max_seq, stream);
+                             : kv->Allocate(kv_geom, max_seq, stream);
         if (ce != cudaSuccess) {
             result.error_msg = "kv cache alloc failed";
             return ce;
@@ -187,6 +182,8 @@ cudaError_t RunQwenMoeGeneration(
         (size_t)1,              // d_maxv_scratch
         (size_t)max_seq * H,    // d_moe_acc
         (size_t)1,              // d_gate_val
+        (size_t)moe::kMaxTopK * I,          // d_sw_batch (hoisted prequant)
+        (size_t)2 * moe::kMaxTopK,          // d_alpha_batch
     };
     size_t half_bytes = 0;
     for (auto s : half_sz) half_bytes += ((s + 7) / 8) * 8 * sizeof(__half);
@@ -271,7 +268,9 @@ cudaError_t RunQwenMoeGeneration(
     float *d_betaf = pf; pf += float_sz[1];
     float *d_maxv_scratch = pf; pf += float_sz[2];
     float *d_moe_acc = pf; pf += float_sz[3];
-    float *d_gate_val = pf;
+    float *d_gate_val = pf; pf += float_sz[4];
+    float *d_sw_batch = pf; pf += float_sz[5];
+    float *d_alpha_batch = pf;
     uint8_t *d_qpack_scratch =
         reinterpret_cast<uint8_t *>(base) + half_bytes + float_bytes;
     uint8_t *d_qscales_scratch = d_qpack_scratch + qpack_bytes;
@@ -518,6 +517,8 @@ cudaError_t RunQwenMoeGeneration(
                     return fail(cudaGetLastError(), "actquant l" +
                                                         std::to_string(l));
             }
+            const moe::MoERoutedTcScratch tc_scratch{
+                d_qpack_b, d_qscales_b, d_sw_batch, d_alpha_batch};
             bool skip_shared = false;
             if (tc_batch) {
                 // ── Batched TC routed chain (device table, no host
@@ -613,7 +614,8 @@ cudaError_t RunQwenMoeGeneration(
                                         ev_front, xq, xqs,
                                         d_qpack_scratch,
                                         d_qscales_scratch, d_ygu_batch,
-                                        d_h_batch, d_yp_batch, d_gemv_tbl);
+                                        d_h_batch, d_yp_batch, d_gemv_tbl,
+                                        nullptr, &tc_scratch);
             }
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);

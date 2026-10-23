@@ -37,6 +37,16 @@ double PeakBandwidthGbs(const GpuPerfProfile &g);
 // "nvidia geforce " prefixes stripped.
 std::string GpuProfileKey(const GpuPerfProfile &g);
 
+// Real achievable device-to-device copy bandwidth (read + write), GB/s,
+// measured on a fixed 512 MiB buffer (deliberately larger than the
+// 96 MB L2, so it is DRAM-bound; one warmup + best of three). This is the
+// perf baseline's ENVIRONMENT oracle: it depends only on the card's current
+// thermal/power state, so it can separate "the room is warm" from "the code
+// regressed" without the model certifying itself. Returns 0 when the probe
+// cannot run (no CUDA / allocation failure); callers must treat 0 as "no
+// oracle", never as a pass.
+double MeasureMemoryBandwidthGbs(int mib = 512);
+
 // ── Tuning knobs (per-GPU performance policy) ───────────────────────────────
 
 struct LsxPerfKnobs {

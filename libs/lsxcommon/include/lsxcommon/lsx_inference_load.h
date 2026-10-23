@@ -94,5 +94,18 @@ struct AttnGeometry {
     double rope_theta = 1e7;
 };
 
+// Geometry of a hybrid linear+full KV session. Explicit scalars, not a model
+// passport: the cache is neutral state and must not pull a family header.
+struct KvGeometry {
+    int num_full_layers = 0;
+    int num_linear_layers = 0;
+    int num_key_value_heads = 0;
+    int head_dim = 0;
+    int linear_num_key_heads = 0;
+    int linear_key_head_dim = 0;
+    int linear_num_value_heads = 0;
+    int linear_value_head_dim = 0;
+};
+
 } // namespace attn
 } // namespace lsxcommon

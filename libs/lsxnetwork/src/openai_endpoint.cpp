@@ -150,6 +150,24 @@ simdjson::error_code OpenAiEndpoint::ParseChatRequest(const char* data,
     else if (mt.error() != simdjson::NO_SUCH_FIELD)
         return mt.error();
 
+    if (auto tv = root["temperature"].get_double();
+        tv.error() == simdjson::SUCCESS)
+        out.sampling.temperature = static_cast<float>(tv.value_unsafe());
+    else if (tv.error() != simdjson::NO_SUCH_FIELD)
+        return tv.error();
+    if (auto pv = root["top_p"].get_double(); pv.error() == simdjson::SUCCESS)
+        out.sampling.top_p = static_cast<float>(pv.value_unsafe());
+    else if (pv.error() != simdjson::NO_SUCH_FIELD)
+        return pv.error();
+    if (auto kv = root["top_k"].get_int64(); kv.error() == simdjson::SUCCESS)
+        out.sampling.top_k = static_cast<std::int32_t>(kv.value_unsafe());
+    else if (kv.error() != simdjson::NO_SUCH_FIELD)
+        return kv.error();
+    if (auto sv = root["seed"].get_int64(); sv.error() == simdjson::SUCCESS)
+        out.sampling.seed = static_cast<std::uint64_t>(sv.value_unsafe());
+    else if (sv.error() != simdjson::NO_SUCH_FIELD)
+        return sv.error();
+
     simdjson::ondemand::object so;
     if (auto e = root["stream_options"].get_object().get(so)) {
         if (e != simdjson::NO_SUCH_FIELD) return e;

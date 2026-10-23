@@ -24,141 +24,6 @@
 namespace lsxcommon {
 namespace qwen {
 
-// ── QwenKvCache (spec item 15: persistent incremental session state) ───────
-// Buffers are per-layer-sliced: full-attention layers own [max_total][NKV*HD]
-// k/v halves; linear layers own [max_total][KD*2+VD] raw qkv history halves
-// (feed for the causal conv1d) plus a [nv*vd*kd] float GatedDeltaNet col
-// accumulator. Allocate() sets up a fresh session (kv_rows == 0, col zeroed);
-// EnsureCapacity() grows geometrically and preserves the written rows.
-
-cudaError_t QwenKvCache::Allocate(const QwenPinnedWeights &pw, int max_total_in,
-                                  cudaStream_t stream)
-{
-    Free();
-    const QwenTopology &top = pw.top;
-    const int NKV = top.num_key_value_heads, HD = top.head_dim;
-    const int nk = top.linear_num_key_heads, kd = top.linear_key_head_dim;
-    const int nv = top.linear_num_value_heads, vd = top.linear_value_head_dim;
-    const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
-
-    num_full_layers = 0;
-    num_linear_layers = 0;
-    for (const auto &lw : pw.layers) {
-        if (lw.is_linear) ++num_linear_layers;
-        else ++num_full_layers;
-    }
-    if (max_total_in <= 0 || num_full_layers <= 0 || num_linear_layers <= 0)
-        return cudaErrorInvalidValue;
-
-    max_total = max_total_in;
-    const size_t kvk_bytes =
-        (size_t)num_full_layers * (size_t)max_total * NKV * HD * sizeof(__half);
-    const size_t kvv_bytes = kvk_bytes;
-    const size_t qkv_bytes =
-        (size_t)num_linear_layers * (size_t)max_total * S * sizeof(__half);
-    const size_t col_bytes =
-        (size_t)num_linear_layers * (size_t)nv * vd * kd * sizeof(float);
-
-    if (cudaMalloc(&d_kv_k, kvk_bytes) != cudaSuccess)
-        return cudaErrorMemoryAllocation;
-    if (cudaMalloc(&d_kv_v, kvv_bytes) != cudaSuccess) { Free(); return cudaErrorMemoryAllocation; }
-    if (cudaMalloc(&d_qkv, qkv_bytes) != cudaSuccess)   { Free(); return cudaErrorMemoryAllocation; }
-    if (cudaMalloc(&d_col, col_bytes) != cudaSuccess)   { Free(); return cudaErrorMemoryAllocation; }
-    if (cudaMemsetAsync(d_col, 0, col_bytes, stream) != cudaSuccess) {
-        Free(); return cudaErrorInvalidValue;
-    }
-    kv_rows = 0;
-    last_tok = -1;
-    cache_bytes = (int64_t)(kvk_bytes + kvv_bytes + qkv_bytes + col_bytes);
-    return cudaSuccess;
-}
-
-cudaError_t QwenKvCache::EnsureCapacity(const QwenPinnedWeights &pw, int needed,
-                                        cudaStream_t stream)
-{
-    if (needed <= max_total) return cudaSuccess;
-    if (max_total <= 0) return cudaErrorInvalidValue;
-    const QwenTopology &top = pw.top;
-    const int NKV = top.num_key_value_heads, HD = top.head_dim;
-    const int nk = top.linear_num_key_heads, kd = top.linear_key_head_dim;
-    const int nv = top.linear_num_value_heads, vd = top.linear_value_head_dim;
-    const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
-
-    const int new_max = std::max(2 * max_total, needed);
-    const size_t kvk_bytes =
-        (size_t)num_full_layers * (size_t)new_max * NKV * HD * sizeof(__half);
-    const size_t kvv_bytes = kvk_bytes;
-    const size_t qkv_bytes =
-        (size_t)num_linear_layers * (size_t)new_max * S * sizeof(__half);
-    const size_t col_bytes =
-        (size_t)num_linear_layers * (size_t)nv * vd * kd * sizeof(float);
-
-    __half *n_k = nullptr, *n_v = nullptr, *n_q = nullptr;
-    float *n_c = nullptr;
-    if (cudaMalloc(&n_k, kvk_bytes) != cudaSuccess) return cudaErrorMemoryAllocation;
-    if (cudaMalloc(&n_v, kvv_bytes) != cudaSuccess) { cudaFree(n_k); return cudaErrorMemoryAllocation; }
-    if (cudaMalloc(&n_q, qkv_bytes) != cudaSuccess) { cudaFree(n_k); cudaFree(n_v); return cudaErrorMemoryAllocation; }
-    if (cudaMalloc(&n_c, col_bytes) != cudaSuccess) {
-        cudaFree(n_k); cudaFree(n_v); cudaFree(n_q);
-        return cudaErrorMemoryAllocation;
-    }
-
-    // Preserve the written rows [0..kv_rows) per layer (col state is row-free).
-    const size_t row_k = (size_t)NKV * HD * sizeof(__half);
-    const size_t row_q = (size_t)S * sizeof(__half);
-    for (int li = 0; li < num_full_layers; ++li) {
-        cudaMemcpyAsync(n_k + (size_t)li * new_max * NKV * HD,
-                        d_kv_k + (size_t)li * max_total * NKV * HD,
-                        (size_t)kv_rows * row_k, cudaMemcpyDeviceToDevice, stream);
-        cudaMemcpyAsync(n_v + (size_t)li * new_max * NKV * HD,
-                        d_kv_v + (size_t)li * max_total * NKV * HD,
-                        (size_t)kv_rows * row_k, cudaMemcpyDeviceToDevice, stream);
-    }
-    for (int li = 0; li < num_linear_layers; ++li) {
-        cudaMemcpyAsync(n_q + (size_t)li * new_max * S,
-                        d_qkv + (size_t)li * max_total * S,
-                        (size_t)kv_rows * row_q, cudaMemcpyDeviceToDevice, stream);
-    }
-    cudaMemcpyAsync(n_c, d_col, col_bytes, cudaMemcpyDeviceToDevice, stream);
-
-    // Drain the copy stream before freeing the old buffers so no in-flight
-    // D2D read outlives its source allocation.
-    if (cudaStreamSynchronize(stream) != cudaSuccess) {
-        cudaFree(n_k); cudaFree(n_v); cudaFree(n_q); cudaFree(n_c);
-        return cudaErrorInvalidValue;
-    }
-
-    cudaFree(d_kv_k);
-    cudaFree(d_kv_v);
-    cudaFree(d_qkv);
-    cudaFree(d_col);
-    d_kv_k = n_k;
-    d_kv_v = n_v;
-    d_qkv = n_q;
-    d_col = n_c;
-    max_total = new_max;
-    cache_bytes = (int64_t)(kvk_bytes + kvv_bytes + qkv_bytes + col_bytes);
-    return cudaSuccess;
-}
-
-void QwenKvCache::Free()
-{
-    cudaFree(d_kv_k);
-    cudaFree(d_kv_v);
-    cudaFree(d_qkv);
-    cudaFree(d_col);
-    d_kv_k = nullptr;
-    d_kv_v = nullptr;
-    d_qkv = nullptr;
-    d_col = nullptr;
-    kv_rows = 0;
-    last_tok = -1;
-    max_total = 0;
-    num_full_layers = 0;
-    num_linear_layers = 0;
-    cache_bytes = 0;
-}
-
 // ── Generation loop ─────────────────────────────────────────────────────────
 // Greedy argmax over the last row of the logits matrix [seq, V] is delegated to
 // the injected lsxcommon::sample::ISampler (kF16), replacing the former fused
@@ -168,9 +33,9 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                               const QwenPinnedWeights &pw,
                               const std::vector<int32_t> &prompt, int max_new,
                               int eos_id,
-                              QwenGenerationResult &result,
+                              GenerationResult &result,
                               lsxcommon::sample::ISampler &sampler,
-                              QwenKvCache *kv,
+                              KvCache *kv,
                               const lsxcommon::GenerationStream *gs)
 {
     const QwenTopology &top = pw.top;
@@ -182,7 +47,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
     const int V = top.vocab_size;
     const int rotary_dim = (int)(HD * top.partial_rotary_factor);
-    result = QwenGenerationResult{};
+    result = GenerationResult{};
     if (H <= 0 || I <= 0 || V <= 0 || prompt.empty() || max_new <= 0) {
         result.error_msg = "invalid generation inputs";
         return cudaErrorInvalidValue;
@@ -205,10 +70,11 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     const bool is_incr = (kv != nullptr);
     if (is_incr) {
         cudaError_t ce;
+        const attn::KvGeometry kv_geom = MakeKvGeometry(top);
         if (!kv->allocated())
-            ce = kv->Allocate(pw, max_seq, stream);
+            ce = kv->Allocate(kv_geom, max_seq, stream);
         else
-            ce = kv->EnsureCapacity(pw, kv->kv_rows + max_new, stream);
+            ce = kv->EnsureCapacity(kv_geom, kv->kv_rows + max_new, stream);
         if (ce != cudaSuccess) {
             result.error_msg = "kv cache alloc failed";
             return ce;

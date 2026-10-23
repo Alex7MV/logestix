@@ -165,8 +165,7 @@ gpu::InferenceResult Glm5NextFlashModel::Infer(const ModelRequest &req)
     // last-constructed model's fast_math across the registry).
     const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
 
-    qwen::QwenGenerationResult gen;
-    sample::GreedySampler greedy;
+    qwen::GenerationResult gen;
     lsxcommon::GenerationStream gs;
     gs.on_token = req.token_callback ? &req.token_callback : nullptr;
     gs.abort_flag = req.abort_flag;
@@ -175,7 +174,7 @@ gpu::InferenceResult Glm5NextFlashModel::Infer(const ModelRequest &req)
             req.ignore_eos ? std::vector<int>{lsxcommon::kIgnoreEosTokenId} : pw_.top.eos_ids;
         return glm_moe_flash::RunGlmFlashGeneration(
             stream(), pw_, experts_, cache_, req.input_ids, req.max_gen_tokens,
-            eos_ids, gen, greedy, &gs);
+            eos_ids, gen, sample::SamplerFor(req.sampling), &gs);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(err, gen.error_msg);

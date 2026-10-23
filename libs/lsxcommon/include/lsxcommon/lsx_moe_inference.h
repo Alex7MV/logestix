@@ -157,6 +157,17 @@ struct alignas(8) MoEGvSlotDev {
     float coeff;
 };
 
+// Persistent scratch for the batched TC routed chain. When every pointer is
+// non-null and `ygu_batch` is supplied, the per-slot SwiGLU prequant is
+// hoisted: all K slots quantize in three launches per layer instead of three
+// per slot (bit-identical math, same per-slot alpha).
+struct MoERoutedTcScratch {
+    uint8_t *qpack = nullptr;    // [K][I/2] packed nibbles
+    uint8_t *qscales = nullptr;  // [K][ceil(I/16)] E4M3 block scales
+    float *sw_f32 = nullptr;     // [K][I] FP32 SwiGLU product
+    float *alpha = nullptr;      // [2][K] absmax / prescale per slot
+};
+
 // Processes one token's K routed slots (ascending-k deterministic fp32
 // accumulation): d_acc += coeff_k * FFN_eidk(x). Stages experts H2D on cache
 // misses via EnsureMoEExpertResident. Scratch: d_yg/d_yu [I], d_y2 [H].
@@ -193,7 +204,11 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream,
                                 // proof scalar SwiGLU: I floats for the FP32
                                 // product plus 2 floats for alpha/inv_alpha.
                                 // nullptr keeps the cudaMallocAsync fallback.
-                                float *d_swi_scratch = nullptr);
+                                float *d_swi_scratch = nullptr,
+                                // Optional batched-prequant scratch. Requires
+                                // ygu_batch (K*2I) and (I % 16) == 0; nullptr
+                                // keeps the per-slot path.
+                                const MoERoutedTcScratch *tc_scratch = nullptr);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunMoEAccToFp16(cudaStream_t stream, const float *d_acc,

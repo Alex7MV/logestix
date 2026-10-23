@@ -276,7 +276,7 @@ gpu::InferenceResult MistralSmall4MoeModel::Infer(const ModelRequest &req)
             return cudaSuccess;
         }
 
-        auto &sampler = sample::DefaultSampler();
+        auto &sampler = sample::SamplerFor(req.sampling);
         if (d_next_token_ == nullptr &&
             (cudaMalloc(reinterpret_cast<void **>(&d_next_token_),
                         sizeof(int32_t)) != cudaSuccess ||

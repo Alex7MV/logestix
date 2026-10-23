@@ -59,6 +59,20 @@ inline attn::AttnGeometry MakeAttnGeometry(const QwenTopology &top)
         .rope_theta = top.rope_theta};
 }
 
+inline attn::KvGeometry MakeKvGeometry(const QwenTopology &top)
+{
+    attn::KvGeometry g;
+    g.num_key_value_heads = top.num_key_value_heads;
+    g.head_dim = top.head_dim;
+    g.linear_num_key_heads = top.linear_num_key_heads;
+    g.linear_key_head_dim = top.linear_key_head_dim;
+    g.linear_num_value_heads = top.linear_num_value_heads;
+    g.linear_value_head_dim = top.linear_value_head_dim;
+    for (const auto &lt : top.layer_types)
+        (lt == "linear_attention" ? g.num_linear_layers : g.num_full_layers)++;
+    return g;
+}
+
 bool LoadQwenPinnedWeights(const std::string &output_root,
                            QwenPinnedWeights &pw, cudaStream_t stream);
 

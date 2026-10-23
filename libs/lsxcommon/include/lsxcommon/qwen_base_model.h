@@ -59,7 +59,7 @@ protected:
     // equal to the previous call's generated tail) resets the cache and runs a
     // full prefill+decode; a continuation request reuses it with prompt =
     // {kv_->last_tok}.
-    std::unique_ptr<qwen::QwenKvCache> kv_;
+    std::unique_ptr<qwen::KvCache> kv_;
     std::vector<int32_t> session_tail_;
 };
 

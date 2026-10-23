@@ -12,6 +12,54 @@
 #include "lsxcommon/token_stream.h"
 
 namespace lsxcommon {
+namespace attn {
+
+// Persistent per-session incremental KV cache for the hybrid
+// linear+full-attention decoders. Neutral: every dimension arrives as a
+// scalar through KvGeometry, so the cache is not tied to a model passport.
+// A non-null cache handed to a generation driver turns the loop into a
+// uniform one-token-per-step stream: fresh sessions allocate (kv_rows == 0),
+// later calls continue at kv_rows with prompt = {last_tok}. Full-attention
+// k/v rows live in [max_total][NKV*HD] buffers (one per full-attn layer);
+// linear-attention layers keep their raw qkv history [max_total][KD*2+VD]
+// (for the causal conv1d) plus the persistent GatedDeltaNet col accumulator
+// [nv*vd*kd] floats. Growth is handled by EnsureCapacity.
+struct KvCache {
+    __half *d_kv_k = nullptr;        // [num_full][max_total][NKV*HD]
+    __half *d_kv_v = nullptr;        // [num_full][max_total][NKV*HD]
+    __half *d_qkv = nullptr;         // [num_linear][max_total][KD*2+VD]
+    float  *d_col = nullptr;         // [num_linear][nv*vd*kd]  (zero-initialized)
+    int32_t last_tok = -1;
+    int kv_rows = 0;                 // rows written so far (== global pos base)
+    int max_total = 0;
+    int num_linear_layers = 0;
+    int num_full_layers = 0;
+    int64_t cache_bytes = 0;
+
+    bool allocated() const { return d_kv_k != nullptr; }
+    std::uint64_t Bytes() const { return static_cast<std::uint64_t>(cache_bytes); }
+
+    cudaError_t Allocate(const KvGeometry &geom, int max_total,
+                         cudaStream_t stream);
+    cudaError_t EnsureCapacity(const KvGeometry &geom, int needed,
+                               cudaStream_t stream);
+    void Free();
+};
+
+// Output of a neutral generation driver (token stream + last-row logits).
+struct GenerationResult {
+    bool ok = false;
+    std::string error_msg;
+    std::vector<int32_t> tokens;
+    int32_t first_token = -1;
+    std::vector<float> final_logits;
+    double ttft_ms = 0.0;
+    double total_ms = 0.0;
+    std::uint64_t resident_bytes = 0;
+    bool eos_terminated = false;
+};
+
+} // namespace attn
 namespace qwen {
 
 // Result of the shared incremental-session policy (model-unification 2026-08):
@@ -224,6 +272,16 @@ cudaError_t RunAttnSwigluPreciseQuantInternal(cudaStream_t stream,
 cudaError_t RunAttnSwigluPreScaledQuantInternal(
     cudaStream_t stream, const __half *a, const __half *b, float *sw_f32,
     __half *y, uint8_t *packed, uint8_t *scales, int64_t n, float *d_alpha);
+
+// Batched sibling used by the routed-MoE decode chain: quantizes all `slots`
+// SwiGLU rows in three launches instead of three per slot. @p ygu is
+// [slots][2*n] gate|up; on return each slot's gate half holds the prescaled
+// FP16 activation, @p packed / @p scales hold slot k at k*(n/2) /
+// k*ceil(n/16), and @p alpha holds absmax/alpha at 2k / 2k+1. Requires
+// n % 16 == 0 (the TC routed path already enforces it).
+cudaError_t RunAttnSwigluPreScaledQuantBatch(
+    cudaStream_t stream, __half *ygu, int slots, int64_t n, uint8_t *packed,
+    uint8_t *scales, float *sw_f32, float *alpha);
 
 // ── Generation ──────────────────────────────────────────────────────────────
 

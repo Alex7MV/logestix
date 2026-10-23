@@ -55,13 +55,15 @@ struct Admission {
 
 // Blocking (non-streaming) generation: returns true and fills `ids`/`eos`.
 bool RunBlocking(Backend& backend, const std::vector<std::int32_t>& input_ids,
-                 int max_tokens, int timeout_ms,
+                 int max_tokens, const lsxnetwork::RequestSampling& sampling,
+                 int timeout_ms,
                  std::vector<std::int32_t>& out_ids, bool& eos,
                  std::string& error) {
     std::unique_lock<std::mutex> lock(backend.Mutex());
     const std::uint32_t rid = backend.NextRequestId();
     if (!backend.Client().Submit(rid, input_ids,
-                                 static_cast<std::uint32_t>(max_tokens))) {
+                                 static_cast<std::uint32_t>(max_tokens),
+                                 sampling)) {
         backend.MarkDown();
         error = "backend submit failed";
         return false;
@@ -164,7 +166,8 @@ public:
     ChatStreamSource(Backend& backend, PromptFramer& framer,
                      std::string model_path, std::string id, std::string model,
                      std::vector<std::int32_t> input_ids, int max_tokens,
-                     int timeout_ms, bool include_usage, bool buffer_tools,
+                     lsxnetwork::RequestSampling sampling, int timeout_ms,
+                     bool include_usage, bool buffer_tools,
                      std::vector<std::string> stops)
         : backend_(backend),
           framer_(framer),
@@ -173,6 +176,7 @@ public:
           model_(std::move(model)),
           input_ids_(std::move(input_ids)),
           max_tokens_(max_tokens),
+          sampling_(sampling),
           timeout_ms_(timeout_ms),
           include_usage_(include_usage),
           buffer_tools_(buffer_tools),
@@ -193,7 +197,8 @@ public:
             if (!buffered_) decoder_ = framer_.MakeDecoder(model_path_);
             request_id_ = backend_.NextRequestId();
             if (!backend_.Client().Submit(request_id_, input_ids_,
-                                          static_cast<std::uint32_t>(max_tokens_))) {
+                                          static_cast<std::uint32_t>(max_tokens_),
+                                          sampling_)) {
                 backend_.MarkDown();
                 out = Finish("backend submit failed");
                 return true;
@@ -302,6 +307,7 @@ private:
     std::string model_;
     std::vector<std::int32_t> input_ids_;
     int max_tokens_;
+    lsxnetwork::RequestSampling sampling_;
     int timeout_ms_;
     bool include_usage_;
     bool buffer_tools_;
@@ -325,7 +331,8 @@ public:
                           std::string model_path, std::string id,
                           std::string model,
                           std::vector<std::int32_t> input_ids, int max_tokens,
-                          int timeout_ms, bool buffer_tools,
+                          lsxnetwork::RequestSampling sampling, int timeout_ms,
+                          bool buffer_tools,
                           std::vector<std::string> stops)
         : backend_(backend),
           framer_(framer),
@@ -334,6 +341,7 @@ public:
           model_(std::move(model)),
           input_ids_(std::move(input_ids)),
           max_tokens_(max_tokens),
+          sampling_(sampling),
           timeout_ms_(timeout_ms),
           buffer_tools_(buffer_tools),
           buffered_(buffer_tools || !stops.empty()),
@@ -352,7 +360,8 @@ public:
             if (!buffered_) decoder_ = framer_.MakeDecoder(model_path_);
             request_id_ = backend_.NextRequestId();
             if (!backend_.Client().Submit(request_id_, input_ids_,
-                                          static_cast<std::uint32_t>(max_tokens_))) {
+                                          static_cast<std::uint32_t>(max_tokens_),
+                                          sampling_)) {
                 out = FinishError("backend submit failed");
                 return true;
             }
@@ -471,6 +480,7 @@ private:
     std::string model_;
     std::vector<std::int32_t> input_ids_;
     int max_tokens_;
+    lsxnetwork::RequestSampling sampling_;
     int timeout_ms_;
     bool buffer_tools_;
     bool buffered_ = false;
@@ -633,7 +643,7 @@ void ChatBridge::RegisterRoutes() {
                 return std::make_unique<ChatStreamSource>(
                     *rt->backend, framer_, rt->cfg.model_path, "chatcmpl-bridge",
                     rt->cfg.id, std::move(input_ids), max_tokens,
-                    cfg_.request_timeout_ms, req.include_usage,
+                    req.sampling, cfg_.request_timeout_ms, req.include_usage,
                     ToolsRequested(req), req.stop);
             }
             Admission admission{*rt->backend, true};
@@ -641,7 +651,8 @@ void ChatBridge::RegisterRoutes() {
             bool eos = false;
             std::string error;
             if (!RunBlocking(*rt->backend, input_ids, max_tokens,
-                             cfg_.request_timeout_ms, out_ids, eos, error)) {
+                             req.sampling, cfg_.request_timeout_ms, out_ids,
+                             eos, error)) {
                 head.status = 502;
                 head.content_type = kJson;
                 head.body = lsxnetwork::BuildError(error, "server_error");
@@ -756,14 +767,16 @@ void ChatBridge::RegisterRoutes() {
                 return std::make_unique<AnthropicStreamSource>(
                     *rt->backend, framer_, rt->cfg.model_path, "msg-bridge",
                     rt->cfg.id, std::move(input_ids), max_tokens,
-                    cfg_.request_timeout_ms, buffer_tools, req.stop_sequences);
+                    req.sampling, cfg_.request_timeout_ms, buffer_tools,
+                    req.stop_sequences);
             }
             Admission admission{*rt->backend, true};
             std::vector<std::int32_t> out_ids;
             bool eos = false;
             std::string error;
             if (!RunBlocking(*rt->backend, input_ids, max_tokens,
-                             cfg_.request_timeout_ms, out_ids, eos, error)) {
+                             req.sampling, cfg_.request_timeout_ms, out_ids,
+                             eos, error)) {
                 head.status = 502;
                 head.content_type = kJson;
                 head.body = lsxnetwork::BuildAnthropicError(error, "api_error");
@@ -830,7 +843,8 @@ void ChatBridge::RegisterRoutes() {
         const int max_tokens =
             req.max_tokens > 0 ? req.max_tokens : cfg_.default_max_tokens;
         if (!RunBlocking(*rt->backend, input_ids, max_tokens,
-                         cfg_.request_timeout_ms, out_ids, eos, error)) {
+                         req.sampling, cfg_.request_timeout_ms, out_ids, eos,
+                         error)) {
             r.status = 502;
             r.body = lsxnetwork::BuildError(error, "server_error");
             return;

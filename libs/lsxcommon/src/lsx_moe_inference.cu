@@ -401,7 +401,8 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                                 __half *hbuf_batch,
                                 __half *ypart_batch,
                                 MoEGvSlotDev *d_gemv_tbl,
-                                float *d_swi_scratch)
+                                float *d_swi_scratch,
+                                const MoERoutedTcScratch *tc_scratch)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
@@ -494,6 +495,93 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
             return be;
         }
     }
+    // ── Hoisted TC chain (one prequant for all K slots) ─────────────────────
+    // Per-slot the tc_fused route is w13 + 3 prequant launches + down + fold;
+    // with caller-supplied scratch the prequant collapses to three launches
+    // for the whole layer. Same kernels, same per-slot alpha, same ascending
+    // fold order, so the result is bit-identical.
+    static const bool k_gemv_experts_b =
+        std::getenv("LSX_GEMV_EXPERTS") != nullptr;
+    // Escape hatch for bisection/measurement: LSX_MOE_TC_HOIST=0 keeps the
+    // per-slot prequant even when the scratch is supplied.
+    static const bool k_tc_hoist_off = [] {
+        const char *e = std::getenv("LSX_MOE_TC_HOIST");
+        return e != nullptr && std::atoi(e) == 0;
+    }();
+    const bool tc_hoist = !k_tc_hoist_off && tc_scratch && tc_scratch->qpack &&
+                          tc_scratch->qscales && tc_scratch->sw_f32 &&
+                          tc_scratch->alpha && ygu_batch && (I & 15) == 0 &&
+                          !k_gemv_experts_b && qwen::QwenTcFastMath() &&
+                          store.d_seg_wgs != nullptr;
+    if (tc_hoist) {
+        for (int k = 0; k < K; ++k) {
+            const int dev_slot = dev_slots[k];
+            const MoERoutedSlot &slot = h_slots[k];
+            const auto &rec = store.records[static_cast<size_t>(layer)]
+                                            [static_cast<size_t>(slot.eid)];
+            uint8_t *pack =
+                cache.d_pack + static_cast<int64_t>(dev_slot) * cache.pack_stride;
+            uint8_t *scale =
+                cache.d_scale + static_cast<int64_t>(dev_slot) * cache.scale_stride;
+            const uint8_t *w13 = pack;
+            const uint8_t *s13 = scale;
+            const float *seg_wgs =
+                store.d_seg_wgs +
+                (static_cast<int64_t>(layer) * store.num_experts + slot.eid) * 2;
+            if (copy_stream && missed[k]) {
+                cudaError_t e = cudaStreamWaitEvent(stream, ev_uploads[k], 0);
+                if (e != cudaSuccess) return e;
+            }
+            __half *dst = ygu_batch + static_cast<int64_t>(k) * 2 * I;
+            cudaError_t ge;
+            if (xq && xqs) {
+                ge = lsx_tc::RunLsxTcGemmPreQuant(
+                    stream, xq, xqs, w13, s13, 1.0f, dst, 1, H, 2 * I, false,
+                    seg_wgs, nullptr);
+            } else {
+                ge = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w13, s13, 1.0f,
+                                                dst, 1, H, 2 * I, false,
+                                                seg_wgs, nullptr);
+            }
+            if (ge != cudaSuccess) { error = "w13 gemm failed"; return ge; }
+        }
+        cudaError_t qe = qwen::RunAttnSwigluPreScaledQuantBatch(
+            stream, ygu_batch, K, I, tc_scratch->qpack, tc_scratch->qscales,
+            tc_scratch->sw_f32, tc_scratch->alpha);
+        if (qe != cudaSuccess) {
+            error = "batched w2 prequant failed";
+            return qe;
+        }
+        for (int k = 0; k < K; ++k) {
+            const int dev_slot = dev_slots[k];
+            const MoERoutedSlot &slot = h_slots[k];
+            const auto &rec = store.records[static_cast<size_t>(layer)]
+                                            [static_cast<size_t>(slot.eid)];
+            uint8_t *pack =
+                cache.d_pack + static_cast<int64_t>(dev_slot) * cache.pack_stride;
+            uint8_t *scale =
+                cache.d_scale + static_cast<int64_t>(dev_slot) * cache.scale_stride;
+            const uint8_t *w2 = pack + rec.w1_bytes + rec.w3_bytes;
+            const uint8_t *s2 = scale + rec.s1_bytes + rec.s3_bytes;
+            const uint8_t *ap =
+                tc_scratch->qpack + static_cast<int64_t>(k) * (I / 2);
+            const uint8_t *as =
+                tc_scratch->qscales + static_cast<int64_t>(k) * (I / 16);
+            cudaError_t de = lsx_tc::RunLsxTcGemmPreQuant(
+                stream, ap, as, w2, s2, rec.gs2, d_y2, 1, I, H, false);
+            if (de == cudaSuccess) {
+                moe_coeff_add_scaled_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
+                    d_y2, slot.coeff, tc_scratch->alpha + 2 * k + 1, d_acc, H);
+                de = cudaGetLastError();
+            }
+            if (de != cudaSuccess) {
+                error = "w2 prequant gemm failed";
+                return de;
+            }
+        }
+        return cudaSuccess;
+    }
+
     if (copy_stream) {
         for (int k = 0; k < K; ++k) {
             if (!missed[k]) continue;

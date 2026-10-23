@@ -55,6 +55,13 @@ simdjson::error_code ParseAnthropicRequest(const char* data, std::size_t size,
         out.max_tokens = static_cast<int>(mt.value_unsafe());
     if (auto s = root["stream"].get_bool(); s.error() == simdjson::SUCCESS)
         out.stream = s.value_unsafe();
+    if (auto tv = root["temperature"].get_double();
+        tv.error() == simdjson::SUCCESS)
+        out.sampling.temperature = static_cast<float>(tv.value_unsafe());
+    if (auto pv = root["top_p"].get_double(); pv.error() == simdjson::SUCCESS)
+        out.sampling.top_p = static_cast<float>(pv.value_unsafe());
+    if (auto kv = root["top_k"].get_int64(); kv.error() == simdjson::SUCCESS)
+        out.sampling.top_k = static_cast<std::int32_t>(kv.value_unsafe());
 
     // system: string or block array.
     {

@@ -203,7 +203,7 @@ namespace {
 // Independent replica of the post-cache generation-context device footprint
 // (arena + KV) used as the sizing invariant oracle. Mirrors
 // qwen_moe_exp_inference.cu RunExpGeneration arena carving and
-// QwenKvCache::Allocate for the frozen qwen38 geometry.
+// KvCache::Allocate for the frozen qwen38 geometry.
 std::size_t OracleGenContextBytes(int seq)
 {
     using namespace lsxcommon::qwen_moe_exp::frozen;

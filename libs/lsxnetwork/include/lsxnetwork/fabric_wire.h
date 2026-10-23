@@ -10,7 +10,8 @@
 namespace lsxnetwork {
 
 /// v2 streaming wire protocol (little-endian, explicit byte-wise encoding):
-///   request    = 24-byte header + 4 * num_tokens bytes  (client -> server)
+///   request    = 40-byte v3 header + 4 * num_tokens bytes (client -> server)
+///                (a v2 24-byte request is still decoded: greedy, no sampling)
 ///   stream     = one message per frame, each: 16-byte header + body
 ///                token_batch: 16 + 4 * count bytes
 ///                done:        16 + 32 bytes
@@ -21,8 +22,12 @@ inline constexpr std::uint32_t kFabricCancelMagic = 0x4346584Cu;  // "LXFC" LE
 inline constexpr std::uint32_t kFabricPingMagic = 0x5046584Cu;    // "LXFP" LE
 inline constexpr std::uint32_t kFabricPongMagic = 0x5146584Cu;    // "LXFQ" LE
 inline constexpr std::uint16_t kFabricVersion = 2;
+// Request frames carry an optional sampling block, so they version separately
+// from the (unchanged) stream frames. v2 requests decode as greedy.
+inline constexpr std::uint16_t kFabricRequestVersion = 3;
 
-inline constexpr std::size_t kFabricRequestHeaderBytes = 24;
+inline constexpr std::size_t kFabricRequestHeaderBytes = 40;
+inline constexpr std::size_t kFabricRequestHeaderBytesV2 = 24;
 inline constexpr std::size_t kFabricStreamHeaderBytes = 16;
 inline constexpr std::size_t kFabricDoneTailBytes = 32;  // flags4+total4+3*f64
 inline constexpr std::size_t kFabricCancelBytes = 12;
@@ -43,10 +48,23 @@ enum class FabricFrameType : std::uint16_t {
     kError = 3,
 };
 
+/// Sampling block carried by a v3 request frame. temperature <= 0 means
+/// greedy; top_p/top_k are only consulted when temperature > 0.
+struct RequestSampling {
+    float temperature = 0.0f;
+    float top_p = 1.0f;
+    std::int32_t top_k = 0;
+    std::uint64_t seed = 0;
+
+    bool greedy() const { return !(temperature > 0.0f); }
+};
+
 /// Non-owning decoded request. `tokens` aliases the caller's frame buffer.
 struct FabricRequestView {
     std::uint32_t request_id = 0;
     std::uint32_t max_gen = 0;  // 0 => server default
+    // v2 frames decode as greedy (the numeric class the parity goldens pin).
+    RequestSampling sampling;
     std::span<const std::int32_t> tokens;
 };
 
@@ -64,9 +82,9 @@ struct FabricStreamFrame {
     std::string error;                 // kError
 };
 
-std::vector<std::byte> EncodeFabricRequest(std::uint32_t request_id,
-                                           std::span<const std::int32_t> tokens,
-                                           std::uint32_t max_gen);
+std::vector<std::byte> EncodeFabricRequest(
+    std::uint32_t request_id, std::span<const std::int32_t> tokens,
+    std::uint32_t max_gen, const RequestSampling &sampling = {});
 WireStatus DecodeFabricRequest(std::span<const std::byte> frame,
                                FabricRequestView& out);
 

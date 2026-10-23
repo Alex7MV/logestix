@@ -1128,6 +1128,7 @@ cudaError_t RunGemmaDenseGeneration(
     const std::vector<std::int32_t> &input_ids, int max_gen_tokens,
     const std::vector<int> &eos_ids, GemmaDenseGenerationResult &out,
     GemmaDenseKvCache &kv, GemmaDenseGenContext *ctx,
+    lsxcommon::sample::ISampler &sampler,
     const lsxcommon::GenerationStream *gs)
 {
     const auto t_start = std::chrono::steady_clock::now();
@@ -1228,6 +1229,10 @@ cudaError_t RunGemmaDenseGeneration(
         if (e == cudaSuccess) e = run_layers(seq, 0);
         std::int32_t tok = -1;
         if (e == cudaSuccess) e = SampleNext(stream, ws, pw, seq, softcap);
+        if (e == cudaSuccess && !sampler.IsGreedy())
+            e = sampler.Sample(stream, ws.logits, static_cast<int>(V),
+                               lsxcommon::sample::LogitType::kF32, ws.argmax,
+                               ws.maxv);
         if (e == cudaSuccess)
             e = cudaMemcpyAsync(&tok, ws.argmax, sizeof(std::int32_t),
                                 cudaMemcpyDeviceToHost, stream);
@@ -1267,6 +1272,10 @@ cudaError_t RunGemmaDenseGeneration(
         if (e == cudaSuccess) e = run_layers(1, pos_base);
         std::int32_t tok = -1;
         if (e == cudaSuccess) e = SampleNext(stream, ws, pw, 1, softcap);
+        if (e == cudaSuccess && !sampler.IsGreedy())
+            e = sampler.Sample(stream, ws.logits, static_cast<int>(V),
+                               lsxcommon::sample::LogitType::kF32, ws.argmax,
+                               ws.maxv);
         if (e == cudaSuccess)
             e = cudaMemcpyAsync(&tok, ws.argmax, sizeof(std::int32_t),
                                 cudaMemcpyDeviceToHost, stream);

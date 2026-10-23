@@ -1560,11 +1560,11 @@ cudaError_t RunGlmFlashGeneration(
     cudaStream_t stream, const FlashPinnedWeights &pw,
     lsxcommon::moe::MoEExpertStore &store, gpu::ExpertDeviceCache &cache,
     const std::vector<int32_t> &prompt, int max_new,
-    const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result,
+    const std::vector<int> &eos_ids, qwen::GenerationResult &result,
     sample::ISampler &sampler,
     const lsxcommon::GenerationStream *gs)
 {
-    result = qwen::QwenGenerationResult{};
+    result = qwen::GenerationResult{};
     using namespace frozen;
     const int H = kHidden;
     const int hc = kHcCount;

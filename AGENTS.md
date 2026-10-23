@@ -99,7 +99,12 @@ procedure — `perf-tuning-a-model`.
   `core.cpp` (logging/init), `schema.cpp` (ExpertSchema/PackedExpert),
   `converter.cpp` (GPU NVFP4 quantization), `tokenizer.cpp` +
   `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
-  `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, `token_stream.h`
+  `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp` (+ the 512 MiB
+  DRAM copy probe that is the perf baseline's environment oracle),
+  `sampling.{h,cu}` (`SamplingParams`; greedy by default, `SamplingSampler`
+  for temperature/top-k/top-p with an exact radix top-k and a counter-based
+  RNG, selected per request by `SamplerFor(req.sampling)`; every family must
+  thread it — `test_model_independence_guard` scans each `Infer`), `token_stream.h`
   (`GenerationStream`: CUDA-safe per-token callback + abort, threaded into every
   family generation loop; `Emit(token, step, logit_maxv)`. The shared lifecycle
   contract each family must wire — residency lock, streaming/abort, context
@@ -112,7 +117,8 @@ procedure — `perf-tuning-a-model`.
   `lsx_attn_inference.{h,cu}` (model-neutral **attention/MLP kernel** layer in
   `lsxcommon::attn` — full-attn + GatedDeltaNet hybrid, fused decode-attn/MLP,
   RMSNorm/RoPE/embed; its neutral weight bundle and geometry POD live in
-  `lsx_inference_load.h`; the qwen generation driver + KV session stay
+  `lsx_inference_load.h`, and `attn::KvCache`/`attn::GenerationResult` (with an
+  explicit `KvGeometry`) are the neutral session state; the qwen generation driver + KV session stay
   family-named in `qwen_dense_inference_pipeline.{h,cu}`; consumed by Qwen
   dense+MoE, Qwen MoE Exp, Ornith and Alice),
   `lsx_moe_inference.{h,cu}` (model-neutral **routed-MoE kernel** layer in
@@ -332,7 +338,9 @@ procedure — `perf-tuning-a-model`.
   `/v1/chat/completions` (+ `tools`/`tool_calls`, `stop`), `/v1/completions`,
   `/v1/models`, `/health`, `/ready`, and the Anthropic Messages API
   (`/v1/messages`, `/v1/messages/count_tokens`, `HEAD /api/hello`,
-  `stop_sequences`). Tool calling has verified native render/parse for
+  `stop_sequences`). Sampling fields (`temperature`/`top_p`/`top_k`/`seed`)
+  are forwarded on the v3 request frame; absent/zero keeps greedy, which is the
+  numeric class the parity goldens pin. Tool calling has verified native render/parse for
   Qwen3.5/3.6 (ChatML XML), GLM-5.3-Flash (`<|system|>` + `<arg_key>`),
   DeepSeek-V4/V4.1 (DSML; `deepseek_moe_tool_format.{h,cpp}`), Gemma-4
   (`<|tool_call>call:…`; `gemma_tool_format.{h,cpp}`), GigaChat-3.5
@@ -486,6 +494,11 @@ All speed work — decode-token profiling (nsys), TDD budget tests,
   the only numeric run flag is `--bit-exact` (lsxbenchmark), which maps
   to `FastMathMode::kOff`. `LSX_PERF_AUTO=0` restores the legacy bit-exact defaults,
   `LSX_TEST_FAST_MATH` forces TC. Tests that pin the numeric class set `kOff`.
+- `test_perf_baseline` measures a DRAM-bound copy probe once per target and
+  records it as a synthetic baseline entry (`__gpu_probe__`/`probe`); a
+  low model reading is reported as ENVIRONMENT (not failed) only when the probe
+  is also down by at least as much (`perf_baseline::AttributeDegrade`), so the
+  oracle cannot mask a code regression.
 - `gpu_perf` (`include/lsxcommon/gpu_perf.h`) resolves the knobs at `InitializeEngine`
   (TC fast-math, GEMV MiB limit, split-K threshold, % VRAM for the expert cache,
   dual-stream staging); the resolution priority and knob consumers are in the skill.

@@ -192,6 +192,10 @@ int FabricServer::Run(const std::string& endpoint,
                                   ? static_cast<int>(req.max_gen)
                                   : static_cast<int>(default_max_gen_);
         mreq.abort_flag = &abort;
+        mreq.sampling.temperature = req.sampling.temperature;
+        mreq.sampling.top_p = req.sampling.top_p;
+        mreq.sampling.top_k = req.sampling.top_k;
+        mreq.sampling.seed = req.sampling.seed;
         // Reuse one frame buffer across tokens (no per-token allocation) and
         // drop the stream if the consumer stalls.
         std::vector<std::byte> frame;

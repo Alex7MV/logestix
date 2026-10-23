@@ -13,8 +13,8 @@
 #include "lsxcommon/lsx_moe_inference.h"    // MoEExpertStore, kernel entry points
 #include "lsxcommon/ornith_moe_load.h"      // OrnithMoePinnedWeights
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
-#include "lsxcommon/lsx_attn_inference.h"       // QwenGenerationResult
-#include "lsxcommon/qwen_inference_load.h"  // QwenKvCache
+#include "lsxcommon/lsx_attn_inference.h"       // GenerationResult
+#include "lsxcommon/qwen_inference_load.h"  // KvCache
 #include "lsxcommon/sampling.h"             // ISampler
 #include "lsxcommon/token_stream.h"         // GenerationStream
 
@@ -47,8 +47,8 @@ cudaError_t RunOrnithMoeGeneration(
     moe::MoEExpertStore &store, OrnithMoeExpertDeviceCache &cache,
     OrnithMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
-    lsxcommon::qwen::QwenGenerationResult &result,
-    lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::QwenKvCache *kv,
+    lsxcommon::qwen::GenerationResult &result,
+    lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::KvCache *kv,
     const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace ornith

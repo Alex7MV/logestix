@@ -220,6 +220,7 @@ gpu::InferenceResult NemotronModelBase::RunInferShared(const ModelRequest &req)
         cudaEventRecord(ev.first, stream());
 
         const int eos = idx_.eos_token_id;
+        auto &sampler = sample::SamplerFor(req.sampling);
         int generated = 0;
         for (int step = 0; step < req.max_gen_tokens; ++step) {
             if (cudaMemcpyAsync(logits.data(), session_.head_logits,
@@ -230,7 +231,18 @@ gpu::InferenceResult NemotronModelBase::RunInferShared(const ModelRequest &req)
                 r.error_msg = "logits readback failed";
                 return r;
             }
-            const int next = ArgMaxHost(logits);
+            int next = ArgMaxHost(logits);
+            if (!sampler.IsGreedy()) {
+                float sampled_maxv = 0.0f;
+                const cudaError_t se = sample::SampleToHost(
+                    stream(), sampler, session_.head_logits,
+                    static_cast<int>(logits.size()),
+                    sample::LogitType::kF32, &next, &sampled_maxv);
+                if (se != cudaSuccess) {
+                    r.error_msg = "sampling failed";
+                    return r;
+                }
+            }
             r.gen_tokens.push_back(next);
             ++generated;
             if (step == 0) {

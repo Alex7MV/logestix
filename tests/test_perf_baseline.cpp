@@ -152,6 +152,60 @@ std::string TodayIso()
     return buf;
 }
 
+// The environment oracle lives in the same table as a synthetic entry, so the
+// committed JSON schema is unchanged: model_type "__gpu_probe__", mode
+// "probe", tokens_per_sec = GB/s. Like a model reference it only ratchets up.
+constexpr const char *kProbeModel = "__gpu_probe__";
+constexpr const char *kProbeMode = "probe";
+// The probe size is part of its protocol: a 64 MiB copy fits in the 96 MB L2
+// and measured 2165 GB/s (L2 speed), so only the DRAM-bound 512 MiB protocol
+// is comparable and an entry from another size is ignored.
+constexpr const char *kProbePrompt = "d2d-copy-512MiB";
+
+std::optional<double> ProbeReference(const pb::PerfBaselineTable &t,
+                                     const std::string &gpu_key)
+{
+    const pb::PerfBaselineEntry *e =
+        pb::FindEntry(t, kProbeModel, gpu_key, kThisOs, kProbeMode);
+    if (e == nullptr || e->prompt != kProbePrompt ||
+        !(e->tokens_per_sec > 0.0))
+        return std::nullopt;
+    return e->tokens_per_sec;
+}
+
+// Records an improved probe reading; a lower one is kept out of the reference
+// so the oracle stays an upper bound on what this card can do.
+void UpdateProbeReference(double gbs, const std::string &gpu_key)
+{
+    pb::PerfBaselineTable table = LoadTable();
+    const std::optional<double> ref = ProbeReference(table, gpu_key);
+    if (ref.has_value() && gbs <= *ref) return;
+    pb::PerfBaselineEntry upsert;
+    upsert.model_type = kProbeModel;
+    upsert.gpu_key = gpu_key;
+    upsert.os = kThisOs;
+    upsert.mode = kProbeMode;
+    upsert.tokens_per_sec = gbs;
+    upsert.max_gen = 0;
+    upsert.prompt = kProbePrompt;
+    upsert.date = TodayIso();
+    upsert.commit = "-";
+    bool replaced = false;
+    for (auto &e : table.entries) {
+        if (e.model_type == kProbeModel && e.gpu_key == gpu_key &&
+            e.os == kThisOs && e.mode == kProbeMode) {
+            e = upsert;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) table.entries.push_back(upsert);
+    table.format_version = pb::kPerfBaselineFormatVersion;
+    SaveTable(table);
+    INFO("gpu probe reference " << (replaced ? "updated" : "recorded") << " -> "
+                                << gbs << " GB/s");
+}
+
 // Measures one model; returns the lsxbenchmark-style t/s (the value is
 // computed by the model itself from its generation wall time) plus the
 // ACTUAL generated token count (EOS timing is part of the measurement
@@ -237,7 +291,8 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m,
 }
 
 void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
-                          const std::string &mode)
+                          const std::string &mode, double probe_gbs,
+                          std::optional<double> probe_ref)
 {
     pb::PerfBaselineTable table = LoadTable();
     const std::string gpu_key = lsxcommon::perf::GpuProfileKey(
@@ -258,15 +313,39 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
         pb::JudgePerfLen(baseline, actual, mr.gen_tokens, baseline_len);
 
     switch (verdict) {
-    case pb::PerfVerdict::kDegrade:
+    case pb::PerfVerdict::kDegrade: {
+        // The model cannot certify its own environment. Ask the independent
+        // copy-bandwidth probe first: if it is down at least as much as the
+        // model, this is a thermal/power state, not a code regression.
+        const double model_ratio = actual / *baseline;
+        const double probe_ratio =
+            (probe_ref.has_value() && *probe_ref > 0.0 && probe_gbs > 0.0)
+                ? probe_gbs / *probe_ref
+                : 0.0;
+        if (pb::AttributeDegrade(model_ratio, probe_ratio) ==
+            pb::PerfCause::kEnvironment) {
+            WARN(m.model_type
+                 << " [" << gpu_key << "/" << kThisOs << "/" << mode
+                 << "]: ENVIRONMENT (not a regression) baseline=" << *baseline
+                 << " t/s, actual=" << actual << " t/s ("
+                 << (100.0 * model_ratio) << "%), probe " << probe_gbs
+                 << " vs " << *probe_ref << " GB/s ("
+                 << (100.0 * probe_ratio) << "%). The card is in a lower "
+                    "power/thermal state; re-run when the probe is nominal.");
+            break;
+        }
         FAIL(m.model_type << " [" << gpu_key << "/" << kThisOs
                           << "]: DEGRADED baseline=" << *baseline
                           << " t/s, actual=" << actual
                           << " t/s (" << (100.0 * actual / *baseline)
                           << "%) at equal fact length " << mr.gen_tokens
                           << " tok. Root-cause the regression; the "
-                             "reference is not updated.");
+                             "reference is not updated."
+                          << " (probe " << probe_gbs << " vs "
+                          << (probe_ref.has_value() ? *probe_ref : 0.0)
+                          << " GB/s: the environment is not the cause)");
         break;
+    }
     case pb::PerfVerdict::kUpdate: {
         pb::PerfBaselineEntry upsert;
         upsert.model_type = m.model_type;
@@ -357,13 +436,22 @@ void RunPerfModel(const PerfModel &m)
     // Cool before the perf->r3 pair, but only when the model is present (an
     // absent vault SKIPs immediately — no point holding the GPU cool first).
     std::error_code ec;
-    if (fs::exists(ModelDir(m) / "logestix" / "model.index.json", ec))
-        CooldownBetweenTargets();
+    if (!fs::exists(ModelDir(m) / "logestix" / "model.index.json", ec))
+        return;
+    CooldownBetweenTargets();
+    // Environment oracle, measured once per target on the same cool card the
+    // model is about to run on.
+    const std::string gpu_key = lsxcommon::perf::GpuProfileKey(
+        lsxcommon::perf::ProbeGpuPerfProfile());
+    const double probe_gbs = lsxcommon::perf::MeasureMemoryBandwidthGbs();
+    const std::optional<double> probe_ref = ProbeReference(LoadTable(), gpu_key);
+    if (probe_gbs > 0.0) UpdateProbeReference(probe_gbs, gpu_key);
     // Two numeric modes, one mechanism: "perf" (kAuto) and "r3" (kOff,
     // bit-exact). Both are recorded in perf_baselines.json, keyed by mode.
     for (const char *mode : {"perf", "r3"}) {
         const auto actual = MeasureModel(m, mode);
-        if (actual.has_value()) CheckAgainstBaseline(m, *actual, mode);
+        if (actual.has_value())
+            CheckAgainstBaseline(m, *actual, mode, probe_gbs, probe_ref);
     }
 }
 

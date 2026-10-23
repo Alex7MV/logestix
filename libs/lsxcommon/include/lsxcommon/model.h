@@ -16,6 +16,7 @@
 #include "lsxcommon/fast_math_mode.h"  // FastMathMode
 #include "lsxcommon/lsx_kv_cache.h"    // KvCacheLayout / KvCacheGeometry
 #include "lsxcommon/token_stream.h"    // TokenChunk / TokenCallback / GenerationStream
+#include "lsxcommon/sampling.h"        // SamplingParams (opt-in sampling)
 #include "lsxcommon/chat_conversation.h"  // ChatConversation / ToolCall
 #include "lsxcommon/tool_format.h"     // generic Hermes render/parse
 
@@ -76,6 +77,9 @@ struct ModelRequest {
     // generation, the engine loop stops publishing new chunks and the decode
     // run aborts. Never dereferenced when null.
     const std::atomic<bool> *abort_flag = nullptr;
+    // Opt-in sampling. Default greedy (temperature 0), so every existing
+    // caller and every golden keeps the bit-exact argmax class.
+    sample::SamplingParams sampling;
 };
 
 class IModel {

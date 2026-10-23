@@ -579,6 +579,7 @@ gpu::InferenceResult MiMoV26FlashModel::Infer(const ModelRequest &req)
             if (!ForwardOne(t, pos, d_logits)) { r.error_msg = "forward failed"; return r; }
             ++pos;
         }
+        auto &sampler = sample::SamplerFor(req.sampling);
         auto argmax = [&]() {
             if (cudaMemcpyAsync(host_logits.data(), d_logits,
                                 static_cast<size_t>(topo_.vocab) * 4,
@@ -588,6 +589,13 @@ gpu::InferenceResult MiMoV26FlashModel::Infer(const ModelRequest &req)
             int best = 0;
             for (int i = 1; i < topo_.vocab; ++i)
                 if (host_logits[i] > host_logits[best]) best = i;
+            if (!sampler.IsGreedy()) {
+                float sampled_maxv = 0.0f;
+                if (sample::SampleToHost(st, sampler, d_logits, topo_.vocab,
+                                         sample::LogitType::kF32, &best,
+                                         &sampled_maxv) != cudaSuccess)
+                    return -1;
+            }
             return best;
         };
         int next = argmax();

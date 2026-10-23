@@ -163,8 +163,8 @@ cudaError_t RunExpGeneration(
     std::vector<ExpQsaIndexerState> &qsa,
     const std::vector<ExpPleShardView> &ple_shards,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
-    qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
-    qwen::QwenKvCache *kv,
+    qwen::GenerationResult &result, lsxcommon::sample::ISampler &sampler,
+    qwen::KvCache *kv,
     const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace lsxcommon::qwen_moe_exp

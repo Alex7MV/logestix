@@ -46,7 +46,7 @@ TEST_CASE("Qwen incremental KV cache is bit-identical to full recompute")
     const int max_new = 6;
 
     // Full-recompute baseline (kv == nullptr).
-    lsxcommon::qwen::QwenGenerationResult full;
+    lsxcommon::qwen::GenerationResult full;
     REQUIRE(lsxcommon::qwen::RunQwenGeneration(
                 st, pw, prompt, max_new, eos_id, full) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
@@ -54,8 +54,8 @@ TEST_CASE("Qwen incremental KV cache is bit-identical to full recompute")
     REQUIRE(full.tokens.size() == max_new);
 
     // Incremental session (kv != nullptr): same single call.
-    lsxcommon::qwen::QwenKvCache cache;
-    lsxcommon::qwen::QwenGenerationResult incr;
+    lsxcommon::qwen::KvCache cache;
+    lsxcommon::qwen::GenerationResult incr;
     REQUIRE(lsxcommon::qwen::RunQwenGeneration(
                 st, pw, prompt, max_new, eos_id, incr,
                 lsxcommon::sample::DefaultSampler(), &cache) == cudaSuccess);
@@ -74,8 +74,8 @@ TEST_CASE("Qwen incremental KV cache is bit-identical to full recompute")
     REQUIRE(cache.kv_rows == static_cast<int>(prompt.size()) + max_new - 1);
 
     // A continuation split (3 + 3) must reproduce the same 6-token prefix.
-    lsxcommon::qwen::QwenKvCache cache2;
-    lsxcommon::qwen::QwenGenerationResult a, b;
+    lsxcommon::qwen::KvCache cache2;
+    lsxcommon::qwen::GenerationResult a, b;
     REQUIRE(lsxcommon::qwen::RunQwenGeneration(
                 st, pw, prompt, 3, eos_id, a,
                 lsxcommon::sample::DefaultSampler(), &cache2) == cudaSuccess);

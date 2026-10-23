@@ -320,6 +320,8 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                                float softcap, GemmaGenerationResult &out,
                                GemmaKvCache &kv,
                                GemmaGenContext *ctx = nullptr,
+                               lsxcommon::sample::ISampler &sampler =
+                                   lsxcommon::sample::DefaultSampler(),
                                const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace gemma

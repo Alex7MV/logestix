@@ -129,7 +129,7 @@ gpu::InferenceResult Granite42_30BModel::Infer(const ModelRequest &req)
                                : tok_db_->eos_id;
         const cudaError_t e = granite::RunGraniteGeneration(
             st, pw_, gen_input, req.max_gen_tokens, eos_id, gen,
-            lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
+            lsxcommon::sample::SamplerFor(req.sampling), kv_.get(), &gs);
         if (e != cudaSuccess) {
             r.error_msg = runtime::CombineGenError(e, gen.error_msg);
             r.ok = false;

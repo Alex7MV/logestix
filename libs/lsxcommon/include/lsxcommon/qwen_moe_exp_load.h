@@ -185,7 +185,7 @@ bool LoadQwen4ExpPleShards(const std::string &model_path, ExpPinnedWeights &pw,
                            ExpPleShardView *shards, std::string &error);
 
 // Device bytes the qwen38 generation context allocates AFTER the expert
-// cache: KV history (QwenKvCache::Allocate) + the max_seq-scaled arena
+// cache: KV history (KvCache::Allocate) + the max_seq-scaled arena
 // (RunExpGeneration carving, incl. the two max_seq x V fp32 logits buffers).
 // Both grow linearly with the context, so the LRU sizing reserve must be a
 // function of the supported context, not a fixed constant (the model-neutral

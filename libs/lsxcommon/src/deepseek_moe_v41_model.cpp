@@ -95,7 +95,7 @@ gpu::InferenceResult DeepSeekV41FlashModel::Infer(const ModelRequest &req)
         return gpu::RunDeepSeekV41Inference(
             cfg_.model_path, req.input_ids, req.max_gen_tokens, tok_db_.get(),
             pw_,
-            expert_db_, lsxcommon::sample::DefaultSampler(), stream(),
+            expert_db_, lsxcommon::sample::SamplerFor(req.sampling), stream(),
             req.ignore_eos, &gs);
     });
 }

@@ -1333,7 +1333,7 @@ std::size_t GenContextBytes(int max_seq)
         ((float_per_tok * (std::size_t)max_seq + 1024) * sizeof(float) + 255) &
         ~(std::size_t)255;
 
-    // KV history (QwenKvCache::Allocate): full-attention k/v + linear qkv
+    // KV history (KvCache::Allocate): full-attention k/v + linear qkv
     // history scale with max_seq; the linear GDN column state does not.
     constexpr int kFull = kLayers / kFullAttnInterval;
     constexpr int kLin = kLayers - kFull;

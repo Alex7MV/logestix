@@ -46,7 +46,7 @@ private:
     std::vector<qwen_moe_exp::ExpPleShardView> ple_shards_;
     gpu::ExpertDeviceCache cache_{};
     qwen_moe_exp::ExpPleState ple_state_{};
-    std::unique_ptr<qwen::QwenKvCache> kv_;
+    std::unique_ptr<qwen::KvCache> kv_;
     std::vector<qwen_moe_exp::ExpQsaIndexerState> qsa_;
     std::vector<int32_t> session_tail_;
 };

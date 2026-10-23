@@ -62,17 +62,40 @@ WireStatus CheckStreamHeader(const std::byte* p, std::size_t size,
 
 }  // namespace
 
-std::vector<std::byte> EncodeFabricRequest(std::uint32_t request_id,
-                                           std::span<const std::int32_t> tokens,
-                                           std::uint32_t max_gen) {
+namespace {
+
+void PutF32(std::byte* p, float v) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &v, sizeof(bits));
+    PutU32(p, bits);
+}
+float GetF32(const std::byte* p) {
+    const std::uint32_t bits = GetU32(p);
+    float v = 0.0f;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
+}  // namespace
+
+std::vector<std::byte> EncodeFabricRequest(
+    std::uint32_t request_id, std::span<const std::int32_t> tokens,
+    std::uint32_t max_gen, const RequestSampling &sampling) {
     std::vector<std::byte> out(kFabricRequestHeaderBytes + tokens.size() * 4u);
     std::byte* p = out.data();
     PutU32(p + 0, kFabricMagic);
-    PutU16(p + 4, kFabricVersion);
+    PutU16(p + 4, kFabricRequestVersion);
     PutU16(p + 6, 0);
     PutU32(p + 8, request_id);
     PutU32(p + 12, max_gen);
     PutU32(p + 16, static_cast<std::uint32_t>(tokens.size()));
+    PutF32(p + 20, sampling.temperature);
+    PutF32(p + 24, sampling.top_p);
+    PutU32(p + 28, static_cast<std::uint32_t>(sampling.seed));
+    PutU32(p + 32, static_cast<std::uint32_t>(sampling.seed >> 32));
+    const std::int32_t k = sampling.top_k < 0 ? 0 : sampling.top_k;
+    PutU16(p + 36, static_cast<std::uint16_t>(k > 65535 ? 65535 : k));
+    PutU16(p + 38, 0);
     for (std::size_t i = 0; i < tokens.size(); ++i)
         PutI32(p + kFabricRequestHeaderBytes + i * 4u, tokens[i]);
     return out;
@@ -80,18 +103,36 @@ std::vector<std::byte> EncodeFabricRequest(std::uint32_t request_id,
 
 WireStatus DecodeFabricRequest(std::span<const std::byte> frame,
                                FabricRequestView& out) {
-    if (frame.size() < kFabricRequestHeaderBytes) return WireStatus::kTruncated;
+    if (frame.size() < kFabricRequestHeaderBytesV2)
+        return WireStatus::kTruncated;
     const std::byte* p = frame.data();
     if (GetU32(p) != kFabricMagic) return WireStatus::kBadMagic;
-    if (GetU16(p + 4) != kFabricVersion) return WireStatus::kBadVersion;
+    const std::uint16_t version = GetU16(p + 4);
+    std::size_t header = 0;
+    if (version == kFabricRequestVersion) {
+        header = kFabricRequestHeaderBytes;
+    } else if (version == kFabricVersion) {
+        header = kFabricRequestHeaderBytesV2;  // greedy request
+    } else {
+        return WireStatus::kBadVersion;
+    }
+    if (frame.size() < header) return WireStatus::kTruncated;
     const std::uint32_t n = GetU32(p + 16);
-    const std::size_t avail = frame.size() - kFabricRequestHeaderBytes;
+    const std::size_t avail = frame.size() - header;
     if (static_cast<std::size_t>(n) > avail / 4u) return WireStatus::kTruncated;
     if (static_cast<std::size_t>(n) * 4u != avail) return WireStatus::kTrailing;
     out.request_id = GetU32(p + 8);
     out.max_gen = GetU32(p + 12);
+    out.sampling = RequestSampling{};
+    if (version == kFabricRequestVersion) {
+        out.sampling.temperature = GetF32(p + 20);
+        out.sampling.top_p = GetF32(p + 24);
+        out.sampling.seed = static_cast<std::uint64_t>(GetU32(p + 28)) |
+                            (static_cast<std::uint64_t>(GetU32(p + 32)) << 32);
+        out.sampling.top_k = static_cast<std::int32_t>(GetU16(p + 36));
+    }
     out.tokens = std::span<const std::int32_t>(
-        reinterpret_cast<const std::int32_t*>(p + kFabricRequestHeaderBytes), n);
+        reinterpret_cast<const std::int32_t*>(p + header), n);
     return WireStatus::kOk;
 }
 

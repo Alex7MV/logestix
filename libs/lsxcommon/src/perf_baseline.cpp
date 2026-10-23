@@ -173,5 +173,14 @@ PerfVerdict JudgePerfLen(const std::optional<double> &baseline,
     return JudgePerf(baseline, actual, tolerance_pct);
 }
 
+PerfCause AttributeDegrade(double model_ratio, double probe_ratio)
+{
+    // No probe (0/absent) => no oracle => keep the code-regression verdict.
+    if (!(probe_ratio > 0.0)) return PerfCause::kCode;
+    if (probe_ratio < kProbeDegradeRatio && probe_ratio <= model_ratio + 0.01)
+        return PerfCause::kEnvironment;
+    return PerfCause::kCode;
+}
+
 } // namespace perf_baseline
 } // namespace lsxcommon

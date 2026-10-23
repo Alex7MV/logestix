@@ -98,6 +98,13 @@ struct MistralSession {
     __half *d_yg = nullptr;          // [moe_inter]
     __half *d_yu = nullptr;
     __half *d_y2 = nullptr;          // [hidden]
+    // Hoisted routed-MoE TC scratch (K slots): gate|up rows, packed nibbles,
+    // block scales, FP32 SwiGLU products and per-slot alpha.
+    __half *d_ygu_batch = nullptr;   // [top_k][2*moe_inter]
+    uint8_t *d_qpack_b = nullptr;    // [top_k][moe_inter/2]
+    uint8_t *d_qscales_b = nullptr;  // [top_k][ceil(moe_inter/16)]
+    float *d_sw_batch = nullptr;     // [top_k][moe_inter]
+    float *d_alpha_batch = nullptr;  // [2*top_k]
     lsxcommon::moe::MoERoutedSlot *d_slots = nullptr;  // [top_k]
     lsxcommon::moe::MoERoutedSlot *h_slots = nullptr;  // [top_k] pinned
     float *d_scores = nullptr;       // [heads * capacity] attention scratch

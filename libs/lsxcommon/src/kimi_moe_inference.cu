@@ -1623,6 +1623,7 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
                               int max_gen_tokens, KimiGenerationResult &gen,
                               KimiExpertCacheState *cache, int eos_id,
                               bool fast_math,
+                              lsxcommon::sample::ISampler &sampler,
                               const lsxcommon::GenerationStream *gs)
 {
     gen = {};
@@ -1917,8 +1918,18 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
                                gemv::LxDtype::kBF16, alpha, d_logits,
                                gemv::LxDtype::kF32, beta0) != cudaSuccess)
             return cudaGetLastError();
-        kimi_argmax_kernel<<<1, kRouterMaxBlock, 0, stream>>>(
-            d_logits, kKimiVocab, d_best, d_bestv);
+        if (sampler.IsGreedy()) {
+            kimi_argmax_kernel<<<1, kRouterMaxBlock, 0, stream>>>(
+                d_logits, kKimiVocab, d_best, d_bestv);
+        } else {
+            const cudaError_t se = sampler.Sample(
+                stream, d_logits, kKimiVocab,
+                lsxcommon::sample::LogitType::kF32, d_best, d_bestv);
+            if (se != cudaSuccess) {
+                gen.error_msg = "sampling failed";
+                return se;
+            }
+        }
         if (step == 0) cudaEventRecord(ev_ttft, stream);
 
         // Device-side decode PARKED (Round 25b determinism gate, re-confirmed

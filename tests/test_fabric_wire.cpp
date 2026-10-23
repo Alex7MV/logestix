@@ -15,16 +15,63 @@ std::span<const std::byte> AsBytes(const std::vector<std::byte>& v) {
 }
 }  // namespace
 
-TEST_CASE("fabric_wire v2: request round-trip", "[fabric][wire][v2]") {
+TEST_CASE("fabric_wire v3: request round-trip with sampling",
+          "[fabric][wire][v3]") {
     const std::vector<std::int32_t> ids{7, 8, 9, 10};
-    const auto enc = EncodeFabricRequest(42u, ids, 16u);
+    RequestSampling sampling;
+    sampling.temperature = 0.7f;
+    sampling.top_p = 0.9f;
+    sampling.top_k = 40;
+    sampling.seed = 0x1234'5678'9ABCull;
+    const auto enc = EncodeFabricRequest(42u, ids, 16u, sampling);
     CHECK(enc.size() == kFabricRequestHeaderBytes + 16u);
     FabricRequestView view;
     REQUIRE(DecodeFabricRequest(AsBytes(enc), view) == WireStatus::kOk);
     CHECK(view.request_id == 42u);
     CHECK(view.max_gen == 16u);
+    CHECK(view.sampling.temperature == 0.7f);
+    CHECK(view.sampling.top_p == 0.9f);
+    CHECK(view.sampling.top_k == 40);
+    CHECK(view.sampling.seed == 0x1234'5678'9ABCull);
     REQUIRE(view.tokens.size() == 4u);
     CHECK(view.tokens[3] == 10);
+}
+
+TEST_CASE("fabric_wire v3: default request is greedy", "[fabric][wire][v3]") {
+    const auto enc = EncodeFabricRequest(1u, std::vector<std::int32_t>{5}, 1u);
+    FabricRequestView view;
+    REQUIRE(DecodeFabricRequest(AsBytes(enc), view) == WireStatus::kOk);
+    CHECK(view.sampling.greedy());
+    CHECK(view.sampling.temperature == 0.0f);
+    CHECK(view.sampling.top_p == 1.0f);
+    CHECK(view.sampling.top_k == 0);
+}
+
+TEST_CASE("fabric_wire: a v2 request still decodes as greedy",
+          "[fabric][wire][v2]") {
+    // Hand-built v2 frame: 24-byte header, magic/version 2/reqid/maxgen/ntok.
+    const std::vector<std::int32_t> ids{11, 12};
+    std::vector<std::byte> frame(kFabricRequestHeaderBytesV2 + 8u,
+                                 std::byte{0});
+    auto put = [&](std::size_t at, std::uint32_t v) {
+        for (int i = 0; i < 4; ++i)
+            frame[at + static_cast<std::size_t>(i)] =
+                static_cast<std::byte>((v >> (8 * i)) & 0xFFu);
+    };
+    put(0, kFabricMagic);
+    frame[4] = std::byte{static_cast<unsigned char>(kFabricVersion)};
+    frame[5] = std::byte{0};
+    put(8, 77u);
+    put(12, 3u);
+    put(16, 2u);
+    put(kFabricRequestHeaderBytesV2, 11u);
+    put(kFabricRequestHeaderBytesV2 + 4u, 12u);
+    FabricRequestView view;
+    REQUIRE(DecodeFabricRequest(AsBytes(frame), view) == WireStatus::kOk);
+    CHECK(view.request_id == 77u);
+    CHECK(view.sampling.greedy());
+    REQUIRE(view.tokens.size() == 2u);
+    CHECK(view.tokens[1] == 12);
 }
 
 TEST_CASE("fabric_wire v2: request rejects bad magic/version/trailing",
@@ -124,7 +171,7 @@ TEST_CASE("fabric_wire v2: ping/pong round-trip and separation",
     // A ping must not decode as a pong (distinct magic).
     CHECK(DecodeFabricPong(AsBytes(EncodeFabricPing(1u)), nonce) ==
           WireStatus::kBadMagic);
-    // Nor as a request (too short for the 24-byte request header) or a cancel.
+    // Nor as a request (too short for the v2 request header) or a cancel.
     FabricRequestView rv;
     CHECK(DecodeFabricRequest(AsBytes(EncodeFabricPing(1u)), rv) ==
           WireStatus::kTruncated);

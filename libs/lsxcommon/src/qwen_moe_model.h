@@ -70,7 +70,7 @@ protected:
     moe::MoEExpertStore experts_;
     qwen_moe::QwenMoeExpertDeviceCache cache_{};
     qwen_moe::QwenMoeGenScratch scratch_{};
-    std::unique_ptr<qwen::QwenKvCache> kv_;
+    std::unique_ptr<qwen::KvCache> kv_;
     std::vector<int32_t> session_tail_;
 };
 

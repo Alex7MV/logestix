@@ -235,8 +235,8 @@ bool QwenMoeModelBase::Load()
     // kernel's first-launch overhead land on Load instead of the measured
     // TTFT (one-time ~40-80 ms otherwise paid inside the first Infer).
     {
-        auto kv = std::make_unique<qwen::QwenKvCache>();
-        qwen::QwenGenerationResult warm;
+        auto kv = std::make_unique<qwen::KvCache>();
+        qwen::GenerationResult warm;
         lsxcommon::sample::ISampler &warm_sampler =
             lsxcommon::sample::DefaultSampler();
         const std::vector<int32_t> warm_prompt = {0};
@@ -272,7 +272,7 @@ gpu::InferenceResult QwenMoeModelBase::RunInferShared(const ModelRequest &req)
         return r;
     }
 
-    qwen::QwenGenerationResult gen;
+    qwen::GenerationResult gen;
     lsxcommon::GenerationStream gs;
     gs.on_token = req.token_callback ? &req.token_callback : nullptr;
     gs.abort_flag = req.abort_flag;
@@ -291,13 +291,13 @@ gpu::InferenceResult QwenMoeModelBase::RunInferShared(const ModelRequest &req)
             kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
         if (!session.is_continuation) {
             kv_.reset();
-            kv_ = std::make_unique<qwen::QwenKvCache>();
+            kv_ = std::make_unique<qwen::KvCache>();
             session_tail_.clear();
         }
         const cudaError_t ge = qwen_moe::RunQwenMoeGeneration(
             stream(), pw_, experts_, cache_, scratch_, session.gen_input,
             req.max_gen_tokens, eos_id, gen,
-            lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
+            lsxcommon::sample::SamplerFor(req.sampling), kv_.get(), &gs);
         // Uniform failure contract (GLM/Kimi parity): both a CUDA error and a
         // family-level generation failure abort the request and drop the
         // session.

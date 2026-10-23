@@ -98,7 +98,7 @@ gpu::InferenceResult AliceFoundation80BModel::Infer(const ModelRequest &req)
     auto ec = RunUnderResidencyLock([&]() {
         return alice::RunAliceGeneration(stream(), pw_, *experts_, req.input_ids,
                                          req.max_gen_tokens, eos_id, gen,
-                                         sample::DefaultSampler(), &gs);
+                                         sample::SamplerFor(req.sampling), &gs);
     });
     if (ec != cudaSuccess || !gen.ok) {
         r.error_msg = gen.error_msg.empty() ? "alice cuda error" : gen.error_msg;

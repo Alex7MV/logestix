@@ -1163,6 +1163,102 @@ cudaError_t RunAttnSwigluPreScaledQuantInternal(
     return cudaGetLastError();
 }
 
+// Batched routed-MoE prequant: all K slots in three launches (one alpha
+// clear + absmax + quantize) instead of three per slot. Requires
+// n % 16 == 0, which the TC routed path already enforces.
+__global__ void swiglu_f32_absmax_batch_kernel(
+    const __half *__restrict__ ygu, float *__restrict__ sw_f32,
+    float *__restrict__ alpha, int64_t n, int slots)
+{
+    const int64_t total = static_cast<int64_t>(slots) * n;
+    const int64_t base =
+        (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 16;
+    if (base >= total) return;
+    const int64_t slot = base / n;
+    const int64_t in_slot = base - slot * n;
+    const __half *a = ygu + slot * 2 * n;
+    const __half *b = a + n;
+    float *dst = sw_f32 + slot * n + in_slot;
+    float *am = alpha + 2 * slot;
+    for (int i = 0; i < 16; ++i) {
+        const float g = __half2float(a[in_slot + i]);
+        const float u = __half2float(b[in_slot + i]);
+        const float sig = __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-g)));
+        const float sw = __fmul_rn(sig, __fmul_rn(g, u));
+        dst[i] = sw;
+        atomicMax(reinterpret_cast<int *>(am), __float_as_int(fabsf(sw)));
+    }
+}
+
+__global__ void swiglu_quant_prescaled_batch_kernel(
+    __half *__restrict__ ygu, const float *__restrict__ sw_f32,
+    uint8_t *__restrict__ packed, uint8_t *__restrict__ scales,
+    float *__restrict__ alpha, int64_t n, int slots)
+{
+    const int64_t total = static_cast<int64_t>(slots) * n;
+    const int64_t base =
+        (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 16;
+    if (base >= total) return;
+    const int64_t slot = base / n;
+    const int64_t in_slot = base - slot * n;
+    // Slot-private alpha: slot 2k holds the absmax, 2k+1 the prescale. Every
+    // block of a slot publishes the same value (idempotent write, no race
+    // with the readers because they touch slot 2k, not 2k+1).
+    float *am = alpha + 2 * slot;
+    const float prescale = SwigluPrescaleAlpha(*am);
+    const float inv_prescale = 1.0f / prescale;
+    // Every block of a slot publishes the same bits (idempotent); gating on
+    // threadIdx == 0 alone would skip slots that start mid-block.
+    am[1] = prescale;
+    const float *src = sw_f32 + slot * n + in_slot;
+    __half *out = ygu + slot * 2 * n + in_slot;
+    const int64_t groups_per_slot = n / 16;
+    const int64_t group = in_slot / 16;
+
+    float vals[16];
+    float absmax = 0.0f;
+    for (int i = 0; i < 16; ++i) {
+        const float v = src[i] * inv_prescale;
+        vals[i] = v;
+        out[i] = __float2half(v);
+        absmax = fmaxf(absmax, fabsf(v));
+    }
+    const uint8_t sb = lsxcommon::nvfp4::FloatToE4m3(absmax * (1.0f / 6.0f));
+    scales[slot * groups_per_slot + group] = sb;
+    const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
+    const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
+    const int64_t pack_base = slot * (n / 2) + in_slot / 2;
+    for (int i = 0; i < 16; i += 2) {
+        const uint8_t lo =
+            lsxcommon::kernels::QuantizeE2m1TieUp(vals[i] * inv);
+        const uint8_t hi = lsxcommon::kernels::QuantizeE2m1TieUp(
+            vals[i + 1] * inv);
+        packed[pack_base + i / 2] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+}
+
+cudaError_t RunAttnSwigluPreScaledQuantBatch(
+    cudaStream_t stream, __half *ygu, int slots, int64_t n, uint8_t *packed,
+    uint8_t *scales, float *sw_f32, float *alpha)
+{
+    if (!ygu || slots <= 0 || n <= 0 || (n & 15) != 0 || !packed || !scales ||
+        !sw_f32 || !alpha)
+        return cudaErrorInvalidValue;
+    const int threads = 256;
+    const int64_t total = static_cast<int64_t>(slots) * n;
+    const int blocks = static_cast<int>(
+        (total / 16 + threads - 1) / threads);
+    cudaError_t e = cudaMemsetAsync(alpha, 0, sizeof(float) * 2 * slots, stream);
+    if (e != cudaSuccess) return e;
+    swiglu_f32_absmax_batch_kernel<<<blocks, threads, 0, stream>>>(
+        ygu, sw_f32, alpha, n, slots);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    swiglu_quant_prescaled_batch_kernel<<<blocks, threads, 0, stream>>>(
+        ygu, sw_f32, packed, scales, alpha, n, slots);
+    return cudaGetLastError();
+}
+
 cudaError_t RunAttnSwigluPreciseQuantInternal(cudaStream_t stream,
                                              const __half *a, const __half *b,
                                              __half *y, uint8_t *packed,
@@ -1880,4 +1976,139 @@ cudaError_t RunAttnLinearAttention(cudaStream_t stream,
 }
 
 } // namespace qwen
+
+namespace attn {
+
+// ── KvCache (persistent incremental session state) ──────────────────────────
+// Buffers are per-layer-sliced: full-attention layers own [max_total][NKV*HD]
+// k/v halves; linear layers own [max_total][KD*2+VD] raw qkv history halves
+// (feed for the causal conv1d) plus a [nv*vd*kd] float GatedDeltaNet col
+// accumulator. Allocate() sets up a fresh session (kv_rows == 0, col zeroed);
+// EnsureCapacity() grows geometrically and preserves the written rows.
+
+cudaError_t KvCache::Allocate(const KvGeometry &geom, int max_total_in,
+                              cudaStream_t stream)
+{
+    Free();
+    const int NKV = geom.num_key_value_heads, HD = geom.head_dim;
+    const int nk = geom.linear_num_key_heads, kd = geom.linear_key_head_dim;
+    const int nv = geom.linear_num_value_heads, vd = geom.linear_value_head_dim;
+    const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
+
+    num_full_layers = geom.num_full_layers;
+    num_linear_layers = geom.num_linear_layers;
+    if (max_total_in <= 0 || num_full_layers <= 0 || num_linear_layers <= 0 ||
+        NKV <= 0 || HD <= 0 || KD <= 0 || VD <= 0)
+        return cudaErrorInvalidValue;
+
+    max_total = max_total_in;
+    const size_t kvk_bytes =
+        (size_t)num_full_layers * (size_t)max_total * NKV * HD * sizeof(__half);
+    const size_t kvv_bytes = kvk_bytes;
+    const size_t qkv_bytes =
+        (size_t)num_linear_layers * (size_t)max_total * S * sizeof(__half);
+    const size_t col_bytes =
+        (size_t)num_linear_layers * (size_t)nv * vd * kd * sizeof(float);
+
+    if (cudaMalloc(&d_kv_k, kvk_bytes) != cudaSuccess)
+        return cudaErrorMemoryAllocation;
+    if (cudaMalloc(&d_kv_v, kvv_bytes) != cudaSuccess) { Free(); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&d_qkv, qkv_bytes) != cudaSuccess)   { Free(); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&d_col, col_bytes) != cudaSuccess)   { Free(); return cudaErrorMemoryAllocation; }
+    if (cudaMemsetAsync(d_col, 0, col_bytes, stream) != cudaSuccess) {
+        Free(); return cudaErrorInvalidValue;
+    }
+    kv_rows = 0;
+    last_tok = -1;
+    cache_bytes = (int64_t)(kvk_bytes + kvv_bytes + qkv_bytes + col_bytes);
+    return cudaSuccess;
+}
+
+cudaError_t KvCache::EnsureCapacity(const KvGeometry &geom, int needed,
+                                    cudaStream_t stream)
+{
+    if (needed <= max_total) return cudaSuccess;
+    if (max_total <= 0) return cudaErrorInvalidValue;
+    const int NKV = geom.num_key_value_heads, HD = geom.head_dim;
+    const int nk = geom.linear_num_key_heads, kd = geom.linear_key_head_dim;
+    const int nv = geom.linear_num_value_heads, vd = geom.linear_value_head_dim;
+    const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
+
+    const int new_max = std::max(2 * max_total, needed);
+    const size_t kvk_bytes =
+        (size_t)num_full_layers * (size_t)new_max * NKV * HD * sizeof(__half);
+    const size_t kvv_bytes = kvk_bytes;
+    const size_t qkv_bytes =
+        (size_t)num_linear_layers * (size_t)new_max * S * sizeof(__half);
+    const size_t col_bytes =
+        (size_t)num_linear_layers * (size_t)nv * vd * kd * sizeof(float);
+
+    __half *n_k = nullptr, *n_v = nullptr, *n_q = nullptr;
+    float *n_c = nullptr;
+    if (cudaMalloc(&n_k, kvk_bytes) != cudaSuccess) return cudaErrorMemoryAllocation;
+    if (cudaMalloc(&n_v, kvv_bytes) != cudaSuccess) { cudaFree(n_k); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&n_q, qkv_bytes) != cudaSuccess) { cudaFree(n_k); cudaFree(n_v); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&n_c, col_bytes) != cudaSuccess) {
+        cudaFree(n_k); cudaFree(n_v); cudaFree(n_q);
+        return cudaErrorMemoryAllocation;
+    }
+
+    // Preserve the written rows [0..kv_rows) per layer (col state is row-free).
+    const size_t row_k = (size_t)NKV * HD * sizeof(__half);
+    const size_t row_q = (size_t)S * sizeof(__half);
+    for (int li = 0; li < num_full_layers; ++li) {
+        cudaMemcpyAsync(n_k + (size_t)li * new_max * NKV * HD,
+                        d_kv_k + (size_t)li * max_total * NKV * HD,
+                        (size_t)kv_rows * row_k, cudaMemcpyDeviceToDevice, stream);
+        cudaMemcpyAsync(n_v + (size_t)li * new_max * NKV * HD,
+                        d_kv_v + (size_t)li * max_total * NKV * HD,
+                        (size_t)kv_rows * row_k, cudaMemcpyDeviceToDevice, stream);
+    }
+    for (int li = 0; li < num_linear_layers; ++li) {
+        cudaMemcpyAsync(n_q + (size_t)li * new_max * S,
+                        d_qkv + (size_t)li * max_total * S,
+                        (size_t)kv_rows * row_q, cudaMemcpyDeviceToDevice, stream);
+    }
+    cudaMemcpyAsync(n_c, d_col, col_bytes, cudaMemcpyDeviceToDevice, stream);
+
+    // Drain the copy stream before freeing the old buffers so no in-flight
+    // D2D read outlives its source allocation.
+    if (cudaStreamSynchronize(stream) != cudaSuccess) {
+        cudaFree(n_k); cudaFree(n_v); cudaFree(n_q); cudaFree(n_c);
+        return cudaErrorInvalidValue;
+    }
+
+    cudaFree(d_kv_k);
+    cudaFree(d_kv_v);
+    cudaFree(d_qkv);
+    cudaFree(d_col);
+    d_kv_k = n_k;
+    d_kv_v = n_v;
+    d_qkv = n_q;
+    d_col = n_c;
+    max_total = new_max;
+    cache_bytes = (int64_t)(kvk_bytes + kvv_bytes + qkv_bytes + col_bytes);
+    return cudaSuccess;
+}
+
+void KvCache::Free()
+{
+    cudaFree(d_kv_k);
+    cudaFree(d_kv_v);
+    cudaFree(d_qkv);
+    cudaFree(d_col);
+    d_kv_k = nullptr;
+    d_kv_v = nullptr;
+    d_qkv = nullptr;
+    d_col = nullptr;
+    kv_rows = 0;
+    last_tok = -1;
+    max_total = 0;
+    num_full_layers = 0;
+    num_linear_layers = 0;
+    cache_bytes = 0;
+}
+
+}  // namespace attn
+
 } // namespace lsxcommon
