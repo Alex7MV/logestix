@@ -37,7 +37,12 @@ OVERRIDES = {
     # Mistral-Small-4-119B ships the Mistral "consolidated" layout: params.json
     # (no config.json, no model_type) plus consolidated-*.safetensors with
     # NVFP4-packed MoE experts. transformers cannot construct it at all, so the
-    # golden is template-derived and the deviation is recorded in `source`.
+    # source is marked unrunnable and NO golden is committed (declared debt in
+    # test_model_suite_guard). To capture it for real, pass one of: an HF-format
+    # bf16 export of the same model (no change needed here - the auto loader
+    # handles it), or the vendor stack (mistral-inference + mistral_common),
+    # which replaces the template-only capture with a `loader: "mistral"` branch
+    # on the qwen4_exp/qwen3_5 pattern and drops this override.
     "mistral-small-4-119b": {
         "unrunnable": "consolidated layout (params.json, no config.json) + "
                       "NVFP4-packed experts",

@@ -309,7 +309,7 @@ procedure — `perf-tuning-a-model`.
   `mistral_moe_convert.{h,cpp}` (strips the vision tower, repacks the experts
   verbatim), `mistral_moe_load.{h,cpp}` (BF16 dense graph + the neutral MoE
   layer's host expert store — `MoEExpertStore`, i.e. all-experts pinned slabs,
-  NOT the neutral `ExpertStore`: `docs/OPEN_TASKS.md` §V), `mistral_moe_inference.{h,cu}` (MLA decode: neutral BF16 GEMV
+  NOT the neutral `ExpertStore`: `docs/open-tasks/2026-10-14-expert-store-arena-retired.md`), `mistral_moe_inference.{h,cu}` (MLA decode: neutral BF16 GEMV
   projections, plain RMSNorm, split-half YaRN RoPE, per-head attention over a
   `KvCacheGeometry` cache, neutral MoE, ungated shared expert),
   `mistral_moe_model.{h,cpp}`, `mistral_moe_tool_format.{h,cpp}` (native

@@ -24,7 +24,7 @@
 //      the same file.
 //   4. The legacy all-experts-in-pinned-slabs store (MoEExpertStore) is allowed
 //      for its known consumers ONLY and must not spread: a new family cannot
-//      adopt it by copy without tripping this guard. See docs/OPEN_TASKS.md §V.
+//      adopt it by copy without tripping this guard. See docs/open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md.
 //
 // Load-time transient staging (a std::vector<StagedExpert> that is uploaded
 // and freed in the same scope) is NOT the defect and is deliberately not
@@ -112,7 +112,7 @@ const char *const kTransientPayloadMaps[] = {
 };
 
 // Known consumers of the legacy all-experts-in-pinned-slabs store. Frozen:
-// adding an entry is a migration decision recorded in docs/OPEN_TASKS.md §V,
+// adding an entry is a migration decision recorded in docs/open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md,
 // not a rename. Paths are relative to LSX_SOURCE_DIR.
 const char *const kLegacyConsumers[] = {
     // neutral layer: the definition and the shared kernels
@@ -333,7 +333,7 @@ TEST_CASE("expert store guard: the legacy pinned-arena store does not spread",
 {
     const Scan &s = CachedScan(LSX_SOURCE_DIR, true);
     INFO("violations (new consumer of MoEExpertStore; migrate to ExpertStore "
-         "or add to kLegacyConsumers with an OPEN_TASKS.md §V entry):\n"
+         "or add to kLegacyConsumers with an entry in docs/open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md):\n"
          << Join(s.legacy_spread));
     REQUIRE(s.legacy_spread.empty());
 }

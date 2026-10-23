@@ -83,7 +83,7 @@ Budget test, in the model's existing test TU:
   `LSX_KERNEL_BUDGET_WRITE=1` → record the measurement instead. A bare
   constant cannot tell "regressed" from "measured on another box" — that
   ambiguity was measured on this host (identical code, 2.1x apart), see
-  `docs/OPEN_TASKS.md` §B.
+  `docs/open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md` § B.
 - Assert a latency budget (µs), an aggregate bandwidth budget (GB/s), or a
   count budget (misses/token).
 - Per-iteration `cudaEventRecord` around **only** the kernel; flush L2 with a

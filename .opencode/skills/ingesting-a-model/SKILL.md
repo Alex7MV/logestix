@@ -385,8 +385,11 @@ succeed silently. Alice's identical-class bug (an unbounded owning map) cost
 2026-10-14 (qwen3.6 17.5 → 7.0 GB at unchanged throughput; qwen3.8 63.6 →
 10.9 GB) — `docs/open-tasks/2026-10-14-expert-store-arena-retired.md`.
 
-Two consequences of the fix are still open in `docs/OPEN_TASKS.md` §V, and both
-are traps for the next family:
+Two consequences of the fix are traps for the next family; the first is recorded
+as a negative result in
+`docs/open-tasks/2026-10-14-qwen38-arena-required-negative.md`, the second was
+refuted on 2026-10-23 in
+`docs/open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md` (§V2):
 
 - **§V1 — a pinned arena is not waste when the decode working set IS the
   model.** If every token routes to experts spread over the whole expert set,
