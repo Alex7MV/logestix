@@ -460,7 +460,14 @@ __device__ __forceinline__ void LsxExpertRowGemv(
         const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
         const int chunks = (K / KP) >> 5;
         float acc0 = 0.0f, acc1 = 0.0f;
-        const bool x_vec = (reinterpret_cast<uintptr_t>(xe) & 3u) == 0;
+        // Four 128-bit activation loads per chunk, not sixteen scalar __half2
+        // ones: the dense seq1 kernel measured this as the GEMV's dominant
+        // non-DRAM cost (removing x entirely lifted its shape 878 -> 1182 GB/s)
+        // and the expert batch body had never been given the same form. It is
+        // the same 32 half values in the same order, so the arithmetic below is
+        // untouched. Alignment is checked for uint4 (16 B), not __half2 (4 B);
+        // xb is a multiple of 32 halves (64 B), so x's alignment carries over.
+        const bool x_vec = (reinterpret_cast<uintptr_t>(xe) & 15u) == 0;
         for (int c = lane; c < chunks; c += 32) {
             const uint4 pw = wv[c];
             const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
@@ -468,17 +475,27 @@ __device__ __forceinline__ void LsxExpertRowGemv(
             const float sc0 = E4M3ScaleToFloat(srow[sb]);
             const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
             const int xb = kb + c * 32;
-            const __half2 *xh =
-                x_vec ? reinterpret_cast<const __half2 *>(xe + xb) : nullptr;
+            __half2 xp[16];
+            if (x_vec) {
+                const uint4 *xq = reinterpret_cast<const uint4 *>(xe + xb);
+#pragma unroll
+                for (int k = 0; k < 4; ++k) {
+                    const uint4 q = xq[k];
+                    xp[4 * k + 0] = *reinterpret_cast<const __half2 *>(&q.x);
+                    xp[4 * k + 1] = *reinterpret_cast<const __half2 *>(&q.y);
+                    xp[4 * k + 2] = *reinterpret_cast<const __half2 *>(&q.z);
+                    xp[4 * k + 3] = *reinterpret_cast<const __half2 *>(&q.w);
+                }
+            }
 #pragma unroll
             for (int b = 0; b < 16; ++b) {
                 const bool first_block = b < 8;
                 const float scl = first_block ? sc0 : sc1;
                 float xv0, xv1;
                 if (x_vec) {
-                    const __half2 pair = xh[b];
-                    xv0 = __half2float(pair.x);
-                    xv1 = __half2float(pair.y);
+                    const float2 xf = __half22float2(xp[b]);
+                    xv0 = xf.x;
+                    xv1 = xf.y;
                 } else {
                     xv0 = __half2float(xe[xb + 2 * b]);
                     xv1 = __half2float(xe[xb + 2 * b + 1]);

@@ -145,11 +145,8 @@ struct XingSession {
     float *d_scores = nullptr;  // [capacity]
     float *d_logits = nullptr;  // [vocab]
     int64_t logit_count = 0;    // elements in d_logits (set at allocation)
-    // Router staging: the neutral device-independent GEMV dispatches matching
-    // dtypes only, so the BF16 activation and the BF16 logits need their own
-    // buffers (the router kernel then converts per element).
+    // Router staging: the BF16 activation the family router reads.
     __nv_bfloat16 *d_router_act = nullptr;   // [hidden]
-    __nv_bfloat16 *d_router_logits = nullptr;  // [experts]
     float *d_router_scores = nullptr;  // [experts] between the router phases
     float *d_gate = nullptr;    // [16] router weights
     int32_t *d_expert_ids = nullptr;  // [16]

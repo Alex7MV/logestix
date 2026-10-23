@@ -125,161 +125,164 @@ __global__ void xing_hyper_conn_proj_kernel(
     }
 }
 
-// mHC, phase 2 of 2: the gates, the Sinkhorn mixing matrix and the collapse.
-// Still one block, but the expensive part (24 x 14336 multiply-adds) moved to
-// phase 1; what is left is hc_mult sigmoids, hc_mult^2 Sinkhorn cells on thread 0
-// and a 57 KB collapse spread over the block.
-// mHC, phase 2 of 2: the gates, the Sinkhorn mixing matrix and the collapse.
+// mHC, phase 2 of 2: the gates, the Sinkhorn mixing matrix and the collapse,
+// merged into ONE launch.
 //
-// Still one block (the tile is hc_mult x hc_mult), but the arithmetic is spread
-// over it: ExpfGlibc is a bit-exact glibc replica written in DOUBLE precision
-// and a consumer Blackwell SM retires FP64 at 1/64 of FP32, so 20 exps + 4
-// sigmoids run serially on thread 0 took ~36 us - more than the whole projection
-// phase. One cell per thread (and one row/column reciprocal per thread) is
-// numerically IDENTICAL: exp and the max are element-wise, and the Sinkhorn's
-// per-cell updates were already independent. What is left on thread 0 is the
-// 24-element row copy.
+// The gates block is 7.1 us and the collapse 2.0 us; both are single-block and
+// strictly ordered, so the collapse's 57 KB stream read could not start until
+// the Sinkhorn finished. Warps 1..7 now prefetch the streams into shared memory
+// while warp 0 runs the sigmoids/Sinkhorn, one barrier follows, and the collapse
+// reads shared memory instead of re-issuing the same global loads. The Sinkhorn
+// arithmetic is unchanged (same exps, same per-cell row/column order, same
+// merges), and the collapse still multiplies the RAW streams in d = 0..hc_mult
+// order, so the outputs are bit-identical - this is overlap, not a new formula.
 //
-// Measured: 61 us (single-block original) -> 3.1 us projection + ~2 us gates.
-__global__ void xing_hyper_conn_gates_kernel(
+// Still one block: the tile is hc_mult x hc_mult. Only warp 0 touches FP64
+// (ExpfGlibc is a double-precision replica and consumer Blackwell retires FP64
+// at 1/64), so the wide prefetch warps never see the FP64 register pressure that
+// made the earlier 1024-thread gates attempt spill.
+constexpr int kHcThreads = 256;
+constexpr int kHcLoadThreads = kHcThreads - 32;
+
+__global__ void xing_hyper_conn_gates_collapse_kernel(
     const float *__restrict__ rows_in, const __nv_bfloat16 *__restrict__ hc_base,
     const float *__restrict__ hc_scale, int hc_mult, int hidden, float eps,
     int sinkhorn_iters, float clamp_min, float clamp_max, float post_gain,
     float *__restrict__ post, float *__restrict__ comb,
-    float *__restrict__ pre_gate_out)
+    const float *__restrict__ streams, float *__restrict__ collapsed)
 {
+    extern __shared__ __align__(16) float sm[];   // hc_mult * hidden raw streams
     __shared__ float pre_gate[kMaxHcMult];
     __shared__ float comb_buf[kMaxMix];
     __shared__ float rows[kMaxMix];
-    __shared__ float tile_max;
-    const int hw = hc_mult * hc_mult;
     const int tid = threadIdx.x;
-    for (int k = tid; k < (2 + hc_mult) * hc_mult; k += blockDim.x)
-        rows[k] = rows_in[k];
-    if (tid == 0) tile_max = -INFINITY;
-    __syncthreads();
-    // gates: one thread per stream
-    for (int d = tid; d < hc_mult; d += blockDim.x)
+    const int hw = hc_mult * hc_mult;
+    const int n = hc_mult * hidden;
+
+    if (tid < 32)
     {
-        pre_gate[d] = XingSigmoid(__fadd_rn(
-            __fmul_rn(rows[d], hc_scale[0]),
-            __bfloat162float(hc_base[d])));
-        post[d] = __fmul_rn(
-            post_gain,
-            XingSigmoid(__fadd_rn(__fmul_rn(rows[hc_mult + d], hc_scale[1]),
-                                 __bfloat162float(hc_base[hc_mult + d]))));
-    }
-    // comb logits, one thread per cell, then the max as a block reduction
-    const int off = 2 * hc_mult;
-    float local = -INFINITY;
-    for (int i = tid; i < hw; i += blockDim.x)
-    {
-        const float lg = fminf(
-            fmaxf(__fadd_rn(__fmul_rn(rows[off + i], hc_scale[2]),
-                           __bfloat162float(hc_base[off + i])),
-                  clamp_min),
-            clamp_max);
-        comb_buf[kCombBase + i] = lg;
-        local = fmaxf(local, lg);
-    }
-    for (int stride = 16; stride > 0; stride >>= 1)
-        local = fmaxf(local, __shfl_down_sync(0xffffffffu, local, stride));
-    if ((tid & 31) == 0) atomicMax(reinterpret_cast<int *>(&tile_max),
-                                   __float_as_int(local));
-    __syncthreads();
-    if (hw > 32)
-        for (int i = tid; i < hw; i += blockDim.x)
-            comb_buf[kCombBase + i] =
-                device::XingExpfGlibc(comb_buf[kCombBase + i] - tile_max);
-    // Sinkhorn. hc_mult^2 cells fit in one warp at the frozen geometry (16 of
-    // 32 lanes), so warp 0 keeps the whole tile in REGISTERS and the 20
-    // iterations need no shared-memory round trip and no __syncthreads at all -
-    // that alone was most of the block's 12.6 us. The arithmetic per cell is
-    // unchanged: a row sum still accumulates c = 0..hc_mult-1 in that order (the
-    // four values arrive by shuffle in lane order) and a column sum r = 0.. in
-    // that order, so this is bit-identical to the serial version, not a
-    // tolerance-class change. Wider hc_mult falls back to the shared-memory
-    // path below.
-    if (hw <= 32)
-    {
-        const int lane = tid & 31;
-        const int r = lane / hc_mult;
-        const int c = lane - r * hc_mult;
-        const bool live = lane < hw;
-        float cell = live ? device::XingExpfGlibc(
-                                __fsub_rn(comb_buf[kCombBase + lane], tile_max))
-                          : 0.0f;
-        for (int it = 0; it < sinkhorn_iters; ++it)
+        // ── gates, comb logits, Sinkhorn: warp 0 only ─────────────────────
+        const int lane = tid;
+        for (int i = lane; i < (2 + hc_mult) * hc_mult; i += 32)
+            rows[i] = rows_in[i];
+        __syncwarp();
+        if (lane < hc_mult)
         {
-            float s = 0.0f;
-            for (int j = 0; j < hc_mult; ++j)
-                s += __shfl_sync(0xffffffffu, cell, r * hc_mult + j);
-            const float inv = __fdiv_rn(1.0f, __fadd_rn(s, eps));
-            cell = __fmul_rn(cell, inv);
-            s = 0.0f;
-            for (int j = 0; j < hc_mult; ++j)
-                s += __shfl_sync(0xffffffffu, cell, j * hc_mult + c);
-            const float inv2 = __fdiv_rn(1.0f, __fadd_rn(s, eps));
-            cell = __fmul_rn(cell, inv2);
+            pre_gate[lane] = XingSigmoid(__fadd_rn(
+                __fmul_rn(rows[lane], hc_scale[0]),
+                __bfloat162float(hc_base[lane])));
+            post[lane] = __fmul_rn(
+                post_gain,
+                XingSigmoid(__fadd_rn(
+                    __fmul_rn(rows[hc_mult + lane], hc_scale[1]),
+                    __bfloat162float(hc_base[hc_mult + lane]))));
         }
-        if (live) comb[lane] = cell;
+        const int off = 2 * hc_mult;
+        // hc_mult <= 8, so hw <= 64: a lane owns at most two cells. lut applies
+        // the same two clamp+exp expressions as the old per-thread loops.
+        float lg0 = -INFINITY, lg1 = -INFINITY;
+        for (int i = lane; i < hw; i += 32)
+        {
+            const float raw = __fadd_rn(__fmul_rn(rows[off + i], hc_scale[2]),
+                                        __bfloat162float(hc_base[off + i]));
+            const float v = fminf(fmaxf(raw, clamp_min), clamp_max);
+            if (i == lane) lg0 = v; else lg1 = v;
+        }
+        float tile_max = fmaxf(lg0, lg1);
+        for (int stride = 16; stride > 0; stride >>= 1)
+            tile_max = fmaxf(tile_max, __shfl_down_sync(0xffffffffu, tile_max, stride));
+        tile_max = __shfl_sync(0xffffffffu, tile_max, 0);
+
+        float cell = 0.0f;
+        if (hw <= 32 && lane < hw)
+            cell = device::XingExpfGlibc(__fsub_rn(lg0, tile_max));
+        // hc_mult^2 cells fit in one warp at the frozen geometry (16 of 32
+        // lanes). The arithmetic per cell is unchanged: a row sum accumulates
+        // c = 0..hc_mult-1 in order (values arrive by shuffle in lane order)
+        // and a column sum r = 0.. in order.
+        if (hw <= 32)
+        {
+            const int r = lane / hc_mult;
+            const int c = lane - r * hc_mult;
+            const bool live = lane < hw;
+            for (int it = 0; it < sinkhorn_iters; ++it)
+            {
+                float s = 0.0f;
+                for (int j = 0; j < hc_mult; ++j)
+                    s += __shfl_sync(0xffffffffu, cell, r * hc_mult + j);
+                const float inv = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+                cell = __fmul_rn(cell, inv);
+                s = 0.0f;
+                for (int j = 0; j < hc_mult; ++j)
+                    s += __shfl_sync(0xffffffffu, cell, j * hc_mult + c);
+                const float inv2 = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+                cell = __fmul_rn(cell, inv2);
+            }
+            if (live) comb[lane] = cell;
+        }
+        else
+        {
+            // Wider hc_mult: the tile no longer fits one warp, so keep it in
+            // shared memory. Warp 0 is the only participant, which makes the
+            // original block-wide barriers warp barriers; the per-cell order
+            // (row c = 0.. in order, then column r = 0..) is unchanged.
+            for (int i = lane; i < hw; i += 32)
+                comb_buf[kCombBase + i] = device::XingExpfGlibc(
+                    __fsub_rn(i == lane ? lg0 : lg1, tile_max));
+            __syncwarp();
+            for (int it = 0; it < sinkhorn_iters; ++it)
+            {
+                for (int r = lane; r < hc_mult; r += 32)
+                {
+                    float s = 0.0f;
+                    for (int c = 0; c < hc_mult; ++c)
+                        s += comb_buf[kCombBase + r * hc_mult + c];
+                    s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+                    for (int c = 0; c < hc_mult; ++c)
+                        comb_buf[kCombBase + r * hc_mult + c] *= s;
+                }
+                __syncwarp();
+                for (int c = lane; c < hc_mult; c += 32)
+                {
+                    float s = 0.0f;
+                    for (int r = 0; r < hc_mult; ++r)
+                        s += comb_buf[kCombBase + r * hc_mult + c];
+                    s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+                    for (int r = 0; r < hc_mult; ++r)
+                        comb_buf[kCombBase + r * hc_mult + c] *= s;
+                }
+                __syncwarp();
+            }
+            if (lane == 0)
+                for (int i = 0; i < hw; ++i) comb[i] = comb_buf[kCombBase + i];
+        }
     }
     else
     {
-        // Sinkhorn: thread r owns row r (then column r). The per-cell arithmetic
-        // is unchanged; only who executes it moved.
-        for (int it = 0; it < sinkhorn_iters; ++it)
+        // ── warps 1..7: stage the raw streams while the Sinkhorn runs ─────
+        const int ltid = tid - 32;
+        if ((hidden & 3) == 0)
         {
-            __syncthreads();
-            for (int r = tid; r < hc_mult; r += blockDim.x)
-            {
-                float s = 0.0f;
-                for (int c = 0; c < hc_mult; ++c)
-                    s += comb_buf[kCombBase + r * hc_mult + c];
-                s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
-                for (int c = 0; c < hc_mult; ++c)
-                    comb_buf[kCombBase + r * hc_mult + c] *= s;
-            }
-            __syncthreads();
-            for (int c = tid; c < hc_mult; c += blockDim.x)
-            {
-                float s = 0.0f;
-                for (int r = 0; r < hc_mult; ++r)
-                    s += comb_buf[kCombBase + r * hc_mult + c];
-                s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
-                for (int r = 0; r < hc_mult; ++r)
-                    comb_buf[kCombBase + r * hc_mult + c] *= s;
-            }
+            const int vn = n >> 2;
+            float4 *dst = reinterpret_cast<float4 *>(sm);
+            const float4 *src = reinterpret_cast<const float4 *>(streams);
+            for (int v = ltid; v < vn; v += kHcLoadThreads) dst[v] = src[v];
         }
-        if (tid == 0)
-            for (int i = 0; i < hw; ++i) comb[i] = comb_buf[kCombBase + i];
+        else
+        {
+            for (int j = ltid; j < n; j += kHcLoadThreads) sm[j] = streams[j];
+        }
     }
     __syncthreads();
 
-    // pre_gate goes to the shared scratch for the collapse kernel: hc_mult
-    // floats, and the alternative is recomputing four sigmoids per block.
-    for (int d = tid; d < hc_mult; d += blockDim.x)
-        pre_gate_out[d] = pre_gate[d];
-}
-
-// mHC, phase 3: the collapse, on a wide block.
-//
-// Multiplies the RAW streams, not the normalised ones: the unweighted RMSNorm
-// only feeds hc_fn, while upstream collapses with `pre * hidden_streams`
-// (Xing4_0HyperConnection.forward). Reading a normalised copy here would apply
-// the factor twice - caught by the host-parity test.
-__global__ void xing_hyper_conn_collapse_kernel(const float *__restrict__ streams,
-                                                const float *__restrict__ gates,
-                                                int hc_mult, int hidden,
-                                                float *__restrict__ collapsed)
-{
-    float g[8];
-    for (int d = 0; d < hc_mult; ++d) g[d] = gates[d];
-    for (int c = threadIdx.x; c < hidden; c += blockDim.x)
+    // ── collapse: all threads, from the staged block ─────────────────────
+    float g[kMaxHcMult];
+    for (int d = 0; d < hc_mult; ++d) g[d] = pre_gate[d];
+    for (int c = tid; c < hidden; c += kHcThreads)
     {
         float acc = 0.0f;
         for (int d = 0; d < hc_mult; ++d)
-            acc = __fadd_rn(acc, __fmul_rn(g[d], streams[d * hidden + c]));
+            acc = __fadd_rn(acc, __fmul_rn(g[d], sm[d * hidden + c]));
         collapsed[c] = acc;
     }
 }
@@ -879,25 +882,31 @@ cudaError_t LaunchXingHyperConnection(
         return cudaErrorInvalidValue;
     const int mix = (2 + hc_mult) * hc_mult;
     if (mix > kMaxMix) return cudaErrorInvalidValue;
-    // Phase 1 across mix blocks (24 SMs at hc_mult=4), phase 2 on one. Neither
-    // needs dynamic shared memory any more, so the 56 KiB opt-in a single block
-    // used to require is gone with it.
+    // Phase 1 across mix blocks (24 SMs at hc_mult=4).
     // Phase 1 gets 1024 threads: 24 blocks x 256 was only 8 warps per SM to hide
     // the load latency of a 14 KiB-stride dot product.
     xing_hyper_conn_proj_kernel<<<mix, kProjThreads, 0, stream>>>(
         streams, hc_fn, hc_mult, hidden, eps, rows);
-    // Phase 2 is split again: the gates/Sinkhorn block is tiny, but its collapse
-    // was a 57 KB read that ONE block had to issue, and that is latency-bound
-    // (256 threads = 8 warps of loads in flight). Running the gates at 1024
-    // threads instead measured 15.4 us against 12.6 - __launch_bounds__'s 64
-    // register cap made the FP64 path spill, which cost more than the warps won.
-    // So the collapse gets its own wide block with no FP64 in it at all.
-    xing_hyper_conn_gates_kernel<<<1, kThreads, 0, stream>>>(
+    // Phase 2 is one block: warp 0 runs the Sinkhorn while warps 1..7 stage the
+    // raw streams, then the collapse runs from that staged block. It needs
+    // hc_mult*hidden floats of dynamic shared memory (57 KiB at the frozen
+    // geometry), so the opt-in is raised once per process. The first decode
+    // step runs eagerly (capture starts at the second token), which is where
+    // this normally happens.
+    const size_t smem = static_cast<size_t>(hc_mult) * hidden * sizeof(float);
+    static size_t smem_configured = 0;
+    if (smem > smem_configured)
+    {
+        const cudaError_t se = cudaFuncSetAttribute(
+            xing_hyper_conn_gates_collapse_kernel,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            static_cast<int>(smem));
+        if (se != cudaSuccess) return se;
+        smem_configured = smem;
+    }
+    xing_hyper_conn_gates_collapse_kernel<<<1, kHcThreads, smem, stream>>>(
         rows, hc_base, hc_scale, hc_mult, hidden, eps, sinkhorn_iters, clamp_min,
-        clamp_max, post_gain, post, comb, rows + kMaxMix);
-    xing_hyper_conn_collapse_kernel<<<(hidden + kProjThreads - 1) / kProjThreads,
-                                      kProjThreads, 0, stream>>>(
-        streams, rows + kMaxMix, hc_mult, hidden, collapsed);
+        clamp_max, post_gain, post, comb, streams, collapsed);
     return cudaGetLastError();
 }
 cudaError_t LaunchXingMix(const float *streams, const float *out,

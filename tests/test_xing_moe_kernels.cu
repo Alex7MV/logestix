@@ -55,11 +55,11 @@ void ReferenceHyperConn(const std::vector<float> &hidden,
                         const std::vector<__nv_bfloat16> &hc_base,
                         const std::vector<float> &hc_scale,
                         std::vector<float> &collapsed, std::vector<float> &post,
-                        std::vector<float> &comb)
+                        std::vector<float> &comb, int hc = kHcMult)
 {
-    const int hidden_dim = static_cast<int>(hidden.size()) / kHcMult;
-    const int n = kHcMult * hidden_dim;
-    const int mix = (2 + kHcMult) * kHcMult;
+    const int hidden_dim = static_cast<int>(hidden.size()) / hc;
+    const int n = hc * hidden_dim;
+    const int mix = (2 + hc) * hc;
 
     double sumsq = 0.0;
     for (float v : hidden) sumsq += static_cast<double>(v) * v;
@@ -77,52 +77,52 @@ void ReferenceHyperConn(const std::vector<float> &hidden,
     }
 
     collapsed.assign(static_cast<size_t>(hidden_dim), 0.0f);
-    post.assign(kHcMult, 0.0f);
-    comb.assign(static_cast<size_t>(kHcMult) * kHcMult, 0.0f);
+    post.assign(hc, 0.0f);
+    comb.assign(static_cast<size_t>(hc) * hc, 0.0f);
 
-    std::vector<float> pre(kHcMult);
-    for (int d = 0; d < kHcMult; ++d)
+    std::vector<float> pre(hc);
+    for (int d = 0; d < hc; ++d)
     {
         pre[d] = 1.0f / (1.0f + std::exp(-(t[d] * hc_scale[0] +
                                            bf(hc_base[d]))));
         post[d] = kPostGain * (1.0f / (1.0f + std::exp(
-                                       -(t[kHcMult + d] * hc_scale[1] +
-                                         bf(hc_base[kHcMult + d])))));
+                                       -(t[hc + d] * hc_scale[1] +
+                                         bf(hc_base[hc + d])))));
     }
-    const int off = 2 * kHcMult;
-    std::vector<float> c(static_cast<size_t>(kHcMult) * kHcMult, 0.0f);
+    const int off = 2 * hc;
+    std::vector<float> c(static_cast<size_t>(hc) * hc, 0.0f);
     float mx = -INFINITY;
-    for (int i = 0; i < kHcMult * kHcMult; ++i)
+    for (int i = 0; i < hc * hc; ++i)
     {
         c[i] = std::min(std::max(t[off + i] * hc_scale[2] + bf(hc_base[off + i]),
                                  kClampMin),
                         kClampMax);
         mx = std::max(mx, c[i]);
     }
-    for (int i = 0; i < kHcMult * kHcMult; ++i) c[i] = std::exp(c[i] - mx);
+    for (int i = 0; i < hc * hc; ++i) c[i] = std::exp(c[i] - mx);
     for (int it = 0; it < kSinkhorn; ++it)
     {
-        for (int r = 0; r < kHcMult; ++r)
+        for (int r = 0; r < hc; ++r)
         {
             float s = 0.0f;
-            for (int col = 0; col < kHcMult; ++col)
-                s += c[r * kHcMult + col];
+            for (int col = 0; col < hc; ++col)
+                s += c[r * hc + col];
             s = 1.0f / (s + kEps);
-            for (int col = 0; col < kHcMult; ++col) c[r * kHcMult + col] *= s;
+            for (int col = 0; col < hc; ++col) c[r * hc + col] *= s;
         }
-        for (int col = 0; col < kHcMult; ++col)
+        for (int col = 0; col < hc; ++col)
         {
             float s = 0.0f;
-            for (int r = 0; r < kHcMult; ++r) s += c[r * kHcMult + col];
+            for (int r = 0; r < hc; ++r) s += c[r * hc + col];
             s = 1.0f / (s + kEps);
-            for (int r = 0; r < kHcMult; ++r) c[r * kHcMult + col] *= s;
+            for (int r = 0; r < hc; ++r) c[r * hc + col] *= s;
         }
     }
     comb = c;
     for (int j = 0; j < hidden_dim; ++j)
     {
         float acc = 0.0f;
-        for (int d = 0; d < kHcMult; ++d)
+        for (int d = 0; d < hc; ++d)
             acc += pre[d] * hidden[d * hidden_dim + j];
         collapsed[j] = acc;
     }
@@ -310,6 +310,68 @@ TEST_CASE("Xing mHC block matches the host reference", "[xing][kernels]")
     cudaFree(d_hidden); cudaFree(d_fn); cudaFree(d_base); cudaFree(d_scale);
     cudaFree(d_collapsed); cudaFree(d_post); cudaFree(d_comb); cudaFree(d_out);
     cudaFree(d_mixed); cudaFree(d_hidden_inplace);
+    cudaStreamDestroy(stream);
+}
+
+TEST_CASE("Xing mHC block matches the host reference at hc_mult=8",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+
+    // The merged gates+collapse kernel keeps hc_mult^2 cells in one warp only
+    // up to 32; the frozen model is 16, but the launcher accepts up to 8 and
+    // the >32-cell path lives in shared memory. Exercise it at the production
+    // hidden width for that path's arithmetic order.
+    constexpr int kHc = 8;
+    constexpr int kHiddenDim = 64;
+    constexpr int kMix = (2 + kHc) * kHc;
+    std::mt19937 rng(20261024);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    const int n = kHc * kHiddenDim;
+
+    std::vector<float> hidden(n);
+    for (auto &v : hidden) v = dist(rng);
+    std::vector<__nv_bfloat16> hc_fn(static_cast<size_t>(kMix) * n);
+    for (auto &v : hc_fn) v = __float2bfloat16(dist(rng) * 0.3f);
+    std::vector<__nv_bfloat16> hc_base(kMix);
+    for (auto &v : hc_base) v = __float2bfloat16(dist(rng) * 0.1f);
+    const std::vector<float> hc_scale = {0.7f, -0.4f, 1.3f};
+
+    std::vector<float> ref_collapsed, ref_post, ref_comb;
+    ReferenceHyperConn(hidden, hc_fn, hc_base, hc_scale, ref_collapsed,
+                       ref_post, ref_comb, kHc);
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    auto *d_hidden = Upload(hidden);
+    auto *d_fn = Upload(hc_fn);
+    auto *d_base = Upload(hc_base);
+    auto *d_scale = Upload(hc_scale);
+    float *d_collapsed = nullptr, *d_post = nullptr, *d_comb = nullptr,
+          *d_rows = nullptr;
+    REQUIRE(cudaMalloc(&d_collapsed, kHiddenDim * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_post, kHc * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_comb, kHc * kHc * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_rows, (kMix + 8) * sizeof(float)) == cudaSuccess);
+
+    REQUIRE(LaunchXingHyperConnection(d_hidden, d_fn, d_base, d_scale, kHc,
+                                      kHiddenDim, kEps, kSinkhorn, kClampMin,
+                                      kClampMax, kPostGain, d_collapsed, d_post,
+                                      d_comb, d_rows, stream) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    const auto collapsed = Download(d_collapsed, kHiddenDim);
+    const auto post = Download(d_post, kHc);
+    const auto comb = Download(d_comb, kHc * kHc);
+    for (int d = 0; d < kHc; ++d)
+        REQUIRE(post[d] == Approx(ref_post[d]).margin(1e-5));
+    for (int i = 0; i < kHiddenDim; ++i)
+        REQUIRE(collapsed[i] == Approx(ref_collapsed[i]).margin(1e-5));
+    for (int i = 0; i < kHc * kHc; ++i)
+        REQUIRE(comb[i] == Approx(ref_comb[i]).margin(1e-5));
+
+    cudaFree(d_hidden); cudaFree(d_fn); cudaFree(d_base); cudaFree(d_scale);
+    cudaFree(d_collapsed); cudaFree(d_post); cudaFree(d_comb); cudaFree(d_rows);
     cudaStreamDestroy(stream);
 }
 

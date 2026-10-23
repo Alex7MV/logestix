@@ -180,6 +180,17 @@ __global__ void f16_to_f32_kernel(const __half *__restrict__ x,
 // is BIT-IDENTICAL and a launch per norm disappears (an empty 1-block launch
 // costs 1.84 us on this machine). The F32 output stays because the layer-debug
 // hash, the post-mix add and the rmsnorm's own input read it.
+//
+// Why float4 and a 512-thread block: the row is ONE block, so the only latency
+// hiding available is warps and bytes-in-flight per warp. Cold (128 MB L2 flush,
+// the state the real step is in - 22 MB of expert weights stream between two
+// uses of a 7 KB weight row) the scalar 256-thread form measures 7.99 us,
+// scalar 512 6.43, float4 512 4.96 and float4 1024 4.28 on RTX 5090. The
+// vector form keeps the same per-element expression (fadd of fmul(x,x), then
+// fmul(fmul(x,inv),w)) and therefore the same per-element rounding; only which
+// thread owns which element - already tolerance class here - changes.
+constexpr int kNormThreads = 512;
+
 __global__ void xing_rmsnorm_kernel(const float *__restrict__ x,
                                     const __nv_bfloat16 *__restrict__ w,
                                     float *__restrict__ out,
@@ -187,13 +198,27 @@ __global__ void xing_rmsnorm_kernel(const float *__restrict__ x,
                                     float eps)
 {
     constexpr int kWarpSz = 32;
-    extern __shared__ float red[];
-    __shared__ float warp_sum[kThreads / kWarpSz];
+    __shared__ float warp_sum[kNormThreads / kWarpSz];
     const int lane = threadIdx.x & (kWarpSz - 1);
     const int warp = threadIdx.x >> 5;
     float sum = 0.0f;
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x)
-        sum = __fadd_rn(sum, __fmul_rn(x[j], x[j]));
+    const int n4 = hidden >> 2;
+    if ((hidden & 3) == 0)
+    {
+        for (int t = threadIdx.x; t < n4; t += blockDim.x)
+        {
+            const float4 v = reinterpret_cast<const float4 *>(x)[t];
+            sum = __fadd_rn(sum, __fmul_rn(v.x, v.x));
+            sum = __fadd_rn(sum, __fmul_rn(v.y, v.y));
+            sum = __fadd_rn(sum, __fmul_rn(v.z, v.z));
+            sum = __fadd_rn(sum, __fmul_rn(v.w, v.w));
+        }
+    }
+    else
+    {
+        for (int j = threadIdx.x; j < hidden; j += blockDim.x)
+            sum = __fadd_rn(sum, __fmul_rn(x[j], x[j]));
+    }
     for (int off = kWarpSz / 2; off > 0; off >>= 1)
         sum = __fadd_rn(sum, __shfl_down_sync(0xffffffffu, sum, off));
     if (lane == 0) warp_sum[warp] = sum;
@@ -204,11 +229,33 @@ __global__ void xing_rmsnorm_kernel(const float *__restrict__ x,
     const float inv =
         device::XingRsqrtfGlibc(__fadd_rn(
             __fdiv_rn(sum, static_cast<float>(hidden)), eps));
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x)
+    if ((hidden & 3) == 0)
     {
-        const float v = __fmul_rn(__fmul_rn(x[j], inv), __bfloat162float(w[j]));
-        out[j] = v;
-        if (out16) out16[j] = __float2half(v);
+        for (int t = threadIdx.x; t < n4; t += blockDim.x)
+        {
+            const float4 v = reinterpret_cast<const float4 *>(x)[t];
+            const __nv_bfloat16 *wb = w + static_cast<size_t>(t) * 4;
+            const float v0 = __fmul_rn(__fmul_rn(v.x, inv), __bfloat162float(wb[0]));
+            const float v1 = __fmul_rn(__fmul_rn(v.y, inv), __bfloat162float(wb[1]));
+            const float v2 = __fmul_rn(__fmul_rn(v.z, inv), __bfloat162float(wb[2]));
+            const float v3 = __fmul_rn(__fmul_rn(v.w, inv), __bfloat162float(wb[3]));
+            reinterpret_cast<float4 *>(out)[t] = make_float4(v0, v1, v2, v3);
+            if (out16)
+            {
+                __half2 *dst = reinterpret_cast<__half2 *>(out16 + static_cast<size_t>(t) * 4);
+                dst[0] = __floats2half2_rn(v0, v1);
+                dst[1] = __floats2half2_rn(v2, v3);
+            }
+        }
+    }
+    else
+    {
+        for (int j = threadIdx.x; j < hidden; j += blockDim.x)
+        {
+            const float v = __fmul_rn(__fmul_rn(x[j], inv), __bfloat162float(w[j]));
+            out[j] = v;
+            if (out16) out16[j] = __float2half(v);
+        }
     }
 }
 
@@ -607,7 +654,7 @@ void FreeXingSession(XingSession &s)
     cudaFree(s.d_rows_gate); cudaFree(s.d_rows_down); cudaFree(s.d_rows_up);
     cudaFree(s.d_scalars);
     if (s.h_scalars) cudaFreeHost(s.h_scalars); d(s.d_half_big); d(s.d_expert_out); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
-    d(s.d_embed_table); d(s.d_router_act); d(s.d_router_scores); d(s.d_router_logits);
+    d(s.d_embed_table); d(s.d_router_act); d(s.d_router_scores);
     s = XingSession{};
 }
 
@@ -671,9 +718,6 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
                   static_cast<size_t>(H) * sizeof(__nv_bfloat16)));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_router_scores),
              static_cast<size_t>(frozen::kNumRouted) * 4));
-    XING_CK(alloc(reinterpret_cast<void **>(&s.d_router_logits),
-                  static_cast<size_t>(std::max(1, dims.experts)) *
-                      sizeof(__nv_bfloat16)));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_gate), 16 * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_expert_ids), 16 * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_half),
@@ -945,7 +989,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         XingStageRms("hc.collapsed", l, token_id, s.d_collapsed, H, stream);
         XingStageRms("hc.post", l, token_id, s.d_post, hc, stream);
         XingStageRms("hc.comb", l, token_id, s.d_comb, hc * hc, stream);
-        xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
+        xing_rmsnorm_kernel<<<1, kNormThreads, 0, stream>>>(
             s.d_collapsed, ly.input_ln, s.d_act, s.d_half, H, frozen::kRmsEps);
         XingStageRms("input_ln", l, token_id, s.d_act, H, stream);
 
@@ -967,7 +1011,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                 static_cast<int>(ly.kv_a.rows));
             XING_CK(qe);
         }
-        xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
+        xing_rmsnorm_kernel<<<1, kNormThreads, 0, stream>>>(
             s.d_norm, ly.q_a_ln, s.d_norm, s.d_half2, frozen::kQLoraRank,
             frozen::kRmsEps);
         XING_CK(GvF32(ly.q_b, s.d_half2, s.d_q, stream));           // [heads*qk]
@@ -981,7 +1025,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         // pass: this used to be a norm into scratch, a D2D memcpy of the normed
         // latent back, and a separate ToHalf - three launches per layer to move
         // 2 KiB, which is ~80 launches per token at this machine's launch floor.
-        xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
+        xing_rmsnorm_kernel<<<1, kNormThreads, 0, stream>>>(
             s.d_kv_latent, ly.kv_a_ln, s.d_kv_latent, s.d_half2,
             frozen::kKvLoraRank, frozen::kRmsEps);
         XING_CK(GvF32(ly.kv_b, s.d_half2, s.d_kv_b, stream));       // [heads*(nope+v)]
@@ -1055,7 +1099,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             s.d_comb, s.d_rows, stream));
         XingStageRms("ffnhc.collapsed", l, token_id, s.d_collapsed, H, stream);
         XingStageRms("ffnhc.comb", l, token_id, s.d_comb, hc * hc, stream);
-        xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
+        xing_rmsnorm_kernel<<<1, kNormThreads, 0, stream>>>(
             s.d_collapsed, ly.post_attn_ln, s.d_act, s.d_half, H,
             frozen::kRmsEps);
         XingStageRms("post_attn_ln", l, token_id, s.d_act, H, stream);
@@ -1074,15 +1118,14 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         else
         {
             // Router: BF16 weight + FP32 bias (never quantized). The
-            // device-independent GEMV dispatches matching dtypes only, so the
-            // activation is converted to BF16 first.
+            // activation is converted to BF16 first because the family router
+            // reads BF16; its own projection kernel writes the scores the top-k
+            // actually consumes. A second neutral RunLxGemmVec projection into
+            // d_router_logits used to run here and nothing ever read it - dead
+            // work on every MoE layer (6.4 us x 38 per token).
             lsxcommon::kernels::F32toTKernel<__nv_bfloat16>
                 <<<(H + 255) / 256, 256, 0, stream>>>(s.d_act, s.d_router_act,
                                                       static_cast<int64_t>(H));
-            XING_CK(lsxcommon::gemv::RunLxGemmVec(
-                stream, ly.router, s.d_router_act, 1, dims.experts, H,
-                lsxcommon::gemv::LxDtype::kBF16, lsxcommon::gemv::LxDtype::kBF16,
-                1.0f, s.d_router_logits, lsxcommon::gemv::LxDtype::kBF16, 0.0f));
             XING_CK(LaunchXingRouter(ly.router, ly.e_score_bias, s.d_router_act,
                                      dims.experts, H, dims.top_k,
                                      dims.norm_topk_prob, dims.routed_scale,
@@ -1220,7 +1263,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
     // Mean over the four streams -> final norm -> lm_head.
     xing_mean_streams_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
         s.d_hidden, hc, H, s.d_norm);
-    xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
+    xing_rmsnorm_kernel<<<1, kNormThreads, 0, stream>>>(
             s.d_norm, pw.final_norm, s.d_norm, s.d_half, H, frozen::kRmsEps);
     XING_CK(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
         stream, s.d_half, pw.head.packed, pw.head.scales, pw.head.global_scale,

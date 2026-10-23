@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/core.h"
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/gpu_power.h"
 #include "lsxcommon/model_engine.h"
@@ -188,6 +189,17 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m,
         SKIP(("vault model missing: " + model_dir.string()).c_str());
     }
 
+    // Same logging core as every app (lsxbenchmark/lsxfabric). Without it the
+    // default spdlog logger is the SYNCHRONOUS single-thread one, and the measured
+    // decode differed from the canonical lsxbenchmark run by 9% on the same
+    // binary and prompt (Xing-4.0: 134.4 vs 146.6 t/s at 2048, reproduced both
+    // ways). A baseline guard that measures a path no user runs cannot see a
+    // regression in the path they do run, so initialize once per process.
+    static const bool core_ready = [] {
+        lsxcommon::Core::Initialize("test_perf_baseline.log");
+        return true;
+    }();
+    (void)core_ready;
     lsxcommon::InferenceEngine::Session engine;
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_dir.string();

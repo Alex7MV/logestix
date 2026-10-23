@@ -119,168 +119,6 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 123.2 t/s (nine serial kernels + device dispatch + graph replay)
-- **Status: serial-kernel class CLOSED (2026-10-05); re-measured 2026-10-23.
-  14.40 -> **123.2 t/s perf / 112.4 t/s r3** at 2048 tokens (the old r3
-  record was 20.10; the strict streaming-GEMV route removed the scalar-tile
-  bottleneck). Every
-  single-block, thread-0-serial and under-occupied kernel on the decode path is
-  fixed or measured-and-declined; what is left is the GEMV occupancy, which is a
-  different (numerics) project - see the end. Every fix came from the same
-  method: nsys + a `--max-gen` sweep to separate fixed from context-dependent
-  cost, then a Release-only latency budget at the PRODUCTION shape.
-- The three serial costs, in the order nsys found them:
-
-  | kernel | before | after | what it was |
-  |---|---|---|---|
-  | `xing_hyper_conn_kernel` | 229 us | 61 us | `<<<1,256>>>`, 24 sequential 256-thread tree reductions (192 dependent barriers) |
-  | `xing_router_proj_kernel` + `..._topk_kernel` | 129 us | 6.4 us | `<<<1,256>>>`: one SM read all 458 KiB of router weights, and XingSigmoid (a double-precision glibc replica) ran 8x per warp back to back before the top-k could start |
-  | `xing_attn_kernel` | 814 us | 209 us | `<<<32,256>>>` (32 of 170 SMs), softmax serial on thread 0, values serial over t on one thread per dim |
-  | `xing_attn_split_kernel` | 209 us | 63 us | the fixed grid was 32 blocks - one per head; split-K over position chunks (heads x 8 = 256 blocks) plus a combine kernel |
-  | `xing_hyper_conn_gates_kernel` | 36 us | 6.5 us | 20 Sinkhorn iterations + 16 exps serial on thread 0, and `ExpfGlibc` is a DOUBLE-precision replica - a consumer SM retires FP64 at 1/64 rate; then warp-0 registers with shuffles |
-  | `xing_hyper_conn_collapse_kernel` | 8 us | 2.0 us | the 57 KB collapse was the tail of the one-block gates kernel (8 warps of loads in flight); its own wide block, no FP64 in it |
-  | `xing_attn_combine_kernel` | 6.8 us | 1.8 us | kAttnSplits rescale factors were recomputed per head DIM thread - 16 serial double-precision exps each; now computed once per chunk |
-
-- The attention ones are what the length curve pointed at:
-  `us/token = 14258 + 16518 per 1000 cached positions` meant 54% of a 2048-token
-  step was context-dependent, all of it in that kernel. After the two attention
-  passes the same sweep gives **7016 + 1680**, i.e. the context term shrunk 9.8x
-  and is now 19% of the step; the fixed term is 81% and is the whole frontier
-  (it was 46% of the step before this series).
-- The depth mixer needed TWO passes and the second one had to be re-derived after
-  the first looked done. Splitting `<<<1,256>>>` into a projection (24 blocks,
-  one per hc_fn row) and a gates block took 61 -> 40 us - and then nsys said the
-  gates block alone was 36 of those 40. The cause was arithmetic, not occupancy:
-  `ExpfGlibc`/`XingSigmoid` are bit-exact glibc replicas written in double
-  precision, so the 16 exps + 4 sigmoids of the Sinkhorn were 20 serial
-  double-precision calls on thread 0. One cell per thread (and one row/column
-  reciprocal per thread) is numerically IDENTICAL - exp and max are element-wise
-  and the Sinkhorn's per-cell updates were already independent - for 40 -> 17 us.
-  **The lesson worth keeping: on consumer Blackwell (1/64 FP64) a "tiny" serial
-  scalar tail can dominate a kernel, and nsys per-kernel attribution is what
-  finds it - the block count looked fine.**
-- **2026-10-23 profile and next lever.** nsys on the graphless decode
-  (128 tokens) attributes the fixed step to the expert-batch GEMV
-  (`gemv_expert_batch_ids`, ~24% combined), `xing_rmsnorm_kernel` (~12%,
-  167 launches/token at ~4.6 us), the mHC gates/proj/collapse (~19%) and the
-  attention/router GEMVs. A 128-thread `RunLxGemmVec` launch was neutral
-  (123.4 vs 123.3 t/s) and reverted. The remaining 8 ms/token is still the
-  GEMV/allocation-occupancy project described below, not bandwidth.
-- Fixed cost, where the next levers are: the per-token `[vocab]` logits round
-  trip is GONE (the sampler now reads `session_->d_logits` in place and only the
-  8-byte argmax comes back, with the full row captured just for the final token
-  - worth +0.7% end to end, 106.9 -> 107.9 t/s at 128 tokens, so it was never
-  the E2E bottleneck, but it removes 1 MB of PCIe traffic and three
-  `cudaMalloc`/`cudaFree` per token, which is what concurrent sessions on one
-  model pay for). On the GPU side the remaining single-block work is the gates block
-  (13 us x 40 layers = 0.5 ms/token) and the attention could still use more SMs
-  (one block per head = 32 of 170; a position-split plus a combine kernel would
-  open 8x more). `ResolveXingRouted`'s 38 D2H syncs per token were
-  MEASURED as free at 128 tokens (64.3 vs 64.3 t/s with them skipped), so they
-  are not worth doing before the two above.
-- Numeric gates re-run on the real weights after every change (all three kernel
-  rewrites are tolerance class): SelfCheck Paris x3, FSI 3/3, CODE 3/3, DET 3/3.
-  Each kernel carries a Release-only latency budget and a host-parity case at the
-  production shape - the original cases used hidden=64 / 16 experts, which is why
-  all three defects survived a green suite.
-- **What the remaining 7.0 ms/token is NOT: bandwidth.** Per token the decode
-  path streams the 4-of-64 routed experts, the shared expert, the attention
-  projections, the two dense layers and the LM head: ~2.68 GB, so at 113.6 t/s
-  that is 304 GB/s, 17% of the 1792 GB/s peak -
-  and a layer's ~53 MB should take 31 us at peak, while a layer measures ~222 us
-  (9.1 ms / 41). So decode is latency/occupancy-bound, not bandwidth-bound, and
-  the next lever is the GEMV path itself: `RunLxGemmVec` splits output rows
-  across blocks conservatively and never fills 170 SMs, so each of the ~15
-  dependent kernels per layer pays launch + drain latency at low occupancy.
-  Raising decode further means wider GEMV tiles (more rows per block, split-K
-  over the K dimension) - correctness-first no longer, i.e. a real numerics
-  project with its own gate, not another serial-kernel fix.
-- Effective bandwidth went 31.6 -> 304 GB/s (113.6 t/s, 8.8 ms/token). The memory roofline for this model
-  is 2.19 GB/token => **694 t/s at 85% of peak**; at 113.6 t/s the model reads
-  304 GB/s of it - which is the point above: the roofline is not the binding
-  constraint any more, the GEMV occupancy is.
-- **What the next project is, and it is plumbing, not arithmetic.** After the
-  router fix the profile is dominated by kernels that are far too slow for their
-  bytes: `xing_rmsnorm_kernel` at 4.8 us for a 3584-float row, 163 launches per
-  token, and 81 each of the three mHC kernels. All are single-block, so 169 of
-  170 SMs idle during a 42 KB reduction, and a decode step is ~400 dependent
-  launches. Replacing the RMSNorm's 8-barrier tree with warp shuffles bought
-  +0.4% (19292/19323 ms vs 19366/19392) which is the point: **the floor of a
-  one-block launch here is ~4 us regardless of what the block does.** Neither
-  more ILP nor fewer barriers moves it. The lever that does is CUDA graph
-  capture of a whole decode step, and that requires the routed-id dispatch to be
-  device-side - so the id->slot table whose sync measured free above becomes a
-  PREREQUISITE here, not a win. Second project: the prefill row-batching (below).
-- **DONE (2026-10-05): the decode step is captured and replayed as a CUDA graph**
-  (114.1 -> 117.2 t/s at 2048, 113.9 -> 117.1 on the repeat; `LSX_XING_CUDA_GRAPH=0`
-  restores the legacy per-token launch path). Three things had to become true
-  first, and each is a separate commit:
-  1. the routed-expert dispatch resolves on the device (`8bb474c`), because the
-     host path drains the pipeline once per MoE layer and a drain cannot be
-     recorded;
-  2. `{pos, token_id}` live in device memory rather than in kernel arguments
-     (`f7fa0bb`) - a graph bakes its arguments in, so a per-token value has to
-     travel in memory. The embedding gather, the KV write and both RoPE kernels
-     read them there now, and the RoPE kernels take the BASE YaRN tables and
-     index their own row;
-  3. the attention launches a position-independent geometry when captured
-     (`3e0ae5a`): both forms at their maximum, excluding each other on the
-     device position, with empty chunks publishing `(m = -inf, l = 0)` so the
-     combine cannot read the previous position's slots. Same bits, verified at
-     pos 2047 / 1000 / 255.
-
-  What the graph does NOT cover: the sampler, the per-token logits readback and
-  the KV-layout work below. `XingCaptureDecodeGraph` refuses (rather than
-  capturing) when the step is not capture-legal - fast-math off, the layer-debug
-  staging on - and a capture that fails after it started is reported instead of
-  being papered over, because it leaves the context unusable.
-- Tool calling is verified on the REAL weights
-  (`test_xing_moe_selfcheck` "end-to-end tool round-trip", the same case nine
-  other families run): the model emits its native markers as the control ids
-  11/12, `arrow_tokenizer_decode` drops special tokens, so `output_text` reads
-  as a bare `get_weather<param_key>city</param_key><param_value>Paris</...>` with
-  no marker in it - which is why `xing_moe_tool_format::Parse` walks the ids and
-  splices the marker bytes instead of decoding, and why the test asserts the ids
-  are present rather than trusting the decoded text. An earlier "emission not
-  observed" note was that same artifact, not a defect.
-- Remaining per-token costs, in the order they were identified:
-1. ~~`ResolveXingRouted` syncs once per MoE layer (38/token)~~ DONE, and the
-   earlier "measured free" conclusion was HALF RIGHT. Skipping only the
-   `cudaStreamSynchronize` really is free (64.3 vs 64.3 t/s, then 21569 vs
-   21555 ms - 0.06%): a decode-loop sync costs only what it drains. What the
-   experiment did NOT skip was the host resolve around it - six `assign()`
-   calls plus nine pointer fields per selected expert, 38 times per token - and
-   moving the whole thing to the device (uploaded per-layer expert pointer
-   tables, ids read in the GEMV kernel) is worth **+3.4%**. Both halves had to
-   go: the sync was free, the resolve was not.
-2. ~~`XingMoeModel::Infer` round-trips the whole `[vocab]` logits row~~ DONE
-   (9108ff4): the sampler now reads `session_->d_logits` in place and only the
-   8-byte argmax comes back, with the row captured once for `final_logits`. The
-   three per-step `cudaMalloc`/`cudaFree` are gone with it.
-3. Prefill replays the prompt one token per step (no incremental/parallel
-   prefill), so TTFT grows linearly with prompt length.
-- **Next target, measured (2026-10-05): the mHC depth mixer, 1.32 ms/token, 15%
-  of the step.** It is four launches per mHC block, two blocks per layer, so 320
-  per token: proj 5.93 us (24 blocks), gates 7.06 us (ONE block), collapse 1.97 us,
-  mix 1.55 us. The gates kernel is the interesting one - it is 0.56 ms/token on
-  its own and it is not bandwidth: the Sinkhorn already lives in warp 0's
-  registers at the frozen geometry (hc_mult=4, 16 of 32 lanes), so the cost is
-  20 strictly serial iterations of shuffle-sums and divides, with the other seven
-  warps idle. The obvious fix - merge gates into the wide collapse block so the
-  57 KiB stream read overlaps the Sinkhorn - is the one that was already tried
-  and reverted: the collapse block runs 1024 threads, whose 64-register cap makes
-  the FP64 exp replica spill, and that cost more than the overlap won. The way
-  through is a producer/consumer split INSIDE one launch: warps 1..7 prefetch the
-  streams into shared memory while warp 0 runs the iterations, one barrier, then
-  the collapse - FP64 stays off the wide path and the load overlaps the chain.
-  Budget: `xing.mhc.decode` in `kernel_budgets.json` guards the current 12.5-13.0 us
-  for proj+gates+collapse, so a regression here is visible immediately.
-- The baseline is recorded in `tests/perf/perf_baselines.json` (mode `perf`
-  and `r3`); it is still an explicit **floor**, not a tuned number, so the perf
-  guard treats a regression against it as a real signal.
-- Parity is unaffected: SelfCheck Paris and the FSI/CODE/DET gates pass at
-  `kOff`, so this is pure throughput work.
-
 ## F. Decode throughput ramp over a session (2026-10-05) — no ramp on Xing
 
 An operator's separate observation was that throughput sometimes *grows* during
@@ -1049,6 +887,16 @@ within-target protocol is unchanged. Knob `LSX_PERF_COOLDOWN_TIMEOUT_S`
 (default 300; 0 disables). Verified: phi-4 and qwen3.8-flash-next pass
 back-to-back; fast suite 94/94.
 
+**Second measurement defect, fixed 2026-10-23:** `test_perf_baseline` did not
+call `Core::Initialize`, so unlike every app it ran with spdlog's synchronous
+default logger. On the same binary, prompt and 2048-token protocol it read
+134.4 t/s where `lsxbenchmark` read 146.6 (reproduced both ways; adding the
+initialization makes them agree). The harness now initializes the logging core,
+so a baseline measures the path users run. Consequence: every other family's
+committed row was recorded on the slower path and is ~9% low; the next run of
+that target re-seeds it upward automatically (a higher reading is `kUpdate`,
+not a failure), so they are conservative floors in the meantime.
+
 **Still open (the §B class):** a genuinely warm room whose plateau sits above
 what the reference needs cannot be cooled into tolerance — no oracle separates
 "the room is warm" from "the code regressed" at 3%. The cooldown removes the
@@ -1064,7 +912,7 @@ investigation trail:
 | 2026-10-23 | r3/bit-exact restored to streaming GEMV; qwen3.6 closed | The strict mode had been made correct by disabling `gemv_large`, which dropped qwen3.5-9b r3 from 111 to 19.3 t/s. The strict scope now pins the large-N and <=32 MiB streaming GEMV as its canonical route (`LsxBitExactMode`), ignores `LSX_GEMV_LARGE`/`LSX_GEMV_MAX_MIB`, and routes qkv/z through it for every H. Re-seeded r3 references: qwen3.5-9b **111.06 -> 147.0**, qwen3.8-27b **39.03 -> 52.27**, qwen3.6-35B-A3B **13.32 -> 73.39**. SelfCheck/FSI/CODE/DET for all three plus Ornith are green; the TC path stays off. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-23 | Ornith perf baseline re-seeded (documented cost) | 167.06 -> **160.20 t/s** on two cooled runs. The reference predates the neutral MoE migration and the overflow-proof batched SwiGLU (`8e34314`), whose own note records the same ~4% cost (Qwen3.6 166.7 -> 161.3); this is the accepted correctness fix, not a regression. r3 was then re-seeded 12.70 -> **72.02**. A router launch-geometry experiment (128 -> 64 threads) was neutral (160.5 vs 160.0) and reverted; `ornith.router.decode` now has a 14.0 us max budget row (11.84 us observed) instead of SKIPping. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-23 | C1 closed: GPU budget tests serialized | `RESOURCE_LOCK "gpu"` added to all kernel-budget suites (plus Ornith, now budget-bearing) in `tests/CMakeLists.txt`; a `ctest -j` sweep can no longer overlap two latency/bandwidth samples. The measured flake was contention: five concurrent copies failed 4/5, 80 solo runs were green. Best-of-5 remains the second layer. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
-| 2026-10-23 | Xing re-measured: 123.2 perf / 112.4 r3 | The strict streaming-GEMV route lifts r3 from 20.1; the graphless profile leaves the GEMV-occupancy/numerics project as the only open D2 item. A 128-thread `RunLxGemmVec` launch was neutral and reverted. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
+| 2026-10-23 | D2 closed: Xing decode 123.2 -> **146.65 perf / 123.92 r3** | Expert-batch GEMV now uses the dense kernel's four 128-bit activation loads (bit-identical; gate/up 13.5 -> 9.24 us, down 12.95 -> 9.05 us); the second, unread router projection was deleted (6.4 us x 38/token); mHC gates+collapse merged with the 57 KB prefetch under the Sinkhorn (9.10 -> 7.27 us, bit-identical); RMSNorm moved from a cold-latency-bound scalar 256 block to float4/512 (7.99 -> 1.75 us in situ). All SelfCheck/FSI/CODE/DET and the fast suite pass. Found and fixed a harness defect: `test_perf_baseline` never initialized the logging core, so it measured the synchronous-logger path (134.4 vs 146.6 canonical); other families' rows will re-seed upward on their next run. The 2048 profile now puts attention split-K at 26.8% (~84 MB KV/token, roofline); remaining work is KV compression and prefill, not decode serialization. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-23 | Granite tool round-trip and the qwen fused-linear test fixtures | §U closed: the RED was prompt framing, not generation arithmetic — the native `granite_tool_format` renderer/parser (commit `de0b160`) restores `get_weather`, and `test_granite_dense_selfcheck` passes with `logits_hash=3d1604aa75c99a1f` unchanged. The `test_qwen_dense_fused_linear_attn` failures were fixture bugs: the synthetic E4M3 scale cycle included `0x7F`, the reserved NaN; the host z reference added the projection twice; and the tiny full-layer geometry used `gs=0.5`, overflowing FP16 after the NaN was removed. All 43,675 assertions now pass. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-22 | Inference audit — memory/lifecycle P1s and the cheap hardening closed | Mistral/Xing continuation no longer writes past the KV cache and all four families share one continuation contract (Mistral's `last_tok`, Granite's `pos0 = kv_rows`); fused w13 writes the up half to `d_yg + I` (real OOB in Mistral, memcheck-clean now); the E1 depth counter is process-global and cross-TU-tested; `--bit-exact` no longer routes through `gemv_large`; six busy-polls became bounded `WaitEventChecked`; the split-K partials scratch is per-stream; RPATH, `head_dim`/GDN validation and the prequant double-activation fallback fixed; §V corrected. Fast 98/98 without `LD_LIBRARY_PATH`; dense parity green except the known phi DET-02 / gemma FSI/CODE reds. All X1-X16 audit items are closed (second pass: GLM embed epoch, per-stream scratch, Arrow view range checks, split-KV dot bound) — [`open-tasks/2026-10-22-inference-audit-closed.md`](open-tasks/2026-10-22-inference-audit-closed.md) |
 | 2026-10-17 | Sequential-dispatch invariant made machine-checked (E1) + alice aligned to the fleet logits contract (E2) | **E1:** with no parallel dispatch planned, the process-global kernel-routing toggles' single-dispatch assumption is now enforced — `LsxFastMathScope` keeps a depth counter and logs a loud violation on overlap, pinned by two guard cases (one spawns a second thread to prove the counter is shared state, so the guard is not vacuous). **E2:** alice now publishes the LAST logits row like every other family (it published the FIRST). The original worry — that this would move alice's DET/FSI goldens — was wrong: those harnesses read `gen_tokens`, never `final_logits`, so nothing was re-captured. Real-weight alice selfcheck/DET/FSI/CODE all green. [`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md) |

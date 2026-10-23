@@ -271,16 +271,18 @@ procedure — `perf-tuning-a-model`.
   the markers at ids 11/12 are the **plain** `<tool_call>` spellings — the
   zero-width-space variants in `tokenizer_config.json` are not vocabulary pieces);
   format tag `logestix-xing-nvfp4`; converted with `lsxforge --xing`; real-weight
-  SelfCheck + FSI + CODE + DET all pass. Decode is still correctness-first:
-  123.2 t/s (perf) / 112.4 t/s (r3) at 2048 tokens against a 694 t/s memory
-  roofline (`tests/perf/perf_baselines.json`); the mHC and router kernels are
-  were single-block by design (all three since parallelised: mHC, router,
-  attention, split-K attention, warp-Sinkhorn mHC, split collapse, split router,
-  CUDA-graph replay of the decode step - `LSX_XING_CUDA_GRAPH=0` for the legacy
-  per-token launch path)
-  and the remaining costs are the per-MoE-layer routed-id
-  D2H sync, the per-token host logits round trip and token-by-token prefill
-  (`docs/OPEN_TASKS.md` D2).
+  SelfCheck + FSI + CODE + DET all pass. Decode: **146.65 t/s (perf) / 123.92 t/s
+  (r3)** at 2048 tokens against a 694 t/s memory roofline
+  (`tests/perf/perf_baselines.json`); every serial/one-block kernel on the
+  decode path is parallelised (mHC, warp-Sinkhorn gates, router, split-K
+  attention, split collapse, split router), the expert-batch GEMV uses the dense
+  kernel's four 128-bit activation loads, the mHC gates+collapse share one
+  launch with the 57 KB stream prefetch under the Sinkhorn, RMSNorm is
+  float4/512, and the step replays as a CUDA graph (`LSX_XING_CUDA_GRAPH=0` for
+  the legacy per-token launch path). Attention split-K is now ~27% of the 2048
+  step and sits on the KV memory roofline; token-by-token prefill is the
+  remaining TTFT cost. History and profile: archive
+  `docs/open-tasks/2026-10-23-residual-closures.md`.
   Gemma-4 (two members, one tokenizer): the MoE 26B (`gemma_moe_*` +
   `gemma_base_model.*` + `gemma_tool_format.*`, format tag `logestix-gemma`) and
   the DENSE 31B (`gemma_dense_constants.h` (frozen passport),
