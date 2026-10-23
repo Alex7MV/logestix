@@ -1272,7 +1272,7 @@ target_compile_definitions(test_glm_moe_flash_convert PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_glm_moe_flash_convert PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
+    lsxcommon simdjson::simdjson Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 

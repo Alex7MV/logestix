@@ -4,15 +4,22 @@
 // (unified converter-suite discipline: no real-model conversions).
 #include <catch2/catch_test_macros.hpp>
 
+#include <simdjson.h>
+
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "glm_moe_flash_constants.h"
+#include "lsxcommon/path_registry.h"
 #include "test_glm_moe_flash_fixture.h"
 
 namespace fs = std::filesystem;
@@ -386,4 +393,292 @@ TEST_CASE("BuildFlashPassportTokens: byte-0 unk anchors + DS bridge side")
     REQUIRE(hdr.deepseek_vocab_size == pt.deepseek_tokens.size());
     REQUIRE(hdr.glm_unk_id == pt.glm_unk_id);
     REQUIRE(hdr.deepseek_unk_id == pt.deepseek_unk_id);
+}
+
+// ── Audit instrument: the real checkpoint (light files only) ─────────────
+// The converter hard-errors on an unclassified tensor and silently ignores
+// nothing, so the classifier's coverage of the *actual* inventory is the
+// difference between a conversion failure and a model that lost a tensor.
+// These cases read config.json + model.safetensors.index.json (never tensor
+// data: the converter-suite discipline forbids real conversions) and SKIP on
+// a machine whose vault does not have the checkpoint.
+namespace {
+
+fs::path GlmFlashSourceDir()
+{
+    return fs::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.3-Flash";
+}
+
+} // namespace
+
+TEST_CASE("real checkpoint: hybrid pattern + semantics match the passport")
+{
+    const fs::path dir = GlmFlashSourceDir();
+    const std::string cfg = dir.string() + "/config.json";
+    if (!fs::exists(cfg)) SKIP("GLM-5.3-Flash checkpoint not present");
+
+    simdjson::dom::parser parser;
+    simdjson::dom::element doc;
+    REQUIRE(parser.load(cfg.c_str()).get(doc) == simdjson::SUCCESS);
+    simdjson::dom::object tc;
+    REQUIRE(doc["text_config"].get_object().get(tc) == simdjson::SUCCESS);
+
+    using namespace frozen;
+    auto iv = [&](const char *k) {
+        int64_t v = 0;
+        REQUIRE(tc[k].get_int64().get(v) == simdjson::SUCCESS);
+        return static_cast<int>(v);
+    };
+    auto dv = [&](const char *k) {
+        double v = 0.0;
+        REQUIRE(tc[k].get_double().get(v) == simdjson::SUCCESS);
+        return v;
+    };
+    // Geometry the kernels are compiled against.
+    CHECK(iv("hidden_size") == kHidden);
+    CHECK(iv("num_hidden_layers") == kLayers);
+    CHECK(iv("num_attention_heads") == kHeads);
+    CHECK(iv("qk_head_dim") == kQkHeadDim);
+    CHECK(iv("q_lora_rank") == kQLora);
+    CHECK(iv("kv_lora_rank") == kKvLora);
+    CHECK(iv("moe_intermediate_size") == kMoeIntermediate);
+    CHECK(iv("intermediate_size") == kDenseIntermediate);
+    CHECK(iv("n_routed_experts") == kNumExperts);
+    CHECK(iv("num_experts_per_tok") == kTopK);
+    CHECK(iv("hc_mult") == kHcCount);
+    CHECK(iv("vocab_size") == kVocab);
+    CHECK(iv("first_k_dense_replace") == kFirstKDense);
+    CHECK(iv("num_nextn_predict_layers") == 1);
+
+    // Hybrid pattern: the one item that silently decodes garbage if a
+    // single layer_types assumption is used instead.
+    simdjson::dom::object lac;
+    REQUIRE(tc["linear_attn_config"].get_object().get(lac) == simdjson::SUCCESS);
+    simdjson::dom::array kda_arr, full_arr;
+    REQUIRE(lac["kda_layers"].get_array().get(kda_arr) == simdjson::SUCCESS);
+    REQUIRE(lac["full_attn_layers"].get_array().get(full_arr) ==
+            simdjson::SUCCESS);
+    std::vector<int> got_kda, got_full;
+    for (auto e : kda_arr) {
+        int64_t v = 0;
+        REQUIRE(e.get_int64().get(v) == simdjson::SUCCESS);
+        got_kda.push_back(static_cast<int>(v));
+    }
+    for (auto e : full_arr) {
+        int64_t v = 0;
+        REQUIRE(e.get_int64().get(v) == simdjson::SUCCESS);
+        got_full.push_back(static_cast<int>(v));
+    }
+    CHECK(got_kda == std::vector<int>(std::begin(kKdaLayerIds),
+                                      std::end(kKdaLayerIds)));
+    CHECK(got_full == std::vector<int>(std::begin(kDsaLayerIds),
+                                       std::end(kDsaLayerIds)));
+    {
+        int64_t conv = 0;
+        REQUIRE(lac["short_conv_kernel_size"].get_int64().get(conv) ==
+                simdjson::SUCCESS);
+        CHECK(static_cast<int>(conv) == kConvKernel);
+        int64_t heads = 0;
+        REQUIRE(lac["num_heads"].get_int64().get(heads) == simdjson::SUCCESS);
+        CHECK(static_cast<int>(heads) == kHeads);
+        int64_t hd = 0;
+        REQUIRE(lac["head_dim"].get_int64().get(hd) == simdjson::SUCCESS);
+        CHECK(static_cast<int>(hd) == kHeadDim);
+    }
+
+    // Semantics that the kernels hard-code (a mismatch here is not a
+    // performance question: it is a wrong-answer question).
+    CHECK(dv("swiglu_limit") == 10.0);          // clamped SwiGLU
+    CHECK(dv("routed_scaling_factor") == 2.5);  // kRoutedScalingNum/Den
+    CHECK(dv("hc_eps") == 1e-6);
+    CHECK(iv("hc_sinkhorn_iters") == 20);
+    CHECK(iv("index_head_dim") == kIndexerHeadDim);
+    CHECK(iv("index_n_heads") == kIndexerHeads);
+    CHECK(iv("index_topk") == kIndexerTopk);
+    CHECK(iv("index_kpool") == kIndexerKpool);
+    CHECK(iv("n_shared_experts") == 1);
+    CHECK(tc["mla_use_nope"].get_bool().value());
+    CHECK(tc["norm_topk_prob"].get_bool().value());
+    {
+        std::string_view scoring, method;
+        REQUIRE(tc["scoring_func"].get_string().get(scoring) ==
+                simdjson::SUCCESS);
+        REQUIRE(tc["topk_method"].get_string().get(method) ==
+                simdjson::SUCCESS);
+        CHECK(scoring == "sigmoid");
+        CHECK(method == "noaux_tc");
+    }
+
+    // ParseFlashConfig must agree with the passport it is gated against.
+    auto top = ParseFlashConfig(dir.string());
+    REQUIRE(top.error_msg.empty());
+    CHECK(top.qk_head_dim == kQkHeadDim);
+    CHECK(top.indexer_topk == kIndexerTopk);
+}
+
+TEST_CASE("real checkpoint: every tensor in the index is classified")
+{
+    const fs::path dir = GlmFlashSourceDir();
+    const std::string index_path = dir.string() + "/model.safetensors.index.json";
+    if (!fs::exists(index_path)) SKIP("GLM-5.3-Flash checkpoint not present");
+
+    simdjson::dom::parser parser;
+    simdjson::dom::element doc;
+    REQUIRE(parser.load(index_path.c_str()).get(doc) == simdjson::SUCCESS);
+    simdjson::dom::object weight_map;
+    REQUIRE(doc["weight_map"].get_object().get(weight_map) == simdjson::SUCCESS);
+
+    std::set<std::string> names;      // classified payload tensors
+    std::vector<std::string> unknown;
+    size_t scale_inv = 0;
+    std::map<int, std::set<int>> moe_experts;
+    std::map<int, std::map<int, std::array<bool, 4>>> expert_projs;
+    std::map<int, std::set<std::string>> layer_suffixes;  // non-expert names
+
+    for (auto [key, shard] : weight_map) {
+        const std::string name(key);
+        (void)shard;
+        if (name.find(".weight_scale_inv") != std::string::npos) {
+            ++scale_inv;
+            continue;
+        }
+        const ParsedFlashTensor p = classify_flash_tensor(name);
+        names.insert(name);
+        if (p.kind == FlashTensorKind::Unknown) {
+            unknown.push_back(name);
+            continue;
+        }
+        if (p.kind == FlashTensorKind::RoutedExpert) {
+            // Only MoE layers own routed experts, each expert exactly once
+            // per projection.
+            CHECK(frozen::IsMoeLayer(p.layer));
+            moe_experts[p.layer].insert(p.expert);
+            expert_projs[p.layer][p.expert][static_cast<size_t>(p.proj_id)] =
+                true;
+        } else if (p.layer >= 0) {
+            const std::string prefix = ".layers." + std::to_string(p.layer) + ".";
+            const size_t at = name.find(prefix);
+            layer_suffixes[p.layer].insert(
+                at == std::string::npos ? name : name.substr(at + prefix.size()));
+        }
+    }
+
+    INFO("unclassified: " << (unknown.empty() ? std::string("none")
+                                              : unknown.front()));
+    CHECK(unknown.empty());
+    CHECK(scale_inv == 37338);  // FP8 scale payloads, consumed as pairs
+    CHECK(names.size() == 38770);
+
+    // Routed-expert completeness: 288 experts x 3 projections on every MoE
+    // layer, and no expert tensor anywhere else.
+    CHECK(moe_experts.size() == static_cast<size_t>(frozen::kLayers -
+                                                    frozen::kFirstKDense + 1));
+    for (const auto &[layer, experts] : moe_experts) {
+        INFO("layer " << layer);
+        CHECK(experts.size() == static_cast<size_t>(frozen::kNumExperts));
+        CHECK(*experts.begin() == 0);
+        CHECK(*experts.rbegin() == frozen::kNumExperts - 1);
+        size_t missing = 0;
+        for (const auto &[e, projs] : expert_projs[layer]) {
+            for (int pid = 1; pid <= 3; ++pid)
+                if (!projs[static_cast<size_t>(pid)]) ++missing;
+        }
+        CHECK(missing == 0);
+    }
+
+    // Per-layer structure. Layer tables come from the checkpoint itself,
+    // not from the passport, so a passport/config drift fails here.
+    static const std::array<std::pair<const char *, FlashTensorKind>, 14>
+        kKdaSuffix = {{
+            {"self_attn.q_proj.weight", FlashTensorKind::KdaQ},
+            {"self_attn.k_proj.weight", FlashTensorKind::KdaK},
+            {"self_attn.v_proj.weight", FlashTensorKind::KdaV},
+            {"self_attn.o_proj.weight", FlashTensorKind::KdaO},
+            {"self_attn.q_conv1d.weight", FlashTensorKind::KdaConv},
+            {"self_attn.k_conv1d.weight", FlashTensorKind::KdaConv},
+            {"self_attn.v_conv1d.weight", FlashTensorKind::KdaConv},
+            {"self_attn.A_log", FlashTensorKind::KdaALog},
+            {"self_attn.dt_bias", FlashTensorKind::KdaDtBias},
+            {"self_attn.b_proj.weight", FlashTensorKind::KdaB},
+            {"self_attn.f_a_proj.weight", FlashTensorKind::KdaFa},
+            {"self_attn.f_b_proj.weight", FlashTensorKind::KdaFb},
+            {"self_attn.g_a_proj.weight", FlashTensorKind::KdaGa},
+            {"self_attn.g_b_proj.weight", FlashTensorKind::KdaGb},
+        }};
+    static const std::array<std::pair<const char *, FlashTensorKind>, 14>
+        kDsaSuffix = {{
+            {"self_attn.q_a_proj.weight", FlashTensorKind::DsaQa},
+            {"self_attn.q_b_proj.weight", FlashTensorKind::DsaQb},
+            {"self_attn.kv_a_proj_with_mqa.weight", FlashTensorKind::DsaKvA},
+            {"self_attn.kv_b_proj.weight", FlashTensorKind::DsaKvB},
+            {"self_attn.o_proj.weight", FlashTensorKind::DsaOBig},
+            {"self_attn.q_a_layernorm.weight", FlashTensorKind::DsaNorms},
+            {"self_attn.kv_a_layernorm.weight", FlashTensorKind::DsaNorms},
+            {"self_attn.indexer.wq_b.weight", FlashTensorKind::Indexer},
+            {"self_attn.indexer.wk.weight", FlashTensorKind::Indexer},
+            {"self_attn.indexer.weights_proj.weight", FlashTensorKind::Indexer},
+            {"self_attn.indexer.k_norm.weight", FlashTensorKind::Indexer},
+            {"self_attn.indexer.k_norm.bias", FlashTensorKind::Indexer},
+            {"self_attn.indexer.index_kpool_compress_ape",
+             FlashTensorKind::Indexer},
+            {"self_attn.indexer.index_kpool_compress_gate",
+             FlashTensorKind::Indexer},
+        }};
+
+    const std::string lprefix = "model.language_model.layers.";
+    auto check_layer = [&](int layer, const auto &suffixes,
+                           const char *what) {
+        for (const auto &[suffix, want] : suffixes) {
+            const std::string full =
+                lprefix + std::to_string(layer) + "." + suffix;
+            INFO(what << " layer " << layer << ": " << suffix);
+            CHECK(names.count(full) == 1);
+            CHECK(classify_flash_tensor(full).kind == want);
+        }
+    };
+
+    for (size_t i = 0; i < frozen::kKdaLayerCount; ++i) {
+        const int layer = frozen::kKdaLayerIds[i];
+        check_layer(layer, kKdaSuffix, "KDA");
+        INFO("KDA layer " << layer);
+        CHECK(layer_suffixes[layer].count("self_attn.o_norm.weight") == 1);
+        CHECK(frozen::IsKdaLayer(layer));
+    }
+    for (size_t i = 0; i < frozen::kDsaLayerCount; ++i) {
+        const int layer = frozen::kDsaLayerIds[i];
+        check_layer(layer, kDsaSuffix, "DSA");
+        CHECK(frozen::IsDsaLayer(layer));
+    }
+    // MTP nextn layer: a full DSA + MoE layer, but the checkpoint carries no
+    // hyper-connection tensors for it (mHC starts at layer 0 and covers the
+    // 45 resident layers only). It is stored and never applied, and the
+    // loader builds layers [0, num_layers) == [0, 45).
+    check_layer(frozen::kMtpLayer, kDsaSuffix, "MTP");
+    for (int l = 0; l < frozen::kLayers; ++l) {
+        const std::string prefix = lprefix + std::to_string(l) + ".";
+        INFO("layer " << l);
+        CHECK(names.count(prefix + "input_layernorm.weight") == 1);
+        CHECK(names.count(prefix + "post_attention_layernorm.weight") == 1);
+        for (const char *hc : {"hc_attn_base", "hc_attn_fn", "hc_attn_scale",
+                               "hc_ffn_base", "hc_ffn_fn", "hc_ffn_scale"})
+            CHECK(names.count(prefix + hc) == 1);
+    }
+    CHECK(names.count(lprefix + std::to_string(frozen::kMtpLayer) +
+                      ".hc_attn_fn") == 0);
+
+    // Globals + multimodal ballast (stripped, counted by the converter).
+    CHECK(classify_flash_tensor("lm_head.weight").kind ==
+          FlashTensorKind::LmHead);
+    CHECK(classify_flash_tensor("model.language_model.embed_tokens.weight")
+              .kind == FlashTensorKind::Embed);
+    CHECK(classify_flash_tensor("model.language_model.norm.weight").kind ==
+          FlashTensorKind::FinalNorm);
+    size_t visual = 0;
+    for (const auto &n : names) {
+        const auto p = classify_flash_tensor(n);
+        if (p.kind != FlashTensorKind::Visual) continue;
+        ++visual;
+        CHECK(p.layer == -1);
+    }
+    CHECK(visual == 347);  // 24 vision blocks + merger/patch_embed
 }
