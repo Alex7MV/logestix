@@ -60,7 +60,8 @@ MistralDims MistralDimsFromWeights(const MistralPinnedWeights &pw);
 // the MoE need. Created and destroyed INSIDE RunUnderResidencyLock.
 struct MistralSession {
     int capacity = 0;
-    int length = 0;
+    int length = 0;       // tokens whose K/V are in the cache
+    int32_t last_tok = -1; // last SAMPLED token, not yet decoded (continuation)
     int vocab = 0;
     // KV caches, layer-major: element (l, p, h, d) at
     // ((l * capacity + p) * heads + h) * dim + d.

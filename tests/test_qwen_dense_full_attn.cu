@@ -242,3 +242,23 @@ TEST_CASE("Split-KV decode attention rejects unsupported geometry",
 
     cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_out);
 }
+
+TEST_CASE("Non-split attention rejects non-power-of-two head_dim",
+          "[qwen-full-attn]")
+{
+    // The unsplit kernel reduces the softmax denominator with a `threads/2`
+    // tree; for head_dim=192 the tree does not cover the row (audit X7).
+    // Split-KV already rejects it; the non-split entry must too.
+    constexpr int kHeads = 4, kHd = 192, kKvHeads = 1;
+    __half *d_q, *d_k, *d_v, *d_out;
+    cudaMalloc(&d_q, (size_t)kHeads * kHd * sizeof(__half));
+    cudaMalloc(&d_k, (size_t)kKvHeads * kHd * sizeof(__half));
+    cudaMalloc(&d_v, (size_t)kKvHeads * kHd * sizeof(__half));
+    cudaMalloc(&d_out, (size_t)kHeads * kHd * sizeof(__half));
+
+    CHECK(lsxcommon::qwen::RunAttnFullAttnKernel(
+              0, d_q, d_k, d_v, d_out, 1, kHeads, kHd, kKvHeads, 0.1f, 0) ==
+          cudaErrorInvalidValue);
+
+    cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_out);
+}

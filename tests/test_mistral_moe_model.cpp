@@ -147,3 +147,58 @@ TEST_CASE("Mistral honours cooperative cancel", "[mistral][inference][lifecycle]
 
     model->Unload();
 }
+
+// Audit X1/X2: a continuation must be semantically identical to a fresh
+// prefill of the same context, and it must not run past the cache capacity.
+// The old path passed `session.length - 1` (a POSITION) as the next token id
+// and re-fed a token that had already been decoded.
+TEST_CASE("Mistral continuation matches a fresh prefill", "[mistral][inference]")
+{
+    if (!GpuAvailable()) std::exit(4);
+    EnsureModelRegistry();
+    const fs::path root = BuildConverted();
+
+    auto model = MakeModel(root);
+    REQUIRE(model->Load());
+
+    ModelRequest first;
+    first.input_ids = {5, 7, 9};
+    first.max_gen_tokens = 2;
+    first.ignore_eos = true;
+    const auto r1 = model->Infer(first);
+    REQUIRE(r1.ok);
+    REQUIRE(r1.gen_tokens.size() == 2);
+
+    // session_tail_ == prompt + generated for Mistral.
+    ModelRequest cont;
+    cont.input_ids = first.input_ids;
+    cont.input_ids.insert(cont.input_ids.end(), r1.gen_tokens.begin(),
+                          r1.gen_tokens.end());
+    cont.max_gen_tokens = 2;
+    cont.ignore_eos = true;
+    const auto r2 = model->Infer(cont);
+    REQUIRE(r2.ok);
+    model->Unload();
+
+    // Fresh instance, same context: no session reuse.
+    auto fresh = MakeModel(root);
+    REQUIRE(fresh->Load());
+    ModelRequest same;
+    same.input_ids = cont.input_ids;
+    same.max_gen_tokens = 2;
+    same.ignore_eos = true;
+    const auto r3 = fresh->Infer(same);
+    REQUIRE(r3.ok);
+    fresh->Unload();
+
+    CHECK(r2.gen_tokens == r3.gen_tokens);
+
+    REQUIRE(r2.final_logits.size() == r3.final_logits.size());
+    double max_abs = 0.0;
+    for (size_t i = 0; i < r2.final_logits.size(); ++i)
+        max_abs = std::max(max_abs,
+                           (double)std::abs(r2.final_logits[i] -
+                                            r3.final_logits[i]));
+    INFO("max logit delta = " << max_abs);
+    CHECK(max_abs < 1e-3);
+}

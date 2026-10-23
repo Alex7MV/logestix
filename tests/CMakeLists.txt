@@ -5253,6 +5253,27 @@ target_compile_definitions(test_absl_container_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_ABSC}\"")
 add_test(NAME test_absl_container_guard COMMAND test_absl_container_guard)
 
+# Guard: the E1 FastMathScope depth must be process-global across TUs. The
+# header used to keep it in an anonymous-namespace static (one copy per TU),
+# which leaked the counter and printed false VIOLATION lines. Two TUs on
+# purpose: the second one enters, the first one observes.
+add_executable(test_fast_math_guard_cross_tu
+    test_fast_math_guard_cross_tu.cpp
+    test_fast_math_guard_other_tu.cpp)
+target_link_libraries(test_fast_math_guard_cross_tu PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_fast_math_guard_cross_tu COMMAND test_fast_math_guard_cross_tu)
+
+add_executable(test_cuda_event_wait test_cuda_event_wait.cpp)
+target_link_libraries(test_cuda_event_wait PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_cuda_event_wait COMMAND test_cuda_event_wait)
+
+add_executable(test_granite_tool_framing test_granite_tool_framing.cpp)
+target_link_libraries(test_granite_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_granite_tool_framing COMMAND test_granite_tool_framing)
+
 # Guard: routed-expert host storage — no family-private OWNING expert
 # container; every entry view must alias the neutral ExpertStore; the legacy
 # all-experts-in-pinned-slabs store (MoEExpertStore) must not spread. Host-only
@@ -6137,6 +6158,9 @@ set_tests_properties(
     test_code_naming_guard
     test_absl_format_guard
     test_absl_container_guard
+    test_fast_math_guard_cross_tu
+    test_granite_tool_framing
+    test_cuda_event_wait
     test_expert_store_guard
     test_license_guard
     test_kimi_moe_expert_cache

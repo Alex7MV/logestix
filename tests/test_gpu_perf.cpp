@@ -121,6 +121,9 @@ TEST_CASE("ResolvePerfKnobs: precedence env > CLI > base/heuristic",
     REQUIRE(r.source == lsxcommon::perf::PerfSource::kBase);
     REQUIRE(r.knobs.tc_fast_math_default == false);
     REQUIRE(r.knobs.seq1_gemv_default == false);
+    // The large-N streaming GEMV is a tolerance-class route, not part of the
+    // strict scalar path: kOff must clear it too (audit X4).
+    REQUIRE(r.knobs.gemv_large_default == false);
 
     // CLI kOn on a heuristic GPU still forces TC.
     GpuPerfProfile unknown = Rtx5090();

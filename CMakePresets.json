@@ -75,7 +75,7 @@
         "CMAKE_CXX_COMPILER": "$env{HOME}/projects/amd/aocc-compiler-5.2.0/bin/clang++",
         "CMAKE_CUDA_HOST_COMPILER": "$env{HOME}/projects/amd/aocc-compiler-5.2.0/bin/clang++",
         "CMAKE_BUILD_WITH_INSTALL_RPATH": "ON",
-        "CMAKE_INSTALL_RPATH": "$ORIGIN/../_deps/arrow-build/release",
+        "CMAKE_INSTALL_RPATH": "$ORIGIN/../_deps/arrow-build/release;$ORIGIN/../../_deps/arrow-build/release;$ORIGIN/../../../_deps/arrow-build/release",
         "CMAKE_CXX_FLAGS_RELEASE": "-DNDEBUG"
       }
     }

@@ -12,6 +12,7 @@
 
 #include "lsxcommon/gemma_moe_inference.h"
 #include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/cuda_event_wait.h"
 #include "lsx_reduce.cuh"
 #include "lsxcommon/gemma_moe_load.h"
 #include "lsxcommon/expert_device_cache.h"
@@ -2040,9 +2041,13 @@ cudaError_t ForwardLayer(cudaStream_t stream,
         // wake latency after full sync is pure GPU idle time (qwen parity).
         cudaEventRecord(g_gen_ctx->ev_router, stream);
         {
-            cudaError_t q;
-            while ((q = cudaEventQuery(g_gen_ctx->ev_router)) == cudaErrorNotReady) {}
-            if (q != cudaSuccess) { log::error(std::string("[gemma] L962: ") + cudaGetErrorString(q)); return q; }
+            const cudaError_t q =
+                lsxcommon::cuda::WaitEventChecked(g_gen_ctx->ev_router);
+            if (q != cudaSuccess) {
+                log::error(std::string("[gemma] L962: ") +
+                           cudaGetErrorString(q));
+                return q;
+            }
         }
     }
 

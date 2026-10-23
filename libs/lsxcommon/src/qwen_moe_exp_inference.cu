@@ -8,6 +8,7 @@
 #include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/qwen_moe_inference_pipeline.h"
 #include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/cuda_event_wait.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/shared_experts.h"
 
@@ -1650,7 +1651,7 @@ cudaError_t RunExpGeneration(
     half_elems += (size_t)K * 2 * I;               // d_ygu_batch
     half_elems += (size_t)K * I;                   // d_h_batch
     half_elems += (size_t)K * H;                   // d_yp_batch
-    half_elems += (size_t)I;                       // d_yg (routed scratch)
+    half_elems += (size_t)2 * I;                   // d_yg (fused w13: gate|up)
     half_elems += (size_t)I;                       // d_yu
     half_elems += (size_t)H;                       // d_y2
     half_elems += (size_t)SI;                      // d_si (shared scratch)
@@ -1729,7 +1730,7 @@ cudaError_t RunExpGeneration(
     __half *d_ygu_batch = adv(ph, (size_t)K * 2 * I);
     __half *d_h_batch = adv(ph, (size_t)K * I);
     __half *d_yp_batch = adv(ph, (size_t)K * H);
-    __half *d_yg = adv(ph, (size_t)I);
+    __half *d_yg = adv(ph, (size_t)2 * I);
     __half *d_yu = adv(ph, (size_t)I);
     __half *d_y2 = adv(ph, (size_t)H);
     __half *d_si = adv(ph, (size_t)SI);
@@ -2090,9 +2091,12 @@ cudaError_t RunExpGeneration(
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready_ev, stream);
             {
-                cudaError_t q;
-                while ((q = cudaEventQuery(tok_ready_ev)) ==
-                       cudaErrorNotReady) {}
+                const cudaError_t q =
+                    lsxcommon::cuda::WaitEventChecked(tok_ready_ev);
+                if (q != cudaSuccess) {
+                    result.error_msg = "router handshake failed";
+                    return q;
+                }
             }
             for (int k = 0; k < K && k < 16; ++k) {
                 if (h_slots[k].eid < 0 || h_slots[k].eid >= E) {
@@ -2240,18 +2244,11 @@ cudaError_t RunExpGeneration(
                                 cudaMemcpyDeviceToHost, stream);
                 cudaEventRecord(tok_ready_ev, stream);
                 {
-                    // Spinning on cudaEventQuery is forward-progress conforming
-                    // (CUDA guarantees that REPEATED query calls make device
-                    // progress, so this cannot hang), but the status must not
-                    // be dropped: a sticky launch failure from the decode step
-                    // makes this return an error, and swallowing it fed a -1
-                    // token back into the model - garbage output in place of a
-                    // reported CUDA failure.
-                    cudaError_t q = cudaEventQuery(tok_ready_ev);
-                    while (q == cudaErrorNotReady)
-                    {
-                        q = cudaEventQuery(tok_ready_ev);
-                    }
+                    // The status must not be dropped: a sticky launch failure
+                    // from the decode step makes this return an error, and
+                    // swallowing it fed a -1 token back into the model.
+                    const cudaError_t q =
+                        lsxcommon::cuda::WaitEventChecked(tok_ready_ev);
                     if (q != cudaSuccess)
                     {
                         result.error_msg = "token readback: " +

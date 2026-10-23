@@ -68,6 +68,7 @@ bool AllowedCommon(const std::string& stem)
         "deepseek_moe_tool_format",  // V4/V4.1 DSML codec shared by both
         "qwen_tool_format",          // ChatML codec shared by dense + MoE
         "gemma_tool_format",         // Gemma-4 tool codec
+        "granite_tool_format",       // Granite-4.2 ChatML tool codec
         "gigachat_tool_format",      // GigaChat chatml-v5 GCML codec
         "mimo_tool_format",          // MiMo ChatML + <tool_call> codec
         "alice_tool_format",         // AliceAI native chat/tool codec

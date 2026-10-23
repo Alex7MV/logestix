@@ -162,6 +162,9 @@ LsxPerfKnobSet ResolvePerfKnobs(const GpuPerfProfile &gpu,
         case FastMathMode::kOff:
             r.knobs.tc_fast_math_default = false;
             r.knobs.seq1_gemv_default = false;
+            // Tolerance-class streaming GEMV; the strict scalar mode must not
+            // select it (audit X4).
+            r.knobs.gemv_large_default = false;
             break;
         case FastMathMode::kAuto:
             break;

@@ -1,4 +1,5 @@
 #include "kimi_moe_kernels.h"
+#include "lsxcommon/cuda_event_wait.h"
 #include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/lsx_gemv.h"
@@ -214,9 +215,7 @@ cudaError_t KimiRouteFinish(cudaEvent_t ev)
     if (!ev) return cudaErrorInvalidValue;
     // Event-scoped busy-poll (round-20 pattern): returns the moment the
     // router D2H retires without draining the rest of the stream.
-    cudaError_t q;
-    while ((q = cudaEventQuery(ev)) == cudaErrorNotReady) {}
-    return q;
+    return lsxcommon::cuda::WaitEventChecked(ev);
 }
 
 } // namespace kimi
@@ -1924,9 +1923,9 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
                         cudaMemcpyDeviceToHost, stream);
         cudaEventRecord(step_ev, stream);
         {
-            cudaError_t q;
-            while ((q = cudaEventQuery(step_ev)) == cudaErrorNotReady) {}
-            (void)q;
+            const cudaError_t q =
+                lsxcommon::cuda::WaitEventChecked(step_ev);
+            if (q != cudaSuccess) return q;
         }
         if (next_id < 0) {
             gen.error_msg = "argmax failed";

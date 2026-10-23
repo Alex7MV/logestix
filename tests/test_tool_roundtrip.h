@@ -45,7 +45,6 @@ inline std::vector<lsxcommon::ToolCall> RunToolRoundTrip(
     std::vector<int32_t> ids;
     REQUIRE(model.BuildConversationInputIds(model.Tokenizer(), conv, ids));
     REQUIRE(!ids.empty());
-
     ModelRequest req;
     req.input_ids = ids;
     req.max_gen_tokens = max_gen_tokens;

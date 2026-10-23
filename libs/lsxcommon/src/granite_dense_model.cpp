@@ -5,6 +5,7 @@
 #include "fast_load_internal.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxcommon/granite_tool_format.h"
 #include "lsxcommon/sampling.h"
 
 #include <absl/strings/str_cat.h>
@@ -163,6 +164,24 @@ gpu::InferenceResult Granite42_30BModel::Infer(const ModelRequest &req)
 gpu::InferenceResult Granite42_30BModel::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+bool Granite42_30BModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderGraniteConversation(conv, text)) return false;
+    if (!AppendGraniteChatIds(tok, text, out_ids))
+        return BuildPromptInputIds(tok, text, out_ids);
+    return true;
+}
+
+bool Granite42_30BModel::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    return ParseGraniteTokenCalls(tok, gen_tokens, out_calls);
 }
 
 } // namespace lsxcommon

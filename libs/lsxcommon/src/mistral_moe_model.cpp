@@ -219,8 +219,18 @@ gpu::InferenceResult MistralSmall4MoeModel::Infer(const ModelRequest &req)
     const cudaError_t run = RunUnderResidencyLock([&] {
         const qwen::SessionDecision session = qwen::DecideSession(
             session_ && session_->length > 0,
-            session_ ? session_->length - 1 : -1, session_tail_, req.input_ids);
-        if (!session.is_continuation)
+            session_ ? session_->last_tok : -1, session_tail_, req.input_ids);
+        // A continuation is only safe while the existing cache can hold the
+        // token we are about to append plus the whole generation budget
+        // (audit X1: the old path wrote past capacity). If it cannot, fall
+        // back to a fresh prefill of the full context instead of growing the
+        // multi-buffer MLA session in place.
+        bool use_cont = session.is_continuation;
+        if (use_cont && session_ &&
+            session_->length + 1 + std::max(0, req.max_gen_tokens) >
+                session_->capacity)
+            use_cont = false;
+        if (!use_cont)
         {
             session_.reset();
             session_tail_.clear();
@@ -249,10 +259,9 @@ gpu::InferenceResult MistralSmall4MoeModel::Infer(const ModelRequest &req)
                 return cudaErrorMemoryAllocation;
         }
 
-        std::vector<int32_t> feed = session.is_continuation
-                                        ? session.gen_input
-                                        : req.input_ids;
-        int pos = session.is_continuation ? session_->length : 0;
+        std::vector<int32_t> feed = use_cont ? session.gen_input
+                                             : req.input_ids;
+        int pos = use_cont ? session_->length : 0;
         for (size_t i = 0; i < feed.size(); ++i)
         {
             if (gs.Aborted()) break;
@@ -298,6 +307,10 @@ gpu::InferenceResult MistralSmall4MoeModel::Infer(const ModelRequest &req)
                 cudaStreamSynchronize(stream());
             }
             tokens.push_back(next);
+            // `next` is the last SAMPLED token. It is decoded only if another
+            // step follows; otherwise it stays out of the cache and is the
+            // continuation seed (audit X2).
+            session_->last_tok = next;
             gs.Emit(next, pos, maxv);
             if (tokens.size() == 1)
                 ttft_ms = static_cast<double>(
@@ -309,6 +322,7 @@ gpu::InferenceResult MistralSmall4MoeModel::Infer(const ModelRequest &req)
                 eos_terminated = true;
                 break;
             }
+            if (step + 1 >= std::max(0, req.max_gen_tokens)) break;
             const cudaError_t se = mistral_moe::MistralDecodeStep(
                 pw_, dims_, *session_, next, d_rc_, d_rs_, pos, stream());
             if (se != cudaSuccess) return se;

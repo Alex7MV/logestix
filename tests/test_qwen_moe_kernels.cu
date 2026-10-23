@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "lsxcommon/qwen_moe_expert_cache.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 
 using lsxcommon::qwen_moe::QwenMoeExpertDeviceCache;
 
@@ -518,7 +519,7 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]
     __half *d_x, *d_yg, *d_yu, *d_y2;
     float *d_acc;
     cudaMalloc(&d_x, H * 2);
-    cudaMalloc(&d_yg, I * 2);
+    cudaMalloc(&d_yg, 2 * I * 2);
     cudaMalloc(&d_yu, I * 2);
     cudaMalloc(&d_y2, H * 2);
     cudaMalloc(&d_acc, H * 4);
@@ -612,7 +613,7 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
     __half *d_x, *d_yg, *d_yu, *d_y2;
     float *d_acc;
     cudaMalloc(&d_x, H * 2);
-    cudaMalloc(&d_yg, I * 2);
+    cudaMalloc(&d_yg, 2 * I * 2);
     cudaMalloc(&d_yu, I * 2);
     cudaMalloc(&d_y2, H * 2);
     cudaMalloc(&d_acc, H * 4);
@@ -1323,4 +1324,88 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     cudaFree(d_bat13); cudaFree(d_bat2);
     cudaStreamDestroy(stream);
     lsxcommon::qwen::SetQwenTcFastMath(false);
+}
+
+// Audit X5: the fused w13 path writes [gate|up] as 2*I halves in ONE GEMM.
+// The up half must be read from `d_yg + I`; reading `d_yu` instead only works
+// when the allocator happens to place d_yu right after d_yg (the arena callers
+// do, Mistral's two cudaMallocs do not). This case gives the FFN separate
+// buffers, forces the TC fused route, and compares the SwiGLU output across
+// two different d_yu fills: the fused result must not depend on d_yu at all.
+TEST_CASE("fused routed FFN reads the up half from the fused output",
+          "[qwen-moe-experts]")
+{
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_moe_ffn_fused_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_ffn_fused_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::moe::MoEExpertStore store;
+    std::string err;
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
+    REQUIRE(store.d_seg_wgs != nullptr);
+
+    lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
+    REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, 4, cache, err));
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    const int H = 64, I = 16, K = 2;
+    std::vector<__half> hx(static_cast<size_t>(H));
+    for (int i = 0; i < H; ++i)
+        hx[static_cast<size_t>(i)] = __float2half(sinf((float)i * 0.7f) * 0.4f);
+
+    __half *d_x, *d_yg, *d_yu, *d_y2;
+    float *d_acc;
+    cudaMalloc(&d_x, H * 2);
+    // The fused route needs 2*I halves; d_yu is deliberately a separate
+    // allocation whose bytes the fused route must ignore.
+    cudaMalloc(&d_yg, 2 * I * 2);
+    cudaMalloc(&d_yu, I * 2);
+    cudaMalloc(&d_y2, H * 2);
+    cudaMalloc(&d_acc, H * 4);
+    cudaMemcpy(d_x, hx.data(), H * 2, cudaMemcpyHostToDevice);
+
+    std::vector<lsxcommon::moe::MoERoutedSlot> h_slots = {{0, 0.5f}, {1, 0.5f}};
+
+    auto run_fused = [&](uint8_t d_yu_fill, std::vector<__half> &sw_h) {
+        cudaMemset(d_acc, 0, H * 4);
+        cudaMemset(d_yu, d_yu_fill, I * 2);
+        cudaMemset(d_yg, 0xAB, 2 * I * 2);
+        lsxcommon::lsx_nvfp4::SetLsxTcFastMath(true);
+        lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(true);
+        REQUIRE(lsxcommon::moe::RunMoERoutedFFN(
+                    stream, store, cache, /*layer=*/0, h_slots.data(), K, d_x,
+                    H, I, d_acc, d_yg, d_yu, d_y2, err) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        sw_h.resize(static_cast<size_t>(I));
+        // In the fused path RunAttnSwigluPreScaledQuantInternal writes the
+        // prescaled product to d_yg[0..I); compare exactly that.
+        cudaMemcpy(sw_h.data(), d_yg, static_cast<size_t>(I) * 2,
+                   cudaMemcpyDeviceToHost);
+    };
+
+    std::vector<__half> a, b;
+    run_fused(0x00, a);
+    run_fused(0x7f, b);
+    CHECK(std::memcmp(a.data(), b.data(),
+                      static_cast<size_t>(I) * sizeof(__half)) == 0);
+
+    float energy = 0.f;
+    for (const __half v : a) energy += __half2float(v) * __half2float(v);
+    CHECK(energy > 0.f);
+
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(false);
+    cudaFree(d_x); cudaFree(d_yg); cudaFree(d_yu); cudaFree(d_y2);
+    cudaFree(d_acc);
+    cudaStreamDestroy(stream);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
+    store.Free();
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
 }

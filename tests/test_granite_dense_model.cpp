@@ -101,3 +101,64 @@ TEST_CASE("granite honours cooperative cancel", "[granite][model][lifecycle]")
     model->Unload();
     std::filesystem::remove_all(tmp);
 }
+
+// Audit X2: a granite continuation must append to the existing cache, not
+// prefill the tail at position 0 and reset kv_rows. Compare against a fresh
+// prefill of prompt + generated tokens.
+TEST_CASE("granite continuation matches a fresh prefill", "[granite][model]")
+{
+    auto tmp = BuildConvertedFixture();
+    ModelInitConfig cfg;
+    cfg.model_path = tmp.string();
+    cfg.model_type = "granite-4.2-30b";
+
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {10, 11, 12, 13, 14};
+    req.max_gen_tokens = 3;
+    req.ignore_eos = true;
+    const auto r1 = model->Infer(req);
+    REQUIRE(r1.ok);
+    REQUIRE(r1.gen_tokens.size() == 3);
+
+    // Granite's session_tail_ is the generated tokens.
+    ModelRequest cont;
+    cont.input_ids = r1.gen_tokens;
+    cont.max_gen_tokens = 3;
+    cont.ignore_eos = true;
+    const auto r2 = model->Infer(cont);
+    REQUIRE(r2.ok);
+    model->Unload();
+
+    auto fresh = LsxModelFactory::Create(cfg);
+    REQUIRE(fresh != nullptr);
+    REQUIRE(fresh->Load());
+    ModelRequest same;
+    same.input_ids = req.input_ids;
+    same.input_ids.insert(same.input_ids.end(), r1.gen_tokens.begin(),
+                          r1.gen_tokens.end());
+    same.max_gen_tokens = 3;
+    same.ignore_eos = true;
+    const auto r3 = fresh->Infer(same);
+    REQUIRE(r3.ok);
+    fresh->Unload();
+
+    CHECK(r2.gen_tokens == r3.gen_tokens);
+    REQUIRE(r2.final_logits.size() == r3.final_logits.size());
+    double max_abs = 0.0;
+    for (size_t i = 0; i < r2.final_logits.size(); ++i)
+        max_abs = std::max(max_abs,
+                           (double)std::abs(r2.final_logits[i] -
+                                            r3.final_logits[i]));
+    INFO("max logit delta = " << max_abs);
+    CHECK(max_abs < 1e-3);
+    // Structural oracle: a continuation must APPEND to the cache, so the
+    // slot count matches a fresh prefill of the same context. The old path
+    // prefilled the tail at pos 0 and reset kv_rows to 1.
+    CHECK(r2.kv_slots_used == r3.kv_slots_used);
+
+    std::filesystem::remove_all(tmp);
+}

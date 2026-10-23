@@ -167,6 +167,10 @@ struct alignas(8) MoEGvSlotDev {
 // the implementation records it on `stream` before staging so the copy stream
 // never overwrites a slot still being read by previously enqueued compute.
 // Numerics are unchanged (same kernels, same accumulation order).
+// `d_yg` is 2*I halves when the fused w13 route is eligible (fast-math and a
+// non-null store.d_seg_wgs), because the gate and up halves are one GEMM
+// output [gate|up]; the split route uses only the first I. `d_yu` is I halves
+// and is used by the split route only — the fused route must never read it.
 cudaError_t RunMoERoutedFFN(cudaStream_t stream,
                                 MoEExpertStore &store,
                                 gpu::ExpertDeviceCache &cache, int layer,

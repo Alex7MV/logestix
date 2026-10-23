@@ -21,6 +21,7 @@
 #include "test_streaming_assert.h"
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/model_factory.h"
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/xing_moe_inference.h"
 #include "lsxcommon/xing_moe_load.h"
@@ -371,4 +372,69 @@ TEST_CASE("Xing multi-step decode is bit-reproducible", "[xing][model]")
     // NaN, and NaN != NaN would mask the bitwise comparison we actually want.
     REQUIRE(std::memcmp(first.data(), second.data(),
                         first.size() * sizeof(float)) == 0);
+}
+
+// Audit X1/X2: a Xing continuation must append to the cache and produce the
+// same tokens/logits as a fresh prefill of prompt + generated tokens.
+TEST_CASE("xing continuation matches a fresh prefill", "[xing][model]")
+{
+    ConvertedFixture f = BuildFixture();
+    EnsureModelRegistry();
+
+    ModelInitConfig cfg;
+    cfg.model_path = f.out.string();
+    cfg.model_type = "xing4.0-29b-a4b";
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {1, 2, 3};
+    req.max_gen_tokens = 2;
+    req.ignore_eos = true;
+    const auto r1 = model->Infer(req);
+    REQUIRE(r1.ok);
+    REQUIRE(r1.gen_tokens.size() == 2);
+
+    // session_tail_ == prompt + generated for Xing.
+    ModelRequest cont;
+    cont.input_ids = req.input_ids;
+    cont.input_ids.insert(cont.input_ids.end(), r1.gen_tokens.begin(),
+                          r1.gen_tokens.end());
+    cont.max_gen_tokens = 2;
+    cont.ignore_eos = true;
+    const auto r2 = model->Infer(cont);
+    REQUIRE(r2.ok);
+    model->Unload();
+
+    auto fresh = LsxModelFactory::Create(cfg);
+    REQUIRE(fresh != nullptr);
+    REQUIRE(fresh->Load());
+    ModelRequest same;
+    same.input_ids = cont.input_ids;
+    same.max_gen_tokens = 2;
+    same.ignore_eos = true;
+    const auto r3 = fresh->Infer(same);
+    REQUIRE(r3.ok);
+    fresh->Unload();
+
+    std::string dbg = "r1 tokens=";
+    for (auto t : r1.gen_tokens) dbg += std::to_string(t) + ",";
+    dbg += " slots=" + std::to_string(r1.kv_slots_used) +
+           " r2=" + std::to_string(r2.kv_slots_used) +
+           " r3=" + std::to_string(r3.kv_slots_used);
+    INFO(dbg);
+    for (size_t i = 0; i < r2.gen_tokens.size(); ++i)
+        INFO("tok[" << i << "] r2=" << r2.gen_tokens[i]
+                    << " r3=" << r3.gen_tokens[i]);
+    CHECK(r2.gen_tokens == r3.gen_tokens);
+    CHECK(r2.kv_slots_used == r3.kv_slots_used);
+    REQUIRE(r2.final_logits.size() == r3.final_logits.size());
+    double max_abs = 0.0;
+    for (size_t i = 0; i < r2.final_logits.size(); ++i)
+        max_abs = std::max(max_abs,
+                           (double)std::abs(r2.final_logits[i] -
+                                            r3.final_logits[i]));
+    INFO("max logit delta = " << max_abs);
+    CHECK(max_abs < 1e-3);
 }

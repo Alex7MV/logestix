@@ -39,6 +39,12 @@ public:
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
 
     const std::string &Type() const override { return kType; }
     static const std::string kType;

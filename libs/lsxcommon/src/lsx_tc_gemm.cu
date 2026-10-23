@@ -855,31 +855,34 @@ cudaError_t LsxTcQuantizeActsNvfp4Bf16(cudaStream_t stream,
     return cudaGetLastError();
 }
 
-// Persistent split-K partials scratch: per-process grow-only buffer.
+// Persistent split-K partials scratch: one grow-only buffer PER STREAM.
 // The hot decode path runs several split-K GEMMs per layer per step; a
 // cudaMallocAsync+cudaMemsetAsync+cudaFreeAsync triple per GEMM dominated
 // the dispatch cost (the partials are disjoint RAW writes per z-slice, so
-// no memset is needed for correctness). One mutex-guarded buffer shared
-// across streams: allocations race only on the grow path, and each GEMM's
-// partials region is disjoint while its kernel runs (same-stream ordering
-// guarantees reuse is safe within a stream; cross-stream users of this
-// dispatch must fence externally, as before).
+// no memset is needed for correctness). Keying by stream is what makes the
+// reuse safe: two streams decoding concurrently previously shared one
+// region, so one stream's finalize could read the other's partials. Streams
+// are stable handles, and this dispatch is the only user of the map.
 namespace {
-float *g_splitk_partials = nullptr;
-size_t g_splitk_bytes = 0;
+std::unordered_map<cudaStream_t, std::pair<float *, size_t>>
+    g_splitk_partials;
 std::mutex g_splitk_mu;
 
-cudaError_t EnsureSplitkPartials(size_t bytes, float **out)
+cudaError_t EnsureSplitkPartials(cudaStream_t stream, size_t bytes,
+                                 float **out)
 {
     std::lock_guard<std::mutex> lk(g_splitk_mu);
-    if (g_splitk_bytes < bytes) {
+    auto &slot = g_splitk_partials[stream];
+    if (slot.second < bytes) {
         void *p = nullptr;
         if (cudaMalloc(&p, bytes) != cudaSuccess) return cudaGetLastError();
-        if (g_splitk_partials) cudaFree(g_splitk_partials);
-        g_splitk_partials = static_cast<float *>(p);
-        g_splitk_bytes = bytes;
+        // Safe to release the old buffer: cudaFree synchronizes the device,
+        // so no kernel of any stream can still be reading it here.
+        if (slot.first) cudaFree(slot.first);
+        slot.first = static_cast<float *>(p);
+        slot.second = bytes;
     }
-    *out = g_splitk_partials;
+    *out = slot.first;
     return cudaSuccess;
 }
 } // namespace
@@ -977,7 +980,7 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
         if (split_k > 1) {
             const size_t pbytes =
                 static_cast<size_t>(split_k) * N * sizeof(float);
-            e = EnsureSplitkPartials(pbytes, &partials);
+            e = EnsureSplitkPartials(stream, pbytes, &partials);
             if (e != cudaSuccess) return e;
             dim3 grid3(grid.x, grid.y, split_k);
             TcGemmKernel<false><<<grid3, 256, 0, stream>>>(

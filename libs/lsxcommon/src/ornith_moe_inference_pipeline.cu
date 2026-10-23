@@ -10,6 +10,7 @@
 // generation loop), shared-memory RMW only by thread 0 behind barriers.
 
 #include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/cuda_event_wait.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/ornith_moe_load.h"
@@ -184,7 +185,7 @@ cudaError_t RunOrnithMoeGeneration(
         (size_t)max_seq * V,             // d_logits
         (size_t)max_seq * 2,             // d_ids
         (size_t)max_seq * 2,             // d_pos
-        (size_t)I,                       // d_yg (routed scratch)
+        (size_t)2 * I,                   // d_yg (fused w13: gate|up)
         (size_t)I,                       // d_yu
         (size_t)H,                       // d_y2
         (size_t)SI,                      // d_si (shared scratch)
@@ -509,10 +510,10 @@ cudaError_t RunOrnithMoeGeneration(
                                 cudaMemcpyDeviceToHost, stream);
                 cudaEventRecord(tok_ready, stream);
                 {
-                    cudaError_t q;
-                    while ((q = cudaEventQuery(tok_ready)) ==
-                           cudaErrorNotReady) {}
-                    (void)q;
+                    const cudaError_t q =
+                        lsxcommon::cuda::WaitEventChecked(tok_ready);
+                    if (q != cudaSuccess)
+                        return fail(q, "router handshake");
                 }
             }
             moe::MoERoutedSlot *slots_host = h_slots;

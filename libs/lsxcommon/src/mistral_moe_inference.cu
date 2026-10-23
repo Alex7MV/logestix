@@ -376,7 +376,9 @@ void FreeMistralSession(MistralSession &s)
     drop(s.d_yu);
     drop(s.d_y2);
     drop(s.d_slots);
-    drop(s.h_slots);
+    // h_slots is page-locked (cudaMallocHost), so it must not go through
+    // cudaFree: that returned cudaErrorInvalidValue on every teardown.
+    if (s.h_slots) cudaFreeHost(s.h_slots);
     drop(s.d_scores);
     drop(s.d_logits);
     lsxcommon::moe::FreeMoEExpertCache(s.cache);
@@ -466,7 +468,7 @@ cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_mlp_scratch),
                      2 * dims.moe_inter * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_yg),
-                     dims.moe_inter * sizeof(__half)));
+                     2 * dims.moe_inter * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_yu),
                      dims.moe_inter * sizeof(__half)));
     MISTRAL_CK(alloc(reinterpret_cast<void **>(&s.d_y2), H * sizeof(__half)));

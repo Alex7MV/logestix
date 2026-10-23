@@ -449,7 +449,7 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[ornith-moe-expert
     __half *d_x, *d_yg, *d_yu, *d_y2;
     float *d_acc;
     cudaMalloc(&d_x, H * 2);
-    cudaMalloc(&d_yg, I * 2);
+    cudaMalloc(&d_yg, 2 * I * 2);
     cudaMalloc(&d_yu, I * 2);
     cudaMalloc(&d_y2, H * 2);
     cudaMalloc(&d_acc, H * 4);
@@ -543,7 +543,7 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
     __half *d_x, *d_yg, *d_yu, *d_y2;
     float *d_acc;
     cudaMalloc(&d_x, H * 2);
-    cudaMalloc(&d_yg, I * 2);
+    cudaMalloc(&d_yg, 2 * I * 2);
     cudaMalloc(&d_yu, I * 2);
     cudaMalloc(&d_y2, H * 2);
     cudaMalloc(&d_acc, H * 4);

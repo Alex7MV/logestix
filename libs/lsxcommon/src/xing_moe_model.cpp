@@ -52,6 +52,9 @@ XingMoeModel::XingMoeModel(ModelInitConfig cfg) : ModelBase(std::move(cfg))
     // Captured before cfg_ is moved into ModelBase; the decode session builds its
     // KV geometry from this and never changes it afterwards.
     kv_cache_layout_ = ModelBase::cfg_.kv_cache_layout;
+    // A synthetic fixture ships no tokenizer arrows; tolerate their absence
+    // (same gate as Mistral/gemma).
+    tokenizer_optional_ = SyntheticGeometryAllowed();
 }
 
 void XingMoeModel::TeardownWeights()
@@ -195,7 +198,16 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
         const qwen::SessionDecision session = qwen::DecideSession(
             session_ && session_->length > 0,
             session_ ? session_->token_id : -1, session_tail_, req.input_ids);
-        if (!session.is_continuation)
+        // Only continue when the existing cache can hold the token we are
+        // about to append plus the whole generation budget (audit X1). If it
+        // cannot, re-prefill the full context on a fresh session instead of
+        // writing past the layer slice.
+        bool use_cont = session.is_continuation;
+        if (use_cont && session_ &&
+            session_->length + 1 + std::max(0, req.max_gen_tokens) >
+                session_->capacity)
+            use_cont = false;
+        if (!use_cont)
         {
             session_.reset();
             session_tail_.clear();
@@ -233,10 +245,9 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
 
         // Prefill: one token per step. Xing has no incremental prefill path
         // yet, so a prompt is replayed token by token — correct-first.
-        std::vector<int32_t> feed = session.is_continuation
-                                        ? session.gen_input
-                                        : req.input_ids;
-        int pos = session.is_continuation ? session_->length : 0;
+        std::vector<int32_t> feed = use_cont ? session.gen_input
+                                             : req.input_ids;
+        int pos = use_cont ? session_->length : 0;
         float maxv = 0.0f;
         // LSX_XING_CUDA_GRAPH=0 keeps the legacy per-token launch path (what the
         // bit-exact --bench run uses); anything else captures.
@@ -326,6 +337,10 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
                 std::fprintf(stderr, "[xing-gen] pos=%d tok=%d hash=%08x\n", pos,
                              next, h);
             }
+            // `next` is the last SAMPLED token. It is decoded only when a
+            // further step follows; otherwise it remains outside the cache and
+            // is the continuation seed (audit X2).
+            session_->token_id = next;
             gs.Emit(next, pos, maxv);
             if (tokens.size() == 1)
                 ttft_ms = static_cast<double>(
@@ -337,6 +352,7 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
                 eos_terminated = true;
                 break;
             }
+            if (step + 1 >= std::max(0, req.max_gen_tokens)) break;
             XING_MODEL_CK(xing::XingSetStepScalars(*session_, pos, next,
                                                     stream()));
             // CUDA graph: record the step once, replay it after that. The step is
@@ -389,11 +405,20 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
                 }
             }
             cudaError_t se = cudaSuccess;
-            if (want_graph && xing::XingDecodeGraphReady(*session_))
+            if (want_graph && xing::XingDecodeGraphReady(*session_)) {
                 se = xing::XingLaunchDecodeGraph(*session_, stream());
-            else
+                // Graph replay records the kernels, not the host-side session
+                // bookkeeping. XingCaptureDecodeGraph ran a host XingDecodeStep
+                // at pos 0, so `length`/`token_id` are stale unless updated
+                // here; the continuation logic and kv_slots read them.
+                if (se == cudaSuccess) {
+                    session_->length = pos + 1;
+                    session_->token_id = next;
+                }
+            } else {
                 se = xing::XingDecodeStep(pw_, dims_, *session_, next, d_rc_,
                                           d_rs_, pos, stream());
+            }
             if (se != cudaSuccess) return se;
             ++pos;
         }

@@ -300,6 +300,23 @@ TEST_CASE("Fused linear-attn full layer matches split reference (seq=1,2)", "[qw
                 dqf, dzf, dabf, dgf, dbetaf, dconvf, dcoref, dgatedf) == cudaSuccess);
             cudaDeviceSynchronize();
 
+            if (seq > 1) {
+                // Persistent state with a multi-token chunk has no grid barrier
+                // between the col_seed read and the t == seq-1 write (audit X8):
+                // the neutral entry must refuse it until it has a state pass.
+                float *dstate = nullptr;
+                REQUIRE(cudaMalloc(&dstate,
+                                   (size_t)nv * vd * kd * sizeof(float)) ==
+                        cudaSuccess);
+                CHECK(RunAttnLinearAttention(nullptr, lw, geo, seq, dx, dout,
+                      dq, dz, dab, dg, dbeta, dconv, dcore, dgated, 0,
+                      dstate) == cudaErrorInvalidValue);
+                CHECK(RunAttnFusedLinearAttnKernel(nullptr, lw, geo, seq, dx,
+                      doutf, dqf, dzf, dabf, dgf, dbetaf, dconvf, dcoref,
+                      dgatedf, 0, dstate) == cudaErrorInvalidValue);
+                cudaFree(dstate);
+            }
+
             std::vector<__half> ho(seq*H), hf(seq*H);
             cudaMemcpy(ho.data(), dout, seq*H*2, cudaMemcpyDeviceToHost);
             cudaMemcpy(hf.data(), doutf, seq*H*2, cudaMemcpyDeviceToHost);

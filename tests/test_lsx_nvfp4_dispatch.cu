@@ -340,6 +340,24 @@ TEST_CASE("fast-math scope depth tracks live scopes and returns to zero",
 // is the only way to actually break the invariant. The case proves the counter
 // is not a constant: the depth a worker thread sees must be >0 while a scope is
 // open, and the violation fires.
+TEST_CASE("kOff disables the large-N streaming GEMV route",
+          "[lsxnvfp4][dispatch][fastmath][guard]")
+{
+    using lsxcommon::FastMathMode;
+    using lsxcommon::lsx_nvfp4::LsxFastMathScope;
+    using lsxcommon::lsx_nvfp4::LsxGemmLarge;
+    using lsxcommon::lsx_nvfp4::SetLsxGemmLarge;
+
+    SetLsxGemmLarge(true);
+    REQUIRE(LsxGemmLarge() == true);
+    {
+        LsxFastMathScope off(FastMathMode::kOff);
+        CHECK(LsxGemmLarge() == false);
+    }
+    CHECK(LsxGemmLarge() == true);
+    SetLsxGemmLarge(false);
+}
+
 TEST_CASE("fast-math scope depth observes a concurrent scope on another thread",
           "[lsxnvfp4][dispatch][fastmath][guard]")
 {

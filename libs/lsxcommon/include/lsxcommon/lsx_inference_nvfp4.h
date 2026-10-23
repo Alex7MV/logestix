@@ -130,7 +130,8 @@ class LsxFastMathScope {
 public:
     // Legacy bool pair (unchanged semantics).
     LsxFastMathScope(bool tc_fast_math, bool seq1_gemv)
-        : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv()), active_(true)
+        : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv()),
+          prev_large_(LsxGemmLarge()), active_(true)
     {
         SetLsxTcFastMath(tc_fast_math);
         SetLsxSeq1Gemv(seq1_gemv);
@@ -141,7 +142,7 @@ public:
     // afterwards. Numeric-class tests pin kOff; production uses kAuto.
     explicit LsxFastMathScope(FastMathMode mode)
         : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv()),
-          active_(mode != FastMathMode::kAuto)
+          prev_large_(LsxGemmLarge()), active_(mode != FastMathMode::kAuto)
     {
         if (mode == FastMathMode::kOn) {
             SetLsxTcFastMath(true);
@@ -149,6 +150,9 @@ public:
         } else if (mode == FastMathMode::kOff) {
             SetLsxTcFastMath(false);
             SetLsxSeq1Gemv(false);
+            // The large-N streaming GEMV is tolerance-class; the strict kOff
+            // path must not route through it (audit X4).
+            SetLsxGemmLarge(false);
         }
         if (active_) Detail::EnterFastMathScope();
     }
@@ -157,6 +161,7 @@ public:
         if (!active_) return;
         SetLsxTcFastMath(prev_tc_);
         SetLsxSeq1Gemv(prev_gemv_);
+        SetLsxGemmLarge(prev_large_);
         Detail::LeaveFastMathScope();
     }
     LsxFastMathScope(const LsxFastMathScope &) = delete;
@@ -165,29 +170,31 @@ public:
 private:
     bool prev_tc_;
     bool prev_gemv_;
+    bool prev_large_;
     bool active_;
 };
 
 // ── Sequential-dispatch guard implementation ───────────────────────────────
 namespace Detail {
-namespace {
-// Live LsxFastMathScope count. Relaxed is enough: the guard only needs to see
-// that the count is 1 in the single-dispatch case; the trip below is a log, not
-// a synchronization primitive.
-std::atomic<int>& FastMathDepth()
-{
-    static std::atomic<int> depth{0};
-    return depth;
-}
-} // namespace
+// One PROCESS-GLOBAL depth (an inline variable, external linkage) so every
+// translation unit shares it. It used to be an anonymous-namespace static in
+// this header: each TU got a private counter, Enter and Leave could land on
+// different copies, and real FSI/DET runs printed false VIOLATION lines while
+// the depth leaked. Pinned by test_fast_math_guard_cross_tu (two TUs).
+inline std::atomic<int> g_fast_math_depth{0};
+// Nesting on one thread is legitimate sequential dispatch. Track it per
+// thread: a violation is only a SECOND THREAD entering while one is already
+// inside, not a nested scope on the same thread.
+inline thread_local int g_fast_math_tls_depth = 0;
 
 inline void EnterFastMathScope()
 {
-    const int d = FastMathDepth().fetch_add(1, std::memory_order_relaxed) + 1;
-    if (d > 1)
+    const int d = g_fast_math_depth.fetch_add(1, std::memory_order_relaxed) + 1;
+    const int tls = ++g_fast_math_tls_depth;
+    if (tls == 1 && d > 1)
     {
         // E1: this is the first moment the sequential-dispatch assumption is
-        // observably false. Two models are inside the kernel-routing scope at
+        // observably false. Two THREADS are inside the kernel-routing scope at
         // once, so the inner save/restore will repoint the outer's routing
         // mid-decode. Loud by design: it must not be a silent wrong-numerics bug.
         std::fprintf(stderr,
@@ -201,10 +208,11 @@ inline void EnterFastMathScope()
 
 inline void LeaveFastMathScope()
 {
-    FastMathDepth().fetch_sub(1, std::memory_order_relaxed);
+    g_fast_math_depth.fetch_sub(1, std::memory_order_relaxed);
+    --g_fast_math_tls_depth;
 }
 
-inline int ActiveFastMathScopeDepth() { return FastMathDepth().load(std::memory_order_relaxed); }
+inline int ActiveFastMathScopeDepth() { return g_fast_math_depth.load(std::memory_order_relaxed); }
 } // namespace Detail
 
 // ── NVFP4 dense GEMM ────────────────────────────────────────────────────────

@@ -892,6 +892,7 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
     // routes ONLY large-N plain shapes; small-N / MoE shapes and the
     // segmented fused qkv|z|a|b path are untouched.
     const bool gemv_large =
+        g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&
         LsxGemmLargeActive() &&
         seq == 1 && !seg_wgs_dev && !seg_bounds_dev &&
         K >= 4096 && N >= 4096;
@@ -901,7 +902,8 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
         (int64_t)(K / 2) * N + (int64_t)((K + 15) / 16) * N <=
             g_lsx_gemv_max_bytes.load(std::memory_order_relaxed);
     const bool gemv_head =
-        kGemvHead && K >= 1024 && N >= 16384;
+        g_lsx_tc_fast_math.load(std::memory_order_relaxed) && kGemvHead &&
+        K >= 1024 && N >= 16384;
     if (((gemv_small && seq == 1) || (gemv_head && seq == 1) ||
          gemv_large) &&
         K >= 256 && !seg_wgs_dev && !seg_bounds_dev) {

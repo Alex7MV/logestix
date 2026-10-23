@@ -27,6 +27,7 @@ add_library(lsxcommon STATIC
     src/granite_dense_convert.cpp
     src/granite_dense_load.cpp
     src/granite_dense_model.cpp
+    src/granite_tool_format.cpp
     src/phi_dense_convert.cpp
     src/phi_dense_load.cpp
     src/phi_dense_model.cpp

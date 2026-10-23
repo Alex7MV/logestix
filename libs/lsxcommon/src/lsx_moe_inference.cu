@@ -629,8 +629,12 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                 }
                 own_swi = true;
             }
+            // The fused w13 GEMM wrote [gate|up] into d_yg as 2*I halves
+            // (w13 above). Read the up half from d_yg + I: d_yu is a SEPARATE
+            // allocation for the split path and is not guaranteed to follow
+            // d_yg (Mistral's two cudaMalloc calls, standalone callers).
             cudaError_t qe = qwen::RunAttnSwigluPreScaledQuantInternal(
-                stream, d_yg, d_yu, sw_f32, d_yg, ap, as, I, alpha_slot);
+                stream, d_yg, d_yg + I, sw_f32, d_yg, ap, as, I, alpha_slot);
             if (qe == cudaSuccess)
                 qe = lsx_tc::RunLsxTcGemmPreQuant(
                     stream, ap, as, w2, s2, rec.gs2, d_y2, 1, I, H, false);

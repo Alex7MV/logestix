@@ -276,6 +276,13 @@ cudaError_t RunAttnFullAttnKernel(
     if (!q || !k || !v || !out || seq <= 0 || heads <= 0 || head_dim <= 0 ||
         kv_heads <= 0 || kv_base < 0)
         return cudaErrorInvalidValue;
+    // The softmax denominator uses a `threads/2` tree over blockDim =
+    // min(head_dim, 512) and the GQA map is `h / (heads / kv_heads)`. Both
+    // require a power-of-two head_dim and an exact division (the split-KV
+    // entry already checks this; audit X7).
+    if ((head_dim & (head_dim - 1)) != 0 || kv_heads > heads ||
+        heads % kv_heads != 0)
+        return cudaErrorInvalidValue;
     const dim3 grid(seq, heads);
     const int threads = std::min(head_dim, 512);
     // dynamic shared = slogits[nscores]; the block REDUCTION scratch is a
@@ -1342,6 +1349,12 @@ cudaError_t RunAttnFusedLinearAttnKernel(
     bool use_sigmoid_gate /* = false */)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
+    // A persistent GatedDeltaNet state is only safe for a single-token chunk:
+    // for seq > 1 there is no grid barrier between the col_seed read and the
+    // t == seq-1 write, so a block could read the state another block already
+    // updated (audit X8). Every current pipeline uses seq == 1 here; keep the
+    // contract explicit instead of relying on that.
+    if (d_gd_state != nullptr && seq > 1) return cudaErrorInvalidValue;
     const int nk = geo.linear_num_key_heads;
     const int kd = geo.linear_key_head_dim;
     const int nv = geo.linear_num_value_heads;
@@ -1580,7 +1593,13 @@ cudaError_t RunAttnFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
         const bool down_warprow =
             QwenGemmLargeActive() && seq == 1 && (I % 64) == 0 &&
             H >= 2048 && I >= 4096;
-        if (!down_warprow && QwenTcFastMath() && (I % 16) == 0) {
+        // The prequant kernel consumes d_gate and overwrites it with the
+        // activated value. If the TC GEMM then fails, re-running SwiGLU on
+        // d_gate would apply silu twice (audit X12), so only enter this branch
+        // when the TC path is known to exist and return the GEMM error rather
+        // than falling through.
+        if (!down_warprow && QwenTcFastMath() && (I % 16) == 0 &&
+            lsx_tc::LsxTcRuntimeSupported()) {
             const size_t qb = static_cast<size_t>(seq) * I / 2;
             const size_t sb2 = static_cast<size_t>(seq) * ((I + 15) / 16);
             uint8_t *ap = nullptr, *as = nullptr;
@@ -1598,12 +1617,7 @@ cudaError_t RunAttnFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
                     seq, I, H, /*acc=*/true);
             cudaFreeAsync(ap, stream);
             cudaFreeAsync(as, stream);
-            if (e2 == cudaErrorNotSupported ||
-                e2 == cudaErrorInvalidValue) {
-                // fall through to the fp16 path below
-            } else {
-                return e2;
-            }
+            return e2;
         }
         qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(
             d_gate, d_up, d_gate, n_act);
@@ -1753,6 +1767,12 @@ cudaError_t RunAttnLinearAttention(cudaStream_t stream,
                                    float *d_gd_state)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
+    // A persistent GatedDeltaNet state is only safe for a single-token chunk:
+    // for seq > 1 there is no grid barrier between the col_seed read and the
+    // t == seq-1 write, so a block could read the state another block already
+    // updated (audit X8). Every current pipeline uses seq == 1 here; keep the
+    // contract explicit instead of relying on that.
+    if (d_gd_state != nullptr && seq > 1) return cudaErrorInvalidValue;
     const int nk = geo.linear_num_key_heads;
     const int kd = geo.linear_key_head_dim;
     const int nv = geo.linear_num_value_heads;
