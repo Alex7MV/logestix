@@ -28,6 +28,14 @@ public:
 
     const std::string &Type() const override { return kType; }
 
+    // Single-prompt bridge (Model Ingestion Protocol stage 4). A chat model
+    // must never see an unframed prompt: --run, --testprompt and SelfCheck all
+    // land here, and the checkpoint's own template opens with
+    // `[gMASK]<sop><|system|>Reasoning Effort: Max` before the user turn.
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
+
     // Tool/function-calling bridge (Model Ingestion Protocol step 4b). GLM-5.3-
     // Flash native template (verified chat_template.jinja): a `<|system|>` tools
     // block and `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>

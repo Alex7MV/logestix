@@ -10,6 +10,7 @@
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/lsx_attn_inference.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/tool_format.h"
 
@@ -210,7 +211,16 @@ gpu::InferenceResult Glm5NextFlashModel::Infer(const ModelRequest &req)
 
 gpu::InferenceResult Glm5NextFlashModel::SelfCheck(const ModelRequest &req)
 {
-    return runtime::RunParisSelfCheck(*this, req);
+    // The checkpoint's generation prompt opens inside `<think>` and the model
+    // closes it with an EMPTY block before answering: measured on real weights,
+    // the first generated tokens are `</think>The capital of France is Paris.`
+    // A two-token window can therefore never contain "Paris" - the family's
+    // selfcheck checks a short answer window instead, deterministically.
+    runtime::ParisSelfCheckOptions opts;
+    opts.min_tokens = 32;
+    opts.answer_window = 32;
+    opts.substring_match = true;
+    return runtime::RunParisSelfCheck(*this, req, opts);
 }
 
 void Glm5NextFlashModel::TeardownWeights()
@@ -285,6 +295,20 @@ bool AppendGlmIds(const ArrowTokenizerDb &tok, const std::string &text,
         if (!matched) ++i;
     }
     return flush(text.size());
+}
+
+// Native frame encode: role sentinels must be real vocabulary ids. Returns
+// false when the tokenizer cannot resolve them (synthetic fixtures without
+// the specials), so callers fall back to the raw BPE encode instead of
+// recursing back through the conversation bridge.
+bool EncodeGlmFrame(const ArrowTokenizerDb &tok, const std::string &text,
+                    std::vector<int32_t> &out_ids)
+{
+    if (arrow_tokenizer_lookup(tok, "<|system|>", 10) < 0 ||
+        arrow_tokenizer_lookup(tok, "<|user|>", 8) < 0)
+        return false;
+    out_ids.clear();
+    return AppendGlmIds(tok, text, out_ids);
 }
 
 std::string_view GlmTrim(std::string_view s)
@@ -363,40 +387,52 @@ bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv
     out += "[gMASK]<sop>";
     out += "<|system|>Reasoning Effort: Max";
     if (!conv.tools.empty()) {
+        // Byte-for-byte the template's tools block, including its blank lines
+        // and json.dumps separators (", " / ": "): the model saw this exact
+        // shape in training, and a synthetic fixture cannot tell the two apart.
         out += "<|system|>\n# Tools\n\n"
                "You may call one or more functions to assist with the user "
                "query.\n\n"
                "You are provided with function signatures within "
                "<tools></tools> XML tags:\n<tools>";
         for (const ToolSpec &t : conv.tools) {
-            out += "\n{\"name\":\"";
+            out += "\n\n{\"name\": \"";
             out += JsonEscape(esc(t.name));
-            out += "\",\"description\":\"";
+            out += "\", \"description\": \"";
             out += JsonEscape(esc(t.description));
-            out += "\",\"parameters\":";
+            out += "\", \"parameters\": ";
             out += t.parameters_json.empty() ? std::string("{}")
                                              : esc(t.parameters_json);
-            out += "}";
+            out += "}\n";
         }
-        out += "\n</tools>\n\n"
+        out += "\n\n</tools>\n\n"
                "For each function call, output the function name and arguments "
                "within the following XML format:\n"
                "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key>"
-               "<arg_value>{arg-value-1}</arg_value>...</tool_call>";
+               "<arg_value>{arg-value-1}</arg_value>"
+               "<arg_key>{arg-key-2}</arg_key>"
+               "<arg_value>{arg-value-2}</arg_value>...</tool_call>";
     }
 
     bool in_observation = false;
     simdjson::dom::parser parser;
     for (const ChatMessage &m : conv.messages) {
         if (m.role == "system") {
-            out += "<|system|>" + esc(m.content) + "\n";
+            // No trailing newline: the template emits the next turn directly
+            // after the content.
+            out += "<|system|>" + esc(m.content);
             in_observation = false;
         } else if (m.role == "user") {
-            out += "<|user|>" + esc(m.content) + "\n";
+            out += "<|user|>" + esc(m.content);
             in_observation = false;
         } else if (m.role == "assistant") {
-            out += "<|assistant|>\n<think></think>";
-            if (!m.content.empty()) out += esc(m.content);
+            out += "<|assistant|><think></think>";
+            // The template strips assistant content and skips it when blank.
+            {
+                const std::string body = esc(m.content);
+                out.append(GlmTrim(body));
+            }
+            if (!m.tool_calls.empty()) out += "\n";
             for (const ToolCall &c : m.tool_calls) {
                 out += "<tool_call>" + esc(c.name);
                 if (!c.arguments_json.empty()) {
@@ -417,7 +453,7 @@ bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv
                 }
                 out += "</tool_call>";
             }
-            out += "\n";
+            if (!m.tool_calls.empty()) out += "\n";
             in_observation = false;
         } else if (m.role == "tool") {
             if (!in_observation) {
@@ -502,6 +538,28 @@ std::vector<ToolCall> Glm5NextFlashModel::ParseGlmFlashToolCallText(
     return calls;
 }
 
+bool Glm5NextFlashModel::BuildPromptInputIds(
+    const ArrowTokenizerDb &tok, std::string_view raw_prompt,
+    std::vector<int32_t> &out_ids) const
+{
+    // One renderer, one framing: a lone user turn goes through the native chat
+    // template exactly like a conversation does, so `--run`/`--testprompt`/
+    // SelfCheck see the `Reasoning Effort: Max` system turn the checkpoint was
+    // trained with. The raw-encode path stays as the fallback for tokenizers
+    // that do not carry the role sentinels.
+    ChatConversation conv;
+    ChatMessage m;
+    m.role = "user";
+    m.content = std::string(raw_prompt);
+    conv.messages.push_back(std::move(m));
+    std::string text;
+    if (RenderGlmFlashConversation(conv, text) &&
+        EncodeGlmFrame(tok, text, out_ids))
+        return true;
+    out_ids.clear();
+    return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+}
+
 bool Glm5NextFlashModel::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const
@@ -509,10 +567,8 @@ bool Glm5NextFlashModel::BuildConversationInputIds(
     std::string text;
     if (!RenderGlmFlashConversation(conv, text)) return false;
     out_ids.clear();
-    if (arrow_tokenizer_lookup(tok, "<|system|>", 10) < 0 ||
-        arrow_tokenizer_lookup(tok, "<|user|>", 8) < 0)
-        return BuildPromptInputIds(tok, text, out_ids);
-    return AppendGlmIds(tok, text, out_ids);
+    if (EncodeGlmFrame(tok, text, out_ids)) return true;
+    return prompt::EncodeRawPrompt(tok, text, out_ids);
 }
 
 bool Glm5NextFlashModel::ParseToolCalls(

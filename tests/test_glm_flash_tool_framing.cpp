@@ -102,21 +102,61 @@ TEST_CASE("glm-flash tool framing: render places tools, calls and responses",
     std::string out;
     REQUIRE(Glm5NextFlashModel::RenderGlmFlashConversation(conv, out));
 
-    REQUIRE(out.rfind("[gMASK]<sop><|system|>Reasoning Effort: Max", 0) == 0);
-    CHECK(Contains(out, "<|system|>\n# Tools\n"));
-    CHECK(Contains(out,
-                   "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key>"));
-    CHECK(Contains(out, "<|user|>Weather?\n"));
-    // Native call: strings raw, numbers as JSON.
-    CHECK(Contains(out,
-                   "<|assistant|>\n<think></think>Sure.<tool_call>get_weather"
-                   "<arg_key>city</arg_key><arg_value>Paris</arg_value>"
-                   "<arg_key>days</arg_key><arg_value>3</arg_value>"
-                   "</tool_call>\n"));
-    CHECK(Contains(out, "<|observation|><tool_response>sunny</tool_response>"));
-    const std::string gen = "<|assistant|><think>";
-    REQUIRE(out.size() >= gen.size());
-    CHECK(out.substr(out.size() - gen.size()) == gen);
+    // Byte-exact vs chat_template.jinja (jinja2 render, add_generation_prompt
+    // = true). The template puts NO newline after a role turn, none between
+    // `<|assistant|>` and `<think>`, and the tool calls start on their own
+    // line after the assistant content.
+    const std::string tools_block =
+        "<|system|>\n# Tools\n\n"
+        "You may call one or more functions to assist with the user query.\n\n"
+        "You are provided with function signatures within <tools></tools> "
+        "XML tags:\n<tools>\n\n"
+        "{\"name\": \"get_weather\", \"description\": \"Get the weather\", "
+        "\"parameters\": {\"type\":\"object\"}}\n\n\n</tools>\n\n"
+        "For each function call, output the function name and arguments "
+        "within the following XML format:\n"
+        "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key>"
+        "<arg_value>{arg-value-1}</arg_value>"
+        "<arg_key>{arg-key-2}</arg_key>"
+        "<arg_value>{arg-value-2}</arg_value>...</tool_call>";
+    const std::string expected =
+        "[gMASK]<sop><|system|>Reasoning Effort: Max" + tools_block +
+        "<|system|>You are a helper.<|user|>Weather?"
+        "<|assistant|><think></think>Sure.\n"
+        "<tool_call>get_weather<arg_key>city</arg_key>"
+        "<arg_value>Paris</arg_value><arg_key>days</arg_key>"
+        "<arg_value>3</arg_value></tool_call>\n"
+        "<|observation|><tool_response>sunny</tool_response>"
+        "<|assistant|><think>";
+    CHECK(out == expected);
+}
+
+TEST_CASE("glm-flash framing: rendered text is byte-exact with the template",
+          "[glm-flash][tool_framing]")
+{
+    // Ground truth from the checkpoint's own chat_template.jinja (jinja2
+    // render with add_generation_prompt=true). A stray newline after a turn is
+    // a different prompt, not a formatting preference: the model was trained
+    // on exactly these bytes.
+    ChatConversation single;
+    single.messages.push_back({"user", "hi", "", {}});
+    std::string out;
+    REQUIRE(Glm5NextFlashModel::RenderGlmFlashConversation(single, out));
+    CHECK(out ==
+          "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>hi"
+          "<|assistant|><think>");
+
+    ChatConversation multi;
+    multi.messages.push_back({"system", "You are a helper.", "", {}});
+    multi.messages.push_back({"user", "hi", "", {}});
+    multi.messages.push_back({"assistant", "  hello  ", "", {}});
+    multi.messages.push_back({"user", "again", "", {}});
+    REQUIRE(Glm5NextFlashModel::RenderGlmFlashConversation(multi, out));
+    CHECK(out ==
+          "[gMASK]<sop><|system|>Reasoning Effort: Max"
+          "<|system|>You are a helper."
+          "<|user|>hi<|assistant|><think></think>hello"
+          "<|user|>again<|assistant|><think>");
 }
 
 TEST_CASE("glm-flash tool framing: render rejects unknown roles",
@@ -169,6 +209,41 @@ TEST_CASE("glm-flash tool framing: conversation bridge injects role sentinels",
     // The generation prompt emits the assistant sentinel exactly once.
     CHECK(std::count(ids.begin(), ids.end(), asst) == 1);
     CHECK(std::count(ids.begin(), ids.end(), user) >= 1);
+
+    f.db = ArrowTokenizerDb{};
+    fs::remove_all(f.pinned);
+}
+
+TEST_CASE("glm-flash framing: a single prompt goes through the chat template",
+          "[glm-flash][tool_framing]")
+{
+    DbFiles f = BuildDb("synthetic_glm_flash_tok.json");
+    const auto &db = f.db;
+    const int32_t gmask =
+        lsxcommon::arrow_tokenizer_lookup(db, "[gMASK]", 7);
+    const int32_t user = lsxcommon::arrow_tokenizer_lookup(db, "<|user|>", 8);
+    REQUIRE(gmask >= 0);
+    REQUIRE(user >= 0);
+
+    lsxcommon::ModelInitConfig cfg;
+    Glm5NextFlashModel model(cfg);
+
+    // A chat model must never see an unframed prompt: --run, --testprompt and
+    // SelfCheck all go through BuildPromptInputIds, and the raw BPE default
+    // would hand the model a string with no role sentinel at all.
+    std::vector<int32_t> ids;
+    REQUIRE(model.BuildPromptInputIds(db, "The capital of France is", ids));
+    REQUIRE(!ids.empty());
+    CHECK(ids.front() == gmask);
+    CHECK(std::count(ids.begin(), ids.end(), user) == 1);
+
+    // ... and it must be the same frame the conversation path produces for a
+    // lone user turn (one renderer, not two).
+    ChatConversation conv;
+    conv.messages.push_back({"user", "The capital of France is", "", {}});
+    std::vector<int32_t> conv_ids;
+    REQUIRE(model.BuildConversationInputIds(db, conv, conv_ids));
+    CHECK(ids == conv_ids);
 
     f.db = ArrowTokenizerDb{};
     fs::remove_all(f.pinned);
