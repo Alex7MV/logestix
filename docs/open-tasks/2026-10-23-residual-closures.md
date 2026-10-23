@@ -112,3 +112,53 @@ only 11.80 -> 11.73 us and left E2E unchanged (160.5 vs 160.0); reverted.
 with 11.84 us observed and a 14.0 us max, so the real-shape router is now
 guarded instead of silently skipped.
 
+
+## Red selfchecks re-checked (2026-10-23)
+
+All four currently-red real-weight gates were re-run after the strict-GEMV
+work, and each reproduces with the route disabled as well (no routing
+artifact):
+
+- `test_gemma_dense_fsi_selfcheck`: FSI-01, the model emits the template
+  `PV=CF*(...)` instead of substituting the prompt's numbers (§R).
+- `test_gemma_moe_fsi_selfcheck`: FSI-01 drops the annuity-due `exp(r)` and
+  FSI-02 substitutes the numeric rates instead of the symbolic variables;
+  FSI-03 passes (§J, refreshed).
+- `test_gemma_moe_code_selfcheck`: CODE-02 emits `m=l+(h-l)/2` against the
+  source's `m=l+((h-l)/2)`; the gate intentionally does not canonicalize
+  algebraically (§J).
+- `test_phi_dense_det_selfcheck`: DET-02 is the known C-vs-CR near-tie
+  (source margin ~1.1 logits); it stays CRITICAL deterministically 3/3 (§O).
+
+These are model-defined divergences at the NVFP4/bf16 boundary, not harness
+or routing defects. The only safe fixes would be to change the numeric class
+(e.g. keep sensitive heads/embeddings in BF16, which changes the model format
+and needs a re-convert plus all gates) or to weaken the oracle, which the
+project deliberately rejects. Left red.
+
+The previously-unrun `test_alice_moe_code_selfcheck` and
+`test_alice_moe_det_selfcheck` now pass (151 s / 94 s), closing the `n/r`
+coverage gap in the audit table.
+
+## C1 — GPU budget tests are now serialized
+
+`LSX_KERNEL_BUDGET_TESTS` (the eight budget suites plus `test_ornith_moe_kernels`,
+which gained a router budget) now carry `RESOURCE_LOCK "gpu"` in
+`tests/CMakeLists.txt`, alongside `SKIP_RETURN_CODE 4`. A `ctest -j` run can no
+longer overlap two latency/bandwidth budgets, which was the measured flake:
+five concurrent copies failed four of five samples while 80 solo runs were
+green. This is the contention-proofing C1 asked for; the best-of-5 mitigation
+stays as the second layer.
+
+## D2 — Xing re-measured
+
+At the canonical 2048-token protocol Xing now measures **123.2 t/s perf /
+112.4 t/s r3** (old record 117.2 / 20.1; the r3 jump is the strict
+streaming-GEMV route). The 127.1 perf figure that had been in the file did not
+reproduce: two cooled runs read 123.3 and 123.2, so the perf entry was
+re-seeded with the measured TTFT/power evidence rather than left 3% high. The graphless 128-token nsys profile attributes the
+fixed step to expert-batch GEMV (~24%), `xing_rmsnorm_kernel` (~12%, 167
+launches/token), mHC gates/proj/collapse (~19%) and the attention/router GEMVs.
+A 128-thread `RunLxGemmVec` launch was neutral (123.4 vs 123.3 t/s) and was
+reverted. The remaining GEMV-occupancy work is still a numerics project, so D2
+stays open as that one item.

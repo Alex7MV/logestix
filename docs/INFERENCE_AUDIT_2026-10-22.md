@@ -114,12 +114,10 @@ GEMV/dispatch — 0 ошибок). Основные риски — не в ар�
 | mistral-small-4-119b | PASS | SKIP | SKIP | SKIP |
 | qwen3.8-flash-next | PASS | PASS | PASS | PASS |
 | xing4.0-29b-a4b | PASS | PASS | PASS | PASS |
-| alice-foundation-80b-a3b | PASS | PASS | n/r | n/r |
+| alice-foundation-80b-a3b | PASS | PASS | PASS | PASS |
 
-`n/r` у alice — CODE/DET не прогонялись: в голдене `max_new_tokens=2048`
-на кейс, а r3-скорость alice ~10 t/s; FSI занял 731 s, CODE+DET дали бы ещё
-~45 мин. FSI (самый информативный гейт) — зелёный; исторически CODE/DET у alice
-тоже зелёные (E2 closure). `PASS` у nemotron/mistral в колонке `Paris` —
+CODE/DET у alice прогнаны 2026-10-23 после включения streaming-GEMV в strict
+режиме: оба зелёные (CODE 151 s, DET 94 s). `PASS` у nemotron/mistral в колонке `Paris` —
 это базовый selfcheck. `SKIP` у nemotron/mistral — задекларированный golden-debt
 (OPEN_TASKS §K): файлов `tests/fixtures/{fsi,code,det}/<model>.json` нет,
 тест не запускает модель. Остальные `FAIL` воспроизводят известные открытые

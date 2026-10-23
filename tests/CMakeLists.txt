@@ -6423,7 +6423,12 @@ set_tests_properties(test_diagnostics PROPERTIES LABELS fast)
 set(LSX_KERNEL_BUDGET_TESTS
     test_gemma_moe_norm test_gemma_moe_moe test_glm_moe_flash_kernels
     test_qwen_moe_kernels test_qwen_nvfp4_gemv test_qwen_moe_exp_kernels
-    test_nemotron_moe_kernels test_gigachat_moe_devkernels)
+    test_nemotron_moe_kernels test_gigachat_moe_devkernels
+    test_ornith_moe_kernels)
 foreach(_bt IN LISTS LSX_KERNEL_BUDGET_TESTS)
     set_tests_properties(${_bt} PROPERTIES SKIP_RETURN_CODE 4)
+    # These measure latency/bandwidth budgets. A concurrent GPU workload makes
+    # the sample a measurement of the box, not the kernel (OPEN_TASKS C1), so
+    # ctest -j must serialize them behind one GPU lock.
+    set_tests_properties(${_bt} PROPERTIES RESOURCE_LOCK "gpu")
 endforeach()

@@ -88,51 +88,6 @@ The 12 call sites: gemma norm/MoE, glm-flash GDN, qwen-MoE router, qwen4_exp
 PLE + hyper-connection, nemotron Mamba step + GEMV latency + GEMV speedup,
 gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 
-## C. Intermittent
-
-### C1. `test_gigachat_moe_devkernels` flaked once — **cause found 2026-10-02**
-- Original report: failed once in an `-L inference` sweep on 2026-09-30,
-  passed standalone, and the failing assertion was never captured.
-- **The cause is GPU contention, and the earlier "+0.3%" figure understated it
-  by three orders of magnitude.** That measurement put one idle 638 MiB CUDA
-  process next to the test. Running five copies of the test against the same
-  RTX 5090 does the job properly:
-
-  | run | gated norm (budget 35.25 us) | router (budget 17.19 us) |
-  |---|---|---|
-  | 1 | 65.04 | 39.37 |
-  | 2 | 65.47 | 32.46 |
-  | 3 | 59.33 | 38.83 |
-  | 4 | 35.22 | — |
-  | 5 | passed | passed |
-
-  Four of five fail, one clears the gated-norm budget by 0.03 us. This is the
-  flake: a latency budget measured on a shared GPU is a measurement of the
-  box, not of the kernel.
-- **Everything else is now excluded.** 80 consecutive solo Release runs are
-  green; `compute-sanitizer --tool memcheck`, `racecheck` (0 hazards) and
-  `initcheck` report nothing, so there is no data race and no uninitialised
-  global read in this file. The parity cases are host-reference comparisons
-  and deterministic.
-- **Two further things learned, worth not re-learning.** `compute-sanitizer` is
-  *not* a usable stand-in for load: under memcheck the gated-norm sample is
-  3344 us, ~128x the idle number, so budgets will always fail under a
-  sanitizer and a failure there says nothing. And no test in the suite sets
-  `RESOURCE_LOCK`, so a `ctest -j` sweep — or any model load running
-  alongside — is enough to trigger this. ctest is sequential by default and
-  no preset passes `-j`, so a stock sweep is safe; the AGENTS "one GPU load
-  at a time" rule is what actually protects it, which is worth knowing is
-  load-bearing rather than decorative.
-- **Hardened both budget cases to best-of-5** (minimum of five timed series,
-  was one). This does not survive real contention — see the table above, where
-  all five series are slow — but it removes the short-lived-spike path, and it
-  is the part of the exposure that is genuinely random.
-- **Still open, deliberately:** making the budgets contention-proof rather than
-  contention-tolerant. `RESOURCE_LOCK "gpu"` across the eight budget-bearing
-  tests would stop `ctest -j` from ever doing this, and is the obvious next
-  step if it recurs. Not done yet because nothing in the current workflow
-  triggers it.
-
 ## D. Performance
 
 ### D1. nemotron batched expert GEMV reaches ~1.4x, not the 1.67x expected
@@ -164,9 +119,11 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 117.2 t/s (nine serial kernels + device dispatch + graph replay)
-- **Status: CLOSED for the serial-kernel class (2026-10-05).
-  14.40 -> 117.20 t/s perf / 9.10 -> 20.10 t/s r3 at 2048 tokens.** Every
+### D2. `xing` decode: 14.4 -> 123.2 t/s (nine serial kernels + device dispatch + graph replay)
+- **Status: serial-kernel class CLOSED (2026-10-05); re-measured 2026-10-23.
+  14.40 -> **123.2 t/s perf / 112.4 t/s r3** at 2048 tokens (the old r3
+  record was 20.10; the strict streaming-GEMV route removed the scalar-tile
+  bottleneck). Every
   single-block, thread-0-serial and under-occupied kernel on the decode path is
   fixed or measured-and-declined; what is left is the GEMV occupancy, which is a
   different (numerics) project - see the end. Every fix came from the same
@@ -202,6 +159,13 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   **The lesson worth keeping: on consumer Blackwell (1/64 FP64) a "tiny" serial
   scalar tail can dominate a kernel, and nsys per-kernel attribution is what
   finds it - the block count looked fine.**
+- **2026-10-23 profile and next lever.** nsys on the graphless decode
+  (128 tokens) attributes the fixed step to the expert-batch GEMV
+  (`gemv_expert_batch_ids`, ~24% combined), `xing_rmsnorm_kernel` (~12%,
+  167 launches/token at ~4.6 us), the mHC gates/proj/collapse (~19%) and the
+  attention/router GEMVs. A 128-thread `RunLxGemmVec` launch was neutral
+  (123.4 vs 123.3 t/s) and reverted. The remaining 8 ms/token is still the
+  GEMV/allocation-occupancy project described below, not bandwidth.
 - Fixed cost, where the next levers are: the per-token `[vocab]` logits round
   trip is GONE (the sampler now reads `session_->d_logits` in place and only the
   8-byte argmax comes back, with the full row captured just for the final token
@@ -526,31 +490,39 @@ separated the two states here.
 
 Reverted; the verified split-only port stands and the tree is green.
 
-## J. gemma FSI/CODE goldens captured; both gates RED on real divergences (2026-10-06)
+## J. gemma FSI/CODE goldens captured; both gates RED on real divergences (2026-10-06, refreshed 2026-10-23)
 
 gemma had **no** FSI or CODE golden, so both stages were silently SKIPping and the family
 was effectively held up only by SelfCheck and DET. Now captured from the source
 safetensors (they run locally: `Gemma4ForConditionalGeneration`, bf16, transformers
 5.15.1), so they are model-defined goldens, not template-derived.
 
-Both gates run, and both fail — for **different** reasons:
+Both gates run, and both fail. Re-checked 2026-10-23 after the strict-GEMV
+changes (identical with the route disabled, so not a routing artifact):
 
-- **FSI-TEST-01** — semantic. Source: `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`, the
-  correct annuity-due answer. Converted: `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`, the
-  prompt's own template line, missing the trailing `exp(r)`. Clean and correctly
-  extracted, so it is a real behavioural difference, not a harness artifact. FSI-02/03 pass.
+- **FSI-TEST-01** — semantic. Source: `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`.
+  Converted: `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))` — it
+  substitutes the prompt's numbers but drops the annuity-due `exp(r)` factor.
+  Cleanly extracted, so it is a real behavioural difference, not a harness
+  artifact.
+- **FSI-TEST-02** — semantic. Source: the symbolic
+  `Balance_Alpha=((((100000000*Rate_A)-Slip_A)*Rate_B)-Slip_B)*Rate_C-Slip_C`;
+  converted: the same expression with the numeric rates substituted
+  (`...*1.083541...83.152402...0.011104...`). FSI-03 passes.
 - **CODE-TEST-02** — syntactic, and the gate working as designed. Source:
-  `m=l+((h-l)/2)`; converted: `m=(l+(h-l)/2)`. Algebraically identical; CODE applies no
+  `m=l+((h-l)/2)`; converted: `m=l+(h-l)/2`. Algebraically identical; CODE applies no
   canonicalization precisely so that this fails. CODE-01/03 pass.
 
 **Neither is the port.** Reverting `gemma_moe_inference.cu` to its pre-port state at
 `7810383` reproduces 5 passed / 1 failed on both gates, byte for byte. Both are
-NVFP4-vs-bf16 differences on borderline greedy decisions.
+NVFP4-vs-bf16 differences on borderline greedy decisions. Disabling the strict
+GEMV route (the F-04/bit-exact state) produces the same tokens, so the later
+routing work did not move them.
 
-Left red deliberately. Two things are *not* acceptable fixes here: writing the template's
-answer into the golden (that deletes the model-defined rule and makes the gate vacuous),
-and adding algebraic comparison to CODE (that deletes the reason CODE exists). Both
-findings are written up in `docs/FSI_SELFCHECK_FINDINGS.md` and
+Left red deliberately. Two things are *not* acceptable fixes here: writing the
+template's answer into the golden (that deletes the model-defined rule and makes the
+gate vacuous), and adding algebraic comparison to CODE (that deletes the reason CODE
+exists). Both findings are written up in `docs/FSI_SELFCHECK_FINDINGS.md` and
 `docs/CODE_SELFCHECK_FINDINGS.md`.
 
 Worth noting what this costs: gemma was previously *appearing* green on 4 stages while two
@@ -1091,6 +1063,8 @@ investigation trail:
 |---|---|
 | 2026-10-23 | r3/bit-exact restored to streaming GEMV; qwen3.6 closed | The strict mode had been made correct by disabling `gemv_large`, which dropped qwen3.5-9b r3 from 111 to 19.3 t/s. The strict scope now pins the large-N and <=32 MiB streaming GEMV as its canonical route (`LsxBitExactMode`), ignores `LSX_GEMV_LARGE`/`LSX_GEMV_MAX_MIB`, and routes qkv/z through it for every H. Re-seeded r3 references: qwen3.5-9b **111.06 -> 147.0**, qwen3.8-27b **39.03 -> 52.27**, qwen3.6-35B-A3B **13.32 -> 73.39**. SelfCheck/FSI/CODE/DET for all three plus Ornith are green; the TC path stays off. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-23 | Ornith perf baseline re-seeded (documented cost) | 167.06 -> **160.20 t/s** on two cooled runs. The reference predates the neutral MoE migration and the overflow-proof batched SwiGLU (`8e34314`), whose own note records the same ~4% cost (Qwen3.6 166.7 -> 161.3); this is the accepted correctness fix, not a regression. r3 was then re-seeded 12.70 -> **72.02**. A router launch-geometry experiment (128 -> 64 threads) was neutral (160.5 vs 160.0) and reverted; `ornith.router.decode` now has a 14.0 us max budget row (11.84 us observed) instead of SKIPping. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
+| 2026-10-23 | C1 closed: GPU budget tests serialized | `RESOURCE_LOCK "gpu"` added to all kernel-budget suites (plus Ornith, now budget-bearing) in `tests/CMakeLists.txt`; a `ctest -j` sweep can no longer overlap two latency/bandwidth samples. The measured flake was contention: five concurrent copies failed 4/5, 80 solo runs were green. Best-of-5 remains the second layer. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
+| 2026-10-23 | Xing re-measured: 123.2 perf / 112.4 r3 | The strict streaming-GEMV route lifts r3 from 20.1; the graphless profile leaves the GEMV-occupancy/numerics project as the only open D2 item. A 128-thread `RunLxGemmVec` launch was neutral and reverted. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-23 | Granite tool round-trip and the qwen fused-linear test fixtures | §U closed: the RED was prompt framing, not generation arithmetic — the native `granite_tool_format` renderer/parser (commit `de0b160`) restores `get_weather`, and `test_granite_dense_selfcheck` passes with `logits_hash=3d1604aa75c99a1f` unchanged. The `test_qwen_dense_fused_linear_attn` failures were fixture bugs: the synthetic E4M3 scale cycle included `0x7F`, the reserved NaN; the host z reference added the projection twice; and the tiny full-layer geometry used `gs=0.5`, overflowing FP16 after the NaN was removed. All 43,675 assertions now pass. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-22 | Inference audit — memory/lifecycle P1s and the cheap hardening closed | Mistral/Xing continuation no longer writes past the KV cache and all four families share one continuation contract (Mistral's `last_tok`, Granite's `pos0 = kv_rows`); fused w13 writes the up half to `d_yg + I` (real OOB in Mistral, memcheck-clean now); the E1 depth counter is process-global and cross-TU-tested; `--bit-exact` no longer routes through `gemv_large`; six busy-polls became bounded `WaitEventChecked`; the split-K partials scratch is per-stream; RPATH, `head_dim`/GDN validation and the prequant double-activation fallback fixed; §V corrected. Fast 98/98 without `LD_LIBRARY_PATH`; dense parity green except the known phi DET-02 / gemma FSI/CODE reds. All X1-X16 audit items are closed (second pass: GLM embed epoch, per-stream scratch, Arrow view range checks, split-KV dot bound) — [`open-tasks/2026-10-22-inference-audit-closed.md`](open-tasks/2026-10-22-inference-audit-closed.md) |
 | 2026-10-17 | Sequential-dispatch invariant made machine-checked (E1) + alice aligned to the fleet logits contract (E2) | **E1:** with no parallel dispatch planned, the process-global kernel-routing toggles' single-dispatch assumption is now enforced — `LsxFastMathScope` keeps a depth counter and logs a loud violation on overlap, pinned by two guard cases (one spawns a second thread to prove the counter is shared state, so the guard is not vacuous). **E2:** alice now publishes the LAST logits row like every other family (it published the FIRST). The original worry — that this would move alice's DET/FSI goldens — was wrong: those harnesses read `gen_tokens`, never `final_logits`, so nothing was re-captured. Real-weight alice selfcheck/DET/FSI/CODE all green. [`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md) |
