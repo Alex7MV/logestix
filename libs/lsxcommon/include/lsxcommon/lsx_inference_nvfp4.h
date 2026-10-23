@@ -94,6 +94,13 @@ bool LsxGemmLarge();
 // consistent with the dispatcher's routing read this, not LsxGemmLarge().
 bool LsxGemmLargeActive();
 
+// True while an explicit FastMathMode::kOff scope is active. This is the
+// canonical strict mode: it forces the large-N streaming GEMV route ON while
+// keeping TC/seq1-gemv OFF, so the strict path is fast AND independent of the
+// LSX_GEMV_LARGE environment override (audit X4).
+void SetLsxBitExactMode(bool on);
+bool LsxBitExactMode();
+
 // Dual-stream expert-staging toggle (H2D/compute overlap). Default true;
 // narrow-bus GPUs resolve this to false and keep single-stream staging.
 void SetLsxDualStreamStaging(bool on);
@@ -131,7 +138,8 @@ public:
     // Legacy bool pair (unchanged semantics).
     LsxFastMathScope(bool tc_fast_math, bool seq1_gemv)
         : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv()),
-          prev_large_(LsxGemmLarge()), active_(true)
+          prev_large_(LsxGemmLarge()), prev_bit_exact_(LsxBitExactMode()),
+          active_(true)
     {
         SetLsxTcFastMath(tc_fast_math);
         SetLsxSeq1Gemv(seq1_gemv);
@@ -142,17 +150,21 @@ public:
     // afterwards. Numeric-class tests pin kOff; production uses kAuto.
     explicit LsxFastMathScope(FastMathMode mode)
         : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv()),
-          prev_large_(LsxGemmLarge()), active_(mode != FastMathMode::kAuto)
+          prev_large_(LsxGemmLarge()), prev_bit_exact_(LsxBitExactMode()),
+          active_(mode != FastMathMode::kAuto)
     {
         if (mode == FastMathMode::kOn) {
             SetLsxTcFastMath(true);
             SetLsxSeq1Gemv(true);
+            SetLsxBitExactMode(false);
         } else if (mode == FastMathMode::kOff) {
             SetLsxTcFastMath(false);
             SetLsxSeq1Gemv(false);
-            // The large-N streaming GEMV is tolerance-class; the strict kOff
-            // path must not route through it (audit X4).
+            // kOff keeps the sliced GEMV as its canonical route (fast and
+            // deterministic) but the dispatcher ignores LSX_GEMV_LARGE while
+            // this flag is set, so the strict hash cannot depend on the env.
             SetLsxGemmLarge(false);
+            SetLsxBitExactMode(true);
         }
         if (active_) Detail::EnterFastMathScope();
     }
@@ -162,6 +174,7 @@ public:
         SetLsxTcFastMath(prev_tc_);
         SetLsxSeq1Gemv(prev_gemv_);
         SetLsxGemmLarge(prev_large_);
+        SetLsxBitExactMode(prev_bit_exact_);
         Detail::LeaveFastMathScope();
     }
     LsxFastMathScope(const LsxFastMathScope &) = delete;
@@ -171,6 +184,7 @@ private:
     bool prev_tc_;
     bool prev_gemv_;
     bool prev_large_;
+    bool prev_bit_exact_;
     bool active_;
 };
 

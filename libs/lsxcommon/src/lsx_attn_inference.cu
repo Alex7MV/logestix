@@ -1431,6 +1431,15 @@ cudaError_t RunAttnFusedLinearAttnKernel(
                         lw.qkv.global_scale, H, S, qkv_row);
                     if ((e = cudaGetLastError()) != cudaSuccess) return e;
                 }
+            } else if (lsx_nvfp4::LsxBitExactMode()) {
+                // Strict mode: the size-bounded streaming GEMV is the
+                // canonical, deterministic route. Use it for qkv and z
+                // instead of the warpdot fallback; a/b stay warpdot because
+                // N=32 is too narrow to fill the GEMV grid.
+                e = lsx_nvfp4::RunLsxNvfp4Gemm(
+                    stream, d_normed, lw.qkv.d_packed, lw.qkv.d_scales,
+                    lw.qkv.global_scale, qkv_row, 1, H, S, false);
+                if (e != cudaSuccess) return e;
             } else {
                 const int grid = (S + 7) / 8;
                 warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
@@ -1454,12 +1463,19 @@ cudaError_t RunAttnFusedLinearAttnKernel(
             __half *a_buf = d_ab;
             __half *b_buf = d_ab + static_cast<int64_t>(seq) * nv;
             if (!tc_attn) {
-                int grid = (VD + 7) / 8;
-                warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
-                    xrow, lw.z.d_packed, lw.z.d_scales,
-                    lw.z.global_scale, H, VD, d_z);
-                if ((e = cudaGetLastError()) != cudaSuccess) return e;
-                grid = (nv + 7) / 8;
+                if (lsx_nvfp4::LsxBitExactMode()) {
+                    e = lsx_nvfp4::RunLsxNvfp4Gemm(
+                        stream, xrow, lw.z.d_packed, lw.z.d_scales,
+                        lw.z.global_scale, d_z, 1, H, VD, false);
+                    if (e != cudaSuccess) return e;
+                } else {
+                    int grid = (VD + 7) / 8;
+                    warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
+                        xrow, lw.z.d_packed, lw.z.d_scales,
+                        lw.z.global_scale, H, VD, d_z);
+                    if ((e = cudaGetLastError()) != cudaSuccess) return e;
+                }
+                int grid = (nv + 7) / 8;
                 warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
                     xrow, lw.a.d_packed, lw.a.d_scales,
                     lw.a.global_scale, H, nv, a_buf);

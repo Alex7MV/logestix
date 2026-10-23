@@ -17,6 +17,7 @@ namespace lsx_nvfp4 {
 
 static std::atomic<bool> g_lsx_tc_fast_math{false};
 static std::atomic<bool> g_lsx_seq1_gemv{false};
+static std::atomic<bool> g_lsx_bit_exact{false};
 
 void SetLsxTcFastMath(bool on)
 {
@@ -36,6 +37,16 @@ void SetLsxSeq1Gemv(bool on)
 bool LsxSeq1Gemv()
 {
     return g_lsx_seq1_gemv.load(std::memory_order_relaxed);
+}
+
+void SetLsxBitExactMode(bool on)
+{
+    g_lsx_bit_exact.store(on, std::memory_order_relaxed);
+}
+
+bool LsxBitExactMode()
+{
+    return g_lsx_bit_exact.load(std::memory_order_relaxed);
 }
 
 static std::atomic<int64_t> g_lsx_gemv_max_bytes{int64_t{32} << 20};
@@ -737,7 +748,8 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
     // unchanged at ~880/911 (already warp-per-row). K >= 4096 keeps the
     // warp-per-row route for deep-K wide-N shapes.
     if ((K & 63) == 0 && K >= 4096 && N >= 8192 &&
-        g_lsx_tc_fast_math.load(std::memory_order_relaxed)) {
+        (g_lsx_tc_fast_math.load(std::memory_order_relaxed) ||
+         g_lsx_bit_exact.load(std::memory_order_relaxed))) {
         constexpr int WARPS = 8;   // rows per block (probe: 8 > 4 or 16)
         const int grid = (N + WARPS - 1) / WARPS;
         lsx_nvfp4_gemv_warprow_kernel<YT><<<grid, WARPS * 32, 0, stream>>>(
@@ -891,21 +903,36 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
     // kept as a tri-state override: 1=force on, 0=force off, unset=policy):
     // routes ONLY large-N plain shapes; small-N / MoE shapes and the
     // segmented fused qkv|z|a|b path are untouched.
+    // kOff pins the large-N streaming GEMV as its canonical route: it is the
+    // strict mode's fast path and, with the bit-exact flag bypassing the env
+    // override, its output cannot depend on LSX_GEMV_LARGE. TC/seq1-gemv stay
+    // off; inside this route the kernel picks warp-row for N >= 8192 and the
+    // sliced variant otherwise, exactly as its own size heuristic says.
+    const bool bit_exact = g_lsx_bit_exact.load(std::memory_order_relaxed);
     const bool gemv_large =
-        g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&
-        LsxGemmLargeActive() &&
+        (g_lsx_tc_fast_math.load(std::memory_order_relaxed) || bit_exact) &&
+        (bit_exact || LsxGemmLargeActive()) &&
         seq == 1 && !seg_wgs_dev && !seg_bounds_dev &&
         K >= 4096 && N >= 4096;
+    // kOff also pins the size-bounded streaming GEMV: on expert/attention
+    // shapes it is the deterministic strict route and is 3-5x faster than the
+    // scalar tile kernel. The 32 MiB bound is fixed (not the policy knob) so
+    // LSX_GEMV_MAX_MIB cannot move the strict hash.
+    const int64_t gemv_small_limit =
+        bit_exact ? (int64_t{32} << 20)
+                  : g_lsx_gemv_max_bytes.load(std::memory_order_relaxed);
     const bool gemv_small =
-        g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&
-        LsxSeq1Gemv() &&
+        (g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&
+         LsxSeq1Gemv()) ||
+        bit_exact;
+    const bool gemv_small_size =
         (int64_t)(K / 2) * N + (int64_t)((K + 15) / 16) * N <=
-            g_lsx_gemv_max_bytes.load(std::memory_order_relaxed);
+        gemv_small_limit;
     const bool gemv_head =
         g_lsx_tc_fast_math.load(std::memory_order_relaxed) && kGemvHead &&
         K >= 1024 && N >= 16384;
-    if (((gemv_small && seq == 1) || (gemv_head && seq == 1) ||
-         gemv_large) &&
+    if (((gemv_small && gemv_small_size && seq == 1) ||
+         (gemv_head && seq == 1) || gemv_large) &&
         K >= 256 && !seg_wgs_dev && !seg_bounds_dev) {
         const cudaError_t gv = LaunchLsxNvfp4GemmSeq1GemmV(
             stream, x, packed, scales, global_scale, y, K, N, acc);

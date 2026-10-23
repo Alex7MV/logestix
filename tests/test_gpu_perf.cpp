@@ -121,8 +121,9 @@ TEST_CASE("ResolvePerfKnobs: precedence env > CLI > base/heuristic",
     REQUIRE(r.source == lsxcommon::perf::PerfSource::kBase);
     REQUIRE(r.knobs.tc_fast_math_default == false);
     REQUIRE(r.knobs.seq1_gemv_default == false);
-    // The large-N streaming GEMV is a tolerance-class route, not part of the
-    // strict scalar path: kOff must clear it too (audit X4).
+    // The *policy knob* is cleared, but the strict scope pins the large-N
+    // sliced GEMV as its canonical route and ignores LSX_GEMV_LARGE, so the
+    // strict hash cannot depend on the environment (audit X4).
     REQUIRE(r.knobs.gemv_large_default == false);
 
     // CLI kOn on a heuristic GPU still forces TC.
@@ -249,7 +250,9 @@ TEST_CASE("LsxFastMathScope tri-state semantics", "[gpu_perf]")
         const LsxFastMathScope s(FastMathMode::kOff);
         REQUIRE(LsxTcFastMath() == false);
         REQUIRE(LsxSeq1Gemv() == false);
+        REQUIRE(lsxcommon::lsx_nvfp4::LsxBitExactMode() == true);
     }
+    REQUIRE(lsxcommon::lsx_nvfp4::LsxBitExactMode() == false);  // restored
     REQUIRE(LsxTcFastMath() == true);       // restored
     {
         const LsxFastMathScope s(FastMathMode::kOn);

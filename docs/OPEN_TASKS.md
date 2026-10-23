@@ -1018,40 +1018,6 @@ upload), was fixed the same day and moved to
 `test_model_suite_guard`. Closing them needs either a runnable source
    (vendor stack) or a documented answer-format contract from the operator.
 
-## U. granite-4.2-30b tool round-trip RED again at `31998bf` (found 2026-10-13)
-
-`test_granite_dense_selfcheck`'s second test case ("end-to-end tool
-round-trip", real weights) fails at HEAD:
-
-```
-CHECK( calls[0].name == "get_weather" )   with expansion: "get_weather.x" == "get_weather"
-```
-
-The model emits `get_weather.x` — it puts the `.x` into its **own reasoning
-text** first ("We have tool: get_weather.x, …"), then into
-`<function>get_weather.x</function>` and into the bare
-`{"name": "get_weather.x", …}` object. So the parse path is not at fault: the
-divergence is in the greedy generation. The first test case is unaffected
-(`Paris`, `top1_tok=12366`, `logits_hash=3d1604aa75c99a1f` stable over 3
-cycles), and FSI/CODE/DET are green.
-
-**Not an Arrow regression.** Found while bumping Arrow 25.0.1 -> 26.0.0, so it
-was attributed with a control: a second tree at the *same* commit (`31998bf`)
-built against **Arrow 25.0.1** produces the identical `get_weather.x` **and the
-identical `logits_hash=3d1604aa75c99a1f`** — the Arrow bump is bit-identical
-on this path.
-
-**Where the suspicion points instead:** the granite tool round-trip was
-"recovered" on 2026-10-07
-(`open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md`, archive row
-L/M/N), and 9 commits have landed in `libs/lsxcommon` since — including three
-that touch the shared attention layer granite decodes through (neutral-layer
-split `2b4b41c`/`65db1c7`, `00e22ec` TC mxf4nvf4 GEMM tile fix, `f99008b`
-`__host__ __device__` KV-geometry helpers). Which of them moved this token is
-**not yet established** — the missing instrument is a generation-level oracle
-(the token ids of the 256-token round-trip, plus the logit margin at the flip
-step), not another pass/fail on the same assertion.
-
 ## V. Routed-expert host storage: the arena is retired; one follow-up remains (2026-10-14)
 
 **The migration itself is closed** — the arena is gone for qwen MoE / Ornith /
@@ -1116,6 +1082,17 @@ what the reference needs cannot be cooled into tolerance — no oracle separates
 "the room is warm" from "the code regressed" at 3%. The cooldown removes the
 back-to-back component, not the ambient one.
 
+## Y. ornith perf-mode baseline is 4.1% below its reference (2026-10-23)
+
+`test_perf_baseline_ornith` reads **160.2 t/s** against **167.06 t/s** (95.9%)
+in the **perf** (TC) mode. This is not the strict-mode work: the kOff change
+only touches `LsxBitExactMode`, and the perf path is unchanged. It reproduces
+standalone after the harness cooldown. Either the 2026-10-07 reference is stale
+or a TC-path change since then moved it; needs attribution before re-seeding.
+The r3 baseline for the same model is still the old 12.7 (its r3 path is now
+much faster, but the perf FAIL short-circuits the pair, so the harness cannot
+update it).
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -1123,6 +1100,8 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-23 | r3/bit-exact restored to streaming GEMV; qwen3.6 closed | The strict mode had been made correct by disabling `gemv_large`, which dropped qwen3.5-9b r3 from 111 to 19.3 t/s. The strict scope now pins the large-N and <=32 MiB streaming GEMV as its canonical route (`LsxBitExactMode`), ignores `LSX_GEMV_LARGE`/`LSX_GEMV_MAX_MIB`, and routes qkv/z through it for every H. Re-seeded r3 references: qwen3.5-9b **111.06 -> 147.0**, qwen3.8-27b **39.03 -> 52.27**, qwen3.6-35B-A3B **13.32 -> 73.39**. SelfCheck/FSI/CODE/DET for all three plus Ornith are green; the TC path stays off. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
+| 2026-10-23 | Granite tool round-trip and the qwen fused-linear test fixtures | §U closed: the RED was prompt framing, not generation arithmetic — the native `granite_tool_format` renderer/parser (commit `de0b160`) restores `get_weather`, and `test_granite_dense_selfcheck` passes with `logits_hash=3d1604aa75c99a1f` unchanged. The `test_qwen_dense_fused_linear_attn` failures were fixture bugs: the synthetic E4M3 scale cycle included `0x7F`, the reserved NaN; the host z reference added the projection twice; and the tiny full-layer geometry used `gs=0.5`, overflowing FP16 after the NaN was removed. All 43,675 assertions now pass. — [`open-tasks/2026-10-23-residual-closures.md`](open-tasks/2026-10-23-residual-closures.md) |
 | 2026-10-22 | Inference audit — memory/lifecycle P1s and the cheap hardening closed | Mistral/Xing continuation no longer writes past the KV cache and all four families share one continuation contract (Mistral's `last_tok`, Granite's `pos0 = kv_rows`); fused w13 writes the up half to `d_yg + I` (real OOB in Mistral, memcheck-clean now); the E1 depth counter is process-global and cross-TU-tested; `--bit-exact` no longer routes through `gemv_large`; six busy-polls became bounded `WaitEventChecked`; the split-K partials scratch is per-stream; RPATH, `head_dim`/GDN validation and the prequant double-activation fallback fixed; §V corrected. Fast 98/98 without `LD_LIBRARY_PATH`; dense parity green except the known phi DET-02 / gemma FSI/CODE reds. All X1-X16 audit items are closed (second pass: GLM embed epoch, per-stream scratch, Arrow view range checks, split-KV dot bound) — [`open-tasks/2026-10-22-inference-audit-closed.md`](open-tasks/2026-10-22-inference-audit-closed.md) |
 | 2026-10-17 | Sequential-dispatch invariant made machine-checked (E1) + alice aligned to the fleet logits contract (E2) | **E1:** with no parallel dispatch planned, the process-global kernel-routing toggles' single-dispatch assumption is now enforced — `LsxFastMathScope` keeps a depth counter and logs a loud violation on overlap, pinned by two guard cases (one spawns a second thread to prove the counter is shared state, so the guard is not vacuous). **E2:** alice now publishes the LAST logits row like every other family (it published the FIRST). The original worry — that this would move alice's DET/FSI goldens — was wrong: those harnesses read `gen_tokens`, never `final_logits`, so nothing was re-captured. Real-weight alice selfcheck/DET/FSI/CODE all green. [`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md) |
 | 2026-10-17 | mimo uploaded weights through a host-side BF16→FP16 pass (E3) | `UploadHalf` decoded every BF16 element into a host `std::vector<__half>` and issued a synchronous pageable `cudaMemcpy` on the DEFAULT stream — `(void)st;` ignored the model's stream. Routed to the existing model-neutral device kernel `fastload::Bf16ToHalfInPlace` (the one GLM and the DeepSeek fast loader use), stream-ordered, with no host staging buffer. Bit-exact: the kernel is the same arithmetic the host loop ran, and `test_deepseek_moe_load_fast.cu` already pins it against a host reference including ragged tails. `UploadBf16`/`UploadF32` had the same `(void)st;` defect with no conversion involved and became stream-ordered too - [`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md) |

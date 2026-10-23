@@ -594,7 +594,7 @@ Dense parity после правок: qwen3.5-9b, qwen3.8-27b, granite-4.2-30b,
 | F-01 / X1 | fixed | capacity-guard + fallback to fresh prefill в Mistral/Xing; continuation-тесты; Mistral memcheck **0 errors** (было 146), плюс найден и исправлен `cudaFree` по `cudaMallocHost`-указателю `h_slots` |
 | F-02 / X2 | fixed | `last_tok` (Mistral), no-double-decode (Xing), `pos0 = kv_rows` (Granite); continuation-тесты; granite Paris hash не изменился |
 | F-03 / X3 | fixed | process-global `g_fast_math_depth` + TLS nesting; `test_fast_math_guard_cross_tu` |
-| F-04 / X4 | fixed | kOff чистит `gemv_large`; `gemv_large`/`gemv_head` под `LsxTcFastMath()`; `test_gpu_perf`, `test_lsx_nvfp4_dispatch` |
+| F-04 / X4 | fixed | kOff пиннит large-N и <=32 MiB streaming GEMV (`LsxBitExactMode`, env игнорируется), TC/seq1-gemv off; r3: qwen9b 147.0, qwen27b 52.27, qwen3.6 73.39; `test_gpu_perf`, `test_lsx_nvfp4_dispatch` |
 | F-15 / X5 | fixed | up-half в `d_yg + I`, все арены 2I; `test_qwen_moe_kernels`, `test_ornith_moe_kernels`; Mistral memcheck без OOB |
 | F-08 / X6 | fixed | три `$ORIGIN/.../_deps`; app-тесты без env, `ldd` чист |
 | F-09 / X7 | fixed | pow2 `head_dim` + GQA gate; новый кейс в `test_qwen_dense_full_attn` |

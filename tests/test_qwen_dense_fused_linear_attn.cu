@@ -30,7 +30,7 @@ __host__ float HostDeq(const std::vector<uint8_t>& packed, const std::vector<uin
 void FillNvfp4(lsx_nvfp4::LsxNvfp4Weight &w, int K, int N, float gs) {
     std::vector<uint8_t> pk((size_t)K * N / 2), sc((size_t)K * N / 16);
     for (size_t i = 0; i < pk.size(); ++i) pk[i] = (uint8_t)((i * 37 + 5) & 0xFF);
-    for (size_t i = 0; i < sc.size(); ++i) sc[i] = (uint8_t)(120 + (i % 12));
+    for (size_t i = 0; i < sc.size(); ++i) sc[i] = (uint8_t)(120 + (i % 6));
     cudaMalloc(&w.d_packed, pk.size()); cudaMemcpy(const_cast<uint8_t*>(w.d_packed), pk.data(), pk.size(), cudaMemcpyHostToDevice);
     cudaMalloc(&w.d_scales, sc.size()); cudaMemcpy(const_cast<uint8_t*>(w.d_scales), sc.data(), sc.size(), cudaMemcpyHostToDevice);
     w.global_scale = gs;
@@ -335,6 +335,6 @@ TEST_CASE("Fused linear-attn full layer matches split reference (seq=1,2)", "[qw
         cudaFree(lw.d_conv1d); cudaFree(lw.d_A_log); cudaFree(lw.d_dt_bias); cudaFree(lw.d_attn_norm);
     };
 
-    run_geom(2, 8, 2, 8, 0.5f);
+    run_geom(2, 8, 2, 8, 0.02f);
     run_geom(16, 128, 32, 128, 0.02f);   // real Qwen3.5-9B linear-attn geometry
 }
