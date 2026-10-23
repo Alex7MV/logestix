@@ -825,6 +825,46 @@ const int64_t *ShapePtr(const arrow::ListArray &shapes, int64_t i,
     return flat.raw_values() + offsets->Value(i);
 }
 
+// Zero-copy views publish pointers into Arrow buffers. A corrupt/foreign
+// batch (or a broken offset table) can produce a view whose extent crosses the
+// backing buffer; reject it here so callers never mmap-dereference past the
+// mapping (audit X15).
+arrow::Status CheckViewRange(const void *p, int64_t bytes,
+                             const std::shared_ptr<arrow::Buffer> &buf,
+                             std::string_view what, std::string_view name)
+{
+    if (bytes < 0)
+        return arrow::Status::Invalid(what, " for '", name,
+                                      "' has a negative size");
+    if (!buf)
+        return bytes == 0 ? arrow::Status::OK()
+                          : arrow::Status::Invalid(what, " for '", name,
+                                                   "' has no backing buffer");
+    const uintptr_t base = reinterpret_cast<uintptr_t>(buf->data());
+    const uintptr_t end = base + static_cast<uintptr_t>(buf->size());
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(p);
+    if (addr < base || addr > end ||
+        static_cast<uintptr_t>(bytes) > end - addr)
+        return arrow::Status::Invalid(
+            what, " for '", name, "' lies outside its buffer (offset=",
+            static_cast<int64_t>(addr - base), ", bytes=", bytes,
+            ", buffer=", buf->size(), ")");
+    return arrow::Status::OK();
+}
+
+arrow::Status CheckListSlice(const arrow::Int32Array &offsets, int64_t row,
+                             int64_t values_length, std::string_view what,
+                             std::string_view name)
+{
+    const int64_t begin = offsets.Value(row);
+    const int64_t end = offsets.Value(row + 1);
+    if (begin < 0 || end < begin || end > values_length)
+        return arrow::Status::Invalid(what, " for '", name,
+                                      "' has an out-of-range list slice [",
+                                      begin, ", ", end, ") of ", values_length);
+    return arrow::Status::OK();
+}
+
 } // namespace
 
 arrow::Result<TensorBatchViews>
@@ -866,6 +906,9 @@ LoadTensorBatchViews(const std::filesystem::path &path)
         v.shape = ShapePtr(*shapes, i, *flat_shapes, &v.rank);
         if (!v.shape) return arrow::Status::Invalid("Shape offsets not int32");
         auto view = datas->GetView(i);
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            view.data(), static_cast<int64_t>(view.size()),
+            datas->value_data(), "tensor data", v.name));
         v.data = reinterpret_cast<const uint8_t *>(view.data());
         v.bytes = static_cast<size_t>(view.size());
     }
@@ -928,12 +971,21 @@ LoadDenseNvfp4BatchViews(const std::filesystem::path &path)
         v.shape = ShapePtr(*shapes, i, *flat_shapes, &v.rank);
         if (!v.shape) return arrow::Status::Invalid("Shape offsets not int32");
         auto pv = packeds->GetView(i);
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            pv.data(), static_cast<int64_t>(pv.size()), packeds->value_data(),
+            "packed data", v.name));
         v.packed = reinterpret_cast<const uint8_t *>(pv.data());
         v.packed_bytes = static_cast<int64_t>(pv.size());
+        ARROW_RETURN_NOT_OK(CheckListSlice(*scale_offsets, i,
+                                           flat_scales->length(),
+                                           "scales", v.name));
         const uint8_t *sraw = flat_scales->raw_values();
         v.scales = sraw + scale_offsets->Value(i);
         v.scale_bytes = static_cast<int64_t>(scale_offsets->Value(i + 1) -
                                              scale_offsets->Value(i));
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            v.scales, v.scale_bytes, flat_scales->data()->buffers[1],
+            "scales", v.name));
     }
     return out;
 }
@@ -987,21 +1039,47 @@ LoadSharedExpertBatchViews(const std::filesystem::path &path)
     out.layers.resize(static_cast<size_t>(n));
     for (int64_t i = 0; i < n; ++i) {
         PackedExpertView &v = out.layers[static_cast<size_t>(i)];
+        const std::string name =
+            "shared_experts[" + std::to_string(i) + "]";
         auto pv1 = w1->GetView(i);
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            pv1.data(), static_cast<int64_t>(pv1.size()), w1->value_data(),
+            "w1", name));
         v.w1_packed = reinterpret_cast<const uint8_t *>(pv1.data());
         v.w1_packed_bytes = static_cast<int64_t>(pv1.size());
         auto pv2 = w2->GetView(i);
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            pv2.data(), static_cast<int64_t>(pv2.size()), w2->value_data(),
+            "w2", name));
         v.w2_packed = reinterpret_cast<const uint8_t *>(pv2.data());
         v.w2_packed_bytes = static_cast<int64_t>(pv2.size());
         auto pv3 = w3->GetView(i);
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            pv3.data(), static_cast<int64_t>(pv3.size()), w3->value_data(),
+            "w3", name));
         v.w3_packed = reinterpret_cast<const uint8_t *>(pv3.data());
         v.w3_packed_bytes = static_cast<int64_t>(pv3.size());
+        ARROW_RETURN_NOT_OK(CheckListSlice(*o1, i, u1->length(), "w1 scales",
+                                           name));
+        ARROW_RETURN_NOT_OK(CheckListSlice(*o2, i, u2->length(), "w2 scales",
+                                           name));
+        ARROW_RETURN_NOT_OK(CheckListSlice(*o3, i, u3->length(), "w3 scales",
+                                           name));
         v.w1_scales = u1->raw_values() + o1->Value(i);
         v.w1_scale_bytes = o1->Value(i + 1) - o1->Value(i);
         v.w2_scales = u2->raw_values() + o2->Value(i);
         v.w2_scale_bytes = o2->Value(i + 1) - o2->Value(i);
         v.w3_scales = u3->raw_values() + o3->Value(i);
         v.w3_scale_bytes = o3->Value(i + 1) - o3->Value(i);
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            v.w1_scales, v.w1_scale_bytes, u1->data()->buffers[1], "w1 scales",
+            name));
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            v.w2_scales, v.w2_scale_bytes, u2->data()->buffers[1], "w2 scales",
+            name));
+        ARROW_RETURN_NOT_OK(CheckViewRange(
+            v.w3_scales, v.w3_scale_bytes, u3->data()->buffers[1], "w3 scales",
+            name));
         v.w1_global_scale = gs1->Value(i);
         v.w2_global_scale = gs2->Value(i);
         v.w3_global_scale = gs3->Value(i);

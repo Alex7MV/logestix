@@ -3,6 +3,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/stream_scratch.h"
 #include "nvfp4_codec.h"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_norm.cuh"
@@ -348,7 +349,9 @@ __device__ __forceinline__ float AttnHalfDotRow(const __half *__restrict__ qrow,
         // disagree about what "vectorised" means.
         const __half2 *k2 = reinterpret_cast<const __half2 *>(krow);
         const __half2 *q2 = reinterpret_cast<const __half2 *>(qrow);
-        for (int j = 0; j < (hd >> 2); j += 2)
+        // k2/q2 hold hd/2 half2 elements and each iteration consumes two of
+        // them, so the bound is hd/2 (the old hd/4 covered only half the row).
+        for (int j = 0; j < (hd >> 1); j += 2)
         {
             const float2 f0 = __half22float2(k2[j]);
             const float2 f1 = __half22float2(k2[j + 1]);
@@ -492,16 +495,18 @@ cudaError_t RunAttnFullAttnKernelSplitKV(
     constexpr int kChunk = 512;
     const int nchunks = (nscores + kChunk - 1) / kChunk;
 
-    float *d_part = nullptr, *d_st = nullptr;
-    cudaError_t e = cudaMallocAsync(
-        &d_part, (size_t)heads * nchunks * head_dim * sizeof(float), stream);
+    struct PartialsTag;
+    struct StatsTag;
+    void *part_raw = nullptr, *st_raw = nullptr;
+    cudaError_t e = lsxcommon::cuda::StreamScratch<PartialsTag>::Get(
+        stream, (size_t)heads * nchunks * head_dim * sizeof(float),
+        &part_raw);
     if (e != cudaSuccess) return e;
-    e = cudaMallocAsync(&d_st, (size_t)heads * nchunks * 2 * sizeof(float),
-                        stream);
-    if (e != cudaSuccess) {
-        cudaFreeAsync(d_part, stream);
-        return e;
-    }
+    e = lsxcommon::cuda::StreamScratch<StatsTag>::Get(
+        stream, (size_t)heads * nchunks * 2 * sizeof(float), &st_raw);
+    if (e != cudaSuccess) return e;
+    float *d_part = static_cast<float *>(part_raw);
+    float *d_st = static_cast<float *>(st_raw);
 
     {
         const dim3 grid(heads, nchunks);
@@ -517,8 +522,6 @@ cudaError_t RunAttnFullAttnKernelSplitKV(
             d_part, d_st, out, heads, head_dim, nchunks);
         e = cudaGetLastError();
     }
-    cudaFreeAsync(d_part, stream);
-    cudaFreeAsync(d_st, stream);
     return e;
 }
 

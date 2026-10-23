@@ -583,8 +583,8 @@ compute-sanitizer --tool memcheck ./tests/test_lsx_nvfp4_dispatch
 
 ## 5. Статус исправлений (2026-10-22)
 
-Ветка `fix/inference-audit-2026-10-22`. Сборка
-`linux-release-znver4-aocc`; fast-набор **97/97 без `LD_LIBRARY_PATH`**.
+Ветка `fix/inference-audit-2026-10-22`. Второй проход закрыл X9/X11/X15/X16. Сборка
+`linux-release-znver4-aocc`; fast-набор **98/98 без `LD_LIBRARY_PATH`**.
 Dense parity после правок: qwen3.5-9b, qwen3.8-27b, granite-4.2-30b,
 а также gemma-4-31b CODE/DET — зелёные; остались только известные красные
 (phi DET-02, gemma-4-31b FSI-01, gemma-4-26b FSI/CODE).
@@ -602,11 +602,11 @@ Dense parity после правок: qwen3.5-9b, qwen3.8-27b, granite-4.2-30b,
 | F-06 / X10 | fixed | `WaitEventChecked` во всех шести циклах; `test_cuda_event_wait`; `cudaEventQuery` в `libs/` больше нет |
 | F-11 / X12 | fixed by inspection | prequant только при `LsxTcRuntimeSupported()`, ошибка GEMM возвращается; инъекция TC-отказа на CC 12 недостижима, юнит-теста нет |
 | F-13 / X14 | fixed | §V приведён к §V1/коду (63.6 GB arena) |
-| F-05 / X9 | **open** | кэши GLM-Flash/Kimi/Gemma-MoE |
-| F-07 / X11 | **open** | аллокации/`getenv` на пути декода |
+| F-05 / X9 | fixed | `FlashEmbedCache` по (weight epoch, source) + RAII сброс Gemma; test_glm_moe_flash_kernels |
+| F-07 / X11 | fixed | per-stream `StreamScratch` для split-KV/router; getenv вынесен из цикла; test_stream_scratch |
 | F-12 / X13 | fixed | split-K partials теперь per-stream; старые dispatch-тесты зелёные |
-| F-14 / X15 | **open** | нет range-check для zero-copy Arrow |
-| X16 | **open (pre-existing)** | split-KV tolerance: `max_abs=0.0712585` при bound `2e-2` |
+| F-14 / X15 | fixed | `CheckViewRange`/`CheckListSlice`; malformed-batch тест |
+| X16 | fixed | `AttnHalfDotRow` читал половину head (`hd/2` вместо `hd/4`); тест `< 2e-2` зелёный |
 
 Закрытые пункты вынесены в
 [`open-tasks/2026-10-22-inference-audit-closed.md`](open-tasks/2026-10-22-inference-audit-closed.md).

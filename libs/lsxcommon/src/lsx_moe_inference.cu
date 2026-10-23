@@ -31,6 +31,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/stream_scratch.h"
 #include "fast_load_internal.h"
 
 #include <absl/strings/str_cat.h>
@@ -317,11 +318,12 @@ cudaError_t RunMoERouterTopK(cudaStream_t stream,                               
         // Stage-1 scratch is stream-ordered (pool-backed, non-synchronizing);
         // no static device state (the old cached cudaMalloc leaked one buffer
         // per process and was not thread-safe across model instances).
-        float *d_logits = nullptr;
-        cudaError_t le = cudaMallocAsync(&d_logits, static_cast<size_t>(E) *
-                                                          sizeof(float),
-                                         stream);
+        struct RouterLogitsTag;
+        void *logits_raw = nullptr;
+        cudaError_t le = lsxcommon::cuda::StreamScratch<RouterLogitsTag>::Get(
+            stream, static_cast<size_t>(E) * sizeof(float), &logits_raw);
         if (le != cudaSuccess) return le;
+        float *d_logits = static_cast<float *>(logits_raw);
         // 8 threads per expert (chain-parallel etalon walk): E*8 threads
         // across 128-thread blocks engage all SMs on the 1MB row stream.
         moe_router_dots_kernel<<<(E * 8 + 127) / 128, 128, 0, stream>>>(
@@ -331,11 +333,7 @@ cudaError_t RunMoERouterTopK(cudaStream_t stream,                               
             moe_router_select_kernel<<<seq, kRouterBlock,
                                             sizeof(float) * E, stream>>>(
                 d_logits, K, E, d_slots);
-        if (le != cudaSuccess) {
-            cudaFreeAsync(d_logits, stream);
-            return le;
-        }
-        cudaFreeAsync(d_logits, stream);
+        if (le != cudaSuccess) return le;
         return cudaGetLastError();
     }
     moe_router_topk_kernel<<<seq, kRouterBlock, smem, stream>>>(

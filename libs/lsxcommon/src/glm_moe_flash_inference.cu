@@ -8,6 +8,7 @@
 #include "lsx_kernels_quant.cuh"
 #include "glm_moe_flash_constants.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/log.h"
 #include "deepseek_moe_load.cuh"  // run_hc_pre/post/head, run_expand_hc (lsxcommon_cu)
 #include "lsx_kernels_act.cuh"
@@ -1302,6 +1303,53 @@ __global__ void flash_router_top8_f16_kernel(
 } // namespace
 
 
+cudaError_t FlashEmbedCache::Ensure(cudaStream_t stream,
+                                    const __nv_bfloat16 *src, int64_t n,
+                                    unsigned long long weight_epoch)
+{
+    if (!src || n <= 0) return cudaErrorInvalidValue;
+    // Key on (epoch, source), not the epoch alone: two live GLM instances share
+    // the process-global epoch but own different embedding tensors, and a
+    // source-pointer-only key would survive a reload via allocator reuse.
+    const bool rebuild = data == nullptr || elems < n ||
+                         epoch != weight_epoch || source != src;
+    if (rebuild)
+    {
+        if (data)
+        {
+            cudaFree(data);
+            data = nullptr;
+            elems = 0;
+        }
+        if (cudaMalloc(reinterpret_cast<void **>(&data),
+                       static_cast<size_t>(n) * sizeof(__half)) != cudaSuccess)
+            return cudaGetLastError();
+        const int64_t grid = (n + 255) / 256;
+        if (grid > 0x7FFFFFFFLL) return cudaErrorInvalidValue;
+        bf16_to_f16_kernel<<<static_cast<int>(grid), 256, 0, stream>>>(
+            reinterpret_cast<const uint8_t *>(src), data, n);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+        // The old path synchronized here so the table is visible before the
+        // first embed row is read by the decode loop.
+        if (cudaStreamSynchronize(stream) != cudaSuccess)
+            return cudaGetLastError();
+        elems = n;
+        epoch = weight_epoch;
+        source = src;
+    }
+    return cudaSuccess;
+}
+
+void FlashEmbedCache::Free()
+{
+    if (data) cudaFree(data);
+    data = nullptr;
+    elems = 0;
+    epoch = 0;
+    source = nullptr;
+}
+
 cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
                                   const float *d_bias, const __half *d_x,
                                   int tok, int hidden, int experts,
@@ -1531,24 +1579,21 @@ cudaError_t RunGlmFlashGeneration(
         result.error_msg = "invalid glm flash generation inputs";
         return cudaErrorInvalidValue;
     }
+    const bool trace_flash = std::getenv("LSX_TRACE_FLASH") != nullptr;
     const int max_seq = static_cast<int>(prompt.size()) + max_new;
 
-    // Persistent FP16 embed table (dequant once).
-    static __half *d_embed_h = nullptr;
-    static int64_t embed_elems = 0;
-    if (!d_embed_h || embed_elems < static_cast<int64_t>(V) * H) {
-        if (d_embed_h) cudaFree(d_embed_h);
-        if (cudaMalloc(&d_embed_h,
-                       static_cast<size_t>(V) * H * sizeof(__half))
-            != cudaSuccess) return cudaGetLastError();
-        embed_elems = static_cast<int64_t>(V) * H;
-        // BF16 bits -> FP16 exact widening (both 8-bit mantissa formats).
-        bf16_to_f16_kernel<<<static_cast<int>((embed_elems + 255) / 256), 256,
-                             0, stream>>>(
-            pw.d_embed_bf16, d_embed_h, embed_elems);
-        if (cudaStreamSynchronize(stream) != cudaSuccess)
-            return cudaGetLastError();
+    // Persistent FP16 embed table (dequant once per weight lifetime). Keyed by
+    // the weight epoch, not just V*H: a second GLM instance with the same
+    // geometry must not inherit the first one's embedding rows (audit X9).
+    static FlashEmbedCache embed_cache;
+    {
+        const cudaError_t ee = embed_cache.Ensure(
+            stream,
+            reinterpret_cast<const __nv_bfloat16 *>(pw.d_embed_bf16),
+            static_cast<int64_t>(V) * H, lsx_tc::LsxTcWeightEpoch());
+        if (ee != cudaSuccess) return ee;
     }
+    __half *d_embed_h = embed_cache.data;
 
     // Per-layer KDA state (allocated once, static etalon style).
     static std::vector<FlashKdaState> kda_states;
@@ -1726,7 +1771,7 @@ cudaError_t RunGlmFlashGeneration(
     }
 
     {
-        const int dbg = std::getenv("LSX_TRACE_FLASH") ? 1 : 0;
+        const int dbg = trace_flash ? 1 : 0;
         flash_dbg_on_host = dbg != 0;
         cudaMemcpyToSymbolAsync(flash_dbg_on, &dbg, 4, 0,
                                 cudaMemcpyHostToDevice, stream);
@@ -1769,7 +1814,7 @@ cudaError_t RunGlmFlashGeneration(
     for (int step = 0; step < total_steps; ++step) {
         const int kv_pos = step;  // 1 token/step for both KDA and DSA
         h_ids_pinned[0] = cur;
-        if (std::getenv("LSX_TRACE_FLASH"))
+        if (trace_flash)
             FlashDbg("[step] step=%d cur=%d\n", step, cur);
         cudaMemcpyAsync(d_ids, h_ids_pinned, 4, cudaMemcpyHostToDevice,
                         stream);
@@ -1793,7 +1838,7 @@ cudaError_t RunGlmFlashGeneration(
         for (int l = 0; l < kLayers; ++l) {
             const FlashLayerWeights &lw = pw.layers[l];
             const bool is_kda = IsKdaLayer(l);
-            if (std::getenv("LSX_TRACE_FLASH")) {
+            if (trace_flash) {
                 static std::vector<float> hs;
                 hs.resize(HCH);
                 cudaMemcpyAsync(hs.data(), d_state, sizeof(float) * HCH,
@@ -1840,10 +1885,10 @@ cudaError_t RunGlmFlashGeneration(
                                       kk, vv, kv_pos, dsa_cap, kIndexerTopk);
                 if (e != cudaSuccess) { result.error_msg = "dsa"; break; }
             }
-            if (std::getenv("LSX_TRACE_FLASH")) {
+            if (trace_flash) {
                 FlashDbg("[attn] post-l=%d\n", l);
             }
-            if (std::getenv("LSX_TRACE_FLASH")) {
+            if (trace_flash) {
                 std::vector<float> ha(H);
                 cudaMemcpy(ha.data(), d_act2, sizeof(float) * H,
                            cudaMemcpyDeviceToHost);
@@ -1868,7 +1913,7 @@ cudaError_t RunGlmFlashGeneration(
                                                             HCH);
                 flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_act2, 0, 2, H);
             }
-            if (std::getenv("LSX_TRACE_FLASH")) {
+            if (trace_flash) {
                 std::vector<float> hst(HCH);
                 cudaMemcpy(hst.data(), d_state, sizeof(float) * HCH,
                            cudaMemcpyDeviceToHost);
@@ -1894,7 +1939,7 @@ cudaError_t RunGlmFlashGeneration(
                 { result.error_msg = "post norm"; break; }
             // ── MLP branch ──
             if (lw.is_moe) {
-                if (std::getenv("LSX_TRACE_FLASH")) {
+                if (trace_flash) {
                     std::vector<float> hx(static_cast<size_t>(H));
                     cudaMemcpy(hx.data(), d_single, sizeof(float) * H,
                                cudaMemcpyDeviceToHost);
@@ -1970,7 +2015,7 @@ cudaError_t RunGlmFlashGeneration(
                 e = cudaErrorInvalidValue;
                 break;
             }
-            if (std::getenv("LSX_TRACE_FLASH") && l >= 3) {
+            if (trace_flash && l >= 3) {
                 static std::vector<float> hm;
                 hm.resize(H);
                 cudaMemcpy(hm.data(), d_module_f, sizeof(float) * H,
@@ -1992,7 +2037,7 @@ cudaError_t RunGlmFlashGeneration(
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "hc_post2"; break; }
         }
-        if (std::getenv("LSX_TRACE_FLASH"))
+        if (trace_flash)
             FlashDbg("[loopend] e=%d err='%s'\n", (int) e,
                          result.error_msg.c_str());
         if (e != cudaSuccess) {
@@ -2028,7 +2073,7 @@ cudaError_t RunGlmFlashGeneration(
         if ((e = cudaGetLastError()) != cudaSuccess)
             { result.error_msg = "head"; break; }
 
-        if (std::getenv("LSX_TRACE_FLASH")) {
+        if (trace_flash) {
             static std::vector<float> hlog;
             hlog.resize(static_cast<size_t>(V));
             cudaMemcpy(hlog.data(), d_logits, sizeof(float) * V,

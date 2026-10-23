@@ -1116,30 +1116,6 @@ what the reference needs cannot be cooled into tolerance — no oracle separates
 "the room is warm" from "the code regressed" at 3%. The cooldown removes the
 back-to-back component, not the ambient one.
 
-## X. Inference audit 2026-10-22 — open findings
-
-The P1/P2 items and the cheap P3 hardening from the first pass are closed;
-the archive keeps the verbatim findings and the resolution log:
-[`open-tasks/2026-10-22-inference-audit-closed.md`](open-tasks/2026-10-22-inference-audit-closed.md).
-Full evidence: [`INFERENCE_AUDIT_2026-10-22.md`](INFERENCE_AUDIT_2026-10-22.md).
-
-- **X9 (P2) — Process-global caches in GLM-5.3-Flash/Kimi/Gemma-MoE are never
-  reset.** `d_embed_h` is keyed only by element count; KDA/DSA/arena and
-  `g_expert_db`/`g_gen_ctx` survive reloads and second instances.
-- **X11 (P2) — Per-token/per-layer allocations and `getenv` on the decode
-  path.** Split-KV attention + router `cudaMallocAsync` per layer/token; a
-  `std::vector pos` per layer in granite/phi/gemma; Kimi reads `getenv` per
-  token.
-- **X15 (P3) — Zero-copy Arrow views are not range-checked.** `GetView`
-  pointers are stored without an `in_range` check against the mapping
-  (`schema.cpp:831-945`).
-- **X16 (P2, found by the X7 regression) — Split-KV decode attention misses
-  its own tolerance.** `test_qwen_dense_full_attn` "Split-KV decode attention
-  matches legacy within tolerance" measures `max_abs=0.0712585` against a
-  `2e-2` bound. Not a new regression: the case predates the audit fix. Either
-  the bound is wrong for the exercised geometry or the split reduction has a
-  real discrepancy — needs a host reference before moving the gate.
-
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -1147,7 +1123,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
-| 2026-10-22 | Inference audit — memory/lifecycle P1s and the cheap hardening closed | Mistral/Xing continuation no longer writes past the KV cache and all four families share one continuation contract (Mistral's `last_tok`, Granite's `pos0 = kv_rows`); fused w13 writes the up half to `d_yg + I` (real OOB in Mistral, memcheck-clean now); the E1 depth counter is process-global and cross-TU-tested; `--bit-exact` no longer routes through `gemv_large`; six busy-polls became bounded `WaitEventChecked`; the split-K partials scratch is per-stream; RPATH, `head_dim`/GDN validation and the prequant double-activation fallback fixed; §V corrected. Fast 97/97 without `LD_LIBRARY_PATH`; dense parity green except the known phi DET-02 / gemma FSI/CODE reds. X9/X11/X15 stay open, plus X16 (pre-existing split-KV tolerance) — [`open-tasks/2026-10-22-inference-audit-closed.md`](open-tasks/2026-10-22-inference-audit-closed.md) |
+| 2026-10-22 | Inference audit — memory/lifecycle P1s and the cheap hardening closed | Mistral/Xing continuation no longer writes past the KV cache and all four families share one continuation contract (Mistral's `last_tok`, Granite's `pos0 = kv_rows`); fused w13 writes the up half to `d_yg + I` (real OOB in Mistral, memcheck-clean now); the E1 depth counter is process-global and cross-TU-tested; `--bit-exact` no longer routes through `gemv_large`; six busy-polls became bounded `WaitEventChecked`; the split-K partials scratch is per-stream; RPATH, `head_dim`/GDN validation and the prequant double-activation fallback fixed; §V corrected. Fast 98/98 without `LD_LIBRARY_PATH`; dense parity green except the known phi DET-02 / gemma FSI/CODE reds. All X1-X16 audit items are closed (second pass: GLM embed epoch, per-stream scratch, Arrow view range checks, split-KV dot bound) — [`open-tasks/2026-10-22-inference-audit-closed.md`](open-tasks/2026-10-22-inference-audit-closed.md) |
 | 2026-10-17 | Sequential-dispatch invariant made machine-checked (E1) + alice aligned to the fleet logits contract (E2) | **E1:** with no parallel dispatch planned, the process-global kernel-routing toggles' single-dispatch assumption is now enforced — `LsxFastMathScope` keeps a depth counter and logs a loud violation on overlap, pinned by two guard cases (one spawns a second thread to prove the counter is shared state, so the guard is not vacuous). **E2:** alice now publishes the LAST logits row like every other family (it published the FIRST). The original worry — that this would move alice's DET/FSI goldens — was wrong: those harnesses read `gen_tokens`, never `final_logits`, so nothing was re-captured. Real-weight alice selfcheck/DET/FSI/CODE all green. [`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md) |
 | 2026-10-17 | mimo uploaded weights through a host-side BF16→FP16 pass (E3) | `UploadHalf` decoded every BF16 element into a host `std::vector<__half>` and issued a synchronous pageable `cudaMemcpy` on the DEFAULT stream — `(void)st;` ignored the model's stream. Routed to the existing model-neutral device kernel `fastload::Bf16ToHalfInPlace` (the one GLM and the DeepSeek fast loader use), stream-ordered, with no host staging buffer. Bit-exact: the kernel is the same arithmetic the host loop ran, and `test_deepseek_moe_load_fast.cu` already pins it against a host reference including ragged tails. `UploadBf16`/`UploadF32` had the same `(void)st;` defect with no conversion involved and became stream-ordered too - [`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md) |
 | 2026-10-17 | gemma-MoE synthetic decode failed at once and reported `ok=true` (E1e) | `RunGemmaGeneration` ended by assigning the last-step logits read-back status back to `e`, so any error raised inside the decode loop was overwritten by a successful copy: `ok=true`, empty `error_msg`, and an answer truncated at the step the loop died on. The loop itself was correct. Combined with a synthetic fixture whose `moe_intermediate_size` was 16 while the routed-GEMV chain requires K % 32 == 0, the synthetic MoE decode had never actually run. Fixed both: the decode status is preserved and the copy is best-effort; the fixture intermediate is a documented 32-multiple (the dense one already carried that comment). `test_gemma_moe_model` now carries the full cooperative-cancel gate. This is what exposed it: every gemma-MoE synthetic assertion was satisfied by one token - [`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md) |

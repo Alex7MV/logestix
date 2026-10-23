@@ -712,3 +712,53 @@ TEST_CASE("GLM routed FFN real-shape latency + determinism")
     h.Free();
     cudaStreamDestroy(s);
 }
+
+TEST_CASE("flash embed cache rebuilds when the weight epoch changes")
+{
+    CudaGuard g;
+    constexpr int64_t n = 8;
+    std::vector<__nv_bfloat16> a(n), b(n);
+    for (int64_t i = 0; i < n; ++i) {
+        a[static_cast<size_t>(i)] = __float2bfloat16(1.0f);
+        b[static_cast<size_t>(i)] = __float2bfloat16(2.0f);
+    }
+    __nv_bfloat16 *da = nullptr, *db = nullptr;
+    REQUIRE(cudaMalloc(&da, n * sizeof(__nv_bfloat16)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&db, n * sizeof(__nv_bfloat16)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(da, a.data(), n * sizeof(__nv_bfloat16),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(db, b.data(), n * sizeof(__nv_bfloat16),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    FlashEmbedCache cache;
+    REQUIRE(cache.Ensure(0, da, n, /*weight_epoch=*/1) == cudaSuccess);
+    __half *host = nullptr;
+    REQUIRE(cudaMallocHost(&host, n * sizeof(__half)) == cudaSuccess);
+    auto read_back = [&]() {
+        REQUIRE(cudaMemcpy(host, cache.data, n * sizeof(__half),
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        return __half2float(host[0]);
+    };
+    const __half *first = cache.data;
+    CHECK(read_back() == 1.0f);
+
+    // Same epoch + same source: reuse the table.
+    REQUIRE(cache.Ensure(0, da, n, /*weight_epoch=*/1) == cudaSuccess);
+    CHECK(cache.data == first);
+    CHECK(read_back() == 1.0f);
+
+    // Same epoch but a different live instance/source: rebuild. The epoch is
+    // process-global, so it cannot distinguish two coexisting models.
+    REQUIRE(cache.Ensure(0, db, n, /*weight_epoch=*/1) == cudaSuccess);
+    CHECK(read_back() == 2.0f);
+
+    // A new weight lifetime rebuilds even when the allocator hands back the
+    // same address (pointer identity cannot be the oracle; the contents are).
+    REQUIRE(cache.Ensure(0, da, n, /*weight_epoch=*/2) == cudaSuccess);
+    CHECK(read_back() == 1.0f);
+    cache.Free();
+    CHECK(cache.data == nullptr);
+    cudaFreeHost(host);
+    cudaFree(da);
+    cudaFree(db);
+}

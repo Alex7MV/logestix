@@ -1231,6 +1231,12 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                            lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl)
 {
     const float alpha = 1.0f, beta0 = 0.0f;
+    // Diagnostics read the environment once, not once per layer/token.
+    static const char *const kTracePath = std::getenv("KIMI_TRACE_FILE");
+    static const int kDiagIds = []() {
+        const char *p = std::getenv("KIMI_DIAG_IDS");
+        return p ? std::atoi(p) : -1;
+    }();
 
     for (int l = 0; l < kKimiNumLayers; ++l) {
         const KimiLayerWeights &lw = pw.layers[l];
@@ -1263,7 +1269,11 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                     gemv::LxDtype::kBF16, alpha, d_scores,
                     gemv::LxDtype::kF32, beta0) != cudaSuccess)
                 return cudaGetLastError();
-        if (getenv("KIMI_DIAG_LAYER") && l == atoi(getenv("KIMI_DIAG_LAYER"))) {
+        static const int kDiagLayer = []() {
+            const char *p = std::getenv("KIMI_DIAG_LAYER");
+            return p ? std::atoi(p) : -1;
+        }();
+        if (l == kDiagLayer) {
             static thread_local float dbg[384];
             cudaMemcpy(dbg, d_scores, kKimiNumRouted * sizeof(float),
                        cudaMemcpyDeviceToHost);
@@ -1347,10 +1357,10 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                 // appends {turn, layer, top-k ids} per decode layer so
                 // cache-policy hit rates can be replayed offline without a
                 // GPU (diagnostics only; no numeric effect).
-                if (turn >= 1 && getenv("KIMI_TRACE_FILE")) {
+                if (turn >= 1 && kTracePath) {
                     static FILE *trace_f = []() {
-                        const char *p = getenv("KIMI_TRACE_FILE");
-                        return p ? std::fopen(p, "wb") : nullptr;
+                        return kTracePath ? std::fopen(kTracePath, "wb")
+                                          : nullptr;
                     }();
                     if (trace_f) {
                         int rec[2 + kKimiTopK];
@@ -1406,7 +1416,7 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                     }
                 }
 
-                if (getenv("KIMI_DIAG_IDS") && (l == atoi(getenv("KIMI_DIAG_IDS")) || l == 59)) {
+                if (kDiagIds >= 0 && (l == kDiagIds || l == 59)) {
                     fprintf(stderr, "[DIAG-IDS] l=%d ids=%d,%d,%d,%d\n",
                             l, h_ids[0], h_ids[1], h_ids[2], h_ids[3]);
                 }

@@ -68,7 +68,7 @@ Branch `fix/inference-audit-2026-10-22`; each item gets a failing test first
 
 ## Resolution log (2026-10-22)
 
-Build `linux-release-znver4-aocc`; fast suite **97/97** (no
+Build `linux-release-znver4-aocc`; fast suite **98/98** (no
 `LD_LIBRARY_PATH`), including the new guards below. Dense parity after the
 fixes: qwen3.5-9b, qwen3.8-27b, granite-4.2-30b, gemma-4-31b CODE/DET all
 green; only the pre-existing known reds remain (phi DET-02, gemma-4-31b
@@ -140,8 +140,43 @@ FSI-01, gemma-4-26b FSI/CODE).
   arena (`LoadQwen4ExpExpertStore`, two passes over 24 576 files), matching
   §V1 and the code.
 
-Still open after this pass: **X9** (process-global caches in
-GLM-Flash/Kimi/Gemma-MoE), **X11** (per-token/per-layer allocations and
-`getenv` on the decode path), **X15** (zero-copy Arrow views not
-range-checked), and **X16** (pre-existing split-KV attention tolerance
-failure).
+## Second pass (2026-10-23): X9, X11, X15, X16
+
+- **X9 (fixed).** The content-bearing GLM embedding cache is now
+  `FlashEmbedCache`, keyed by the `(weight epoch, source tensor)` pair (and
+  rebuilt when the table grows), so a second GLM instance with the same `V*H`
+  cannot serve the previous model's rows — the global epoch alone cannot
+  distinguish two coexisting instances. `test_glm_moe_flash_kernels` "flash
+  embed cache rebuilds when the weight epoch changes" reuses the table for the
+  same source/epoch, requires 2.0 after a source swap at the same epoch, and
+  requires a rebuild after a new epoch. The KDA/DSA
+  buffers are zeroed at the start of every generation and the arena is pure
+  scratch, so they carry no weight-dependent state; Kimi's persistent buffers
+  are a constant inverse-frequency table and scratch; Gemma-MoE's
+  `g_expert_db`/`g_gen_ctx` now have an RAII reset that fires on every exit,
+  including early errors.
+- **X11 (fixed).** Split-KV attention partials/stats and the router logits
+  moved to `lsxcommon::cuda::StreamScratch`: one grow-only buffer per
+  `(stream, tag)`, no `cudaMallocAsync`/`cudaFreeAsync` per layer/token, and
+  no cross-stream aliasing (the same defect class as X13).
+  `test_stream_scratch` pins reuse, growth and per-stream isolation. Kimi's
+  per-layer `KIMI_*` lookups and GLM's per-step `LSX_TRACE_FLASH` checks are
+  hoisted out of the decode loop. The `std::vector pos` in granite/phi/gemma
+  is built once per prefill, not per layer, so it is not a decode-path
+  allocation. The remaining async allocations are the documented
+  standalone-caller fallbacks; production decode passes arena slices.
+- **X15 (fixed).** `LoadTensorBatchViews`, `LoadDenseNvfp4BatchViews` and
+  `LoadSharedExpertBatchViews` now validate every published pointer+extent
+  against the Arrow value buffer (`CheckViewRange`) and every list slice
+  against the values length (`CheckListSlice`). The regression writes a
+  pinned batch whose binary offsets claim 5 bytes over a 4-byte buffer and
+  requires `LoadTensorBatchViews` to fail with "outside its buffer".
+- **X16 (fixed).** `AttnHalfDotRow` iterated `j < hd/4` while consuming two
+  `half2` per step, so the split-KV score dot covered only the first half of
+  the head (and the test's `max_abs=0.071` was the real discrepancy, not a
+  tolerance problem). The bound is now `hd/2`; `test_qwen_dense_full_attn`
+  passes at `< 2e-2` and all four kernels' tests are green. Real-weight
+  qwen3.5-9b FSI/CODE/DET and qwen3.8-27b FSI/CODE still pass.
+
+All audit items X1-X16 are now closed. Fast suite **98/98**; the qwen dense
+parity run is green after the split-KV fix.

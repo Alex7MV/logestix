@@ -6,6 +6,7 @@
 // (ported as NEW functions from the GLM-5.2 kernel semantics); MoE: sigmoid
 // noaux_tc top-8 router + NVFP4 routed/shared experts; hyper-connections
 // via the shared cached GatedResidual primitives.
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -60,6 +61,20 @@ struct FlashKdaState {
 
 cudaError_t FlashKdaStateAlloc(FlashKdaState &st, int64_t max_ctx);
 void FlashKdaStateFree(FlashKdaState &st);
+
+// Process-lifetime FP16 embedding table (BF16 source -> FP16 widening), keyed
+// by BOTH the source tensor and the model weight epoch. A size-only key served
+// the previous model's embeddings when two GLM instances shared V*H (audit X9).
+struct FlashEmbedCache {
+    __half *data = nullptr;
+    int64_t elems = 0;
+    unsigned long long epoch = 0;
+    const __nv_bfloat16 *source = nullptr;
+
+    cudaError_t Ensure(cudaStream_t stream, const __nv_bfloat16 *src,
+                       int64_t n, unsigned long long weight_epoch);
+    void Free();
+};
 
 // Single-token KDA decode for one layer (seq == 1):
 //   d_x: [H] current token hidden (post hc mixing, FP16).

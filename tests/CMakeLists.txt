@@ -5269,6 +5269,11 @@ target_link_libraries(test_cuda_event_wait PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_cuda_event_wait COMMAND test_cuda_event_wait)
 
+add_executable(test_stream_scratch test_stream_scratch.cpp)
+target_link_libraries(test_stream_scratch PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_stream_scratch COMMAND test_stream_scratch)
+
 add_executable(test_granite_tool_framing test_granite_tool_framing.cpp)
 target_link_libraries(test_granite_tool_framing PRIVATE lsxcommon
     Catch2::Catch2WithMain)
@@ -6161,6 +6166,7 @@ set_tests_properties(
     test_fast_math_guard_cross_tu
     test_granite_tool_framing
     test_cuda_event_wait
+    test_stream_scratch
     test_expert_store_guard
     test_license_guard
     test_kimi_moe_expert_cache

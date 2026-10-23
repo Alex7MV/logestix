@@ -2598,6 +2598,15 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     g_gen_ctx = &c;
 
     g_expert_db = &db;
+    // Both globals point at caller-owned state and are only valid for the
+    // duration of this call. Null them on EVERY exit, including the early
+    // error returns below (audit X9).
+    struct GlobalCtxReset {
+        ~GlobalCtxReset() {
+            g_expert_db = nullptr;
+            g_gen_ctx = nullptr;
+        }
+    } global_ctx_reset;
 
     // ── Prefill ─────────────────────────────────────────────────────────────
     e = cudaMemcpyAsync(ws.d_pos, input_ids.data(), sizeof(int32_t) * P,

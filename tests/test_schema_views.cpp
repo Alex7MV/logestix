@@ -260,3 +260,39 @@ TEST_CASE("View loaders report missing files as errors",
     auto r3 = lsxcommon::LoadSharedExpertBatchViews(missing);
     REQUIRE_FALSE(r3.ok());
 }
+
+TEST_CASE("Pinned view loader rejects a binary view outside its buffer",
+          "[schema][views][range]")
+{
+    auto tmp = fs::temp_directory_path() /
+               ("lsx_schema_views_bad_range_" + std::to_string(::getpid()));
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+
+    auto valid = lsxcommon::PinnedSchema::MakeBatch(SampleTensors());
+    REQUIRE(valid.ok());
+
+    // Offsets claim 5 bytes while the value buffer holds 4: GetView(0) hands
+    // back a string_view whose extent crosses the buffer end. The loader must
+    // reject it instead of publishing a pointer into unmapped memory.
+    const int64_t offsets[3] = {0, 5, 5};
+    auto offsets_buf = arrow::Buffer::FromString(
+        std::string(reinterpret_cast<const char *>(offsets), sizeof(offsets)));
+    auto values_buf = arrow::Buffer::FromString(std::string(4, 'x'));
+    auto bad_data = arrow::MakeArray(arrow::ArrayData::Make(
+        arrow::large_binary(), 2, {nullptr, offsets_buf, values_buf},
+        /*child_data=*/{}));
+    auto batch = arrow::RecordBatch::Make(
+        (*valid)->schema(), 2,
+        {(*valid)->column(lsxcommon::PinnedSchema::kIdxName),
+         (*valid)->column(lsxcommon::PinnedSchema::kIdxShape),
+         (*valid)->column(lsxcommon::PinnedSchema::kIdxDtype), bad_data});
+    const auto path = tmp / "bad_range.arrow";
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(batch, path).ok());
+
+    const auto views = lsxcommon::LoadTensorBatchViews(path);
+    REQUIRE(!views.ok());
+    CHECK(views.status().ToString().find("outside its buffer") !=
+          std::string::npos);
+    fs::remove_all(tmp);
+}
