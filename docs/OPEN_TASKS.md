@@ -22,7 +22,9 @@ code that produced it.
   call in the process returns 700, so the bulk of the failure list is cascade.
   Triage from the *first* failing `REQUIRE`, not the last.
 - Also carries a latency budget failure at `tests/test_qwen_moe_kernels.cu:388`
-  (`us < 20.0`, measured 31.24) — that part belongs to section B.
+  (`us < 20.0`, measured 31.24) — that part is the GPU-keyed-budget question
+  settled in the 2026-10-23 archive (`open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md`
+  § B): the number is machine-specific, so it needs that card, not a patch.
 - **Next step:** same workflow that resolved the GigaChat router.
   ```
   compute-sanitizer --tool memcheck --launch-timeout 120 <test>.exe
@@ -72,7 +74,7 @@ of them never executed. A SKIP is not a pass, and a missing golden is indistingu
 from a passing one in the ctest summary. Every other family's `det` golden exists and
 gemma's did not, which is why this gap survived — the absence is now closed.
 
-## R. gemma-4-31b-it (dense) ingested; FSI-01 RED; shared TC partial-M bug (2026-10-09)
+## R. gemma-4-31b-it (dense): FSI-01 RED (the TC partial-M bug it was found by is closed, 2026-10-10)
 
 The dense 31B member of the Gemma-4 family was ingested (`gemma_dense_*`,
 format tag `logestix-gemma-dense`, `lsxforge --gemma4dense`). Real-weight
