@@ -1784,6 +1784,13 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                 lw.attn_q.global_scale, ws.d_gemv_q, static_cast<int>(H),
                 q_rows, false);
             if (e != cudaSuccess) { log::error(std::string("[gemma] L804nv: ") + cudaGetErrorString(e)); return e; }
+            if (lw.attn_q_res.d_packed) {
+                e = RunGemmaNvfp4Gemm(stream, xt, lw.attn_q_res.d_packed,
+                                      lw.attn_q_res.d_scales,
+                                      lw.attn_q_res.global_scale, ws.d_gemv_q,
+                                      static_cast<int>(H), q_rows, true);
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L804nvres: ") + cudaGetErrorString(e)); return e; }
+            }
             e = RunGemmaF16ToBf16(stream, ws.d_gemv_q,
                                   ws.d_qr + static_cast<int64_t>(t) * q_rows,
                                   q_rows);
@@ -1793,6 +1800,14 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                 lw.attn_k.global_scale, ws.d_gemv_kv, static_cast<int>(H),
                 kv_heads * head_dim, false);
             if (e != cudaSuccess) { log::error(std::string("[gemma] L807nv: ") + cudaGetErrorString(e)); return e; }
+            if (lw.attn_k_res.d_packed) {
+                e = RunGemmaNvfp4Gemm(
+                    stream, xt, lw.attn_k_res.d_packed,
+                    lw.attn_k_res.d_scales, lw.attn_k_res.global_scale,
+                    ws.d_gemv_kv, static_cast<int>(H), kv_heads * head_dim,
+                    true);
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L807nvres: ") + cudaGetErrorString(e)); return e; }
+            }
             e = RunGemmaF16ToBf16(stream, ws.d_gemv_kv,
                                   ws.d_kr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                   kv_heads * head_dim);
@@ -1803,6 +1818,14 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                     lw.attn_v.global_scale, ws.d_gemv_kv, static_cast<int>(H),
                     kv_heads * head_dim, false);
                 if (e != cudaSuccess) { log::error(std::string("[gemma] L811nv: ") + cudaGetErrorString(e)); return e; }
+                if (lw.attn_v_res.d_packed) {
+                    e = RunGemmaNvfp4Gemm(
+                        stream, xt, lw.attn_v_res.d_packed,
+                        lw.attn_v_res.d_scales, lw.attn_v_res.global_scale,
+                        ws.d_gemv_kv, static_cast<int>(H),
+                        kv_heads * head_dim, true);
+                    if (e != cudaSuccess) { log::error(std::string("[gemma] L811nvres: ") + cudaGetErrorString(e)); return e; }
+                }
                 e = RunGemmaF16ToBf16(stream, ws.d_gemv_kv,
                                       ws.d_vr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                       kv_heads * head_dim);
@@ -1939,6 +1962,14 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                 lw.attn_o.global_scale, ws.d_gemv_o, q_rows,
                 static_cast<int>(H), false);
             if (e != cudaSuccess) { log::error(std::string("[gemma] L898nv: ") + cudaGetErrorString(e)); return e; }
+            if (lw.attn_o_res.d_packed) {
+                e = RunGemmaNvfp4Gemm(
+                    stream, ws.d_tmpf + static_cast<int64_t>(t) * q_rows,
+                    lw.attn_o_res.d_packed, lw.attn_o_res.d_scales,
+                    lw.attn_o_res.global_scale, ws.d_gemv_o, q_rows,
+                    static_cast<int>(H), true);
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L898nvres: ") + cudaGetErrorString(e)); return e; }
+            }
             e = RunGemmaF16ToBf16(stream, ws.d_gemv_o,
                                   ws.d_qr + static_cast<int64_t>(t) * H, H);
             if (e != cudaSuccess) { log::error(std::string("[gemma] L899nv: ") + cudaGetErrorString(e)); return e; }
@@ -1988,7 +2019,10 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                     lw.mlp_down.global_scale, ws.d_xh + static_cast<int64_t>(t) * H,
                     ws.d_mlp_g, ws.d_mlp_u, ws.d_mlp_h,
                     ws.d_mlp_y + static_cast<int64_t>(t) * H,
-                    static_cast<int>(H), static_cast<int>(I));
+                    static_cast<int>(H), static_cast<int>(I),
+                    lw.mlp_gate_res.d_packed ? &lw.mlp_gate_res : nullptr,
+                    lw.mlp_up_res.d_packed ? &lw.mlp_up_res : nullptr,
+                    lw.mlp_down_res.d_packed ? &lw.mlp_down_res : nullptr);
                 if (e != cudaSuccess) { log::error(std::string("[gemma] L918nv: ") + cudaGetErrorString(e)); return e; }
             }
             e = RunGemmaF16ToBf16(stream, ws.d_mlp_y, ws.d_qr,
@@ -3181,16 +3215,44 @@ cudaError_t RunGemmaDenseMlpNvfp4Chain(
     float down_gs, const __half *x, __half *g_out, __half *u_out,
     __half *h_out, __half *y, int H, int I)
 {
+    return RunGemmaDenseMlpNvfp4Chain(stream, gate_packed, gate_scales, gate_gs,
+                                      up_packed, up_scales, up_gs, down_packed,
+                                      down_scales, down_gs, x, g_out, u_out,
+                                      h_out, y, H, I, nullptr, nullptr,
+                                      nullptr);
+}
+
+cudaError_t RunGemmaDenseMlpNvfp4Chain(
+    cudaStream_t stream, const uint8_t *gate_packed, const uint8_t *gate_scales,
+    float gate_gs, const uint8_t *up_packed, const uint8_t *up_scales,
+    float up_gs, const uint8_t *down_packed, const uint8_t *down_scales,
+    float down_gs, const __half *x, __half *g_out, __half *u_out,
+    __half *h_out, __half *y, int H, int I,
+    const lsx_nvfp4::LsxNvfp4Weight *gate_res,
+    const lsx_nvfp4::LsxNvfp4Weight *up_res,
+    const lsx_nvfp4::LsxNvfp4Weight *down_res)
+{
     if (!gate_packed || !gate_scales || !up_packed || !up_scales ||
         !down_packed || !down_scales || !x || !g_out || !u_out || !h_out ||
         !y || H <= 0 || I <= 0 || (H & 31) != 0 || (I & 31) != 0)
         return cudaErrorInvalidValue;
 
+    // Residual plane: the same GEMV over the second weight, accumulating into
+    // the FP16 output (acc=true => one extra rounding, the ~8-bit contract).
+    auto with_res = [&](const lsx_nvfp4::LsxNvfp4Weight *res, const __half *xin,
+                        __half *yout, int K, int N) -> cudaError_t {
+        if (res == nullptr || res->d_packed == nullptr) return cudaSuccess;
+        return RunGemmaNvfp4Gemm(stream, xin, res->d_packed, res->d_scales,
+                                 res->global_scale, yout, K, N, true);
+    };
+
     cudaError_t e = RunGemmaNvfp4Gemm(
         stream, x, gate_packed, gate_scales, gate_gs, g_out, H, I, false);
+    if (e == cudaSuccess) e = with_res(gate_res, x, g_out, H, I);
     if (e != cudaSuccess) return e;
     e = RunGemmaNvfp4Gemm(
         stream, x, up_packed, up_scales, up_gs, u_out, H, I, false);
+    if (e == cudaSuccess) e = with_res(up_res, x, u_out, H, I);
     if (e != cudaSuccess) return e;
     {
         const int n_act = I;
@@ -3201,6 +3263,7 @@ cudaError_t RunGemmaDenseMlpNvfp4Chain(
     }
     e = RunGemmaNvfp4Gemm(
         stream, h_out, down_packed, down_scales, down_gs, y, I, H, false);
+    if (e == cudaSuccess) e = with_res(down_res, h_out, y, I, H);
     return e == cudaSuccess ? cudaGetLastError() : e;
 }
 

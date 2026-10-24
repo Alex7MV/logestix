@@ -373,6 +373,7 @@ arrow::Status WriteGemmaModelIndex(const std::string &output_root,
       << "  \"format\": \"logestix-gemma\",\n"
       << "  \"model\": \"gemma-4-26B-A4B-it\",\n"
       << "  \"mlp_nvfp4\": true,\n      \"attn_nvfp4\": true,\n      \"head_nvfp4\": true,\n"
+      << "  \"residual\": \"attn+mlp\",\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
@@ -638,6 +639,23 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
                 append_nvfp4_records(t.name, packed, scales, gs, r.shape,
                                      raw_by_layer[p.layer]);
                 total_pinned += 3;  // packed + scales + global_scale records
+                // Second plane: the residual w - dequant(base), decoded as one
+                // more GEMV with acc=true (~8 bits for 2x the bytes, no new
+                // codec). Attn + dense MLP only: an offline recipe ablation
+                // (2026-10-24) cleared every gemma-4-26b FSI/CODE flip with
+                // these at 8 bits and the routed experts at 4, and the experts
+                // are what the decode streams, so upgrading them would cost
+                // t/s for nothing measured.
+                std::vector<uint8_t> rp, rs;
+                float rgs = 1.0f;
+                if (!gpu::quantize_residual_tensor_gpu(
+                        r.data.data(), static_cast<int64_t>(r.data.size()) / 2,
+                        "BF16", r.shape, packed, scales, gs, rp, rs, rgs))
+                    return arrow::Status::IOError(
+                        "GPU NVFP4 residual quantization failed for ", t.name);
+                append_nvfp4_records(t.name + ".res", rp, rs, rgs, r.shape,
+                                     raw_by_layer[p.layer]);
+                total_pinned += 3;
                 continue;
             }
 
@@ -765,6 +783,14 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
                          k == TensorKind::ExpertsDown)
                             ? VramTensorClass::RoutedExpert
                             : VramTensorClass::Resident;
+             },
+             // attn + dense MLP carry the residual plane (experts do not).
+             +[](const std::string &n) {
+                 auto k = classify_gemma_tensor(n).kind;
+                 return k == TensorKind::AttnQ || k == TensorKind::AttnK ||
+                        k == TensorKind::AttnV || k == TensorKind::AttnO ||
+                        k == TensorKind::MlpGate || k == TensorKind::MlpUp ||
+                        k == TensorKind::MlpDown;
              }},
             vg);
         spdlog::info("VRAM profile: min={} optimal={} max={} (ctx={})",

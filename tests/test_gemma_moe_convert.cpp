@@ -2,12 +2,17 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <fstream>
+#include <string>
 #include <vector>
 
 #include "test_gemma_moe_fixture.h"
 
 #include <filesystem>
+
+#include "nvfp4_scale.h"
 
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/model_integrity.h"
@@ -184,6 +189,158 @@ TEST_CASE("convert fails on layer_types contradicting tensor shapes",
     auto out = tmp / "out";
     auto st = lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string());
     REQUIRE_FALSE(st.ok());
+    remove_all(tmp);
+}
+
+namespace {
+
+std::vector<float> Bf16Floats(const std::vector<uint8_t> &bytes)
+{
+    std::vector<float> out(bytes.size() / 2);
+    for (size_t i = 0; i < out.size(); ++i) {
+        const uint16_t bits = static_cast<uint16_t>(
+            bytes[2 * i] | (static_cast<uint16_t>(bytes[2 * i + 1]) << 8));
+        const uint32_t f32 = static_cast<uint32_t>(bits) << 16;
+        std::memcpy(&out[i], &f32, sizeof(float));
+    }
+    return out;
+}
+
+// Host decode of one NVFP4 record triad (packed + scales + global_scale) as the
+// converter wrote it. Test-side on purpose: the residual case is an
+// independent check of the stored bits, not of the decoder.
+std::vector<float> DecodeTriad(const std::vector<lsxcommon::TensorView> &ts,
+                               const std::string &base,
+                               const std::string &suffix)
+{
+    static const float kMag[8] = {0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+    const lsxcommon::TensorView *pk = nullptr;
+    const lsxcommon::TensorView *sc = nullptr;
+    const lsxcommon::TensorView *gs = nullptr;
+    for (const auto &t : ts) {
+        if (t.name == base + suffix + ".packed") pk = &t;
+        if (t.name == base + suffix + ".scales") sc = &t;
+        if (t.name == base + suffix + ".global_scale") gs = &t;
+    }
+    if (!pk || !sc || !gs) return {};
+    float g = 0.f;
+    std::memcpy(&g, gs->data, sizeof(float));
+    const int64_t n = static_cast<int64_t>(pk->bytes) * 2;
+    std::vector<float> out(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        const auto *bytes = static_cast<const uint8_t *>(pk->data);
+        const uint8_t byte = bytes[i >> 1];
+        const int nib = (i & 1) ? (byte >> 4) : (byte & 0x0F);
+        const float mag = kMag[nib & 7] * ((nib & 8) ? -1.0f : 1.0f);
+        const float scale = lsxcommon::nvfp4::E4m3ToFloat(
+            static_cast<const uint8_t *>(sc->data)[i >> 4]);
+        out[static_cast<size_t>(i)] = mag * scale * g;
+    }
+    return out;
+}
+
+float RelL2(const std::vector<float> &a, const std::vector<float> &b)
+{
+    double num = 0.0, den = 0.0;
+    for (size_t i = 0; i < b.size(); ++i) {
+        const double d = static_cast<double>(a[i]) - b[i];
+        num += d * d;
+        den += static_cast<double>(b[i]) * b[i];
+    }
+    return den > 0.0 ? static_cast<float>(std::sqrt(num / den)) : 0.0f;
+}
+
+} // namespace
+
+// The 4-bit body drifts from the bf16 source by cos 0.965 at the last layer
+// (measured 2026-10-24), i.e. ~3.5 logits rms on the head, and that flips the
+// FSI/CODE template near-ties. An offline recipe ablation showed the cheapest
+// sufficient fix is a second NVFP4 plane (w - dequant(base), decoded with
+// acc=true) on the attention projections and the dense MLP: experts stay 4-bit
+// so the streamed expert bytes and decode t/s are untouched.
+TEST_CASE("gemma MoE residual plane covers attn + dense MLP, never the experts",
+          "[gemma][convert][nvfp4][residual]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_conv_residual";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    // The shared fixture builds projection weights from raw 16-bit patterns
+    // (NaN/Inf-heavy) which the quantizer flattens to zeros -- useless for a
+    // reconstruction comparison. Re-seed those tensors with a smooth,
+    // deterministic, NVFP4-imperfect signal so the plane's effect is visible.
+    for (auto &t : tensors) {
+        if (t.name.find(".weight") == std::string::npos) continue;
+        if (t.name.find("norm") != std::string::npos) continue;
+        if (t.name.find("router") != std::string::npos) continue;
+        if (t.name.find("embed_tokens") != std::string::npos) continue;
+        const int64_t n = static_cast<int64_t>(t.data.size() / 2);
+        t.data = gemmatest::MakeBf16Values(n, [](int64_t i) {
+            return 0.3f * std::sin(0.37f * static_cast<float>(i)) +
+                   0.15f * std::sin(1.9f * static_cast<float>(i));
+        });
+    }
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                               tmp / "tokenizer.json");
+
+    auto out = tmp / "out";
+    auto cst = lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string());
+    if (!cst.ok()) FAIL("ConvertGemmaModel: " << cst.ToString());
+    REQUIRE(cst.ok());
+
+    auto batch_res = lsxcommon::LoadTensorBatchViews(
+        out / "logestix" / "pinned" / "layer_0.arrow");
+    REQUIRE(batch_res.ok());
+    const auto &ts = batch_res->tensors;
+
+    for (const char *t : {"self_attn.q_proj.weight", "self_attn.k_proj.weight",
+                          "self_attn.o_proj.weight",
+                          "mlp.gate_proj.weight", "mlp.up_proj.weight",
+                          "mlp.down_proj.weight"}) {
+        const std::string base = std::string("model.language_model.layers.0.") +
+                                 t;
+        const std::string res = base + ".res";
+        bool have_res = false;
+        for (const auto &v : ts)
+            if (v.name == res + ".packed") have_res = true;
+        INFO(base);
+        REQUIRE(have_res);
+        const auto dq_base = DecodeTriad(ts, base, "");
+        const auto dq_res = DecodeTriad(ts, base, ".res");
+        REQUIRE(!dq_base.empty());
+        REQUIRE(dq_res.size() == dq_base.size());
+        std::vector<float> sum(dq_base.size());
+        for (size_t i = 0; i < sum.size(); ++i) sum[i] = dq_base[i] + dq_res[i];
+        std::vector<float> src;
+        for (const auto &ft : tensors)
+            if (ft.name == base) src = Bf16Floats(ft.data);
+        REQUIRE(src.size() == sum.size());
+        const float e_base = RelL2(dq_base, src);
+        const float e_res = RelL2(sum, src);
+        INFO(base << ": base relL2=" << e_base << " base+res=" << e_res);
+        CHECK(e_base > 0.0f);
+        CHECK(e_res < e_base * 0.5f);
+    }
+
+    // The router stays high precision (a 4-bit router swaps the expert set).
+    for (const auto &v : ts)
+        CHECK(v.name.find("router.proj.weight.res") == std::string::npos);
+    // The tied table keeps its 4-bit plane: measured, the head costs < 1
+    // logit while the body owns the drift, so a residual there is pure cost.
+    {
+        auto g = lsxcommon::ReadRecordBatchFromFile(
+            out / "logestix" / "pinned" / "global_nvfp4.arrow");
+        REQUIRE(g.ok());
+        auto recs = lsxcommon::DenseNvfp4Schema::UnpackBatch(*g);
+        REQUIRE(recs.ok());
+        for (const auto &r : *recs)
+            CHECK(r.name.find(".res") == std::string::npos);
+    }
+
+    batch_res->keepalive.reset();
     remove_all(tmp);
 }
 

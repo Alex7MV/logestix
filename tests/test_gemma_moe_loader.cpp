@@ -204,6 +204,51 @@ TEST_CASE("gemma loader uploads NVFP4 dense MLP when present",
     fs::remove_all(tmp);
 }
 
+TEST_CASE("gemma loader uploads the attn + dense-MLP residual planes",
+          "[gemma][loader][nvfp4][residual]") {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "gemma4_loader_residual";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                               tmp / "tokenizer.json");
+    auto out = tmp / "out";
+    REQUIRE(lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string())
+                .ok());
+
+    lsxcommon::gemma::GemmaPinnedWeights pw;
+    auto rc = lsxcommon::gemma::LoadGemmaPinnedWeights(out.string(), pw,
+                                                       nullptr);
+    if (rc != cudaSuccess) {
+        INFO("LoadGemmaPinnedWeights rc=" << cudaGetErrorString(rc));
+        REQUIRE(rc == cudaSuccess);
+    }
+    REQUIRE(pw.layers.size() == gemmatest::TestCfg().num_layers);
+    const auto &lw = pw.layers[0];
+    REQUIRE(lw.attn_nvfp4);
+    REQUIRE(lw.mlp_nvfp4);
+    // Same shape as the base plane: the decode accumulates plane two into the
+    // same output buffer with acc=true.
+    CHECK(lw.attn_q_res.d_packed != nullptr);
+    CHECK(lw.attn_q_res.rows == lw.attn_q.rows);
+    CHECK(lw.attn_q_res.cols == lw.attn_q.cols);
+    CHECK(lw.attn_k_res.rows == lw.attn_k.rows);
+    CHECK(lw.attn_o_res.rows == lw.attn_o.rows);
+    CHECK(lw.attn_o_res.cols == lw.attn_o.cols);
+    CHECK(lw.mlp_gate_res.rows == lw.mlp_gate.rows);
+    CHECK(lw.mlp_up_res.rows == lw.mlp_up.rows);
+    CHECK(lw.mlp_down_res.rows == lw.mlp_down.rows);
+    CHECK(lw.mlp_down_res.cols == lw.mlp_down.cols);
+    // Sliding layers ship a v_proj; full layers tie V to K and have none.
+    CHECK(lw.attn_v_res.d_packed != nullptr);
+    CHECK(pw.layers[3].attn_v_res.d_packed == nullptr);
+    pw.Free();
+    fs::remove_all(tmp);
+}
+
 TEST_CASE("gemma loader uploads NVFP4 attention projections",
           "[gemma][loader][nvfp4]") {
     namespace fs = std::filesystem;

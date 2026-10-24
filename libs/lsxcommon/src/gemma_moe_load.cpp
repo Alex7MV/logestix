@@ -251,18 +251,36 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
         w.d_scales = static_cast<const uint8_t *>(d2);
         return cudaSuccess;
     };
+    // Residual planes (optional: absent on a legacy 4-bit-only tree). A
+    // missing triple leaves the weight null and the decode skips the
+    // accumulate pass, so old trees keep loading unchanged.
+    auto upload_res = [&](std::string_view base,
+                          lsx_nvfp4::LsxNvfp4Weight &w) -> cudaError_t {
+        const Nvfp4Recs r = gather(std::string(base) + ".res");
+        if (!r.packed || !r.scales || !r.gs) return cudaSuccess;
+        return upload_nv(r, w);
+    };
     if (mlp_nv) {
         cudaError_t e = upload_nv(gate_rec, lw.mlp_gate);
         if (e == cudaSuccess) e = upload_nv(up_rec, lw.mlp_up);
         if (e == cudaSuccess) e = upload_nv(down_rec, lw.mlp_down);
         if (e != cudaSuccess) return e;
         lw.mlp_nvfp4 = true;
+        e = upload_res("mlp.gate_proj.weight", lw.mlp_gate_res);
+        if (e == cudaSuccess) e = upload_res("mlp.up_proj.weight", lw.mlp_up_res);
+        if (e == cudaSuccess) e = upload_res("mlp.down_proj.weight", lw.mlp_down_res);
+        if (e != cudaSuccess) return e;
     }
     if (attn_nv && attn_v_ok) {
         cudaError_t e = upload_nv(q_rec, lw.attn_q);
         if (e == cudaSuccess) e = upload_nv(k_rec, lw.attn_k);
         if (e == cudaSuccess && v_rec.packed) e = upload_nv(v_rec, lw.attn_v);
         if (e == cudaSuccess) e = upload_nv(o_rec, lw.attn_o);
+        if (e != cudaSuccess) return e;
+        e = upload_res("self_attn.q_proj.weight", lw.attn_q_res);
+        if (e == cudaSuccess) e = upload_res("self_attn.k_proj.weight", lw.attn_k_res);
+        if (e == cudaSuccess && v_rec.packed) e = upload_res("self_attn.v_proj.weight", lw.attn_v_res);
+        if (e == cudaSuccess) e = upload_res("self_attn.o_proj.weight", lw.attn_o_res);
         if (e != cudaSuccess) return e;
         lw.attn_nvfp4 = true;
         // Preserve the geometry fields the attention code reads from the
@@ -424,6 +442,13 @@ void GemmaLayerWeights::Free()
     attn_k.Free();
     attn_v.Free();
     attn_o.Free();
+    attn_q_res.Free();
+    attn_k_res.Free();
+    attn_v_res.Free();
+    attn_o_res.Free();
+    mlp_gate_res.Free();
+    mlp_up_res.Free();
+    mlp_down_res.Free();
     *this = GemmaLayerWeights{};
 }
 

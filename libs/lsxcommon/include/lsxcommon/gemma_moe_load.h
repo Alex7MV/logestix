@@ -71,6 +71,18 @@ struct alignas(16) GemmaLayerWeights {
     lsx_nvfp4::LsxNvfp4Weight attn_q, attn_k, attn_v, attn_o;
     bool attn_nvfp4 = false;
 
+    // Second NVFP4 plane (the residual w - dequant(base), stored as
+    // "<name>.res"). Decoded as one more GEMV with acc=true, which lifts the
+    // effective precision to ~8 bits for 2x the bytes. Null on a legacy
+    // 4-bit-only tree (the decode then skips the accumulate pass).
+    //
+    // Placement is measured, not uniform (2026-10-24): attn + dense MLP here,
+    // routed experts NOT (they are 88% of the weights and own the streamed
+    // read volume; an offline recipe ablation cleared every gemma-4-26b
+    // FSI/CODE flip with attn+MLP at 8 bits and experts at 4).
+    lsx_nvfp4::LsxNvfp4Weight attn_q_res, attn_k_res, attn_v_res, attn_o_res;
+    lsx_nvfp4::LsxNvfp4Weight mlp_gate_res, mlp_up_res, mlp_down_res;
+
     // Router logits projection (FP16) [num_experts, hidden].
     __nv_bfloat16 *d_router_proj = nullptr;
 

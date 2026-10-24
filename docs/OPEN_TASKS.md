@@ -34,88 +34,16 @@ code that produced it.
   (`libs/lsxcommon/src/lsx_tc_gemm.cu:891`) already rejects non-CC-12, and this
   GPU *is* CC 12, so the `major != 12` guard is not what is firing here.
 
-## J. gemma FSI/CODE goldens captured; both gates RED on real divergences (2026-10-06, refreshed 2026-10-23)
+## J. gemma-4-26b-a4b-it FSI/CODE — RESOLVED 2026-10-24 (archive)
 
-gemma had **no** FSI or CODE golden, so both stages were silently SKIPping and the family
-was effectively held up only by SelfCheck and DET. Now captured from the source
-safetensors (they run locally: `Gemma4ForConditionalGeneration`, bf16, transformers
-5.15.1), so they are model-defined goldens, not template-derived.
-
-Both gates run, and both fail. Re-checked 2026-10-23 after the strict-GEMV
-changes (identical with the route disabled, so not a routing artifact):
-
-- **FSI-TEST-01** — semantic. Source: `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`.
-  Converted: `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))` — it
-  substitutes the prompt's numbers but drops the annuity-due `exp(r)` factor.
-  Cleanly extracted, so it is a real behavioural difference, not a harness
-  artifact.
-- **FSI-TEST-02** — semantic. Source: the symbolic
-  `Balance_Alpha=((((100000000*Rate_A)-Slip_A)*Rate_B)-Slip_B)*Rate_C-Slip_C`;
-  converted: the same expression with the numeric rates substituted
-  (`...*1.083541...83.152402...0.011104...`). FSI-03 passes.
-- **CODE-TEST-02** — syntactic, and the gate working as designed. Source:
-  `m=l+((h-l)/2)`; converted: `m=l+(h-l)/2`. Algebraically identical; CODE applies no
-  canonicalization precisely so that this fails. CODE-01/03 pass.
-
-**Neither is the port.** Reverting `gemma_moe_inference.cu` to its pre-port state at
-`7810383` reproduces 5 passed / 1 failed on both gates, byte for byte. Both are
-NVFP4-vs-bf16 differences on borderline greedy decisions. Disabling the strict
-GEMV route (the F-04/bit-exact state) produces the same tokens, so the later
-routing work did not move them.
-
-Left red deliberately. Two things are *not* acceptable fixes here: writing the
-template's answer into the golden (that deletes the model-defined rule and makes the
-gate vacuous), and adding algebraic comparison to CODE (that deletes the reason CODE
-exists). Both findings are written up in `docs/FSI_SELFCHECK_FINDINGS.md` and
-`docs/CODE_SELFCHECK_FINDINGS.md`.
-
-### J2. Measured root cause (2026-10-24): 4-bit body error, and the recipe that fixes it
-
-Instrument (all numbers pre-softcap, source = `Gemma4ForConditionalGeneration`,
-bf16, `final_logit_softcapping=None`, teacher-forced on the golden prefix):
-
-- The engine is **faithful**: per-layer residual stream vs the source is
-  cos 0.9992 after layer 0 and 0.960-0.965 at layer 29 (rms ratio 0.94-1.03),
-  and the layer-0 router picks the identical top-8 expert set. The drift is
-  plain NVFP4 weight error accumulating over 30 layers (embed/lm_head table
-  rel. err 9.6%).
-- Decomposition at the head: with the source's exact hidden, our 4-bit tied
-  table costs max 1.05 / rms 0.36 logits. With our hidden and the source's
-  exact table it is max 5.58 / rms 3.46 -- i.e. the **body**, not the head,
-  owns the error. (FP16 edges would not fix these flips.)
-- The decisive pairs, source margin vs converted margin:
-  FSI-01 step 2 afer `PV=`: src `CF` +12.4, conv `2` +9.9 (22-logit swing);
-  CODE-02 step 3: src `(` +2.5, conv `+(` +2.8.
-- Offline NVFP4 recipe ablation (in-place quantization of the HF model, exact
-  same block/e4m3 recipe, teacher-forced 40 steps; `all-q4` reproduces the
-  engine's flips bit-for-bit, so the instrument is validated):
-  | recipe | flips | top-5 \|err\| mean |
-  |---|---|---|
-  | all 4-bit (shipped) | FSI-01 s2,s3; CODE-02 s3 | 0.76-1.70 |
-  | experts 4-bit, attn+MLP bf16 | none | 0.51-0.85 |
-  | attn+MLP 8-bit, experts 4-bit | none | 0.53-0.95 |
-  | all 8-bit | none | 0.36-0.56 |
-- **Sufficient recipe:** a residual NVFP4 plane (`<name>.res`, the phi-4
-  scheme) on the attention projections and the dense MLP only -- experts stay
-  4-bit. Cost: +1.5 GiB resident (3 GB of attn+MLP weights move 0.5 -> 1
-  byte/param); the 22.8B expert params keep their size and their streamed
-  read volume, so decode t/s is unaffected.
-- Not yet implemented: `gemma_moe_convert` must emit the `.res` records,
-  `gemma_moe_load` must upload them, and the attn / `RunGemmaDenseMlpNvfp4Chain`
-  GEMV paths must run the second `acc=true` pass. TDD anchor:
-  `test_gemma_moe_convert` (residual reconstruction) + `test_gemma_moe_moe`
-  (chain arithmetic).
-- Separate **fixed** defect found on the way: the NVFP4 logits kernel ignored
-  the tied table's per-tensor global scale (+ multiply missing), so every
-  gemma-4-26b logit was 1/gs = 7.01x hot and the softcap saturated. Greedy
-  argmax is scale-invariant, so it hid; the logit row, temperature/top-k
-  semantics and the SelfCheck logit evidence were all wrong. Pinned by
-  `test_gemma_moe_moe` "gemma NVFP4 logits apply the table global scale".
-
-Worth noting what this costs: gemma was previously *appearing* green on 4 stages while two
-of them never executed. A SKIP is not a pass, and a missing golden is indistinguishable
-from a passing one in the ctest summary. Every other family's `det` golden exists and
-gemma's did not, which is why this gap survived — the absence is now closed.
+All four parity gates are green on the MoE member (SelfCheck, FSI 3/3, CODE
+3/3, DET 3/3) after two fixes: the NVFP4 logits kernel was dropping the tied
+table's per-tensor global scale (logits 7.01x hot, fixed in `76a13afc`, pinned
+by a `gs != 1` case in `test_gemma_moe_moe`), and the body needed a second
+NVFP4 plane on the attention projections + dense MLP (routed experts stay
+4-bit). Measured root cause, the recipe ablation, the implementation and the
+re-seeded throughput (128.25 t/s perf / 128.34 r3, was ~157) --
+[`open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md`](open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md).
 
 ## R. gemma-4-31b-it (dense): FSI-01 RED (the TC partial-M bug it was found by is closed, 2026-10-10)
 
@@ -124,18 +52,25 @@ format tag `logestix-gemma-dense`, `lsxforge --gemma4dense`). Real-weight
 results: SelfCheck PASS (`Paris.`, bit-exact across stress cycles), CODE 3/3,
 DET 3/3, FSI 2/3. Open items:
 
-- **FSI-TEST-01 RED.** Source (golden):
+- **FSI-TEST-01 RED (stays red).** Source (golden):
   `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))`; the converted model
-  repeats the prompt template `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`. Same
-  NVFP4-vs-bf16 borderline class as the 26B (section J); the gate stays red.
-  Measured 2026-10-24 (pre-softcap, teacher-forced): the fork is at step 2
-  (after `PV=`), src `2` 55.5 vs `CF` 42.75 (+12.75), converted `CF` 46.1 vs
-  `2` 43.4 (a 15.4-logit swing). Offline recipe ablation on the same
-  instrument: all-8-bit -> no flips (top-5 \|err\| mean 0.32);
-  **`down_proj` + `o_proj` 8-bit, rest 4-bit -> no flips (0.53)**, i.e. a
-  residual plane on the two projections that write into the residual stream
-  (+4.8 GiB, 17 -> ~22 GiB resident, fits). All-linears 8-bit would be
-  32.5 GiB and does not fit this card.
+  repeats the prompt template `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`. The fork is
+  at step 2 (after `PV=`), and it was re-measured in the engine on 2026-10-24
+  after the MoE member's fix (pre-softcap, teacher-forced): src `2` 55.5 vs
+  `CF` 42.75, converted `CF` 46.1 vs `2` 43.4.
+  **The 26B residual recipe does not transfer and no partial placement fits.**
+  Measured in the engine (each variant = a 65 s re-conversion + probe):
+  `o`+`down` planes (the offline-simulation winner) -> margin `CF` +6.3 at
+  22 GiB; `q,k,v,o`+`down` -> `CF` +10.4 at 25 GiB; all linears -> 33.7 GiB,
+  OOM. Adding precision moved *away* from the source at this pair, i.e. the
+  required upgrade is broader than the card. The offline HF simulation is only
+  qualitative here: its all-4-bit baseline already sat on the source's side of
+  the fork (its error is smaller than the engine's), which is why
+  "`down`+`o` suffices" did not transfer. The dense residual plumbing was
+  therefore reverted -- the tree is back to the 4-bit-only 17 GiB format.
+  Getting this gate green needs ~8 bits on every linear (~33.7 GiB resident),
+  i.e. a 48 GiB card or a different block format. Full trail:
+  `open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md` §5.
 - **Shared TC defect: RESOLVED 2026-10-10** - `TcGemmKernel` wrote only
   rows `[0,16)` of its 64-row tile (`wm` was computed and never used); all
   four row computations fixed, TC shape sweep extended to seq 17/18/33/64.
@@ -476,6 +411,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-24 | gemma-4-26b-a4b-it FSI/CODE closed: two defects, one recipe | §J resolved. **(a)** The NVFP4 logits kernel dropped the tied table's per-tensor global scale, so every logit was 7.01x hot and the soft cap saturated — greedy hid it (argmax is scale-invariant), the logit row/temperature semantics did not; pinned by a `gs = 0.25` CPU-table case (the latency test passed `gs = 1`, which is how it shipped). **(b)** The remaining flips were accumulated 4-bit body error on template near-ties: engine vs source cos 0.9992 after L0 and 0.960-0.965 at L29, identical router top-8, head error only ~1 logit while the body owned 3.46 rms — so FP16 edges were the wrong lever. Recipe ablation (validated: all-q4 reproduced the engine's flips): attn+MLP at 8 bits with the **routed experts still 4-bit** clears every flip, i.e. a second NVFP4 plane (`<name>.res`, `acc=true`) on attention + dense MLP only. All four gates now green (SelfCheck, FSI/CODE/DET 3/3), 15 GiB tree; throughput re-seeded by the harness with power/TTFT evidence 156.7/156.5 -> **128.25/128.34** t/s (the doubled attn+MLP read). The dense 31B sibling stays red on FSI-01: the same recipe does not transfer and no partial placement fits (§R) — [`open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md`](open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md) |
 | 2026-10-24 | phi-4 DET-TEST-02 closed: 4-bit body + residual plane + FP16 edges | The gate was a genuine 1.1-logit near-tie (source `C` 30.75 / `CR` 29.625), and the flip was **not** the quantizer being bad: our NVFP4 reconstructs weights as well as NF4 (relL2 9.5% vs 9.1%) and, with FP16 edges, matches it on perplexity (13.88 vs 13.85, source 13.48), top-1 and a 35-prompt near-tie battery (7/9 each). A per-layer ablation showed the error is spread over all 40 layers, so no high-precision subset helps; a BF16 LM head alone still answered `CR` by 0.34. Fix: every projection carries a **second NVFP4 plane with the residual** (decoded with `acc=true`, same codec/schema/kernels) and `embed_tokens`/`lm_head` stay FP16 — effective ~8-bit weights at 2x the read. All four parity gates green (Paris ×3 bit-exact, FSI/CODE/DET 3/3), 16.6 GiB resident, 71 t/s at 2048 tokens. Also fixed the VRAM profile (it ignored the residual plane) and re-seeded the perf rows 130.91/130.31 -> 71.06/71.16 with the harness's own evidence — [`open-tasks/2026-10-24-phi-4-perf-mode-closed.md`](open-tasks/2026-10-24-phi-4-perf-mode-closed.md) |
 | 2026-10-24 | phi-4 lifecycle re-audit: continuation X2, the kAuto perf row, two instrument defects | The vault had no converted artifact, so phi-4 was re-converted and every stage re-run. **Continuation (audit X2) had never been ported from granite**: prefill hard-coded `pos0 = 0` and reset `kv_rows`, so a continuation wrote K/V over cache row 0 — fixed, pinned by a fresh-prefill parity case. The `perf`-mode row (134.67, 2026-10-01) was **not a code regression**: the E4M3FN block-scale decode (2026-10-06, after the row) cost 1.2-1.5% in the streaming-GEMV inner loop, measured by an A/B against the pre-codec decode; a bit-identical single-return rewrite with an FMA subnormal lands at pow2 parity (app 133.2-133.7 = 98.9-99.3% of the row). Compiler (GCC == AOCC), warm-up, NVML, cooldown and artifact were each ruled out by measurement; the harness's own run-to-run spread on this model is ~2%. Rows re-seeded by the harness with evidence: perf **134.67 -> 130.72 -> 130.91**, r3 **128.68 -> 129.68 -> 130.31**; the target passes both modes. Instruments: the phi decode-shape bandwidth budget existed but had **no row** (silent SKIP) and now covers the real `qkv` shape, and `test_kernel_budget.h` no longer truncates hand-formatted multi-line entries on read or rewrite. Also fixed: a Debug perf run rewrote the tracked `__gpu_probe__` oracle before SKIPping — [`open-tasks/2026-10-24-phi-4-perf-mode-closed.md`](open-tasks/2026-10-24-phi-4-perf-mode-closed.md) |
 | 2026-10-24 | The `model-metadata/` vault block is deleted | Only two things still lived there and neither belonged in the model vault: the passport (deleted just above) and the per-GPU perf calibration cache (empty; reachable only from an explicit calibration). `lsx_model_metadata{,_root}` and `kModelMetadataDir` are gone; the calibration moved to `lsx_cache_path` — `LSX_CACHE_DIR`, else `$XDG_CACHE_HOME/logestix` / `~/.cache/logestix` (`%LOCALAPPDATA%\logestix\cache`), temp fallback. The DeepSeek loaders' `manifests/model.index.json` vault fallback was removed too (nothing ever wrote such a file). `test_path_registry` now pins "cache root is never inside the vault"; `test_gpu_perf` asserts the same for the cache path. The directory itself was removed from the vault. |

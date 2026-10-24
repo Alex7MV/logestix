@@ -300,14 +300,24 @@ procedure — `perf-tuning-a-model`.
   remaining TTFT cost. History and profile: archive
   `docs/open-tasks/2026-10-23-residual-closures.md`.
   Gemma-4 (two members, one tokenizer): the MoE 26B (`gemma_moe_*` +
-  `gemma_base_model.*` + `gemma_tool_format.*`, format tag `logestix-gemma`) and
+  `gemma_base_model.*` + `gemma_tool_format.*`, format tag `logestix-gemma`;
+  its attention projections and dense MLP carry a second NVFP4 plane —
+  `<name>.res`, decoded with `acc=true` — while the routed experts stay 4-bit,
+  which is what makes **all four parity gates green** (SelfCheck, FSI 3/3,
+  CODE 3/3, DET 3/3); index field `"residual": "attn+mlp"`; the cost is the
+  doubled attn+MLP read: **128.25 t/s** (perf) / **128.34 t/s** (r3) at 2048
+  tokens, previously 156.7 — deliberate, measured, re-seeded; see
+  `docs/open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md`) and
   the DENSE 31B (`gemma_dense_constants.h` (frozen passport),
   `gemma_dense_convert.{h,cpp}` (vision ballast stripped), `gemma_dense_load.*`,
   `gemma_dense_inference.{h,cu}` (HF-exact "proportional" RoPE on the global
   layers, K-tied-to-V, GeGLU, NVFP4 tied head; FP16 activations) and
   `gemma_dense_model.{h,cpp}`; format tag `logestix-gemma-dense`; converted in
   place with `lsxforge --gemma4dense`; CODE 3/3, DET 3/3, FSI 2/3 (FSI-01 is the
-  same NVFP4-borderline class as the 26B).
+  same NVFP4-borderline class, and it is the one gate the cheap recipe does
+  NOT clear: the pair that fixes the 26B costs nothing here, because the dense
+  body needs ~8 bits on *every* linear — 33.7 GiB resident, over this card.
+  Numbers in `docs/OPEN_TASKS.md` §R).
   Mistral-Small-4-119B-2603-NVFP4 (independent family `mistral`: MLA
   q_lora 1024 / kv_lora 256 / qk_nope 64 / qk_rope 64 / v_head 128 + 128-expert
   top-4 MoE with one **ungated** shared expert, every layer MoE

@@ -450,6 +450,155 @@ TEST_CASE("gemma dense MLP NVFP4 GEMV chain parity vs host reference",
     cudaFree(du); cudaFree(dh); cudaFree(dy);
 }
 
+// The residual plane is decoded as a SECOND GEMV with acc=true, so each
+// projection must equal "base dot rounded to FP16, then + residual dot rounded
+// once more" -- not one dot over an exactly summed weight. Pin that arithmetic
+// (it is what makes 4-bit + 4-bit behave like ~8 bits instead of like a noisy
+// single 4-bit plane).
+TEST_CASE("gemma dense MLP chain accumulates the residual planes with acc=true",
+          "[gemma][moe][nvfp4][residual]") {
+    using lsxcommon::gpu::quantize_tensor_gpu;
+    using lsxcommon::gpu::quantize_residual_tensor_gpu;
+    constexpr int H = 256, I = 128;
+    std::mt19937 rng(23);
+    std::normal_distribution<float> nd(0.f, 1.f);
+
+    std::vector<uint8_t> gate_raw(I * H * 2), up_raw(I * H * 2),
+        down_raw(H * I * 2);
+    auto fill_bf16 = [&](std::vector<uint8_t> &v, float scale) {
+        for (size_t i = 0; i < v.size() / 2; ++i) {
+            __nv_bfloat16 b = __float2bfloat16(scale * nd(rng));
+            uint16_t bits;
+            std::memcpy(&bits, &b, 2);
+            v[i * 2] = static_cast<uint8_t>(bits & 0xff);
+            v[i * 2 + 1] = static_cast<uint8_t>(bits >> 8);
+        }
+    };
+    fill_bf16(gate_raw, 0.2f);
+    fill_bf16(up_raw, 0.2f);
+    fill_bf16(down_raw, 0.2f);
+
+    const std::vector<int64_t> gate_shape{I, H}, down_shape{H, I};
+    std::vector<uint8_t> gp, gsc, up, usc, dp, dsc;
+    std::vector<uint8_t> gr, grsc, ur, ursc, dr, drsc;
+    float ggs, ugs, dgs, ggs_r, ugs_r, dgs_r;
+    REQUIRE(quantize_tensor_gpu(gate_raw.data(), (int64_t)I * H, "BF16",
+                                nullptr, gate_shape, {}, gp, gsc, ggs));
+    REQUIRE(quantize_tensor_gpu(up_raw.data(), (int64_t)I * H, "BF16", nullptr,
+                                gate_shape, {}, up, usc, ugs));
+    REQUIRE(quantize_tensor_gpu(down_raw.data(), (int64_t)H * I, "BF16",
+                                nullptr, down_shape, {}, dp, dsc, dgs));
+    REQUIRE(quantize_residual_tensor_gpu(gate_raw.data(), (int64_t)I * H,
+                                         "BF16", gate_shape, gp, gsc, ggs, gr,
+                                         grsc, ggs_r));
+    REQUIRE(quantize_residual_tensor_gpu(up_raw.data(), (int64_t)I * H, "BF16",
+                                         gate_shape, up, usc, ugs, ur, ursc,
+                                         ugs_r));
+    REQUIRE(quantize_residual_tensor_gpu(down_raw.data(), (int64_t)H * I,
+                                         "BF16", down_shape, dp, dsc, dgs, dr,
+                                         drsc, dgs_r));
+
+    std::vector<float> xf(H);
+    for (auto &v : xf) v = nd(rng);
+    std::vector<__half> xh(H);
+    for (int i = 0; i < H; ++i)
+        xh[i] = __float2half(__bfloat162float(__float2bfloat16(xf[i])));
+
+    uint8_t *dgp, *dgsc, *dup, *dusc, *ddp, *ddsc;
+    uint8_t *dgr, *dgrsc, *dur, *dursc, *ddr, *ddrsc;
+    __half *dxh, *dgu, *du, *dh, *dy;
+    REQUIRE(cudaMalloc(&dgp, gp.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dgsc, gsc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dup, up.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dusc, usc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ddp, dp.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ddsc, dsc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dgr, gr.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dgrsc, grsc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dur, ur.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dursc, ursc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ddr, dr.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ddrsc, drsc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dxh, H * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dgu, (size_t)I * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&du, (size_t)I * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dh, (size_t)I * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy, (size_t)H * 2) == cudaSuccess);
+    auto up2 = [](void *dst, const std::vector<uint8_t> &v) {
+        REQUIRE(cudaMemcpy(dst, v.data(), v.size(), cudaMemcpyHostToDevice) ==
+                cudaSuccess);
+    };
+    up2(dgp, gp); up2(dgsc, gsc); up2(dup, up); up2(dusc, usc);
+    up2(ddp, dp); up2(ddsc, dsc);
+    up2(dgr, gr); up2(dgrsc, grsc); up2(dur, ur); up2(dursc, ursc);
+    up2(ddr, dr); up2(ddrsc, drsc);
+    REQUIRE(cudaMemcpy(dxh, xh.data(), H * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight g_res{}, u_res{}, d_res{};
+    g_res.d_packed = dgr; g_res.d_scales = dgrsc; g_res.global_scale = ggs_r;
+    u_res.d_packed = dur; u_res.d_scales = dursc; u_res.global_scale = ugs_r;
+    d_res.d_packed = ddr; d_res.d_scales = ddrsc; d_res.global_scale = dgs_r;
+
+    REQUIRE(lsxcommon::gemma::RunGemmaDenseMlpNvfp4Chain(
+                nullptr, dgp, dgsc, ggs, dup, dusc, ugs, ddp, ddsc, dgs,
+                dxh, dgu, du, dh, dy, H, I, &g_res, &u_res, &d_res) ==
+            cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__half> hy(H);
+    REQUIRE(cudaMemcpy(hy.data(), dy, H * 2, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    auto e2m1 = [](int nib) {
+        static const float t[16] = {0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f,
+                                    -0.f, -0.5f, -1.f, -1.5f, -2.f, -3.f,
+                                    -4.f, -6.f};
+        return t[nib & 0xF];
+    };
+    auto e4m3 = [](uint8_t b) { return lsxcommon::e4m3_to_float(b); };
+    auto row_dot = [&](const std::vector<uint8_t> &packed,
+                       const std::vector<uint8_t> &scales, float gs,
+                       int64_t row, int cols, const std::vector<__half> &xin) {
+        float a = 0.f;
+        const int64_t poff = row * (cols / 2);
+        const int64_t soff = row * (cols / 16);
+        for (int k = 0; k < cols; ++k) {
+            const uint8_t byte = packed[poff + k / 2];
+            const int nib = (k & 1) ? (byte >> 4) : (byte & 0xF);
+            a += __half2float(xin[k]) * e2m1(nib) *
+                 e4m3(scales[soff + k / 16]) * gs;
+        }
+        return a;
+    };
+    float maxerr = 0.f;
+    for (int c = 0; c < H; ++c) {
+        std::vector<__half> hh(I);
+        for (int j = 0; j < I; ++j) {
+            // Two-pass decode: base dot into FP16, then acc the residual.
+            float g = __half2float(__float2half(
+                row_dot(gp, gsc, ggs, j, H, xh)));
+            g = __half2float(__float2half(
+                g + row_dot(gr, grsc, ggs_r, j, H, xh)));
+            float u = __half2float(__float2half(
+                row_dot(up, usc, ugs, j, H, xh)));
+            u = __half2float(__float2half(
+                u + row_dot(ur, ursc, ugs_r, j, H, xh)));
+            hh[j] = __float2half(GeluTanh(g) * u);
+        }
+        float ref = __half2float(__float2half(row_dot(dp, dsc, dgs, c, I, hh)));
+        ref = __half2float(
+            __float2half(ref + row_dot(dr, drsc, dgs_r, c, I, hh)));
+        maxerr = std::max(maxerr, std::abs(__half2float(hy[c]) - ref));
+    }
+    CHECK(maxerr < 0.05f);
+
+    cudaFree(dgp); cudaFree(dgsc); cudaFree(dup); cudaFree(dusc);
+    cudaFree(ddp); cudaFree(ddsc); cudaFree(dgr); cudaFree(dgrsc);
+    cudaFree(dur); cudaFree(dursc); cudaFree(ddr); cudaFree(ddrsc);
+    cudaFree(dxh); cudaFree(dgu); cudaFree(du); cudaFree(dh); cudaFree(dy);
+}
+
 // The NVFP4 rows kernel decodes weight = E2M1(nibble) * e4m3_block_scale *
 // table_global_scale. The latency test below passes gs = 1, where a dropped
 // global scale is invisible -- exactly how gemma-4-26b shipped every logit

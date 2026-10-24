@@ -1995,6 +1995,10 @@ add_executable(test_gemma_moe_convert test_gemma_moe_convert.cpp)
 target_compile_definitions(test_gemma_moe_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
+# The residual cases decode the written NVFP4 records with the canonical
+# block-scale codec (nvfp4_scale.h), like test_phi_dense_convert does.
+target_include_directories(test_gemma_moe_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_gemma_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)

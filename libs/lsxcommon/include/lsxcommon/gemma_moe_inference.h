@@ -276,6 +276,21 @@ cudaError_t RunGemmaDenseMlpNvfp4Chain(
     float down_gs, const __half *x, __half *g_out, __half *u_out,
     __half *h_out, __half *y, int H, int I);
 
+// Residual-plane form: each projection is decoded as its base GEMV followed by
+// one more GEMV over the residual plane with acc=true (FP16-rounding between
+// the two, i.e. "base then add the residual"), which is the ~8-bit contract.
+// A null plane pointer skips that projection's second pass, so a mixed recipe
+// (e.g. o/down only) needs no separate entry point.
+cudaError_t RunGemmaDenseMlpNvfp4Chain(
+    cudaStream_t stream, const uint8_t *gate_packed, const uint8_t *gate_scales,
+    float gate_gs, const uint8_t *up_packed, const uint8_t *up_scales,
+    float up_gs, const uint8_t *down_packed, const uint8_t *down_scales,
+    float down_gs, const __half *x, __half *g_out, __half *u_out,
+    __half *h_out, __half *y, int H, int I,
+    const lsx_nvfp4::LsxNvfp4Weight *gate_res,
+    const lsx_nvfp4::LsxNvfp4Weight *up_res,
+    const lsx_nvfp4::LsxNvfp4Weight *down_res);
+
 // FP16 -> BF16 elementwise cast (elementwise scratch plumbing).
 cudaError_t RunGemmaF16ToBf16(cudaStream_t stream, const __half *src,
                               __nv_bfloat16 *dst, int64_t n);
