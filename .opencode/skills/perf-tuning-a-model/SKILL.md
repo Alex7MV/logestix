@@ -38,8 +38,21 @@ ninja -C build/linux-release-znver4-aocc lsxbenchmark
 ```
 
 - Read `tests/perf/perf_baselines.json` first: `model_type`, `max_gen`,
-  `prompt`, `gen_tokens`. Same prompt and `max_gen`, or the number is not
-  comparable.
+  `prompt`, `gen_tokens`. Same prompt and `max_gen`, **and the same prompt
+  framing** (see below — for a streamed-expert family the frame decides the
+  continuation, which decides the number).
+- **Streamed-expert families: decode t/s is a function of the generated text.**
+  Measured on ONE GLM-5.3-Flash binary at 2048 tokens: `hit rate 46.6% / 13.0
+  t/s` on the Paris prompt, `50.3% / 13.5` on a coding prompt, `57.4% / 14.6`
+  on "count to 2000". The routed path streams 2.4 GB/token and the copies do
+  not overlap compute, so `wall/token = K + misses × slot_bytes / H2D_bw`
+  (GLM: `22.5 ms + misses × 0.293 ms`) — an expert-cache hit rate is the whole
+  story, and *any* change that alters the continuation (a prompt, a chat
+  template, a numeric fix that re-rolls near-tie routing) moves it by 10-30%.
+  Before calling a delta a regression, check that the reference and the run
+  **generated the same kind of text**: re-run the old binary on a second
+  prompt. GLM's "14.89 → 12.79 regression" turned out to be entirely a framing
+  change — on a comparable prompt the two binaries were 13.2 vs 13.5 t/s.
 - `linux-release-znver4-aocc` is the perf reference build; `linux-debug` is for
   fast tests.
 - Loading is per-process and can dominate wall time (Kimi re-pins 544 GiB ≈

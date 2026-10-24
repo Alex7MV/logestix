@@ -116,8 +116,19 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
                               FlashPinnedWeights &pw, cudaStream_t stream,
                               std::string &error);
 
+// Layer range of the routed-expert store. The resident graph routes layers
+// [kMoeFirstLayer, kLayers) only: the MTP nextn layer (kMtpLayer == kLayers)
+// is stored-not-applied, so its 288 expert files stay on disk but are NOT
+// pinned (~4 GB of host RAM held for nothing at 14.2 MB per expert).
+// @p max_layer_seen is the highest experts/layer_NNN directory present.
+// Returns false with @p why filled when the tree names a layer beyond the MTP
+// slot: a malformed tree must fail loudly rather than silently drop experts.
+bool FlashExpertLayerRange(int max_layer_seen, int &first, int &last,
+                           std::string &why);
+
 // Loads every experts/layer_NNN/exp_EEE.arrow under <model_path>/logestix/
-// into pinned host memory. Strict errors.
+// into pinned host memory (layers [kMoeFirstLayer, kLayers) - see
+// FlashExpertLayerRange). Strict errors.
 bool LoadGlmFlashExpertStore(const std::string &model_path,
                              lsxcommon::moe::MoEExpertStore &store,
                              std::string &error);

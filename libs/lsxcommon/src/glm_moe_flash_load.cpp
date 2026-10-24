@@ -666,6 +666,28 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
     return true;
 }
 
+bool FlashExpertLayerRange(int max_layer_seen, int &first, int &last,
+                           std::string &why)
+{
+    why.clear();
+    first = frozen::kMoeFirstLayer;
+    last = -1;
+    if (max_layer_seen < frozen::kMoeFirstLayer) {
+        why = absl::StrCat("no MoE layers: highest layer dir is ",
+                            max_layer_seen);
+        return false;
+    }
+    if (max_layer_seen > frozen::kMtpLayer) {
+        why = absl::StrCat("expert layer beyond the MTP slot: found ", 
+                            max_layer_seen, ", the model has layers 0..",
+                            frozen::kMtpLayer);
+        return false;
+    }
+    // The MTP layer is stored-not-applied: clamp to the last resident layer.
+    last = std::min(max_layer_seen, frozen::kLayers - 1);
+    return true;
+}
+
 bool LoadGlmFlashExpertStore(const std::string &model_path,
                              lsxcommon::moe::MoEExpertStore &store,
                              std::string &error)
@@ -693,8 +715,16 @@ bool LoadGlmFlashExpertStore(const std::string &model_path,
         error = "no expert layer dirs under " + experts_dir.string();
         return false;
     }
-    // Compact layout: slab index = layer - kMoeFirstLayer (MoE layers
-    // 3..45 -> store slots 0..42). num_layers counts MoE layers only.
+    int first_layer = -1;
+    std::string why;
+    if (!FlashExpertLayerRange(max_layer, first_layer, max_layer, why)) {
+        error = absl::StrCat("expert store: ", why);
+        return false;
+    }
+    (void)first_layer;  // == frozen::kMoeFirstLayer
+    // Compact layout: slab index = layer - kMoeFirstLayer (resident MoE layers
+    // 3..44 -> store slots 0..41). num_layers counts MoE layers only. The MTP
+    // layer is excluded by FlashExpertLayerRange.
     store.num_layers = max_layer + 1 - frozen::kMoeFirstLayer;
     store.records.resize(static_cast<size_t>(store.num_layers));
     store.h_slabs.assign(static_cast<size_t>(store.num_layers), nullptr);

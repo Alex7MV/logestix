@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "glm_moe_flash_constants.h"
 #include "lsxcommon/glm_moe_flash_load.h"
 
 #include "test_glm_moe_flash_fixture.h"
@@ -102,6 +103,30 @@ TEST_CASE("LoadGlmFlashDenseWeights: missing dir is a hard error")
                                            error));
     REQUIRE_FALSE(error.empty());
     REQUIRE(cudaStreamDestroy(stream) == cudaSuccess);
+}
+
+TEST_CASE("FlashExpertLayerRange: the MTP layer is never pinned")
+{
+    using namespace frozen;
+    int first = -1, last = -1;
+    std::string why;
+    // A full tree: the MTP nextn layer is stored-not-applied, so the store
+    // must stop at the last resident layer (45 experts dirs -> 3..44).
+    REQUIRE(FlashExpertLayerRange(kMtpLayer, first, last, why));
+    CHECK(first == kMoeFirstLayer);
+    CHECK(last == kLayers - 1);
+    CHECK(last < kMtpLayer);
+    // A tree truncated at the last resident layer is unchanged.
+    REQUIRE(FlashExpertLayerRange(kLayers - 1, first, last, why));
+    CHECK(last == kLayers - 1);
+    // A tree with fewer MoE layers keeps its real range (synthetic fixtures).
+    REQUIRE(FlashExpertLayerRange(10, first, last, why));
+    CHECK(last == 10);
+    // Malformed trees fail loudly instead of silently dropping experts.
+    CHECK_FALSE(FlashExpertLayerRange(kMtpLayer + 1, first, last, why));
+    CHECK_FALSE(why.empty());
+    CHECK_FALSE(FlashExpertLayerRange(kFirstKDense - 1, first, last, why));
+    CHECK_FALSE(why.empty());
 }
 
 TEST_CASE("LoadGlmFlashExpertStore: synthetic MoE layer slabs")

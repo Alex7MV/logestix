@@ -176,38 +176,6 @@ near-tie on the very first token, flipped by the few-percent NVFP4
 requantization — not a systematic degradation. The gate stays red (source
 parity); the decision itself is inherent to greedy decoding at this margin.
 
-## P3. Which commit shifted GLM-5.3-Flash's expert access pattern? (2026-10-24)
-
-§P2 is closed and re-seeded (perf 14.89 → **12.79**, r3 12.50 → **12.27**):
-the whole loss is the **streamed-expert hit rate**, 73.2% on the 2026-10-12
-tree against 46.6% now, at identical capacity (1555 slots), store, prompt and
-converted weights. A miss costs 0.293 ms (measured by a 1000-vs-1555-slot A/B;
-H2D runs at the 55 GB/s Gen5 ceiling and does not overlap compute), so
-90 → 186 misses/token is the entire 18.6 → 13.0 t/s gap. Kernels are unchanged
-(w13/down bodies byte-identical; the batched-SwiGLU quantizer A/B is a numeric
-no-op for this family) and the environment is clean (probe 1524.23 vs
-1524.09 GB/s).
-
-The 2026-10-12 binary is **not** a valid reference: it fails FSI-02 at the
-512-token budget (initial-state echo) where HEAD answers it, so its routing was
-also *different*, not just faster.
-
-**Open question:** the commit. Window `31998bf` (2026-10-12) … HEAD, i.e.
-`f0a97e1`/`c8db34c`/`bad0792`/`8e34314` (10-14), `7946a45` (10-17),
-`de0b160`/`f7cc177`/`754a88c`/`9a2da44` (10-23).
-
-**Instrument:** `lsxbenchmark --bench --max-gen 128` on the AOCC tree prints
-`hit_rate`; 73% means "still the old pattern", ~46% means "the shift is in".
-~3.5 min per point after an incremental build; bisect on that, then confirm the
-culprit on the 2048 protocol.
-
-**Two outcomes, both terminal:** if the shift came from a *numeric* fix, close
-as a cost of correctness (the routing re-roll is unavoidable) and keep the
-re-seed; if a *perf* defect did it, ~30% is recoverable and the fix is worth
-landing. Either way, record the hit rate next to t/s in the entry's prose —
-the baseline JSON has no field for it and a hit-rate shift is invisible in
-every other column.
-
 ## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
 
 The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
@@ -491,7 +459,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
-| 2026-10-23 | GLM-5.3-Flash audited end to end and re-converted | `§P` **retracted**: the FSI red was a 128-token budget on a reasoning checkpoint — at 512 all three prompts pass with their canonical answers (the recorded "reproduces at 512 and 2048" claim is false on this conversion), so the golden's budget moved to match CODE/DET's 512 and no expectation was rewritten. Three real defects fixed in the family: the single-prompt path bypassed the chat template (raw BPE default), the renderer had drifted from `chat_template.jinja` (newlines after every turn, tool calls on the wrong line, tools block without the template's layout) and the cooperative-cancel counter incremented after the abort check, so a cancelled request reported `ok=false`/`unknown error`. SelfCheck now owns the family's answer window (the model closes an empty `<think>` before answering). New instrument: the real inventory is classified and the passport reconciled against `config.json` (39,522 assertions). Real weights: Paris ×3 bit-exact, tool round-trip, streaming/cancel, FSI/CODE/DET 3/3 each. Perf was then attributed and re-seeded (perf 14.89 -> 12.79, r3 12.50 -> 12.27; see §P3) — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |
+| 2026-10-23 | GLM-5.3-Flash audited end to end and re-converted | `§P` **retracted**: the FSI red was a 128-token budget on a reasoning checkpoint — at 512 all three prompts pass with their canonical answers (the recorded "reproduces at 512 and 2048" claim is false on this conversion), so the golden's budget moved to match CODE/DET's 512 and no expectation was rewritten. Three real defects fixed in the family: the single-prompt path bypassed the chat template (raw BPE default), the renderer had drifted from `chat_template.jinja` (newlines after every turn, tool calls on the wrong line, tools block without the template's layout) and the cooperative-cancel counter incremented after the abort check, so a cancelled request reported `ok=false`/`unknown error`. SelfCheck now owns the family's answer window (the model closes an empty `<think>` before answering). New instrument: the real inventory is classified and the passport reconciled against `config.json` (39,522 assertions). Real weights: Paris ×3 bit-exact, tool round-trip, streaming/cancel, FSI/CODE/DET 3/3 each. Perf was then attributed and re-seeded (perf 14.89 -> 12.79, r3 12.50 -> 12.27): the whole drop is the expert hit rate following the *generated text*, i.e. the framing change, not a code regression — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |
 | 2026-10-23 | §I closed (and §H with it): the non-split attention dot was a half-row bug, not FMA | `AttnHalfDotRow` consumed two `__half2` per step under a `hd >> 2` bound, so every score dot covered half the head (64 of 128); X16 (`f7cc177`) fixed the bound for the split path, and the 2026-10-06 non-split experiment predates it, which is the whole of the "compiler/FMA" story. The helper now sits outside the anonymous namespace and the non-split kernel calls it: Qwen3.6-35B-A3B SelfCheck/FSI/CODE/DET, Qwen3.5-9B SelfCheck, Alice and Ornith FSI/CODE/DET and gemma-MoE DET all pass (gemma FSI/CODE keep the known §J divergences). Alice, which only ever reached the non-split kernel, gains **+2.0%** (interleaved A/B: 45.6/45.4 vs 44.5/44.6 t/s) - [`open-tasks/2026-10-23-non-split-attn-dot-closed.md`](open-tasks/2026-10-23-non-split-attn-dot-closed.md) |
 | 2026-10-23 | Doc hygiene: the non-defect records moved out (B, D1, F, G, E, V2) | These were not open work: `B` is the resolved GPU-keyed-budget mechanism, `D1` was closed as not-a-regression (batched expert GEMV 1.34-1.44x in isolation, no pipeline cost), `F` measured the opposite of a ramp (Xing falls 27% / 42% across a session), `G` is the completed vectorisation ledger (qwen +4.8%, gemma +3.0%, gigachat 0%; the non-split half remains §I), `E`'s last subsection (E4) closed the same day, and `V2` was refuted (`max_open` bounds RSS monotonically, 3.2 / 7.0 / 31.1 GB at cap 64 / 512 / 8192). Kept for their method notes, not as tasks — [`open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md`](open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md) |
 | 2026-10-23 | E4 closed: opt-in sampling end to end | `SamplingParams` in `ModelRequest`; a deterministic device sampler (exact radix top-k, conservative 4096-bin top-p, counter-based RNG) behind `SamplerFor`, with greedy bit-identical and every fused-argmax family keeping its fast path via `ISampler::IsGreedy()`. Wire v3 carries the fields and v2 requests still decode as greedy; TaskMosaic/Fabric plumb them; a guard scans every `Infer` for `SamplerFor(req.sampling)`. `test_sampling` pins the distribution, the top-k set and seed reproducibility — [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md) |
