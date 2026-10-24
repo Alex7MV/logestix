@@ -866,12 +866,17 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
 
     PhiKvCache local_kv;
     PhiKvCache *cache = kv;
+    // A continuation passes prompt={last_tok} and MUST append at the existing
+    // kv_rows, not at position 0: the old path prefilled at 0 and reset
+    // kv_rows to seq, discarding the session context (audit X2).
+    const int pos0 = cache ? cache->kv_rows : 0;
+    const int needed = pos0 + P + std::max(max_new, 1);
     if (!cache) {
-        e = local_kv.Allocate(pw, P + std::max(max_new, 1), stream);
+        e = local_kv.Allocate(pw, needed, stream);
         if (e != cudaSuccess) { ws.Free(); result.error_msg = "kv alloc"; return e; }
         cache = &local_kv;
     } else {
-        e = cache->EnsureCapacity(pw, P + std::max(max_new, 1), stream);
+        e = cache->EnsureCapacity(pw, needed, stream);
         if (e != cudaSuccess) { ws.Free(); result.error_msg = "kv grow"; return e; }
     }
 
@@ -882,7 +887,8 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
     {
         const int seq = P;
         std::vector<int32_t> pos(static_cast<size_t>(seq));
-        for (int i = 0; i < seq; ++i) pos[static_cast<size_t>(i)] = i;
+        for (int i = 0; i < seq; ++i)
+            pos[static_cast<size_t>(i)] = pos0 + i;
         e = cudaMemcpyAsync(ws.ids, prompt.data(),
                             static_cast<size_t>(seq) * sizeof(int32_t),
                             cudaMemcpyHostToDevice, stream);
@@ -902,8 +908,8 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
                                           cache->max_total * kv_row;
             __half *cv = cache->d_v + static_cast<int64_t>(l) *
                                           cache->max_total * kv_row;
-            e = RunLayer(stream, pw, pw.layers[static_cast<size_t>(l)], seq, 0,
-                         ws.pos, ws, ck, cv);
+            e = RunLayer(stream, pw, pw.layers[static_cast<size_t>(l)], seq,
+                         pos0, ws.pos, ws, ck, cv);
         }
         if (e == cudaSuccess) {
             int32_t tok = -1;
@@ -912,7 +918,7 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
             if (e == cudaSuccess) {
                 e = cudaStreamSynchronize(stream);
                 if (e == cudaSuccess) {
-                    cache->kv_rows = seq;
+                    cache->kv_rows = pos0 + seq;
                     cache->last_tok = tok;
                     result.first_token = tok;
                     result.tokens.push_back(tok);

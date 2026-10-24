@@ -176,6 +176,59 @@ near-tie on the very first token, flipped by the few-percent NVFP4
 requantization — not a systematic degradation. The gate stays red (source
 parity); the decision itself is inherent to greedy decoding at this margin.
 
+**Re-verified 2026-10-24** against the re-converted artifact and the current
+source oracle (transformers 5.15.1 / torch 2.13.0+cu130, source loaded
+`device_map="auto"`, bf16): the source top-8 at the first token is
+`C` 30.75, `CR` 29.625, `CAT` 22.75, `The` 22.625, `TER` 21.5, `F` 21.125,
+`` ``` `` 21.125, `Critical` 21.0, and the source still generates
+`CATASTROPHIC`. The converted model answers `CRITICAL` deterministically 3/3.
+The measurement is unchanged, so the §O verdict stands.
+
+## Z. phi-4 lifecycle audit (2026-10-24): continuation X2 fixed, perf-mode row not reproducible
+
+Full re-audit at the operator's request. The vault had no converted artifact at
+the start (the `logestix/` tree used for the 10-07/10-23 measurements was gone),
+so phi-4 was re-converted in place (`lsxforge --phi`, 7.7 GiB, 59 s) and every
+lifecycle stage re-run. Registered and runnable: convert, load, model, kernels,
+selfcheck, fsi, code, det, perf (the guard registries are unchanged). Real
+weights: Paris ×3 bit-exact, FSI 3/3, CODE 3/3, DET 2/3 (§O).
+
+**Defect found and fixed — the X2 continuation contract was never ported.**
+`phi_dense_inference.cu` is granite's generation body with phi's fused qkv /
+gate_up layouts, but it did not receive granite's continuation fix
+(`pos0 = kv_rows`). Its prefill hard-coded `pos[i] = i` and `kv_base = 0`, then
+reset `kv_rows = seq`, so a continuation `Infer` (whose `input_ids` equal the
+previous call's `gen_tokens`, the session rule `phi_dense_model.cpp` implements)
+wrote its K/V over cache row 0 and attended only key 0 — the session context
+was discarded and the answer came from a one-row attention. Fixed by porting
+granite's contract: positions `pos0 + i`, attention base `pos0`, capacity
+`pos0 + P + max_new`, `kv_rows = pos0 + seq`. Fresh sessions are byte-identical
+(`pos0 = 0`), so no golden moved. Pinned by the new `test_phi_dense_model` case
+"phi continuation matches a fresh prefill": RED before the fix
+(`kv_slots_used` 3 vs 10 for the continuation vs a fresh prefill of the same
+context), GREEN after; the case also compares `gen_tokens` and `final_logits`.
+
+**Open: the `perf`-mode baseline row (134.67 t/s, 2026-10-01) is not
+reproducible on the current binary and artifact.** Two cooled runs each:
+
+| path | perf (kAuto) | vs 134.67 | r3 (kOff) | vs 128.68 |
+|---|---|---|---|---|
+| `lsxbenchmark --bench` | 132.1 / 131.5 t/s | 98.1% / 97.7% | 130.9 | 101.7% |
+| `test_perf_baseline` | 129.89 / 129.54 t/s | 96.5% / 96.2% (DEGRADED) | — | — |
+
+The environment oracle is nominal (DRAM probe 1523-1528 GB/s against the
+1528 / 1524 reference), qwen3.5-9b reads 100.4% of its 2026-10-23 re-seed, and
+phi's own r3 row reads 101.7%, so neither the box nor the bit-exact path is the
+cause. The two readings also differ from each other by ~1.5% (harness vs app,
+same `Infer`), so part of the 3.8% is instrument. The row predates the E4M3FN
+codec (2026-10-07) and the 10-22/23 strict-GEMV and lifecycle work, and the
+artifact is a fresh conversion, so it is not a like-for-like reference. It is
+**not** re-seeded: the reference is never rewritten on an unattributed
+degradation (§Y's Ornith row was re-seeded only after the cost was pinned to a
+named commit). Next step: a bisect of `c037ed7..ffa1879` on the AOCC tree, or a
+decode profile of the seq-1 GEMV + lm_head path (100352-row head) comparing
+kAuto against kOff.
+
 ## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
 
 The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
