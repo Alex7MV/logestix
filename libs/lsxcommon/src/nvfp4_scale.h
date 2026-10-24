@@ -85,21 +85,34 @@ LSX_NVFP4_SCALE_HD inline uint8_t FloatToE4m3(float s)
 // its low 7 bits. Over 0x00..0x7F this is bit-identical to
 // cuda_fp8 / torch.float8_e4m3fn, so a pre-quantized ModelOpt W4A16_NVFP4
 // block scale decodes exactly as NVIDIA reads it (subnormals included).
+//
+// Shape matters, not just semantics: this is the inner-loop scale decode of the
+// seq==1 streaming GEMV, so every instruction lands on a DRAM-latency-bound
+// loop. The early-return form (NaN test, then the subnormal return, then the
+// normal path) measured 131.5-132.1 t/s on phi-4 at 2048 tokens; the
+// one-return form below, with both rare cases as selects on an already computed
+// register, measures 132.5-133.1 (+0.8%) with byte-identical results. The
+// pre-codec pow2-only decode, kept as the cost reference, read 133.1-133.6.
+// Pinned by tests/test_nvfp4_scale.cpp (exhaustive host) and the exhaustive
+// device-parity case in tests/test_lsx_kernels.cu.
 LSX_NVFP4_SCALE_HD inline float E4m3ToFloat(uint8_t b)
 {
     const uint32_t e = (b >> 3) & 0xFu;
     const uint32_t m = b & 0x7u;
-    if (e == 15u && m == 7u) {
-        const uint32_t nan_bits = 0x7FC00000u;
-        float nan_v;
-        std::memcpy(&nan_v, &nan_bits, sizeof(nan_v));
-        return nan_v;
-    }
-    if (e == 0u) return static_cast<float>(m) * 0.001953125f;  // m * 2^-9
     const uint32_t bits = ((e + 120u) << 23) | (m << 20);
-    float v;
+    // 0x7F (e=15, m=7) is the reserved NaN slot: its normal-path bit pattern
+    // is 0x43F00000, so one compare on the folded register covers it without
+    // an extra compare on (e, m).
+    const uint32_t nan_bits = 0x7FC00000u;
+    float v, nan_v;
     std::memcpy(&v, &bits, sizeof(v));
-    return v;
+    std::memcpy(&nan_v, &nan_bits, sizeof(nan_v));
+    // e == 0 decodes to the subnormal m * 2^-9. Folding it out of the
+    // normal-path value costs one fused multiply-add and no int->float
+    // convert: v = 2^-7 * (1 + m/8) there, so 2*v - 2^-6 == m * 2^-9 exactly
+    // (both operands are dyadic and the subtraction is Sterbenz-exact).
+    const float sub = 2.0f * v - 0.015625f;  // == m * 2^-9
+    return (bits == 0x43F00000u) ? nan_v : ((e == 0u) ? sub : v);
 }
 
 // Map one MXFP4 E8M0 exponent byte (value 2^(b-127); 0 -> 0 per the clamped
