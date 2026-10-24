@@ -34,6 +34,8 @@ void PhiLayerWeights::Free()
         d_post_norm = nullptr;
         qkv.Free(); q.Free(); k.Free(); v.Free(); o.Free();
         mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
+        qkv_res.Free(); o_res.Free();
+        mlp_gate_up_res.Free(); mlp_down_res.Free();
         norm_size = 0;
         loaded = false;
         return;
@@ -43,12 +45,17 @@ void PhiLayerWeights::Free()
     qkv.Free();
     q.Free(); k.Free(); v.Free(); o.Free();
     mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
+    qkv_res.Free(); o_res.Free();
+    mlp_gate_up_res.Free(); mlp_down_res.Free();
     norm_size = 0;
     loaded = false;
 }
 
 void PhiPinnedWeights::Free()
 {
+    cudaFree(d_embed_f16); d_embed_f16 = nullptr;
+    cudaFree(d_head_f16);  d_head_f16 = nullptr;
+    embed_rows = embed_cols = head_rows = head_cols = 0;
     embed.Free();
     head.Free();
     cudaFree(d_final_norm); d_final_norm = nullptr;
@@ -114,6 +121,23 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
         e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "mlp.gate_up_proj.weight"),
                               lw.mlp_gate_up, stream, ring, bytes_acc, nullptr);
     if (e != cudaSuccess) return e;
+
+    // Residual planes (optional: absent on a legacy 4-bit-only tree). They are
+    // uploaded with the same helper; a missing record leaves the weight null
+    // and the decode simply skips the accumulate pass.
+    auto upload_res = [&](const char *suffix, lsx_nvfp4::LsxNvfp4Weight &w) {
+        const auto *view = FindNvfp4Suffix(nv, suffix);
+        if (view == nullptr) return cudaSuccess;
+        return UploadNvfp4Weight(view, w, stream, ring, bytes_acc, nullptr);
+    };
+    if ((e = upload_res("self_attn.qkv_proj.weight.res", lw.qkv_res)) !=
+        cudaSuccess) return e;
+    if ((e = upload_res("self_attn.o_proj.weight.res", lw.o_res)) != cudaSuccess)
+        return e;
+    if ((e = upload_res("mlp.gate_up_proj.weight.res", lw.mlp_gate_up_res)) !=
+        cudaSuccess) return e;
+    if ((e = upload_res("mlp.down_proj.weight.res", lw.mlp_down_res)) !=
+        cudaSuccess) return e;
 
     if (lw.mlp_gate_up.d_packed) {
         // Fused [2I, K] record: derive non-owning gate/up row-slices. NVFP4
@@ -244,8 +268,57 @@ bool LoadPhiPinnedWeights(const std::string &output_root,
         }
     }
 
-    // Global NVFP4 (embed + head).
-    if (fs::exists(pinned_dir / "global_nvfp4.arrow")) {
+    // Edges from the raw batch (FP16 path): embed + lm_head stay high
+    // precision. A legacy tree keeps them in global_nvfp4.arrow instead, and
+    // the block below then populates the NVFP4 members.
+    if (fs::exists(pinned_dir / "global.arrow")) {
+        auto raw_res = LoadTensorBatchViews(pinned_dir / "global.arrow");
+        if (!raw_res.ok()) {
+            log::error("[phi_load] global.arrow read failed: " +
+                       raw_res.status().ToString());
+            pw.Free();
+            return false;
+        }
+        auto upload_edge = [&](const char *suffix, __half **dst, int &rows,
+                               int &cols) -> cudaError_t {
+            auto *t = FindTensorSuffix(*raw_res, suffix);
+            if (t == nullptr || t->rank < 2) return cudaErrorNotSupported;
+            rows = static_cast<int>(t->shape[0]);
+            cols = static_cast<int>(t->shape[1]);
+            const int64_t n = static_cast<int64_t>(rows) * cols;
+            cudaError_t e = cudaMalloc(reinterpret_cast<void **>(dst),
+                                       static_cast<size_t>(n) * sizeof(__half));
+            if (e != cudaSuccess) return e;
+            if (t->dtype == "F32") {
+                std::vector<__half> h(static_cast<size_t>(n));
+                const float *src = reinterpret_cast<const float *>(t->data);
+                for (int64_t i = 0; i < n; ++i)
+                    h[static_cast<size_t>(i)] = __float2half(src[i]);
+                return cudaMemcpyAsync(*dst, h.data(),
+                                       static_cast<size_t>(n) * sizeof(__half),
+                                       cudaMemcpyHostToDevice, stream);
+            }
+            return ring.UploadBf16AsFp16(t->data, n, *dst, stream, bytes_acc);
+        };
+        cudaError_t ee = upload_edge("embed_tokens.weight", &pw.d_embed_f16,
+                                     pw.embed_rows, pw.embed_cols);
+        if (ee == cudaSuccess)
+            ee = upload_edge("lm_head.weight", &pw.d_head_f16, pw.head_rows,
+                             pw.head_cols);
+        if (ee != cudaSuccess && ee != cudaErrorNotSupported) {
+            pw.Free();
+            return false;
+        }
+        if (pw.d_embed_f16 || pw.d_head_f16)
+            log::info(absl::StrCat("[phi_load] edges FP16: embed ",
+                                   pw.embed_rows, "x", pw.embed_cols,
+                                   ", head ", pw.head_rows, "x",
+                                   pw.head_cols));
+    }
+
+    // Global NVFP4 (embed + head) -- legacy trees only.
+    if (!pw.d_embed_f16 && !pw.d_head_f16 &&
+        fs::exists(pinned_dir / "global_nvfp4.arrow")) {
         auto nv_res =
             LoadDenseNvfp4BatchViews(pinned_dir / "global_nvfp4.arrow");
         if (!nv_res.ok()) {

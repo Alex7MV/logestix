@@ -638,6 +638,10 @@ add_executable(test_phi_dense_convert test_phi_dense_convert.cpp)
 target_compile_definitions(test_phi_dense_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
+# The residual cases decode the written NVFP4 records with the canonical
+# block-scale codec (nvfp4_scale.h), like test_nvfp4_scale does.
+target_include_directories(test_phi_dense_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_phi_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)

@@ -20,6 +20,7 @@
 
 #include "lsxcommon/phi_dense_constants.h"
 #include "lsxcommon/log.h"
+#include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/shared_experts.h"
 
@@ -515,7 +516,8 @@ struct Workspace {
     float *attn_part = nullptr;   // split-KV softmax partials [splits,seq,nh,hd+2]
     int max_seq = 0;
 
-    cudaError_t Alloc(const PhiTopology &top, int max_seq_);
+    cudaError_t Alloc(const PhiTopology &top, int max_seq_,
+                      bool need_embed_table);
     void Free();
 };
 
@@ -530,7 +532,8 @@ void Workspace::Free()
     *this = Workspace{};
 }
 
-cudaError_t Workspace::Alloc(const PhiTopology &top, int max_seq_)
+cudaError_t Workspace::Alloc(const PhiTopology &top, int max_seq_,
+                             bool need_embed_table)
 {
     max_seq = max_seq_;
     const int H = top.hidden_size;
@@ -559,7 +562,11 @@ cudaError_t Workspace::Alloc(const PhiTopology &top, int max_seq_)
     if ((e = alloc(reinterpret_cast<void **>(&down), S * H * 2))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&logits),
                    static_cast<int64_t>(V) * 2))) return e;
-    if ((e = alloc(reinterpret_cast<void **>(&embed_h),
+    // The embed table is only staged when the edge is NVFP4 (legacy trees);
+    // an FP16 edge is used in place, which also removes a 1 GiB dequant from
+    // every Infer call.
+    if (need_embed_table &&
+        (e = alloc(reinterpret_cast<void **>(&embed_h),
                    static_cast<int64_t>(V) * H * 2))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&ids), S * sizeof(int32_t)))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&pos), S * sizeof(int32_t)))) return e;
@@ -678,6 +685,14 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
                             lw.qkv.global_scale, ws.qkv, seq, H,
                             (NH + 2 * NKV) * HD);
         if (e != cudaSuccess) return e;
+        // Residual plane: the same GEMV accumulating into the same buffer, so
+        // the effective weight precision is ~8 bits at 2x the read.
+        if (lw.qkv_res.d_packed) {
+            e = RunLsxNvfp4Gemm(stream, ws.norm, lw.qkv_res.d_packed,
+                                lw.qkv_res.d_scales, lw.qkv_res.global_scale,
+                                ws.qkv, seq, H, (NH + 2 * NKV) * HD, true);
+            if (e != cudaSuccess) return e;
+        }
         e = PhiSplitQKV(stream, ws.qkv, ws.q, ws.k, ws.v, seq, NH * HD,
                             NKV * HD);
         if (e != cudaSuccess) return e;
@@ -722,6 +737,12 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
     e = RunLsxNvfp4Gemm(stream, ws.attn, lw.o.d_packed, lw.o.d_scales,
                         lw.o.global_scale, ws.proj, seq, NH * HD, H);
     if (e != cudaSuccess) return e;
+    if (lw.o_res.d_packed) {
+        e = RunLsxNvfp4Gemm(stream, ws.attn, lw.o_res.d_packed,
+                            lw.o_res.d_scales, lw.o_res.global_scale, ws.proj,
+                            seq, NH * HD, H, true);
+        if (e != cudaSuccess) return e;
+    }
     kernels::AddInPlaceKernel<__half>
         <<<(seq * H + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
             ws.proj, ws.x, static_cast<int64_t>(seq) * H);
@@ -736,6 +757,13 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
                         lw.mlp_gate_up.d_scales, lw.mlp_gate_up.global_scale,
                         ws.gate_up, seq, H, 2 * I);
     if (e != cudaSuccess) return e;
+    if (lw.mlp_gate_up_res.d_packed) {
+        e = RunLsxNvfp4Gemm(stream, ws.norm, lw.mlp_gate_up_res.d_packed,
+                            lw.mlp_gate_up_res.d_scales,
+                            lw.mlp_gate_up_res.global_scale, ws.gate_up, seq,
+                            H, 2 * I, true);
+        if (e != cudaSuccess) return e;
+    }
     e = PhiSwiGLU(stream, ws.gate_up, ws.act, I,
                       static_cast<int64_t>(seq) * I);
     if (e != cudaSuccess) return e;
@@ -743,6 +771,13 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
                         lw.mlp_down.d_scales, lw.mlp_down.global_scale, ws.down,
                         seq, I, H);
     if (e != cudaSuccess) return e;
+    if (lw.mlp_down_res.d_packed) {
+        e = RunLsxNvfp4Gemm(stream, ws.act, lw.mlp_down_res.d_packed,
+                            lw.mlp_down_res.d_scales,
+                            lw.mlp_down_res.global_scale, ws.down, seq, I, H,
+                            true);
+        if (e != cudaSuccess) return e;
+    }
     kernels::AddInPlaceKernel<__half>
         <<<(seq * H + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
             ws.down, ws.x, static_cast<int64_t>(seq) * H);
@@ -761,8 +796,17 @@ cudaError_t SampleNext(cudaStream_t stream, Workspace &ws,
         static_cast<float>(pw.top.rms_norm_eps));
     if (e != cudaSuccess) return e;
     const __half *last = ws.norm + static_cast<int64_t>(seq - 1) * H;
-    e = RunLsxNvfp4Gemm(stream, last, pw.head.d_packed, pw.head.d_scales,
-                        pw.head.global_scale, ws.logits, 1, H, V);
+    if (pw.d_head_f16 != nullptr) {
+        // High-precision edge: the neutral device-independent GEMV over the
+        // FP16 head. Same y = W*x contract, one warp per output row.
+        e = lsxcommon::gemv::RunLxGemmVec(
+            stream, pw.d_head_f16, last, 1, V, H,
+            lsxcommon::gemv::LxDtype::kF16, lsxcommon::gemv::LxDtype::kF16,
+            1.0f, ws.logits, lsxcommon::gemv::LxDtype::kF16, 0.0f);
+    } else {
+        e = RunLsxNvfp4Gemm(stream, last, pw.head.d_packed, pw.head.d_scales,
+                            pw.head.global_scale, ws.logits, 1, H, V);
+    }
     if (e != cudaSuccess) return e;
     e = sampler.Sample(stream, ws.logits, V,
                        lsxcommon::sample::LogitType::kF16, ws.tok, ws.maxv);
@@ -846,7 +890,10 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
         result.error_msg = "model has no loaded layers";
         return cudaErrorInvalidValue;
     }
-    if (!pw.embed.d_packed || !pw.head.d_packed || !pw.d_final_norm) {
+    const bool edges_ok =
+        (pw.d_embed_f16 != nullptr && pw.d_head_f16 != nullptr) ||
+        (pw.embed.d_packed != nullptr && pw.head.d_packed != nullptr);
+    if (!edges_ok || !pw.d_final_norm) {
         result.error_msg = "embed/head/final-norm missing";
         return cudaErrorInvalidValue;
     }
@@ -854,15 +901,20 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
     Workspace ws;
     int work_seq = P;
     if (!kv) work_seq = P + std::max(max_new, 1);
-    cudaError_t e = ws.Alloc(top, work_seq);
+    cudaError_t e = ws.Alloc(top, work_seq, pw.d_embed_f16 == nullptr);
     if (e != cudaSuccess) { ws.Free(); result.error_msg = "workspace alloc"; return e; }
 
-    // Dequant embed to FP16 for the gather.
-    e = lsxcommon::gpu::dequant_shared_nvfp4(
-        stream, pw.embed.d_packed, pw.embed.packed_bytes, pw.embed.d_scales,
-        pw.embed.scale_bytes, pw.embed.global_scale, ws.embed_h,
-        static_cast<int64_t>(V) * H);
-    if (e != cudaSuccess) { ws.Free(); result.error_msg = "dequant embed"; return e; }
+    // The gather reads an FP16 table either way: the pinned FP16 edge when the
+    // tree keeps one, otherwise the NVFP4 edge dequantized once per call.
+    const __half *embed_table = pw.d_embed_f16;
+    if (embed_table == nullptr) {
+        e = lsxcommon::gpu::dequant_shared_nvfp4(
+            stream, pw.embed.d_packed, pw.embed.packed_bytes, pw.embed.d_scales,
+            pw.embed.scale_bytes, pw.embed.global_scale, ws.embed_h,
+            static_cast<int64_t>(V) * H);
+        if (e != cudaSuccess) { ws.Free(); result.error_msg = "dequant embed"; return e; }
+        embed_table = ws.embed_h;
+    }
 
     PhiKvCache local_kv;
     PhiKvCache *cache = kv;
@@ -899,7 +951,7 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
         if (e == cudaSuccess)
             kernels::EmbedGatherKernel<__half>
                 <<<(seq * H + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-                    ws.embed_h, ws.ids, ws.x, seq, H);
+                    embed_table, ws.ids, ws.x, seq, H);
         if (e == cudaSuccess) e = cudaGetLastError();
         if (e != cudaSuccess) { ws.Free(); result.error_msg = "prefill embed"; return e; }
 
@@ -951,7 +1003,7 @@ cudaError_t RunPhiGeneration(cudaStream_t stream,
         if (e == cudaSuccess)
             kernels::EmbedGatherKernel<__half>
                 <<<(H + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
-                    ws.embed_h, ws.ids, ws.x, seq, H);
+                    embed_table, ws.ids, ws.x, seq, H);
         if (e == cudaSuccess) e = cudaGetLastError();
         if (e != cudaSuccess) { ws.Free(); result.error_msg = "decode embed"; return e; }
 

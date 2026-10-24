@@ -219,8 +219,6 @@ ParsedTensor classify_phi_tensor(const std::string &name)
 bool phi_tensor_is_nvfp4(TensorKind kind)
 {
     switch (kind) {
-    case TensorKind::Embed:
-    case TensorKind::LmHead:
     case TensorKind::AttnQKV:
     case TensorKind::AttnO:
     case TensorKind::MlpGateUp:
@@ -300,6 +298,8 @@ arrow::Status WritePhiModelIndex(const std::string &output_root,
     j << "{\n"
       << "  \"format\": \"logestix-phi\",\n"
       << "  \"model\": \"Phi-4\",\n"
+      << "  \"edges\": \"fp16\",\n"
+      << "  \"residual\": true,\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"hidden_size\": " << top.hidden_size
       << ",\n  \"intermediate_size\": " << top.intermediate_size
@@ -446,7 +446,27 @@ arrow::Status ConvertPhiModel(const std::string &input_path,
                                               nullptr, t.shape, {}, r.packed,
                                               r.scales, r.global_scale))
                     r.packed.clear();
+                // Second plane: the residual w - dequant(base). Decoded with
+                // acc=true, it lifts the effective weight precision from 4 to
+                // ~8 bits at 2x the bytes, without a new codec or kernel.
+                // A 4-bit-only body cannot express every near-tie decision
+                // (phi-4 DET-02), and the error is spread over all layers, so
+                // this is per tensor rather than on a chosen subset.
+                DenseNvfp4Record rr;
+                rr.name = t.name + ".res";
+                rr.shape = t.shape;
+                rr.dtype = t.dtype;
+                if (!gpu::quantize_residual_tensor_gpu(
+                        data.data(), t.numel(), t.dtype, t.shape, r.packed,
+                        r.scales, r.global_scale, rr.packed, rr.scales,
+                        rr.global_scale))
+                    rr.packed.clear();
                 nvfp4_by_layer[layer].push_back(std::move(r));
+                if (!rr.packed.empty())
+                    nvfp4_by_layer[layer].push_back(std::move(rr));
+                else
+                    return arrow::Status::IOError(
+                        "residual quantization failed for ", t.name);
             } else {
                 TensorRecord r;
                 r.name = t.name;
@@ -505,7 +525,11 @@ arrow::Status ConvertPhiModel(const std::string &input_path,
                  return phi_tensor_is_nvfp4(
                      classify_phi_tensor(n).kind);
              },
-             nullptr},
+             nullptr,
+             +[](const std::string &n) {
+                 return phi_tensor_is_nvfp4(
+                     classify_phi_tensor(n).kind);
+             }},
             vg);
         lsxcommon::log::info(absl::StrFormat(
             "VRAM profile: min=%s optimal=%s max=%s (ctx=%d)",
@@ -569,7 +593,10 @@ arrow::Status RecomputePhiVram(const std::string &input_path,
         {+[](const std::string &n) {
              return phi_tensor_is_nvfp4(classify_phi_tensor(n).kind);
          },
-         nullptr},
+         nullptr,
+         +[](const std::string &n) {
+             return phi_tensor_is_nvfp4(classify_phi_tensor(n).kind);
+         }},
         vg);
 
     std::ofstream out(idx, std::ios::trunc);

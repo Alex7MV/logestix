@@ -23,5 +23,20 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
                          std::vector<uint8_t> &scales_e4m3,
                          float &global_scale);
 
+
+// Second NVFP4 plane for the residual (w - dequant(base)). Same codec, same
+// schema: the caller stores it as the same record with a ".res" name suffix and
+// the decode adds it with acc=true. `numel`/`shape` describe the SOURCE tensor;
+// `raw_data` is its original dtype.
+bool quantize_residual_tensor_gpu(const uint8_t *raw_data, int64_t numel,
+                                  const std::string &dtype,
+                                  const std::vector<int64_t> &tensor_shape,
+                                  const std::vector<uint8_t> &base_packed,
+                                  const std::vector<uint8_t> &base_scales,
+                                  float base_global_scale,
+                                  std::vector<uint8_t> &packed,
+                                  std::vector<uint8_t> &scales_e4m3,
+                                  float &global_scale);
+
 }
 } // namespace lsxcommon

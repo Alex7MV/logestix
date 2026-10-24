@@ -61,11 +61,16 @@ TEST_CASE("Phi pinned weights upload to device", "[phi][loader]")
     CHECK(pw.resident_bytes > 0);
     CHECK(pw.d_final_norm != nullptr);
     CHECK(pw.final_norm_size == c.hidden_size);
-    CHECK(pw.embed.d_packed != nullptr);
-    CHECK(pw.embed.rows == c.vocab_size);
-    CHECK(pw.embed.cols == c.hidden_size);
-    CHECK(pw.head.d_packed != nullptr);
-    CHECK(pw.head.rows == c.vocab_size);
+    // Edges are FP16 tables, not NVFP4: the gather/head routes read them
+    // directly (the embedding no longer pays a 1 GiB dequant per call).
+    CHECK(pw.d_embed_f16 != nullptr);
+    CHECK(pw.embed_rows == c.vocab_size);
+    CHECK(pw.embed_cols == c.hidden_size);
+    CHECK(pw.d_head_f16 != nullptr);
+    CHECK(pw.head_rows == c.vocab_size);
+    CHECK(pw.head_cols == c.hidden_size);
+    CHECK(pw.embed.d_packed == nullptr);
+    CHECK(pw.head.d_packed == nullptr);
 
     for (int l = 0; l < c.num_layers; ++l) {
         const auto &lw = pw.layers[static_cast<size_t>(l)];
@@ -86,6 +91,14 @@ TEST_CASE("Phi pinned weights upload to device", "[phi][loader]")
         CHECK(lw.mlp_up.d_packed != nullptr);
         CHECK(lw.mlp_gate.rows == c.intermediate_size);
         CHECK(lw.mlp_up.rows == c.intermediate_size);
+        // Second NVFP4 plane per projection (the residual): decoded with
+        // acc=true it lifts the effective precision to ~8 bits.
+        CHECK(lw.qkv_res.d_packed != nullptr);
+        CHECK(lw.o_res.d_packed != nullptr);
+        CHECK(lw.mlp_gate_up_res.d_packed != nullptr);
+        CHECK(lw.mlp_down_res.d_packed != nullptr);
+        CHECK(lw.qkv_res.rows == lw.qkv.rows);
+        CHECK(lw.mlp_gate_up_res.rows == lw.mlp_gate_up.rows);
     }
 
     pw.Free();

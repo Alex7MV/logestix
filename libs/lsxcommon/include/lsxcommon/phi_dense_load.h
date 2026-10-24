@@ -40,6 +40,17 @@ struct PhiLayerWeights {
     lsx_nvfp4::LsxNvfp4Weight mlp_down;
     lsx_nvfp4::LsxNvfp4Weight mlp_gate_up;
 
+    // Second NVFP4 plane per projection (the residual w - dequant(base)),
+    // stored as "<name>.res". The decode issues one more GEMV with acc=true,
+    // which lifts the effective weight precision from 4 to ~8 bits at 2x the
+    // bytes: a 4-bit-only body cannot express every near-tie decision and the
+    // quantization error is spread over all layers, so this is applied to every
+    // projection rather than to a chosen subset. Null on a legacy tree.
+    lsx_nvfp4::LsxNvfp4Weight qkv_res;
+    lsx_nvfp4::LsxNvfp4Weight o_res;
+    lsx_nvfp4::LsxNvfp4Weight mlp_gate_up_res;
+    lsx_nvfp4::LsxNvfp4Weight mlp_down_res;
+
     void *d_arena = nullptr;
     size_t arena_bytes = 0;
 
@@ -48,8 +59,18 @@ struct PhiLayerWeights {
 
 struct PhiPinnedWeights {
     PhiTopology top;
-    lsx_nvfp4::LsxNvfp4Weight embed;  // vocab x hidden
-    lsx_nvfp4::LsxNvfp4Weight head;   // vocab x hidden
+    // Edges (Model Ingestion Protocol step 2, measured 2026-10-24): the
+    // embedding and the LM head stay FP16. Quantizing them to NVFP4 cost
+    // 0.12 perplexity and two of nine near-tie answers against the same
+    // 4-bit body, and no standard 4-bit recipe (NF4/AWQ/GPTQ) quantizes them.
+    // A legacy tree that still stores them as NVFP4 loads through
+    // `embed`/`head` instead; exactly one of the two pairs is populated.
+    __half *d_embed_f16 = nullptr;  // [embed_rows][embed_cols]
+    __half *d_head_f16 = nullptr;   // [head_rows][head_cols]
+    int embed_rows = 0, embed_cols = 0;
+    int head_rows = 0, head_cols = 0;
+    lsx_nvfp4::LsxNvfp4Weight embed;  // legacy NVFP4 edge (vocab x hidden)
+    lsx_nvfp4::LsxNvfp4Weight head;   // legacy NVFP4 edge (vocab x hidden)
     __half *d_final_norm = nullptr;
     int final_norm_size = 0;
     std::vector<PhiLayerWeights> layers;

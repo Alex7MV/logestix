@@ -387,5 +387,96 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     return true;
 }
 
+// ── Residual plane (second NVFP4 pass) ──────────────────────────────────────
+// The 4-bit plane cannot express every near-tie decision: on phi-4 the DET-02
+// answer flips on the base alone, and a per-layer ablation showed the error is
+// spread over all layers (there is no single tensor to keep high precision).
+// A second NVFP4 plane carrying the RESIDUAL (w - dequant(base)) doubles the
+// effective precision for one extra GEMV with acc=true, reusing the same codec,
+// schema, loader and kernels.
+__global__ void subtract_dequant_kernel(float *__restrict__ x,
+                                        const uint8_t *__restrict__ packed,
+                                        const uint8_t *__restrict__ scales,
+                                        float base_gs, int64_t n)
+{
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+    for (; i < n; i += stride) {
+        const uint8_t byte = packed[i >> 1];
+        const int nib = (i & 1) ? (byte >> 4) : (byte & 0x0F);
+        const float scale =
+            gpu::nvfp4::E4M3ScaleToFloat(scales[i >> 4]) * base_gs;
+        x[i] -= gpu::nvfp4::E2M1Value(nib) * scale;
+    }
+}
+
+bool quantize_residual_tensor_gpu(const uint8_t *raw_data, int64_t numel,
+                                  const std::string &dtype,
+                                  const std::vector<int64_t> &tensor_shape,
+                                  const std::vector<uint8_t> &base_packed,
+                                  const std::vector<uint8_t> &base_scales,
+                                  float base_global_scale,
+                                  std::vector<uint8_t> &packed,
+                                  std::vector<uint8_t> &scales_e4m3,
+                                  float &global_scale)
+{
+    if (numel <= 0 || base_packed.empty() || base_scales.empty()) return false;
+    const int dc = dtype_code(dtype);
+    const int64_t raw_size = numel * dtype_byte_size(dc);
+    if (raw_size <= 0) return false;
+
+    cudaStream_t stream = nullptr;
+    if (cudaStreamCreate(&stream) != cudaSuccess) return false;
+    uint8_t *d_raw = nullptr;
+    float *d_f32 = nullptr;
+    uint8_t *d_bp = nullptr;
+    uint8_t *d_bs = nullptr;
+    auto cleanup = [&]() {
+        if (d_raw) cudaFree(d_raw);
+        if (d_f32) cudaFree(d_f32);
+        if (d_bp) cudaFree(d_bp);
+        if (d_bs) cudaFree(d_bs);
+        cudaStreamSynchronize(stream);
+        cudaStreamDestroy(stream);
+    };
+    if (cudaMalloc(reinterpret_cast<void **>(&d_raw), raw_size) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&d_f32),
+                   numel * sizeof(float)) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&d_bp), base_packed.size()) !=
+            cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&d_bs), base_scales.size()) !=
+            cudaSuccess) {
+        cleanup();
+        return false;
+    }
+    const bool ok_copy =
+        cudaMemcpyAsync(d_raw, raw_data, raw_size, cudaMemcpyHostToDevice,
+                        stream) == cudaSuccess &&
+        cudaMemcpyAsync(d_bp, base_packed.data(), base_packed.size(),
+                        cudaMemcpyHostToDevice, stream) == cudaSuccess &&
+        cudaMemcpyAsync(d_bs, base_scales.data(), base_scales.size(),
+                        cudaMemcpyHostToDevice, stream) == cudaSuccess;
+    if (!ok_copy) { cleanup(); return false; }
+    convert_kernel<<<512, 256, 0, stream>>>(d_raw, d_f32, numel, dc, nullptr, 0,
+                                           0, 0, 0);
+    if (cudaGetLastError() != cudaSuccess) { cleanup(); return false; }
+    subtract_dequant_kernel<<<512, 256, 0, stream>>>(d_f32, d_bp, d_bs,
+                                                     base_global_scale, numel);
+    if (cudaGetLastError() != cudaSuccess) { cleanup(); return false; }
+    std::vector<uint8_t> residual(static_cast<size_t>(numel) * sizeof(float));
+    const bool ok_read =
+        cudaMemcpyAsync(residual.data(), d_f32, residual.size(),
+                        cudaMemcpyDeviceToHost, stream) == cudaSuccess &&
+        cudaStreamSynchronize(stream) == cudaSuccess;
+    cleanup();
+    if (!ok_read || cudaGetLastError() != cudaSuccess) return false;
+
+    // Same codec, same schema: the F32 residual goes through the ordinary
+    // quantizer so both planes are interchangeable to every consumer.
+    return quantize_tensor_gpu(residual.data(), numel, "F32", nullptr,
+                               tensor_shape, {}, packed, scales_e4m3,
+                               global_scale);
+}
+
 } // namespace gpu
 } // namespace lsxcommon

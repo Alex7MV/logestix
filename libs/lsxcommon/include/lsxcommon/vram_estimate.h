@@ -21,6 +21,10 @@ enum class VramTensorClass { Resident, RoutedExpert };
 struct VramTensorPolicy {
     bool (*is_nvfp4)(const std::string &name) = nullptr;
     VramTensorClass (*mem_class)(const std::string &name) = nullptr;
+    // Optional: tensors that also carry a second NVFP4 plane (the residual
+    // w - dequant(base), see quantize_residual_tensor_gpu). They cost 2x the
+    // NVFP4 bytes. Null -> no tensor has one.
+    bool (*has_residual)(const std::string &name) = nullptr;
 };
 
 // Model geometry needed by the estimate (derived from config.json + shapes).

@@ -47,14 +47,19 @@ VramProfile EstimateVram(const std::vector<VramTensorInfo> &tensors,
     for (const auto &t : tensors) {
         const bool quantized =
             policy.is_nvfp4 && policy.is_nvfp4(t.name);
-        const std::uint64_t bytes = quantized
+        std::uint64_t bytes = quantized
             ? static_cast<std::uint64_t>(
                   Nvfp4ConvertedBytes(t.numel, geom.nvfp4_scale_block))
             : static_cast<std::uint64_t>(t.raw_bytes);
+        // A residual plane is a second full NVFP4 record of the same shape.
+        if (quantized && policy.has_residual &&
+            policy.has_residual(t.name))
+            bytes *= 2;
+        const std::uint64_t quantized_bytes = bytes;
         const bool routed = policy.mem_class &&
             policy.mem_class(t.name) == VramTensorClass::RoutedExpert;
         if (routed)
-            expert_pool += bytes;
+            expert_pool += quantized_bytes;
         else
             resident += bytes;
     }
