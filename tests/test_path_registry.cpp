@@ -60,10 +60,10 @@ TEST_CASE("path_registry vault root carries model-metadata block", "[path_regist
 
 TEST_CASE("path_registry appends inherited subpath after block", "[path_registry]")
 {
-    const std::string pathed = lsxcommon::lsx_model_metadata("passport/passport.bin");
+    const std::string pathed = lsxcommon::lsx_model_metadata("manifests/glm.json");
     const std::filesystem::path p(pathed);
-    REQUIRE(p.filename() == "passport.bin");
-    REQUIRE(p.parent_path().filename() == "passport");
+    REQUIRE(p.filename() == "glm.json");
+    REQUIRE(p.parent_path().filename() == "manifests");
     REQUIRE(p.parent_path().parent_path().filename() == "model-metadata");
 }
 

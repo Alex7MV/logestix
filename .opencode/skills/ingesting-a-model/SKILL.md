@@ -1,6 +1,6 @@
 ---
 name: ingesting-a-model
-description: Use when adding, adapting or ingesting a new model architecture into logestix, or porting an existing family to a new variant — lsxforge converter, NVFP4 packing, IModel + LsxModelFactory registration, tokenizer arrow bridge, CUDA inference kernels, token passport, SelfCheck harness, and the ctest lifecycle stages. Triggers - new model, model adaptation, Model Ingestion Protocol, MODEL INGEST INVARIANT, kType, frozen geometry, selfcheck Paris.
+description: Use when adding, adapting or ingesting a new model architecture into logestix, or porting an existing family to a new variant — lsxforge converter, NVFP4 packing, IModel + LsxModelFactory registration, tokenizer arrow bridge, CUDA inference kernels, SelfCheck harness, and the ctest lifecycle stages. Triggers - new model, model adaptation, Model Ingestion Protocol, MODEL INGEST INVARIANT, kType, frozen geometry, selfcheck Paris.
 ---
 
 # Ingesting a new model into logestix
@@ -285,16 +285,19 @@ An ingested model is **not done** without it.
   no `atomicAdd` in anything feeding `final_logits`). Reference implementation:
   `full_attn_softmax_kernel`.
 
-### 7. Thread-isolated mapping (LsxTokenTranslator)
+### 7. Token handoff — retired 2026-10-24 (nothing to do)
 
-- Update the binary token-translation passport
-  (`lsx_model_metadata("passport/passport.bin")`, built with
-  `lsxnetwork::BuildPassport` / `WritePassport`).
-- Integrate the translator as a private `alignas(64)` member of the network
-  worker `IoWorker` (`libs/lsxnetwork/include/lsxnetwork/io_worker.h`).
-- `Load()` (Win32 `MapViewOfFile(PAGE_READONLY)` / POSIX `mmap(PROT_READ)`) MUST
-  run strictly AFTER the hardware core pinning (`CpuAffinity::PinToCores0To3`)
-  and BEFORE the readiness `set_value()`.
+The binary **token-translation passport** (`LsxTokenTranslator`, `IoWorker`'s
+per-thread mapping, `tools/lsx_token_packer`) has been removed. It had no
+caller: TaskMosaic tokenizes with the *target model's own* tokenizer
+(`EncodeConversation(model_path, ...)`) and the fabric server consumes those
+ids as-is, so ids never cross vocabularies; a cross-model hop is a text hop.
+
+What a new family must still do: build the tokenizer arrows (step 4) and let
+`BuildConversationInputIds`/`ParseToolCalls` own its framing. Do **not**
+reintroduce a cross-family id map without (a) a real consumer, (b) a defined
+unk policy, and (c) an end-to-end test from one model's ids into the other's
+server.
 
 ### 8. TDD and SelfCheck harness
 

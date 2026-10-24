@@ -35,25 +35,6 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
 arrow::Status RecomputeGlmFlashVram(const std::string &input_path,
                                     const std::filesystem::path &output_root);
 
-// Builds the step-7 network passport token tables from a converted flash
-// tokenizer: first = glm_tokens from @p pinned_dir/tokenizer_vocab.arrow,
-// second = deepseek_tokens from the DeepSeek-V4-Flash vault vocabulary
-// (<models>/DeepSeek-V4-Flash/logestix/pinned). Unknown-token anchors are
-// each side's byte-0 token (byte-level BPE has no <unk>; a NUL byte is the
-// loss-free sink). Returns (glm_tokens, ds_tokens, glm_unk, ds_unk) so the
-// caller can feed lsxnetwork::BuildPassportOptions without lsxnetwork
-// headers in this public header (OBJECT CUDA targets include it). When the
-// DeepSeek vocabulary is absent the deepseek side stays empty (header
-// ds_vocab == 0) and the caller warns.
-struct FlashPassportTokens {
-    std::vector<std::string> glm_tokens;
-    std::vector<std::string> deepseek_tokens;
-    std::uint32_t glm_unk_id = 0;
-    std::uint32_t deepseek_unk_id = 0;
-};
-FlashPassportTokens BuildFlashPassportTokens(
-    const std::filesystem::path &pinned_dir);
-
 // GPU-dequantizes an F8_E4M3 tensor with per-128x128 F32 scale_inv tiles
 // into a BF16 byte buffer (row-major, [rows, cols]). Feeds
 // gpu::quantize_tensor_gpu("BF16") for the NVFP4 requant path (the

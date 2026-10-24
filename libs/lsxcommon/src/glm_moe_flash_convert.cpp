@@ -32,7 +32,6 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/tokenizer.h"
-#include "lsxnetwork/lsx_token_translator.h"
 
 namespace fs = std::filesystem;
 
@@ -480,78 +479,6 @@ arrow::Status FillPackedExpert(int proj_id, DenseNvfp4Record r,
 
 } // namespace
 
-FlashPassportTokens BuildFlashPassportTokens(const fs::path &pinned_dir)
-{
-    FlashPassportTokens out;
-    // GLM side: the freshly built flash vocabulary arrows.
-    auto vocab_mmap = arrow::io::MemoryMappedFile::Open(
-        (pinned_dir / "tokenizer_vocab.arrow").string(),
-        arrow::io::FileMode::READ);
-    auto merges_mmap = arrow::io::MemoryMappedFile::Open(
-        (pinned_dir / "tokenizer_merges.arrow").string(),
-        arrow::io::FileMode::READ);
-    if (!vocab_mmap.ok() || !merges_mmap.ok()) return out;
-    auto db = std::make_shared<ArrowTokenizerDb>();
-    db->vocab_mmap = *vocab_mmap;
-    db->merges_mmap = *merges_mmap;
-    if (!lsxcommon::load_tokenizer_metadata(*vocab_mmap, *merges_mmap, *db)
-             .ok())
-        return out;
-    out.glm_tokens.reserve(static_cast<size_t>(db->vocab_size));
-    for (int32_t i = 0; i < db->vocab_size; ++i) {
-        const int64_t b = db->token_offsets[i];
-        const int64_t e = db->token_offsets[i + 1];
-        out.glm_tokens.emplace_back(
-            reinterpret_cast<const char *>(db->token_bytes + b),
-            static_cast<size_t>(e - b));
-    }
-
-    // Byte-0 unknown anchors: byte-level BPE vocabularies carry no <unk>;
-    // the NUL byte token is the loss-free sink for translation misses.
-    for (uint32_t i = 0; i < out.glm_tokens.size(); ++i) {
-        if (out.glm_tokens[i].size() == 1 && out.glm_tokens[i][0] == '\0') {
-            out.glm_unk_id = i;
-            break;
-        }
-    }
-
-    // DeepSeek side: the converted DeepSeek-V4-Flash vault vocabulary (the
-    // canonical bridge target of the orchestrator). Missing vault -> empty
-    // deepseek side (header ds_vocab == 0); the caller warns.
-    const fs::path ds_vocab =
-        fs::path(lsxcommon::lsx_model_models_dir()) / "DeepSeek-V4-Flash" /
-        "logestix" / "pinned" / "tokenizer_vocab.arrow";
-    const fs::path ds_merges =
-        fs::path(lsxcommon::lsx_model_models_dir()) / "DeepSeek-V4-Flash" /
-        "logestix" / "pinned" / "tokenizer_merges.arrow";
-    auto ds_v = arrow::io::MemoryMappedFile::Open(ds_vocab.string(),
-                                                  arrow::io::FileMode::READ);
-    auto ds_m = arrow::io::MemoryMappedFile::Open(ds_merges.string(),
-                                                  arrow::io::FileMode::READ);
-    if (!ds_v.ok() || !ds_m.ok()) return out;
-    auto ds_db = std::make_shared<ArrowTokenizerDb>();
-    ds_db->vocab_mmap = *ds_v;
-    ds_db->merges_mmap = *ds_m;
-    if (!lsxcommon::load_tokenizer_metadata(*ds_v, *ds_m, *ds_db).ok())
-        return out;
-    out.deepseek_tokens.reserve(static_cast<size_t>(ds_db->vocab_size));
-    for (int32_t i = 0; i < ds_db->vocab_size; ++i) {
-        const int64_t b = ds_db->token_offsets[i];
-        const int64_t e = ds_db->token_offsets[i + 1];
-        out.deepseek_tokens.emplace_back(
-            reinterpret_cast<const char *>(ds_db->token_bytes + b),
-            static_cast<size_t>(e - b));
-    }
-    for (uint32_t i = 0; i < out.deepseek_tokens.size(); ++i) {
-        if (out.deepseek_tokens[i].size() == 1 &&
-            out.deepseek_tokens[i][0] == '\0') {
-            out.deepseek_unk_id = i;
-            break;
-        }
-    }
-    return out;
-}
-
 namespace {
 
 // VRAM policy for this family, derived from the converter's own classifier so
@@ -898,39 +825,6 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
     } else if (!SyntheticGeometryAllowed()) {
         return arrow::Status::Invalid("tokenizer.json not found in ",
                                       input_dir);
-    }
-
-    // Network passport (Model Ingestion Protocol step 7): GLM flash vocab
-    // paired with the DeepSeek-V4-Flash vault vocabulary (bridge target).
-    {
-        const FlashPassportTokens ptok = BuildFlashPassportTokens(pinned_dir);
-        if (ptok.glm_tokens.empty()) {
-            lsxcommon::log::warn("passport skipped: flash tokenizer arrows "
-                                 "missing/invalid in " +
-                                 pinned_dir.string());
-        } else {
-            lsxnetwork::BuildPassportOptions opts;
-            opts.glm_tokens = ptok.glm_tokens;
-            opts.deepseek_tokens = ptok.deepseek_tokens;
-            opts.glm_unk_id = ptok.glm_unk_id;
-            opts.deepseek_unk_id = ptok.deepseek_unk_id;
-            const std::string passport_path =
-                lsxcommon::lsx_model_metadata("passport/passport.bin");
-            if (lsxnetwork::WritePassport(passport_path.c_str(), opts) != 0) {
-                lsxcommon::log::warn(
-                    "passport write failed: " + passport_path);
-            } else if (ptok.deepseek_tokens.empty()) {
-                lsxcommon::log::warn(
-                    "passport written WITHOUT deepseek side "
-                    "(DeepSeek-V4-Flash vault vocabulary not found): " +
-                    passport_path);
-            } else {
-                lsxcommon::log::info(absl::StrCat(
-                    "passport written: ", passport_path, " (glm_vocab=",
-                    opts.glm_tokens.size(), " ds_vocab=",
-                    opts.deepseek_tokens.size(), ")"));
-            }
-        }
     }
 
     // Structural manifest (index). Deterministic byte content.

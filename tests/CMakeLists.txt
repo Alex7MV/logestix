@@ -2858,29 +2858,6 @@ target_link_libraries(test_mosaic_frontend_route PRIVATE lsxnetwork Catch2::Catc
 
 add_test(NAME test_mosaic_frontend_route COMMAND test_mosaic_frontend_route)
 
-# ── TDD Phase 4: LsxTokenTranslator (cross-model binary token translator) ─────
-# Exercises the offline passport builder (BuildPassport/WritePassport) plus the
-# runtime zero-copy mapper (CreateFileMapping/MapViewOfFile) over a synthetic
-# GLM-5.2 / DeepSeek-V4-Flash vocabulary pair. Asserts 100% bidirectional index
-# mapping accuracy, 64-byte cache-line alignment of the access pointers, and a
-# zero-runtime-allocation translation burst. Links lsxnetwork only (no Arrow;
-# the global replacement operator-new counter is unit-local).
-add_executable(test_token_translator test_token_translator.cpp)
-target_link_libraries(test_token_translator PRIVATE lsxnetwork Catch2::Catch2WithMain)
-
-add_test(NAME test_token_translator COMMAND test_token_translator)
-
-# ── TDD Phase 4.5: network translator weld ──────────────────────────────────
-# Welds a privately-owned, per-thread LsxTokenTranslator into the pinned
-# IoWorker thread context. Concurrency burst (4 workers over cores 0..3) asserts
-# per-thread isolation, 64-byte cache-line alignment of every embedded mapping,
-# zero cross-thread lock contention, and zero runtime heap allocations via the
-# unit-local global replacement operator-new counter. Links lsxnetwork only.
-add_executable(test_network_translator_weld test_network_translator_weld.cpp)
-target_link_libraries(test_network_translator_weld PRIVATE lsxnetwork Catch2::Catch2WithMain)
-
-add_test(NAME test_network_translator_weld COMMAND test_network_translator_weld)
-
 # ── TaskMosaic integration test: the orchestrator (lsx_orchestrator) ──
 # Runs a simultaneous burst of OpenAI requests on both branches ("glm-5.2" and
 # "deepseek-v4-flash") through a long lock-free SPSC pipeline and checks
@@ -6148,8 +6125,6 @@ set_tests_properties(
     test_tokenizer
     test_mosaic_network
     test_mosaic_frontend_route
-    test_token_translator
-    test_network_translator_weld
     test_integrated_pipeline
     test_fabric_wire
     test_fabric_client

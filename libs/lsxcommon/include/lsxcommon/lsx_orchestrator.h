@@ -79,17 +79,11 @@ public:
                         std::atomic<bool>& stop,
                         const std::string& endpoint);
 
-    /// Phase 4.5 — welds the streaming ingestion loop into a pinned IoWorker
-    /// (cores 0..3) that owns a per-thread isolated LsxTokenTranslator, loaded
-    /// natively on thread entry from the vault-resolved passport path.
-    ///
-    /// @param passport_path vault-resolved "model-metadata/passport/passport.bin"
-    ///                      (use lsxcommon::lsx_model_metadata("passport/passport.bin")).
+    /// Welds the streaming ingestion loop into a pinned IoWorker (cores 0..3).
     void ServeTaskMosaicPinned(lsxnetwork::FrameQueue& queue,
                                lsxnetwork::FrameQueue& responses,
                                TaskMosaicStats& stats,
-                               std::atomic<bool>& stop,
-                               const std::string& passport_path);
+                               std::atomic<bool>& stop);
 
 private:
     void DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,

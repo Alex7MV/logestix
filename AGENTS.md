@@ -382,7 +382,7 @@ authoritative.
 | phase | skill | what it decides |
 |---|---|---|
 | 0. intake / triage | **`ingesting-a-model`** § Stage 0 | is this a new family or a sibling? geometry, tokenizer verdict, what to strip, does it fit this machine |
-| 1. ingestion | **`ingesting-a-model`** stages 1–8 | converter → NVFP4 → registration → tokenizer bridge → 4b tool calling → kernels → sandbox → passport + tests |
+| 1. ingestion | **`ingesting-a-model`** stages 1–8 | converter → NVFP4 → registration → tokenizer bridge → 4b tool calling → kernels → sandbox → tests (stage 7, the token-translation passport, is retired: no consumer) |
 | 2. build | **`building-the-project`**, `cuda-cmake-build-gotchas` | presets, toolchain, where the binaries land, why the build breaks |
 | 3. correctness gates | **`test-lifecycle`**, `fsi-selfcheck`, `code-selfcheck`, `det-selfcheck` | labels, targets, and the three parity/determinism goldens |
 | 4. throughput | **`perf-tuning-a-model`** | attribute the wall time, budget tests, baselines |
@@ -404,8 +404,9 @@ runtime env knobs `LSX_*`/`KIMI_*`.
 Adding/adapting a new model — skill **`ingesting-a-model`**
 (`.opencode/skills/ingesting-a-model/SKILL.md`): the 8-step MODEL INGEST INVARIANT
 (lsxforge converter → NVFP4 quantization → registration in `LsxModelFactory` +
-frozen geometry → tokenizer bridge → CUDA kernels → shared-mem sandbox → passport →
-SelfCheck/tests), the model file naming convention
+frozen geometry → tokenizer bridge → CUDA kernels → shared-mem sandbox →
+SelfCheck/tests; stage 7 — the binary token-translation passport — is retired,
+see the skill), the model file naming convention
 (`<family>_<type>[_<variant>]_<role>[_<subsystem>]`) and the guard-test registries
 (`test_code_naming_guard`, `test_model_independence_guard`,
 `test_model_suite_guard`), which must be extended in the same commit as the

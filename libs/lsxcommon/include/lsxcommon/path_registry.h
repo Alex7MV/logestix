@@ -21,8 +21,8 @@ constexpr const char* kModelMetadataDir = "model-metadata";
 std::string lsx_model_metadata_root();
 
 // Appends the invariant "model-metadata/" block to a relative subpath:
-//   lsx_model_metadata("passport/passport.bin")
-// returns "<base>/model-metadata/passport/passport.bin" with platform
+//   lsx_model_metadata("manifests/glm.json")
+// returns "<base>/model-metadata/manifests/glm.json" with platform
 // separators. No other code may reconstruct the vault root.
 std::string lsx_model_metadata(const std::string& rel);
 

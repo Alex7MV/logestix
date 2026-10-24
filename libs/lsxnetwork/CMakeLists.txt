@@ -68,7 +68,6 @@ add_library(lsxnetwork STATIC
     src/http_router.cpp
     src/http_server.cpp
     src/io_worker.cpp
-    src/lsx_token_translator.cpp
     src/openai_endpoint.cpp
     src/zmq_context.cpp
 )
