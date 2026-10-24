@@ -184,65 +184,6 @@ source oracle (transformers 5.15.1 / torch 2.13.0+cu130, source loaded
 `CATASTROPHIC`. The converted model answers `CRITICAL` deterministically 3/3.
 The measurement is unchanged, so the §O verdict stands.
 
-## Z. phi-4 lifecycle audit (2026-10-24): continuation X2 fixed, perf-mode row not reproducible
-
-Full re-audit at the operator's request. The vault had no converted artifact at
-the start (the `logestix/` tree used for the 10-07/10-23 measurements was gone),
-so phi-4 was re-converted in place (`lsxforge --phi`, 7.7 GiB, 59 s) and every
-lifecycle stage re-run. Registered and runnable: convert, load, model, kernels,
-selfcheck, fsi, code, det, perf (the guard registries are unchanged). Real
-weights: Paris ×3 bit-exact, FSI 3/3, CODE 3/3, DET 2/3 (§O).
-
-**Defect found and fixed — the X2 continuation contract was never ported.**
-`phi_dense_inference.cu` is granite's generation body with phi's fused qkv /
-gate_up layouts, but it did not receive granite's continuation fix
-(`pos0 = kv_rows`). Its prefill hard-coded `pos[i] = i` and `kv_base = 0`, then
-reset `kv_rows = seq`, so a continuation `Infer` (whose `input_ids` equal the
-previous call's `gen_tokens`, the session rule `phi_dense_model.cpp` implements)
-wrote its K/V over cache row 0 and attended only key 0 — the session context
-was discarded and the answer came from a one-row attention. Fixed by porting
-granite's contract: positions `pos0 + i`, attention base `pos0`, capacity
-`pos0 + P + max_new`, `kv_rows = pos0 + seq`. Fresh sessions are byte-identical
-(`pos0 = 0`), so no golden moved. Pinned by the new `test_phi_dense_model` case
-"phi continuation matches a fresh prefill": RED before the fix
-(`kv_slots_used` 3 vs 10 for the continuation vs a fresh prefill of the same
-context), GREEN after; the case also compares `gen_tokens` and `final_logits`.
-
-**Defect found and fixed — a Debug perf run rewrote the tracked baseline
-file.** The `#ifndef NDEBUG` skip lived only in `MeasureModel()`, i.e. after
-`RunPerfModel()` had already parked the GPU and run the 512 MiB DRAM probe, and
-`UpdateProbeReference()` writes the `__gpu_probe__` row into
-`tests/perf/perf_baselines.json`. Two `ctest --preset linux-debug -R
-test_perf_baseline_phi_4` runs on 2026-10-24 rewrote that row (1524.37 ->
-1528.54 -> 1526.45) before SKIPping, so a Debug sweep — which measures a
-debug-compiled probe that is never compared against the Release reference —
-moved the committed environment oracle. The gate now sits at the top of
-`RunPerfModel`, before the cooldown and the probe; a Debug run SKIPs in 0.01 s
-with the file untouched. Pinned by a source-scanning case in
-`test_perf_baseline_logic` ("a Debug run must not write the tracked baseline
-file"), which failed on the old ordering.
-
-**Open: the `perf`-mode baseline row (134.67 t/s, 2026-10-01) is not
-reproducible on the current binary and artifact.** Two cooled runs each:
-
-| path | perf (kAuto) | vs 134.67 | r3 (kOff) | vs 128.68 |
-|---|---|---|---|---|
-| `lsxbenchmark --bench` | 132.1 / 131.5 t/s | 98.1% / 97.7% | 130.9 | 101.7% |
-| `test_perf_baseline` | 129.89 / 129.54 t/s | 96.5% / 96.2% (DEGRADED) | — | — |
-
-The environment oracle is nominal (DRAM probe 1523-1528 GB/s against the
-1528 / 1524 reference), qwen3.5-9b reads 100.4% of its 2026-10-23 re-seed, and
-phi's own r3 row reads 101.7%, so neither the box nor the bit-exact path is the
-cause. The two readings also differ from each other by ~1.5% (harness vs app,
-same `Infer`), so part of the 3.8% is instrument. The row predates the E4M3FN
-codec (2026-10-07) and the 10-22/23 strict-GEMV and lifecycle work, and the
-artifact is a fresh conversion, so it is not a like-for-like reference. It is
-**not** re-seeded: the reference is never rewritten on an unattributed
-degradation (§Y's Ornith row was re-seeded only after the cost was pinned to a
-named commit). Next step: a bisect of `c037ed7..ffa1879` on the AOCC tree, or a
-decode profile of the seq-1 GEMV + lm_head path (100352-row head) comparing
-kAuto against kOff.
-
 ## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
 
 The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
@@ -526,6 +467,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-24 | phi-4 lifecycle re-audit: continuation X2, the kAuto perf row, two instrument defects | The vault had no converted artifact, so phi-4 was re-converted and every stage re-run. **Continuation (audit X2) had never been ported from granite**: prefill hard-coded `pos0 = 0` and reset `kv_rows`, so a continuation wrote K/V over cache row 0 — fixed, pinned by a fresh-prefill parity case. The `perf`-mode row (134.67, 2026-10-01) was **not a code regression**: the E4M3FN block-scale decode (2026-10-06, after the row) cost 1.2-1.5% in the streaming-GEMV inner loop, measured by an A/B against the pre-codec decode; a bit-identical single-return rewrite with an FMA subnormal lands at pow2 parity (app 133.2-133.7 = 98.9-99.3% of the row). Compiler (GCC == AOCC), warm-up, NVML, cooldown and artifact were each ruled out by measurement; the harness's own run-to-run spread on this model is ~2%. Rows re-seeded by the harness with evidence: perf **134.67 -> 130.72 -> 130.91**, r3 **128.68 -> 129.68 -> 130.31**; the target passes both modes. Instruments: the phi decode-shape bandwidth budget existed but had **no row** (silent SKIP) and now covers the real `qkv` shape, and `test_kernel_budget.h` no longer truncates hand-formatted multi-line entries on read or rewrite. Also fixed: a Debug perf run rewrote the tracked `__gpu_probe__` oracle before SKIPping — [`open-tasks/2026-10-24-phi-4-perf-mode-closed.md`](open-tasks/2026-10-24-phi-4-perf-mode-closed.md) |
 | 2026-10-24 | The `model-metadata/` vault block is deleted | Only two things still lived there and neither belonged in the model vault: the passport (deleted just above) and the per-GPU perf calibration cache (empty; reachable only from an explicit calibration). `lsx_model_metadata{,_root}` and `kModelMetadataDir` are gone; the calibration moved to `lsx_cache_path` — `LSX_CACHE_DIR`, else `$XDG_CACHE_HOME/logestix` / `~/.cache/logestix` (`%LOCALAPPDATA%\logestix\cache`), temp fallback. The DeepSeek loaders' `manifests/model.index.json` vault fallback was removed too (nothing ever wrote such a file). `test_path_registry` now pins "cache root is never inside the vault"; `test_gpu_perf` asserts the same for the cache path. The directory itself was removed from the vault. |
 | 2026-10-24 | Stage 7 retired: the token-translation passport is deleted | It had no consumer (`TranslateGlmToDeepSeek*` was called only from its two tests; the single `IoWorker` construction sat in an uncalled orchestrator method), the shipped handoff tokenizes with the target model's own tokenizer so ids never crossed vocabularies, and the converter's write went to a shared `model-metadata/passport/passport.bin` that the test suite had overwritten with a 268-token synthetic fixture. Removed: `lsx_token_translator.{h,cpp}`, `IoWorker`'s translator + passport parameter, `tools/lsx_token_packer.cpp`, two tests, `BuildFlashPassportTokens` and the converter write; `ingesting-a-model` stage 7 is now "nothing to do" and AGENTS.md points at the retirement. `IoWorker` stays as the plain pinned worker — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |
 | 2026-10-24 | §U closed: GLM-5.3-Flash session scratch has a budget | The expert cache sized itself from a fixed 3 GiB reserve while the session's DSA KV scales with the context (0.69 MiB/position), so a ~2900-token prompt died with `out of memory` before the first token. `GlmFlashSessionScratchBytes(max_ctx)` now reports embed + KDA + DSA KV + indexer + arena (the indexer's span list is the allocator's, and its 11 allocations became one), and the driver reserves it before allocating, calling the neutral `moe::EnsureMoEExpertCacheHeadroom` to re-allocate the cache with fewer slots (64-slot floor) when short. Real weights at 2907 positions without the old `LSX_FLASH_SLOTS` workaround: 3414 MiB reserved, cache 1544 -> 1491, correct answer; the same session also closed the `vram` block (the `--vram_recompute` prefix dispatch was running the GLM-5.2 estimator, ~28x too small) and built the DSA selection oracle (source-shard host replica, 0 rank disagreements over 512 pools at slot 2304) — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |
