@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/vram_estimate.h"
+
 namespace lsxcommon::glm_moe_flash {
 
 // Converts a GLM-5.3-Flash (glm5_next) checkpoint into the unified
@@ -24,6 +26,14 @@ namespace lsxcommon::glm_moe_flash {
 // MoE layer's experts are quantized and flushed in their own pass.
 arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                                    const std::string &output_root);
+
+// Recomputes the "vram" block of an already-converted tree from the source
+// inventory (lsxforge --vram_recompute). Separate from the converter so a
+// profile can be refreshed without re-quantizing 171 GB, and dispatched by the
+// `logestix-glm5next` tag: the GLM-5.2 path would read this family's
+// `kv_a_proj_with_mqa` as the KV width and under-report by ~28x.
+arrow::Status RecomputeGlmFlashVram(const std::string &input_path,
+                                    const std::filesystem::path &output_root);
 
 // Builds the step-7 network passport token tables from a converted flash
 // tokenizer: first = glm_tokens from @p pinned_dir/tokenizer_vocab.arrow,
@@ -68,6 +78,9 @@ struct FlashTopology {
     std::vector<int> eos_ids;
     int pad_id = -1;
     std::string error_msg;  // non-empty when config is invalid
+    // Conversion-time VRAM profile (see EstimateGlmFlashVram). Empty for trees
+    // converted before the block existed; `lsxforge --vram_recompute` fills it.
+    VramProfile vram;
 };
 
 // Parses text_config from <input_dir>/config.json via simdjson. Falls back

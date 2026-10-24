@@ -128,6 +128,11 @@ cudaError_t RunFlashIndexerSelectKTest(cudaStream_t stream,
                                        int64_t visible_count, int topk,
                                        int32_t *out_sel, int32_t *out_count);
 
+// Device bytes of one layer's indexer state at `max_ctx` (keys/gates scale with
+// the context, the selection scratch does not). The allocator carves exactly
+// this block, so the session-scratch plan cannot drift from it.
+int64_t FlashIndexerStateBytes(int64_t max_ctx);
+
 // ── KDA decode-path state + kernels ──────────────────────────────────────
 // Per-layer recurrent state: S[heads, dim, dim] FP32 + short-conv history
 // window [K-1 rows, 3*8192] FP16 (q/k/v channels interleaved by projection).
@@ -139,6 +144,14 @@ struct FlashKdaState {
 
 cudaError_t FlashKdaStateAlloc(FlashKdaState &st, int64_t max_ctx);
 void FlashKdaStateFree(FlashKdaState &st);
+
+// Device bytes of one KDA layer's state: S[64,128,128] FP32 + the fixed
+// (conv_kernel - 1)-row history. Constant - there is no context buffer.
+inline constexpr int64_t FlashKdaLayerBytes()
+{
+    return static_cast<int64_t>(64) * 128 * 128 * 4 +
+           static_cast<int64_t>(3) * 3 * 8192 * 2;
+}
 
 // Process-lifetime FP16 embedding table (BF16 source -> FP16 widening), keyed
 // by BOTH the source tensor and the model weight epoch. A size-only key served
@@ -252,6 +265,24 @@ cudaError_t RunGlmFlashGeneration(
     const std::vector<int> &eos_ids, qwen::GenerationResult &result,
     sample::ISampler &sampler,
     const lsxcommon::GenerationStream *gs = nullptr);
+
+
+// ── Session scratch budget ───────────────────────────────────────────────
+// Everything the generation session allocates ON TOP of the resident graph,
+// which is why the expert cache cannot size itself from the free memory alone:
+// the DSA KV caches scale with the context (0.69 MiB per position across the 11
+// DSA layers), while the embed table, the KDA state and the arena are constant.
+// Callers reserve this before sizing the cache (moe::EnsureMoEExpertCacheHeadroom)
+// so a long prompt cannot starve the session.
+struct FlashSessionScratch {
+    int64_t embed = 0;    // FP16 embedding table, vocab x hidden
+    int64_t kda = 0;      // 34 x FlashKdaLayerBytes()
+    int64_t dsa_kv = 0;   // 11 layers x 2 x cap x heads x qk_dim x 2 bytes
+    int64_t indexer = 0;  // 11 x FlashIndexerStateBytes(cap)
+    int64_t arena = 0;    // decode scratch (constant, see GlmFlashArenaBytes)
+    int64_t Total() const { return embed + kda + dsa_kv + indexer + arena; }
+};
+FlashSessionScratch GlmFlashSessionScratchBytes(int64_t max_ctx);
 
 } // namespace glm_moe_flash
 } // namespace lsxcommon

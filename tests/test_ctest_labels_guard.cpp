@@ -317,14 +317,44 @@ std::vector<std::string> CheckSkipCapableHaveCode(
 {
     std::vector<std::string> v;
     std::set<std::string> has_code;
+    // set(<var> <items...>): the literal lists a `foreach(<x> IN LISTS <var>)`
+    // expands (the GPU-budget suites are registered that way, and missing it
+    // made this guard blind to all nine of them).
+    std::map<std::string, std::vector<std::string>> list_items;
+    {
+        static const std::regex set_re(
+            R"(\bset\s*\(\s*(\w+)((?:\s+(?!PARENT_SCOPE\b)[A-Za-z0-9_]+)+)\s*\))");
+        std::smatch sm;
+        auto b = cmake_text.cbegin();
+        while (std::regex_search(b, cmake_text.cend(), sm, set_re))
+        {
+            std::istringstream is(sm[2].str());
+            std::string tok;
+            auto &items = list_items[sm[1].str()];
+            while (is >> tok)
+                items.push_back(tok);
+            b = sm.suffix().first;
+        }
+    }
     // foreach(<var> <items...>): a later set_tests_properties(${var} ...) with
-    // SKIP_RETURN_CODE 4 applies to every item.
+    // SKIP_RETURN_CODE 4 applies to every item. `IN LISTS <var>` resolves
+    // through the set() map above.
     std::map<std::string, std::vector<std::string>> loop_items;
     {
         static const std::regex fe_re(
             R"(foreach\s*\(\s*(\w+)((?:\s+(?!IN\b|LISTS\b|RANGE\b)[A-Za-z0-9_]+)+)\s*\))");
+        static const std::regex fe_lists_re(
+            R"(foreach\s*\(\s*(\w+)\s+IN\s+LISTS\s+(\w+)\s*\))");
         std::smatch fm;
         auto b = cmake_text.cbegin();
+        while (std::regex_search(b, cmake_text.cend(), fm, fe_lists_re))
+        {
+            const auto it = list_items.find(fm[2].str());
+            if (it != list_items.end())
+                loop_items[fm[1].str()] = it->second;
+            b = fm.suffix().first;
+        }
+        b = cmake_text.cbegin();
         while (std::regex_search(b, cmake_text.cend(), fm, fe_re))
         {
             std::istringstream is(fm[2].str());

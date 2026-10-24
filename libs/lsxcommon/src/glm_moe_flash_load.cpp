@@ -70,6 +70,14 @@ bool ReadIndexJson(const fs::path &idx_path, FlashTopology &top,
         error = "unexpected format tag in " + idx_path.string();
         return false;
     }
+    // Optional conversion-time VRAM profile (IModel::VramRequirements). A tree
+    // converted before the block existed loads exactly as before - nothing in
+    // the loader or the planner depends on it, and the session reserves its own
+    // scratch dynamically (OPEN_TASKS §U).
+    {
+        std::string verr;
+        if (!lsxcommon::ParseVramBlock(json, top.vram, verr)) top.vram = {};
+    }
     if (!SyntheticGeometryAllowed()
         && (top.hidden != frozen::kHidden || top.layers != frozen::kLayers
             || top.num_experts != frozen::kNumExperts)) {

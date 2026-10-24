@@ -373,4 +373,17 @@ bool AllocateMoEExpertCache(moe::MoEExpertStore &store, int slots,
                                 std::string &error);
 void FreeMoEExpertCache(gpu::ExpertDeviceCache &cache);
 
-} // namespace lsxcommon::moe
+// Frees `deficit_bytes` of device memory by re-allocating the cache with fewer
+// slots, for callers whose session scratch is allocated *after* the cache sized
+// itself from the free memory it saw at load (a context-scaled KV cache cannot
+// be known then). The device block is one cudaMalloc, so this cannot shrink in
+// place: residency is cold afterwards (correct, just slower to warm up). The
+// cache keeps at least the top-k working-set floor (64 slots); if the deficit
+// cannot be met at that floor the function still shrinks to the floor and
+// returns true - the caller's own allocation then reports the real failure.
+bool EnsureMoEExpertCacheHeadroom(moe::MoEExpertStore &store,
+                                  gpu::ExpertDeviceCache &cache,
+                                  std::size_t deficit_bytes,
+                                  std::string &error);
+
+}  // namespace lsxcommon::moe

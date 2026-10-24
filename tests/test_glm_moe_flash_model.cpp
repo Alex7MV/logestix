@@ -47,6 +47,13 @@ TEST_CASE("Glm5NextFlashModel: Load lifecycle on synthetic converted fixture")
     REQUIRE(model != nullptr);
     REQUIRE(model->Load());
     REQUIRE(model->ResidentWeightBytes() > 0);
+    // Conversion-time VRAM profile is written into the index and surfaced
+    // through IModel::VramRequirements (lsxcli --info).
+    const VramProfile &vp = model->VramRequirements();
+    REQUIRE(vp.min_bytes > 0);
+    REQUIRE(vp.optimal_bytes >= vp.min_bytes);
+    REQUIRE(vp.max_bytes >= vp.optimal_bytes);
+    REQUIRE(vp.context_tokens > 0);
     model->Unload();
     // Idempotent re-load support: Load() tears down and rebuilds.
     REQUIRE(model->Load());

@@ -7,7 +7,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <numeric>
@@ -16,6 +19,7 @@
 
 #include "glm_moe_flash_constants.h"
 #include "glm_moe_flash_device_math.h"
+#include "lsxcommon/safetensors.h"
 #include "lsxcommon/glm_moe_flash_inference.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/lsx_moe_inference.h"
@@ -768,6 +772,131 @@ TEST_CASE("flash embed cache rebuilds when the weight epoch changes")
     cudaFree(db);
 }
 
+// ── Session scratch budget (OPEN_TASKS §U) ────────────────────────────────
+TEST_CASE("GLM session scratch plan counts what the session allocates")
+{
+    using namespace lsxcommon::glm_moe_flash;
+    constexpr int64_t kCap = 2048 + 64;
+    const FlashSessionScratch a = GlmFlashSessionScratchBytes(kCap);
+    const FlashSessionScratch b = GlmFlashSessionScratchBytes(kCap + 2048);
+
+    // Embed table: vocab x hidden FP16, constant.
+    REQUIRE(a.embed == static_cast<int64_t>(frozen::kVocab) * frozen::kHidden * 2);
+    // KDA state: 34 layers, no context buffer.
+    REQUIRE(a.kda == static_cast<int64_t>(frozen::kKdaLayerCount) *
+                        FlashKdaLayerBytes());
+    // DSA KV: 11 layers x 2 x cap x 64 heads x 256 dims x FP16.
+    REQUIRE(a.dsa_kv == static_cast<int64_t>(frozen::kDsaLayerCount) * 2 * kCap *
+                           frozen::kHeads * frozen::kQkHeadDim * 2);
+    REQUIRE(a.indexer == static_cast<int64_t>(frozen::kDsaLayerCount) *
+                            FlashIndexerStateBytes(kCap));
+    REQUIRE(a.arena > 0);
+    REQUIRE(a.Total() == a.embed + a.kda + a.dsa_kv + a.indexer + a.arena);
+
+    // Only the KV/indexer part scales, at 0.69 MiB per position.
+    REQUIRE(b.dsa_kv > a.dsa_kv);
+    REQUIRE(b.dsa_kv - a.dsa_kv ==
+            2048LL * frozen::kDsaLayerCount * 2 * frozen::kHeads *
+                frozen::kQkHeadDim * 2);
+    REQUIRE(b.indexer > a.indexer);
+    REQUIRE(b.embed == a.embed);
+    REQUIRE(b.kda == a.kda);
+    REQUIRE(b.arena == a.arena);
+    const int64_t per_position = (b.dsa_kv - a.dsa_kv) / 2048;
+    REQUIRE(per_position == 11LL * 2 * 64 * 256 * 2);
+    REQUIRE(per_position * 100 / (1024 * 1024) == 68);  // 0.69 MiB
+
+    // The session that died with "out of memory" (2995 positions): the KV alone
+    // is over the 3 GiB the cache reserves.
+    const FlashSessionScratch big = GlmFlashSessionScratchBytes(3059);
+    REQUIRE(big.dsa_kv > (2LL << 30));
+    REQUIRE(big.Total() > (3LL << 30));
+
+    // Degenerate capacities report nothing rather than a negative size.
+    const FlashSessionScratch none = GlmFlashSessionScratchBytes(0);
+    REQUIRE(none.dsa_kv == 0);
+    REQUIRE(none.indexer == 0);
+    REQUIRE(none.embed > 0);
+}
+
+TEST_CASE("expert cache headroom frees whole slots, keeping a working set")
+{
+    using namespace lsxcommon;
+    CudaGuard g;
+    // Tiny store: one layer, 4 experts, so a 100-slot cache costs ~340 KiB.
+    constexpr int H = 64, I = 32, E = 4;
+    const int64_t per_expert = 3LL * (I * H / 2) + 3LL * (I * H / 16);
+    std::vector<uint8_t> slab(static_cast<size_t>(per_expert) * E, 0x11);
+    moe::MoEExpertStore store;
+    store.num_layers = 1;
+    store.num_experts = E;
+    store.h_slabs.push_back(slab.data());
+    store.slab_bytes.push_back(slab.size());
+    store.records.assign(1, std::vector<moe::MoEExpertRecord>(E));
+    for (int e = 0; e < E; ++e) {
+        const int64_t base = e * per_expert;
+        auto &r = store.records[0][static_cast<size_t>(e)];
+        const int64_t pk = I * H / 2, sk = I * H / 16;
+        r.slab_w1_off = base;
+        r.w1_bytes = pk;
+        r.slab_w2_off = base + pk;
+        r.w2_bytes = pk;
+        r.slab_w3_off = base + 2 * pk;
+        r.w3_bytes = pk;
+        r.slab_s1_off = base + 3 * pk;
+        r.s1_bytes = sk;
+        r.slab_s2_off = base + 3 * pk + sk;
+        r.s2_bytes = sk;
+        r.slab_s3_off = base + 3 * pk + 2 * sk;
+        r.s3_bytes = sk;
+        r.gs1 = r.gs2 = r.gs3 = 1.0f;
+    }
+    gpu::ExpertDeviceCache cache;
+    std::string err;
+    REQUIRE(moe::AllocateMoEExpertCache(store, 100, cache, err));
+    const int64_t slot_bytes = cache.pack_stride + cache.scale_stride;
+    REQUIRE(slot_bytes > 0);
+
+    SECTION("a deficit frees the slots it needs plus a small margin")
+    {
+        REQUIRE(moe::EnsureMoEExpertCacheHeadroom(
+            store, cache, static_cast<std::size_t>(slot_bytes * 3), err));
+        REQUIRE(cache.slots == 100 - (3 + 8));
+        // The re-allocated cache is usable (cold, but valid).
+        REQUIRE(cache.d_base != nullptr);
+        REQUIRE(cache.h_slot_of != nullptr);
+        REQUIRE(cache.pack_stride == slot_bytes - cache.scale_stride);
+    }
+
+    SECTION("an impossible deficit stops at the top-k working-set floor")
+    {
+        REQUIRE(moe::EnsureMoEExpertCacheHeadroom(
+            store, cache, static_cast<std::size_t>(slot_bytes * 1000), err));
+        REQUIRE(cache.slots == 64);
+    }
+
+    SECTION("at the floor, the cache reports rather than pretending")
+    {
+        std::string e2;
+        REQUIRE(moe::EnsureMoEExpertCacheHeadroom(
+            store, cache, static_cast<std::size_t>(slot_bytes * 1000), e2));
+        REQUIRE(cache.slots == 64);
+        // Nothing left to give: the caller must see it, not a silent no-op.
+        REQUIRE_FALSE(moe::EnsureMoEExpertCacheHeadroom(store, cache, 1, e2));
+        REQUIRE(cache.slots == 64);
+        REQUIRE_FALSE(e2.empty());
+    }
+
+    SECTION("an unallocated cache is an error, not a crash")
+    {
+        gpu::ExpertDeviceCache empty;
+        std::string e3;
+        REQUIRE_FALSE(moe::EnsureMoEExpertCacheHeadroom(store, empty, 1, e3));
+        REQUIRE_FALSE(e3.empty());
+    }
+    moe::FreeMoEExpertCache(cache);
+}
+
 // ── DSA indexer (sparse attention) ─────────────────────────────────────────
 // The indexer is its own lightweight attention: per-position keys (LayerNorm)
 // and per-channel pool gates, softmax pooling with the learned `ape` offset,
@@ -1494,4 +1623,253 @@ TEST_CASE("flash DSA indexer end-to-end: token/pool/select chain vs host")
         }
     FlashIndexerStateFree(st);
     cudaStreamDestroy(s);
+}
+
+// ── Real-weight DSA oracle ────────────────────────────────────────────────
+// Above index_topk the selection has no runnable reference implementation, so
+// the strongest available oracle is a host replica over the SOURCE shards:
+// a >2048-position run dumps the first sparse step (LSX_FLASH_DSA_DUMP), and
+// this case reproduces every stage of the indexer in host code from the BF16
+// tensors in the checkpoint. It checks, in order:
+//   1. the query token's key and pool gate against wk/compress_gate + the
+//      LayerNorm (validates the BF16 GEMV, the eps-1e-6 norm and the layout);
+//   2. the pooled keys against the dumped ones (softmax over kpool + ape);
+//   3. the scores against the dumped ones (q/w projections, relu placement,
+//      the 128^-0.5 and 32^-0.5 scales);
+//   4. the selected indices against the host top-k of the DEVICE scores
+//      (the radix select alone), and against the host top-k of the HOST
+//      scores (the whole chain).
+// SKIPs without the dump and the checkpoint.
+namespace {
+
+struct DsaDumpHeader {
+    char magic[8];
+    int32_t slot, visible, n_pools;
+    int32_t hidden, q_lora, heads, dim, kpool, topk;
+    int32_t sel_count;
+};
+
+template <typename T>
+bool ReadDump(FILE *f, std::vector<T> &out, size_t n)
+{
+    out.resize(n);
+    return std::fread(out.data(), sizeof(T), n, f) == n;
+}
+
+std::vector<uint8_t> ReadSourceTensor(const std::string &dir,
+                                      const lsxcommon::SafetensorsModel::Shard &shard,
+                                      const lsxcommon::TensorInfo &info)
+{
+    uint64_t hdr_len = 0;
+    std::ifstream sf((std::filesystem::path(dir) / shard.filename).string(),
+                     std::ios::binary);
+    if (!sf) return {};
+    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
+    sf.seekg(static_cast<int64_t>(8 + hdr_len) + info.data_begin, std::ios::beg);
+    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
+    sf.read(reinterpret_cast<char *>(buf.data()),
+            static_cast<std::streamsize>(buf.size()));
+    return buf;
+}
+
+} // namespace
+
+TEST_CASE("flash DSA selection: real-weight oracle from the source shards")
+{
+    const char *root = std::getenv("LSX_TEST_GLM_FLASH_ROOT");
+    const char *dump_path = std::getenv("LSX_GLM_DSA_DUMP");
+    if (!root || !dump_path)
+        SKIP("set LSX_TEST_GLM_FLASH_ROOT and LSX_GLM_DSA_DUMP (see "
+             "LSX_FLASH_DSA_DUMP)");
+    std::FILE *f = std::fopen(dump_path, "rb");
+    if (!f) SKIP("cannot open the DSA dump");
+    DsaDumpHeader h{};
+    REQUIRE(std::fread(&h, sizeof(h), 1, f) == 1);
+    REQUIRE(std::memcmp(h.magic, "GLMDSA1", 7) == 0);
+    INFO("slot=" << h.slot << " visible=" << h.visible << " pools=" << h.n_pools
+                 << " sel_count=" << h.sel_count);
+    REQUIRE(h.slot + 1 > h.topk);
+    REQUIRE(h.visible == h.slot + 1);
+
+    std::vector<__half> x, q_resid, k, gate;
+    std::vector<float> pool, scores;
+    std::vector<int32_t> sel;
+    REQUIRE(ReadDump(f, x, static_cast<size_t>(h.hidden)));
+    REQUIRE(ReadDump(f, q_resid, static_cast<size_t>(h.q_lora)));
+    REQUIRE(ReadDump(f, k, static_cast<size_t>(h.visible) * h.dim));
+    REQUIRE(ReadDump(f, gate, static_cast<size_t>(h.visible) * h.dim));
+    REQUIRE(ReadDump(f, pool, static_cast<size_t>(h.n_pools) * h.dim));
+    REQUIRE(ReadDump(f, scores, static_cast<size_t>(h.n_pools)));
+    REQUIRE(ReadDump(f, sel, static_cast<size_t>(h.topk + h.kpool)));
+    std::fclose(f);
+
+    // ── Source tensors of the DSA layer the dump came from (layer 0) ──────
+    const lsxcommon::SafetensorsModel model = lsxcommon::scan_directory(root);
+    REQUIRE(!model.shards.empty());
+    const std::string stem = "layers." +
+                             std::to_string(frozen::kDsaLayerIds[0]) +
+                             ".self_attn.indexer.";
+    auto find = [&](const std::string &suffix)
+        -> std::pair<const lsxcommon::SafetensorsModel::Shard *,
+                     const lsxcommon::TensorInfo *> {
+        for (const auto &shard : model.shards)
+            for (const auto &t : shard.tensors) {
+                const size_t p = t.name.find(stem);
+                if (p != std::string::npos &&
+                    t.name.compare(p + stem.size(), suffix.size(), suffix) == 0)
+                    return {&shard, &t};
+            }
+        return {nullptr, nullptr};
+    };
+    auto load = [&](const char *suffix) {
+        auto [shard, info] = find(suffix);
+        REQUIRE(shard != nullptr);
+        REQUIRE(info->dtype == "BF16");
+        return ReadSourceTensor(root, *shard, *info);
+    };
+    const std::vector<uint8_t> wk_raw = load("wk.weight");
+    const std::vector<uint8_t> gate_raw = load("index_kpool_compress_gate");
+    const std::vector<uint8_t> knw_raw = load("k_norm.weight");
+    const std::vector<uint8_t> knb_raw = load("k_norm.bias");
+    const std::vector<uint8_t> ape_raw = load("index_kpool_compress_ape");
+    const std::vector<uint8_t> wqb_raw = load("wq_b.weight");
+    const std::vector<uint8_t> wproj_raw = load("weights_proj.weight");
+    REQUIRE(wk_raw.size() == static_cast<size_t>(h.dim) * h.hidden * 2);
+    REQUIRE(gate_raw.size() == static_cast<size_t>(h.dim) * h.hidden * 2);
+    REQUIRE(wqb_raw.size() ==
+            static_cast<size_t>(h.heads) * h.dim * h.q_lora * 2);
+    REQUIRE(wproj_raw.size() == static_cast<size_t>(h.heads) * h.hidden * 2);
+    REQUIRE(ape_raw.size() == static_cast<size_t>(h.kpool) * h.dim * 2);
+    auto bf16_at = [](const std::vector<uint8_t> &raw, size_t i) {
+        uint16_t bits;
+        std::memcpy(&bits, raw.data() + 2 * i, 2);
+        return FromBf16(bits);
+    };
+
+    // ── 1. The query token's key: LN(wk @ x) against the dumped k[slot] ───
+    auto gemv = [&](const std::vector<uint8_t> &w, const __half *v, int n_dim,
+                    int k_dim) {
+        std::vector<float> out(static_cast<size_t>(n_dim));
+        for (int n = 0; n < n_dim; ++n) {
+            double acc = 0.0;
+            for (int kk = 0; kk < k_dim; ++kk)
+                acc += bf16_at(w, static_cast<size_t>(n) * k_dim + kk) *
+                       static_cast<double>(__half2float(v[kk]));
+            out[static_cast<size_t>(n)] = static_cast<float>(acc);
+        }
+        return out;
+    };
+    const std::vector<float> wk_x = gemv(wk_raw, x.data(), h.dim, h.hidden);
+    double mean = 0.0;
+    for (float v : wk_x) mean += v;
+    mean /= h.dim;
+    double var = 0.0;
+    for (float v : wk_x) var += (v - mean) * (v - mean);
+    var /= h.dim;
+    const double inv = 1.0 / std::sqrt(var + 1e-6);
+    const size_t slot_off = static_cast<size_t>(h.slot) * h.dim;
+    double max_k_err = 0.0;
+    for (int c = 0; c < h.dim; ++c) {
+        const double expect =
+            (static_cast<double>(wk_x[static_cast<size_t>(c)]) - mean) * inv *
+                bf16_at(knw_raw, static_cast<size_t>(c)) +
+            bf16_at(knb_raw, static_cast<size_t>(c));
+        const double got = static_cast<double>(__half2float(k[slot_off + c]));
+        max_k_err = std::max(max_k_err, std::fabs(got - expect));
+        INFO("k c=" << c << " expect=" << expect << " got=" << got);
+        REQUIRE(std::fabs(got - expect) < 5e-3);
+    }
+    WARN("max |k device - LN(wk@x) host| = " << max_k_err);
+
+    // ── The query token's gate: compress_gate @ x ────────────────────────
+    const std::vector<float> gate_x =
+        gemv(gate_raw, x.data(), h.dim, h.hidden);
+    for (int c = 0; c < h.dim; ++c) {
+        const double got = static_cast<double>(__half2float(gate[slot_off + c]));
+        INFO("gate c=" << c << " expect=" << gate_x[static_cast<size_t>(c)]
+                       << " got=" << got);
+        const double gx = gate_x[static_cast<size_t>(c)];
+        REQUIRE(std::fabs(got - gx) < 5e-3 * std::max(1.0, std::fabs(gx)));
+    }
+
+    // ── 2. Pooled keys from the dumped per-position keys/gates ────────────
+    std::vector<uint16_t> ape(static_cast<size_t>(h.kpool) * h.dim);
+    for (size_t i = 0; i < ape.size(); ++i) {
+        std::memcpy(&ape[i], ape_raw.data() + 2 * i, 2);
+    }
+    double max_pool_err = 0.0;
+    for (int p = 0; p < h.n_pools; ++p) {
+        const std::vector<double> expect =
+            IndexerPoolHost(k, gate, ape, h.dim, h.kpool,
+                            static_cast<int64_t>(p) * h.kpool);
+        for (int c = 0; c < h.dim; ++c) {
+            const double got = pool[static_cast<size_t>(p) * h.dim + c];
+            max_pool_err =
+                std::max(max_pool_err, std::fabs(got - expect[static_cast<size_t>(c)]));
+        }
+    }
+    WARN("max |pool device - host| = " << max_pool_err);
+    REQUIRE(max_pool_err < 5e-3);
+
+    // ── 3. Scores: q = wq_b @ q_resid, w = weights_proj @ x * 32^-0.5 ─────
+    const std::vector<float> qraw = gemv(wqb_raw, q_resid.data(),
+                                         h.heads * h.dim, h.q_lora);
+    std::vector<float> q_host(qraw.size());
+    for (size_t i = 0; i < qraw.size(); ++i)
+        q_host[i] = __half2float(__float2half_rn(qraw[i]));
+    const std::vector<float> wraw =
+        gemv(wproj_raw, x.data(), h.heads, h.hidden);
+    const float ws = 1.0f / std::sqrt(static_cast<float>(h.heads));
+    std::vector<float> w_host(static_cast<size_t>(h.heads));
+    for (int hh = 0; hh < h.heads; ++hh)
+        w_host[static_cast<size_t>(hh)] =
+            __half2float(__float2half_rn(wraw[static_cast<size_t>(hh)])) * ws;
+    std::vector<float> pool_f(pool.begin(), pool.end());
+    const std::vector<double> scores_host = IndexerScoresHost(
+        q_host, w_host, pool_f, h.heads, h.dim, h.n_pools);
+    double max_score_err = 0.0;
+    for (int p = 0; p < h.n_pools; ++p) {
+        const double got = scores[static_cast<size_t>(p)];
+        const double rel = std::fabs(got - scores_host[static_cast<size_t>(p)]);
+        max_score_err = std::max(max_score_err, rel);
+        INFO("score p=" << p << " host=" << scores_host[static_cast<size_t>(p)]
+                        << " device=" << got);
+        REQUIRE(rel < 2e-3 * std::max(1.0, std::fabs(got)));
+    }
+    WARN("max |score device - host| = " << max_score_err);
+
+    // ── 4. Selection: the radix select, then the whole chain ──────────────
+    const int select_k = std::min(h.topk / h.kpool, h.n_pools);
+    REQUIRE(h.sel_count == select_k * h.kpool + h.visible % h.kpool);
+    std::vector<double> device_scores(scores.begin(), scores.end());
+    const std::vector<int> order_dev = TopKPoolsHost(device_scores, select_k);
+    std::vector<double> sorted = device_scores;
+    std::sort(sorted.begin(), sorted.end(), std::greater<double>());
+    const double gap = select_k < h.n_pools ? sorted[static_cast<size_t>(select_k - 1)] -
+                                                  sorted[static_cast<size_t>(select_k)]
+                                            : 1.0;
+    WARN("rank " << select_k << " gap " << gap);
+    REQUIRE(gap > 1e-3);
+    for (int r = 0; r < select_k; ++r)
+        for (int i = 0; i < h.kpool; ++i) {
+            const int expect = order_dev[static_cast<size_t>(r)] * h.kpool + i;
+            INFO("sel r=" << r << " i=" << i << " expect=" << expect
+                          << " got=" << sel[static_cast<size_t>(r * h.kpool + i)]);
+            REQUIRE(sel[static_cast<size_t>(r * h.kpool + i)] == expect);
+        }
+    // The same selection from the host's own scores: the chain, end to end.
+    const std::vector<int> order_host = TopKPoolsHost(scores_host, select_k);
+    int disagree = 0;
+    for (int r = 0; r < select_k; ++r)
+        if (order_dev[static_cast<size_t>(r)] != order_host[static_cast<size_t>(r)])
+            ++disagree;
+    WARN("pools whose host rank differs from the device's: " << disagree);
+    REQUIRE(disagree <= 2);  // fp32 vs fp64 accumulation on near-ties
+    // The visible tail is appended after the selected pools.
+    const int tail = h.visible % h.kpool;
+    for (int i = 0; i < tail; ++i)
+        REQUIRE(sel[static_cast<size_t>(select_k * h.kpool + i)] ==
+                h.visible - tail + i);
+    for (int i = h.sel_count; i < h.topk + h.kpool - 1; ++i)
+        REQUIRE(sel[static_cast<size_t>(i)] == -1);
 }

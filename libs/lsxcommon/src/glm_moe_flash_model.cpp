@@ -143,6 +143,10 @@ bool Glm5NextFlashModel::Load()
     if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();
 
     resident_bytes_ = pw_.resident_bytes;
+    // Conversion-time profile (IModel::VramRequirements / lsxcli --info). Empty
+    // on trees converted before the block existed; the session reserves its own
+    // scratch dynamically either way.
+    vram_ = pw_.top.vram;
     log::info("[glm-flash-model] loaded: resident=" +
               std::to_string(resident_bytes_) + " layers=" +
               std::to_string(pw_.layers.size()));

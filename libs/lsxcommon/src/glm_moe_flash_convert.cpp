@@ -552,6 +552,57 @@ FlashPassportTokens BuildFlashPassportTokens(const fs::path &pinned_dir)
     return out;
 }
 
+namespace {
+
+// VRAM policy for this family, derived from the converter's own classifier so
+// the estimate cannot disagree with what the pipeline actually writes:
+// `flash_tensor_is_nvfp4` decides the packed size, RoutedExpert decides the
+// placement class.
+VramTensorPolicy GlmFlashVramPolicy()
+{
+    VramTensorPolicy p;
+    p.is_nvfp4 = [](const std::string &n) {
+        return flash_tensor_is_nvfp4(classify_flash_tensor(n).kind);
+    };
+    p.mem_class = [](const std::string &n) {
+        return classify_flash_tensor(n).kind == FlashTensorKind::RoutedExpert
+                   ? VramTensorClass::RoutedExpert
+                   : VramTensorClass::Resident;
+    };
+    return p;
+}
+
+// The converted artifact's residency: source shards minus the FP8 scale tiles
+// (consumed by the requant) and the stripped vision tower. Geometry that the
+// generic estimate cannot infer from tensor shapes:
+//   - only the 11 DSA layers keep a per-position KV; the 34 KDA layers hold a
+//     constant recurrent state, so num_attn_layers is the DSA count;
+//   - a DSA layer stores K+V of [64 heads x 256 dims] FP16 per position, which
+//     EstimateVram expresses as kv_dim * 2 (K,V) * 2 (bytes) = 65536 B.
+VramProfile EstimateGlmFlashVram(const SafetensorsModel &model, int64_t ctx)
+{
+    std::vector<VramTensorInfo> inventory;
+    for (const auto &shard : model.shards)
+        for (const auto &t : shard.tensors) {
+            if (t.name.rfind(".weight_scale_inv") != std::string::npos)
+                continue;
+            if (classify_flash_tensor(t.name).kind == FlashTensorKind::Visual)
+                continue;
+            inventory.push_back({t.name, t.numel(), t.byte_size()});
+        }
+    using namespace frozen;
+    VramGeometry vg;
+    vg.hidden_dim = kHidden;
+    vg.kv_dim = kHeads * kQkHeadDim;
+    vg.num_attn_layers = kDsaLayerCount;
+    vg.num_moe_layers = kLayers - kFirstKDense;
+    vg.experts_per_layer = kNumExperts;
+    vg.context_length = ctx;
+    return EstimateVram(inventory, GlmFlashVramPolicy(), vg);
+}
+
+}  // namespace
+
 arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                                    const std::string &output_root)
 {
@@ -937,11 +988,47 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
           << ",\n  \"eos_token_id\": [" << eos << "]"
           << ",\n  \"pad_token_id\": " << top.pad_id
           << ",\n  \"skipped_visual_tensors\": " << visual_skipped
+          // FormatVramJson renders the whole `"vram": {...}` member.
+          << ",\n" 
+          << FormatVramJson(EstimateGlmFlashVram(
+                 model,
+                 ReadContextLength((fs::path(input_dir) / "config.json").string())))
           << "\n}\n";
         std::ofstream out(base / "model.index.json");
         out << j.str();
     }
 
+    return arrow::Status::OK();
+}
+
+arrow::Status RecomputeGlmFlashVram(const std::string &input_path,
+                                    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+    const fs::path index_path =
+        fs::path(output_root) / "logestix" / "model.index.json";
+    std::ifstream f(index_path);
+    if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    auto model = lsxcommon::scan_directory(input_path);
+    if (model.shards.empty())
+        return arrow::Status::Invalid("no safetensors shards found in ",
+                                      input_path);
+    const int64_t ctx = ReadContextLength(
+        (fs::path(input_path) / "config.json").string());
+    const VramProfile profile = EstimateGlmFlashVram(model, ctx);
+    lsxcommon::log::info(absl::StrCat(
+        "GLM-5.3-Flash VRAM profile: min=",
+        FormatBytesHuman(profile.min_bytes), " optimal=",
+        FormatBytesHuman(profile.optimal_bytes), " max=",
+        FormatBytesHuman(profile.max_bytes),
+        " (ctx=", static_cast<long long>(profile.context_tokens), ")"));
+    std::ofstream out(index_path, std::ios::trunc);
+    if (!out)
+        return arrow::Status::IOError("cannot write ", index_path.string());
+    out << ReplaceVramBlock(json, profile);
+    if (!out) return arrow::Status::IOError("write failed ", index_path.string());
     return arrow::Status::OK();
 }
 

@@ -20,6 +20,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <string>
+#include <vector>
 
 namespace lsxcommon {
 namespace glm_moe_flash {
@@ -1391,56 +1393,93 @@ constexpr int kIdxTopk = frozen::kIndexerTopk;
 constexpr float kIdxNormEps = 1e-6f;
 }  // namespace
 
+namespace {
+// One aligned span per buffer, in FlashIndexerState field order. Keeping the
+// list in one place is what lets FlashIndexerStateBytes() be exact (the session
+// scratch plan in the generation driver depends on it).
+struct IdxSpan {
+    const char *name;
+    int64_t elems;
+    int64_t elem_size;
+};
+int IdxSpans(int64_t max_ctx, int64_t pool_cap, IdxSpan out[11])
+{
+    int n = 0;
+    auto add = [&](const char *name, int64_t elems, int64_t elem_size) {
+        out[n++] = {name, elems, elem_size};
+    };
+    add("k", max_ctx * kIdxDim, sizeof(__half));
+    add("gate", max_ctx * kIdxDim, sizeof(__half));
+    add("pool", pool_cap * kIdxDim, sizeof(float));
+    add("scores", pool_cap, sizeof(float));
+    add("q", kIdxHeads * kIdxDim, sizeof(float));
+    add("w", kIdxHeads, sizeof(float));
+    add("sel", kIdxTopk + kIdxKpool, sizeof(int32_t));
+    add("sel_count", 1, sizeof(int32_t));
+    add("kraw", kIdxDim, sizeof(__half));
+    add("qraw", kIdxHeads * kIdxDim, sizeof(__half));
+    add("wraw", kIdxHeads, sizeof(__half));
+    return n;
+}
+constexpr int64_t kIdxAlign = 256;
+}  // namespace
+
+int64_t FlashIndexerStateBytes(int64_t max_ctx)
+{
+    if (max_ctx <= 0) return 0;
+    const int64_t pool_cap = (max_ctx + kIdxKpool - 1) / kIdxKpool + 1;
+    IdxSpan spans[11];
+    const int n = IdxSpans(max_ctx, pool_cap, spans);
+    int64_t total = 0;
+    for (int i = 0; i < n; ++i)
+        total += (spans[i].elems * spans[i].elem_size + kIdxAlign - 1) /
+                 kIdxAlign * kIdxAlign;
+    return total;
+}
+
 cudaError_t FlashIndexerStateAlloc(FlashIndexerState &st, int64_t max_ctx)
 {
     FlashIndexerStateFree(st);
     if (max_ctx <= 0) return cudaErrorInvalidValue;
     st.capacity_ctx = max_ctx;
     st.pool_cap = (max_ctx + kIdxKpool - 1) / kIdxKpool + 1;
-    auto alloc = [](void **p, size_t bytes) {
-        return cudaMalloc(p, bytes) == cudaSuccess;
-    };
-    if (!alloc(reinterpret_cast<void **>(&st.d_k),
-                static_cast<size_t>(max_ctx) * kIdxDim * sizeof(__half)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_gate),
-               static_cast<size_t>(max_ctx) * kIdxDim * sizeof(__half)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_pool),
-               static_cast<size_t>(st.pool_cap) * kIdxDim * sizeof(float)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_scores),
-               static_cast<size_t>(st.pool_cap) * sizeof(float)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_q),
-               static_cast<size_t>(kIdxHeads) * kIdxDim * sizeof(float)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_w),
-               static_cast<size_t>(kIdxHeads) * sizeof(float)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_sel),
-               static_cast<size_t>(kIdxTopk + kIdxKpool) * sizeof(int32_t)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_sel_count), sizeof(int32_t)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_kraw),
-               static_cast<size_t>(kIdxDim) * sizeof(__half)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_qraw),
-               static_cast<size_t>(kIdxHeads) * kIdxDim * sizeof(__half)) ||
-        !alloc(reinterpret_cast<void **>(&st.d_wraw),
-               static_cast<size_t>(kIdxHeads) * sizeof(__half))) {
+    IdxSpan spans[11];
+    const int n = IdxSpans(max_ctx, st.pool_cap, spans);
+    const int64_t bytes = FlashIndexerStateBytes(max_ctx);
+    void *base = nullptr;
+    if (cudaMalloc(&base, static_cast<size_t>(bytes)) != cudaSuccess) {
         const cudaError_t e = cudaGetLastError();
         FlashIndexerStateFree(st);
         return e;
     }
+    // Carve the block in the same order/alignment FlashIndexerStateBytes()
+    // summed, so Free() is one cudaFree and the plan matches to the byte.
+    uint8_t *p = static_cast<uint8_t *>(base);
+    auto take = [&](int64_t span_bytes) {
+        const int64_t aligned = (span_bytes + kIdxAlign - 1) / kIdxAlign * kIdxAlign;
+        void *r = p;
+        p += aligned;
+        return r;
+    };
+    st.d_k = static_cast<__half *>(take(spans[0].elems * spans[0].elem_size));
+    st.d_gate = static_cast<__half *>(take(spans[1].elems * spans[1].elem_size));
+    st.d_pool = static_cast<float *>(take(spans[2].elems * spans[2].elem_size));
+    st.d_scores = static_cast<float *>(take(spans[3].elems * spans[3].elem_size));
+    st.d_q = static_cast<float *>(take(spans[4].elems * spans[4].elem_size));
+    st.d_w = static_cast<float *>(take(spans[5].elems * spans[5].elem_size));
+    st.d_sel = static_cast<int32_t *>(take(spans[6].elems * spans[6].elem_size));
+    st.d_sel_count = static_cast<int32_t *>(take(spans[7].elems * spans[7].elem_size));
+    st.d_kraw = static_cast<__half *>(take(spans[8].elems * spans[8].elem_size));
+    st.d_qraw = static_cast<__half *>(take(spans[9].elems * spans[9].elem_size));
+    st.d_wraw = static_cast<__half *>(take(spans[10].elems * spans[10].elem_size));
+    (void)n;
     return cudaSuccess;
 }
 
 void FlashIndexerStateFree(FlashIndexerState &st)
 {
+    // Every pointer above is carved from d_k's block.
     cudaFree(st.d_k);
-    cudaFree(st.d_gate);
-    cudaFree(st.d_pool);
-    cudaFree(st.d_scores);
-    cudaFree(st.d_q);
-    cudaFree(st.d_w);
-    cudaFree(st.d_sel);
-    cudaFree(st.d_sel_count);
-    cudaFree(st.d_kraw);
-    cudaFree(st.d_qraw);
-    cudaFree(st.d_wraw);
     st = FlashIndexerState{};
 }
 
@@ -2154,6 +2193,149 @@ cudaError_t RunFlashSharedFFN(cudaStream_t stream, const FlashLayerWeights &lw,
 //     hc_pre(attn) -> [KDA|DSA attention] -> hc_post -> hc_pre(ffn) ->
 //     MoE|dense MLP -> hc_post -> hc_head -> final norm -> lm_head.
 
+namespace {
+// Decode arena: constant, a function of the frozen geometry only (see the
+// layout carve below, which this must match). Split out so the session-scratch
+// plan can report it without allocating.
+size_t GlmFlashArenaBytes()
+{
+    const int H = frozen::kHidden;
+    const int hc = frozen::kHcCount;
+    const int HCH = H * hc;
+    const int I = frozen::kMoeIntermediate;
+    const int K = frozen::kTopK;
+    const int V = frozen::kVocab;
+    size_t half_elems = 0;
+    half_elems += H;                       // d_act
+    half_elems += (size_t)2 * HCH;         // d_state (FP32? no: kept FP32 separately)
+    half_elems += H;                       // d_single (hc pre out)
+    half_elems += H;                       // d_act2 (module out f16)
+    half_elems += frozen::kQLora;          // d_qr
+    half_elems += frozen::kHeads * frozen::kQkHeadDim;  // d_q
+    half_elems += frozen::kKvLora;         // d_kvc
+    half_elems += frozen::kHeads * 2 * frozen::kQkHeadDim;  // d_kvb
+    half_elems += frozen::kHeads * frozen::kQkHeadDim;  // d_attn
+    half_elems += 2 * KD_TOTAL;            // kda q/k raw
+    half_elems += 2 * KD_TOTAL;            // kda v + qc
+    half_elems += 2 * KD_TOTAL;            // kc + vc
+    half_elems += frozen::kHeads;          // d_b
+    half_elems += 3 * KD_TOTAL;            // d_f + d_g + d_gated
+    half_elems += KD_TOTAL;                // d_attn kda
+    half_elems += 128;                     // f/g mid
+    half_elems += 3 * I;                   // moe yg/yu/y2
+    half_elems += 3 * I;                   // shared yg/yu/y2 + dense reuse
+    constexpr int kYMax = frozen::kMoeIntermediate > frozen::kDenseIntermediate
+                              ? frozen::kMoeIntermediate
+                              : frozen::kDenseIntermediate;
+    half_elems += 3 * kYMax - 3 * I;       // dense-MLP headroom for yg/yu/y2
+    half_elems += (size_t)K * 2 * I;       // d_batch_ygu
+    half_elems += (size_t)K * I;           // d_batch_hbuf
+    half_elems += (size_t)K * H;           // d_batch_ypart
+    size_t float_elems = HCH;              // d_state FP32 [hc*H]
+    float_elems += H;                      // d_module_f32 (hc_post input)
+    float_elems += (2 + hc) * hc;          // hc post/comb/pre scratch
+    float_elems += 64;                     // misc
+    float_elems += V;                      // logits
+    float_elems += H;                      // moe acc
+    const size_t half_bytes = (half_elems * 2 + 255) & ~size_t(255);
+    const size_t float_bytes = (float_elems * 4 + 255) & ~size_t(255);
+    return half_bytes + float_bytes + 4096;
+}
+}  // namespace
+
+FlashSessionScratch GlmFlashSessionScratchBytes(int64_t max_ctx)
+{
+    FlashSessionScratch s;
+    s.embed = static_cast<int64_t>(frozen::kVocab) * frozen::kHidden *
+              static_cast<int64_t>(sizeof(__half));
+    s.kda = static_cast<int64_t>(frozen::kKdaLayerCount) * FlashKdaLayerBytes();
+    if (max_ctx > 0) {
+        s.dsa_kv = static_cast<int64_t>(frozen::kDsaLayerCount) * 2 * max_ctx *
+                   frozen::kHeads * frozen::kQkHeadDim *
+                   static_cast<int64_t>(sizeof(__half));
+        s.indexer = static_cast<int64_t>(frozen::kDsaLayerCount) *
+                    FlashIndexerStateBytes(max_ctx);
+    }
+    s.arena = static_cast<int64_t>(GlmFlashArenaBytes());
+    return s;
+}
+
+namespace {
+
+// Test instrument for the real-weight DSA oracle (see OPEN_TASKS §U):
+// LSX_FLASH_DSA_DUMP=<file> writes the first sparse step of the first DSA
+// layer - the query token's hidden state, its q_a residual, the indexer's
+// per-position keys/gates, the pooled keys, the scores, and the selected
+// indices - as one binary blob. A host replica over the SOURCE shards then
+// reproduces the selection without the device. Off by default; the copy is
+// stream-ordered and synchronised, so a session without the env var pays
+// nothing.
+struct FlashDsaDumpHeader {
+    char magic[8];        // "GLMDSA1"
+    int32_t slot;         // position of the query token
+    int32_t visible;      // positions visible to it (slot + 1)
+    int32_t n_pools;      // completed pools scored
+    int32_t hidden;
+    int32_t q_lora;
+    int32_t heads;        // indexer heads
+    int32_t dim;          // indexer head dim
+    int32_t kpool;
+    int32_t topk;
+    int32_t sel_count;
+};
+
+bool DumpFlashIndexerState(cudaStream_t stream, const char *path,
+                           FlashIndexerState &st, const __half *d_x,
+                           const __half *d_q_resid, int64_t slot)
+{
+    if (st.n_pools <= 0 || slot < 0 || slot >= st.capacity_ctx) return false;
+    const int visible = static_cast<int>(slot) + 1;
+    const int n_pools = static_cast<int>(st.n_pools);
+    FlashDsaDumpHeader h{};
+    std::memcpy(h.magic, "GLMDSA1", 7);
+    h.slot = static_cast<int32_t>(slot);
+    h.visible = visible;
+    h.n_pools = n_pools;
+    h.hidden = frozen::kHidden;
+    h.q_lora = frozen::kQLora;
+    h.heads = kIdxHeads;
+    h.dim = kIdxDim;
+    h.kpool = kIdxKpool;
+    h.topk = kIdxTopk;
+    int32_t sel_count = -1;
+    if (cudaMemcpyAsync(&sel_count, st.d_sel_count, sizeof(int32_t),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return false;
+    if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
+    h.sel_count = sel_count;
+
+    std::FILE *f = std::fopen(path, "wb");
+    if (!f) return false;
+    bool ok = std::fwrite(&h, sizeof(h), 1, f) == 1;
+    auto write_dev = [&](const void *src, size_t bytes) {
+        if (!ok) return;
+        std::vector<uint8_t> buf(bytes);
+        if (cudaMemcpyAsync(buf.data(), src, bytes, cudaMemcpyDeviceToHost,
+                            stream) != cudaSuccess ||
+            cudaStreamSynchronize(stream) != cudaSuccess) {
+            ok = false;
+            return;
+        }
+        ok = std::fwrite(buf.data(), bytes, 1, f) == 1;
+    };
+    write_dev(d_x, static_cast<size_t>(h.hidden) * sizeof(__half));
+    write_dev(d_q_resid, static_cast<size_t>(h.q_lora) * sizeof(__half));
+    write_dev(st.d_k, static_cast<size_t>(visible) * h.dim * sizeof(__half));
+    write_dev(st.d_gate, static_cast<size_t>(visible) * h.dim * sizeof(__half));
+    write_dev(st.d_pool, static_cast<size_t>(n_pools) * h.dim * sizeof(float));
+    write_dev(st.d_scores, static_cast<size_t>(n_pools) * sizeof(float));
+    write_dev(st.d_sel, static_cast<size_t>(h.topk + h.kpool) * sizeof(int32_t));
+    std::fclose(f);
+    return ok;
+}
+
+}  // namespace
+
 cudaError_t RunGlmFlashGeneration(
     cudaStream_t stream, const FlashPinnedWeights &pw,
     lsxcommon::moe::MoEExpertStore &store, gpu::ExpertDeviceCache &cache,
@@ -2178,6 +2360,15 @@ cudaError_t RunGlmFlashGeneration(
         return cudaErrorInvalidValue;
     }
     const bool trace_flash = std::getenv("LSX_TRACE_FLASH") != nullptr;
+    const char *dsa_dump_path = std::getenv("LSX_FLASH_DSA_DUMP");
+    // Position to dump: past index_topk by default, so the radix path (not the
+    // whole-context branch) is what gets verified on real weights.
+    static const int dsa_dump_slot = [] {
+        const char *v = std::getenv("LSX_FLASH_DSA_DUMP_SLOT");
+        const int n = v ? std::atoi(v) : 0;
+        return n > 0 ? n : frozen::kIndexerTopk + 256;
+    }();
+    bool dsa_dumped = false;
     // A/B escape hatch: force the dense path above index_topk (the pre-sparsity
     // behaviour) so a measurement can compare sparse against dense.
     static const bool dsa_dense_forced = [] {
@@ -2200,10 +2391,62 @@ cudaError_t RunGlmFlashGeneration(
         log::info(note);
     }
 
+    // Session scratch, declared up front so the budget check below can see what
+    // is already allocated. Nothing here is per-request state; the KV capsules
+    // only grow, and the session zeroes them at the start of every call.
+    static FlashEmbedCache embed_cache;          // FP16 embed table (constant)
+    static std::vector<FlashKdaState> kda_states;  // 34 KDA layers (constant)
+    static std::vector<__half *> dsa_kv_k, dsa_kv_v;
+    static std::vector<FlashIndexerState> idx_states;
+    static int64_t dsa_cap = 0;                  // DSA k/v + indexer capacity
+    static void *arena = nullptr;
+    static size_t arena_cap = 0;
+
+    // Budget (OPEN_TASKS §U): the expert cache sized itself at Load from the
+    // free memory it saw then, minus a FIXED reserve, while the DSA KV scales
+    // with the context (0.69 MiB per position across 11 layers) and the embed
+    // table alone is 1.27 GiB. Reserve this session's scratch before allocating
+    // it and shrink the cache when the reserve will not cover it; failing here
+    // would report "out of memory" from a cudaMalloc the operator cannot map
+    // back to the planner.
+    {
+        const int64_t cap_needed = static_cast<int64_t>(max_seq) + 64;
+        const FlashSessionScratch plan = GlmFlashSessionScratchBytes(cap_needed);
+        const size_t arena_need = GlmFlashArenaBytes();
+        int64_t need = 0;
+        if (!embed_cache.data) need += plan.embed;
+        if (kda_states.empty()) need += plan.kda;
+        if (dsa_cap < cap_needed) need += plan.dsa_kv + plan.indexer;
+        if (arena_cap < arena_need) need += static_cast<int64_t>(arena_need);
+        size_t free_b = 0, total_b = 0;
+        if (need > 0 && cudaMemGetInfo(&free_b, &total_b) == cudaSuccess) {
+            const size_t need_b = static_cast<size_t>(need);
+            const size_t slack = size_t{256} << 20;  // allocator fragmentation
+            const size_t have = free_b > slack ? free_b - slack : 0;
+            if (have < need_b) {
+                std::string why;
+                const int before = cache.slots;
+                if (!moe::EnsureMoEExpertCacheHeadroom(store, cache,
+                                                       need_b - have, why)) {
+                    log::warn("glm-moe-flash: session scratch needs " +
+                              std::to_string(need_b >> 20) + " MiB, free " +
+                              std::to_string(have >> 20) +
+                              " MiB, and the expert cache cannot shrink: " +
+                              why);
+                } else {
+                    log::info("glm-moe-flash: reserved session scratch " +
+                              std::to_string(need_b >> 20) + " MiB at cap " +
+                              std::to_string(cap_needed) + "; expert cache " +
+                              std::to_string(before) + " -> " +
+                              std::to_string(cache.slots) + " slots");
+                }
+            }
+        }
+    }
+
     // Persistent FP16 embed table (dequant once per weight lifetime). Keyed by
     // the weight epoch, not just V*H: a second GLM instance with the same
     // geometry must not inherit the first one's embedding rows (audit X9).
-    static FlashEmbedCache embed_cache;
     {
         const cudaError_t ee = embed_cache.Ensure(
             stream,
@@ -2214,7 +2457,6 @@ cudaError_t RunGlmFlashGeneration(
     __half *d_embed_h = embed_cache.data;
 
     // Per-layer KDA state (allocated once, static etalon style).
-    static std::vector<FlashKdaState> kda_states;
     if (kda_states.empty()) {
         kda_states.resize(static_cast<size_t>(kKdaLayerCount));
         for (auto &st : kda_states)
@@ -2223,9 +2465,6 @@ cudaError_t RunGlmFlashGeneration(
     }
     // DSA KV caches: [dsa_layer][cap * heads * 256] x2 + the per-layer indexer
     // state (token keys, pool gates, pooled keys, selection scratch).
-    static std::vector<__half *> dsa_kv_k, dsa_kv_v;
-    static std::vector<FlashIndexerState> idx_states;
-    static int64_t dsa_cap = 0;
     if (dsa_cap < max_seq + 64) {
         for (auto *p : dsa_kv_k) cudaFree(p);
         for (auto *p : dsa_kv_v) cudaFree(p);
@@ -2250,9 +2489,7 @@ cudaError_t RunGlmFlashGeneration(
         }
     }
 
-    // Arena.
-    static void *arena = nullptr;
-    static size_t arena_cap = 0;
+    // Arena (layout carved below; GlmFlashArenaBytes() is the same total).
     size_t half_elems = 0;
     half_elems += H;                       // d_act
     half_elems += (size_t)2 * HCH;         // d_state (FP32? no: kept FP32 separately)
@@ -2292,7 +2529,14 @@ cudaError_t RunGlmFlashGeneration(
     float_elems += H;                      // moe acc
     const size_t half_bytes = (half_elems * 2 + 255) & ~size_t(255);
     const size_t float_bytes = (float_elems * 4 + 255) & ~size_t(255);
-    const size_t need = half_bytes + float_bytes + 4096;
+    // The plan reports GlmFlashArenaBytes(); the carve below recomputes the
+    // same total. Allocate the larger of the two, so a drift can never carve
+    // past the block it allocated.
+    const size_t carve_need = half_bytes + float_bytes + 4096;
+    const size_t plan_need = GlmFlashArenaBytes();
+    if (carve_need != plan_need)
+        log::warn("glm-moe-flash: arena carve and GlmFlashArenaBytes() disagree");
+    const size_t need = carve_need > plan_need ? carve_need : plan_need;
     if (arena_cap < need) {
         if (arena) cudaFree(arena);
         if (cudaMalloc(&arena, need) != cudaSuccess)
@@ -2515,6 +2759,16 @@ cudaError_t RunGlmFlashGeneration(
                                       &idx_states[static_cast<size_t>(dsa_idx)],
                                       dsa_dense_forced);
                 if (e != cudaSuccess) { result.error_msg = "dsa"; break; }
+                if (dsa_dump_path && !dsa_dumped && dsa_idx == 0
+                    && kv_pos + 1 > kIdxTopk && kv_pos >= dsa_dump_slot) {
+                    dsa_dumped = DumpFlashIndexerState(
+                        stream, dsa_dump_path,
+                        idx_states[static_cast<size_t>(dsa_idx)], d_single,
+                        d_qr, kv_pos);
+                    log::info(std::string("glm-moe-flash: DSA dump ") +
+                              (dsa_dumped ? "written to " : "FAILED for ") +
+                              dsa_dump_path);
+                }
             }
             if (trace_flash) {
                 FlashDbg("[attn] post-l=%d\n", l);

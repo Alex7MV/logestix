@@ -226,7 +226,14 @@ int main(int argc, char* argv[]) {
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
         arrow::Status st = arrow::Status::Invalid("unknown index format");
-        if (json.find("logestix-glm") != std::string::npos)
+        // GLM-5.3-Flash shares the "logestix-glm" prefix with GLM-5.2 but not
+        // its geometry (hybrid KDA + DSA MLA): the 5.2 estimate reads
+        // kv_a_proj_with_mqa as the KV width and under-reports by ~28x, so the
+        // flash tag has to win the dispatch.
+        if (json.find("logestix-glm5next") != std::string::npos)
+            st = lsxcommon::glm_moe_flash::RecomputeGlmFlashVram(input_path,
+                                                                 output_path);
+        else if (json.find("logestix-glm") != std::string::npos)
             st = lsxcommon::glm::RecomputeGlmVram(input_path, output_path);
         else if (json.find("logestix-qwen") != std::string::npos)
             st = lsxcommon::qwen::RecomputeQwenVram(input_path, output_path);

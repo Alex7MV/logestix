@@ -2049,5 +2049,38 @@ void FreeMoEExpertCache(gpu::ExpertDeviceCache &cache)
     cache.slots = 0;
 }
 
+bool EnsureMoEExpertCacheHeadroom(MoEExpertStore &store,
+                                  gpu::ExpertDeviceCache &cache,
+                                  std::size_t deficit_bytes, std::string &error)
+{
+    const std::int64_t slot_bytes = cache.pack_stride + cache.scale_stride;
+    if (slot_bytes <= 0 || cache.slots <= 0) {
+        error = "expert cache is not allocated";
+        return false;
+    }
+    constexpr int kMinSlots = 64;  // top-k per-layer working set floor
+    const std::int64_t want =
+        static_cast<std::int64_t>((deficit_bytes + slot_bytes - 1) / slot_bytes);
+    const std::int64_t floor_keep = kMinSlots;
+    std::int64_t keep = static_cast<std::int64_t>(cache.slots) - (want + 8);
+    if (keep < floor_keep) keep = floor_keep;
+    if (keep >= cache.slots) {
+        error = absl::StrCat("expert cache cannot free ", (deficit_bytes >> 20),
+                             " MiB: ", cache.slots,
+                             " slots are already at the floor");
+        return false;
+    }
+    const int old = cache.slots;
+    // One cudaMalloc backs the whole cache, so this is free + allocate at the
+    // smaller size; the residency map starts empty (cold, never wrong).
+    FreeMoEExpertCache(cache);
+    if (!AllocateMoEExpertCache(store, static_cast<int>(keep), cache, error)) {
+        error = absl::StrCat("expert cache shrink ", old, " -> ", keep,
+                             " slots failed: ", error);
+        return false;
+    }
+    return true;
+}
+
 } // namespace moe
 } // namespace lsxcommon
