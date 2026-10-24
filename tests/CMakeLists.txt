@@ -3361,7 +3361,7 @@ endif()
 
 add_test(NAME test_deepseek_moe_load_fast COMMAND test_deepseek_moe_load_fast)
 
-# �� ���� model-metadata vault path registry �����������������������������
+# ── path registry (vault root + per-user cache dir) ────────────────────────
 add_executable(test_path_registry test_path_registry.cpp)
 target_link_libraries(test_path_registry PRIVATE lsxcommon Catch2::Catch2WithMain)
 

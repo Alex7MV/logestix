@@ -62,7 +62,7 @@ struct LsxPerfKnobs {
 enum class PerfSource {
     kBase,         // committed base table (repo)
     kHeuristic,    // passport-derived fallback (unknown GPU)
-    kCalibrated,   // local calibration cache (vault perf-cache/)
+    kCalibrated,   // local calibration cache (lsx_cache_dir()/perf-cache/)
     kEnvOverride,  // env variables set (LSX_GEMV_MAX_MIB, LSX_TEST_FAST_MATH)
     kLegacy        // LSX_PERF_AUTO=0 escape hatch: pre-tuning behavior
 };
@@ -100,7 +100,7 @@ void ApplyKnobs(const LsxPerfKnobs &knobs, PerfSource source);
 // marks applied and keeps legacy defaults.
 void EnsurePerfPolicyApplied();
 
-// ── Calibration cache (vault JSON, perf-cache/<gpu-key>.json) ───────────────
+// ── Calibration cache (per-user JSON, <cache>/perf-cache/<gpu-key>.json) ───
 
 inline constexpr int kPerfCacheFormatVersion = 1;
 
@@ -114,7 +114,7 @@ struct PerfCacheEntry {
 std::string SerializePerfCache(const PerfCacheEntry &e);
 std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json);
 
-// Vault path: lsx_model_metadata("perf-cache/<gpu-key>.json").
+// Path: lsx_cache_path("perf-cache/<gpu-key>.json") - never in the model vault.
 std::string PerfCachePath(const GpuPerfProfile &gpu);
 
 // File-backed convenience wrappers. Never throw; failures return false.

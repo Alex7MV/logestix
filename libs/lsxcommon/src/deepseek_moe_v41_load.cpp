@@ -16,10 +16,6 @@ ModelTopology LoadTopology(const std::string &model_path)
     ModelTopology topo;
     auto ipath =
         std::filesystem::path(model_path) / "logestix" / "model.index.json";
-    const auto vault = std::filesystem::path(
-        lsxcommon::lsx_model_metadata("manifests/model.index.json"));
-    if (!std::filesystem::exists(ipath) && std::filesystem::exists(vault))
-        ipath = vault;
     std::ifstream f(ipath);
     if (!f) {
         topo.error_msg = "Cannot open " + ipath.string();

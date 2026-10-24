@@ -205,11 +205,16 @@ TEST_CASE("Perf cache: format-version invalidation", "[gpu_perf]")
     REQUIRE_FALSE(ParsePerfCache("").has_value());
 }
 
-TEST_CASE("Perf cache path lands in vault perf-cache/", "[gpu_perf]")
+TEST_CASE("Perf cache path lands in the per-user cache, not the vault",
+          "[gpu_perf]")
 {
     const std::string p = PerfCachePath(Rtx5090());
     REQUIRE(p.find("perf-cache") != std::string::npos);
     REQUIRE(p.find("rtx 5090.json") != std::string::npos);
+    // The calibration cache is host state, not model data: it must live under
+    // lsx_cache_dir() and never inside the model vault.
+    REQUIRE(p.rfind(lsxcommon::lsx_cache_dir(), 0) == 0);
+    REQUIRE(p.rfind(lsxcommon::lsx_model_models_dir(), 0) != 0);
 }
 
 #include <cstddef>
@@ -278,9 +283,13 @@ TEST_CASE("EnsureCalibrated: base GPUs skip, unknown GPUs run once", "[gpu_perf]
     // Unknown GPU with no cache: bench runs once; result persists.
     GpuPerfProfile mystery = Rtx5090();
     mystery.name = "Test Mystery Card Unit";
-    if (!std::filesystem::is_directory(
-            lsxcommon::lsx_model_metadata_root()))
-        SKIP();  // read-only CI vault: calibration persistence unavailable
+    {
+        // Persistence needs a writable cache root; skip on a read-only host.
+        std::error_code dir_ec;
+        std::filesystem::create_directories(lsxcommon::lsx_cache_dir(), dir_ec);
+        if (!std::filesystem::is_directory(lsxcommon::lsx_cache_dir()))
+            SKIP();
+    }
     // Drop a stale cache entry to prove the bench path actually runs.
     std::error_code ec;
     std::filesystem::remove(lsxcommon::perf::PerfCachePath(mystery), ec);

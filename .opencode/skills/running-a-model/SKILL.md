@@ -33,10 +33,12 @@ directory):
 | Linux | `/mnt/llm_models/models` | `<base>/<Model>/logestix/` |
 | Windows | `D:\Programs\huggingface.co` | `<base>\<Model>\logestix\` |
 
-- Every vault read/write goes through `lsx_model_metadata_root()` /
-  `lsx_model_metadata(rel)` / `lsx_model_models_dir()` — **no other code may
-  reconstruct the root** (the `model-metadata/` block is appended by the
-  helper). The metadata vault is `<base>/model-metadata/` (passport, perf cache).
+- Every vault read/write goes through `lsx_model_models_dir()` — **no other
+  code may reconstruct the root**. The vault holds model trees only
+  (`<base>/<Model>/logestix/`); nothing else is written next to them. Host
+  state that is not model data (the per-GPU perf calibration) lives in
+  `lsx_cache_dir()` (`LSX_CACHE_DIR`, else `$XDG_CACHE_HOME/logestix` /
+  `~/.cache/logestix`; `%LOCALAPPDATA%\logestix\cache` on Windows).
 - A converted model `lsxforge` output lands in `<output>/logestix/` and carries
   `logestix/model.index.json`, `logestix/pinned/`, and per-expert `.arrow` files.
 - **Gotcha:** the CLI apps take the **model root** (`<base>/<Model>`), *not* the

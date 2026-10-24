@@ -326,7 +326,7 @@ std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json_view)
 
 std::string PerfCachePath(const GpuPerfProfile &gpu)
 {
-    return lsx_model_metadata("perf-cache/" + GpuProfileKey(gpu) + ".json");
+    return lsx_cache_path("perf-cache/" + GpuProfileKey(gpu) + ".json");
 }
 
 bool LoadPerfCache(const GpuPerfProfile &gpu, LsxPerfKnobs &out)
