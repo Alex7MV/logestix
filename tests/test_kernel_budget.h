@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -102,64 +103,103 @@ inline std::string CurrentGpuKey()
         lsxcommon::perf::ProbeGpuPerfProfile());
 }
 
-inline std::vector<Entry> LoadAll()
+// True when the accumulated object text closes every brace it opened (string
+// literals skipped, so a '}' inside a note does not count).
+inline bool ObjectComplete(const std::string &s)
+{
+    int depth = 0;
+    bool in_string = false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (in_string) {
+            if (c == '\\') ++i;
+            else if (c == '"') in_string = false;
+            continue;
+        }
+        if (c == '"') in_string = true;
+        else if (c == '{') ++depth;
+        else if (c == '}') --depth;
+    }
+    return depth == 0 && !in_string;
+}
+
+// One entry object (already joined to a single logical line).
+inline std::optional<Entry> ParseEntryObject(const std::string &s)
+{
+    const auto field = [&](const char *k) -> std::string {
+        const std::string key = std::string("\"") + k + "\": \"";
+        auto p = s.find(key);
+        if (p == std::string::npos) return {};
+        p += key.size();
+        const auto q = s.find('"', p);
+        return q == std::string::npos ? std::string{} : s.substr(p, q - p);
+    };
+    const auto number = [&](const char *k) -> double {
+        const std::string key = std::string("\"") + k + "\": ";
+        auto p = s.find(key);
+        if (p == std::string::npos) return 0.0;
+        p += key.size();
+        try {
+            return std::stod(s.substr(p));
+        } catch (...) {
+            return 0.0;
+        }
+    };
+
+    Entry e;
+    e.name = field("name");
+    e.gpu_key = field("gpu_key");
+    e.kind = ParseKind(field("kind"));
+    e.note = field("note");
+    e.date = field("date");
+    e.budget = number("budget");
+    e.observed_min = number("observed_min");
+    e.observed_max = number("observed_max");
+    e.samples = static_cast<int>(number("samples"));
+    if (e.name.empty() || e.gpu_key.empty()) return std::nullopt;
+    return e;
+}
+
+inline std::vector<Entry> LoadAll(
+    const std::string &path = LSX_KERNEL_BUDGETS_FILE)
 {
     std::vector<Entry> out;
-    std::ifstream in(LSX_KERNEL_BUDGETS_FILE);
+    std::ifstream in(path);
     if (!in) return out;
 
-    // Line-oriented parse: the file is written by WriteAll below, so it is
-    // one JSON object per line inside a "budgets" array. Deliberately not a
-    // general JSON reader — a mis-formatted line must fail loudly, not be
-    // silently skipped into a false "no record for this gpu" SKIP.
+    // The file is hand-editable, so an entry may span several lines (the
+    // long-note rows do). Join continuation lines into one logical object
+    // before parsing; a mis-formatted entry must fail loudly, not be silently
+    // dropped into a false "no record for this gpu" SKIP -- and, in write
+    // mode, not be rewritten as a truncated record.
     std::string line;
     bool in_array = false;
+    std::string acc;
     while (std::getline(in, line)) {
         const auto t = line.find_first_not_of(" \t\r\n");
         if (t == std::string::npos) continue;
         const std::string s = line.substr(t);
-        if (s.rfind("\"budgets\"", 0) == 0) {
-            in_array = true;
+        if (!in_array) {
+            if (s.rfind("\"budgets\"", 0) == 0) in_array = true;
             continue;
         }
-        if (!in_array) continue;
-        if (s[0] == ']') break;
-        if (s.rfind("{\"name\"", 0) != 0) continue;
-
-        const auto field = [&](const char *k) -> std::string {
-            const std::string key = std::string("\"") + k + "\": \"";
-            auto p = s.find(key);
-            if (p == std::string::npos) return {};
-            p += key.size();
-            const auto q = s.find('"', p);
-            return q == std::string::npos ? std::string{}
-                                           : s.substr(p, q - p);
-        };
-        const auto number = [&](const char *k) -> double {
-            const std::string key = std::string("\"") + k + "\": ";
-            auto p = s.find(key);
-            if (p == std::string::npos) return 0.0;
-            p += key.size();
-            try {
-                return std::stod(s.substr(p));
-            } catch (...) {
-                return 0.0;
-            }
-        };
-
-        Entry e;
-        e.name = field("name");
-        e.gpu_key = field("gpu_key");
-        e.kind = ParseKind(field("kind"));
-        e.note = field("note");
-        e.date = field("date");
-        e.budget = number("budget");
-        e.observed_min = number("observed_min");
-        e.observed_max = number("observed_max");
-        e.samples = static_cast<int>(number("samples"));
-        if (e.name.empty() || e.gpu_key.empty()) continue;
-        out.push_back(std::move(e));
+        if (acc.empty()) {
+            if (s[0] == ']') break;
+            if (s[0] != '{') continue;  // stray text between objects
+        }
+        if (!acc.empty()) acc += ' ';
+        acc += s;
+        if (!ObjectComplete(acc)) continue;
+        const auto parsed = ParseEntryObject(acc);
+        if (!parsed)
+            throw std::runtime_error(
+                "kernel_budgets.json: unparsable entry: " + acc);
+        out.push_back(*parsed);
+        acc.clear();
     }
+    if (!acc.empty())
+        throw std::runtime_error(
+            "kernel_budgets.json: unterminated entry: " + acc);
     return out;
 }
 

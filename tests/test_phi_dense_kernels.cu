@@ -350,10 +350,15 @@ TEST_CASE("phi seq1 GEMV decode-shape aggregate bandwidth budget",
         lsxg::SetLsxSeq1Gemv(true);
 
     struct Shape { int K, N; const char *name; };
-    // q/o, fused gate_up, down, head — the warmup-free warprow set.
+    // Every GEMM the phi decode step issues, one entry per dispatch class.
+    // `qkv` is the fused [NH*HD + 2*NKV*HD, K] projection: N=7680 puts it on
+    // the sliced (N < 8192) route while `o`/`down` sit below and `gate_up`/
+    // `head` above, so leaving it out measured 4 of the 5 shapes and none of
+    // the ones the step spends its time in (22 MB/token, 17% of the weights).
     const Shape shapes[] = {
-        {5120, 5120, "q_o"},      {5120, 35840, "gate_up"},
-        {17920, 5120, "down"},    {5120, 100352, "head"},
+        {5120, 7680, "qkv"},      {5120, 5120, "q_o"},
+        {5120, 35840, "gate_up"}, {17920, 5120, "down"},
+        {5120, 100352, "head"},
     };
     constexpr int kIters = 30;
     constexpr size_t kFlushBytes = 128u << 20;  // > 5090 L2 (96 MiB)
@@ -423,6 +428,14 @@ TEST_CASE("phi seq1 GEMV decode-shape aggregate bandwidth budget",
     // streaming ceiling on this part = ~1618 GB/s. Budget sits just below the
     // current figure so a silent regression to the branchy decode,
     // low-occupancy or scalar-x launch fails here.
+    //
+    // 2026-10-24: the shape set gained the real `qkv` shape (5120x7680), which
+    // the four-shape set never measured, so the aggregate is not comparable to
+    // the 1327 above: the five-shape aggregate reads 1258-1267 and the worst
+    // shape is q_o at 722 (sliced route, N < 8192). Same day, the E4M3FN
+    // block-scale decode was folded to a single return (bit-identical) and
+    // q_o moved 722 -> 758, which is also what the end-to-end phi decode
+    // showed (+0.8%). The row was recorded from the five-shape run.
     kernel_budget::Require("phi.dense_gemm.bandwidth", agg,
                            kernel_budget::Kind::kMin,
                            "aggregate dense-decode NVFP4 GEMV, GB/s");

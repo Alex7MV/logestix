@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "lsxcommon/perf_baseline.h"
+#include "test_kernel_budget.h"
 
 #ifndef LSX_SOURCE_DIR
 #define LSX_SOURCE_DIR "."
@@ -426,6 +427,91 @@ TEST_CASE("perf registry: every perf TEST_CASE has a registered ctest target",
     for (const auto &x : unwired) joined += "TEST_CASE with no ctest target: " + x + "\n";
     INFO("perf target drift:\n" << joined);
     REQUIRE(unwired.empty());
+}
+
+TEST_CASE("kernel budgets: a hand-formatted multi-line entry is parsed",
+          "[perf_baseline][guard]")
+{
+    // kernel_budgets.json is hand-editable and the long-note rows were written
+    // across several lines. The loader used to be strictly one-object-per-line
+    // and read only the fields on the FIRST line of such an entry, so
+    // `observed_min/observed_max/samples/date/note` came back empty -- and any
+    // LSX_KERNEL_BUDGET_WRITE=1 run then REWROTE the file from that truncated
+    // view, destroying the note and the recorded range. Measured 2026-10-24:
+    // recording the phi GEMV row that way wiped the notes of
+    // `xing.kv_read.decode_gbps` and `mem.stream_read_ceiling_gbps`.
+    const std::filesystem::path tmp =
+        std::filesystem::temp_directory_path() / "kernel_budgets_parse.json";
+    {
+        std::ofstream f(tmp);
+        f << "{\n  \"budgets\": [\n"
+          << "    {\"name\": \"one.line\", \"gpu_key\": \"rtx 5090\", "
+             "\"kind\": \"min\", \"budget\": 10.5, "
+             "\"observed_min\": 12.5, \"observed_max\": 13.5, "
+             "\"samples\": 3, \"date\": \"2026-10-01\", "
+             "\"note\": \"single\"},\n"
+          << "    {\"name\": \"multi.line\", \"gpu_key\": \"rtx 5090\", "
+             "\"kind\": \"max\", \"budget\": 47,\n"
+          << "     \"observed_min\": 42.82, \"observed_max\": 58.1456,\n"
+          << "     \"samples\": 5, \"date\": \"2026-10-04\",\n"
+          << "     \"note\": \"spread across lines, with commas, and "
+             "kAttnSplits=4\"}\n"
+          << "  ]\n}\n";
+    }
+    const auto entries = kernel_budget::LoadAll(tmp.string());
+    REQUIRE(entries.size() == 2);
+    const auto &one = entries[0];
+    CHECK(one.name == "one.line");
+    CHECK(one.kind == kernel_budget::Kind::kMin);
+    CHECK(one.budget == 10.5);
+    CHECK(one.observed_min == 12.5);
+    CHECK(one.observed_max == 13.5);
+    CHECK(one.samples == 3);
+    CHECK(one.date == "2026-10-01");
+    CHECK(one.note == "single");
+    const auto &multi = entries[1];
+    CHECK(multi.name == "multi.line");
+    CHECK(multi.kind == kernel_budget::Kind::kMax);
+    CHECK(multi.budget == 47.0);
+    CHECK(multi.observed_min == 42.82);
+    CHECK(multi.observed_max == 58.1456);
+    CHECK(multi.samples == 5);
+    CHECK(multi.date == "2026-10-04");
+    CHECK(multi.note ==
+          "spread across lines, with commas, and kAttnSplits=4");
+
+    // A malformed entry must fail loudly instead of being dropped into a
+    // false "no record for this gpu" SKIP. Two shapes: an object that never
+    // closes, and a closed object with no name/gpu_key.
+    {
+        std::ofstream f(tmp);
+        f << "{\n  \"budgets\": [\n"
+          << "    {\"name\": \"broken\", \"gpu_key\": \"rtx 5090\", "
+             "\"budget\": 1,\n";   // truncated: the object never closes
+    }
+    REQUIRE_THROWS(kernel_budget::LoadAll(tmp.string()));
+    {
+        std::ofstream f(tmp);
+        f << "{\n  \"budgets\": [\n"
+          << "    {\"budget\": 1, \"gpu_key\": \"rtx 5090\"}\n"
+          << "  ]\n}\n";
+    }
+    REQUIRE_THROWS(kernel_budget::LoadAll(tmp.string()));
+    std::filesystem::remove(tmp);
+
+    // The committed file itself: every entry must come through complete. The
+    // truncating read this test exists for showed up as empty date/samples on
+    // the entries whose notes span lines.
+    const auto real = kernel_budget::LoadAll(
+        std::string(LSX_SOURCE_DIR) + "/tests/perf/kernel_budgets.json");
+    REQUIRE(real.size() >= 8);
+    for (const auto &e : real) {
+        INFO("entry " << e.name);
+        CHECK_FALSE(e.name.empty());
+        CHECK_FALSE(e.gpu_key.empty());
+        CHECK(e.budget > 0.0);
+        if (e.samples > 0) CHECK_FALSE(e.date.empty());
+    }
 }
 
 TEST_CASE("perf harness: a Debug run must not write the tracked baseline file",
