@@ -142,48 +142,6 @@ that it can no longer be invisible.
 whole family, which is worth noticing: a family can look fully wired across all four
 parity stages and still have a hole in one of them.
 
-## O. phi-4 DET-TEST-02 RED after the E4M3FN re-conversion (2026-10-07)
-
-Re-converting phi-4 after the E4M3FN (subnormal) block-scale codec change makes
-`test_phi_dense_det_selfcheck` DET-TEST-02 fail: the source golden is
-`CATASTROPHIC` (the unique word in `[CATASTROPHIC, CRITICAL, FATAL, TERMINAL]`
-that begins and ends with `C`), and the converted model now answers `CRITICAL`
-(deterministic 3/3). DET-01/03 and Paris/FSI/CODE still pass.
-
-This is a borderline greedy flip from the offline requantization — the same
-class as gemma's CODE-TEST-02 (section J) and alice's CODE-TEST-02 (whose
-golden is self-consistency and was re-reconciled). The phi DET golden is
-source-parity (`Phi3ForCausalLM` runs locally), so it is **not** reconciled and
-the gate stays red deliberately. The same re-conversion recovered granite's
-tool round-trip (section N archived) — a codec change moves every model's
-borderline decisions; each one has to be judged on whether the new answer is
-still the canonical one.
-
-**Measured 2026-10-07 (near-tie confirmed).** Feeding the source phi-4 the
-golden DET-02 `input_ids` (HF `Phi3ForCausalLM`, bf16, GPU) gives, at the first
-generated token:
-
-| token | decode | logit |
-|---|---|---|
-| 34 | `C` | 30.75 |
-| 9150 | `CR` | 29.625 |
-| 29296 | `CAT` | 22.75 |
-
-The source spells `C`+`ATA`+`ST`+`RO`+`PH`+`IC` -> `CATASTROPHIC`; `CR` is the
-runner-up at only ~1.1 logits behind (a ~2.3x probability ratio). The converted
-model takes the `CR` branch -> `CRITICAL`. So the divergence is a genuine
-near-tie on the very first token, flipped by the few-percent NVFP4
-requantization — not a systematic degradation. The gate stays red (source
-parity); the decision itself is inherent to greedy decoding at this margin.
-
-**Re-verified 2026-10-24** against the re-converted artifact and the current
-source oracle (transformers 5.15.1 / torch 2.13.0+cu130, source loaded
-`device_map="auto"`, bf16): the source top-8 at the first token is
-`C` 30.75, `CR` 29.625, `CAT` 22.75, `The` 22.625, `TER` 21.5, `F` 21.125,
-`` ``` `` 21.125, `Critical` 21.0, and the source still generates
-`CATASTROPHIC`. The converted model answers `CRITICAL` deterministically 3/3.
-The measurement is unchanged, so the §O verdict stands.
-
 ## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
 
 The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
@@ -467,6 +425,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-24 | phi-4 DET-TEST-02 closed: 4-bit body + residual plane + FP16 edges | The gate was a genuine 1.1-logit near-tie (source `C` 30.75 / `CR` 29.625), and the flip was **not** the quantizer being bad: our NVFP4 reconstructs weights as well as NF4 (relL2 9.5% vs 9.1%) and, with FP16 edges, matches it on perplexity (13.88 vs 13.85, source 13.48), top-1 and a 35-prompt near-tie battery (7/9 each). A per-layer ablation showed the error is spread over all 40 layers, so no high-precision subset helps; a BF16 LM head alone still answered `CR` by 0.34. Fix: every projection carries a **second NVFP4 plane with the residual** (decoded with `acc=true`, same codec/schema/kernels) and `embed_tokens`/`lm_head` stay FP16 — effective ~8-bit weights at 2x the read. All four parity gates green (Paris ×3 bit-exact, FSI/CODE/DET 3/3), 16.6 GiB resident, 71 t/s at 2048 tokens. Also fixed the VRAM profile (it ignored the residual plane) and re-seeded the perf rows 130.91/130.31 -> 71.06/71.16 with the harness's own evidence — [`open-tasks/2026-10-24-phi-4-perf-mode-closed.md`](open-tasks/2026-10-24-phi-4-perf-mode-closed.md) |
 | 2026-10-24 | phi-4 lifecycle re-audit: continuation X2, the kAuto perf row, two instrument defects | The vault had no converted artifact, so phi-4 was re-converted and every stage re-run. **Continuation (audit X2) had never been ported from granite**: prefill hard-coded `pos0 = 0` and reset `kv_rows`, so a continuation wrote K/V over cache row 0 — fixed, pinned by a fresh-prefill parity case. The `perf`-mode row (134.67, 2026-10-01) was **not a code regression**: the E4M3FN block-scale decode (2026-10-06, after the row) cost 1.2-1.5% in the streaming-GEMV inner loop, measured by an A/B against the pre-codec decode; a bit-identical single-return rewrite with an FMA subnormal lands at pow2 parity (app 133.2-133.7 = 98.9-99.3% of the row). Compiler (GCC == AOCC), warm-up, NVML, cooldown and artifact were each ruled out by measurement; the harness's own run-to-run spread on this model is ~2%. Rows re-seeded by the harness with evidence: perf **134.67 -> 130.72 -> 130.91**, r3 **128.68 -> 129.68 -> 130.31**; the target passes both modes. Instruments: the phi decode-shape bandwidth budget existed but had **no row** (silent SKIP) and now covers the real `qkv` shape, and `test_kernel_budget.h` no longer truncates hand-formatted multi-line entries on read or rewrite. Also fixed: a Debug perf run rewrote the tracked `__gpu_probe__` oracle before SKIPping — [`open-tasks/2026-10-24-phi-4-perf-mode-closed.md`](open-tasks/2026-10-24-phi-4-perf-mode-closed.md) |
 | 2026-10-24 | The `model-metadata/` vault block is deleted | Only two things still lived there and neither belonged in the model vault: the passport (deleted just above) and the per-GPU perf calibration cache (empty; reachable only from an explicit calibration). `lsx_model_metadata{,_root}` and `kModelMetadataDir` are gone; the calibration moved to `lsx_cache_path` — `LSX_CACHE_DIR`, else `$XDG_CACHE_HOME/logestix` / `~/.cache/logestix` (`%LOCALAPPDATA%\logestix\cache`), temp fallback. The DeepSeek loaders' `manifests/model.index.json` vault fallback was removed too (nothing ever wrote such a file). `test_path_registry` now pins "cache root is never inside the vault"; `test_gpu_perf` asserts the same for the cache path. The directory itself was removed from the vault. |
 | 2026-10-24 | Stage 7 retired: the token-translation passport is deleted | It had no consumer (`TranslateGlmToDeepSeek*` was called only from its two tests; the single `IoWorker` construction sat in an uncalled orchestrator method), the shipped handoff tokenizes with the target model's own tokenizer so ids never crossed vocabularies, and the converter's write went to a shared `model-metadata/passport/passport.bin` that the test suite had overwritten with a 268-token synthetic fixture. Removed: `lsx_token_translator.{h,cpp}`, `IoWorker`'s translator + passport parameter, `tools/lsx_token_packer.cpp`, two tests, `BuildFlashPassportTokens` and the converter write; `ingesting-a-model` stage 7 is now "nothing to do" and AGENTS.md points at the retirement. `IoWorker` stays as the plain pinned worker — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |

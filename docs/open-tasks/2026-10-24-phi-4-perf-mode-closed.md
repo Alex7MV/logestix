@@ -154,3 +154,97 @@ then the next sweep tightened both rows as kUpdate is designed to: **perf
 - **Launch gaps.** The decode step spends 0.28 ms/token (3.7%) between kernels
   across ~360 launches; the CUDA-graph route Xing uses (`LSX_XING_CUDA_GRAPH`)
   has not been ported to phi.
+
+---
+
+## 6. Resolution of §O (same day): DET-TEST-02 green — 4-bit body + residual plane + FP16 edges
+
+§O above (and the §O section of the live file, now removed) recorded the DET-02
+near-tie as a deliberate, permanently-red source-parity gate. That conclusion is
+**withdrawn**: the gate is green, and the trail of how the boundary was found is
+the interesting part.
+
+### 6.1 The first suspicion — "our quantizer is bad" — was measured, and refuted
+
+An offline bench (the converted tree dequantized back to an fp16 checkpoint)
+reproduces the engine's logits to ~0.02, so the bench is trustworthy for
+counterfactuals. On the same prompt:
+
+| variant | source margin `C−CR` | greedy |
+|---|---|---|
+| source bf16 | +1.125 | `CATASTROPHIC` |
+| our NVFP4 (all 4-bit) | −0.688 | `CRITICAL` |
+| NVFP4 body + BF16 LM head | −0.344 | `CRITICAL` |
+| NVFP4 body + BF16 embed & head | −0.484 | `CRITICAL` |
+| NF4 (QLoRA table, block 64, bf16 embed) | **+2.562** | `CATASTROPHIC` |
+
+NF4 keeps the prompt, so "4 bits in general" was not yet an answer. Two more
+measurements settled it:
+
+* **Weight reconstruction**: relL2 vs the source is 9.52% (NVFP4) against 9.11%
+  (NF4) globally, and NVFP4 is *better* on most tensors (qkv 0.093 vs 0.105). The
+  stored weights are not the problem.
+* **Distribution, not one prompt**: on a 35-prompt battery (9 with a source
+  top-2 margin < 2 logits) and a 2048-token perplexity probe:
+
+  | variant | PPL (source 13.4811) | top-1 | agreement | near-ties |
+  |---|---|---|---|---|
+  | NVFP4, everything 4-bit | 14.0024 (+3.9%) | 0.5100 | 31/35 | 5/9 |
+  | NVFP4 + FP16 embed | 14.0109 | 0.5095 | 30/35 | 5/9 |
+  | NVFP4 + FP16 embed & head | **13.8845 (+3.0%)** | **0.5129** | **32/35** | **7/9** |
+  | NF4 (embed bf16) | 13.8519 (+2.8%) | 0.5110 | 33/35 | 7/9 |
+
+  At parity with NF4 once the edges are high precision, and near-tie flips go in
+  both directions (NF4 loses DET-01, which NVFP4 keeps). A single prompt ranks
+  nothing.
+
+So the honest statement is: **the 4-bit body is at parity with the standard
+4-bit recipe; the remaining failure is the arithmetic boundary, reached by a
+source margin of 1.1 logits.**
+
+### 6.2 How much precision is needed
+
+* **Per-layer ablation** (each layer's tensors replaced by the source, one at a
+  time): every layer moves the margin by 0.1-0.5 logits in either direction and
+  none recovers it — the error is accumulated over all 40 layers, so there is no
+  cheap high-precision subset.
+* **FP16 edges only**: still `CR` (−0.48).
+* **FP8 E4M3 body (per-tensor) + FP16 edges**: `C` by **+1.59** → passes, but
+  needs a new 8-bit runtime kernel.
+* **NVFP4 body + a second NVFP4 plane carrying the residual + FP16 edges**:
+  `C` by **+0.81** → passes, and reuses everything that already exists.
+
+### 6.3 What shipped
+
+* `quantize_residual_tensor_gpu` (`safetensors_gpu.{h,cu}`): converts the source
+  to f32, subtracts the dequantized base plane on device, and quantizes the
+  residual through the ordinary codec. The converter stores it as
+  `<name>.res` in the same `layer_L_nvfp4.arrow` batch (same schema, no new
+  format), and the index records `"residual": true`.
+* Loader: four optional residual weights per layer (`qkv_res`, `o_res`,
+  `mlp_gate_up_res`, `mlp_down_res`); a legacy tree without them loads exactly
+  as before.
+* Decode: one extra `RunLsxNvfp4Gemm(..., acc=true)` per projection.
+* Edges: `embed_tokens` and `lm_head` are FP16 records in `global.arrow`
+  (`"edges": "fp16"` in the index). The embedding is used in place as the gather
+  table, which also removes a 1 GiB dequant from **every** `Infer` call; the head
+  runs through the neutral device-independent `RunLxGemmVec`.
+* `VramTensorPolicy::has_residual` so the conversion-time VRAM profile counts the
+  second plane (it read 9 GiB while the model needed 16.6 GiB).
+
+Measured on the real model: **all four parity gates green** (Paris ×3 bit-exact,
+FSI 3/3, CODE 3/3, DET 3/3 — DET-02 now answers `CATASTROPHIC`), 16.6 GiB
+resident, 17 GiB on disk, 41 ms TTFT and **71 t/s** at 2048 tokens (from 133
+t/s for the 4-bit-only tree: the residual doubles the weight read, which is the
+whole decode).
+
+Perf rows re-seeded by the harness with its own evidence: `perf` 130.91 ->
+**71.06** (ttft 42.91 ms, 584.5 W avg), `r3` 130.31 -> **71.16** (ttft 167.87 ms).
+The four-shape/two-plane trade is deliberate: the operator's requirement is a
+model that passes every golden.
+
+TDD trail: the converter case "phi residual plane halves the 4-bit
+reconstruction error" (asserts the `.res` record and a >=2x lower reconstruction
+error, host-decoded with the canonical codec), the loader case (both planes
+uploaded per projection), and the pre-existing synthetic model/determinism case
+now exercises the `acc=true` path.

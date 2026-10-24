@@ -221,7 +221,17 @@ procedure — `perf-tuning-a-model`.
   RoPE + SwiGLU dense loop over the neutral `lsx_nvfp4` layer and the shared
   `lsx_kernels_*.cuh` primitives), `phi_dense_model.{h,cpp}` (native ChatML
   `<|im_start|>role<|im_sep|>content<|im_end|>` framing; generic tool parser);
-  converted in place with `lsxforge --phi`).
+  converted in place with `lsxforge --phi`). The tree is **4-bit body + a
+  residual plane + FP16 edges**: every projection carries a second NVFP4 record
+  (`<name>.res`, `quantize_residual_tensor_gpu` = w − dequant(base)) decoded with
+  `acc=true`, which lifts the effective weight precision to ~8 bits at 2x the
+  read, and `embed_tokens`/`lm_head` stay FP16 (no standard 4-bit recipe
+  quantizes them; quantizing them cost 0.12 perplexity and two of nine near-tie
+  answers). That mix is what makes **all four parity gates green** — a 4-bit-only
+  body flipped DET-TEST-02's 1.1-logit near-tie deterministically, and the error
+  is spread over all 40 layers (per-layer ablation), so no smaller high-precision
+  subset works. Measured: 16.6 GiB resident, **71 t/s** at 2048 tokens (RTX
+  5090), Paris ×3 bit-exact, FSI/CODE/DET 3/3 each.
   MiMo-V2.6-Flash-RL (independent family `mimo`: hybrid SWA + full-attention
   sparse MoE, 48L / 4096H / 64Q / 4KV(GA)·8KV(SWA) / 192QK·128V head, 256 routed
   experts / top-8, partial RoPE on 64 dims, learned sink bias on the 39 SWA
