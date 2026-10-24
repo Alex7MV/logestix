@@ -1274,6 +1274,17 @@ __global__ void gemma_logits_rows_nvfp4_kernel(
         for (int off = 16; off > 0; off >>= 1)
             lane_acc += __shfl_down_sync(0xffffffffu, lane_acc, off);
         acc = __shfl_sync(0xffffffffu, lane_acc, 0);
+        // The tied table's per-tensor global scale is part of the NVFP4
+        // decode (weight = e2m1 * e4m3_scale * gs), so the row dot must be
+        // scaled before the soft cap. Dropping it (as the first cut did)
+        // inflated every gemma-4-26b logit by 1/gs -- measured 7.01x at
+        // gs = 0.1426: the raw logits read ~250 where the source reads ~35,
+        // the tanh cap saturated, and final_logits stopped being a faithful
+        // logit row (temperature/top-k semantics and the SelfCheck logit
+        // evidence were all measured 7x hot; greedy argmax hid it because the
+        // factor is positive). Pinned by test_gemma_moe_moe "gemma NVFP4
+        // logits apply the table global scale".
+        acc *= gs;
         if (cap > 0.f) acc = tanhf(acc / cap) * cap;
         if (d_logits && lane == 0) d_logits[row_i] = acc;
     }

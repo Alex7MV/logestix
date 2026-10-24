@@ -450,6 +450,83 @@ TEST_CASE("gemma dense MLP NVFP4 GEMV chain parity vs host reference",
     cudaFree(du); cudaFree(dh); cudaFree(dy);
 }
 
+// The NVFP4 rows kernel decodes weight = E2M1(nibble) * e4m3_block_scale *
+// table_global_scale. The latency test below passes gs = 1, where a dropped
+// global scale is invisible -- exactly how gemma-4-26b shipped every logit
+// inflated by 1/gs (gs = 0.1426, i.e. ~7x) until the softcap buried the
+// near-ties and FSI-TEST-01/02 + CODE-TEST-02 flipped. Pin the numeric
+// contract with gs != 1 against a hand-written CPU table, independent of the
+// device codec.
+TEST_CASE("gemma NVFP4 logits apply the table global scale",
+          "[gemma][moe][logits]")
+{
+    constexpr int V = 8, H = 64;
+    constexpr float gs = 0.25f;
+    // Row r: every nibble is (r % 7) + 1 -> E2M1 magnitudes
+    // {0.5, 1, 1.5, 2, 3, 4, 6}; every block scale is 1.0 (e4m3 0x38), x is
+    // all ones, so logit[r] = H * 0.5_code(nibble) * gs.
+    const float kE2M1[8] = {0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+    std::vector<uint8_t> hp(static_cast<size_t>(V) * (H / 2));
+    std::vector<uint8_t> hs(static_cast<size_t>(V) * (H / 16), 0x38);
+    for (int r = 0; r < V; ++r) {
+        const uint8_t nib = static_cast<uint8_t>((r % 7) + 1);
+        const uint8_t byte = static_cast<uint8_t>(nib | (nib << 4));
+        for (int i = 0; i < H / 2; ++i)
+            hp[static_cast<size_t>(r) * (H / 2) + i] = byte;
+    }
+    std::vector<__nv_bfloat16> hx(H, __float2bfloat16(1.0f));
+
+    uint8_t *dp = nullptr, *ds = nullptr;
+    __nv_bfloat16 *dx = nullptr;
+    float *d_logits = nullptr, *d_blkbest = nullptr, *d_max = nullptr;
+    int *d_blkidx = nullptr;
+    int32_t *d_argmax = nullptr;
+    REQUIRE(cudaMalloc(&dp, hp.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, hs.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, H * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_logits, static_cast<size_t>(V) * 4) == cudaSuccess);
+    const size_t blk_n = static_cast<size_t>(V) + V / 8 + 4096;
+    REQUIRE(cudaMalloc(&d_blkbest, blk_n * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_blkidx, blk_n * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_max, 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_argmax, 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, hx.data(), H * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    REQUIRE(lsxcommon::gemma::RunGemmaLogitsArgmaxNvfp4(
+                stream, dp, ds, gs, dx, V, H, /*cap=*/0.f, d_argmax, d_max,
+                d_logits, d_blkbest, d_blkidx) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    std::vector<float> logits(V);
+    REQUIRE(cudaMemcpy(logits.data(), d_logits, V * 4,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    int32_t best = -1;
+    float maxv = 0.f;
+    REQUIRE(cudaMemcpy(&best, d_argmax, 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(&maxv, d_max, 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    for (int r = 0; r < V; ++r) {
+        const double want =
+            static_cast<double>(H) * kE2M1[(r % 7) + 1] * gs;
+        INFO("row " << r << " got " << logits[r] << " want " << want);
+        CHECK(std::abs(logits[r] - want) <= 1e-3 * std::abs(want));
+    }
+    CHECK(best == 6);      // the 6.0 table row (nibble 7)
+    CHECK(std::abs(maxv - static_cast<float>(H) * 6.0f * gs) <= 0.05f);
+
+    cudaStreamDestroy(stream);
+    cudaFree(dp); cudaFree(ds); cudaFree(dx); cudaFree(d_logits);
+    cudaFree(d_blkbest); cudaFree(d_blkidx); cudaFree(d_max);
+    cudaFree(d_argmax);
+}
+
 // The LM head is one warp-per-vocab-row NVFP4 GEMV over the whole 262144-row
 // embedding per token, i.e. the second-largest single kernel in gemma-4
 // decode. Pin both the argmax contract and the streaming rate: the byte-scalar

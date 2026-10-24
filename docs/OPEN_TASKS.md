@@ -69,6 +69,49 @@ gate vacuous), and adding algebraic comparison to CODE (that deletes the reason 
 exists). Both findings are written up in `docs/FSI_SELFCHECK_FINDINGS.md` and
 `docs/CODE_SELFCHECK_FINDINGS.md`.
 
+### J2. Measured root cause (2026-10-24): 4-bit body error, and the recipe that fixes it
+
+Instrument (all numbers pre-softcap, source = `Gemma4ForConditionalGeneration`,
+bf16, `final_logit_softcapping=None`, teacher-forced on the golden prefix):
+
+- The engine is **faithful**: per-layer residual stream vs the source is
+  cos 0.9992 after layer 0 and 0.960-0.965 at layer 29 (rms ratio 0.94-1.03),
+  and the layer-0 router picks the identical top-8 expert set. The drift is
+  plain NVFP4 weight error accumulating over 30 layers (embed/lm_head table
+  rel. err 9.6%).
+- Decomposition at the head: with the source's exact hidden, our 4-bit tied
+  table costs max 1.05 / rms 0.36 logits. With our hidden and the source's
+  exact table it is max 5.58 / rms 3.46 -- i.e. the **body**, not the head,
+  owns the error. (FP16 edges would not fix these flips.)
+- The decisive pairs, source margin vs converted margin:
+  FSI-01 step 2 afer `PV=`: src `CF` +12.4, conv `2` +9.9 (22-logit swing);
+  CODE-02 step 3: src `(` +2.5, conv `+(` +2.8.
+- Offline NVFP4 recipe ablation (in-place quantization of the HF model, exact
+  same block/e4m3 recipe, teacher-forced 40 steps; `all-q4` reproduces the
+  engine's flips bit-for-bit, so the instrument is validated):
+  | recipe | flips | top-5 \|err\| mean |
+  |---|---|---|
+  | all 4-bit (shipped) | FSI-01 s2,s3; CODE-02 s3 | 0.76-1.70 |
+  | experts 4-bit, attn+MLP bf16 | none | 0.51-0.85 |
+  | attn+MLP 8-bit, experts 4-bit | none | 0.53-0.95 |
+  | all 8-bit | none | 0.36-0.56 |
+- **Sufficient recipe:** a residual NVFP4 plane (`<name>.res`, the phi-4
+  scheme) on the attention projections and the dense MLP only -- experts stay
+  4-bit. Cost: +1.5 GiB resident (3 GB of attn+MLP weights move 0.5 -> 1
+  byte/param); the 22.8B expert params keep their size and their streamed
+  read volume, so decode t/s is unaffected.
+- Not yet implemented: `gemma_moe_convert` must emit the `.res` records,
+  `gemma_moe_load` must upload them, and the attn / `RunGemmaDenseMlpNvfp4Chain`
+  GEMV paths must run the second `acc=true` pass. TDD anchor:
+  `test_gemma_moe_convert` (residual reconstruction) + `test_gemma_moe_moe`
+  (chain arithmetic).
+- Separate **fixed** defect found on the way: the NVFP4 logits kernel ignored
+  the tied table's per-tensor global scale (+ multiply missing), so every
+  gemma-4-26b logit was 1/gs = 7.01x hot and the softcap saturated. Greedy
+  argmax is scale-invariant, so it hid; the logit row, temperature/top-k
+  semantics and the SelfCheck logit evidence were all wrong. Pinned by
+  `test_gemma_moe_moe` "gemma NVFP4 logits apply the table global scale".
+
 Worth noting what this costs: gemma was previously *appearing* green on 4 stages while two
 of them never executed. A SKIP is not a pass, and a missing golden is indistinguishable
 from a passing one in the ctest summary. Every other family's `det` golden exists and
@@ -85,6 +128,14 @@ DET 3/3, FSI 2/3. Open items:
   `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))`; the converted model
   repeats the prompt template `PV=CF*((1-exp(-r*n))/(1-exp(-r)))`. Same
   NVFP4-vs-bf16 borderline class as the 26B (section J); the gate stays red.
+  Measured 2026-10-24 (pre-softcap, teacher-forced): the fork is at step 2
+  (after `PV=`), src `2` 55.5 vs `CF` 42.75 (+12.75), converted `CF` 46.1 vs
+  `2` 43.4 (a 15.4-logit swing). Offline recipe ablation on the same
+  instrument: all-8-bit -> no flips (top-5 \|err\| mean 0.32);
+  **`down_proj` + `o_proj` 8-bit, rest 4-bit -> no flips (0.53)**, i.e. a
+  residual plane on the two projections that write into the residual stream
+  (+4.8 GiB, 17 -> ~22 GiB resident, fits). All-linears 8-bit would be
+  32.5 GiB and does not fit this card.
 - **Shared TC defect: RESOLVED 2026-10-10** - `TcGemmKernel` wrote only
   rows `[0,16)` of its 64-row tile (`wm` was computed and never used); all
   four row computations fixed, TC shape sweep extended to seq 17/18/33/64.
