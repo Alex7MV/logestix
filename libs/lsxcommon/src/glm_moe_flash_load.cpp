@@ -167,6 +167,13 @@ void FlashLayerWeights::Free()
     cudaFree(d_q_a_norm);
     cudaFree(d_kv_a_norm);
     cudaFree(d_kv_b);
+    cudaFree(d_idx_wq_b);
+    cudaFree(d_idx_wk);
+    cudaFree(d_idx_knorm_w);
+    cudaFree(d_idx_knorm_b);
+    cudaFree(d_idx_wproj);
+    cudaFree(d_idx_gate);
+    cudaFree(d_idx_ape);
     cudaFree(d_router);
     cudaFree(d_router_bias);
     shared_w1.Free();
@@ -553,25 +560,62 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
                 pw.Free();
                 return false;
             }
-            // Indexer payloads: keep as raw records (DSA kernel consumes
-            // them directly; shapes validated here).
-            for (const char *suf :
-                 {"indexer.wq_b.weight", "indexer.wk.weight",
-                  "indexer.weights_proj.weight", "indexer.k_norm.weight",
-                  "indexer.k_norm.bias", "indexer.index_kpool_compress_ape",
-                  "indexer.index_kpool_compress_gate"}) {
-                const TensorView *t = FindTensorSuffix(*raw, suf);
+            // Indexer payloads: uploaded as BF16 bits; the indexer kernels
+            // read them directly. Byte sizes are validated against the frozen
+            // passport, and nothing is retained on the host.
+            using namespace frozen;
+            struct IdxTensor {
+                const char *suffix;
+                uint16_t **dst;
+                int64_t want_bytes;  // 0 = shape-only validation
+            };
+            const IdxTensor kIdxTensors[] = {
+                {"indexer.wq_b.weight", &lw.d_idx_wq_b,
+                 static_cast<int64_t>(kIndexerHeads) * kIndexerHeadDim *
+                     kQLora * 2},
+                {"indexer.wk.weight", &lw.d_idx_wk,
+                 static_cast<int64_t>(kIndexerHeadDim) * kHidden * 2},
+                {"indexer.weights_proj.weight", &lw.d_idx_wproj,
+                 static_cast<int64_t>(kIndexerHeads) * kHidden * 2},
+                {"indexer.k_norm.weight", &lw.d_idx_knorm_w,
+                 static_cast<int64_t>(kIndexerHeadDim) * 2},
+                {"indexer.k_norm.bias", &lw.d_idx_knorm_b,
+                 static_cast<int64_t>(kIndexerHeadDim) * 2},
+                {"indexer.index_kpool_compress_ape", &lw.d_idx_ape,
+                 static_cast<int64_t>(kIndexerKpool) * kIndexerHeadDim * 2},
+                {"indexer.index_kpool_compress_gate", &lw.d_idx_gate,
+                 static_cast<int64_t>(kIndexerHeadDim) * kHidden * 2},
+            };
+            for (const IdxTensor &it : kIdxTensors) {
+                const TensorView *t = FindTensorSuffix(*raw, it.suffix);
                 if (!t) {
-                    error = std::string(l3) + " missing indexer " + suf;
+                    error = std::string(l3) + " missing indexer " + it.suffix;
                     pw.Free();
                     return false;
                 }
-                TensorRecord r;
-                r.name = suf;
-                r.dtype.assign(t->dtype.data(), t->dtype.size());
-                r.shape.assign(t->shape, t->shape + t->rank);
-                r.data.assign(t->data, t->data + t->bytes);
-                lw.indexer_raw.push_back(std::move(r));
+                // A frozen-geometry mismatch here would silently mis-shape
+                // every indexer dot product. Under the synthetic gate the
+                // fixture writes its own (small) geometry, as everywhere else
+                // in this loader.
+                if (!SyntheticGeometryAllowed() && t->bytes != it.want_bytes) {
+                    error = absl::StrCat(l3, " indexer ", it.suffix,
+                                         " has ", t->bytes, " bytes, want ",
+                                         it.want_bytes);
+                    pw.Free();
+                    return false;
+                }
+                if (UploadBf16Raw(ring, t->data, t->bytes,
+                                  reinterpret_cast<uint8_t **>(it.dst), stream,
+                                  bytes_acc) != cudaSuccess) {
+                    error = std::string(l3) + " indexer upload failed: " +
+                            it.suffix;
+                    pw.Free();
+                    return false;
+                }
+                // The device copy is the only copy: keeping the host
+                // payloads here cost ~180 MB of pinned-side RSS across the
+                // 12 DSA layers for nothing (the parity tests build their own
+                // fixtures).
             }
         }
 

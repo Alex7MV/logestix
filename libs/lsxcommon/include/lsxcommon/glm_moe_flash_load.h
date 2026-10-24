@@ -74,9 +74,16 @@ struct FlashLayerWeights {
     __half *d_q_a_norm = nullptr;   // [q_lora]
     __half *d_kv_a_norm = nullptr;  // [kv_lora]
     uint16_t *d_kv_b = nullptr;     // BF16 bits [heads*(qk+qk), kv_lora]
-    // Indexer raw BF16 payloads (stored as opaque records, consumed by the
-    // DSA kernel path).
-    std::vector<TensorRecord> indexer_raw;
+    // DSA indexer, BF16 bits on device. The indexer is its own lightweight
+    // attention (transformers `Glm5NextTextIndexer`): scores compressed
+    // k-pools, so only the top `index_topk` tokens reach the main MLA.
+    uint16_t *d_idx_wq_b = nullptr;    // [idx_heads*idx_head_dim, q_lora]
+    uint16_t *d_idx_wk = nullptr;      // [idx_head_dim, H]
+    uint16_t *d_idx_knorm_w = nullptr; // [idx_head_dim]  (LayerNorm, eps 1e-6)
+    uint16_t *d_idx_knorm_b = nullptr; // [idx_head_dim]
+    uint16_t *d_idx_wproj = nullptr;   // [idx_heads, H]
+    uint16_t *d_idx_gate = nullptr;    // [idx_head_dim, H]  (per-channel pool gate)
+    uint16_t *d_idx_ape = nullptr;     // [idx_kpool, idx_head_dim]
 
     // MoE: router gate BF16 bits [E, H] + bias F32 [E]; shared NVFP4 trio.
     uint8_t *d_router = nullptr;

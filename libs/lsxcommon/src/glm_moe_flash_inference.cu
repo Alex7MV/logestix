@@ -946,6 +946,380 @@ __global__ void flash_mla_attn_kernel(const __half *__restrict__ q,
     }
 }
 
+// ── DSA indexer kernels (sparse attention) ───────────────────────────────
+// Semantics ported from transformers `Glm5NextTextIndexer`
+// (models/glm5_next): LayerNorm(128, eps 1e-6) on the token key, a per-channel
+// pool gate, softmax pooling over `index_kpool` positions with the learned
+// `ape` offset, relu(dot)*dim^-0.5 per indexer head, weights_proj * heads^-0.5,
+// top-k over pools, expanded back to token indices plus the visible tail.
+
+__device__ __forceinline__ float bf16_bits_to_float(uint16_t bits)
+{
+    const __nv_bfloat16 v = *reinterpret_cast<const __nv_bfloat16 *>(&bits);
+    return __bfloat162float(v);
+}
+
+// LayerNorm(dim, eps) with bias over one row; `raw` is the projection output.
+__global__ void flash_indexer_ln_kernel(const __half *__restrict__ raw,
+                                        const uint16_t *__restrict__ w,
+                                        const uint16_t *__restrict__ b,
+                                        __half *__restrict__ out, int dim,
+                                        float eps)
+{
+    extern __shared__ float red[];
+    const int t = threadIdx.x;
+    float v = 0.0f;
+    if (t < dim) v = __half2float(raw[t]);
+    red[t] = v;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (t < off) red[t] += red[t + off];
+        __syncthreads();
+    }
+    const float mean = red[0] / static_cast<float>(dim);
+    __syncthreads();
+    red[t] = (t < dim) ? (v - mean) * (v - mean) : 0.0f;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (t < off) red[t] += red[t + off];
+        __syncthreads();
+    }
+    const float inv = rsqrtf(red[0] / static_cast<float>(dim) + eps);
+    if (t < dim)
+        out[t] = __float2half_rn((v - mean) * inv *
+                                     bf16_bits_to_float(w[t]) +
+                                 bf16_bits_to_float(b[t]));
+}
+
+// One pooled key: per channel c, p_i = softmax over the pool of
+// (gate_i[c] + ape[i][c]), pool[c] = sum_i p_i * k_i[c].
+__global__ void flash_indexer_pool_kernel(const __half *__restrict__ k,
+                                          const __half *__restrict__ g,
+                                          const uint16_t *__restrict__ ape,
+                                          float *__restrict__ pool, int dim,
+                                          int kpool, int64_t first)
+{
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= dim) return;
+    float lg[8];
+    float mx = -INFINITY;
+    for (int i = 0; i < kpool; ++i) {
+        const int64_t o = (first + i) * dim + c;
+        lg[i] = __half2float(g[o]) + bf16_bits_to_float(ape[i * dim + c]);
+        mx = fmaxf(mx, lg[i]);
+    }
+    float sum = 0.0f, acc = 0.0f;
+    for (int i = 0; i < kpool; ++i) {
+        const float p = flash_expf_glibc(lg[i] - mx);
+        sum += p;
+        acc += p * __half2float(k[(first + i) * dim + c]);
+    }
+    pool[c] = acc / sum;
+}
+
+// f16 -> f32 widen (indexer q / weights staging).
+__global__ void flash_f16_to_f32_kernel(const __half *__restrict__ in, int n,
+                                        float scale, float *__restrict__ out)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __half2float(in[i]) * scale;
+}
+
+// Scores for every completed pool: one warp per pool, heads sequentially.
+__global__ void flash_indexer_scores_kernel(const float *__restrict__ q,
+                                            const float *__restrict__ w,
+                                            const float *__restrict__ pools,
+                                            float *__restrict__ scores,
+                                            int heads, int dim, int n_pools,
+                                            float scale)
+{
+    const int gwarp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (gwarp >= n_pools) return;
+    const float *pk = pools + static_cast<int64_t>(gwarp) * dim;
+    float acc = 0.0f;
+    for (int h = 0; h < heads; ++h) {
+        const float *qh = q + static_cast<int64_t>(h) * dim;
+        float part = 0.0f;
+        for (int d = lane; d < dim; d += 32) part += qh[d] * pk[d];
+        for (int off = 16; off > 0; off >>= 1)
+            part += __shfl_down_sync(0xffffffffu, part, off);
+        part = __shfl_sync(0xffffffffu, part, 0);
+        acc += w[h] * fmaxf(part * scale, 0.0f);  // relu BEFORE the weighting
+    }
+    if (lane == 0) scores[gwarp] = acc;
+}
+
+// Top-`select_k` pools, expanded 1:kpool in score order, then the visible
+// tail tokens, padded with -1 to kIndexerTopk + kIndexerKpool - 1.
+//
+// Selection is an exact radix select over the monotonic uint32 image of the
+// FP32 scores (8 bits per pass, four passes), followed by a bitonic sort of
+// just the selected prefix. A full sort of the pools is not an option: the
+// model's window is 1M positions, so its shared footprint would have to scale
+// with the context. This one is constant (kSelCap entries). Ties at the
+// boundary bucket are taken in scan order; torch.topk is unspecified there too.
+constexpr int kSelCap = 1024;   // select_k <= kIndexerTopk / kIndexerKpool (512)
+constexpr int kSelHist = 256;
+constexpr size_t kSelSmem = (kSelHist + 4) * sizeof(uint32_t) +
+                            kSelCap * (sizeof(float) + sizeof(int));
+
+__device__ __forceinline__ uint32_t flash_sel_key(float s)
+{
+    const uint32_t u = flash_as_uint(s);
+    // Flip the sign bit for positives and invert negatives: uint order ==
+    // descending float order.
+    return u ^ ((u & 0x80000000u) ? 0xffffffffu : 0x80000000u);
+}
+
+__global__ void flash_indexer_select_kernel(
+    const float *__restrict__ scores, int n_pools, int select_k, int kpool,
+    int64_t visible_count, int topk, int32_t *__restrict__ sel,
+    int32_t *__restrict__ count)
+{
+    extern __shared__ unsigned char raw_sel[];
+    uint32_t *hist = reinterpret_cast<uint32_t *>(raw_sel);       // [256]
+    uint32_t *bd = hist + kSelHist;                               // [4]
+    float *s_score = reinterpret_cast<float *>(bd + 4);           // [kSelCap]
+    int *s_idx = reinterpret_cast<int *>(s_score + kSelCap);      // [kSelCap]
+    const int tid = threadIdx.x;
+    const int nsel = select_k < n_pools ? select_k : n_pools;
+    if (tid < kSelHist) hist[tid] = 0;
+    if (tid == 0) bd[1] = 0;
+    __syncthreads();
+
+    int ncols = 0;
+    if (nsel < n_pools) {
+        // Radix select: find the uint32 key of the nsel-th largest pool.
+        uint32_t prefix = 0;
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            // The already-fixed high bits must match (shift + 8 >= 32 is the
+            // first pass, where every pool participates).
+            const int next_shift = shift + 8;
+            const uint32_t hi_mask =
+                (next_shift >= 32) ? 0u : ~((1u << next_shift) - 1u);
+            if (tid < kSelHist) hist[tid] = 0;
+            __syncthreads();
+            for (int i = tid; i < n_pools; i += blockDim.x) {
+                const uint32_t key = flash_sel_key(scores[i]);
+                if ((key & hi_mask) == (prefix & hi_mask))
+                    atomicAdd(&hist[(key >> shift) & 0xffu], 1u);
+            }
+            __syncthreads();
+            if (tid == 0) {
+                bd[0] = 0;
+                bd[2] = 0;
+                uint32_t cum = 0;
+                for (int b = 255; b >= 0; --b) {
+                    if (cum + hist[b] >= static_cast<uint32_t>(nsel)) {
+                        bd[0] = static_cast<uint32_t>(b);
+                        bd[2] = cum;
+                        break;
+                    }
+                    cum += hist[b];
+                }
+            }
+            __syncthreads();
+            prefix |= bd[0] << shift;
+            __syncthreads();
+        }
+        // Everything above the threshold is in; the ties that fill the rest
+        // are capped at kSelCap (>= select_k), so the prefix is complete.
+        for (int i = tid; i < n_pools; i += blockDim.x) {
+            const uint32_t key = flash_sel_key(scores[i]);
+            if (key > prefix) {
+                const int slot = static_cast<int>(atomicAdd(&bd[1], 1u));
+                if (slot < kSelCap) {
+                    s_score[slot] = scores[i];
+                    s_idx[slot] = i;
+                }
+            }
+        }
+        __syncthreads();
+        for (int i = tid; i < n_pools; i += blockDim.x) {
+            const uint32_t key = flash_sel_key(scores[i]);
+            if (key == prefix) {
+                const int slot = static_cast<int>(atomicAdd(&bd[1], 1u));
+                if (slot < kSelCap) {
+                    s_score[slot] = scores[i];
+                    s_idx[slot] = i;
+                }
+            }
+        }
+        __syncthreads();
+        ncols = static_cast<int>(bd[1]);
+        // #(key > prefix) is exactly the nsel-th rank's index, so the ties
+        // that were collected fill the rest; cap only the surplus ties.
+        if (ncols > kSelCap) ncols = kSelCap;
+    } else {
+        // The whole context is selected (n_pools <= select_k <= 512).
+        for (int i = tid; i < n_pools; i += blockDim.x) {
+            s_score[i] = scores[i];
+            s_idx[i] = i;
+        }
+        ncols = n_pools;
+    }
+
+    int np2s = 1;
+    while (np2s < ncols) np2s <<= 1;
+    if (np2s > kSelCap) np2s = kSelCap;
+    for (int i = ncols + tid; i < np2s; i += blockDim.x) {
+        s_score[i] = -INFINITY;
+        s_idx[i] = -1;
+    }
+    __syncthreads();
+    for (int k = 2; k <= np2s; k <<= 1) {
+        for (int j = k >> 1; j > 0; j >>= 1) {
+            for (int i = tid; i < np2s; i += blockDim.x) {
+                const int ixj = i ^ j;
+                if (ixj <= i) continue;
+                // Descending output: flip `up`.
+                const bool up = ((i & k) == 0);
+                const bool swap = up ? (s_score[i] < s_score[ixj])
+                                     : (s_score[i] > s_score[ixj]);
+                if (swap) {
+                    const float st = s_score[i];
+                    s_score[i] = s_score[ixj];
+                    s_score[ixj] = st;
+                    const int si = s_idx[i];
+                    s_idx[i] = s_idx[ixj];
+                    s_idx[ixj] = si;
+                }
+            }
+            __syncthreads();
+        }
+    }
+    if (tid == 0) {
+        const int width = topk + kpool - 1;
+        int n = 0;
+        for (int r = 0; r < nsel; ++r) {
+            const int p = s_idx[r];
+            if (p < 0) continue;
+            for (int i = 0; i < kpool; ++i) sel[n++] = p * kpool + i;
+        }
+        const int64_t tail = visible_count % kpool;
+        const int64_t tail_start = visible_count - tail;
+        for (int64_t i = 0; i < tail; ++i) sel[n++] = static_cast<int>(tail_start + i);
+        for (int i = n; i < width; ++i) sel[i] = -1;
+        *count = n;
+    }
+}
+
+// Sparse MLA: identical arithmetic to flash_mla_attn_kernel, iterating the
+// selected positions instead of 0..total.
+__global__ void flash_mla_attn_sel_kernel(const __half *__restrict__ q,
+                                          const __half *__restrict__ k_cache,
+                                          const __half *__restrict__ v_cache,
+                                          const int32_t *__restrict__ sel,
+                                          int n_sel, __half *__restrict__ out,
+                                          int heads, int dim, float scale)
+{
+    const int h = blockIdx.x;
+    extern __shared__ float smem_s[];
+    float *s_q = smem_s;               // [dim]
+    float *s_score = smem_s + dim;     // [n_sel]
+    float *s_red = s_score + n_sel;    // [blockDim]
+    if (threadIdx.x < dim)
+        s_q[threadIdx.x] = __half2float(q[h * dim + threadIdx.x]);
+    __syncthreads();
+    for (int i = 0; i < n_sel; ++i) {
+        const int t = sel[i];
+        float part = 0.0f;
+        if (t >= 0) {
+            const __half *kr =
+                k_cache + (static_cast<int64_t>(t) * heads + h) * dim;
+            for (int d = threadIdx.x; d < dim; d += blockDim.x)
+                part += s_q[d] * __half2float(kr[d]);
+        }
+        s_red[threadIdx.x] = part;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (threadIdx.x < off) s_red[threadIdx.x] += s_red[threadIdx.x + off];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) s_score[i] = s_red[0] * scale;
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        float mx = -1e30f;
+        for (int i = 0; i < n_sel; ++i)
+            if (sel[i] >= 0) mx = fmaxf(mx, s_score[i]);
+        float psum = 0.0f;
+        for (int i = 0; i < n_sel; ++i) {
+            // Padding entries (-1) must not enter the denominator: the
+            // selection window is a fixed width, so they would shrink every
+            // selective step by exp(-mx).
+            const float p =
+                (sel[i] >= 0) ? flash_expf_glibc(s_score[i] - mx) : 0.0f;
+            s_score[i] = p;
+            psum += p;
+        }
+        s_red[0] = psum;
+    }
+    __syncthreads();
+    const float psum = s_red[0];
+    for (int d = threadIdx.x; d < dim; d += blockDim.x) {
+        float acc = 0.0f;
+        for (int i = 0; i < n_sel; ++i) {
+            const int t = sel[i];
+            if (t < 0) continue;
+            const __half *vr =
+                v_cache + (static_cast<int64_t>(t) * heads + h) * dim;
+            acc += (s_score[i] / psum) * __half2float(vr[d]);
+        }
+        out[h * dim + d] = __float2half(acc);
+    }
+}
+
+// Test twins: one pool from raw FP16 key/gate rows and the BF16 ape offsets
+// (the ape encoding matches the checkpoint, so the twin is the production
+// body on raw inputs).
+__global__ void flash_indexer_pool_test_kernel(const __half *keys,
+                                               const __half *gates,
+                                               const uint16_t *ape, float *pool,
+                                               int dim, int kpool)
+{
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= dim) return;
+    float lg[8];
+    float mx = -INFINITY;
+    for (int i = 0; i < kpool; ++i) {
+        lg[i] = __half2float(gates[i * dim + c]) + bf16_bits_to_float(ape[i * dim + c]);
+        mx = fmaxf(mx, lg[i]);
+    }
+    float sum = 0.0f, acc = 0.0f;
+    for (int i = 0; i < kpool; ++i) {
+        const float p = expf(lg[i] - mx);
+        sum += p;
+        acc += p * __half2float(keys[i * dim + c]);
+    }
+    pool[c] = acc / sum;
+}
+
+__global__ void flash_indexer_scores_test_kernel(const float *q,
+                                                 const float *w,
+                                                 const float *pools, int heads,
+                                                 int dim, int n_pools,
+                                                 float *out_scores)
+{
+    // One warp per pool, the production scoring body.
+    const int gwarp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (gwarp >= n_pools) return;
+    const float *pk = pools + static_cast<int64_t>(gwarp) * dim;
+    float acc = 0.0f;
+    for (int h = 0; h < heads; ++h) {
+        const float *qh = q + static_cast<int64_t>(h) * dim;
+        float part = 0.0f;
+        for (int d = lane; d < dim; d += 32) part += qh[d] * pk[d];
+        for (int off = 16; off > 0; off >>= 1)
+            part += __shfl_down_sync(0xffffffffu, part, off);
+        part = __shfl_sync(0xffffffffu, part, 0);
+        acc += w[h] * fmaxf(part * rsqrtf(static_cast<float>(dim)), 0.0f);
+    }
+    if (lane == 0) out_scores[gwarp] = acc;
+}
+
 } // namespace
 
 
@@ -1007,6 +1381,194 @@ cudaError_t RunFlashMlaAttnTest(cudaStream_t stream, const __half *d_q,
     return cudaGetLastError();
 }
 
+// ── DSA indexer: state + per-step drivers ────────────────────────────────
+namespace {
+constexpr int kIdxHeads = frozen::kIndexerHeads;
+constexpr int kIdxDim = frozen::kIndexerHeadDim;
+constexpr int kIdxKpool = frozen::kIndexerKpool;
+constexpr int kIdxTopk = frozen::kIndexerTopk;
+// transformers GlmMoeDsaIndexer: nn.LayerNorm(index_head_dim, eps=1e-6).
+constexpr float kIdxNormEps = 1e-6f;
+}  // namespace
+
+cudaError_t FlashIndexerStateAlloc(FlashIndexerState &st, int64_t max_ctx)
+{
+    FlashIndexerStateFree(st);
+    if (max_ctx <= 0) return cudaErrorInvalidValue;
+    st.capacity_ctx = max_ctx;
+    st.pool_cap = (max_ctx + kIdxKpool - 1) / kIdxKpool + 1;
+    auto alloc = [](void **p, size_t bytes) {
+        return cudaMalloc(p, bytes) == cudaSuccess;
+    };
+    if (!alloc(reinterpret_cast<void **>(&st.d_k),
+                static_cast<size_t>(max_ctx) * kIdxDim * sizeof(__half)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_gate),
+               static_cast<size_t>(max_ctx) * kIdxDim * sizeof(__half)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_pool),
+               static_cast<size_t>(st.pool_cap) * kIdxDim * sizeof(float)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_scores),
+               static_cast<size_t>(st.pool_cap) * sizeof(float)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_q),
+               static_cast<size_t>(kIdxHeads) * kIdxDim * sizeof(float)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_w),
+               static_cast<size_t>(kIdxHeads) * sizeof(float)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_sel),
+               static_cast<size_t>(kIdxTopk + kIdxKpool) * sizeof(int32_t)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_sel_count), sizeof(int32_t)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_kraw),
+               static_cast<size_t>(kIdxDim) * sizeof(__half)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_qraw),
+               static_cast<size_t>(kIdxHeads) * kIdxDim * sizeof(__half)) ||
+        !alloc(reinterpret_cast<void **>(&st.d_wraw),
+               static_cast<size_t>(kIdxHeads) * sizeof(__half))) {
+        const cudaError_t e = cudaGetLastError();
+        FlashIndexerStateFree(st);
+        return e;
+    }
+    return cudaSuccess;
+}
+
+void FlashIndexerStateFree(FlashIndexerState &st)
+{
+    cudaFree(st.d_k);
+    cudaFree(st.d_gate);
+    cudaFree(st.d_pool);
+    cudaFree(st.d_scores);
+    cudaFree(st.d_q);
+    cudaFree(st.d_w);
+    cudaFree(st.d_sel);
+    cudaFree(st.d_sel_count);
+    cudaFree(st.d_kraw);
+    cudaFree(st.d_qraw);
+    cudaFree(st.d_wraw);
+    st = FlashIndexerState{};
+}
+
+cudaError_t RunFlashIndexerToken(cudaStream_t stream, FlashIndexerState &st,
+                                 const FlashLayerWeights &lw, int hidden,
+                                 const __half *d_x, int64_t pos)
+{
+    if (!lw.d_idx_wk || !lw.d_idx_gate || !lw.d_idx_knorm_w || !lw.d_idx_knorm_b)
+        return cudaErrorInvalidValue;
+    if (pos < 0 || pos >= st.capacity_ctx) return cudaErrorInvalidValue;
+    cudaError_t e = FlashGemmVBf16(stream, lw.d_idx_wk, d_x, st.d_kraw, hidden,
+                                   kIdxDim);
+    if (e != cudaSuccess) return e;
+    // gate_i = compress_gate @ x_i (one logit per key channel).
+    e = FlashGemmVBf16(stream, lw.d_idx_gate, d_x,
+                       st.d_gate + pos * kIdxDim, hidden, kIdxDim);
+    if (e != cudaSuccess) return e;
+    flash_indexer_ln_kernel<<<1, 128, 128 * sizeof(float), stream>>>(
+        st.d_kraw, lw.d_idx_knorm_w, lw.d_idx_knorm_b,
+        st.d_k + pos * kIdxDim, kIdxDim, kIdxNormEps);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashIndexerPool(cudaStream_t stream, FlashIndexerState &st,
+                                const FlashLayerWeights &lw, int64_t first_tok)
+{
+    if (!lw.d_idx_ape) return cudaErrorInvalidValue;
+    if (st.n_pools < 0 || st.n_pools >= st.pool_cap) return cudaErrorInvalidValue;
+    const int threads = 128;
+    flash_indexer_pool_kernel<<<(kIdxDim + threads - 1) / threads, threads, 0,
+                                stream>>>(
+        st.d_k, st.d_gate, lw.d_idx_ape,
+        st.d_pool + st.n_pools * kIdxDim, kIdxDim, kIdxKpool, first_tok);
+    const cudaError_t e = cudaGetLastError();
+    if (e == cudaSuccess) ++st.n_pools;
+    return e;
+}
+
+cudaError_t RunFlashIndexerSelect(cudaStream_t stream, FlashIndexerState &st,
+                                  const FlashLayerWeights &lw, int hidden,
+                                  const __half *d_x, const __half *d_q_resid,
+                                  int64_t pos)
+{
+    if (!lw.d_idx_wq_b || !lw.d_idx_wproj) return cudaErrorInvalidValue;
+    if (pos < 0 || pos >= st.capacity_ctx) return cudaErrorInvalidValue;
+    cudaError_t e = FlashGemmVBf16(stream, lw.d_idx_wq_b, d_q_resid, st.d_qraw,
+                                   frozen::kQLora, kIdxHeads * kIdxDim);
+    if (e != cudaSuccess) return e;
+    {
+        const int n = kIdxHeads * kIdxDim;
+        flash_f16_to_f32_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
+            st.d_qraw, n, 1.0f, st.d_q);
+        if ((e = cudaGetLastError()) != cudaSuccess) return e;
+    }
+    e = FlashGemmVBf16(stream, lw.d_idx_wproj, d_x, st.d_wraw, hidden, kIdxHeads);
+    if (e != cudaSuccess) return e;
+    {
+        const float scale = rsqrtf(static_cast<float>(kIdxHeads));
+        flash_f16_to_f32_kernel<<<1, 32, 0, stream>>>(st.d_wraw, kIdxHeads,
+                                                      scale, st.d_w);
+        if ((e = cudaGetLastError()) != cudaSuccess) return e;
+    }
+    const int n_pools = static_cast<int>(st.n_pools);
+    if (n_pools <= 0) return cudaErrorInvalidValue;
+    {
+        const int warps = (n_pools + 7) / 8;
+        flash_indexer_scores_kernel<<<warps, 256, 0, stream>>>(
+            st.d_q, st.d_w, st.d_pool, st.d_scores, kIdxHeads, kIdxDim, n_pools,
+            rsqrtf(static_cast<float>(kIdxDim)));
+        if ((e = cudaGetLastError()) != cudaSuccess) return e;
+    }
+    const int select_k = std::min(kIdxTopk / kIdxKpool, n_pools);
+    flash_indexer_select_kernel<<<1, 256, kSelSmem, stream>>>(
+        st.d_scores, n_pools, select_k, kIdxKpool, pos + 1, kIdxTopk, st.d_sel,
+        st.d_sel_count);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashMlaAttnSelected(cudaStream_t stream, const __half *d_q,
+                                    const __half *k_cache,
+                                    const __half *v_cache,
+                                    const int32_t *d_sel,
+                                    const int32_t *d_count, __half *d_out,
+                                    int n_sel, int heads, int dim, float scale,
+                                    size_t smem)
+{
+    if (n_sel <= 0 || n_sel > kIdxTopk + kIdxKpool) return cudaErrorInvalidValue;
+    flash_mla_attn_sel_kernel<<<heads, 256, smem, stream>>>(
+        d_q, k_cache, v_cache, d_sel, n_sel, d_out, heads, dim, scale);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashIndexerPoolTest(cudaStream_t stream, const __half *keys,
+                                    const __half *gates, const uint16_t *ape,
+                                    float *pool, int dim, int kpool)
+{
+    if (kpool < 1 || kpool > 8) return cudaErrorInvalidValue;
+    const int threads = 128;
+    flash_indexer_pool_test_kernel<<<(dim + threads - 1) / threads, threads, 0,
+                                     stream>>>(keys, gates, ape, pool, dim,
+                                               kpool);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashIndexerScoresTest(cudaStream_t stream, const float *q,
+                                      const float *w, const float *pools,
+                                      int heads, int dim, int n_pools,
+                                      float *out_scores)
+{
+    const int warps = (n_pools + 7) / 8;
+    flash_indexer_scores_test_kernel<<<warps, 256, 0, stream>>>(
+        q, w, pools, heads, dim, n_pools, out_scores);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashIndexerSelectKTest(cudaStream_t stream,
+                                       const float *scores, int n_pools,
+                                       int select_k, int kpool,
+                                       int64_t visible_count, int topk,
+                                       int32_t *out_sel, int32_t *out_count)
+{
+    if (n_pools <= 0 || select_k > kSelCap) return cudaErrorInvalidValue;
+    flash_indexer_select_kernel<<<1, 256, kSelSmem, stream>>>(
+        scores, n_pools, select_k, kpool, visible_count, topk, out_sel,
+        out_count);
+    return cudaGetLastError();
+}
+
 // DSA decode scratch contract (caller arena, FP16 unless noted):
 //   d_qr [q_lora], d_q [heads*qk], d_kvc [kv_lora], d_kvp [kv_lora],
 //   d_kvb [heads*2*qk], d_attn [heads*qk], d_out [H]
@@ -1018,7 +1580,7 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
                               __half *d_attn, __half *d_out,
                               __half *d_kv_cache_k, __half *d_kv_cache_v,
                               int64_t slot, int64_t cap,
-                              int /*indexer_budget*/)
+                              FlashIndexerState *idx_state, bool dsa_dense)
 {
     const int D = qk_dim;
     cudaError_t e;
@@ -1048,15 +1610,49 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
     flash_mla_store_kv_kernel<<<(heads * D + 255) / 256, 256, 0, stream>>>(
         d_kvb, d_kv_cache_k, d_kv_cache_v, slot, heads, D, cap);
     if ((e = cudaGetLastError()) != cudaSuccess) return e;
-    // 4. Attention (causal over slots 0..slot).
+    // 3b. Indexer state for this position (and the pool it completes), then -
+    //     above index_topk - the sparse selection. Below it the selection is
+    //     the whole context, so the dense kernel stays in charge and the
+    //     numerics are unchanged (pinned by the kernels test).
+    int n_sel = 0;
+    if (idx_state) {
+        if ((e = RunFlashIndexerToken(stream, *idx_state, lw, hidden, d_x,
+                                      slot)) != cudaSuccess) return e;
+        if (((slot + 1) % kIdxKpool) == 0) {
+            if ((e = RunFlashIndexerPool(stream, *idx_state, lw,
+                                         slot + 1 - kIdxKpool)) != cudaSuccess)
+                return e;
+        }
+        if (!dsa_dense && (slot + 1) > kIdxTopk) {
+            if ((e = RunFlashIndexerSelect(stream, *idx_state, lw, hidden, d_x,
+                                           d_qr, slot)) != cudaSuccess)
+                return e;
+            const int64_t full = (slot + 1) / kIdxKpool;
+            const int sel_k = static_cast<int>(
+                std::min<int64_t>(kIdxTopk / kIdxKpool, full));
+            n_sel = sel_k * kIdxKpool +
+                    static_cast<int>((slot + 1) % kIdxKpool);
+        }
+    }
+    // 4. Attention: sparse over the selected positions, else causal 0..slot.
     {
         const float scale = 1.0f / sqrtf(static_cast<float>(D));
-        const size_t smem =
-            (static_cast<size_t>(D) + cap + 256) * sizeof(float);
-        flash_mla_attn_kernel<<<heads, 256, smem, stream>>>(
-            d_q, d_kv_cache_k, d_kv_cache_v, d_attn, cap,
-            static_cast<int>(slot) + 1, heads, scale);
-        if ((e = cudaGetLastError()) != cudaSuccess) return e;
+        if (n_sel > 0) {
+            const size_t smem =
+                (static_cast<size_t>(D) + n_sel + 256) * sizeof(float);
+            if ((e = RunFlashMlaAttnSelected(
+                     stream, d_q, d_kv_cache_k, d_kv_cache_v,
+                     idx_state->d_sel, idx_state->d_sel_count, d_attn, n_sel,
+                     heads, D, scale, smem)) != cudaSuccess)
+                return e;
+        } else {
+            const size_t smem =
+                (static_cast<size_t>(D) + cap + 256) * sizeof(float);
+            flash_mla_attn_kernel<<<heads, 256, smem, stream>>>(
+                d_q, d_kv_cache_k, d_kv_cache_v, d_attn, cap,
+                static_cast<int>(slot) + 1, heads, scale);
+            if ((e = cudaGetLastError()) != cudaSuccess) return e;
+        }
     }
     // 5. o_proj (NVFP4).
     if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_attn, lw.o_big.d_packed,
@@ -1582,7 +2178,27 @@ cudaError_t RunGlmFlashGeneration(
         return cudaErrorInvalidValue;
     }
     const bool trace_flash = std::getenv("LSX_TRACE_FLASH") != nullptr;
+    // A/B escape hatch: force the dense path above index_topk (the pre-sparsity
+    // behaviour) so a measurement can compare sparse against dense.
+    static const bool dsa_dense_forced = [] {
+        const char *v = std::getenv("LSX_FLASH_DSA_DENSE");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
     const int max_seq = static_cast<int>(prompt.size()) + max_new;
+    // One line per call: which DSA policy this session runs, so an operator can
+    // tell a sparse run from the forced-dense A/B without a debugger.
+    {
+        char note[256];
+        std::snprintf(
+            note, sizeof(note),
+            "glm-moe-flash DSA: %s (index_topk %d, kpool %d); this session "
+            "reaches %d positions, so the selection %s",
+            dsa_dense_forced ? "dense forced (LSX_FLASH_DSA_DENSE)" : "sparse",
+            kIdxTopk, kIdxKpool, max_seq,
+            (!dsa_dense_forced && max_seq > kIdxTopk) ? "engages"
+                                                      : "never engages");
+        log::info(note);
+    }
 
     // Persistent FP16 embed table (dequant once per weight lifetime). Keyed by
     // the weight epoch, not just V*H: a second GLM instance with the same
@@ -1605,14 +2221,18 @@ cudaError_t RunGlmFlashGeneration(
             if (FlashKdaStateAlloc(st, max_seq + 64) != cudaSuccess)
                 return cudaGetLastError();
     }
-    // DSA KV caches: [dsa_layer][cap * heads * 256] x2.
+    // DSA KV caches: [dsa_layer][cap * heads * 256] x2 + the per-layer indexer
+    // state (token keys, pool gates, pooled keys, selection scratch).
     static std::vector<__half *> dsa_kv_k, dsa_kv_v;
+    static std::vector<FlashIndexerState> idx_states;
     static int64_t dsa_cap = 0;
     if (dsa_cap < max_seq + 64) {
         for (auto *p : dsa_kv_k) cudaFree(p);
         for (auto *p : dsa_kv_v) cudaFree(p);
         dsa_kv_k.clear();
         dsa_kv_v.clear();
+        for (auto &st : idx_states) FlashIndexerStateFree(st);
+        idx_states.clear();
         dsa_cap = max_seq + 64;
         const size_t bytes = static_cast<size_t>(dsa_cap) * kHeads
                            * kQkHeadDim * sizeof(__half);
@@ -1623,6 +2243,10 @@ cudaError_t RunGlmFlashGeneration(
                 return cudaGetLastError();
             dsa_kv_k.push_back(a);
             dsa_kv_v.push_back(b);
+            FlashIndexerState st;
+            if (FlashIndexerStateAlloc(st, dsa_cap) != cudaSuccess)
+                return cudaGetLastError();
+            idx_states.push_back(st);
         }
     }
 
@@ -1789,6 +2413,9 @@ cudaError_t RunGlmFlashGeneration(
                         static_cast<size_t>(3 * (kConvKernel - 1)
                                             * 64 * kHeadDim) * 2, stream);
     }
+    // Indexer bookkeeping is per session: pool counters restart and the
+    // selection scratch is invalidated (the KV zeroing below covers the keys).
+    for (auto &st : idx_states) st.n_pools = 0;
     // DSA KV caches: stale rows from a previous call would leak into the
     // next session (slot 0 reused). Zero once per call.
     for (int i = 0; i < kDsaLayerCount; ++i) {
@@ -1884,7 +2511,9 @@ cudaError_t RunGlmFlashGeneration(
                 e = RunFlashDsaDecode(stream, lw, H, kHeads, kQkHeadDim,
                                       kQLora, kKvLora, d_single, d_qr, d_q,
                                       d_kvc, nullptr, d_kvb, d_attn, d_act2,
-                                      kk, vv, kv_pos, dsa_cap, kIndexerTopk);
+                                      kk, vv, kv_pos, dsa_cap,
+                                      &idx_states[static_cast<size_t>(dsa_idx)],
+                                      dsa_dense_forced);
                 if (e != cudaSuccess) { result.error_msg = "dsa"; break; }
             }
             if (trace_flash) {

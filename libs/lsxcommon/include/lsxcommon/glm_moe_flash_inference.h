@@ -50,6 +50,84 @@ cudaError_t RunFlashRouterTop8(cudaStream_t stream, const uint8_t *d_gate,
                                int tok, int hidden, int experts,
                                moe::MoERoutedSlot *d_slots);
 
+// ── DSA indexer (sparse attention) ───────────────────────────────────────
+// transformers `Glm5NextTextIndexer` with k-pool compression: the indexer is
+// its own lightweight attention. Per position it stores
+//   k_i   = LayerNorm(wk @ x_i)            (eps 1e-6, bias included)
+//   gate_i= compress_gate @ x_i            (one logit per key channel)
+// and every `index_kpool` positions it builds a pooled key
+//   pool_q[c] = sum_i softmax_i(gate_i[c] + ape[i][c]) * k_i[c]
+// A query scores the *pools* (relu(dot) * 128^-0.5 summed over the 32 indexer
+// heads, weighted by weights_proj(x) * 32^-0.5), keeps the top
+// `index_topk / index_kpool` pools, expands them back to token indices in
+// score order, and appends the visible tail (the current incomplete pool).
+// The main MLA then attends only to those positions. Below `index_topk` the
+// selection is the whole context, so the driver keeps the dense kernel and
+// everything stays bit-identical (pinned by the kernels test).
+struct FlashIndexerState {
+    __half *d_k = nullptr;      // [cap * kIndexerHeadDim] token keys
+    __half *d_gate = nullptr;   // [cap * kIndexerHeadDim] per-channel gates
+    float *d_pool = nullptr;    // [n_pool_cap * kIndexerHeadDim]
+    float *d_q = nullptr;       // [kIndexerHeads * kIndexerHeadDim]
+    float *d_w = nullptr;       // [kIndexerHeads]
+    float *d_scores = nullptr;  // [n_pool_cap]
+    int32_t *d_sel = nullptr;   // [kIndexerTopk + kIndexerKpool - 1]
+    int32_t *d_sel_count = nullptr;
+    __half *d_kraw = nullptr;   // [kIndexerHeadDim]       wk staging
+    __half *d_qraw = nullptr;   // [kIndexerHeads*dim]     wq_b staging
+    __half *d_wraw = nullptr;   // [kIndexerHeads]         weights_proj staging
+    int64_t capacity_ctx = 0;
+    int64_t pool_cap = 0;
+    int64_t n_pools = 0;        // completed pools
+};
+
+cudaError_t FlashIndexerStateAlloc(FlashIndexerState &st, int64_t max_ctx);
+void FlashIndexerStateFree(FlashIndexerState &st);
+
+// Stores k_i and gate_i for the token at `pos` (indexer key cache append).
+cudaError_t RunFlashIndexerToken(cudaStream_t stream, FlashIndexerState &st,
+                                 const FlashLayerWeights &lw, int hidden,
+                                 const __half *d_x, int64_t pos);
+
+// Builds the pooled key for the pool that just completed (the last `kpool`
+// positions) and advances n_pools.
+cudaError_t RunFlashIndexerPool(cudaStream_t stream, FlashIndexerState &st,
+                                const FlashLayerWeights &lw,
+                                int64_t first_tok);
+
+// Scores every completed pool and writes the selected token indices for the
+// query at `pos` (score-descending pools, expanded 1:kpool, plus the visible
+// tail, padded with -1).
+cudaError_t RunFlashIndexerSelect(cudaStream_t stream, FlashIndexerState &st,
+                                  const FlashLayerWeights &lw, int hidden,
+                                  const __half *d_x, const __half *d_q_resid,
+                                  int64_t pos);
+
+// Sparse MLA over the selected positions; same numerics as the dense kernel
+// (FP32 scores/softmax, one FP16 rounding at the end). Entries < 0 are skipped.
+cudaError_t RunFlashMlaAttnSelected(cudaStream_t stream, const __half *d_q,
+                                    const __half *k_cache,
+                                    const __half *v_cache,
+                                    const int32_t *d_sel,
+                                    const int32_t *d_count, __half *d_out,
+                                    int n_sel, int heads, int dim,
+                                    float scale, size_t smem);
+
+// Test twins (raw FP32/FP16 buffers, no NVFP4) for host parity.
+cudaError_t RunFlashIndexerPoolTest(cudaStream_t stream, const __half *keys,
+                                    const __half *gates, const uint16_t *ape,
+                                    float *pool, int dim, int kpool);
+cudaError_t RunFlashIndexerScoresTest(cudaStream_t stream, const float *q,
+                                      const float *w, const float *pools,
+                                      int heads, int dim, int n_pools,
+                                      float *out_scores);
+// Runs the PRODUCTION selection kernel on raw scores.
+cudaError_t RunFlashIndexerSelectKTest(cudaStream_t stream,
+                                       const float *scores, int n_pools,
+                                       int select_k, int kpool,
+                                       int64_t visible_count, int topk,
+                                       int32_t *out_sel, int32_t *out_count);
+
 // ── KDA decode-path state + kernels ──────────────────────────────────────
 // Per-layer recurrent state: S[heads, dim, dim] FP32 + short-conv history
 // window [K-1 rows, 3*8192] FP16 (q/k/v channels interleaved by projection).
