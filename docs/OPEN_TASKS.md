@@ -452,6 +452,31 @@ responsible tensor and re-convert.
   then a real finding either way. `code_capture.py`/`det_capture.py` carry the
   same override block, so the deletion is three one-line edits.
 
+## U. GLM-5.3-Flash: the session scratch is outside the expert-cache budget (2026-10-24)
+
+- **Symptom:** `lsxfabric --localmodel <GLM-5.3-Flash> --testprompt` with a
+  ~2900-token prompt dies with `Inference failed: out of memory` on the 32 GB
+  RTX 5090, after the policy line and before the first generated token.
+- **Cause, measured:** `Glm5NextFlashModel::Load` sizes the expert cache from
+  the free memory it sees at load, minus the fixed
+  `kFlashGenReserveBytes = 3 GiB`. The generation scratch is allocated later
+  and scales with the context: the FP16 embed table is a constant 1.27 GiB
+  (vocab 154880 x 4096 x 2), but the DSA KV is
+  `2 x 11 layers x cap x 64 heads x 256 dims x 2 B` = **0.69 MiB per
+  position** (2.1 GiB at 3059 capacity, 5.5 GiB at 8k, 22 GiB at 32k). At
+  3059 the three allocations need ~3.6 GiB > the 3 GiB reserve.
+- **Workaround (validated):** `LSX_FLASH_SLOTS=1350` (18225 MiB instead of
+  20844) leaves room at 2995 positions; the model then answers correctly and
+  deterministically (audit record §"DSA sparsity", 2026-10-24).
+- **Fix direction:** give the cache sizing the session budget instead of a
+  fixed reserve — i.e. pass the KV/embed/arena requirement into
+  `ResolveExpertSlots` (or reserve the scratch before sizing the cache). The
+  same fixed-reserve assumption is why the `vram` block in `model.index.json`
+  matters (the DeepSeek-only `--vram_recompute` cannot compute this family's
+  profile: no `vram` block is written).
+- **Do not** "fix" it by capping the context: `max_position_embeddings` is
+  1048576 and the sparse attention now scales with it.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
