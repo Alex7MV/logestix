@@ -428,6 +428,37 @@ TEST_CASE("perf registry: every perf TEST_CASE has a registered ctest target",
     REQUIRE(unwired.empty());
 }
 
+TEST_CASE("perf harness: a Debug run must not write the tracked baseline file",
+          "[perf_baseline][guard]")
+{
+    // The Debug gate used to live only in MeasureModel(), i.e. AFTER
+    // RunPerfModel() had already run the cooldown and the 512 MiB DRAM probe.
+    // The probe is recorded into tests/perf/perf_baselines.json by
+    // UpdateProbeReference(), so a Debug tree (which ctest runs by default,
+    // and which measures a debug-compiled probe nobody compares against the
+    // Release reference) mutated a tracked file before SKIPping. Measured
+    // 2026-10-24: two `ctest --preset linux-debug -R test_perf_baseline_phi_4`
+    // runs rewrote the __gpu_probe__ row. The gate must come first.
+    const std::string src =
+        ReadAll(std::string(LSX_SOURCE_DIR) + "/tests/test_perf_baseline.cpp");
+    const size_t fn = src.find("void RunPerfModel(");
+    REQUIRE(fn != std::string::npos);
+    const size_t body_end = src.find("\n}\n", fn);
+    REQUIRE(body_end != std::string::npos);
+    const std::string body = src.substr(fn, body_end - fn);
+    const size_t gate = body.find("#ifndef NDEBUG");
+    const size_t probe = body.find("MeasureMemoryBandwidthGbs");
+    const size_t cooldown = body.find("CooldownBetweenTargets");
+    INFO("RunPerfModel body:\n" << body);
+    REQUIRE(gate != std::string::npos);
+    REQUIRE(probe != std::string::npos);
+    REQUIRE(cooldown != std::string::npos);
+    // The skip must precede both writers (the cooldown is harmless but means
+    // the GPU was already parked; the probe is what rewrites the JSON).
+    REQUIRE(gate < probe);
+    REQUIRE(gate < cooldown);
+}
+
 TEST_CASE("environment attribution needs the probe to explain the loss",
           "[perf-baseline][logic]")
 {

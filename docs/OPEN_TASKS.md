@@ -208,6 +208,20 @@ granite's contract: positions `pos0 + i`, attention base `pos0`, capacity
 (`kv_slots_used` 3 vs 10 for the continuation vs a fresh prefill of the same
 context), GREEN after; the case also compares `gen_tokens` and `final_logits`.
 
+**Defect found and fixed — a Debug perf run rewrote the tracked baseline
+file.** The `#ifndef NDEBUG` skip lived only in `MeasureModel()`, i.e. after
+`RunPerfModel()` had already parked the GPU and run the 512 MiB DRAM probe, and
+`UpdateProbeReference()` writes the `__gpu_probe__` row into
+`tests/perf/perf_baselines.json`. Two `ctest --preset linux-debug -R
+test_perf_baseline_phi_4` runs on 2026-10-24 rewrote that row (1524.37 ->
+1528.54 -> 1526.45) before SKIPping, so a Debug sweep — which measures a
+debug-compiled probe that is never compared against the Release reference —
+moved the committed environment oracle. The gate now sits at the top of
+`RunPerfModel`, before the cooldown and the probe; a Debug run SKIPs in 0.01 s
+with the file untouched. Pinned by a source-scanning case in
+`test_perf_baseline_logic` ("a Debug run must not write the tracked baseline
+file"), which failed on the old ordering.
+
 **Open: the `perf`-mode baseline row (134.67 t/s, 2026-10-01) is not
 reproducible on the current binary and artifact.** Two cooled runs each:
 

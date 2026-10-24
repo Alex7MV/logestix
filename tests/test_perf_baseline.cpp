@@ -433,6 +433,15 @@ void CooldownBetweenTargets()
 
 void RunPerfModel(const PerfModel &m)
 {
+#ifndef NDEBUG
+    // The Debug gate is HERE, not only in MeasureModel(): the cooldown and
+    // the environment probe below run before it, and UpdateProbeReference()
+    // rewrites the tracked tests/perf/perf_baselines.json. A Debug tree
+    // (ctest --preset linux-debug) measures a debug-compiled probe that is not
+    // comparable to the Release reference, so skipping before any write is
+    // what keeps a Debug sweep from moving the committed oracle.
+    SKIP("perf baseline requires a Release build (NDEBUG)");
+#endif
     // Cool before the perf->r3 pair, but only when the model is present (an
     // absent vault SKIPs immediately — no point holding the GPU cool first).
     std::error_code ec;
