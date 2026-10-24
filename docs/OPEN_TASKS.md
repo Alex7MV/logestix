@@ -452,31 +452,6 @@ responsible tensor and re-convert.
   then a real finding either way. `code_capture.py`/`det_capture.py` carry the
   same override block, so the deletion is three one-line edits.
 
-## U. GLM-5.3-Flash: the session scratch is outside the expert-cache budget (2026-10-24)
-
-- **Symptom:** `lsxfabric --localmodel <GLM-5.3-Flash> --testprompt` with a
-  ~2900-token prompt dies with `Inference failed: out of memory` on the 32 GB
-  RTX 5090, after the policy line and before the first generated token.
-- **Cause, measured:** `Glm5NextFlashModel::Load` sizes the expert cache from
-  the free memory it sees at load, minus the fixed
-  `kFlashGenReserveBytes = 3 GiB`. The generation scratch is allocated later
-  and scales with the context: the FP16 embed table is a constant 1.27 GiB
-  (vocab 154880 x 4096 x 2), but the DSA KV is
-  `2 x 11 layers x cap x 64 heads x 256 dims x 2 B` = **0.69 MiB per
-  position** (2.1 GiB at 3059 capacity, 5.5 GiB at 8k, 22 GiB at 32k). At
-  3059 the three allocations need ~3.6 GiB > the 3 GiB reserve.
-- **Workaround (validated):** `LSX_FLASH_SLOTS=1350` (18225 MiB instead of
-  20844) leaves room at 2995 positions; the model then answers correctly and
-  deterministically (audit record §"DSA sparsity", 2026-10-24).
-- **Fix direction:** give the cache sizing the session budget instead of a
-  fixed reserve — i.e. pass the KV/embed/arena requirement into
-  `ResolveExpertSlots` (or reserve the scratch before sizing the cache). The
-  same fixed-reserve assumption is why the `vram` block in `model.index.json`
-  matters (the DeepSeek-only `--vram_recompute` cannot compute this family's
-  profile: no `vram` block is written).
-- **Do not** "fix" it by capping the context: `max_position_embeddings` is
-  1048576 and the sparse attention now scales with it.
-
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -484,6 +459,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-10-24 | §U closed: GLM-5.3-Flash session scratch has a budget | The expert cache sized itself from a fixed 3 GiB reserve while the session's DSA KV scales with the context (0.69 MiB/position), so a ~2900-token prompt died with `out of memory` before the first token. `GlmFlashSessionScratchBytes(max_ctx)` now reports embed + KDA + DSA KV + indexer + arena (the indexer's span list is the allocator's, and its 11 allocations became one), and the driver reserves it before allocating, calling the neutral `moe::EnsureMoEExpertCacheHeadroom` to re-allocate the cache with fewer slots (64-slot floor) when short. Real weights at 2907 positions without the old `LSX_FLASH_SLOTS` workaround: 3414 MiB reserved, cache 1544 -> 1491, correct answer; the same session also closed the `vram` block (the `--vram_recompute` prefix dispatch was running the GLM-5.2 estimator, ~28x too small) and built the DSA selection oracle (source-shard host replica, 0 rank disagreements over 512 pools at slot 2304) — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |
 | 2026-10-23 | GLM-5.3-Flash audited end to end and re-converted | `§P` **retracted**: the FSI red was a 128-token budget on a reasoning checkpoint — at 512 all three prompts pass with their canonical answers (the recorded "reproduces at 512 and 2048" claim is false on this conversion), so the golden's budget moved to match CODE/DET's 512 and no expectation was rewritten. Three real defects fixed in the family: the single-prompt path bypassed the chat template (raw BPE default), the renderer had drifted from `chat_template.jinja` (newlines after every turn, tool calls on the wrong line, tools block without the template's layout) and the cooperative-cancel counter incremented after the abort check, so a cancelled request reported `ok=false`/`unknown error`. SelfCheck now owns the family's answer window (the model closes an empty `<think>` before answering). New instrument: the real inventory is classified and the passport reconciled against `config.json` (39,522 assertions). Real weights: Paris ×3 bit-exact, tool round-trip, streaming/cancel, FSI/CODE/DET 3/3 each. Perf was then attributed and re-seeded (perf 14.89 -> 12.79, r3 12.50 -> 12.27): the whole drop is the expert hit rate following the *generated text*, i.e. the framing change, not a code regression — [`open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md`](open-tasks/2026-10-23-glm-5.3-flash-audit-closed.md) |
 | 2026-10-23 | §I closed (and §H with it): the non-split attention dot was a half-row bug, not FMA | `AttnHalfDotRow` consumed two `__half2` per step under a `hd >> 2` bound, so every score dot covered half the head (64 of 128); X16 (`f7cc177`) fixed the bound for the split path, and the 2026-10-06 non-split experiment predates it, which is the whole of the "compiler/FMA" story. The helper now sits outside the anonymous namespace and the non-split kernel calls it: Qwen3.6-35B-A3B SelfCheck/FSI/CODE/DET, Qwen3.5-9B SelfCheck, Alice and Ornith FSI/CODE/DET and gemma-MoE DET all pass (gemma FSI/CODE keep the known §J divergences). Alice, which only ever reached the non-split kernel, gains **+2.0%** (interleaved A/B: 45.6/45.4 vs 44.5/44.6 t/s) - [`open-tasks/2026-10-23-non-split-attn-dot-closed.md`](open-tasks/2026-10-23-non-split-attn-dot-closed.md) |
 | 2026-10-23 | Doc hygiene: the non-defect records moved out (B, D1, F, G, E, V2) | These were not open work: `B` is the resolved GPU-keyed-budget mechanism, `D1` was closed as not-a-regression (batched expert GEMV 1.34-1.44x in isolation, no pipeline cost), `F` measured the opposite of a ramp (Xing falls 27% / 42% across a session), `G` is the completed vectorisation ledger (qwen +4.8%, gemma +3.0%, gigachat 0%; the non-split half remains §I), `E`'s last subsection (E4) closed the same day, and `V2` was refuted (`max_open` bounds RSS monotonically, 3.2 / 7.0 / 31.1 GB at cap 64 / 512 / 8192). Kept for their method notes, not as tasks — [`open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md`](open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md) |
