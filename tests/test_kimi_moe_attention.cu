@@ -157,6 +157,25 @@ void AttachPacked(KimiLayerWeights &lw, const PackedProj &qa,
     (void)norm_kva_s;
 }
 
+// Host mirror of the kernel's NVFP4 decode (E2M1 nibble x per-16 pow2 scale
+// x global scale). The CPU reference runs on these values: the test's job is
+// the MLA pipeline math, and comparing it against the pre-quantization floats
+// measures the E2M1 rounding of five chained projections instead (which is
+// what the old 0.35 bound silently absorbed).
+std::vector<float> DequantPacked(const PackedProj &p)
+{
+    static const float kE2M1[8] = {0.f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    std::vector<float> w(static_cast<size_t>(p.rows * p.cols));
+    for (size_t idx = 0; idx < w.size(); ++idx) {
+        const uint8_t byte = p.packed[idx >> 1];
+        const int nib = (byte >> ((idx & 1) ? 4 : 0)) & 0xF;
+        const float mag = kE2M1[nib & 7] * ((nib & 8) ? -1.0f : 1.0f);
+        const int se = ((p.scales[idx >> 4] >> 3) & 0xF) - 7;
+        w[idx] = mag * std::ldexp(1.0f, se) * p.global_scale;
+    }
+    return w;
+}
+
 void FreePacked(KimiLayerWeights &lw)
 {
     cudaFree(lw.d_q_a_packed); cudaFree(lw.d_q_a_scale);
@@ -232,23 +251,24 @@ void CpuMlaReference(const std::vector<float> &qa, const std::vector<float> &qb,
         invn = 1.0f / std::sqrt(ss / 512 + kKimiRmsEps);
         for (int i = 0; i < 512; ++i) kvf[i] *= invn * nkva[i];
 
-        // Rope on k branch.
+        // Rope on k branch: adjacent pairs (the reference de-interleaves
+        // before rotate_half, so (2p, 2p+1) share inv_freq[p]).
         for (int pair = 0; pair < ROPE / 2; ++pair) {
             float fr = inv[pair];
             float c = std::cos(fr * t), sn = std::sin(fr * t);
-            float xr = kvf[512 + pair], yr = kvf[512 + ROPE / 2 + pair];
-            kvf[512 + pair] = xr * c - yr * sn;
-            kvf[512 + ROPE / 2 + pair] = xr * sn + yr * c;
+            float xr = kvf[512 + 2 * pair], yr = kvf[512 + 2 * pair + 1];
+            kvf[512 + 2 * pair] = xr * c - yr * sn;
+            kvf[512 + 2 * pair + 1] = xr * sn + yr * c;
         }
-        // Rope on q heads.
+        // Rope on q heads: adjacent pairs.
         for (int h = 0; h < NH; ++h)
             for (int pair = 0; pair < ROPE / 2; ++pair) {
                 float fr = inv[pair];
                 float c = std::cos(fr * t), sn = std::sin(fr * t);
                 float *qr = &qall[h * (NOPE + ROPE) + NOPE];
-                float xv = qr[pair], yv = qr[ROPE / 2 + pair];
-                qr[pair] = xv * c - yv * sn;
-                qr[ROPE / 2 + pair] = xv * sn + yv * c;
+                float xv = qr[2 * pair], yv = qr[2 * pair + 1];
+                qr[2 * pair] = xv * c - yv * sn;
+                qr[2 * pair + 1] = xv * sn + yv * c;
             }
 
         cache_c[t] = std::vector<float>(kvf.begin(), kvf.begin() + 512);
@@ -369,9 +389,11 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     cudaMemcpy(out.data(), d_out, H * seq * sizeof(__nv_bfloat16),
                cudaMemcpyDeviceToHost);
 
+    // Reference on the dequantized weights (see DequantPacked).
     std::vector<float> ref(H * seq, 0.0f);
-    CpuMlaReference(qa, qb, kva, kvb, op, norm_qa, norm_kva, xf, seq,
-                    xf, ref);
+    CpuMlaReference(DequantPacked(pqa), DequantPacked(pqb),
+                    DequantPacked(pkva), DequantPacked(pkvb),
+                    DequantPacked(pop), norm_qa, norm_kva, xf, seq, xf, ref);
 
     double max_err = 0.0;
     for (int t = 0; t < seq; ++t) {
@@ -391,7 +413,9 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
         max_err = std::max(max_err,
                 static_cast<double>(std::fabs(__bfloat162float(out[i]) - ref[i])));
     INFO("max abs error: " << max_err);
-    CHECK(max_err <= 0.35);
+    // Tightened after the rope/scale fix: the old 0.35 absorbed a 2x attention
+    // temperature error. A failure here is a numeric defect, not a bound to relax.
+    CHECK(max_err <= 0.05);
 
     // KimiMlaState is 1.125 MiB (1024 slots x [512 latent + 64 rope]); it must
     // not live on the stack — the Windows default 1 MiB thread stack is

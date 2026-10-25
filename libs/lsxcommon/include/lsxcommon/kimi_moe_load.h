@@ -60,8 +60,10 @@ constexpr float kKimiYarnMscale = 1.4158883083359672f;
 // test_kimi_moe_attention.
 __device__ __host__ inline void KimiRopePair(int p, float theta, float *r)
 {
-    const int a = p;               // RED: half-split pairs (i, i+32)
-    const int b = p + kKimiQkRope / 2;
+    // The reference de-interleaves with view(d/2, 2).transpose().reshape()
+    // before rotate_half, i.e. element pairs (2p, 2p+1) share inv_freq[p].
+    const int a = 2 * p;
+    const int b = 2 * p + 1;
     const float cs = cosf(theta), sn = sinf(theta);
     const float x = r[a], y = r[b];
     r[a] = x * cs - y * sn;
@@ -71,8 +73,8 @@ __device__ __host__ inline void KimiRopePair(int p, float theta, float *r)
 __device__ __host__ inline void KimiRopePair(int p, float theta,
                                              __nv_bfloat16 *r)
 {
-    const int a = p;               // RED: half-split pairs (i, i+32)
-    const int b = p + kKimiQkRope / 2;
+    const int a = 2 * p;
+    const int b = 2 * p + 1;
     const float cs = cosf(theta), sn = sinf(theta);
     const float x = __bfloat162float(r[a]), y = __bfloat162float(r[b]);
     r[a] = __float2bfloat16_rn(x * cs - y * sn);
@@ -88,9 +90,10 @@ std::vector<float> KimiYarnInvFreq();
 // current value so the parity test fails on the number, not on the build.)
 __device__ __host__ inline float KimiAttnScale()
 {
-    // 1/sqrt(qk_head_dim); constant-folded by the compiler and identical on
-    // host and device, so the parity test can pin it from a .cpp TU.
-    return 1.0f / sqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope));
+    // HF DeepseekV3Attention: softmax_scale = q_head_dim**-0.5
+    //   * yarn_get_mscale(factor, mscale_all_dim)**2   (mscale_all_dim truthy)
+    return (1.0f / sqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope))) *
+           (kKimiYarnMscale * kKimiYarnMscale);
 }
 
 // Derived MLA projection row counts (rows of the checkpoint weight matrices).
