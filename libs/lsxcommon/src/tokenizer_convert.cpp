@@ -409,7 +409,8 @@ bool Base64Decode(const std::string &in, std::vector<uint8_t> &out)
 arrow::Status BuildTokenizerArrowFilesTikToken(
     const std::string &tiktoken_model_path,
     const std::string &tokenizer_config_path,
-    const std::filesystem::path &pinned_dir)
+    const std::filesystem::path &pinned_dir,
+    const TikTokenSpecialPolicy &policy)
 {
     absl::flat_hash_map<std::string, int32_t> key_to_id;
     absl::flat_hash_map<int32_t, std::string> id_to_key;
@@ -599,6 +600,12 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
             row.token_bytes = std::move(bytes);
         }
     }
+
+    // Family policy overrides (a checkpoint whose reference tokenizer does not
+    // add BOS, or whose stop id differs from its tokenizer_config entry).
+    if (policy.bos_id != INT32_MIN) bos_id = policy.bos_id;
+    if (policy.eos_id != INT32_MIN) eos_id = policy.eos_id;
+    if (policy.pad_id != INT32_MIN) pad_id = policy.pad_id;
 
     TokenizerVocabMeta meta;
     meta.bos_id = bos_id;

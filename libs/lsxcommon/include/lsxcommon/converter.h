@@ -72,10 +72,21 @@ arrow::Status BuildTokenizerArrowFiles(
 // same tokenizer_vocab.arrow / tokenizer_merges.arrow pair as
 // BuildTokenizerArrowFiles. Sparse id ranges between base ranks and special
 // ids are filled with placeholder rows.
+// Per-family override of the special-token ids the tiktoken bridge writes.
+// INT32_MIN keeps the historical derivation from tokenizer_config.json. A
+// checkpoint whose reference tokenizer never emits [BOS] passes bos_id = -1;
+// a stop id that differs from its tokenizer_config [EOS] entry (Kimi:
+// config.json eos_token_id = <|im_end|>) is passed explicitly.
+struct TikTokenSpecialPolicy {
+    int32_t bos_id = INT32_MIN;
+    int32_t eos_id = INT32_MIN;
+    int32_t pad_id = INT32_MIN;
+};
 arrow::Status BuildTokenizerArrowFilesTikToken(
     const std::string &tiktoken_model_path,
     const std::string &tokenizer_config_path,
-    const std::filesystem::path &pinned_dir);
+    const std::filesystem::path &pinned_dir,
+    const TikTokenSpecialPolicy &policy = {});
 
 // SentencePiece-BPE bridge (AliceAI). Parses the protobuf `tokenizer.model`
 // (identity normalizer, U+2581 word marker, byte fallback), derives BPE merge

@@ -8,6 +8,7 @@
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/diagnostics.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/synthetic_geometry.h"
 
 #include <arrow/io/file.h>
 #include <arrow/ipc/writer.h>
@@ -526,6 +527,7 @@ arrow::Status ConvertKimiModel(
     auto cfg_path = fs::path(input_path) / "config.json";
     if (!fs::exists(cfg_path))
         return arrow::Status::Invalid("config.json not found in ", input_path);
+    int32_t cfg_eos = -1, cfg_pad = -1;
     {
         std::ifstream cf(cfg_path);
         if (!cf)
@@ -573,6 +575,57 @@ arrow::Status ConvertKimiModel(
                     "config.json ", c.name, "=", c.cfg,
                     " does not match compile-time lock ", c.locked);
         }
+
+        // Token policy (MODEL INGEST stage 4): the stop id lives in the model
+        // config, not in tokenizer_config (whose [EOS] entry is a different
+        // token here). The reference tokenizer never emits [BOS].
+        // A second parse pass: simdjson's ondemand iterator is forward-only and
+        // the geometry checks above already walked this object.
+        int32_t cfg_eos2 = -1, cfg_pad2 = -1;
+        {
+            simdjson::padded_string pp(cj.data(), cj.size());
+            simdjson::ondemand::parser p2;
+            simdjson::ondemand::document d2;
+            if (p2.iterate(pp).get(d2) == simdjson::SUCCESS) {
+                simdjson::ondemand::object r2;
+                if (d2.get_object().get(r2) == simdjson::SUCCESS) {
+                    simdjson::ondemand::object t2;
+                    if (r2["text_config"].get_object().get(t2) ==
+                        simdjson::SUCCESS) {
+                        int64_t v = -1;
+                        if (t2["eos_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            cfg_eos2 = static_cast<int32_t>(v);
+                        v = -1;
+                        if (t2["pad_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            cfg_pad2 = static_cast<int32_t>(v);
+                        if (cfg_eos2 < 0) {
+                            v = -1;
+                            if (r2["eos_token_id"].get_int64().get(v) ==
+                                simdjson::SUCCESS)
+                                cfg_eos2 = static_cast<int32_t>(v);
+                        }
+                        if (cfg_pad2 < 0) {
+                            v = -1;
+                            if (r2["pad_token_id"].get_int64().get(v) ==
+                                simdjson::SUCCESS)
+                                cfg_pad2 = static_cast<int32_t>(v);
+                        }
+                    }
+                }
+            }
+        }
+        cfg_eos = cfg_eos2;
+        cfg_pad = cfg_pad2;
+        if (cfg_eos < 0 || cfg_pad < 0)
+            return arrow::Status::Invalid(
+                "config.json missing eos_token_id/pad_token_id");
+        if (!SyntheticGeometryAllowed() &&
+            (cfg_eos != kKimiEosTokenId || cfg_pad != kKimiPadTokenId))
+            return arrow::Status::Invalid(
+                "config.json token ids do not match the frozen passport: eos=",
+                cfg_eos, " pad=", cfg_pad);
     }
 
     // Verify every tensor read is complete before any output is written.
@@ -774,10 +827,14 @@ arrow::Status ConvertKimiModel(
     if (!fs::exists(tiktoken_path))
         return arrow::Status::Invalid("tiktoken.model not found in ",
                                       input_path);
+    TikTokenSpecialPolicy tok_policy;
+    tok_policy.bos_id = -1;       // the reference tokenizer emits no BOS
+    tok_policy.eos_id = cfg_eos;  // config.json <|im_end|>, not the [EOS] entry
+    tok_policy.pad_id = cfg_pad;
     ARROW_RETURN_NOT_OK(BuildTokenizerArrowFilesTikToken(
         tiktoken_path.string(),
         (fs::path(input_path) / "tokenizer_config.json").string(),
-        log_root / "pinned"));
+        log_root / "pinned", tok_policy));
 
     lsxcommon::log::info(absl::StrCat(
         "Done — ", pinned_processed, " pinned tensors, ", experts_processed,

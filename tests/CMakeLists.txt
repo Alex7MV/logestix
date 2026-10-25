@@ -1515,7 +1515,11 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_moe_convert COMMAND test_kimi_moe_convert)
-set_tests_properties(test_kimi_moe_convert PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_moe_convert PROPERTIES
+    SKIP_RETURN_CODE 4
+    # Synthetic geometry: the frozen gates (incl. the token ids) are relaxed at
+    # runtime, never by a compile define.
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # ── GLM-5.2 loader test (pinned BF16→FP16 upload) ─────────────────────
 add_executable(test_glm_moe_loader test_glm_moe_loader.cpp)

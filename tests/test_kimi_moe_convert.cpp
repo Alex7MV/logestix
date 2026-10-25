@@ -83,7 +83,9 @@ TEST_CASE("ConvertKimiModel produces logestix-kimi layout", "[kimi][convert]") {
                                kimitest::BuildSyntheticKimiModel(3));
     kimitest::WriteKimiTokenizerFiles(in);
 
-    REQUIRE(lsxcommon::kimi::ConvertKimiModel(in.string(), out).ok());
+    const auto conv = lsxcommon::kimi::ConvertKimiModel(in.string(), out);
+    INFO(conv.ToString());
+    REQUIRE(conv.ok());
 
     const auto log_root = out / "logestix";
     REQUIRE(fs::exists(log_root / "model.index.json"));
@@ -126,7 +128,9 @@ TEST_CASE("Kimi converter r2: MLA projections quantized, norms untouched",
                                kimitest::BuildSyntheticKimiModel(3));
     kimitest::WriteKimiTokenizerFiles(in);
 
-    REQUIRE(lsxcommon::kimi::ConvertKimiModel(in.string(), out).ok());
+    const auto conv = lsxcommon::kimi::ConvertKimiModel(in.string(), out);
+    INFO(conv.ToString());
+    REQUIRE(conv.ok());
 
     const auto log_root = out / "logestix";
     std::ifstream f(log_root / "model.index.json");
@@ -170,4 +174,37 @@ TEST_CASE("Kimi converter r2: MLA projections quantized, norms untouched",
     REQUIRE(qa_ln != nullptr);
     REQUIRE(qa_ln->bytes == 32);   // 16 BF16 elems
     REQUIRE(qa_ln->dtype == "BF16");
+}
+
+// The checkpoint's reference tokenizer adds no BOS (verified with
+// tokenization_kimi.py under transformers 5.15.1: tok(text) == tok.encode(text)
+// == add_special_tokens=False) and the model stops on <|im_end|>, which is
+// config.json eos_token_id, NOT the tokenizer_config [EOS] vocab entry.
+TEST_CASE("Kimi conversion applies the checkpoint token policy", "[kimi][convert]")
+{
+    namespace fs = std::filesystem;
+    auto in = fs::temp_directory_path() / "kimi_policy_in";
+    auto out = fs::temp_directory_path() / "kimi_policy_out";
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+    kimitest::WriteKimiConfig(in);
+    kimitest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
+                               kimitest::BuildSyntheticKimiModel(2));
+    kimitest::WriteKimiTokenizerFiles(in);
+    const auto conv = lsxcommon::kimi::ConvertKimiModel(in.string(), out);
+    INFO(conv.ToString());
+    REQUIRE(conv.ok());
+
+    auto vres = lsxcommon::ReadRecordBatchFromFile(
+        out / "logestix" / "pinned" / "tokenizer_vocab.arrow");
+    REQUIRE(vres.ok());
+    auto meta = (*vres)->schema()->metadata();
+    REQUIRE(meta != nullptr);
+    auto get = [&](const char *k) {
+        return std::string(meta->Get(k).ValueOr(""));
+    };
+    CHECK(get("bos_id") == "-1");
+    CHECK(get("eos_id") == "257");
+    CHECK(get("pad_id") == "258");
 }

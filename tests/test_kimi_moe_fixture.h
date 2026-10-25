@@ -126,7 +126,8 @@ inline void WriteKimiConfig(const std::filesystem::path &dir)
     std::ofstream f(dir / "config.json");
     f << R"({"architectures":["KimiK25ForConditionalGeneration"],)"
       << R"("model_type":"kimi_k25",)"
-      << R"("text_config":{"model_type":"kimi_k2","hidden_act":"silu"}})";
+      << R"("text_config":{"model_type":"kimi_k2","hidden_act":"silu",)"
+      << R"("bos_token_id":256,"eos_token_id":257,"pad_token_id":258}})";
 }
 
 // Writes the minimal tiktoken ranks + tokenizer_config pair the converter's

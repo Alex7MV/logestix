@@ -38,6 +38,11 @@ constexpr int kKimiNumShared = 1;
 constexpr int kKimiTopK = 8;
 constexpr int kKimiVocab = 163840;
 constexpr int kKimiFirstKDenseReplace = 1;
+// Generation stop/alignment ids from config.json (text_config). [BOS] exists in
+// the vocabulary but the reference tokenizer never emits it (verified against
+// tokenization_kimi.py + transformers 5.15.1), so the conversion passes bos=-1.
+constexpr int kKimiEosTokenId = 163586;   // <|im_end|>
+constexpr int kKimiPadTokenId = 163839;   // [PAD]
 constexpr float kKimiRoutedScalingFactor = 2.827f;
 constexpr float kKimiRmsEps = 1e-5f;
 constexpr float kKimiRopeTheta = 50000.0f;

@@ -3,6 +3,7 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/tokenizer.h"
 
 #include <arrow/io/file.h>
 #include <arrow/record_batch.h>
@@ -11,6 +12,7 @@
 #include <absl/strings/str_cat.h>
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -209,4 +211,59 @@ TEST_CASE("Kimi real vault tokenizer builds", "[kimi][tokenizer][real-model]")
         (dir / "tokenizer_config.json").string(), pinned);
     if (!st.ok()) FAIL(st.ToString());
     REQUIRE(st.ok());
+}
+
+// Policy override (Kimi): the reference tokenizer never emits [BOS], and the
+// generation stop id is config.json eos_token_id (<|im_end|>), not the
+// tokenizer_config [EOS] entry.
+TEST_CASE("kimi token policy: encode adds no BOS and eos is the policy id",
+          "[kimi][tokenizer]")
+{
+    namespace fs = std::filesystem;
+    auto dir = fs::temp_directory_path() / "kimi_tok_policy";
+    auto pinned = dir / "pinned";
+    fs::remove_all(dir);
+    fs::create_directories(pinned);
+    (void)WriteByteAlphabetTikToken(dir);
+    {
+        std::ofstream c(dir / "tokenizer_config.json");
+        // Ids above the one merged base token (id 256): a special that
+        // replaces it would leave the merge table empty.
+        c << "{\"bos_token\":\"[B]\",\"eos_token\":\"[E]\","
+             "\"added_tokens_decoder\":{"
+             "\"257\":{\"content\":\"[B]\",\"special\":true},"
+             "\"258\":{\"content\":\"[E]\",\"special\":true}}}";
+    }
+    lsxcommon::TikTokenSpecialPolicy pol;
+    pol.bos_id = -1;
+    pol.eos_id = 258;
+    pol.pad_id = -1;
+    const auto st = BuildTokenizerArrowFilesTikToken(
+        (dir / "tiktoken.model").string(),
+        (dir / "tokenizer_config.json").string(), pinned, pol);
+    REQUIRE(st.ok());
+
+    ArrowTokenizerDb db;
+    auto v = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_vocab.arrow").string(),
+        arrow::io::FileMode::READ);
+    auto m = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_merges.arrow").string(),
+        arrow::io::FileMode::READ);
+    REQUIRE(v.ok());
+    REQUIRE(m.ok());
+    const auto ld = lsxcommon::load_tokenizer_metadata(*v, *m, db);
+    INFO(ld.ToString());
+    REQUIRE(ld.ok());
+    CHECK(db.bos_id == -1);
+    CHECK(db.eos_id == 258);
+
+    const char *text = "hi";
+    int32_t ids[16] = {0};
+    size_t cap = 16;
+    const int32_t n = lsxcommon::arrow_tokenizer_encode(
+        db, text, std::strlen(text), ids, &cap);
+    REQUIRE(n == 2);
+    CHECK(ids[0] == static_cast<int32_t>('h'));
+    CHECK(ids[1] == static_cast<int32_t>('i'));
 }
