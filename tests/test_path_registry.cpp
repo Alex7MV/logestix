@@ -28,7 +28,7 @@ TEST_CASE("path_registry platform root base", "[path_registry]")
 #if defined(_WIN32)
     CHECK(models == R"(D:\Programs\huggingface.co)");
 #else
-    CHECK(models == "/mnt/llm_models/models");
+    CHECK(models == "/mnt/fast_storage/huggingface");
 #endif
 }
 
@@ -43,7 +43,7 @@ TEST_CASE("path_registry LSX_MODEL_ROOT overrides the compile-time base", "[path
 #if defined(_WIN32)
     CHECK(lsxcommon::lsx_model_models_dir() == R"(D:\Programs\huggingface.co)");
 #else
-    CHECK(lsxcommon::lsx_model_models_dir() == "/mnt/llm_models/models");
+    CHECK(lsxcommon::lsx_model_models_dir() == "/mnt/fast_storage/huggingface");
 #endif
 }
 

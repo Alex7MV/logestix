@@ -11,7 +11,8 @@ namespace lsxcommon {
 #if defined(_WIN32)
 constexpr const char* kModelRootBase = "D:\\Programs\\huggingface.co";
 #else
-constexpr const char* kModelRootBase = "/mnt/llm_models/models";
+// The model vault moved on 2026-10; LSX_MODEL_ROOT still overrides this.
+constexpr const char* kModelRootBase = "/mnt/fast_storage/huggingface";
 #endif
 
 // "<base>" — the models directory holding named checkpoints. Converted models
