@@ -597,8 +597,8 @@ std::shared_ptr<arrow::Schema> TokenizerVocabSchema::Make(const TokenizerVocabMe
 {
     auto kv = arrow::KeyValueMetadata::Make({
         "bos_id", "eos_id", "pad_id", "vocab_size", "byte_to_token_id",
-        "tokenizer_kind", "unk_id", "byte_fallback", "add_dummy_prefix",
-        "escape_whitespaces"
+        "tokenizer_kind", "base_vocab_size", "unk_id", "byte_fallback",
+        "add_dummy_prefix", "escape_whitespaces"
     }, {
         absl::StrCat(meta.bos_id),
         absl::StrCat(meta.eos_id),
@@ -606,6 +606,7 @@ std::shared_ptr<arrow::Schema> TokenizerVocabSchema::Make(const TokenizerVocabMe
         absl::StrCat(meta.vocab_size),
         SerializeByteToTokenId(meta.byte_to_token_id),
         absl::StrCat(meta.tokenizer_kind),
+        absl::StrCat(meta.base_vocab_size),
         absl::StrCat(meta.unk_id),
         absl::StrCat(meta.byte_fallback),
         absl::StrCat(meta.add_dummy_prefix),

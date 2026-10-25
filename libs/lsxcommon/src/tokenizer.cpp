@@ -5,6 +5,7 @@
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_split.h>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -136,10 +137,38 @@ arrow::Status load_tokenizer_metadata(
                 if (absl::SimpleAtoi(*s, &v)) out = v;
             };
             get_opt_i32("tokenizer_kind", db.tokenizer_kind);
+            get_opt_i32("base_vocab_size", db.base_vocab_size);
             get_opt_i32("unk_id", db.unk_id);
             get_opt_i32("byte_fallback", db.byte_fallback);
             get_opt_i32("add_dummy_prefix", db.add_dummy_prefix);
             get_opt_i32("escape_whitespaces", db.escape_whitespaces);
+        }
+
+        // tiktoken: the vocabulary IS the merge table (adjacent pair bytes ->
+        // id), and ids >= base_vocab_size are added tokens matched literally.
+        if (db.tokenizer_kind == 2) {
+            if (db.base_vocab_size <= 0 || db.base_vocab_size > db.vocab_size)
+                return arrow::Status::Invalid(
+                    "tokenizer: bad base_vocab_size for tiktoken BPE");
+            db.rank_by_bytes.reserve(
+                static_cast<size_t>(db.base_vocab_size) * 2);
+            for (int32_t id = 0; id < db.base_vocab_size; ++id) {
+                const int64_t b = db.token_offsets[id];
+                const int64_t e = db.token_offsets[id + 1];
+                db.rank_by_bytes.emplace(
+                    std::string_view(
+                        reinterpret_cast<const char *>(db.token_bytes + b),
+                        static_cast<size_t>(e - b)), id);
+            }
+            for (int32_t id = db.base_vocab_size; id < db.vocab_size; ++id)
+                if (db.token_offsets[id + 1] > db.token_offsets[id])
+                    db.literal_ids.push_back(id);
+            std::stable_sort(
+                db.literal_ids.begin(), db.literal_ids.end(),
+                [&](int32_t a, int32_t b) {
+                    return (db.token_offsets[a + 1] - db.token_offsets[a]) >
+                           (db.token_offsets[b + 1] - db.token_offsets[b]);
+                });
         }
 
         // ---- merges file ----
@@ -520,6 +549,144 @@ int32_t sp_bpe_decode(const ArrowTokenizerDb &db, const int32_t *ids,
 
 // ── gpt2 byte-level BPE (tokenizer_kind == 0) ────────────────────────────────
 
+// ── tiktoken byte-level BPE (tokenizer_kind == 2) ──────────────────────────
+//
+// tiktoken's mergeable_ranks IS the vocabulary: a pair of adjacent symbols
+// merges exactly when the concatenated BYTES are a token, and the merge
+// priority is that token's rank (== id). No separate merge table is needed
+// and no reconstruction heuristic is involved, so the result is exact by
+// construction (validated against the checkpoint tokenizer by
+// test_kimi_moe_tokenizer_parity).
+//
+// Added tokens (id >= base_vocab_size) are matched literally before BPE,
+// mirroring the checkpoint's `encode(..., allowed_special="all")`: `<think>`,
+// `<|im_start|>`-style markers are single tokens and never pass through BPE.
+namespace {
+
+// Returns the number of tokens appended to @p out, or SIZE_MAX when a symbol
+// cannot be mapped (malformed db).
+size_t tt_encode_piece(const ArrowTokenizerDb &db, const char *p, size_t n,
+                       std::vector<int32_t> &out)
+{
+    if (n == 0) return 0;
+    if (n > kMaxWordBytes) return SIZE_MAX;
+    std::vector<int> off(n), len(n, 1);
+    for (size_t i = 0; i < n; ++i) off[i] = static_cast<int>(i);
+    size_t syms = n;
+    while (syms > 1) {
+        size_t best = 0;
+        int32_t best_rank = INT32_MAX;
+        bool found = false;
+        for (size_t i = 0; i + 1 < syms; ++i) {
+            const size_t b = static_cast<size_t>(off[i]);
+            const size_t e = static_cast<size_t>(off[i + 1]) +
+                             static_cast<size_t>(len[i + 1]);
+            const auto it = db.rank_by_bytes.find(
+                std::string_view(p + b, e - b));
+            if (it != db.rank_by_bytes.end() && it->second < best_rank) {
+                best = i;
+                best_rank = it->second;
+                found = true;
+            }
+        }
+        if (!found) break;
+        const size_t nb = static_cast<size_t>(off[best]);
+        const size_t ne = static_cast<size_t>(off[best + 1]) +
+                          static_cast<size_t>(len[best + 1]);
+        off[best] = static_cast<int>(nb);
+        len[best] = static_cast<int>(ne - nb);
+        for (size_t i = best + 1; i + 1 < syms; ++i) {
+            off[i] = off[i + 1];
+            len[i] = len[i + 1];
+        }
+        --syms;
+    }
+    for (size_t i = 0; i < syms; ++i) {
+        const auto it = db.rank_by_bytes.find(std::string_view(
+            p + off[i], static_cast<size_t>(len[i])));
+        if (it == db.rank_by_bytes.end()) return SIZE_MAX;
+        out.push_back(it->second);
+    }
+    return syms;
+}
+
+int32_t tiktoken_bpe_encode(const ArrowTokenizerDb &db, const char *text,
+                            size_t text_len, int32_t *out_tokens,
+                            size_t *max_out_len)
+{
+    bool first_byte[256] = {};
+    for (int32_t id : db.literal_ids) {
+        const int64_t b = db.token_offsets[id];
+        if (db.token_offsets[id + 1] > b)
+            first_byte[db.token_bytes[b]] = true;
+    }
+
+    std::vector<int32_t> out;
+    out.reserve(text_len + 8);
+    size_t pos = 0;
+    while (pos < text_len) {
+        // A literal added token at pos (longest first: literal_ids is sorted).
+        int32_t lit = -1;
+        size_t lit_len = 0;
+        if (first_byte[static_cast<uint8_t>(text[pos])]) {
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l = static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - pos) continue;
+                if (std::memcmp(text + pos,
+                                db.token_bytes + b, l) == 0) {
+                    lit = id;
+                    lit_len = l;
+                    break;
+                }
+            }
+        }
+        if (lit >= 0) {
+            out.push_back(lit);
+            pos += lit_len;
+            continue;
+        }
+        // BPE the run up to the next literal occurrence.
+        size_t gap_end = text_len;
+        for (size_t at = pos + 1; at < text_len; ++at) {
+            if (!first_byte[static_cast<uint8_t>(text[at])]) continue;
+            bool hit = false;
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l = static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - at) continue;
+                if (std::memcmp(text + at, db.token_bytes + b, l) == 0) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                gap_end = at;
+                break;
+            }
+        }
+        WordStream ws(text + pos, gap_end - pos);
+        WordSpan w;
+        while (ws.next(w)) {
+            if (tt_encode_piece(db, w.begin, w.length, out) == SIZE_MAX)
+                return -1;
+        }
+        if (ws.error()) return -1;
+        pos = gap_end;
+    }
+
+    if (out.size() > *max_out_len) {
+        *max_out_len = out.size();
+        return -2;
+    }
+    if (!out.empty())
+        std::memcpy(out_tokens, out.data(), out.size() * sizeof(int32_t));
+    *max_out_len = out.size();
+    return static_cast<int32_t>(out.size());
+}
+
+} // namespace
+
 int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
                                size_t text_len, int32_t *out_tokens,
                                size_t *max_out_len)
@@ -528,6 +695,9 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
     if (text_len == 0) text = "";
     if (db.tokenizer_kind == 1)
         return sp_bpe_encode(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 2)
+        return tiktoken_bpe_encode(db, text, text_len, out_tokens,
+                                   max_out_len);
 
     // Pass 1: count.
     size_t total = (db.bos_id >= 0) ? 1 : 0;

@@ -1,0 +1,26 @@
+# Kimi-K2.7-Code tokenizer parity corpus (one case per line).
+#   - a line starting with '#' is a comment
+#   - \n, \t and \\ in a line are unescaped to a newline, a tab and a backslash
+#     by tools/kimi_tokenizer_capture.py, so multi-line text fits one line
+# Every case is encoded by the checkpoint's own tokenizer (tiktoken with Kimi's
+# pat_str) and by the engine's bridge; ids must match exactly.
+# ASCII words and contractions
+The capital of France is
+don't stop, it's 3.14% of the total...
+# code and punctuation
+def f(x):\n    return x**2 + 1\n
+SELECT * FROM users WHERE id = 10;
+json {"a": [1, 2, 3], "b": null}
+# whitespace runs
+  leading and trailing   
+\tTabbed\tline
+# non-Latin
+Переменная = 42
+变量名 = 42 中文测试
+emoji 🚀 test ünïcode
+# long repeats (BPE depth)
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+# chat control markers (special + non-special)
+<|im_user|>user<|im_middle|>hi<|im_end|>
+<|tool_call_begin|>functions.get_weather:0<|tool_call_argument_begin|>{"city":"Paris"}<|tool_call_end|>
+<think>reasoning</think>answer

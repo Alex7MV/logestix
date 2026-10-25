@@ -128,6 +128,38 @@ size_t consume_lm(const char *begin, const char *end, size_t start, size_t first
         run += cl;
         p += cl;
     }
+    // Optional English contraction suffix, case-insensitive:
+    //   (?i:'s|'t|'re|'ve|'m|'ll|'d)
+    // Longest alternatives first ('re/'ve/'ll before 's/'t/'m/'d). The
+    // apostrophe is the ASCII one only, like the reference pattern.
+    if (p < static_cast<size_t>(end - begin) && begin[p] == '\'') {
+        static const char *const kSuffix[] = {"re", "ve", "ll", "s", "t", "m", "d"};
+        for (const char *sfx : kSuffix) {
+            const size_t l = std::strlen(sfx);
+            if (p + 1 + l > static_cast<size_t>(end - begin)) continue;
+            bool ok = true;
+            for (size_t i = 0; i < l; ++i) {
+                char c = begin[p + 1 + i];
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                if (c != sfx[i]) { ok = false; break; }
+            }
+            if (!ok) continue;
+            // A contraction must not be followed by another letter
+            // ("'s" inside "'something" stays with the letter run).
+            const size_t after = p + 1 + l;
+            if (after < static_cast<size_t>(end - begin)) {
+                size_t cl2 = 0;
+                const uint32_t c3 = decode_utf8(begin + after,
+                    static_cast<size_t>(end - (begin + after)), &cl2);
+                if (c3 != kInvalid &&
+                    (unicode::classify(c3) == unicode::CharClass::Letter ||
+                     unicode::classify(c3) == unicode::CharClass::Mark))
+                    continue;
+            }
+            run = (p + 1 + l) - start;
+            break;
+        }
+    }
     return run;
 }
 
@@ -179,9 +211,16 @@ static bool match_main(const char *begin, const char *end, size_t pos, size_t *m
     }
 
     // alt2: [not \r\n \p{L} \p{P} \p{S}]? [\p{L}\p{M}]+
+    //
+    // The reference's kimi pat_str excludes \p{Han} from these letter classes
+    // (a Han run is its own alternative), and the CJK split below is applied
+    // before the regex. A Han codepoint must therefore never start (or be
+    // pulled in as) this alternative — otherwise " 中" becomes one pretoken and
+    // the Han run is cut after its first character, which changes the ids.
     {
-        bool cp_lm = unicode::classify(cp) == unicode::CharClass::Letter ||
-                     unicode::classify(cp) == unicode::CharClass::Mark;
+        bool cp_lm = (unicode::classify(cp) == unicode::CharClass::Letter ||
+                      unicode::classify(cp) == unicode::CharClass::Mark) &&
+                     !is_cjk_run(cp);
         bool cp_other = cp != 0x0D && cp != 0x0A &&
                         unicode::classify(cp) != unicode::CharClass::Letter &&
                         unicode::classify(cp) != unicode::CharClass::Punct &&
@@ -195,8 +234,9 @@ static bool match_main(const char *begin, const char *end, size_t pos, size_t *m
             if (p < n) {
                 size_t cl = 0;
                 uint32_t c2 = decode_utf8(begin + p, n - p, &cl);
-                if (c2 != kInvalid && (unicode::classify(c2) == unicode::CharClass::Letter ||
-                                       unicode::classify(c2) == unicode::CharClass::Mark)) {
+                if (c2 != kInvalid && (!is_cjk_run(c2)) &&
+                    (unicode::classify(c2) == unicode::CharClass::Letter ||
+                     unicode::classify(c2) == unicode::CharClass::Mark)) {
                     *match_len = cp_len + consume_lm(begin, end, p, cl);
                     return true;
                 }

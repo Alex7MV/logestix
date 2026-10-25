@@ -1,0 +1,30 @@
+CASE 24 5 1008 10484 318 15383 387
+The capital of France is
+CASE 38 13 88709 6156 11 4643 220 18 13 1626 4 318 276 5131 1614
+don't stop, it's 3.14% of the total...
+CASE 30 13 1166 285 3940 2360 274 745 1288 381 17 715 220 16 198
+def f(x):
+    return x**2 + 1
+
+CASE 34 10 12319 397 10861 5945 14294 1965 327 220 795 26
+SELECT * FROM users WHERE id = 10;
+CASE 32 18 5534 9392 64 1289 793 16 11 220 17 11 220 18 2287 414 65 1289 1704 92
+json {"a": [1, 2, 3], "b": null}
+CASE 25 5 220 8134 316 42711 274
+  leading and trailing   
+CASE 12 4 197 11855 6343 37179
+	Tabbed	line
+CASE 25 8 14374 4567 9738 3833 34905 327 220 5512
+Переменная = 42
+CASE 27 8 31146 1072 327 220 5512 220 16717 9555
+变量名 = 42 中文测试
+CASE 25 8 33120 17137 40101 1812 20824 77 44187 2431
+emoji 🚀 test ünïcode
+CASE 72 9 101908 101908 101908 101908 101908 101908 101908 101908 101908
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+CASE 40 5 163587 2482 163601 9663 163586
+<|im_user|>user<|im_middle|>hi<|im_end|>
+CASE 103 14 163597 41937 1150 21055 2800 25 15 163598 8264 37666 7471 113476 16934 163599
+<|tool_call_begin|>functions.get_weather:0<|tool_call_argument_begin|>{"city":"Paris"}<|tool_call_end|>
+CASE 30 5 163606 34876 288 163607 26921
+<think>reasoning</think>answer

@@ -441,6 +441,8 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
         }
     }
 
+    const int32_t base_rank_count = static_cast<int32_t>(key_to_id.size());
+
     // (2) Special tokens from tokenizer_config.json added_tokens_decoder +
     // authoritative bos/eos/pad names.
     int32_t bos_id = -1, eos_id = -1, pad_id = -1;
@@ -613,6 +615,11 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
     meta.pad_id = pad_id;
     meta.vocab_size = vocab_size;
     meta.byte_to_token_id = byte_to_token_id;
+    // tiktoken: the vocabulary is the merge table and ids >= base_vocab_size
+    // are added tokens matched literally before BPE.
+    meta.tokenizer_kind = 2;
+    meta.base_vocab_size = base_rank_count;
+
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

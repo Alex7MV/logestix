@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace lsxcommon {
@@ -31,8 +33,17 @@ struct ArrowTokenizerDb {
 
     int32_t bos_id = -1, eos_id = -1, pad_id = -1;
     int32_t byte_to_token_id[256];
-    // 0 = gpt2 byte-level BPE (default), 1 = sentencepiece BPE.
+    // 0 = gpt2 byte-level BPE (default), 1 = sentencepiece BPE,
+    // 2 = tiktoken byte-level BPE.
     int32_t tokenizer_kind = 0;
+    // tokenizer_kind == 2 only. Ids >= base_vocab_size are added tokens that
+    // the reference encoder matches literally (tiktoken allowed_special="all");
+    // literal_ids holds them longest-text-first, and rank_by_bytes is the
+    // vocabulary itself acting as the merge table (pair bytes -> id).
+    // std:: containers, not absl: this header is reachable from .cu TUs.
+    int32_t base_vocab_size = 0;
+    std::vector<int32_t> literal_ids;
+    std::unordered_map<std::string_view, int32_t> rank_by_bytes;
     int32_t unk_id = 0;
     int32_t byte_fallback = 0;
     int32_t add_dummy_prefix = 1;
