@@ -229,6 +229,8 @@ cudaError_t KimiRouteFinish(cudaEvent_t ev)
 #define M_PI 3.14159265358979323846
 #endif
 #include <cstdlib>
+#include <set>
+#include <sstream>
 #include <vector>
 
 namespace lsxcommon {
@@ -1224,6 +1226,19 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
         const char *p = std::getenv("KIMI_DIAG_IDS");
         return p ? std::atoi(p) : -1;
     }();
+    // Diagnostics (KIMI_DUMP_LAYERS=0,1,30,60): dump the prefill hidden rows
+    // after these layers for the external layer oracle
+    // (tools/kimi_layer_oracle.py). Parsed once, not per layer/token.
+    static const std::set<int> kDumpLayerSet = [] {
+        std::set<int> s;
+        if (const char *p = std::getenv("KIMI_DUMP_LAYERS")) {
+            std::stringstream ss(p);
+            std::string tok;
+            while (std::getline(ss, tok, ','))
+                if (!tok.empty()) s.insert(std::atoi(tok.c_str()));
+        }
+        return s;
+    }();
 
     for (int l = 0; l < kKimiNumLayers; ++l) {
         const KimiLayerWeights &lw = pw.layers[l];
@@ -1577,6 +1592,33 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                 ::lsxcommon::kernels::AddInPlaceKernel<__nv_bfloat16><<<grid, block, 0, stream>>>(
                     d_mlp_g,
                     d_scratch_a + (size_t)base * kKimiHidden, total);
+            }
+        }
+
+        // Diagnostics (env-gated): after this layer's residual add, dump the
+        // prefill rows in bf16 so tools/kimi_layer_oracle.py can compare them
+        // against the checkpoint's own reference modules. Syncs the stream
+        // once per dumped layer — diagnostics only.
+        if (turn == 0 && kDumpLayerSet.count(l) > 0) {
+            std::error_code tec;
+            const auto path = std::filesystem::temp_directory_path(tec) /
+                              ("kimi_layer_" + std::to_string(l) + ".bin");
+            if (!tec) {
+                if (FILE *f = std::fopen(path.string().c_str(), "wb")) {
+                    const int hdr[2] = {seq, kKimiHidden};
+                    std::fwrite(hdr, sizeof(int), 2, f);
+                    std::vector<__nv_bfloat16> rows(
+                        static_cast<size_t>(seq) * kKimiHidden);
+                    cudaMemcpy(rows.data(),
+                               d_scratch_a + (size_t)base * kKimiHidden,
+                               rows.size() * sizeof(__nv_bfloat16),
+                               cudaMemcpyDeviceToHost);
+                    std::fwrite(rows.data(), sizeof(__nv_bfloat16),
+                                rows.size(), f);
+                    std::fclose(f);
+                    fprintf(stderr, "[DIAG] dumped layer %d (%d rows)\n", l,
+                            seq);
+                }
             }
         }
     }
