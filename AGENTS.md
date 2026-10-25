@@ -16,6 +16,10 @@ only genuinely open work; resolved items move to a dated snapshot in
 `fast` label is green (86/86); `inference` is not, and the reasons are
 catalogued there rather than left to be rediscovered.
 
+The measured model x gate status (which model passes which parity gate, which
+rows are declared debt and which only SKIP for a missing tree) —
+`docs/SELFCHECK_MATRIX.md`; the per-session trail is the open-tasks archive.
+
 Why the open list is never empty and why a green suite is a sample rather than
 a proof — `docs/OPEN_ENDEDNESS.md`. A system cannot certify its own correctness
 from within, so every numeric claim needs an external oracle (upstream
