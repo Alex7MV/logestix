@@ -64,6 +64,15 @@ attribution, budget tests, baselines) is the `perf-tuning-a-model` skill.
   FP8 tensors) and the E2M1 encode flavors. The two E4M3 flavors are **not**
   interchangeable: NVFP4 block scales are unsigned via
   `nvfp4_codec`/`nvfp4_scale`; real signed FP8 data uses `F8E4m3ToFloat`.
+- **Every decode of a weight row ends with `* global_scale`.** The per-16 E4M3
+  block scale is only half of the NVFP4 value (`w = e2m1 * e4m3 * gs`); a
+  hand-written family kernel (logits/head kernels are the usual place) that
+  applies the block scale and forgets the tensor scale is silently off by
+  `1/gs` — gemma-4-26b's NVFP4 logits kernel shipped 7.01x hot logits that way
+  (`gs = 0.1426`), and greedy argmax hid it because a positive scale preserves
+  the ordering, while the logit row, temperature/top-k semantics and the
+  SelfCheck logit evidence were all wrong. Unit tests for such a kernel must
+  use a **non-unit** `global_scale`; a `gs = 1` fixture cannot see the defect.
 - Model-neutral device helpers that families alias rather than copy:
   `lsx_device_math.h` (`ExpfGlibc`/`RsqrtfGlibc`, aliased by
   `glm_moe_device_math.h`) and `lsx_reduce.cuh` (`BlockMaxShfl`, aliased by
@@ -174,6 +183,8 @@ Invalid __global__ write of size 4 bytes
   correct" — breaks the single-stream invariant and the perf model.
 - `atomicAdd` in a reduction feeding `final_logits` → nondeterministic decode.
 - A family-named NVFP4 GEMM wrapper instead of the neutral layer.
+- Decoding a weight row without the table/tensor `global_scale`, or testing
+  that kernel only with `global_scale = 1` (see the NVFP4 bullet above).
 - Quantizing norms/biases "for consistency".
 - Changing codec rounding and updating only the code, not the mirror + test.
 - Assuming CUB works identically under MSVC.

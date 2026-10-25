@@ -183,6 +183,79 @@ fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
   and an unbounded host footprint. See **"Host-side weight storage —
   `ExpertStore` and Arrow zero-copy"** below (rules R1/R2).
 
+#### Parity fix: the residual plane (the current way to fix quantization)
+
+A parity gate that goes red on a *borderline* answer is not automatically a
+quantization problem, and "make the weights more precise" is the last resort,
+not the first move. Run this decision procedure (all of it is cheap once the
+converter is deterministic — re-conversion of a 26B model is under a minute):
+
+1. **Is it a tie or a bug?** Teacher-force the golden prefix through the
+   converted model (`Infer` with `prompt + prefix[:k]`, read `final_logits`;
+   temporarily force the final soft cap to a huge value so you see pre-softcap
+   logits) and compare against the source model run the same way
+   (`config.text_config.final_logit_softcapping = None`, bf16). Record the
+   source margin and the converted margin at the fork. A flip of a >10-logit
+   preference is not noise — look for a kernel defect first.
+2. **Bug checklist before any precision work** (each of these has shipped at
+   least once): the logits kernel must multiply the row dot by the table's
+   per-tensor `global_scale` (test it with `gs != 1`; a `gs = 1` fixture cannot
+   see a dropped scale — gemma-4-26b shipped 7.01x hot logits that way);
+   `Free()` must release every allocation the loader added; the decode pass
+   must use the same codec/scale path as the converter (decode the written
+   record on the host and compare with the source tensor: `base relL2` of
+   ~0.09 with `base+res` ~0.009 is the expected pair, and a residual that is
+   zero/garbage shows up immediately).
+3. **Only then, place a residual plane.** If the model tracks the source
+   per layer (cos > 0.99 early, ~0.96 at the last layer) and the fork is a
+   template near-tie, the cause is accumulated 4-bit body error. The fix is a
+   **second NVFP4 plane carrying the residual** `w - dequant(base)`, decoded as
+   one more GEMV with `acc = true`: ~8 effective bits for 2x the bytes, no new
+   codec, schema or kernel.
+4. **Measure the placement; never assume it.** A recipe that works on one
+   member does not transfer to its sibling, and an offline HF-side simulation
+   is only *qualitative* (its baseline error is not the engine's — on gemma-4
+   the sim said "o+down suffices" for the dense 31B and the engine disagreed).
+   Calibrate by re-converting the engine's own tree per candidate placement and
+   probing the fork. Prefer the cheapest set that clears every gate, and prefer
+   leaving the biggest/streamed tensors alone (routed experts) so the decode
+   read volume is untouched.
+5. **Budget it honestly.** Doubling a tensor's bytes is a real cost: report the
+   resident size and re-seed the perf rows **through the harness** with its own
+   TTFT/power evidence (never hand-edit a row). If no placement that fits the
+   card clears the gate, say so and leave the golden red — that is a recorded
+   debt, not a golden to rewrite.
+
+Known placements (measured, do not re-derive from scratch):
+
+| family | plane on | left 4-bit | cost |
+|---|---|---|---|
+| phi-4 (14.7B dense) | every projection; `embed_tokens`/`lm_head` stay FP16 | — | 16.6 GiB, 71 t/s |
+| gemma-4-26b-a4b-it (MoE) | attention projections + dense MLP | routed experts, tied table | +1.5 GiB, 157 -> 128 t/s |
+| gemma-4-31b-it (dense) | needs *every* linear (~33.7 GiB) -> does not fit; partial placements move away from the source | — | gate stays red (`OPEN_TASKS.md` §R) |
+
+Implementation checklist (all of it is exercised by tests in the phi-4 and
+gemma-4 changes — copy their shape):
+
+- converter: `gpu::quantize_residual_tensor_gpu(...)` from the source bytes and
+  the base triple; emit the residual as the **same** record schema with a
+  `.res` name suffix (`<name>.res.{packed,scales,global_scale}`); write an
+  index field (`"residual": true` / `"attn+mlp"`) for humans and the VRAM
+  estimate; extend the family's `VramTensorPolicy::has_residual` so
+  `EstimateVram` doubles exactly those tensors.
+- loader: one `LsxNvfp4Weight` member per plane, uploaded from the suffix when
+  present and **left null on a legacy 4-bit-only tree** (the decode skips the
+  accumulate pass, so old artifacts keep loading); release every plane in
+  `Free()`.
+- inference: after each base GEMV/GEMM, one more call with `acc = true` into the
+  same buffer (the kernels already support it, so the arithmetic is "base dot
+  rounds, then the residual dot adds and rounds once more").
+- tests, written red first: converter (records exist, `base+res` reconstruction
+  at least 2x better than `base`, and *no* plane on norms/router/edge tensors
+  you deliberately excluded), loader (members uploaded with the base shape, and
+  null where the converter wrote none), and the arithmetic of the accumulate
+  pass against a host reference that rounds between the two dots.
+
 ### 3. Registration in the factory (LsxModelFactory)
 
 - Register the string `kType` in `libs/lsxcommon/src/model_registry.cpp` via
@@ -470,6 +543,11 @@ without updating them fails CI.
       The verdict (target name, or "generic") is written into the tool-verdict
       table of `test_model_suite_guard.cpp` in the same commit.
 - [ ] `test_<model>_selfcheck.cpp` ≥3 cycles, bit-exact, `SKIP_RETURN_CODE 4`.
+- [ ] FSI/CODE/DET goldens captured from the source and the gates **run** (a
+      SKIP is not a pass). If one is red on a borderline answer, follow
+      "Parity fix: the residual plane" in stage 2 — and record the outcome
+      (green, or the measured reason it cannot be green on this card) in
+      `docs/SELFCHECK_MATRIX.md` + `docs/OPEN_TASKS.md`.
 - [ ] perf entry in `tests/perf/perf_baselines.json` + `TEST_CASE` in
       `test_perf_baseline.cpp` + `add_test` target in `tests/CMakeLists.txt` (label
       `perf`, `SKIP_RETURN_CODE 4`).
@@ -532,3 +610,14 @@ ingested.
 - Keeping a `UnpackBatch` record alive past the scope that uploads it — the
   record owns a full `std::vector<uint8_t>` copy of the tensor. Read it as a
   view when the payload is retained.
+- Adding a residual (or any extra) weight plane in the loader without adding it
+  to `Free()`. The leak is invisible on one model load and shows up as an
+  `out of memory` on the *next* one — on gemma-4-31b it surfaced as a SelfCheck
+  failure in the following test case, not as a leak report.
+- Treating an offline HF-side quantization simulation as a recipe oracle. It is
+  qualitative: its all-4-bit baseline is not the engine's, so a placement it
+  "proves" sufficient can be useless (or harmful) in the engine. Calibrate by
+  re-converting the engine's own tree.
+- Rewriting a golden, or a perf row, to make a gate pass. Goldens are source
+  parity (`docs/OPEN_ENDEDNESS.md`); perf rows are re-seeded through the harness
+  with its own evidence, never by hand.
