@@ -128,6 +128,24 @@ that it can no longer be invisible.
 whole family, which is worth noticing: a family can look fully wired across all four
 parity stages and still have a hole in one of them.
 
+**A rejected golden set (2026-10-25), kept here as evidence.** Three
+`nemotron-3.5-lightning-30b-a3b-nvfp4` goldens were committed and reverted the
+same day. They were not a source capture: the `input_ids` were
+Qwen3.8-Flash-Next ids (up to **248069** against this model's **131072**-entry
+vocabulary — `convert_ids_to_tokens(248045)` returns `None`, and decoding the
+row with the Qwen tokenizer reproduces the prompt exactly), the `expected`
+values equalled that family's goldens verbatim in all nine cases, and `source`
+was a descriptive sentence rather than the model path both capture tools write.
+The three gates therefore failed with an empty `raw` (out-of-vocabulary ids →
+immediate turn close), and the commit also left `test_model_suite_guard` red
+("debt row whose golden now exists" ×3). No fix is available locally: the
+checkpoint is `modelopt 0.44.0rc5` `MIXED_PRECISION` with `W4A16_NVFP4` experts
+plus an FP8 KV cache, and the installed transformers ships **no** modelopt
+quantizer, so the source cannot be executed for an oracle; the bf16 passport is
+not in the vault. The debt rows stay. The lesson matches §J: a golden that is
+not the source's own generation is not a parity oracle, and a golden with the
+wrong tokenizer cannot even be a framing test.
+
 ## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
 
 The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
