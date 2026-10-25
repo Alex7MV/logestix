@@ -46,8 +46,11 @@ TEST_CASE("Kimi classifier strips language_model prefix", "[kimi][convert]") {
     REQUIRE(t.kind == K::RoutedExpert);
     REQUIRE(t.weight_id == 3);
 
-    REQUIRE(kimi_classify("vision_tower.encoder.layers.0.attn.qkv.weight").kind == K::Unknown);
-    REQUIRE(kimi_classify("mm_projector.proj.0.weight").kind == K::Unknown);
+    // Ballast is classified (and counted), never Unknown.
+    REQUIRE(kimi_classify("vision_tower.encoder.layers.0.attn.qkv.weight").kind == K::Ballast);
+    REQUIRE(kimi_classify("mm_projector.proj.0.weight").kind == K::Ballast);
+    REQUIRE(kimi_classify("language_model.model.layers.7.mlp.experts.42.gate_proj.weight_shape").kind == K::ShapeAnnotation);
+    REQUIRE(kimi_classify("mtp.layers.0.attn.weight").kind == K::Mtp);
 }
 
 TEST_CASE("Kimi classifier covers every tensor family", "[kimi][convert]") {
@@ -207,4 +210,48 @@ TEST_CASE("Kimi conversion applies the checkpoint token policy", "[kimi][convert
     CHECK(get("bos_id") == "-1");
     CHECK(get("eos_id") == "257");
     CHECK(get("pad_id") == "258");
+}
+
+// Stage 0.4: ballast is classified and COUNTED (never silently skipped), and a
+// genuinely unknown model tensor fails the conversion instead of warning.
+TEST_CASE("Kimi conversion counts ballast and rejects unknown tensors",
+          "[kimi][convert]")
+{
+    namespace fs = std::filesystem;
+    auto in = fs::temp_directory_path() / "kimi_ballast_in";
+    auto out = fs::temp_directory_path() / "kimi_ballast_out";
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+    kimitest::WriteKimiConfig(in);
+    kimitest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
+                               kimitest::BuildSyntheticKimiModel(2));
+    kimitest::WriteKimiTokenizerFiles(in);
+    const auto conv = lsxcommon::kimi::ConvertKimiModel(in.string(), out);
+    INFO(conv.ToString());
+    REQUIRE(conv.ok());
+
+    std::ifstream f(out / "logestix" / "model.index.json");
+    REQUIRE(f.good());
+    const std::string json((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+    CHECK(json.find("\"skipped_visual_tensors\": 2") != std::string::npos);
+    // One MoE layer x 2 experts x 3 projections.
+    CHECK(json.find("\"skipped_shape_tensors\": 6") != std::string::npos);
+    CHECK(json.find("\"mtp_layer\": null") != std::string::npos);
+
+    auto in2 = fs::temp_directory_path() / "kimi_unknown_in";
+    auto out2 = fs::temp_directory_path() / "kimi_unknown_out";
+    fs::remove_all(in2);
+    fs::remove_all(out2);
+    fs::create_directories(in2);
+    kimitest::WriteKimiConfig(in2);
+    auto tensors = kimitest::BuildSyntheticKimiModel(2);
+    tensors.push_back({"language_model.model.layers.1.mlp.mystery.weight",
+                       "BF16", {16, 16}, kimitest::MakeBf16(256)});
+    kimitest::WriteSafetensors(in2, "model-00001-of-00001.safetensors", tensors);
+    kimitest::WriteKimiTokenizerFiles(in2);
+    const auto st = lsxcommon::kimi::ConvertKimiModel(in2.string(), out2.string());
+    REQUIRE_FALSE(st.ok());
+    CHECK(st.ToString().find("unclassified tensor") != std::string::npos);
 }

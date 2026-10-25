@@ -20,6 +20,9 @@ enum class KimiTensorKind {
     Attention,      // layers.N.self_attn.{q_a,q_b,kv_a_proj_with_mqa,kv_b,o}_proj / norms
     LayerNorm,      // layers.N.{input_layernorm,post_attention_layernorm}
     Global,         // embed_tokens / lm_head / model.norm
+    Ballast,        // vision_tower.* / mm_projector.* (counted, never applied)
+    ShapeAnnotation,// compressed-tensors *.weight_shape (counted, skipped)
+    Mtp,            // speculative head (counted, never applied)
 };
 
 struct KimiParsedTensor {
@@ -32,7 +35,8 @@ struct KimiParsedTensor {
 
 // Classifies a full safetensors tensor name into a Kimi pipeline category.
 // The "language_model." checkpoint prefix is stripped internally;
-// vision_tower.* / mm_projector.* classify as Unknown (stripped fat).
+// vision_tower.* / mm_projector.* classify as Ballast and *.weight_shape as
+// ShapeAnnotation: both are counted and skipped (stage 0.4), never applied.
 KimiParsedTensor kimi_classify(const std::string &name);
 
 // Topology of a converted Kimi-K2.7-Code model, derived from the source

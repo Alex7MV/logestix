@@ -57,6 +57,15 @@ inline void AppendInt4ExpertProj(std::vector<FakeTensor> &t,
     t.push_back({base + proj + ".weight_scale", "BF16",
                  {rows, groups},
                  MakeBf16(static_cast<int64_t>(rows) * groups)});
+    // compressed-tensors records the logical shape next to the payload; it is
+    // ballast (counted, never applied) and must not fail the conversion.
+    {
+        std::vector<uint8_t> shape(8, 0);
+        const int32_t dims[2] = {rows, cols};
+        std::memcpy(shape.data(), dims, sizeof(dims));
+        t.push_back({base + proj + ".weight_shape", "I32", {2},
+                     std::move(shape)});
+    }
 }
 
 inline void AppendKimiAttention(std::vector<FakeTensor> &t, int l)
@@ -108,6 +117,12 @@ inline std::vector<FakeTensor> BuildSyntheticKimiModel(int num_layers = 3)
                  MakeBf16(64 * 16)});
     t.push_back({"language_model.model.norm.weight",         "BF16", {16},
                  MakeBf16(16)});
+
+    // Multimodal ballast the converter must count and skip.
+    t.push_back({"vision_tower.encoder.blocks.0.wqkv.weight", "BF16",
+                 {16, 16}, MakeBf16(256)});
+    t.push_back({"mm_projector.proj.0.weight", "BF16", {16, 16},
+                 MakeBf16(256)});
 
     for (int l = 0; l < num_layers; ++l) {
         AppendKimiAttention(t, l);

@@ -185,6 +185,28 @@ KimiParsedTensor kimi_classify(const std::string &full_name)
     if (auto p = parse_shared_expert(name)) return *p;
     if (auto p = parse_routed_expert(name)) return *p;
     if (auto p = parse_dense_mlp(name)) return *p;
+
+    // Non-textual ballast, counted rather than silently dropped.
+    if (name.rfind("vision_tower.", 0) == 0 ||
+        name.rfind("mm_projector.", 0) == 0 ||
+        full_name.rfind("vision_tower.", 0) == 0 ||
+        full_name.rfind("mm_projector.", 0) == 0) {
+        KimiParsedTensor p;
+        p.kind = KimiTensorKind::Ballast;
+        return p;
+    }
+    if (name.size() > 13 && name.compare(name.size() - 13, 13,
+                                         ".weight_shape") == 0) {
+        KimiParsedTensor p;
+        p.kind = KimiTensorKind::ShapeAnnotation;
+        return p;
+    }
+    if (name.rfind("mtp.", 0) == 0 || name.rfind("model.mtp.", 0) == 0 ||
+        full_name.rfind("mtp.", 0) == 0) {
+        KimiParsedTensor p;
+        p.kind = KimiTensorKind::Mtp;
+        return p;
+    }
     return {};
 }
 
@@ -453,6 +475,9 @@ void WriteKimiModelIndex(
     const KimiTopology &topo,
     int64_t total_pinned,
     int64_t total_experts,
+    int64_t skipped_visual,
+    int64_t skipped_shape,
+    int64_t mtp_tensors,
     const absl::btree_map<int, absl::btree_map<std::string, float>>
         &mla_global_scales,
     const fs::path &output_root)
@@ -494,7 +519,14 @@ void WriteKimiModelIndex(
     }
     f << "],\n";
     f << "  \"total_pinned_tensors\": " << total_pinned << ",\n";
-    f << "  \"total_experts\": " << total_experts << "\n";
+    f << "  \"total_experts\": " << total_experts << ",\n";
+    // Stage 0.4 ballast accounting: stripped vision/projector tensors, the
+    // compressed-tensors shape records, and any speculative head. This
+    // checkpoint has num_nextn_predict_layers = 0, so mtp_layer is null.
+    f << "  \"skipped_visual_tensors\": " << skipped_visual << ",\n";
+    f << "  \"skipped_shape_tensors\": " << skipped_shape << ",\n";
+    f << "  \"mtp_tensors\": " << mtp_tensors << ",\n";
+    f << "  \"mtp_layer\": " << (mtp_tensors > 0 ? "40" : "null") << "\n";
     f << "}\n";
     f.close();
 }
@@ -638,6 +670,9 @@ arrow::Status ConvertKimiModel(
 
     int experts_processed = 0;
     int pinned_processed = 0;
+    int skipped_visual = 0;   // vision tower / multimodal projector
+    int skipped_shape = 0;    // compressed-tensors *.weight_shape
+    int mtp_tensors = 0;      // speculative head (never applied)
     int shard_idx = 0;
     int max_layer = -1;
     int max_experts_per_layer = 0;
@@ -777,6 +812,12 @@ arrow::Status ConvertKimiModel(
                 t.shape = tensor.shape; t.data = std::move(raw);
                 pinned_tensors.push_back(std::move(t));
                 ++pinned_processed;
+            } else if (parsed.kind == KimiTensorKind::Ballast) {
+                ++skipped_visual;
+            } else if (parsed.kind == KimiTensorKind::ShapeAnnotation) {
+                ++skipped_shape;
+            } else if (parsed.kind == KimiTensorKind::Mtp) {
+                ++mtp_tensors;
             } else if (parsed.kind != KimiTensorKind::Unknown) {
                 // Attention, Router, LayerNorm, Global -> pinned.
                 max_layer = std::max(max_layer, parsed.layer);
@@ -786,8 +827,11 @@ arrow::Status ConvertKimiModel(
                 pinned_tensors.push_back(std::move(t));
                 ++pinned_processed;
             } else {
-                lsxcommon::log::warn(absl::StrCat(
-                    "  Unclassified tensor: ", tensor.name, " (skipped)"));
+                // Stage 0.4: everything must be classified. A leftover tensor
+                // is a converter defect, not a warning.
+                return arrow::Status::Invalid(
+                    "unclassified tensor (extend kimi_classify): ",
+                    tensor.name);
             }
         }
     }
@@ -818,6 +862,7 @@ arrow::Status ConvertKimiModel(
         topo,
         static_cast<int64_t>(pinned_tensors.size()),
         static_cast<int64_t>(experts_processed),
+        skipped_visual, skipped_shape, mtp_tensors,
         mla_global_scales,
         log_root);
 
