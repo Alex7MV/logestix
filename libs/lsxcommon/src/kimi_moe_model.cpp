@@ -8,6 +8,8 @@
 
 #include "kimi_moe_kernels.h"
 #include "lsxcommon/kimi_moe_convert.h"
+#include "lsxcommon/kimi_moe_tool_format.h"
+#include "lsxcommon/tokenizer.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/fast_math_mode.h"
 #include "lsxcommon/gpu_perf.h"
@@ -135,6 +137,44 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
     if (!r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
     return r;
+}
+
+bool KimiK27CodeModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderKimiConversation(conv, text)) return false;
+    // A tokenizer without the Kimi sentinels falls back to the generic
+    // transcript (keeps the bridge usable on any fixture).
+    if (arrow_tokenizer_lookup(tok, "<|im_user|>", 11) < 0)
+        return BuildPromptInputIds(tok, text, out_ids);
+    return AppendKimiIds(tok, text, out_ids);
+}
+
+bool KimiK27CodeModel::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    out_calls.clear();
+    if (gen_tokens.empty()) return true;
+    std::string text(4096, '\0');
+    size_t cap = text.size();
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const int rc = arrow_tokenizer_decode(
+            tok, gen_tokens.data(), gen_tokens.size(), text.data(), &cap);
+        if (rc == 0) {
+            text.resize(cap);
+            out_calls = ParseKimiToolCalls(text);
+            return true;
+        }
+        if (rc == -2 && cap > text.size() && cap <= (1u << 20)) {
+            text.resize(cap);
+            continue;
+        }
+        break;
+    }
+    return false;
 }
 
 // KimiK27CodeModel::Unload — canonical ModelBase template method

@@ -65,7 +65,7 @@ bool AllowedCommon(const std::string& stem)
         "qwen_device_math",
         "qwen_reduce",
         "gemma_base_model",
-        "deepseek_moe_tool_format",  // V4/V4.1 DSML codec shared by both
+        "deepseek_moe_tool_format", "kimi_moe_tool_format",  // V4/V4.1 DSML codec shared by both
         "qwen_tool_format",          // ChatML codec shared by dense + MoE
         "gemma_tool_format",         // Gemma-4 tool codec
         "granite_tool_format",       // Granite-4.2 ChatML tool codec

@@ -238,7 +238,7 @@ const std::vector<SuiteSpec> &Suites()
           {"load",
            {"test_kimi_moe_loader", "test_kimi_moe_expert_cache",
             "test_kimi_moe_tokenizer", "test_kimi_moe_tokenizer_parity"}},
-          {"model", {"test_kimi_moe_model"}},
+          {"model", {"test_kimi_moe_model", "test_kimi_tool_framing"}},
           {"kernels",
            {"test_kimi_moe_router", "test_kimi_moe_attention",
             "test_kimi_moe_rope_parity", "test_kimi_moe_experts",
@@ -751,7 +751,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // BYTE-IDENTICAL to the 26B's, so the shared gemma codec target proves
         // the render+parse round-trip for both.
         {"gemma-4-31b-it", {"test_gemma_tool_framing"}},
-        {"kimi-k2.7-code", {}},
+        {"kimi-k2.7-code", {"test_kimi_tool_framing"}},
         {"ornith-1.5-35b-a3b", {"test_qwen_tool_framing"}},
         {"phi-4", {"test_phi_tool_framing"}},
         {"granite-4.2-30b", {}},

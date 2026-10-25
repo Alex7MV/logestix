@@ -3651,6 +3651,16 @@ add_test(NAME test_kimi_moe_tokenizer_parity COMMAND test_kimi_moe_tokenizer_par
 set_tests_properties(test_kimi_moe_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_kimi_moe_tokenizer_parity PROPERTIES LABELS fast)
 
+# ── Kimi native conversation/tool codec (host-only) ───────────────────────
+add_executable(test_kimi_tool_framing test_kimi_tool_framing.cpp)
+target_compile_definitions(test_kimi_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_include_directories(test_kimi_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_kimi_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_tool_framing COMMAND test_kimi_tool_framing)
+set_tests_properties(test_kimi_tool_framing PROPERTIES LABELS fast)
+
 # ── Kimi routed-expert FFN test ───────────────────────────────────────────
 add_library(test_kimi_moe_experts_cu OBJECT test_kimi_moe_experts.cu)
 set_target_properties(test_kimi_moe_experts_cu PROPERTIES
