@@ -237,14 +237,8 @@ namespace kimi {
 namespace {
 
 constexpr int kRopePairs = kKimiQkRope / 2;
-// YaRN attention-scale: softmax_scale = q_head_dim^-0.5 * attn_factor.
-// Kimi config sets mscale = mscale_all_dim = 1.0, so the HF factor
-// yarn_get_mscale(f,mscale)/yarn_get_mscale(f,mscale_all_dim) is 1.0
-// and the scale degenerates to the plain inverse sqrt (no mscale boost).
-__device__ __host__ __forceinline__ float KimiAttnScale()
-{
-    return rsqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope));
-}
+// KimiAttnScale() lives in kimi_moe_load.h so the device path and the
+// host-side parity test share one definition.
 
 double YarnCorrectionDim(double num_rotations, double dim, double base,
                          double max_pos)
@@ -320,30 +314,19 @@ __global__ void kimi_kv_postprocess_kernel(__nv_bfloat16 *__restrict__ kvfull,
                             __bfloat162float(kv_a_norm[i]) * inv);
     __syncthreads();
 
+    // Shared with the host-side parity test (kimi_moe_load.h): one helper
+    // owns the element pairing; this loop only distributes pairs over threads.
     for (int pair = threadIdx.x; pair < kRopePairs; pair += blockDim.x) {
         __nv_bfloat16 *kr = c + kKimiKvLoraRank;
-        float freq = inv_freq[pair];
-        float cs = cosf(freq * static_cast<float>(abs_pos));
-        float sn = sinf(freq * static_cast<float>(abs_pos));
-        float x = __bfloat162float(kr[pair]);
-        float y = __bfloat162float(kr[kRopePairs + pair]);
-        kr[pair] = __float2bfloat16_rn(x * cs - y * sn);
-        kr[kRopePairs + pair] = __float2bfloat16_rn(x * sn + y * cs);
+        KimiRopePair(pair, inv_freq[pair] * static_cast<float>(abs_pos), kr);
     }
 
     __nv_bfloat16 *qtok = q_all +
         (size_t)token * (kKimiNumHeads * (kKimiQkNope + kKimiQkRope));
     for (int h = 0; h < kKimiNumHeads; ++h) {
         __nv_bfloat16 *qr = qtok + h * (kKimiQkNope + kKimiQkRope) + kKimiQkNope;
-        for (int pair = threadIdx.x; pair < kRopePairs; pair += blockDim.x) {
-            float freq = inv_freq[pair];
-            float cs = cosf(freq * static_cast<float>(abs_pos));
-            float sn = sinf(freq * static_cast<float>(abs_pos));
-            float x = __bfloat162float(qr[pair]);
-            float y = __bfloat162float(qr[kRopePairs + pair]);
-            qr[pair] = __float2bfloat16_rn(x * cs - y * sn);
-            qr[kRopePairs + pair] = __float2bfloat16_rn(x * sn + y * cs);
-        }
+        for (int pair = threadIdx.x; pair < kRopePairs; pair += blockDim.x)
+            KimiRopePair(pair, inv_freq[pair] * static_cast<float>(abs_pos), qr);
     }
 }
 
@@ -474,6 +457,10 @@ __global__ void kimi_mla_attn_kernel(
 
 } // namespace
 
+// Public host accessor for the RoPE frequencies (parity test + generation
+// setup use the same table the kernel consumes).
+std::vector<float> KimiYarnInvFreq() { return BuildYarnInvFreq(); }
+
 cudaError_t KimiMlaReset(KimiMlaState *d_state, cudaStream_t stream)
 {
     return cudaMemsetAsync(d_state, 0, sizeof(KimiMlaState), stream);
@@ -522,7 +509,7 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
 
     const float alpha = 1.0f, beta0 = 0.0f;
 
-    static const std::vector<float> kInvFreq = BuildYarnInvFreq();
+    static const std::vector<float> kInvFreq = KimiYarnInvFreq();
     static float *d_inv_freq = nullptr;
     if (!d_inv_freq) {
         if (cudaMalloc(&d_inv_freq, kRopePairs * sizeof(float)) !=

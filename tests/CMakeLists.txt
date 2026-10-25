@@ -3630,6 +3630,14 @@ endif()
 
 add_test(NAME test_kimi_moe_attention COMMAND test_kimi_moe_attention)
 
+# ── Kimi MLA rope/scale parity (host-only golden from the vendored code) ──
+add_executable(test_kimi_moe_rope_parity test_kimi_moe_rope_parity.cpp)
+target_compile_definitions(test_kimi_moe_rope_parity PRIVATE
+    LSX_KIMI_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/kimi")
+target_link_libraries(test_kimi_moe_rope_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_moe_rope_parity COMMAND test_kimi_moe_rope_parity)
+set_tests_properties(test_kimi_moe_rope_parity PROPERTIES LABELS fast)
+
 # ── Kimi routed-expert FFN test ───────────────────────────────────────────
 add_library(test_kimi_moe_experts_cu OBJECT test_kimi_moe_experts.cu)
 set_target_properties(test_kimi_moe_experts_cu PROPERTIES

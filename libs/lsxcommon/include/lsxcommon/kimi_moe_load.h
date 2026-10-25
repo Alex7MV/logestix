@@ -6,6 +6,7 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -42,6 +43,55 @@ constexpr float kKimiRmsEps = 1e-5f;
 constexpr float kKimiRopeTheta = 50000.0f;
 constexpr float kKimiYarnFactor = 64.0f;
 constexpr int kKimiYarnOriginalMaxPos = 4096;
+
+// YaRN attention scale: the reference multiplies q_head_dim**-0.5 by
+// yarn_get_mscale(factor, mscale_all_dim)**2 when mscale_all_dim is truthy.
+// For this config (factor 64, mscale = mscale_all_dim = 1.0):
+//   mscale = 0.1*ln(64) + 1 = 1.4158883083359672
+// The cos/sin path is unscaled because yarn_get_mscale(64, 1)/itself == 1.
+constexpr float kKimiYarnMscale = 1.4158883083359672f;
+
+// One adjacent-pair RoPE rotation: element pair (2p, 2p+1) by theta.
+// Single source of truth for the kernel and the parity test; the golden is
+// captured from the checkpoint's own modeling_deepseek.py.
+//
+// Two overloads (float for the host parity test, bf16 for the device path)
+// with identical pairing; the bf16 path is additionally pinned end-to-end by
+// test_kimi_moe_attention.
+__device__ __host__ inline void KimiRopePair(int p, float theta, float *r)
+{
+    const int a = p;               // RED: half-split pairs (i, i+32)
+    const int b = p + kKimiQkRope / 2;
+    const float cs = cosf(theta), sn = sinf(theta);
+    const float x = r[a], y = r[b];
+    r[a] = x * cs - y * sn;
+    r[b] = x * sn + y * cs;
+}
+
+__device__ __host__ inline void KimiRopePair(int p, float theta,
+                                             __nv_bfloat16 *r)
+{
+    const int a = p;               // RED: half-split pairs (i, i+32)
+    const int b = p + kKimiQkRope / 2;
+    const float cs = cosf(theta), sn = sinf(theta);
+    const float x = __bfloat162float(r[a]), y = __bfloat162float(r[b]);
+    r[a] = __float2bfloat16_rn(x * cs - y * sn);
+    r[b] = __float2bfloat16_rn(x * sn + y * cs);
+}
+
+// YaRN interpolation over the pair index (HF DeepseekV3YarnRotaryEmbedding).
+std::vector<float> KimiYarnInvFreq();
+
+// Attention temperature used by the MLA kernels. Header-inline because the
+// decode kernel calls it from device code and the parity test calls it from
+// the host. (Task 3 adds the YaRN mscale**2 factor; this commit keeps the
+// current value so the parity test fails on the number, not on the build.)
+__device__ __host__ inline float KimiAttnScale()
+{
+    // 1/sqrt(qk_head_dim); constant-folded by the compiler and identical on
+    // host and device, so the parity test can pin it from a .cpp TU.
+    return 1.0f / sqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope));
+}
 
 // Derived MLA projection row counts (rows of the checkpoint weight matrices).
 constexpr int kKimiQaRows = kKimiQLoraRank;                               // 1536
