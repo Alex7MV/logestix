@@ -232,8 +232,11 @@ selfcheck -> fsi -> code -> det -> perf), and the frozen passport is
   `perf_baseline_logic` sees it; no `perf_baselines.json` row is committed yet
   (seed through the release harness, never by hand). Expect the 2048-token
   protocol to be host-store bound: every token touches 61 x 6 experts
-  (~13.5 GB) through mmap staging; the debug SelfCheck measured ~0.6 t/s,
-  so the Release number is the one to record.
+  (~13.5 GB) through mmap staging. A Release short-protocol observation
+  (2026-10-26, `linux-release-znver4-aocc`, 64 tokens, RTX 5090): **0.7 t/s**,
+  TTFT 9.0 s, 28.0 GiB resident, 104 W avg — the 2048-token protocol at that
+  rate is ~49 min per mode, so the two-mode harness run is queued as the
+  remaining step, not inferred from this sample.
 
 Residency note for the next operator: do NOT turn on
 `LSX_DEEPSEEK_PRO_PIN=1` on this box. The expert tree is 822 GiB against
