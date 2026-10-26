@@ -41,6 +41,7 @@ moe_layers 60, dense_layers [0], mla_nvfp4 layers 61
 | `test_kimi_moe_int4_real` | source INT4 vs converted NVFP4 payload | PASS |
 | `test_kimi_moe_mla_proj_real` | host NVFP4 decoder on the converted pinned bytes | PASS — o_proj (K=8192,kp=8), kv_a/q_a (kp=4), q_b (kp=1) all within 1e-3; routed expert FFN relL2 ≤ 2%; router BF16 matvec ≤ 1e-2 |
 | `test_kimi_moe_selfcheck` | in-engine determinism + Paris | PASS, 3 cycles, first token 17374 (`Paris`), identical logits hash `0bdd98687b069382` |
+| `test_kimi_moe_inference` | determinism across calls, streaming, cooperative cancel, instance reuse | PASS (52 assertions, 3 cases): the stream matches the produced tokens; pre-set and callback abort both stop early; six consecutive `Infer` calls all succeed and reproduce the first call's tokens |
 | `tools/kimi_layer_oracle.py` | the checkpoint's own math on the converted weights, per-layer hidden states | PASS — relL2 / cos: layer 0 **0.0034 / 0.999996**, layer 1 **0.0400 / 0.99921**, layer 30 **0.0554 / 0.99886**, layer 60 **0.1226 / 0.99253** |
 
 ### Layer oracle — how to reproduce

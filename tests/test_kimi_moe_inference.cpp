@@ -63,10 +63,6 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
     req.input_ids = ids;
     req.max_gen_tokens = 4;
 
-    {   // TEMP-VERIFY: warmup call (discarded) to isolate cross-call state
-        auto rw = m->Infer(req);
-        WARN("warmup sum=" << [&]{ float s=0; for (float v: rw.final_logits) s+=v; return s; }());
-    }
     auto r1 = m->Infer(req);
     if (!r1.ok) FAIL("r1 failed: " + r1.error_msg);
     REQUIRE(r1.ok);
@@ -83,13 +79,10 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
     ExpectCooperativeCancelStops(*m, req);
     REQUIRE(!r1.final_logits.empty());
 
+    // A failed call after the cancel runs would be a lifecycle leak: the abort
+    // path must leave the instance usable.
     auto r2 = m->Infer(req);
-    {
-        float sa = 0.f, sb = 0.f;
-        for (float v : r1.final_logits) sa += v;
-        for (float v : r2.final_logits) sb += v;
-        WARN("R1 sum=" << sa << " R2 sum=" << sb);
-    }
+    if (!r2.ok) FAIL("infer after cancel failed: " + r2.error_msg);
     REQUIRE(r2.ok);
     CHECK(r2.gen_tokens == r1.gen_tokens);
     if (std::memcmp(r2.final_logits.data(), r1.final_logits.data(),
@@ -119,6 +112,39 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
 }
 
 // ── EOS host-truncate (device-side decode, F-11 Round 25) ──────────────────
+TEST_CASE("Kimi-K2.7-Code repeated inference keeps the instance usable",
+          "[kimi][model][inference][real-model]")
+{
+    const std::filesystem::path model = KimiModelPath();
+    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+        SKIP("converted Kimi model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = EncodePrompt(m->Tokenizer(), "The capital of France is");
+    REQUIRE(!req.input_ids.empty());
+    req.max_gen_tokens = 4;
+
+    // Every call must succeed and reproduce the first call's tokens. The
+    // decode path allocates per-generation workspaces and re-plans the expert
+    // cache, so a leak shows up as a failure or a divergence on a later call.
+    std::vector<int32_t> first;
+    for (int call = 0; call < 6; ++call) {
+        const auto r = m->Infer(req);
+        INFO("call " << call << " error: " << r.error_msg);
+        REQUIRE(r.ok);
+        REQUIRE(r.gen_tokens.size() == 4);
+        if (call == 0) first = r.gen_tokens;
+        else CHECK(r.gen_tokens == first);
+    }
+    m->Unload();
+}
+
 TEST_CASE("kimi EOS host-truncate cuts at first eos and flags termination",
           "[kimi][decode][eos]")
 {
