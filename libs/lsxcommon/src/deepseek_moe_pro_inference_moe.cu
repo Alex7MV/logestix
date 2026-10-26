@@ -464,7 +464,8 @@ cudaError_t route_scores_host(
     float *h_logits_scratch,
     int *h_top_indices, float *h_top_weights)
 {
-    constexpr float kRouteScale = 1.5f;
+    // V4-Pro passport: routed_scaling_factor = 2.5 (V4-Flash is 1.5).
+    constexpr float kRouteScale = lsxcommon::deepseek_pro::kRouteScale;
 
     // Defensive bounds: `scores`/`sel`/`selected` are fixed-size stack arrays
     // sized for the model's known geometry (kNumRouted, declared in

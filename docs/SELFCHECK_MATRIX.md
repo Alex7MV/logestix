@@ -68,7 +68,10 @@ when the converted tree exists; SelfCheck skips with them.
 
 `glm-5.2`, `deepseek-v4-flash`, `nemotron-3.5-lightning-30b-a3b` (bf16 sibling),
 `gigachat3.5-432b-a28b-reasoning`, `mimo-v2.6-flash-rl`. Registered stages
-exist; converted trees and goldens do not.
+exist; converted trees and goldens do not. `deepseek-v4-pro-0813` moved out of
+this section on 2026-10-26: the 838 GB tree exists and SelfCheck passes on real
+weights (Paris x3, bit-exact logits) — its FSI/CODE/DET remain declared debt
+because the source oracle is the TP-4 FP8 runner (`docs/OPEN_TASKS.md` §R3).
 
 `kimi-k2.7-code` moved out of this section on 2026-10-26: the tree now exists
 (542 GB, 23040 experts) and **SelfCheck passes on real weights** — Paris

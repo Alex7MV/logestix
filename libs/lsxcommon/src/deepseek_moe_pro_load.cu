@@ -141,7 +141,13 @@ cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
     if (total > 0) {
         cudaError_t e = cudaMalloc(&arena, total);
         if (e != cudaSuccess) {
-            log::error(std::string("[load_pinned] layer arena alloc failed: ")
+            size_t fb = 0, tb = 0;
+            cudaMemGetInfo(&fb, &tb);
+            log::error(std::string("[load_pinned] layer arena alloc failed (")
+                       + std::to_string(total >> 20) + " MiB, rb="
+                       + std::to_string(bytes_acc >> 20) + " MiB, free="
+                       + std::to_string(fb >> 20) + " MiB, total="
+                       + std::to_string(tb >> 20) + " MiB): "
                        + cudaGetErrorString(e));
             return e;
         }
@@ -382,6 +388,19 @@ void free_expert_index(ExpertDb &db) { db.Free(); }
 void LayerWeights::Free()
 {
     if (d_arena) {
+        // The shared-expert blobs and their load-time dequant caches are
+        // allocated SEPARATELY from the layer arena; the early return used to
+        // skip them, leaking the whole shared set (~4 GiB on V4-Pro) on every
+        // Unload and making a second model load in the same process OOM.
+        if (d_shared_w1)        cudaFree(d_shared_w1);
+        if (d_shared_w2)        cudaFree(d_shared_w2);
+        if (d_shared_w3)        cudaFree(d_shared_w3);
+        if (d_shared_w1_scales) cudaFree(d_shared_w1_scales);
+        if (d_shared_w2_scales) cudaFree(d_shared_w2_scales);
+        if (d_shared_w3_scales) cudaFree(d_shared_w3_scales);
+        if (d_shared_w1_h)      cudaFree(d_shared_w1_h);
+        if (d_shared_w3_h)      cudaFree(d_shared_w3_h);
+        if (d_shared_w2_f32)    cudaFree(d_shared_w2_f32);
         if (h_tid2eid)   cudaFreeHost(h_tid2eid);
         if (h_gate_bias) cudaFreeHost(h_gate_bias);
         cudaFree(d_arena);
@@ -577,7 +596,6 @@ cudaError_t load_pinned_weights(
         cudaError_t ge = cudaMalloc(&pw.d_embed,
                                     static_cast<size_t>(numel) * 2);
         if (ge != cudaSuccess) return ge;
-        rb += static_cast<std::uint64_t>(numel) * 2;
         ge = ring.UploadBf16AsFp16(embed_t->data, numel,
                                    pw.d_embed, stream, rb);
         if (ge != cudaSuccess) {
@@ -592,7 +610,6 @@ cudaError_t load_pinned_weights(
         cudaError_t ge = cudaMalloc(&pw.d_head,
                                     static_cast<size_t>(numel) * 2);
         if (ge != cudaSuccess) return ge;
-        rb += static_cast<std::uint64_t>(numel) * 2;
         ge = ring.UploadBf16AsFp16(head_t->data, numel,
                                    pw.d_head, stream, rb);
         if (ge != cudaSuccess) {
@@ -606,7 +623,6 @@ cudaError_t load_pinned_weights(
         cudaError_t ge = cudaMalloc(&pw.d_final_norm,
                                     static_cast<size_t>(numel) * 2);
         if (ge != cudaSuccess) return ge;
-        rb += static_cast<std::uint64_t>(numel) * 2;
         ge = ring.UploadBf16AsFp16(norm_t->data, numel,
                                    pw.d_final_norm, stream, rb);
         if (ge != cudaSuccess) {
@@ -630,7 +646,6 @@ cudaError_t load_pinned_weights(
         }
         cudaError_t he = cudaMalloc(dst, t->bytes);
         if (he != cudaSuccess) return he;
-        rb += t->bytes;
         he = ring.UploadRaw(t->data, *dst, t->bytes, stream, rb);
         if (he != cudaSuccess) {
             log::error(std::string("[load_pinned] upload failed for ")
@@ -847,7 +862,9 @@ cudaError_t load_pinned_weights(
                     cudaError_t ue = cudaMalloc(
                         &d_buf, static_cast<size_t>(desc.packed_bytes));
                     if (ue != cudaSuccess) return ue;
-                    rb += static_cast<std::uint64_t>(desc.packed_bytes);
+                    // ring.UploadRaw accounts the bytes in `rb`; adding them
+                    // here too inflated resident_bytes by ~2x the shared set
+                    // (4 GiB on V4-Pro) and made the governor refuse the lease.
                     ue = ring.UploadRaw(desc.host_ptr, d_buf,
                                         static_cast<size_t>(desc.packed_bytes),
                                         stream, rb);
@@ -856,7 +873,6 @@ cudaError_t load_pinned_weights(
                         ue = cudaMalloc(&d_scales,
                                         static_cast<size_t>(desc.scale_bytes));
                         if (ue != cudaSuccess) return ue;
-                        rb += static_cast<std::uint64_t>(desc.scale_bytes);
                         ue = ring.UploadRaw(desc.scale_host_ptr, d_scales,
                                             static_cast<size_t>(desc.scale_bytes),
                                             stream, rb);
@@ -880,8 +896,13 @@ cudaError_t load_pinned_weights(
                                 lw.shared_w3_global_scale,
                                 lw.shared_w3_bytes);
                 if (ue != cudaSuccess) {
+                    size_t fb = 0, tb = 0;
+                    cudaMemGetInfo(&fb, &tb);
                     log::error("[load_pinned] shared expert upload failed "
-                               "(layer " + std::to_string(l) + "): "
+                               "(layer " + std::to_string(l) + ", rb="
+                               + std::to_string(rb >> 20) + " MiB, free="
+                               + std::to_string(fb >> 20) + " MiB, total="
+                               + std::to_string(tb >> 20) + " MiB): "
                                + cudaGetErrorString(ue));
                     pw.Free();
                     return ue;
@@ -889,9 +910,14 @@ cudaError_t load_pinned_weights(
                 // Load-time FP16/FP32 dequant caches (F-12 Task 4): the
                 // same kernels the per-call path uses, executed ONCE at
                 // load; bit-exact by construction, works with fast_math
-                // either way. ~67 MB per layer across 43 layers.
-                if (lw.shared_w1_bytes > 0 && lw.shared_w3_bytes > 0 &&
-                    lw.shared_w2_bytes > 0) {
+                // either way. On V4-Pro the caches cost ~176 MB/layer
+                // (61 layers = 10.7 GiB) on top of the 26.7 GiB resident set,
+                // which does not fit a 32 GB card, so they are OPT-IN and the
+                // per-call dequant path (identical arithmetic) is the default.
+                const bool want_shared_cache =
+                    std::getenv("LSX_DEEPSEEK_PRO_SHARED_CACHE") != nullptr;
+                if (want_shared_cache && lw.shared_w1_bytes > 0 &&
+                    lw.shared_w3_bytes > 0 && lw.shared_w2_bytes > 0) {
                     const int64_t w1el = lw.shared_w1_bytes;
                     const int64_t w2el = lw.shared_w2_bytes;
                     ue = cudaMalloc(&lw.d_shared_w1_h,
@@ -1014,6 +1040,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
         return at;
     };
     const int64_t o_single       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
+    const int64_t o_single_f32   = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
     const int64_t o_normed       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
     const int64_t o_ffn_out      = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
     const int64_t o_hidden       = page(static_cast<int64_t>(kHcDim) * sizeof(float), 16);
@@ -1104,6 +1131,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
 
     // Bind device slices.
     d_single       = reinterpret_cast<__half*>(d_base + o_single);
+    d_single_f32   = reinterpret_cast<float*>(d_base + o_single_f32);
     d_normed       = reinterpret_cast<__half*>(d_base + o_normed);
     d_ffn_out      = reinterpret_cast<__half*>(d_base + o_ffn_out);
     d_hidden       = reinterpret_cast<float*>(d_base + o_hidden);

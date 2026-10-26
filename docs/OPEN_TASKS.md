@@ -171,7 +171,7 @@ and is machine-enforced in **both** directions:
   the problem and rot;
 - a `kGoldenDebt` row matching no live gap fails, so renames do not leave dead entries.
 
-Current state: **25 declared debt entries** across the nine families that have none
+Current state: **28 declared debt entries** across the ten families that have none
 (or only some) of the three goldens. That number is the honest coverage figure, and
 until now it was only obtainable by diffing two directories by hand.
 
@@ -205,6 +205,41 @@ quantizer, so the source cannot be executed for an oracle; the bf16 passport is
 not in the vault. The debt rows stay. The lesson matches §J: a golden that is
 not the source's own generation is not a parity oracle, and a golden with the
 wrong tokenizer cannot even be a framing test.
+
+## R3. DeepSeek-V4-Pro-0813 — ingestion landed, parity/perf pending (2026-10-26)
+
+The family is registered end to end (convert -> load -> model -> kernels ->
+selfcheck -> fsi -> code -> det -> perf), and the frozen passport is
+61 layers / 7168 hidden / 384x3072 experts / 129280 vocab with the
+`128,128,4,128,4,...` compression grid. Two items remain open:
+
+- **P1 — SelfCheck is green on real weights (2026-10-26).** The 892.7 GB
+  source converted cleanly in place (838 GB tree: 27 GB pinned + 811 GB
+  experts, `deferred.mtp = 7009`; `incomplete 0`). `test_..._pro_selfcheck`:
+  Paris x3 with an identical `final_logits` hash, streaming order exact, and
+  both abort contracts green; the real-weight tool round-trip returned
+  `get_weather {"city":"Paris"}`. Getting there exposed two non-obvious
+  defects: the HC residual exceeds the FP16 range at depth (the source runs
+  BF16/FP8), so `hc_pre`/`hc_head` now publish an **FP32** combined vector
+  (`d_single_f32`) before the scale-invariant RMSNorm; and `LayerWeights::Free`
+  skipped the separately-allocated shared-expert blobs (~4 GiB) on the
+  arena-backed path, so a second `Load()` in one process OOM'd — both fixed.
+- **P2 — parity goldens stay declared debt.** `deepseek-v4-pro-0813:{fsi,code,det}`
+  are in `kGoldenDebt`. The source oracle is the TP-4 FP8 reference
+  (`inference/generate.py`), which this single 32 GB card cannot run, exactly
+  as for Mistral (§T); the three targets SKIP (tree present, golden absent).
+- **P3 — perf.** `test_perf_baseline_deepseek_v4_pro` is registered and
+  `perf_baseline_logic` sees it; no `perf_baselines.json` row is committed yet
+  (seed through the release harness, never by hand). Expect the 2048-token
+  protocol to be host-store bound: every token touches 61 x 6 experts
+  (~13.5 GB) through mmap staging; the debug SelfCheck measured ~0.6 t/s,
+  so the Release number is the one to record.
+
+Residency note for the next operator: do NOT turn on
+`LSX_DEEPSEEK_PRO_PIN=1` on this box. The expert tree is 822 GiB against
+750 GB of RAM; the loader caps an opt-in pool at 64 GiB for exactly that
+reason, and the default (mmap + `LSX_DEEPSEEK_PRO_MAX_OPEN`, 4096) is the
+bounded path.
 
 ## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
 

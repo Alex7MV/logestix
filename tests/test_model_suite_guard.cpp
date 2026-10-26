@@ -892,9 +892,10 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "deepseek-v4-flash:code",
         "deepseek-v4-flash:det",
         "deepseek-v4-flash:fsi",
-        // V4-Pro is ingested before its parity goldens are captured (the
-        // source is a 892 GB fp4/fp8 checkpoint; capture needs the converted
-        // tree to run here first). Declared debt, not a silent SKIP.
+        // V4-Pro's source oracle is the Tensor-Parallel FP8 reference
+        // (inference/generate.py, MP=4) over an 892 GB checkpoint; this
+        // single 32 GB card cannot run it, so no source capture exists.
+        // Declared debt, not a silent SKIP.
         "deepseek-v4-pro-0813:code",
         "deepseek-v4-pro-0813:det",
         "deepseek-v4-pro-0813:fsi",

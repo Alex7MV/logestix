@@ -283,7 +283,7 @@ hc_pre_finalize_kernel(
 __global__ void hc_combine_kernel(
     const float* __restrict__ x,
     const float* __restrict__ pre,
-    __half* __restrict__ y)
+    float* __restrict__ y)
 {
     constexpr int D = kHiddenDim;
     constexpr int H = kHcMult;
@@ -292,7 +292,11 @@ __global__ void hc_combine_kernel(
     float acc = 0.0f;
     for (int j = 0; j < H; ++j)
         acc += pre[j] * x[j * D + i];
-    y[i] = __float2half(acc);
+    // V4-Pro keeps the HC residual in FP32 and its norm can exceed FP16's
+    // 65504 max (the source runs BF16/FP8 with a 3e38 range); the combined
+    // vector feeds an RMSNorm, which is scale-invariant, but must be stored
+    // in FP32 or it becomes inf before the norm sees it.
+    y[i] = acc;
 }
 
 } // anonymous namespace
@@ -630,7 +634,7 @@ cudaError_t run_hc_pre(cudaStream_t stream,
                        const float* d_fn,              // [mix_hc, hc_mult·dim]
                        const float* d_scale,           // [3]
                        const float* d_base,            // [mix_hc]
-                       __half* d_single,               // [dim] FP16
+                       float* d_single,                // [dim] FP32
                        float* d_post, float* d_comb,   // [hc_mult], [hc_mult·hc_mult]
                        float* d_pre,                   // [hc_mult]
                        float* d_scratch,               // ≥ (kHcMix+1)*kHcTiles floats
@@ -669,7 +673,7 @@ cudaError_t run_hc_head(cudaStream_t stream,
                         const float* d_fn,             // [hc_mult, hc_mult·dim]
                         const float* d_scale,          // [1]
                         const float* d_base,           // [hc_mult]
-                        __half* d_single,              // [dim] FP16
+                        float* d_single,               // [dim] FP32
                         float* d_scratch)              // ≥ (kHcMult+1)*kHcTiles + kHcMult floats
 {
     constexpr int M = kHcMult;

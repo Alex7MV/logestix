@@ -401,7 +401,8 @@ inline std::atomic<std::uint64_t>& InferenceAllocCount()
 struct DeepSeekInferArena {
     // device block
     uint8_t* d_base = nullptr;
-    __half* d_single = nullptr;      // [kHiddenDim]
+    __half* d_single = nullptr;      // [kHiddenDim] embedding row (FP16)
+    float*  d_single_f32 = nullptr;  // [kHiddenDim] hc_pre/head combine (FP32)
     __half* d_normed = nullptr;      // [kHiddenDim]
     __half* d_ffn_out = nullptr;     // [kHiddenDim]
     float*  d_hidden = nullptr;      // [kHcDim]
@@ -467,7 +468,7 @@ cudaError_t load_pinned_weights(const std::string &model_path,
 cudaError_t run_hc_pre(cudaStream_t stream,
                        const float *d_state, const float *d_fn,
                        const float *d_scale, const float *d_base,
-                       __half *d_single, float *d_post, float *d_comb,
+                       float *d_single, float *d_post, float *d_comb,
                        float *d_pre, float *d_scratch,
                        float rms_eps = 1e-6f);
 
@@ -479,7 +480,7 @@ cudaError_t run_hc_post(cudaStream_t stream,
 cudaError_t run_hc_head(cudaStream_t stream,
                         const float *d_state, const float *d_fn,
                         const float *d_scale, const float *d_base,
-                        __half *d_single, float *d_scratch);
+                        float *d_single, float *d_scratch);
 
 cudaError_t run_expand_hc(cudaStream_t stream,
                           const __half *d_single, float *d_state);

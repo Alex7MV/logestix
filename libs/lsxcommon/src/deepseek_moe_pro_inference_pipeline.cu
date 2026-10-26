@@ -55,17 +55,18 @@ __global__ void clamp_f32_to_fp16(const float* __restrict__ src,
 }
 
 static __host__ cudaError_t run_rmsnorm(
-    cudaStream_t stream, const __half* d_input, const __half* d_weight,
+    cudaStream_t stream, const float* d_input, const __half* d_weight,
     __half* d_output, float* d_scratch, float* d_gamma_scratch, int dim, float eps)
 {
     int n = dim;
     int block = 256;
     int grid = (n + block - 1) / block;
 
-    half_to_float_kernel<<<grid, block, 0, stream>>>(d_input, d_scratch, n);
+    // d_input is FP32: V4-Pro's HC residual can exceed the FP16 range, so the
+    // combine stage must not round-trip through half before the norm.
     half_to_float_kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, n);
 
-    cudaError_t err = rmsnorm_float(stream, 1, dim, d_scratch,
+    cudaError_t err = rmsnorm_float(stream, 1, dim, d_input,
                                      d_gamma_scratch, eps, d_scratch);
     if (err != cudaSuccess) return err;
 
@@ -196,7 +197,12 @@ InferenceResult RunInferenceModel(
 
     // 4. Allocate device buffers
     int max_gen = std::min(max_gen_tokens, 4096);
-    int total_tokens = static_cast<int>(input_ids.size()) + max_gen;
+    if (max_gen < 1) max_gen = 1;
+    // The first generated token is the argmax at step prompt_len-1, so a
+    // budget of N tokens needs prompt_len+N-1 steps, not +N (the old bound
+    // produced N+1 and broke the streaming contract's exact-budget check).
+    int total_tokens = static_cast<int>(input_ids.size()) + max_gen - 1;
+    if (total_tokens < 1) total_tokens = 1;
     std::vector<int> gen_ids;
     gen_ids.reserve(static_cast<size_t>(total_tokens));
 
@@ -207,7 +213,8 @@ InferenceResult RunInferenceModel(
     DeepSeekInferArena arena;
     float *d_hidden = nullptr;      // [hc_mult·dim] — HC state in FP32
     float *d_hidden_next = nullptr; // [hc_mult·dim] FP32
-    __half *d_single = nullptr;      // [dim] hc_pre output
+    __half *d_single = nullptr;      // [dim] embedding row (FP16)
+    float  *d_single_f32 = nullptr;  // [dim] hc_pre/head combine (FP32)
     __half *d_normed = nullptr;      // [dim] rmsnorm output
     __half *d_ffn_out = nullptr;     // [dim] FFN output (converted to half for hc_post)
     float *d_ffn_accum = nullptr;   // [dim] FP32 accumulation buffer (shared+routed)
@@ -240,6 +247,7 @@ InferenceResult RunInferenceModel(
     int64_t routed_pack_total = 0, routed_scale_total = 0;
     ExpertDb expert_db;
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
+    bool ttft_recorded = false;   // a pre-set abort exits before the first token
     cudaEvent_t evict_done = nullptr;   // mmap-eviction barrier (event form)
     // Dual-stream expert staging: H2D miss copies run on copy_stream with a
     // per-expert event; the compute stream waits only for the expert it is
@@ -341,7 +349,8 @@ InferenceResult RunInferenceModel(
     // 7. Single-allocation per-run arena (spec item 12). Allocate AFTER load so
     // d_logits is sized to the model's actual vocab_size (bounds-checked above),
     // and the CSA region to the real per-layer compress ratios.
-    total_steps = static_cast<int>(input_ids.size()) + max_gen;
+    total_steps = static_cast<int>(input_ids.size()) + max_gen - 1;
+    if (total_steps < 1) total_steps = 1;
     {
         // Per-layer compress_ratio table (mirrors load_pinned_weights).
         std::vector<int> compress_ratios(topo.num_layers, 0);
@@ -357,6 +366,7 @@ InferenceResult RunInferenceModel(
     d_hidden        = arena.d_hidden;
     d_hidden_next   = arena.d_hidden_next;
     d_single        = arena.d_single;
+    d_single_f32    = arena.d_single_f32;
     d_normed        = arena.d_normed;
     d_ffn_out       = arena.d_ffn_out;
     d_shared_int    = arena.d_shared_int;
@@ -410,6 +420,8 @@ InferenceResult RunInferenceModel(
     INFER_CHECK(cudaMemsetAsync(d_hidden, 0, static_cast<size_t>(kHcDim) * sizeof(float), stream));
     INFER_CHECK(cudaMemsetAsync(d_hidden_next, 0, static_cast<size_t>(kHcDim) * sizeof(float), stream));
     INFER_CHECK(cudaMemsetAsync(d_single, 0, static_cast<size_t>(kHiddenDim) * sizeof(__half), stream));
+    INFER_CHECK(cudaMemsetAsync(d_single_f32, 0,
+        static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
     INFER_CHECK(cudaMemsetAsync(d_normed, 0, static_cast<size_t>(kHiddenDim) * sizeof(__half), stream));
     INFER_CHECK(cudaMemsetAsync(d_ffn_out, 0, static_cast<size_t>(kHiddenDim) * sizeof(__half), stream));
     INFER_CHECK(cudaMemsetAsync(d_shared_int, 0, shared_int_sz, stream));
@@ -467,6 +479,7 @@ InferenceResult RunInferenceModel(
         INFER_CHECK(run_expand_hc(stream, d_single, d_hidden));
         // Sync after embed copy to catch async errors
         INFER_CHECK(cudaStreamSynchronize(stream));
+
         (void)embed_err;
     }
 
@@ -590,9 +603,9 @@ InferenceResult RunInferenceModel(
             if (lw.d_hc_attn_fn) {
                 INFER_CHECK(run_hc_pre(stream, d_hidden, lw.d_hc_attn_fn,
                                         lw.d_hc_attn_scale, lw.d_hc_attn_base,
-                                        d_single, d_hc_post, d_hc_comb, d_hc_pre,
+                                        d_single_f32, d_hc_post, d_hc_comb, d_hc_pre,
                                         d_norm_scratch));
-                INFER_CHECK(run_rmsnorm(stream, d_single, lw.d_attn_norm,
+                INFER_CHECK(run_rmsnorm(stream, d_single_f32, lw.d_attn_norm,
                                          d_normed, d_norm_scratch,
                                          d_norm_gamma_scratch,
                                          kHiddenDim, rms_eps));
@@ -631,25 +644,24 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             if (lw.d_hc_ffn_fn) {
                 INFER_CHECK(run_hc_pre(stream, d_hidden, lw.d_hc_ffn_fn,
                                         lw.d_hc_ffn_scale, lw.d_hc_ffn_base,
-                                        d_single, d_hc_post, d_hc_comb, d_hc_pre,
+                                        d_single_f32, d_hc_post, d_hc_comb, d_hc_pre,
                                         d_norm_scratch));
             } else {
                 // Fallback: ffn_norm on the reduced state (no HC)
                 INFER_CHECK(run_hc_pre(stream, d_hidden, lw.d_hc_attn_fn,
                                         lw.d_hc_attn_scale, lw.d_hc_attn_base,
-                                        d_single, d_hc_post, d_hc_comb, d_hc_pre,
+                                        d_single_f32, d_hc_post, d_hc_comb, d_hc_pre,
                                         d_norm_scratch));
             }
 
             if (lw.d_ffn_norm) {
-                INFER_CHECK(run_rmsnorm(stream, d_single, lw.d_ffn_norm,
+                INFER_CHECK(run_rmsnorm(stream, d_single_f32, lw.d_ffn_norm,
                                          d_normed, d_norm_scratch,
                                          d_norm_gamma_scratch,
                                          kHiddenDim, rms_eps));
             } else {
-                INFER_CHECK(cudaMemcpyAsync(d_normed, d_single,
-                    static_cast<size_t>(kHiddenDim) * sizeof(__half),
-                    cudaMemcpyDeviceToDevice, stream));
+                float_to_half_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+                    d_single_f32, d_normed, kHiddenDim);
             }
 
             // Router (async split): begin enqueues gate GEMM + D2H logits and
@@ -764,13 +776,14 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             float *tmp = d_hidden;
             d_hidden = d_hidden_next;
             d_hidden_next = tmp;
+
         } // layers
 
         // Final: hc_head (4 copies → 1), then final RMSNorm, then LM Head
         if (pw.d_hc_head_fn) {
             INFER_CHECK(run_hc_head(stream, d_hidden, pw.d_hc_head_fn,
                                      pw.d_hc_head_scale, pw.d_hc_head_base,
-                                     d_single, d_norm_scratch));
+                                     d_single_f32, d_norm_scratch));
         } else {
             // Fallback: first copy of HC state (float→half via kernel)
             // This path should not be taken if hc_head_fn is loaded
@@ -778,14 +791,13 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         }
 
         if (pw.d_final_norm) {
-            INFER_CHECK(run_rmsnorm(stream, d_single, pw.d_final_norm,
+            INFER_CHECK(run_rmsnorm(stream, d_single_f32, pw.d_final_norm,
                                      d_normed, d_norm_scratch,
                                      d_norm_gamma_scratch,
                                      kHiddenDim, rms_eps));
         } else {
-            INFER_CHECK(cudaMemcpyAsync(d_normed, d_single,
-                static_cast<size_t>(kHiddenDim) * sizeof(__half),
-                cudaMemcpyDeviceToDevice, stream));
+            float_to_half_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+                d_single_f32, d_normed, kHiddenDim);
         }
 
         // LM Head (no fused argmax — the sampler below performs the single
@@ -859,6 +871,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             result.first_gen_maxv   = max_val;
             result.first_gen_text   = std::string(tok_buf, tok_cap);
             cudaEventRecord(t_ttft, stream);
+            ttft_recorded = true;
         }
 
         if (!ignore_eos && next_tok == tok_db.eos_id &&
@@ -904,7 +917,8 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         result.output_text = lsxcommon::runtime::DecodeGeneratedText(
             tok_db, gen_ids_i32);
         float ttft_elapsed = 0.0f;
-        INFER_CHECK(cudaEventElapsedTime(&ttft_elapsed, t_start, t_ttft));
+        if (ttft_recorded)
+            INFER_CHECK(cudaEventElapsedTime(&ttft_elapsed, t_start, t_ttft));
         result.ttft_ms = static_cast<double>(ttft_elapsed);
         result.tokens_per_sec = elapsed_ms > 0.0f
             ? (static_cast<double>(gen_count) / elapsed_ms) * 1000.0
