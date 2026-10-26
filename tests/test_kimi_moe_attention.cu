@@ -376,7 +376,7 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     // positions and incremental cache from batched-prefill effects.
     for (int t = 0; t < seq; ++t) {
         cudaError_t err =
-            RunKimiMlaAttention(stream, /*turn=*/t, lw, 1,
+            RunKimiMlaAttention(stream, /*turn=*/t, /*layer=*/-1, lw, 1,
                                 d_x + (size_t)t * H,
                                 /*residual=*/d_x + (size_t)t * H,
                                 d_out + (size_t)t * H, d_state,
@@ -440,8 +440,8 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
         cudaMemcpy(d_out, out_b.data(), out_b.size() * sizeof(__nv_bfloat16),
                    cudaMemcpyHostToDevice);
         cudaError_t err =
-            RunKimiMlaAttention(stream, 0, lw, seq, d_x, d_x, d_out,
-                                d_state, 0, 0);
+            RunKimiMlaAttention(stream, 0, /*layer=*/-1, lw, seq, d_x, d_x,
+                                d_out, d_state, 0, 0);
         REQUIRE(err == cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         std::vector<KimiMlaState> st_b_buf(1);

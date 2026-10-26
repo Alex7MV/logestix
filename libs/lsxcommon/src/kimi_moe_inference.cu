@@ -497,7 +497,7 @@ __global__ void kimi_rmsnorm_rows_kernel(__nv_bfloat16 *__restrict__ x,
 
 } // namespace
 
-cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
+cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn, int layer,
                                 const KimiLayerWeights &lw, int seq,
                                 const __nv_bfloat16 *d_hidden,
                                 const __nv_bfloat16 *d_residual, __nv_bfloat16 *d_out,
@@ -671,6 +671,45 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
     kimi_mla_attn_kernel<<<attn_grid, 512,
                            0, stream>>>(d_qall, lw.d_kv_b_bf16, d_state,
                                         d_attn, seq, base_slot);
+
+    // Diagnostics (env-gated, same layer set): the kv_a postprocess output
+    // (normed latent | roped key) and the per-head attention output, so the
+    // external oracle can bracket a projection vs the attention math.
+    if (turn == 0 && layer >= 0) {
+        static const std::set<int> dbg = [] {
+            std::set<int> s2;
+            if (const char *p2 = std::getenv("KIMI_DUMP_LAYERS")) {
+                std::stringstream ss(p2);
+                std::string tk;
+                while (std::getline(ss, tk, ','))
+                    if (!tk.empty()) s2.insert(std::atoi(tk.c_str()));
+            }
+            return s2;
+        }();
+        if (dbg.count(layer) > 0) {
+            auto dump = [&](const char *tag, const __nv_bfloat16 *src, int n) {
+                std::error_code tec;
+                const auto pth = std::filesystem::temp_directory_path(tec) /
+                                 ("kimi_mla_" + std::string(tag) + "_" +
+                                  std::to_string(layer) + ".bin");
+                if (tec) return;
+                if (FILE *f = std::fopen(pth.string().c_str(), "wb")) {
+                    const int hdr[2] = {seq, n};
+                    std::fwrite(hdr, sizeof(int), 2, f);
+                    std::vector<__nv_bfloat16> rows(
+                        static_cast<size_t>(seq) * n);
+                    cudaMemcpy(rows.data(), src, rows.size() * 2,
+                               cudaMemcpyDeviceToHost);
+                    std::fwrite(rows.data(), sizeof(__nv_bfloat16),
+                                rows.size(), f);
+                    std::fclose(f);
+                }
+            };
+            dump("kvfull", d_kvfull, kKimiKvaRows);
+            dump("qall", d_qall, kKimiNumHeads * (kKimiQkNope + kKimiQkRope));
+            dump("attn", d_attn, kKimiNumHeads * kKimiHeadV);
+        }
+    }
 
     // 8. o_proj.
     ae = nvfp4_proj(lw.d_o_packed, lw.d_o_scale, lw.o_gs,
@@ -1250,12 +1289,35 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
 
         // 2. MLA attention: out = normed + attn(normed) -> scratch_a.
         cudaError_t ae = RunKimiMlaAttention(
-            stream, turn, lw, seq,
+            stream, turn, l, lw, seq,
             d_scratch_b + (size_t)base * kKimiHidden,   // normed input
             d_scratch_a + (size_t)base * kKimiHidden,   // residual = x
             d_scratch_a + (size_t)base * kKimiHidden,   // out
             d_states + l, base_slot, pos_offset);
         if (ae != cudaSuccess) return ae;
+
+        // Diagnostics (env-gated, same layer set as the layer dump): the
+        // post-attention residual, so the oracle can bracket attention vs FFN.
+        if (turn == 0 && kDumpLayerSet.count(l) > 0) {
+            std::error_code tec2;
+            const auto p2 = std::filesystem::temp_directory_path(tec2) /
+                            ("kimi_attn_" + std::to_string(l) + ".bin");
+            if (!tec2) {
+                if (FILE *f2 = std::fopen(p2.string().c_str(), "wb")) {
+                    const int hdr2[2] = {seq, kKimiHidden};
+                    std::fwrite(hdr2, sizeof(int), 2, f2);
+                    std::vector<__nv_bfloat16> rows2(
+                        static_cast<size_t>(seq) * kKimiHidden);
+                    cudaMemcpy(rows2.data(),
+                               d_scratch_a + (size_t)base * kKimiHidden,
+                               rows2.size() * sizeof(__nv_bfloat16),
+                               cudaMemcpyDeviceToHost);
+                    std::fwrite(rows2.data(), sizeof(__nv_bfloat16),
+                                rows2.size(), f2);
+                    std::fclose(f2);
+                }
+            }
+        }
 
         // 3. post_attention_layernorm -> scratch_b.
         kimi_rmsnorm_rows_op_kernel<<<dim3(seq), 256, 0, stream>>>(
@@ -1419,8 +1481,15 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                 }
 
                 if (kDiagIds >= 0 && (l == kDiagIds || l == 59)) {
-                    fprintf(stderr, "[DIAG-IDS] l=%d ids=%d,%d,%d,%d\n",
-                            l, h_ids[0], h_ids[1], h_ids[2], h_ids[3]);
+                    fprintf(stderr, "[DIAG-IDS] l=%d ids=", l);
+                    for (int k = 0; k < kKimiTopK; ++k)
+                        fprintf(stderr, "%d%s", h_ids[k],
+                                k + 1 < kKimiTopK ? "," : "");
+                    fprintf(stderr, " w=");
+                    for (int k = 0; k < kKimiTopK; ++k)
+                        fprintf(stderr, "%.5f%s", h_w[k],
+                                k + 1 < kKimiTopK ? "," : "");
+                    fprintf(stderr, "\n");
                 }
                 static const bool kBypass =
                     std::getenv("LSX_KIMI_CACHE_BYPASS") != nullptr;

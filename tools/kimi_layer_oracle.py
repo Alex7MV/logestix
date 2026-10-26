@@ -24,9 +24,71 @@ import math
 import os
 import struct
 
+import pyarrow as pa
 import torch
 from safetensors import safe_open
 from transformers import AutoTokenizer
+
+
+E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
+
+
+def e4m3_to_float(b):
+    """OCP/NVIDIA E4M3FN block scale (bit 7 is the reserved sign)."""
+    b = b & 0x7F
+    e, m = (b >> 3) & 0xF, b & 0x7
+    if e == 0:
+        return m * (2.0 ** -9)
+    if e == 15 and m == 7:
+        return float("nan")
+    return (2.0 ** (e - 7)) * (1.0 + m / 8.0)
+
+
+def dequant_nvfp4(packed, scales, rows, cols, gs):
+    """w = E2M1(nibble) * e4m3(block scale) * global_scale, row-major, per-16
+    blocks along the flattened tensor (the engine's kv_b plane layout)."""
+    b = torch.frombuffer(bytearray(packed), dtype=torch.uint8)
+    lo = E2M1[(b & 0x7).long()]
+    hi = E2M1[((b >> 4) & 0x7).long()]
+    sign_lo = torch.where((b & 0x8) != 0, -1.0, 1.0)
+    sign_hi = torch.where((b & 0x80) != 0, -1.0, 1.0)
+    nib = torch.empty(b.numel() * 2, dtype=torch.float32)
+    nib[0::2] = lo * sign_lo
+    nib[1::2] = hi * sign_hi
+    lut = torch.tensor([e4m3_to_float(int(x)) for x in range(128)],
+                       dtype=torch.float32)
+    sc = lut[torch.frombuffer(bytearray(scales), dtype=torch.uint8).long() & 0x7F]
+    return (nib.view(rows, cols) *
+            sc.repeat_interleave(16)[: rows * cols].view(rows, cols) * gs)
+
+
+class Pinned:
+    """Converted pinned-layer records (name -> (shape, dtype, raw bytes))."""
+
+    def __init__(self, model_dir, layer):
+        self.t = {}
+        path = os.path.join(model_dir, "logestix", "pinned",
+                            f"layer_{layer}.arrow")
+        tb = pa.ipc.open_file(path).read_all()
+        for r in tb.to_pylist():
+            self.t[r["name"]] = (r["shape"], r["dtype"], r["data"])
+        idx = json.load(open(os.path.join(model_dir, "logestix",
+                                          "model.index.json")))
+        self.gs = idx["mla_nvfp4"][str(layer)]
+
+    def bf16(self, name, shape):
+        raw = self.t[name][2]
+        x = torch.frombuffer(bytearray(raw), dtype=torch.uint16)
+        return x.view(torch.bfloat16).to(torch.bfloat16).view(*shape)
+
+    def proj(self, full_prefix, src_shape):
+        """Dequantize one MLA projection ("<...>.q_a_proj" -> packed/scale)."""
+        rows, cols = src_shape
+        pk = self.t[full_prefix + ".weight_packed"][2]
+        sc = self.t[full_prefix + ".weight_scale"][2]
+        base = full_prefix.split(".")[-1]
+        return dequant_nvfp4(pk, sc, rows, cols,
+                             float(self.gs[base])).to(torch.bfloat16)
 
 
 class Shards:
@@ -87,9 +149,15 @@ def rope(x, positions, inv):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
-    ap.add_argument("--ids", required=True, help="prompt text")
+    ap.add_argument("--ids", default="", help="prompt text")
     ap.add_argument("--dump-dir", default="/tmp")
     ap.add_argument("--layers", default="0,1,30,60")
+    ap.add_argument("--trace", action="store_true",
+                    help="print the per-layer hidden norms")
+    ap.add_argument("--weights", choices=["source", "converted"], default="source",
+                    help="source BF16 safetensors or the converted NVFP4 tree")
+    ap.add_argument("--stage", choices=["layer", "attn"], default="layer",
+                    help="compare the layer output or the post-attention residual")
     ap.add_argument("--input-ids", default=None,
                     help="optional JSON list of ids (must match the engine)")
     args = ap.parse_args()
@@ -111,14 +179,15 @@ def main():
     top_k = cfg["num_experts_per_tok"]
     scale = (192 ** -0.5) * (0.1 * math.log(64.0) + 1.0) ** 2
 
-    def t(name):
-        return sh.get("language_model.model." + name)
+    def t(name, dtype=torch.bfloat16):
+        return sh.get("language_model.model." + name, dtype)
 
     def lin(x, w):
         # Checkpoint weights are [out, in]; torch linear is x @ w.T.
         return torch.nn.functional.linear(x, w)
 
-    x = t("embed_tokens.weight")[torch.tensor(ids)]
+    x0 = t("embed_tokens.weight")[torch.tensor(ids)]
+    x = x0.clone()
     inv = yarn_inv_freq()
     pos = torch.arange(seq)
     causal = torch.triu(torch.ones(seq, seq, dtype=torch.bool), 1)
@@ -126,19 +195,32 @@ def main():
 
     for layer in range(0, max(want) + 1):
         p = f"layers.{layer}."
+        pinned = Pinned(args.model, layer) if args.weights == "converted" else None
+
+        def w(name):
+            """A projection weight in the requested precision."""
+            full = "language_model.model." + name
+            if pinned is None:
+                return sh.get(full)
+            prefix = full[: -len(".weight")]
+            return pinned.proj(prefix, sh.get(full).shape)
+
+        def norm_w(name):
+            return pinned.bf16("language_model.model." + name, sh.get(
+                "language_model.model." + name).shape) if pinned else t(name)
+
         # ---- MLA attention ----
-        h = rms_norm(x, t(p + "input_layernorm.weight"), eps)
-        q = lin(lin(h, t(p + "self_attn.q_a_proj.weight")),
-                t(p + "self_attn.q_b_proj.weight"))
-        q = lin(rms_norm(lin(h, t(p + "self_attn.q_a_proj.weight")),
-                         t(p + "self_attn.q_a_layernorm.weight"), eps),
-                t(p + "self_attn.q_b_proj.weight"))
+        h = rms_norm(x, norm_w(p + "input_layernorm.weight"), eps)
+        q = lin(rms_norm(lin(h, w(p + "self_attn.q_a_proj.weight")),
+                         norm_w(p + "self_attn.q_a_layernorm.weight"), eps),
+                w(p + "self_attn.q_b_proj.weight"))
         q = q.view(seq, heads, 192)
         q_nope, q_pe = q[..., :128], q[..., 128:]
-        kv = lin(h, t(p + "self_attn.kv_a_proj_with_mqa.weight"))
+        kv = lin(h, w(p + "self_attn.kv_a_proj_with_mqa.weight"))
         latent, k_pe = kv[:, :512], kv[:, 512:]
-        latent = rms_norm(latent, t(p + "self_attn.kv_a_layernorm.weight"), eps)
-        kvb = lin(latent, t(p + "self_attn.kv_b_proj.weight")).view(seq, heads, 256)
+        latent = rms_norm(latent,
+                          norm_w(p + "self_attn.kv_a_layernorm.weight"), eps)
+        kvb = lin(latent, w(p + "self_attn.kv_b_proj.weight")).view(seq, heads, 256)
         k_nope, v = kvb[..., :128], kvb[..., 128:]
         q_pos = pos.repeat_interleave(heads)
         q_pe = rope(q_pe.reshape(seq * heads, 64), q_pos, inv).view(seq, heads, 64)
@@ -151,8 +233,9 @@ def main():
             s = s.masked_fill(causal, float("-inf"))
             attn[:, hd] = torch.softmax(s, dim=-1) @ v[:, hd].to(torch.float32)
         o = lin(attn.reshape(seq, 8192).to(torch.bfloat16),
-                t(p + "self_attn.o_proj.weight"))
+                w(p + "self_attn.o_proj.weight"))
         x = x + o.to(torch.bfloat16)
+        attn_stage = x.clone()
 
         # ---- FFN / MoE ----
         h = rms_norm(x, t(p + "post_attention_layernorm.weight"), eps)
@@ -174,29 +257,41 @@ def main():
             top = torch.topk(scores + bias, top_k, dim=-1, sorted=False).indices
             w = torch.gather(scores, 1, top)
             w = w / (w.sum(-1, keepdim=True) + 1e-20) * cfg["routed_scaling_factor"]
+            if args.trace:
+                print(f"[trace]   attn_stage={[round(float(v),2) for v in attn_stage.float().norm(dim=1)]} "
+                      f"h={[round(float(v),2) for v in h.float().norm(dim=1)]} "
+                      f"d_shared={[round(float(v),2) for v in d.float().norm(dim=1)]}")
             for ei in range(top.shape[1]):
                 for ti in range(seq):
                     e = int(top[ti, ei])
                     base = f"{p}mlp.experts.{e}."
                     gg = dequant_int4(
-                        sh.get("language_model.model." + base + "gate_proj.weight_packed"),
+                        sh.get("language_model.model." + base + "gate_proj.weight_packed",
+                               torch.int32),
                         sh.get("language_model.model." + base + "gate_proj.weight_scale"),
                         H)
                     uu = dequant_int4(
-                        sh.get("language_model.model." + base + "up_proj.weight_packed"),
+                        sh.get("language_model.model." + base + "up_proj.weight_packed",
+                               torch.int32),
                         sh.get("language_model.model." + base + "up_proj.weight_scale"),
                         H)
                     dd = dequant_int4(
-                        sh.get("language_model.model." + base + "down_proj.weight_packed"),
+                        sh.get("language_model.model." + base + "down_proj.weight_packed",
+                               torch.int32),
                         sh.get("language_model.model." + base + "down_proj.weight_scale"),
                         2048)
                     hf = h[ti].to(torch.float32)
                     y = (torch.nn.functional.silu(gg @ hf) * (uu @ hf)) @ dd.T
                     d[ti] += (float(w[ti, ei]) * y).to(torch.bfloat16)
+        if args.trace:
+            print(f"[trace]   d_total={[round(float(v),2) for v in d.float().norm(dim=1)]}")
         x = x + d.to(torch.bfloat16)
+        if args.trace:
+            print(f"[trace] layer {layer:2d} |x|={[round(float(v),2) for v in x.float().norm(dim=1)]}")
 
         if layer in want:
-            path = os.path.join(args.dump_dir, f"kimi_layer_{layer}.bin")
+            tag = "layer" if args.stage == "layer" else "attn"
+            path = os.path.join(args.dump_dir, f"kimi_{tag}_{layer}.bin")
             if not os.path.exists(path):
                 print(f"{layer:5d}   NO ENGINE DUMP ({path})")
                 continue
@@ -205,15 +300,27 @@ def main():
                 raw = f.read(n_seq * n_hidden * 2)
             eng = torch.frombuffer(bytearray(raw), dtype=torch.bfloat16).view(
                 n_seq, n_hidden)
-            if n_seq != seq or n_hidden != H:
+            if n_hidden != H:
                 print(f"{layer:5d}   SHAPE MISMATCH engine={n_seq}x{n_hidden} ref={seq}x{H}")
                 continue
-            ref = x.to(torch.float32)
+            if seq == 1 and n_seq > 1:
+                # Causal prefill: row 0 of the engine dump is exactly the
+                # single-token computation (position 0, attends to itself).
+                eng = eng[0].unsqueeze(0)
+            ref = (x if args.stage == "layer" else attn_stage).to(torch.float32)
             e = eng.to(torch.float32)
             rel = float((e - ref).norm() / ref.norm())
             cos = float(torch.nn.functional.cosine_similarity(
                 e.reshape(-1), ref.reshape(-1), dim=0))
-            print(f"{layer:5d}   {rel:.5f}  {cos:.6f}")
+            # Bracket: is the engine row closer to the embedding (attention
+            # contribution missing) or to our reference?
+            emb = x0[0].to(torch.float32)
+            rel_emb = float((e[0] - emb).norm() / emb.norm())
+            cos_emb = float(torch.nn.functional.cosine_similarity(
+                e[0].reshape(-1), emb.reshape(-1), dim=0))
+            print(f"{layer:5d}   {rel:.5f}  {cos:.6f}   "
+                  f"|o|/|x|={float((ref[0]-emb).norm()/emb.norm()):.4f} "
+                  f"eng_vs_embed rel={rel_emb:.4f} cos={cos_emb:.5f}")
 
 
 if __name__ == "__main__":

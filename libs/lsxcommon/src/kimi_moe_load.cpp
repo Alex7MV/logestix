@@ -377,6 +377,15 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
         return cudaErrorInvalidValue;
     }
     pw.layers.resize(static_cast<size_t>(topo.num_layers));
+    // The absorbed-attention kernel materializes one bf16 kv_b plane per layer
+    // lazily on first decode ([16384 x 512] x 2 B = 16 MiB). Charge it to the
+    // lease up front so the governor does not undercount the resident set by
+    // ~1 GiB (the allocation happens after Load returns).
+    pw.resident_bytes +=
+        static_cast<std::uint64_t>(topo.num_layers) *
+        static_cast<std::uint64_t>(kKimiNumHeads) *
+        static_cast<std::uint64_t>(kKimiQkNope + kKimiHeadV) *
+        static_cast<std::uint64_t>(kKimiKvLoraRank) * 2ull;
 
     // Round-2: per-layer MLA global scales live in the index
     // (mla_nvfp4[layer][base]); the packed/scale records do not carry them.

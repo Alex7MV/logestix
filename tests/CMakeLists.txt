@@ -3557,6 +3557,10 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_moe_loader COMMAND test_kimi_moe_loader)
+# Converts a synthetic checkpoint: the frozen gates (incl. the token ids) are
+# relaxed at runtime, never by a compile define.
+set_tests_properties(test_kimi_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # ── Kimi MoE router test ─────────────────────────────────────────────────
 add_library(test_kimi_moe_router_cu OBJECT test_kimi_moe_router.cu)
@@ -3660,6 +3664,37 @@ target_include_directories(test_kimi_tool_framing PRIVATE
 target_link_libraries(test_kimi_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_kimi_tool_framing COMMAND test_kimi_tool_framing)
 set_tests_properties(test_kimi_tool_framing PROPERTIES LABELS fast)
+
+# ── Kimi pinned MLA projection GEMV vs host decoder (real weights) ────────
+add_library(test_kimi_moe_mla_proj_real_cu OBJECT test_kimi_moe_mla_proj_real.cu)
+set_target_properties(test_kimi_moe_mla_proj_real_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_moe_mla_proj_real_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_moe_mla_proj_real_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+)
+target_compile_definitions(test_kimi_moe_mla_proj_real_cu PRIVATE LOGESTIX_HAS_CUDA)
+target_link_libraries(test_kimi_moe_mla_proj_real_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_mla_proj_real_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_moe_mla_proj_real)
+set_target_properties(test_kimi_moe_mla_proj_real PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_moe_mla_proj_real PRIVATE
+    test_kimi_moe_mla_proj_real_cu lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_moe_mla_proj_real COMMAND test_kimi_moe_mla_proj_real)
+set_tests_properties(test_kimi_moe_mla_proj_real PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_moe_mla_proj_real PROPERTIES LABELS inference)
 
 # ── Kimi routed-expert FFN test ───────────────────────────────────────────
 add_library(test_kimi_moe_experts_cu OBJECT test_kimi_moe_experts.cu)
@@ -3805,6 +3840,8 @@ endif()
 
 add_test(NAME test_kimi_moe_model COMMAND test_kimi_moe_model)
 set_tests_properties(test_kimi_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # ── Kimi SelfCheck test (real weights; SKIP without a model) ──────────────────
 add_executable(test_kimi_moe_selfcheck test_kimi_moe_selfcheck.cpp)

@@ -284,7 +284,7 @@ cudaError_t KimiMlaReset(KimiMlaState *d_state, cudaStream_t stream);
 // Whole pass async on the caller's stream (no host sync inside).
 // base_slot: first cache slot owned by this pass (chronological order);
 // pos_offset: absolute RoPE position of the first row of this pass.
-cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
+cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn, int layer,
                                 const KimiLayerWeights &lw, int seq,
                                 const __nv_bfloat16 *d_hidden,
                                 const __nv_bfloat16 *d_residual, __nv_bfloat16 *d_out,
