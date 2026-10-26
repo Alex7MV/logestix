@@ -53,6 +53,10 @@ OVERRIDES = {
     # own encoding/encoding.py, in the reasoning model's default thinking mode.
     "deepseek-v4.1-flash": {"framing": "deepseek_v41",
                             "thinking_mode": "thinking"},
+    "deepseek-v4-pro-0813": {
+        "framing": "deepseek_v4", "thinking_mode": "chat",
+        "unrunnable": "TP-4 FP8 reference (inference/generate.py, MP=4) over an 892.7 GB checkpoint; this 32 GB card cannot execute it",
+    },
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
@@ -308,12 +312,26 @@ def _frame_deepseek_v41(model_dir, body, thinking_mode):
                                thinking_mode=thinking_mode)
 
 
+def _frame_deepseek_v4(model_dir, body, thinking_mode):
+    import importlib.util
+
+    enc_path = os.path.join(model_dir, "encoding", "encoding_dsv4.py")
+    spec = importlib.util.spec_from_file_location("dsv4_encoding", enc_path)
+    enc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(enc)
+    return enc.encode_messages([{"role": "user", "content": body}],
+                               thinking_mode=thinking_mode)
+
+
 def frame(model, tok, body, opts):
     """Frame a prompt: per-model custom framing when configured, else the
     tokenizer's chat template / raw body."""
     if opts.get("framing") == "deepseek_v41":
         return _frame_deepseek_v41(model, body,
                                    opts.get("thinking_mode", "thinking"))
+    if opts.get("framing") == "deepseek_v4":
+        return _frame_deepseek_v4(model, body,
+                                  opts.get("thinking_mode", "chat"))
     return frame_prompt(tok, body, opts)
 
 
@@ -358,18 +376,29 @@ def template_golden(model, model_type, out, max_new_tokens):
 
     golden = {"format": "logestix-det-golden", "version": 1,
               "model_type": model_type,
-              "source": ("prompt-template (encoding/encoding.py %s framing; "
-                         "template-defined canonical expected)"
-                         % opts.get("thinking_mode", "thinking")
-                         if opts.get("framing") == "deepseek_v41"
-                         else "prompt-template (tokenizer.json + "
-                              "chat_template.jinja; template-defined "
-                              "canonical expected)"),
-              "runtime": ("encoding/encoding.py + tokenizer.json "
-                          "(transformers %s)" % transformers.__version__
-                          if opts.get("framing") == "deepseek_v41"
-                          else "tokenizer.json + chat_template.jinja "
-                               "(transformers %s)" % transformers.__version__),
+              "source": (
+                  "prompt-template (encoding/encoding_dsv4.py %s framing; "
+                  "template-defined canonical expected; source not runnable "
+                  "locally: %s)"
+                  % (opts.get("thinking_mode", "chat"),
+                     opts.get("unrunnable") or "custom architecture/layout")
+                  if opts.get("framing") == "deepseek_v4" else
+                  "prompt-template (encoding/encoding.py %s framing; "
+                  "template-defined canonical expected)"
+                  % opts.get("thinking_mode", "thinking")
+                  if opts.get("framing") == "deepseek_v41"
+                  else "prompt-template (tokenizer.json + "
+                       "chat_template.jinja; template-defined "
+                       "canonical expected)"),
+              "runtime": (
+                  "encoding/encoding_dsv4.py + tokenizer.json "
+                  "(transformers %s)" % transformers.__version__
+                  if opts.get("framing") == "deepseek_v4" else
+                  "encoding/encoding.py + tokenizer.json "
+                  "(transformers %s)" % transformers.__version__
+                  if opts.get("framing") == "deepseek_v41"
+                  else "tokenizer.json + chat_template.jinja "
+                       "(transformers %s)" % transformers.__version__),
               "prompts": cases}
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:

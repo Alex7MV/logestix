@@ -16,6 +16,7 @@
 #include <lsxcommon/tokenizer.h>
 
 #include "deepseek_moe_model.h"
+#include "deepseek_moe_pro_model.h"
 #include "deepseek_moe_v41_model.h"
 
 namespace fs = std::filesystem;
@@ -25,6 +26,7 @@ using lsxcommon::ChatConversation;
 using lsxcommon::ChatMessage;
 using lsxcommon::DeepSeekV41FlashModel;
 using lsxcommon::DeepSeekV4FlashModel;
+using lsxcommon::DeepSeekV4ProModel;
 using lsxcommon::DsmlTags;
 using lsxcommon::ToolCall;
 using lsxcommon::ToolSpec;
@@ -181,6 +183,24 @@ TEST_CASE("deepseek tool framing: model overrides round-trip through the tokeniz
         REQUIRE(model.BuildConversationInputIds(db, ToolConversation(), ids));
         REQUIRE(!ids.empty());
         CHECK(ids.front() == bos);
+    }
+
+    // V4-Pro override: the same no-leading-space DSML dialect as V4.
+    {
+        DeepSeekV4ProModel model(cfg);
+        const std::string answer =
+            "\n\n<｜DSML｜tool_calls>\n"
+            "<｜DSML｜invoke name=\"get_weather\">\n"
+            "<｜DSML｜parameter name=\"city\" string=\"true\">Paris"
+            "</｜DSML｜parameter>\n"
+            "</｜DSML｜invoke>\n</｜DSML｜tool_calls>";
+        std::vector<int32_t> gen;
+        REQUIRE(lsxcommon::AppendDeepSeekIds(db, answer, kV4, gen));
+        std::vector<ToolCall> calls;
+        REQUIRE(model.ParseToolCalls(db, gen, calls));
+        REQUIRE(calls.size() == 1);
+        CHECK(calls[0].name == "get_weather");
+        CHECK(calls[0].arguments_json == R"({"city":"Paris"})");
     }
 
     // V4 override: parse a rendered DSML call back to a ToolCall.

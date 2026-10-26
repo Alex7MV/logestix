@@ -75,6 +75,10 @@ struct ExpertStore {
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
     int64_t parse_calls = 0;
     int64_t parse_ok = 0;
+    // Optional per-store drain hook for the pending-prefetch-copy registry.
+    // A family whose prefetch copies live in its own registry sets this;
+    // when null the shared lsx_pending_copy_drain hook is called.
+    void (*pending_drain)(const void *) = nullptr;
     // Optional locked-host pool backing the entries (DeepSeek NVFP4 pin).
     // When set, entry host pointers point INTO this allocation and Free()
     // releases it with cudaFreeHost.
@@ -356,7 +360,8 @@ struct ExpertStore {
             lru.pop_back();
             // Retire any in-flight prefetch DMA reading this mapping before
             // it disappears (munmap under an async copy = silent garbage).
-            lsx_pending_copy_drain(entries[evict].host_w1);
+            if (pending_drain) pending_drain(entries[evict].host_w1);
+            else lsx_pending_copy_drain(entries[evict].host_w1);
             mmaps[evict].reset();
             batches[evict].reset();
             entries[evict] = TEntry();

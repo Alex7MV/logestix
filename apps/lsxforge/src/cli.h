@@ -23,6 +23,7 @@ enum class Pipeline {
     kRepackRouted,
     kDeepseekNvfp4,
     kDeepseekV41,
+    kDeepseekPro,
     kGlm,
     kKimi,
     kQwenDense,
@@ -57,6 +58,7 @@ struct Flags {
     bool vram_recompute = false;
     bool deepseek_nvfp4 = false;
     bool deepseek_v41 = false;
+    bool deepseek_pro = false;
     bool run = false;
     bool glm = false;
     bool kimi = false;

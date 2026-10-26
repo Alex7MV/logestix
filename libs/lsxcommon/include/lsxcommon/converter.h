@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace lsxcommon {
 
@@ -54,6 +55,24 @@ public:
     Converter &SetInputPath(const std::string &path);
     Converter &SetOutputPath(const std::string &path);
     Converter &SetVerbose(bool v);
+
+    // Tensor-name prefixes cut from the conversion (stored-not-applied
+    // ballast, e.g. DeepSeek-V4-Pro's "mtp." DSpark stage). Every cut tensor
+    // is counted in model.index.json's "deferred" block — a silent drop is
+    // not a strip.
+    Converter &SetSkipPrefixes(std::vector<std::string> prefixes);
+
+    // Override the indexed "model" name. The default is the input directory
+    // name, which is what the runtime's type detection normalizes; a family
+    // pipeline pins its canonical spelling so a renamed download still
+    // resolves to its kType.
+    Converter &SetModelName(std::string name);
+
+    // Frozen-passport gate: when set and synthetic geometry is not allowed,
+    // the source config + tensor inventory must match exactly. An unset gate
+    // keeps the generic converter's historical behaviour.
+    Converter &SetExpectedGeometry(int layers, int hidden, int vocab,
+                                   int experts);
 
     arrow::Status Run();
 

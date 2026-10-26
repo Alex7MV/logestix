@@ -29,6 +29,7 @@
 #include "lsxcommon/phi_dense_convert.h"
 #include "lsxcommon/deepseek_moe_repack.h"
 #include "lsxcommon/deepseek_moe_v41_convert.h"
+#include "lsxcommon/deepseek_moe_pro_convert.h"
 #include "lsxcommon/log.h"
 #include "cli.h"
 #include <arrow/api.h>
@@ -97,6 +98,11 @@ ABSL_FLAG(bool, deepseek_nvfp4, false,
 // excluded with a counted record).
 ABSL_FLAG(bool, deepseek_v41, false,
           "convert DeepSeek-V4.1-Flash to the logestix-v41-nvfp4 layout");
+// DeepSeek-V4-Pro-0813 ingestion: HF safetensors -> logestix-v1-nvfp4 with the
+// frozen 61/7168/129280/384 passport, DSpark/MTP ballast stripped and counted.
+ABSL_FLAG(bool, deepseek_pro, false,
+          "convert DeepSeek-V4-Pro-0813 (DSpark/MTP stripped) to "
+          "logestix-v1-nvfp4");
 // Generation path execution option: routes the resolved prompt straight into
 // the tokenizer encode channel and the single end-to-end cudaStream_t
 // Prefill->Decode autogeneration sequence loop (IModel::Infer), bypassing the
@@ -158,6 +164,7 @@ int main(int argc, char* argv[]) {
     flags.vram_recompute = absl::GetFlag(FLAGS_vram_recompute);
     flags.deepseek_nvfp4 = absl::GetFlag(FLAGS_deepseek_nvfp4);
     flags.deepseek_v41 = absl::GetFlag(FLAGS_deepseek_v41);
+    flags.deepseek_pro = absl::GetFlag(FLAGS_deepseek_pro);
     flags.run = !absl::GetFlag(FLAGS_run).empty();
     flags.glm = glm;
     flags.kimi = kimi;
@@ -282,6 +289,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("DeepSeek-V4.1-Flash conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kDeepseekPro: {
+        lsxcommon::log::info(absl::StrFormat(
+            "DeepSeek-V4-Pro-0813 conversion (%s -> %s)", input_path,
+            output_path));
+        auto st = lsxcommon::deepseek_pro::ConvertDeepSeekProModel(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "DeepSeek-V4-Pro-0813 conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("DeepSeek-V4-Pro-0813 conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

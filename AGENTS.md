@@ -348,6 +348,40 @@ procedure — `perf-tuning-a-model`.
   RTX 5090/Linux, 2048-token protocol); `perf` carries an accepted -4.5% for
   the overflow-proof TC SwiGLU quantizer (one extra launch per slot per layer),
   `r3` is unaffected.
+  DeepSeek-V4-Pro-0813 (independent family `deepseek` variant `pro`: the same
+  DeepseekV4ForCausalLM contour as V4-Flash — MLA + Hyper-Connections +
+  compressed-KV/indexer + hash router + sqrtsoftplus MoE — with Pro geometry
+  61L / 7168H / 128 heads (head_dim 512) / q_lora 1536 / o_groups 16 /
+  384x3072 experts top-6 / route_scale 2.5 / index 64x128 topk 1024 and a
+  `128,128,4,128,4,...` compression grid (indexer on every ratio-4 layer, hash
+  router on layers 0..2); `deepseek_moe_pro_constants.h` (frozen passport,
+  `lsxcommon::deepseek_pro`), `deepseek_moe_pro_convert.{h,cpp}` (wraps the
+  generic Converter with the passport gate; DSpark `mtp.0..2` stripped AND
+  counted), `deepseek_moe_pro_load.{cuh,cu}` + `deepseek_moe_pro_inference_*.cu`
+  + `deepseek_moe_pro_norm_kernels.cu` + `deepseek_moe_pro_model.{h,cpp}`;
+  converted with `lsxforge --deepseek_pro`; the 822 GiB routed-expert set is
+  mmap-streamed through the neutral `ExpertStore` (never pinned by default;
+  `LSX_DEEPSEEK_PRO_PIN=1` opts in under a 64 GiB cap,
+  `LSX_DEEPSEEK_PRO_MAX_OPEN` sizes the LRU window, default 4096), and the store
+  gains a `pending_drain` hook because the prefetch-copy registry is
+  family-local. Converted in place 2026-10-26 (892.7 GB source -> 838 GB tree:
+  27 GB pinned + 811 GB experts, `deferred.mtp = 7009`). Real-weight SelfCheck:
+  Paris x3 bit-exact (`logits_hash` stable), streaming + pre-start/mid-generation
+  cancel green; the tool round-trip returned `get_weather {"city":"Paris"}`.
+  Two Pro-specific numeric/lifecycle facts are load-bearing: the HC residual
+  can exceed the FP16 range (the source runs BF16/FP8), so the HC-combined
+  vector is kept FP32 (`d_single_f32`) before the scale-invariant RMSNorm; and
+  the layer `Free()` must release the separately-allocated shared-expert blobs
+  (~4 GiB) or the second model load in one process OOMs. FSI/CODE/DET goldens
+  are **template-derived** (authored Expected Template + Pro's own
+  `encoding_dsv4.py` framing; the source oracle is the TP-4 FP8 runner, which
+  this 32 GB card cannot execute) and now run: FSI 2/3 (FSI-02 RED — the model
+  inlines numeric constants instead of the required symbolic form), CODE 3/3,
+  DET 3/3. Perf rows are seeded through the harness at the
+  canonical 2048-token protocol: **perf 0.77 t/s / r3 0.79 t/s**, TTFT ~9.0 s,
+  28.0 GiB resident (host-store bound: ~13.5 GB of experts streamed per token
+  from the 811 GB mmap tree) — `tests/perf/perf_baselines.json`; history in
+  `docs/OPEN_TASKS.md` §R3.
   Kimi-K2.7-Code (independent family `kimi`: DeepSeek-V3 MLA + 384-expert top-8
   MoE with one shared expert, 61 layers / 7168H / 64 heads / q_lora 1536 /
   kv_lora 512 / qk_nope 128 / qk_rope 64, YaRN factor 64;
@@ -384,7 +418,7 @@ procedure — `perf-tuning-a-model`.
   are forwarded on the v3 request frame; absent/zero keeps greedy, which is the
   numeric class the parity goldens pin. Tool calling has verified native render/parse for
   Qwen3.5/3.6 (ChatML XML), GLM-5.3-Flash (`<|system|>` + `<arg_key>`),
-  DeepSeek-V4/V4.1 (DSML; `deepseek_moe_tool_format.{h,cpp}`), Gemma-4
+  DeepSeek-V4/V4.1/Pro (DSML; `deepseek_moe_tool_format.{h,cpp}`), Gemma-4
   (`<|tool_call>call:…`; `gemma_tool_format.{h,cpp}`), GigaChat-3.5
   (chatml-v5 GCML; `gigachat_tool_format.{h,cpp}`), Nemotron-3.5
   (Qwen-style XML) and Xing-4.0 (`<tool_call>` + `<param_key>`; the markers

@@ -333,7 +333,8 @@ std::set<std::string> PerfCaseModels(const std::string &test_src)
         for (const auto &mid :
              {std::string("glm-5.2"), std::string("glm-5.3-flash"),
               std::string("deepseek-v4-flash"),
-              std::string("deepseek-v4.1-flash"), std::string("gemma-4"),
+              std::string("deepseek-v4.1-flash"),
+              std::string("deepseek-v4-pro-0813"), std::string("gemma-4"),
               std::string("kimi-k2.7"), std::string("qwen3.5-9b"),
               std::string("qwen3.8-27b"), std::string("qwen3.5-35b"),
               std::string("qwen3.6-35b"), std::string("qwen3.8-flash-next"),

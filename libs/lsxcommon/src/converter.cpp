@@ -3,6 +3,7 @@
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
+#include "lsxcommon/synthetic_geometry.h"
 #include "lsxcommon/diagnostics.h"
 #include "nvfp4_scale.h"
 #include <arrow/ipc/writer.h>
@@ -989,6 +990,7 @@ static arrow::Status WriteModelIndex(
     int64_t total_pinned,
     int64_t total_experts,
     const VramProfile &vram,
+    const absl::btree_map<std::string, int> &deferred,
     const std::filesystem::path &output_root)
 {
     namespace fs = std::filesystem;
@@ -1005,6 +1007,16 @@ static arrow::Status WriteModelIndex(
     f << "  \"total_pinned_tensors\": " << total_pinned << ",\n";
     f << "  \"total_experts\": " << total_experts << ",\n";
     f << FormatVramJson(vram) << ",\n";
+    if (!deferred.empty()) {
+        f << "  \"deferred\": {";
+        bool first = true;
+        for (const auto &[cat, n] : deferred) {
+            if (!first) f << ", ";
+            first = false;
+            f << "\"" << cat << "\": " << n;
+        }
+        f << "},\n";
+    }
     f << "  \"files\": {\n";
     f << "    \"pinned\": {\n";
     f << "      \"global\": \"pinned/global.arrow\"\n";
@@ -1035,6 +1047,13 @@ struct Converter::Impl {
     std::string input_path;
     std::string output_path;
     bool verbose = false;
+    std::vector<std::string> skip_prefixes;
+    std::string model_name;       // empty -> input directory name
+    bool expected_geometry_set = false;
+    int expected_layers = 0;
+    int expected_hidden = 0;
+    int expected_vocab = 0;
+    int expected_experts = 0;
 };
 
 Converter::Converter()
@@ -1059,6 +1078,29 @@ Converter &Converter::SetOutputPath(const std::string &path)
 Converter &Converter::SetVerbose(bool v)
 {
     impl_->verbose = v;
+    return *this;
+}
+
+Converter &Converter::SetSkipPrefixes(std::vector<std::string> prefixes)
+{
+    impl_->skip_prefixes = std::move(prefixes);
+    return *this;
+}
+
+Converter &Converter::SetModelName(std::string name)
+{
+    impl_->model_name = std::move(name);
+    return *this;
+}
+
+Converter &Converter::SetExpectedGeometry(int layers, int hidden, int vocab,
+                                          int experts)
+{
+    impl_->expected_geometry_set = true;
+    impl_->expected_layers = layers;
+    impl_->expected_hidden = hidden;
+    impl_->expected_vocab = vocab;
+    impl_->expected_experts = experts;
     return *this;
 }
 
@@ -1116,6 +1158,8 @@ arrow::Status Converter::Run()
         cfg_hidden_size = get_i(root.value(), "hidden_size", 0);
         cfg_vocab_size = get_i(root.value(), "vocab_size", 0);
         cfg_experts_per_layer = get_i(root.value(), "num_local_experts", 0);
+        if (cfg_experts_per_layer <= 0)
+            cfg_experts_per_layer = get_i(root.value(), "n_routed_experts", 0);
     }
 
     // (3) Verify every tensor read is complete before any output is written.
@@ -1138,9 +1182,11 @@ arrow::Status Converter::Run()
     absl::flat_hash_map<int, ExpertData> shared_by_layer;
     int experts_processed = 0;
     int pinned_processed = 0;
+    int deferred_tensors = 0;
     int shard_idx = 0;
     int max_layer = 0;
     int max_experts_per_layer = 0;
+    absl::btree_map<std::string, int> deferred;
     absl::flat_hash_map<int, int> experts_per_layer;
 
     for (const auto &shard : model.shards) {
@@ -1175,6 +1221,22 @@ arrow::Status Converter::Run()
 
         int experts_in_shard = 0;
         for (const auto &tensor : shard.tensors) {
+            // Ballast cut by prefix (e.g. DeepSeek-V4-Pro's DSpark `mtp.*`):
+            // counted in the index's "deferred" block and never read,
+            // classified or written. A silent drop is not a strip.
+            bool cut = false;
+            for (const auto &pfx : impl_->skip_prefixes) {
+                if (tensor.name.rfind(pfx, 0) == 0) {
+                    std::string key = pfx;
+                    while (!key.empty() && key.back() == '.') key.pop_back();
+                    ++deferred[key];
+                    ++deferred_tensors;
+                    cut = true;
+                    break;
+                }
+            }
+            if (cut) continue;
+
             auto parsed = parse_expert_name(tensor.name);
 
             int64_t raw_size = tensor.byte_size();
@@ -1355,6 +1417,25 @@ arrow::Status Converter::Run()
             ARROW_RETURN_NOT_OK(integrity::CheckGeometryFields(geom));
     }
 
+    // Frozen-passport gate (a family pipeline sets it; the generic converter
+    // leaves it unset). Synthetic fixtures opt out through the shared runtime
+    // env var — never a compile define.
+    if (impl_->expected_geometry_set && !SyntheticGeometryAllowed()) {
+        if (cfg_num_layers != impl_->expected_layers ||
+            cfg_hidden_size != impl_->expected_hidden ||
+            cfg_vocab_size != impl_->expected_vocab ||
+            max_experts_per_layer != impl_->expected_experts) {
+            return arrow::Status::Invalid(absl::StrFormat(
+                "source geometry (layers=%d hidden=%d vocab=%d experts=%d) "
+                "does not match the frozen passport (layers=%d hidden=%d "
+                "vocab=%d experts=%d)",
+                cfg_num_layers, cfg_hidden_size, cfg_vocab_size,
+                max_experts_per_layer, impl_->expected_layers,
+                impl_->expected_hidden, impl_->expected_vocab,
+                impl_->expected_experts));
+        }
+    }
+
     lsxcommon::log::info(absl::StrFormat("Saving %u pinned tensors...",
                                          pinned_tensors.size()));
     ARROW_RETURN_NOT_OK(SavePinnedTensors(pinned_tensors, log_root));
@@ -1406,9 +1487,15 @@ arrow::Status Converter::Run()
     }
 
     std::vector<VramTensorInfo> vram_inventory;
-    for (const auto &shard : model.shards)
-        for (const auto &t : shard.tensors)
+    for (const auto &shard : model.shards) {
+        for (const auto &t : shard.tensors) {
+            bool cut = false;
+            for (const auto &pfx : impl_->skip_prefixes)
+                if (t.name.rfind(pfx, 0) == 0) { cut = true; break; }
+            if (cut) continue;
             vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
+        }
+    }
 
     VramProfile vram_profile = EstimateVram(
         vram_inventory, {&DsIsNvfp4Tensor, &DsMemClass}, vg);
@@ -1419,12 +1506,16 @@ arrow::Status Converter::Run()
         FormatBytesHuman(vram_profile.max_bytes),
         vram_profile.context_tokens));
 
+    const std::string model_name = impl_->model_name.empty()
+        ? fs::path(impl_->input_path).filename().string()
+        : impl_->model_name;
     ARROW_RETURN_NOT_OK(WriteModelIndex(
-        fs::path(impl_->input_path).filename().string(),
+        model_name,
         max_layer, max_experts_per_layer,
         static_cast<int64_t>(pinned_tensors.size()),
         static_cast<int64_t>(experts_processed),
         vram_profile,
+        deferred,
         log_root));
 
     // (8) Build and verify the binary tokenizer (mandatory).
@@ -1439,8 +1530,10 @@ arrow::Status Converter::Run()
                                        .eos_required = true}));
 
     lsxcommon::log::info(absl::StrFormat(
-        "Done — %d pinned tensors, %d experts processed, incomplete %u",
-        pinned_processed, experts_processed, partial.size()));
+        "Done — %d pinned tensors, %d experts processed, %d deferred "
+        "ballast tensors, incomplete %u",
+        pinned_processed, experts_processed, deferred_tensors,
+        partial.size()));
     return arrow::Status::OK();
 }
 

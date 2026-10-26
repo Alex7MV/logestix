@@ -71,6 +71,8 @@ const std::vector<PassportRow> kPassports = {
     {"deepseek-v4-flash", "deepseek_moe_load.cuh", "lsxcommon::gpu"},
     {"deepseek-v4.1-flash", "deepseek_moe_v41_constants.h",
      "lsxcommon::deepseek_v41"},
+    {"deepseek-v4-pro-0813", "deepseek_moe_pro_constants.h",
+     "lsxcommon::deepseek_pro"},
     {"gemma-4-26b-a4b-it", "../include/lsxcommon/gemma_moe_load.h",
      "lsxcommon::gemma"},
     {"gemma-4-31b-it", "../include/lsxcommon/gemma_dense_constants.h",
@@ -178,6 +180,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"glm_moe_flash_constants.h", "namespace frozen {"},
         {"deepseek_moe_load.cuh", "namespace gpu {"},
         {"deepseek_moe_v41_constants.h", "namespace deepseek_v41 {"},
+        {"deepseek_moe_pro_constants.h", "namespace deepseek_pro {"},
         {"../include/lsxcommon/gemma_moe_load.h", "namespace gemma {"},
         {"../include/lsxcommon/gemma_dense_constants.h",
          "namespace frozen {"},
@@ -300,6 +303,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "glm_moe_flash_model.cpp",  // glm-5.3-flash
         "kimi_moe_model.cpp",       // kimi-k2.7-code (TC batch, 100 t/s round)
         "deepseek_moe_model.cpp",   // deepseek-v4-flash (family-scoped toggle)
+        "deepseek_moe_pro_model.cpp",  // deepseek-v4-pro-0813
         "deepseek_moe_v41_model.cpp",  // deepseek-v4.1-flash
         "nemotron_moe_model.cpp",      // nemotron-3.5-lightning-30b-a3b
         "nemotron_moe_nvfp4_model.cpp",  // nemotron-3.5-lightning-30b-a3b-nvfp4
@@ -398,6 +402,9 @@ TEST_CASE("every family model wires the shared lifecycle contract",
          {"deepseek_moe_model.cpp", "deepseek_moe_inference_pipeline.cu"}},
         {"deepseek-v4.1-flash",
          {"deepseek_moe_v41_model.cpp", "deepseek_moe_v41_inference_pipeline.cu"}},
+        {"deepseek-v4-pro-0813",
+         {"deepseek_moe_pro_model.cpp",
+          "deepseek_moe_pro_inference_pipeline.cu"}},
         {"qwen3.5-9b", {"qwen_base_model.cpp",
                         "qwen_dense_inference_pipeline.cu"}},
         {"qwen3.8-27b", {"qwen_base_model.cpp",
