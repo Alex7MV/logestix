@@ -2030,21 +2030,32 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
         }
         if (step == 0) cudaEventRecord(ev_ttft, stream);
 
-        // Device-side decode PARKED (Round 25b determinism gate, re-confirmed
-        // by the kimi-100tps round: fully-async decode reproduces the
-        // un-root-caused cross-cycle final_logits divergence): interim
-        // per-step event-scoped readback stays the default.
+        // Per-step event-scoped readback. The host needs the token id to
+        // stream it and to decide on abort/EOS, so this is a real dependency,
+        // not a park. LSX_KIMI_ASYNC_STEP=1 runs the fully-async diagnostic
+        // path (declared in docs/OPEN_TASKS.md §R K1: it used to reproduce a
+        // cross-cycle final_logits divergence; re-tested 2026-10-26 after the
+        // rope/scale/token fixes).
+        static const bool kAsyncStep =
+            std::getenv("LSX_KIMI_ASYNC_STEP") != nullptr;
         int next_id = -1;
         float next_maxv = 0.0f;
-        cudaMemcpyAsync(&next_id, d_best, sizeof(int),
-                        cudaMemcpyDeviceToHost, stream);
-        cudaMemcpyAsync(&next_maxv, d_bestv, sizeof(float),
-                        cudaMemcpyDeviceToHost, stream);
-        cudaEventRecord(step_ev, stream);
-        {
+        if (!kAsyncStep) {
+            cudaMemcpyAsync(&next_id, d_best, sizeof(int),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(&next_maxv, d_bestv, sizeof(float),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaEventRecord(step_ev, stream);
             const cudaError_t q =
                 lsxcommon::cuda::WaitEventChecked(step_ev);
             if (q != cudaSuccess) return q;
+        } else {
+            cudaError_t q = cudaStreamSynchronize(stream);
+            if (q != cudaSuccess) return q;
+            cudaMemcpy(&next_id, d_best, sizeof(int),
+                       cudaMemcpyDeviceToHost);
+            cudaMemcpy(&next_maxv, d_bestv, sizeof(float),
+                       cudaMemcpyDeviceToHost);
         }
         if (next_id < 0) {
             gen.error_msg = "argmax failed";

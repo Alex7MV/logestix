@@ -100,6 +100,52 @@ DET 3/3, FSI 2/3. Open items:
   comparable (gemma ~818 GB/s vs qwen ~884 GB/s). The ~13% gap is layer-type +
   bytes, not a defect; at `--max-gen 1024` they are at parity (53.8 vs 54.1).
 
+## R2. Kimi-K2.7-Code — audit closure (2026-10-26)
+
+The 2026-08 adaptation was re-audited against the checkpoint's own reference and
+four blockers were found and fixed (details and every number:
+`docs/open-tasks/2026-10-26-kimi-audit-verification.md`):
+
+- **RoPE pairing** was half-split; the vendor de-interleaves before
+  `rotate_half`, i.e. adjacent pairs. Cross-position dots differed by O(1).
+- **Attention temperature** dropped the YaRN `mscale^2` factor (0.0722 vs 0.1447).
+- **Encoder prepended a `[BOS]`** the reference tokenizer never emits, and the
+  **stop id was `[EOS]` (163585)** instead of `config.json eos_token_id` =
+  `<|im_end|>` (163586), so generation never cut at the end of a turn.
+- **tiktoken merge reconstruction was unsound** (9/14 corpus cases diverged);
+  the vocabulary itself is the merge table, and added tokens are matched
+  literally. Two shared-pretokenizer defects came out of the same gate (Han vs
+  the letter alternative, the `'s/'t/'re…` contraction suffix).
+
+Tool-calling now uses the checkpoint's native grammar (stage 4b), the converter
+classifies and counts ballast (`skipped_visual_tensors`,
+`skipped_shape_tensors`, `mtp_*`) and fails on unknown tensors, and the model
+was re-converted (23040 experts, 542 GB). Real-weight gates: SelfCheck Paris ×3
+bit-exact; layer oracle relL2 0.0034 (layer 0) → 0.1226 (layer 60), cos ≥ 0.9925.
+
+Open items for this family:
+
+- **K1 — golden debt (FSI/CODE/DET).** Declared, not captured. The source is
+  581 GB in the `compressed-tensors` `pack-quantized` INT4 layout;
+  `compressed-tensors` 0.19 and `tiktoken` 0.14 are installed, but a
+  `from_pretrained` capture on CPU has not been attempted. Until it is, the
+  three targets SKIP (the tree exists now, the goldens do not) and the rows stay
+  in `kGoldenDebt`. Do **not** derive a golden from the engine.
+- **K2 — async decode overlap.** The per-step D2H + event wait is not a "park":
+  the host needs the token id to stream it and to honour abort, so it is a real
+  dependency. The old note about a "cross-cycle divergence on a fully-async
+  decode" could not be reproduced after the numeric fixes
+  (`LSX_KIMI_ASYNC_STEP=1` compares 6 cycles, identical hashes), and the
+  diagnostic path itself is still host-serialized (`cudaStreamSynchronize`).
+  Pipelining the readback one step behind is a throughput item, not correctness.
+- **K3 — perf row not seeded.** The converted tree is in place;
+  `test_perf_baseline_kimi_k2_7_code` is the harness path (Release build, pinned
+  expert store; the load alone is ~40 min at 542 GB). Recorded as `perf` when
+  run; do not hand-edit `tests/perf/perf_baselines.json`.
+- **K4 — KV capacity.** `kKimiMaxSlots = 1024` against a 262 144 window; a
+  long-context gate is out of reach on one 5090 (the KV cache is 512+64 bf16 per
+  token per layer). Unchanged, documented.
+
 ## K. Golden-debt: the declared list, and why it is not a hard failure (2026-10-06)
 
 Vector 2 of the three "will it recur" holes is now closed. `test_model_suite_guard`
