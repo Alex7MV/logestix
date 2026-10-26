@@ -125,12 +125,20 @@ bit-exact; layer oracle relL2 0.0034 (layer 0) → 0.1226 (layer 60), cos ≥ 0.
 
 Open items for this family:
 
-- **K1 — golden debt (FSI/CODE/DET).** Declared, not captured. The source is
-  581 GB in the `compressed-tensors` `pack-quantized` INT4 layout;
-  `compressed-tensors` 0.19 and `tiktoken` 0.14 are installed, but a
-  `from_pretrained` capture on CPU has not been attempted. Until it is, the
-  three targets SKIP (the tree exists now, the goldens do not) and the rows stay
-  in `kGoldenDebt`. Do **not** derive a golden from the engine.
+- **K1 — golden debt (FSI/CODE/DET).** Declared, not captured, and now
+  **measured as infeasible on this host**: with `compressed-tensors` 0.19 and
+  `tiktoken` 0.14 installed, `AutoModelForCausalLM.from_pretrained(...,
+  device_map="cpu", attn_implementation="eager")` loads the config, applies the
+  quantizer to 69 120 modules and then runs "Decompressing model": it
+  materializes bf16 copies of the INT4 experts — 187 GB at 8 % of the module
+  count, i.e. **~2.0 TB extrapolated against 750 GB of RAM**. The 581 GB source
+  alone mmap-fits (page cache), the decompressed form does not. A vendor-stack
+  capture (vLLM/SGLang `--tool-call-parser kimi_k2`, per the checkpoint's
+  deployment guide) needs multi-GPU hardware, not this box. The three targets
+  therefore SKIP (tree present, golden absent) and the rows stay in
+  `kGoldenDebt`; the layer oracle is the parity instrument that *is* available
+  (`docs/open-tasks/2026-10-26-kimi-audit-verification.md`). Do **not** derive a
+  golden from the engine.
 - **K2 — async decode overlap.** The per-step D2H + event wait is not a "park":
   the host needs the token id to stream it and to honour abort, so it is a real
   dependency. The old note about a "cross-cycle divergence on a fully-async
@@ -138,10 +146,16 @@ Open items for this family:
   (`LSX_KIMI_ASYNC_STEP=1` compares 6 cycles, identical hashes), and the
   diagnostic path itself is still host-serialized (`cudaStreamSynchronize`).
   Pipelining the readback one step behind is a throughput item, not correctness.
-- **K3 — perf row not seeded.** The converted tree is in place;
-  `test_perf_baseline_kimi_k2_7_code` is the harness path (Release build, pinned
-  expert store; the load alone is ~40 min at 542 GB). Recorded as `perf` when
-  run; do not hand-edit `tests/perf/perf_baselines.json`.
+- **K3 — perf rows seeded 2026-10-26 (resolved).** The 2026-09-14 `perf` row
+  (5.1 t/s) carried no evidence (`ttft_ms 0`, `power_samples 0`) and had never
+  been re-measured after the conversion. It was removed and re-recorded through
+  the harness (Release/AOCC tree, 2048-token protocol, pinned 542 GB store):
+  **`perf` 4.86 t/s** (ttft 1043.8 ms, avg 296.5 W, peak 396.4 W, 20979
+  samples) and **`r3` 5.04 t/s** (ttft 1069.9 ms, avg 304.0 W, peak 395.7 W).
+  The -5% against the stale reference is the numeric fixes changing the routed
+  expert sets (different per-token cache working sets), and the old row had no
+  protocol evidence to compare against. Re-seed is deliberate; the numbers are
+  the harness's, not hand-edited.
 - **K4 — KV capacity.** `kKimiMaxSlots = 1024` against a 262 144 window; a
   long-context gate is out of reach on one 5090 (the KV cache is 512+64 bf16 per
   token per layer). Unchanged, documented.

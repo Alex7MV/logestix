@@ -92,11 +92,16 @@ noise; the per-layer *direction* cosine stays ≥ 0.9925.
 - **Async-decode determinism (F7)**: the per-step D2H+event readback is still in
   `RunKimiGeneration`; removing it has not been re-tested since the numeric
   fixes. Needs the reproduce → bisect → fix-or-record cycle.
-- **FSI/CODE/DET goldens**: not captured. The source is 581 GB in
-  `compressed-tensors` INT4; `compressed-tensors` 0.19 and `tiktoken` 0.14 are
-  installed, but a full `from_pretrained` run on CPU has not been attempted yet.
-  Until it is, these three targets SKIP (vault tree now present, golden absent).
-- **Perf row**: not seeded; the converted tree is in place and
-  `test_perf_baseline_kimi_k2_7_code` is the harness path.
+- **FSI/CODE/DET goldens**: not captured, and measured infeasible here.
+  `from_pretrained(device_map="cpu", attn_implementation="eager")` with
+  `compressed-tensors` 0.19 and `tiktoken` 0.14 loads the config and applies the
+  quantizer to 69 120 modules, then "Decompressing model" materializes bf16
+  copies of the INT4 experts: **187 GB at 8 % of the module count, ~2.0 TB
+  extrapolated against 750 GB of RAM**. The three targets SKIP (tree present,
+  golden absent) and the rows stay in `kGoldenDebt`.
+- **Perf rows**: seeded through the harness on 2026-10-26 —
+  `perf` **4.86 t/s** (ttft 1043.8 ms, avg 296.5 W, peak 396.4 W) and `r3`
+  **5.04 t/s** (ttft 1069.9 ms, avg 304.0 W, peak 395.7 W), 2048-token
+  protocol. Load with pinning: 544 GiB in 392-441 s per mode.
 - **KV cap**: `kKimiMaxSlots = 1024` (config window 262 144). A long-context
   gate is out of reach here; the cap is unchanged.

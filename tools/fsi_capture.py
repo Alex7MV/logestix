@@ -55,6 +55,15 @@ OVERRIDES = {
     # accelerate device map keeps every layer on the GPU.
     "qwen3.5-9b": {"loader": "qwen3_5", "device_map": "auto"},
 }
+# kimi-k2.7-code: 581 GB in the compressed-tensors INT4 layout; run on CPU
+# (device_map="cpu"), there is no GPU that holds it.
+OVERRIDES["kimi-k2.7-code"] = {
+    "device_map": "cpu",
+    # The checkpoint's config pins flash_attention_2; eager is the same MLA
+    # math the layer oracle validates and needs no flash_attn build.
+    "attn_implementation": "eager",
+}
+
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
            "device_map": None, "loader": None, "system": None,
@@ -419,6 +428,21 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
             load_kwargs["dtype"] = opts["dtype"]
         if opts.get("device_map"):
             load_kwargs["device_map"] = opts["device_map"]
+        if opts.get("attn_implementation"):
+            # The checkpoint JSON pins _attn_implementation on the wrapper AND
+            # on the nested text/vision configs; the kwarg alone is not enough
+            # (transformers validates against the config's own value).
+            from transformers import AutoConfig
+            cfg = AutoConfig.from_pretrained(
+                model, trust_remote_code=opts["trust_remote_code"])
+            impl = opts["attn_implementation"]
+            cfg._attn_implementation = impl
+            for sub in ("text_config", "vision_config"):
+                sub_cfg = getattr(cfg, sub, None)
+                if sub_cfg is not None:
+                    sub_cfg._attn_implementation = impl
+            load_kwargs["config"] = cfg
+            load_kwargs["attn_implementation"] = impl
         lm = _auto_model().from_pretrained(model, **load_kwargs)
         lm.eval()
 
