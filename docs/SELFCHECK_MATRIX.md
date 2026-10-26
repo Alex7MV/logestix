@@ -39,9 +39,19 @@ one in a ctest summary, which is why the debt rows are called out below.
 | qwen3.8-27b | PASS | 3/3 | 3/3 | 3/3 |
 | qwen3.8-flash-next | PASS (+ eos) | 3/3 | 3/3 | 3/3 |
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
+| deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
 
-- SelfCheck **12/12**, FSI **11/12**, CODE **12/12**, DET **12/12**.
-- The one red is the dense Gemma-4 member, and it is understood rather than
+- SelfCheck **13/13**, FSI **13/15**, CODE **15/15**, DET **15/15**.
+- Two reds. The Pro FSI-02 red is an instruction-following deviation, not a
+  numeric one: the prompt requires the symbolic form
+  `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`,
+  and the model inlines the constants instead
+  (`Balance_Alpha=((100000000*1.083541-0.0005)*83.152402-0.0005)*0.011104-0.0005`);
+  FSI-01/03 pass and CODE/DET are 3/3. Its goldens are **template-derived**
+  (authored Expected Template, Pro's own `encoding_dsv4.py` framing), because
+  the TP-4 FP8 source runner cannot execute on this card — they pin the
+  converted path only, not source parity (`docs/OPEN_TASKS.md` §R3).
+- The other red is the dense Gemma-4 member, and it is understood rather than
   mysterious: FSI-01 is a template near-tie where the dense body needs ~8 bits
   on *every* linear (33.7 GiB resident, over this card). Every partial
   placement that fits was measured and moves *away* from the source —
@@ -56,9 +66,8 @@ one in a ctest summary, which is why the debt rows are called out below.
 |---|---|---|---|---|---|
 | mistral-small-4-119b | PASS | SKIP | SKIP | SKIP | source is the Mistral "consolidated" layout (`params.json`, no `config.json`), so Transformers cannot run it and no oracle can be captured — `docs/OPEN_TASKS.md` §T |
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | source not runnable here: `modelopt 0.44.0rc5` `MIXED_PRECISION` (W4A16_NVFP4 experts + FP8 mixers, FP8 KV cache) and the installed transformers has no modelopt quantizer; the bf16 passport is not in the vault. An attempted golden set was reverted 2026-10-25 — its `input_ids` were Qwen3.8-Flash-Next ids (up to 248069 against this model's 131072-entry vocabulary) and its `expected` values were copied from that family's goldens, so all three gates failed with an empty `raw` |
-| deepseek-v4-pro-0813 | PASS | SKIP | SKIP | SKIP | the source oracle is the Tensor-Parallel FP8 reference (`inference/generate.py`, `MP=4`) over an 892.7 GB checkpoint; this single 32 GB card cannot run it. The 838 GB converted tree exists and SelfCheck is green (Paris x3, bit-exact logits); perf rows are seeded at 0.77 t/s (perf) / 0.79 t/s (r3) — `docs/OPEN_TASKS.md` §R3 |
 
-All three are recorded in the golden-debt list (§K) rather than left to look green.
+Both are recorded in the golden-debt list (§K) rather than left to look green.
 
 ## 3. Golden present, **no converted tree** — SKIP (needs the vault, not a code fix)
 

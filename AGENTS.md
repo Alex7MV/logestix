@@ -373,8 +373,11 @@ procedure — `perf-tuning-a-model`.
   vector is kept FP32 (`d_single_f32`) before the scale-invariant RMSNorm; and
   the layer `Free()` must release the separately-allocated shared-expert blobs
   (~4 GiB) or the second model load in one process OOMs. FSI/CODE/DET goldens
-  are declared debt (the source oracle is the TP-4 FP8 runner, which this
-  32 GB card cannot execute). Perf rows are seeded through the harness at the
+  are **template-derived** (authored Expected Template + Pro's own
+  `encoding_dsv4.py` framing; the source oracle is the TP-4 FP8 runner, which
+  this 32 GB card cannot execute) and now run: FSI 2/3 (FSI-02 RED — the model
+  inlines numeric constants instead of the required symbolic form), CODE 3/3,
+  DET 3/3. Perf rows are seeded through the harness at the
   canonical 2048-token protocol: **perf 0.77 t/s / r3 0.79 t/s**, TTFT ~9.0 s,
   28.0 GiB resident (host-store bound: ~13.5 GB of experts streamed per token
   from the 811 GB mmap tree) — `tests/perf/perf_baselines.json`; history in

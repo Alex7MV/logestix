@@ -171,7 +171,7 @@ and is machine-enforced in **both** directions:
   the problem and rot;
 - a `kGoldenDebt` row matching no live gap fails, so renames do not leave dead entries.
 
-Current state: **28 declared debt entries** across the ten families that have none
+Current state: **25 declared debt entries** across the nine families that have none
 (or only some) of the three goldens. That number is the honest coverage figure, and
 until now it was only obtainable by diffing two directories by hand.
 
@@ -224,10 +224,18 @@ selfcheck -> fsi -> code -> det -> perf), and the frozen passport is
   (`d_single_f32`) before the scale-invariant RMSNorm; and `LayerWeights::Free`
   skipped the separately-allocated shared-expert blobs (~4 GiB) on the
   arena-backed path, so a second `Load()` in one process OOM'd — both fixed.
-- **P2 — parity goldens stay declared debt.** `deepseek-v4-pro-0813:{fsi,code,det}`
-  are in `kGoldenDebt`. The source oracle is the TP-4 FP8 reference
-  (`inference/generate.py`), which this single 32 GB card cannot run, exactly
-  as for Mistral (§T); the three targets SKIP (tree present, golden absent).
+- **P2 — parity goldens are template-derived and the gates now run (2026-10-26).**
+  `tools/{fsi,code,det}_capture.py --template-golden/--template-only` frame
+  each prompt with Pro's own `encoding/encoding_dsv4.py` (chat mode) and record
+  the prompt's authored Expected Template as `expected`; `source` says the TP-4
+  FP8 runner cannot execute here, so these are **not** source-parity goldens
+  (same status as DeepSeek-V4.1). Verdicts: **FSI 2/3**, **CODE 3/3**,
+  **DET 3/3** (3 runs each, deterministic). FSI-02 is RED for a real
+  instruction-following reason: the prompt asks for the symbolic form and the
+  model inlines the numeric constants
+  (`((100000000*1.083541-0.0005)*83.152402-...)`); FSI-01/03 pass. That is an
+  open model-behavior defect, not a kernel defect, and it is not "fixed" by
+  loosening the golden.
 - **P3 — perf is seeded through the harness (2026-10-26).** Running
   `test_perf_baseline "perf baseline: deepseek-v4-pro-0813"` on
   `linux-release-znver4-aocc` (RTX 5090, 2048-token protocol, one process per

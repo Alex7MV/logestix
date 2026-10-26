@@ -54,6 +54,14 @@ OVERRIDES = {
     # qwen3.5-9b is a Qwen3_5 VLM checkpoint; bf16 fits in 32 GiB so the
     # accelerate device map keeps every layer on the GPU.
     "qwen3.5-9b": {"loader": "qwen3_5", "device_map": "auto"},
+    # DeepSeek-V4-Pro-0813 ships no HF chat template; frame with its own
+    # encoding/encoding_dsv4.py in chat mode (short direct answers). The source
+    # reference is the TP-4 FP8 runner, which cannot execute on one 32 GB card,
+    # so the golden is the prompt's Expected Template (template-only mode).
+    "deepseek-v4-pro-0813": {
+        "framing": "deepseek_v4", "thinking_mode": "chat",
+        "unrunnable": "TP-4 FP8 reference (inference/generate.py, MP=4) over an 892.7 GB checkpoint; this 32 GB card cannot execute it",
+    },
 }
 # kimi-k2.7-code: 581 GB in the compressed-tensors INT4 layout; run on CPU
 # (device_map="cpu"), there is no GPU that holds it.
@@ -319,6 +327,26 @@ def selftest():
     print("fsi selftest OK: pv=%.6f arb=%.6f" % (v1, v2))
 
 
+def _frame_deepseek_v4(model_dir, body, thinking_mode):
+    """Frame with DeepSeek-V4's release encoder (encoding/encoding_dsv4.py);
+    V4-Pro ships no HF chat template."""
+    import importlib.util
+
+    enc_path = os.path.join(model_dir, "encoding", "encoding_dsv4.py")
+    spec = importlib.util.spec_from_file_location("dsv4_encoding", enc_path)
+    enc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(enc)
+    return enc.encode_messages([{"role": "user", "content": body}],
+                               thinking_mode=thinking_mode)
+
+
+def frame(model, tok, body, opts):
+    if opts.get("framing") == "deepseek_v4":
+        return _frame_deepseek_v4(model, body,
+                                  opts.get("thinking_mode", "chat"))
+    return None
+
+
 def _frame_messages(opts, body):
     """Chat messages for a prompt: an optional leading system turn (some
     models are only served with one and refuse otherwise) plus the user turn."""
@@ -352,7 +380,10 @@ def capture_from_template(tok, opts, prompts, model, model_type, out,
     cases = []
     for p in prompts:
         prompt_text = p["body"]
-        if getattr(tok, "chat_template", None):
+        framed = frame(model, tok, p["body"], opts)
+        if framed is not None:
+            prompt_text = framed
+        elif getattr(tok, "chat_template", None):
             kwargs = {"tokenize": False, "add_generation_prompt": True}
             if opts.get("enable_thinking") is not None:
                 kwargs["enable_thinking"] = opts["enable_thinking"]
@@ -379,8 +410,11 @@ def capture_from_template(tok, opts, prompts, model, model_type, out,
         "model_type": model_type,
         "source": "prompt-template (source not runnable locally: %s)"
                   % (opts.get("unrunnable") or "custom architecture/layout"),
-        "runtime": "tokenizer.json + chat_template.jinja (transformers %s / torch %s)"
-                   % (transformers.__version__, torch.__version__),
+        "runtime": ("encoding/encoding_dsv4.py + tokenizer.json (transformers %s)"
+                    % transformers.__version__)
+                   if opts.get("framing") == "deepseek_v4" else
+                   ("tokenizer.json + chat_template.jinja (transformers %s / torch %s)"
+                    % (transformers.__version__, torch.__version__)),
         "prompts": cases}
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
