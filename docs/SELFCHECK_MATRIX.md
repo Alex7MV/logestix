@@ -56,7 +56,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 |---|---|---|---|---|---|
 | mistral-small-4-119b | PASS | SKIP | SKIP | SKIP | source is the Mistral "consolidated" layout (`params.json`, no `config.json`), so Transformers cannot run it and no oracle can be captured — `docs/OPEN_TASKS.md` §T |
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | source not runnable here: `modelopt 0.44.0rc5` `MIXED_PRECISION` (W4A16_NVFP4 experts + FP8 mixers, FP8 KV cache) and the installed transformers has no modelopt quantizer; the bf16 passport is not in the vault. An attempted golden set was reverted 2026-10-25 — its `input_ids` were Qwen3.8-Flash-Next ids (up to 248069 against this model's 131072-entry vocabulary) and its `expected` values were copied from that family's goldens, so all three gates failed with an empty `raw` |
-| deepseek-v4-pro-0813 | PASS | SKIP | SKIP | SKIP | the source oracle is the Tensor-Parallel FP8 reference (`inference/generate.py`, `MP=4`) over an 892.7 GB checkpoint; this single 32 GB card cannot run it. The 838 GB converted tree exists and SelfCheck is green (Paris x3, bit-exact logits); the 2048-token perf row is not seeded yet — `docs/OPEN_TASKS.md` §R3 |
+| deepseek-v4-pro-0813 | PASS | SKIP | SKIP | SKIP | the source oracle is the Tensor-Parallel FP8 reference (`inference/generate.py`, `MP=4`) over an 892.7 GB checkpoint; this single 32 GB card cannot run it. The 838 GB converted tree exists and SelfCheck is green (Paris x3, bit-exact logits); perf rows are seeded at 0.77 t/s (perf) / 0.79 t/s (r3) — `docs/OPEN_TASKS.md` §R3 |
 
 All three are recorded in the golden-debt list (§K) rather than left to look green.
 

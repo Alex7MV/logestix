@@ -228,15 +228,16 @@ selfcheck -> fsi -> code -> det -> perf), and the frozen passport is
   are in `kGoldenDebt`. The source oracle is the TP-4 FP8 reference
   (`inference/generate.py`), which this single 32 GB card cannot run, exactly
   as for Mistral (§T); the three targets SKIP (tree present, golden absent).
-- **P3 — perf.** `test_perf_baseline_deepseek_v4_pro` is registered and
-  `perf_baseline_logic` sees it; no `perf_baselines.json` row is committed yet
-  (seed through the release harness, never by hand). Expect the 2048-token
-  protocol to be host-store bound: every token touches 61 x 6 experts
-  (~13.5 GB) through mmap staging. A Release short-protocol observation
-  (2026-10-26, `linux-release-znver4-aocc`, 64 tokens, RTX 5090): **0.7 t/s**,
-  TTFT 9.0 s, 28.0 GiB resident, 104 W avg — the 2048-token protocol at that
-  rate is ~49 min per mode, so the two-mode harness run is queued as the
-  remaining step, not inferred from this sample.
+- **P3 — perf is seeded through the harness (2026-10-26).** Running
+  `test_perf_baseline "perf baseline: deepseek-v4-pro-0813"` on
+  `linux-release-znver4-aocc` (RTX 5090, 2048-token protocol, one process per
+  mode) wrote both rows: **perf 0.77 t/s** (TTFT 8987 ms, 114 W avg) and
+  **r3 0.79 t/s** (TTFT 9023 ms, 116 W avg), 28.0 GiB resident. The number is
+  host-store bound, as expected: every token streams 61 x 6 experts (~13.5 GB)
+  from the 811 GB mmap tree; the 5-slot device cache (177 MiB, all the free
+  VRAM the 26.7 GiB resident set leaves) contributes almost nothing. A pinned
+  arena is not an option (822 GiB vs 750 GB RAM). This is the honest ceiling
+  for this card, not a tuneable regression.
 
 Residency note for the next operator: do NOT turn on
 `LSX_DEEPSEEK_PRO_PIN=1` on this box. The expert tree is 822 GiB against

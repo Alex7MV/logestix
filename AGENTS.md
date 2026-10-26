@@ -374,8 +374,11 @@ procedure — `perf-tuning-a-model`.
   the layer `Free()` must release the separately-allocated shared-expert blobs
   (~4 GiB) or the second model load in one process OOMs. FSI/CODE/DET goldens
   are declared debt (the source oracle is the TP-4 FP8 runner, which this
-  32 GB card cannot execute); the perf row is seeded separately
-  (`docs/OPEN_TASKS.md` §R3).
+  32 GB card cannot execute). Perf rows are seeded through the harness at the
+  canonical 2048-token protocol: **perf 0.77 t/s / r3 0.79 t/s**, TTFT ~9.0 s,
+  28.0 GiB resident (host-store bound: ~13.5 GB of experts streamed per token
+  from the 811 GB mmap tree) — `tests/perf/perf_baselines.json`; history in
+  `docs/OPEN_TASKS.md` §R3.
   Kimi-K2.7-Code (independent family `kimi`: DeepSeek-V3 MLA + 384-expert top-8
   MoE with one shared expert, 61 layers / 7168H / 64 heads / q_lora 1536 /
   kv_lora 512 / qk_nope 128 / qk_rope 64, YaRN factor 64;
