@@ -348,6 +348,24 @@ procedure — `perf-tuning-a-model`.
   RTX 5090/Linux, 2048-token protocol); `perf` carries an accepted -4.5% for
   the overflow-proof TC SwiGLU quantizer (one extra launch per slot per layer),
   `r3` is unaffected.
+  Kimi-K2.7-Code (independent family `kimi`: DeepSeek-V3 MLA + 384-expert top-8
+  MoE with one shared expert, 61 layers / 7168H / 64 heads / q_lora 1536 /
+  kv_lora 512 / qk_nope 128 / qk_rope 64, YaRN factor 64;
+  `kimi_moe_load.h` (frozen passport + the rope/temperature constants),
+  `kimi_moe_convert.{h,cpp}` (INT4 group-32 offset-binary → NVFP4, ballast
+  counted, token policy from `config.json`), `kimi_moe_load.cpp` (pinned MLA
+  graph + neutral `ExpertStore` with chunked pinning, 542 GB tree),
+  `kimi_moe_inference.cu` (absorbed MLA decode, router, expert FFN, staged and
+  resident paths), `kimi_moe_expert_cache.{h,cu}` (device slot-LRU),
+  `kimi_moe_model.{h,cpp}`, `kimi_moe_tool_format.{h,cpp}` (native
+  `<|im_*|>`/`<|tool_call_begin|>functions.{name}:{i}<|tool_call_argument_begin|>`
+  codec, thinking-only `<think>` prefix); the tokenizer is tiktoken
+  (`tokenizer_kind=2`: the vocabulary IS the merge table, added tokens matched
+  literally, no BOS, stop id `<|im_end|>` = 163586); format tag
+  `logestix-kimi-r2`. Verified on real weights 2026-10-26: SelfCheck Paris ×3
+  bit-exact and a per-layer reference oracle (relL2 0.0034 → 0.1226, cos ≥
+  0.9925) — `docs/open-tasks/2026-10-26-kimi-audit-verification.md`; FSI/CODE/DET
+  are declared golden debt (`docs/OPEN_TASKS.md` §R2).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

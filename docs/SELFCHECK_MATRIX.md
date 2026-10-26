@@ -66,10 +66,20 @@ when the converted tree exists; SelfCheck skips with them.
 
 ## 4. Neither — SKIP
 
-`glm-5.2`, `deepseek-v4-flash`, `kimi-k2.7-code`,
-`nemotron-3.5-lightning-30b-a3b` (bf16 sibling), `gigachat3.5-432b-a28b-reasoning`,
-`mimo-v2.6-flash-rl`. Registered stages exist; converted trees and goldens do
-not.
+`glm-5.2`, `deepseek-v4-flash`, `nemotron-3.5-lightning-30b-a3b` (bf16 sibling),
+`gigachat3.5-432b-a28b-reasoning`, `mimo-v2.6-flash-rl`. Registered stages
+exist; converted trees and goldens do not.
+
+`kimi-k2.7-code` moved out of this section on 2026-10-26: the tree now exists
+(542 GB, 23040 experts) and **SelfCheck passes on real weights** — Paris
+(tok 17374), 3 cycles, identical logits hash — with the per-layer reference
+oracle green (relL2 0.0034 at layer 0, 0.1226 at layer 60, cos ≥ 0.9925). FSI,
+CODE and DET remain **declared golden debt** (`docs/OPEN_TASKS.md` §R2 K1): the
+581 GB `compressed-tensors` source has not been run for a capture yet, so their
+three targets SKIP (tree present, golden absent) — the debt rows in
+`kGoldenDebt` are the honest state, and the capture must come from the source,
+never from the engine. Verification record:
+`docs/open-tasks/2026-10-26-kimi-audit-verification.md`.
 
 ## Reproduce
 
