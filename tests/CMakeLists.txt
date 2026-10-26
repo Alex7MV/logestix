@@ -327,6 +327,175 @@ set_tests_properties(test_deepseek_moe_v41_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_deepseek_moe_v41_convert PROPERTIES LABELS convert)
 
+# ── DeepSeek-V4-Pro-0813: converter (synthetic e2e, host-only) ───────────
+add_executable(test_deepseek_moe_pro_convert test_deepseek_moe_pro_convert.cpp)
+target_compile_definitions(test_deepseek_moe_pro_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_deepseek_moe_pro_convert PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_pro_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+add_test(NAME test_deepseek_moe_pro_convert
+         COMMAND test_deepseek_moe_pro_convert)
+set_tests_properties(test_deepseek_moe_pro_convert PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_deepseek_moe_pro_convert PROPERTIES LABELS convert)
+
+# ── DeepSeek-V4-Pro-0813: load stage (host + CUDA, synthetic fixture) ────
+add_executable(test_deepseek_moe_pro_loader test_deepseek_moe_pro_loader.cpp)
+target_link_libraries(test_deepseek_moe_pro_loader PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_pro_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_pro_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_loader>")
+    add_custom_command(TARGET test_deepseek_moe_pro_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_loader>")
+endif()
+add_test(NAME test_deepseek_moe_pro_loader COMMAND test_deepseek_moe_pro_loader)
+
+# ── DeepSeek-V4-Pro-0813: model stage (host-only) ────────────────────────
+add_executable(test_deepseek_moe_pro_model test_deepseek_moe_pro_model.cpp)
+target_link_libraries(test_deepseek_moe_pro_model PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_pro_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_pro_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_model>")
+    add_custom_command(TARGET test_deepseek_moe_pro_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_model>")
+endif()
+add_test(NAME test_deepseek_moe_pro_model COMMAND test_deepseek_moe_pro_model)
+
+# ── DeepSeek-V4-Pro-0813: fast-load primitives (CUDA OBJECT lib) ─────────
+add_library(test_deepseek_moe_pro_load_fast_cu OBJECT
+            test_deepseek_moe_pro_load_fast.cu)
+set_target_properties(test_deepseek_moe_pro_load_fast_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_pro_load_fast_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_pro_load_fast_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+)
+target_compile_definitions(test_deepseek_moe_pro_load_fast_cu PRIVATE
+    LOGESTIX_HAS_CUDA
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_deepseek_moe_pro_load_fast_cu PRIVATE
+    Catch2::Catch2WithMain)
+add_executable(test_deepseek_moe_pro_load_fast)
+set_target_properties(test_deepseek_moe_pro_load_fast PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_pro_load_fast PRIVATE
+    test_deepseek_moe_pro_load_fast_cu lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_pro_load_fast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_load_fast>")
+    add_custom_command(TARGET test_deepseek_moe_pro_load_fast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_load_fast>")
+endif()
+add_test(NAME test_deepseek_moe_pro_load_fast
+         COMMAND test_deepseek_moe_pro_load_fast)
+
+# ── DeepSeek-V4-Pro-0813: kernel stage (family rmsnorm) ──────────────────
+add_library(test_deepseek_moe_pro_kernels_cu OBJECT
+            test_deepseek_moe_pro_kernels.cu)
+set_target_properties(test_deepseek_moe_pro_kernels_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real")
+target_compile_options(test_deepseek_moe_pro_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_deepseek_moe_pro_kernels_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include")
+target_compile_definitions(test_deepseek_moe_pro_kernels_cu PRIVATE
+    LOGESTIX_HAS_CUDA)
+target_link_libraries(test_deepseek_moe_pro_kernels_cu PRIVATE
+    Catch2::Catch2WithMain)
+add_executable(test_deepseek_moe_pro_kernels)
+set_target_properties(test_deepseek_moe_pro_kernels PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_pro_kernels PRIVATE
+    test_deepseek_moe_pro_kernels_cu lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_pro_kernels
+         COMMAND test_deepseek_moe_pro_kernels)
+set_tests_properties(test_deepseek_moe_pro_kernels PROPERTIES
+    SKIP_RETURN_CODE 4)
+
+# ── DeepSeek-V4-Pro-0813: SelfCheck (real model, SKIP 4) ─────────────────
+add_executable(test_deepseek_moe_pro_selfcheck
+               test_deepseek_moe_pro_selfcheck.cpp)
+target_link_libraries(test_deepseek_moe_pro_selfcheck PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_pro_selfcheck
+         COMMAND test_deepseek_moe_pro_selfcheck)
+set_tests_properties(test_deepseek_moe_pro_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
+# ── DeepSeek-V4-Pro-0813: FSI/CODE/DET parity (goldens, SKIP 4) ──────────
+add_executable(test_deepseek_moe_pro_fsi_selfcheck
+               test_deepseek_moe_pro_fsi_selfcheck.cpp)
+target_compile_definitions(test_deepseek_moe_pro_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi")
+target_link_libraries(test_deepseek_moe_pro_fsi_selfcheck PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_pro_fsi_selfcheck
+         COMMAND test_deepseek_moe_pro_fsi_selfcheck)
+set_tests_properties(test_deepseek_moe_pro_fsi_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
+add_executable(test_deepseek_moe_pro_code_selfcheck
+               test_deepseek_moe_pro_code_selfcheck.cpp)
+target_compile_definitions(test_deepseek_moe_pro_code_selfcheck PRIVATE
+    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code")
+target_link_libraries(test_deepseek_moe_pro_code_selfcheck PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_pro_code_selfcheck
+         COMMAND test_deepseek_moe_pro_code_selfcheck)
+set_tests_properties(test_deepseek_moe_pro_code_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
+add_executable(test_deepseek_moe_pro_det_selfcheck
+               test_deepseek_moe_pro_det_selfcheck.cpp)
+target_compile_definitions(test_deepseek_moe_pro_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det")
+target_link_libraries(test_deepseek_moe_pro_det_selfcheck PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_pro_det_selfcheck
+         COMMAND test_deepseek_moe_pro_det_selfcheck)
+set_tests_properties(test_deepseek_moe_pro_det_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
+
 # ── DeepSeek-V4.1-Flash: dense dequant kernels (CUDA) ────────────────────
 add_library(test_deepseek_moe_v41_dequant_cu OBJECT
             test_deepseek_moe_v41_dequant.cu)
@@ -2416,6 +2585,16 @@ set_tests_properties(test_perf_baseline_deepseek_v41_flash PROPERTIES
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=DeepSeek-V4.1-Flash")
 set_tests_properties(test_perf_baseline_deepseek_v41_flash
+    PROPERTIES LABELS perf)
+# DeepSeek-V4-Pro-0813 decode streams 822 GiB of routed experts from mmap:
+# 2048-token timing is bounded by the host store, so the budget is wide.
+add_test(NAME test_perf_baseline_deepseek_v4_pro
+         COMMAND test_perf_baseline "perf baseline: deepseek-v4-pro-0813")
+set_tests_properties(test_perf_baseline_deepseek_v4_pro PROPERTIES
+    TIMEOUT 5400
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=DeepSeek-V4-Pro-0813")
+set_tests_properties(test_perf_baseline_deepseek_v4_pro
     PROPERTIES LABELS perf)
 add_test(NAME test_perf_baseline_qwen3_5_35b_a3b
          COMMAND test_perf_baseline "perf baseline: qwen3.5-35b-a3b")
@@ -6177,6 +6356,8 @@ set_tests_properties(
     test_schema_views
     test_deepseek_moe_loader
     test_deepseek_moe_model
+    test_deepseek_moe_pro_model
+    test_deepseek_moe_pro_loader
     test_deepseek_moe_v41_model
     test_deepseek_moe_v41_loader
     test_expert_store
@@ -6265,6 +6446,7 @@ set_tests_properties(
     test_lsx_kernels
     test_blackwell_micro_gemm
     test_deepseek_moe_inference_kernels
+    test_deepseek_moe_pro_kernels
     test_deepseek_moe_moe
     test_deepseek_moe_arena
     test_deepseek_moe_v41_dequant
@@ -6293,6 +6475,7 @@ set_tests_properties(
     test_kimi_moe_tc_diag
     test_glm_moe_load_fast
     test_deepseek_moe_load_fast
+    test_deepseek_moe_pro_load_fast
     test_glm_moe_model_lifecycle
     test_qwen_dense_loader
     test_qwen_dense_model
@@ -6325,6 +6508,7 @@ set_tests_properties(
     test_glm_moe_fsi_selfcheck
     test_glm_moe_flash_fsi_selfcheck
     test_deepseek_moe_fsi_selfcheck
+    test_deepseek_moe_pro_fsi_selfcheck
     test_deepseek_moe_v41_fsi_selfcheck
     test_qwen_dense_fsi_selfcheck
     test_qwen_dense_27b_fsi_selfcheck
@@ -6340,6 +6524,7 @@ set_tests_properties(
     test_glm_moe_code_selfcheck
     test_glm_moe_flash_code_selfcheck
     test_deepseek_moe_code_selfcheck
+    test_deepseek_moe_pro_code_selfcheck
     test_deepseek_moe_v41_code_selfcheck
     test_qwen_dense_code_selfcheck
     test_qwen_dense_27b_code_selfcheck
@@ -6356,6 +6541,7 @@ set_tests_properties(
     test_glm_moe_det_selfcheck
     test_glm_moe_flash_det_selfcheck
     test_deepseek_moe_det_selfcheck
+    test_deepseek_moe_pro_det_selfcheck
     test_deepseek_moe_v41_det_selfcheck
     test_qwen_dense_det_selfcheck
     test_qwen_dense_27b_det_selfcheck
@@ -6390,6 +6576,7 @@ set_tests_properties(
     test_glm_moe_flash_selfcheck
     test_deepseek_moe_prompt_output
     test_deepseek_moe_selfcheck
+    test_deepseek_moe_pro_selfcheck
     test_gemma_moe_loader
     test_gemma_dense_loader
     test_gemma_dense_model

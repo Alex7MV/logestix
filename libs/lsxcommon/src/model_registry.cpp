@@ -6,6 +6,7 @@
 #include "mistral_moe_model.h"
 #include "lsxcommon/gigachat_moe_model.h"
 #include "deepseek_moe_model.h"
+#include "deepseek_moe_pro_model.h"
 #include "deepseek_moe_v41_model.h"
 #include "gemma_dense_model.h"
 #include "gemma_moe_model.h"
@@ -30,6 +31,7 @@ void EnsureModelRegistry()
 {
     static bool init = [] {
         LsxModelFactory::Register<DeepSeekV4FlashModel>();
+        LsxModelFactory::Register<DeepSeekV4ProModel>();
         LsxModelFactory::Register<DeepSeekV41FlashModel>();
         LsxModelFactory::Register<GlmV5Model>();
         LsxModelFactory::Register<KimiK27CodeModel>();

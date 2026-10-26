@@ -6,6 +6,8 @@ add_library(lsxcommon STATIC
     src/core.cpp
     src/common.cpp
     src/deepseek_moe_model.cpp
+    src/deepseek_moe_pro_convert.cpp
+    src/deepseek_moe_pro_model.cpp
     src/deepseek_moe_v41_convert.cpp
     src/deepseek_moe_v41_load.cpp
     src/deepseek_moe_v41_model.cpp
@@ -505,6 +507,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
     lsxcommon_deepseek_v41_cu
+    lsxcommon_deepseek_pro_cu
     lsxcommon_nemotron_cu
     lsxcommon_gigachat_cu
     lsxcommon_mimo_cu
@@ -637,6 +640,37 @@ target_compile_definitions(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_DEFS
 target_link_libraries(lsxcommon_deepseek_v41_cu
     "${CUDA_CUDART_LIBRARY}"
     arrow_shared
+    absl::strings
+)
+
+# DeepSeek-V4-Pro-0813 inference contour (MLA + HC + CSA/indexer + hash-router
+# MoE). Same runtime fast-math contract as DeepSeek-V4-Flash: no -fmad=false;
+# the per-call LsxFastMathScope owns the numeric class.
+add_library(lsxcommon_deepseek_pro_cu OBJECT
+    src/deepseek_moe_pro_load.cu
+    src/deepseek_moe_pro_inference_moe.cu
+    src/deepseek_moe_pro_inference_head.cu
+    src/deepseek_moe_pro_inference_attn.cu
+    src/deepseek_moe_pro_inference_csa.cu
+    src/deepseek_moe_pro_inference_pipeline.cu
+    src/deepseek_moe_pro_norm_kernels.cu
+)
+set_target_properties(lsxcommon_deepseek_pro_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_deepseek_pro_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+)
+target_include_directories(lsxcommon_deepseek_pro_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_deepseek_pro_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_deepseek_pro_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
     absl::strings
 )
 

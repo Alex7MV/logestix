@@ -11,7 +11,8 @@ Resolution ResolvePipeline(const Flags &flags)
     // --input is a usage error rather than a request for the version banner.
     const bool any_action =
         flags.repack_shared || flags.repack_experts || flags.vram_recompute ||
-        flags.deepseek_nvfp4 || flags.deepseek_v41 || flags.glm ||
+        flags.deepseek_nvfp4 || flags.deepseek_v41 || flags.deepseek_pro ||
+        flags.glm ||
         flags.kimi || flags.qwen || flags.qwen35moe || flags.qwen36moe ||
         flags.ornith || flags.qwen38flashnext || flags.gemma4 ||
         flags.gemma4dense ||
@@ -41,6 +42,7 @@ Resolution ResolvePipeline(const Flags &flags)
     if (flags.vram_recompute) return {Pipeline::kVramRecompute, {}};
     if (flags.deepseek_nvfp4) return {Pipeline::kDeepseekNvfp4, {}};
     if (flags.deepseek_v41) return {Pipeline::kDeepseekV41, {}};
+    if (flags.deepseek_pro) return {Pipeline::kDeepseekPro, {}};
     if (flags.repack_shared) return {Pipeline::kRepackShared, {}};
     if (flags.repack_experts) return {Pipeline::kRepackRouted, {}};
 

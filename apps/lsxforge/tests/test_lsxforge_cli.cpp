@@ -128,6 +128,10 @@ TEST_CASE("forge cli: repack and vram-recompute side paths", "[lsxforge][cli]")
     Flags e = Base();
     e.deepseek_v41 = true;
     CHECK(ResolvePipeline(e).pipeline == Pipeline::kDeepseekV41);
+
+    Flags p = Base();
+    p.deepseek_pro = true;
+    CHECK(ResolvePipeline(p).pipeline == Pipeline::kDeepseekPro);
 }
 
 TEST_CASE("forge cli: two family flags are rejected as ambiguous",
