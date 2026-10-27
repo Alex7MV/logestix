@@ -121,6 +121,8 @@ const PerfModel kAlice = {
 const PerfModel kMistral = {
     "mistral-small-4-119b", "Mistral-Small-4-119B-2603-NVFP4",
     "The capital of France is", 2048};
+const PerfModel kMinimax = {
+    "minimax-m3", "MiniMax-M3", "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -582,4 +584,9 @@ TEST_CASE("perf baseline: alice-foundation-80b-a3b", "[perf]")
 TEST_CASE("perf baseline: mistral-small-4-119b", "[perf]")
 {
     RunPerfModel(kMistral);
+}
+
+TEST_CASE("perf baseline: minimax-m3", "[perf]")
+{
+    RunPerfModel(kMinimax);
 }

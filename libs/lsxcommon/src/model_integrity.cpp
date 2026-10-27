@@ -99,10 +99,12 @@ arrow::Status VerifyTokenizerArtifacts(
 arrow::Status BuildAndVerifyTokenizer(
     const std::string &tokenizer_json_path,
     const std::filesystem::path &pinned_dir,
-    const TokenizerSpecialIds &required_specials)
+    const TokenizerSpecialIds &required_specials,
+    const TokenizerSpecialPolicy &policy)
 {
     // (1) Build binary Arrow files from tokenizer.json (mandatory).
-    ARROW_RETURN_NOT_OK(BuildTokenizerArrowFiles(tokenizer_json_path, pinned_dir));
+    ARROW_RETURN_NOT_OK(
+        BuildTokenizerArrowFiles(tokenizer_json_path, pinned_dir, policy));
     return VerifyTokenizerArtifacts(pinned_dir, required_specials);
 }
 

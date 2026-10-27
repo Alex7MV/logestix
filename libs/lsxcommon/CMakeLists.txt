@@ -92,6 +92,10 @@ add_library(lsxcommon STATIC
     src/xing_moe_model.cpp
     src/xing_moe_tool_format.cpp
     src/mistral_moe_convert.cpp
+    src/minimax_moe_convert.cpp
+    src/minimax_moe_load.cpp
+    src/minimax_moe_model.cpp
+    src/minimax_moe_tool_format.cpp
     src/mistral_moe_load.cpp
     src/mistral_moe_tool_format.cpp
     src/mistral_moe_model.cpp
@@ -292,6 +296,32 @@ target_compile_options(lsxcommon_xing_cu PRIVATE
 target_include_directories(lsxcommon_xing_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_xing_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_xing_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
+# MiniMax-M3 kernels + generation pipeline (MSA indexer, SwiGLU-OAI, MoE).
+# -fmad=false like the other bit-exact families: the router and the activation
+# clamps decide the expert set / the routed sum, so their arithmetic must not
+# be reassociated.
+add_library(lsxcommon_minimax_cu OBJECT
+    src/minimax_moe_kernels.cu
+    src/minimax_moe_inference_pipeline.cu
+)
+set_target_properties(lsxcommon_minimax_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_minimax_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_minimax_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_minimax_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_minimax_cu
     "${CUDA_CUDART_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
@@ -517,6 +547,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_alice_cu
     lsxcommon_xing_cu
     lsxcommon_mistral_cu
+    lsxcommon_minimax_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.

@@ -23,7 +23,8 @@
 namespace lsxcommon {
 
 arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
-                                       const std::filesystem::path &pinned_dir)
+                                       const std::filesystem::path &pinned_dir,
+                                       const TokenizerSpecialPolicy &policy)
 {
     std::ifstream f(tokenizer_json_path, std::ios::binary | std::ios::ate);
     if (!f) return arrow::Status::IOError("cannot open ", tokenizer_json_path);
@@ -223,6 +224,12 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
             pad_id = p;
         }
     }
+
+    // Family policy override (a checkpoint whose reference tokenizer emits no
+    // BOS passes -1; see TokenizerSpecialPolicy).
+    if (policy.bos_id != INT32_MIN) bos_id = policy.bos_id;
+    if (policy.eos_id != INT32_MIN) eos_id = policy.eos_id;
+    if (policy.pad_id != INT32_MIN) pad_id = policy.pad_id;
 
     // byte_to_token_id via vocab lookup of the GPT-2 byte table. Tokenizers
     // without full GPT-2 glyph coverage (e.g. Gemma-4: SentencePiece-style

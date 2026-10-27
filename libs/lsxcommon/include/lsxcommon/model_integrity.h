@@ -29,7 +29,8 @@ struct TokenizerSpecialIds {
 arrow::Status BuildAndVerifyTokenizer(
     const std::string &tokenizer_json_path,
     const std::filesystem::path &pinned_dir,
-    const TokenizerSpecialIds &required_specials);
+    const TokenizerSpecialIds &required_specials,
+    const TokenizerSpecialPolicy &policy = {});
 
 // SentencePiece-BPE variant: builds from tokenizer.model then runs the same
 // artifact/special-id/round-trip verification as BuildAndVerifyTokenizer.
