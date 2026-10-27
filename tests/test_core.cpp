@@ -423,7 +423,7 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
     // simdjson
     STATIC_REQUIRE(simdjson::SIMDJSON_VERSION_MAJOR == 5);
     STATIC_REQUIRE(simdjson::SIMDJSON_VERSION_MINOR == 0);
-    STATIC_REQUIRE(simdjson::SIMDJSON_VERSION_REVISION == 5);
+    STATIC_REQUIRE(simdjson::SIMDJSON_VERSION_REVISION == 6);
 
     // Catch2
     STATIC_REQUIRE(CATCH_VERSION_MAJOR == 3);
@@ -431,7 +431,7 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
     STATIC_REQUIRE(CATCH_VERSION_PATCH == 1);
 
     // cpp-httplib (FetchContent, host-only HTTP). Pin enforced here.
-    STATIC_REQUIRE(std::string_view(CPPHTTPLIB_VERSION) == "0.61.0");
+    STATIC_REQUIRE(std::string_view(CPPHTTPLIB_VERSION) == "0.63.0");
 
     // NVIDIA CCCL — no longer vendored: it comes from the CUDA toolkit bundle
     // (<toolkit-include>/cccl). The validated band is defined once in the root

@@ -20,6 +20,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- Bumped simdjson v5.0.5 -> v5.0.6 (submodule `third_party/simdjson`; the
+  `test_core.cpp` version guard now asserts 5.0.6).
+- Bumped cpp-httplib v0.61.0 -> v0.63.0 (FetchContent pin; the `test_core.cpp`
+  `CPPHTTPLIB_VERSION` guard now asserts 0.63.0).
 - Bumped Apache Arrow 25.0.1 -> 26.0.0 (FetchContent pin `apache-arrow-26.0.0`;
   Arrow now bundles Boost 1.92.0 and xsimd 14.2.0).
 - Bumped simdjson v4.6.11 -> v5.0.5 (submodule `third_party/simdjson`; the

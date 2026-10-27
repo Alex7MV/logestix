@@ -157,4 +157,4 @@ env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
 - CCCL — not vendored; provided by the CUDA Toolkit bundle (`<include>/cccl`), band-guarded at configure time
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (submodule)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (submodule)
-- `third_party/simdjson/` — simdjson v5.0.5 (submodule)
+- `third_party/simdjson/` — simdjson v5.0.6 (submodule)

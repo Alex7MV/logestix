@@ -31,11 +31,11 @@ Each of us took a step in the right direction, and together we reached a goal th
 | spdlog | 1.17.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v5.0.5 | submodule (`third_party/simdjson`) | Static (`.lib`) |
+| simdjson | v5.0.6 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | from CUDA Toolkit (band 3.2.x–3.5.x) | CUDA Toolkit bundle (`<include>/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.1 | FetchContent (test only) | Header-only |
-| cpp-httplib | v0.61.0 | FetchContent (host-only HTTP) | Header-only |
+| cpp-httplib | v0.63.0 | FetchContent (host-only HTTP) | Header-only |
 
 ### 📐 Why there is no "finished" state
 
@@ -161,7 +161,7 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - CCCL — not vendored; comes from the CUDA toolkit bundle (`<include>/cccl`), band-guarded at configure time
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
-- `third_party/simdjson/` — simdjson v5.0.5
+- `third_party/simdjson/` — simdjson v5.0.6
 
 ## TaskMosaic OpenAI bridge
 

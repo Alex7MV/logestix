@@ -36,11 +36,11 @@ in the same class will not find it.
 | spdlog | 1.17.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v5.0.5 | submodule (`third_party/simdjson`) | Static (`.lib`) |
+| simdjson | v5.0.6 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | from CUDA Toolkit (accepted band 3.2.x–3.5.x) | CUDA Toolkit bundle (`<include>/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.1 | FetchContent (test only) | Header-only |
-| cpp-httplib | v0.61.0 | FetchContent (host-only HTTP) | Header-only |
+| cpp-httplib | v0.63.0 | FetchContent (host-only HTTP) | Header-only |
 
 Versions are enforced by code: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
 versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, cpp-httplib,
