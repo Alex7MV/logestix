@@ -47,4 +47,41 @@ private:
     uint32_t error_ = 0;
 };
 
+// Llama-3 / o200k-style pre-tokenizer (Qwen2/3, MiniMax-M3, Llama-3). Same
+// streaming contract as WordStream, but a DIFFERENT pattern: no CJK split, and
+// the first two alternatives split on case runs, which is why it needs the
+// Unicode Lu/Ll/Lt tables. The alternation is the reference one:
+//
+//   1. [^\r\n\p{L}\p{N}]? [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*
+//      [\p{Ll}\p{Lm}\p{Lo}\p{M}]+ (?i:'s|'t|'re|'ve|'m|'ll|'d)?
+//   2. [^\r\n\p{L}\p{N}]? [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+
+//      [\p{Ll}\p{Lm}\p{Lo}\p{M}]* (?i:'s|'t|'re|'ve|'m|'ll|'d)?
+//   3. \p{N}{1,3}
+//   4. ' '? [^\s\p{L}\p{N}]+ [\r\n/]*
+//   5. \s*[\r\n]+
+//   6. \s+(?!\S)
+//   7. \s+
+//
+// Alternation is leftmost-first, so the case-run alternatives win over the
+// generic letter run ("getUserName" -> "get", "User", "Name").
+class Llama3WordStream {
+public:
+    Llama3WordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
+    size_t consume_letter_run(size_t pos) const;
+    size_t consume_case_run(size_t pos) const;   // Lu/Lt/Lm/Lo/M* Ll/Lm/Lo/M+
+    size_t consume_upper_run(size_t pos) const;  // Lu/Lt/Lm/Lo/M+ Ll/Lm/Lo/M*
+    size_t consume_contraction(size_t pos) const;
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
 } // namespace lsxcommon

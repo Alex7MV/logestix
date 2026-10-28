@@ -63,6 +63,17 @@ OVERRIDES = {
         "unrunnable": "TP-4 FP8 reference (inference/generate.py, MP=4) over an 892.7 GB checkpoint; this 32 GB card cannot execute it",
     },
 }
+
+# MiniMax-M3 (428B / 796 GB BF16, 60-layer MSA + MoE): the source model does
+# not fit this card and no quantized reference is published, so the golden is
+# the prompt's Expected Template (template-only mode) framed with the
+# checkpoint's own chat template and thinking disabled (the engine's own
+# generation prefix). Recorded deviation, not a silent one.
+OVERRIDES["minimax-m3"] = {
+    "template_kwargs": {"thinking_mode": "disabled"},
+    "unrunnable": "428B/796 GB BF16 checkpoint: no 32 GB-card execution path "
+                  "(vendor stack is TP-8 over the full BF16 tree)",
+}
 # kimi-k2.7-code: 581 GB in the compressed-tensors INT4 layout; run on CPU
 # (device_map="cpu"), there is no GPU that holds it.
 OVERRIDES["kimi-k2.7-code"] = {
@@ -71,6 +82,13 @@ OVERRIDES["kimi-k2.7-code"] = {
     # math the layer oracle validates and needs no flash_attn build.
     "attn_implementation": "eager",
 }
+
+def _apply_template_kwargs(template_kwargs, opts):
+    """Per-model extra chat-template variables (e.g. MiniMax's thinking_mode)."""
+    extra = opts.get("template_kwargs") or {}
+    for k, v in extra.items():
+        template_kwargs[k] = v
+    return template_kwargs
 
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
@@ -389,6 +407,7 @@ def capture_from_template(tok, opts, prompts, model, model_type, out,
                 kwargs["enable_thinking"] = opts["enable_thinking"]
             if opts.get("low_effort"):
                 kwargs["low_effort"] = True
+            _apply_template_kwargs(kwargs, opts)
             try:
                 prompt_text = tok.apply_chat_template(
                     _frame_messages(opts, p["body"]), **kwargs)
@@ -499,6 +518,7 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
                 template_kwargs["enable_thinking"] = opts["enable_thinking"]
             if opts.get("low_effort"):
                 template_kwargs["low_effort"] = True
+            _apply_template_kwargs(template_kwargs, opts)
             messages = _frame_messages(opts, p["body"])
             try:
                 prompt_text = tok.apply_chat_template(

@@ -25,6 +25,9 @@ bool is_number(uint32_t cp)     { return in_ranges(cp, kNumberRanges, kNumberRan
 bool is_punct(uint32_t cp)      { return in_ranges(cp, kPunctRanges, kPunctRangesCount); }
 bool is_symbol(uint32_t cp)     { return in_ranges(cp, kSymbolRanges, kSymbolRangesCount); }
 bool is_whitespace(uint32_t cp) { return in_ranges(cp, kWhitespaceRanges, kWhitespaceRangesCount); }
+bool is_lowercase_letter(uint32_t cp) { return in_ranges(cp, kLowercaseLetterRanges, kLowercaseLetterRangesCount); }
+bool is_uppercase_letter(uint32_t cp) { return in_ranges(cp, kUppercaseLetterRanges, kUppercaseLetterRangesCount); }
+bool is_titlecase_letter(uint32_t cp) { return in_ranges(cp, kTitlecaseLetterRanges, kTitlecaseLetterRangesCount); }
 
 CharClass classify(uint32_t cp)
 {

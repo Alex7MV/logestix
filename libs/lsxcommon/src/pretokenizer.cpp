@@ -356,4 +356,206 @@ bool WordStream::next(WordSpan &word)
     return next_main(word);
 }
 
+// ── Llama-3 / o200k-style pre-tokenizer ────────────────────────────────────
+namespace {
+
+using unicode::CharClass;
+
+// [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}] — marks plus every letter that is not
+// lowercase (Lm/Lo belong to both classes).
+inline bool cp_upper_class(uint32_t cp)
+{
+    if (unicode::classify(cp) == CharClass::Mark) return true;
+    if (unicode::classify(cp) != CharClass::Letter) return false;
+    return !unicode::is_lowercase_letter(cp);
+}
+// [\p{Ll}\p{Lm}\p{Lo}\p{M}] — marks plus every letter that is neither
+// uppercase nor titlecase.
+inline bool cp_lower_class(uint32_t cp)
+{
+    if (unicode::classify(cp) == CharClass::Mark) return true;
+    if (unicode::classify(cp) != CharClass::Letter) return false;
+    return !unicode::is_uppercase_letter(cp) &&
+           !unicode::is_titlecase_letter(cp);
+}
+inline bool cp_letter_or_mark(uint32_t cp)
+{
+    const CharClass k = unicode::classify(cp);
+    return k == CharClass::Letter || k == CharClass::Mark;
+}
+template <typename Pred>
+size_t consume_run(const char *begin, const char *end, size_t pos, Pred pred)
+{
+    const size_t n = static_cast<size_t>(end - begin);
+    size_t p = pos;
+    while (p < n) {
+        size_t cl = 0;
+        const uint32_t cp = decode_utf8(begin + p, n - p, &cl);
+        if (cp == kInvalidUtf8 || !pred(cp)) break;
+        p += cl;
+    }
+    return p;
+}
+
+} // namespace
+
+Llama3WordStream::Llama3WordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+size_t Llama3WordStream::consume_case_run(size_t pos) const
+{
+    // alt1/alt2 collapse to one greedy scan: the case-run alternatives match
+    // exactly the maximal [Upper*][Lower+] region (an all-upper run is alt2's
+    // [Upper+][Lower*] with an empty tail, which ends at the same byte).
+    const size_t up = consume_run(begin_, end_, pos, cp_upper_class);
+    return consume_run(begin_, end_, up, cp_lower_class);
+}
+
+size_t Llama3WordStream::consume_contraction(size_t pos) const
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos >= n || begin_[pos] != '\'') return pos;
+    static const char *const kSuffix[] = {"re", "ve", "ll", "s", "t", "m", "d"};
+    for (const char *sfx : kSuffix) {
+        const size_t l = std::strlen(sfx);
+        if (pos + 1 + l > n) continue;
+        bool ok = true;
+        for (size_t i = 0; i < l; ++i) {
+            char c = begin_[pos + 1 + i];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            if (c != sfx[i]) { ok = false; break; }
+        }
+        if (!ok) continue;
+        const size_t after = pos + 1 + l;
+        if (after < n) {
+            size_t cl = 0;
+            const uint32_t c3 = decode_utf8(begin_ + after, n - after, &cl);
+            if (c3 != kInvalidUtf8 && cp_letter_or_mark(c3)) continue;
+        }
+        return after;
+    }
+    return pos;
+}
+
+bool Llama3WordStream::match(size_t pos, size_t &len) const
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos, n - pos, &cl);
+    if (cp == kInvalidUtf8) return false;
+
+    const bool is_prefix =
+        cp != 0x0D && cp != 0x0A &&
+        unicode::classify(cp) != CharClass::Letter &&
+        unicode::classify(cp) != CharClass::Number;
+
+    // alt1/alt2 with the optional `[^\r\n\p{L}\p{N}]?` prefix. The prefix is
+    // optional-greedy, so it is tried first and dropped when the rest fails.
+    for (int with_prefix = is_prefix ? 1 : 0; with_prefix >= 0; --with_prefix) {
+        const size_t p = pos + (with_prefix ? cl : 0);
+        if (p >= n) continue;
+        size_t q = 0;
+        const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+        if (c2 == kInvalidUtf8) continue;
+        if (!cp_upper_class(c2) && !cp_lower_class(c2)) continue;
+        const size_t run_end = consume_case_run(p);
+        if (run_end == p) continue;
+        len = consume_contraction(run_end) - pos;
+        return true;
+    }
+
+    // alt3: \p{N}{1,3}
+    if (unicode::classify(cp) == CharClass::Number) {
+        size_t p = pos;
+        int count = 0;
+        while (p < n && count < 3) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalidUtf8 || unicode::classify(c2) != CharClass::Number)
+                break;
+            p += q;
+            ++count;
+        }
+        if (p > pos) { len = p - pos; return true; }
+    }
+
+    // alt4: ' '? [^\s\p{L}\p{N}]+ [\r\n/]*
+    {
+        const size_t p0 = (cp == 0x20) ? pos + cl : pos;
+        const size_t run_begin = p0;
+        size_t p = p0;
+        while (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalidUtf8) break;
+            const CharClass k = unicode::classify(c2);
+            if (k == CharClass::Whitespace || k == CharClass::Letter ||
+                k == CharClass::Number)
+                break;
+            p += q;
+        }
+        if (p > run_begin) {
+            while (p < n) {
+                const char b = begin_[p];
+                if (b != '\r' && b != '\n' && b != '/') break;
+                ++p;
+            }
+            len = p - pos;
+            return true;
+        }
+    }
+
+    // alt5/alt6/alt7: whitespace runs. alt5 keeps up to the last \r/\n; alt6
+    // drops one trailing codepoint when a non-space follows (its (?!\S)
+    // lookahead); alt7 takes the whole run.
+    if (unicode::classify(cp) == CharClass::Whitespace) {
+        size_t p = pos;
+        size_t last_crlf = static_cast<size_t>(-1);
+        size_t prev_cp = pos;
+        while (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalidUtf8 || unicode::classify(c2) != CharClass::Whitespace)
+                break;
+            if (c2 == 0x0D || c2 == 0x0A) last_crlf = p + q;
+            prev_cp = p;
+            p += q;
+        }
+        if (last_crlf != static_cast<size_t>(-1)) {
+            len = last_crlf - pos;
+            return true;
+        }
+        if (p >= n) {
+            len = p - pos;   // alt5/. alt6 with the lookahead at EOF
+            return true;
+        }
+        if (prev_cp > pos) {
+            len = prev_cp - pos;   // alt6: all but the last codepoint
+            return true;
+        }
+        len = p - pos;             // alt7: a single whitespace codepoint
+        return true;
+    }
+
+    return false;
+}
+
+bool Llama3WordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;  // unmatched text: its own piece
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
 } // namespace lsxcommon

@@ -81,9 +81,27 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Per-family override of the special-token ids the byte-level BPE bridge
+// writes. INT32_MIN keeps the derivation from tokenizer_config.json. A
+// checkpoint whose reference tokenizer emits NO [BOS] passes bos_id = -1 (its
+// chat template spells the marker out as text, so an auto-prepended BOS would
+// duplicate it); a stop id that differs from its tokenizer_config entry is
+// passed explicitly. Same contract as TikTokenSpecialPolicy below.
+struct TokenizerSpecialPolicy {
+    int32_t bos_id = INT32_MIN;
+    int32_t eos_id = INT32_MIN;
+    int32_t pad_id = INT32_MIN;
+    // Pre-tokenizer family of a byte-level BPE checkpoint:
+    //   0 = legacy GPT-2 / cl100k 3-split (WordStream; default)
+    //   1 = Llama-3 / o200k 7-alternative pattern (Llama3WordStream: case runs,
+    //       no CJK split). Written as tokenizer_kind = 3.
+    int32_t pretokenizer = 0;
+};
+
 arrow::Status BuildTokenizerArrowFiles(
     const std::string &tokenizer_json_path,
-    const std::filesystem::path &pinned_dir);
+    const std::filesystem::path &pinned_dir,
+    const TokenizerSpecialPolicy &policy = {});
 
 // TikToken (Kimi-K2.7-Code) tokenizer bridge. Parses the tiktoken ranks file
 // ("base64 id" lines) plus the special tokens of tokenizer_config.json

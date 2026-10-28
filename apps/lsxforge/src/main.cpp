@@ -15,6 +15,9 @@
 #include "lsxcommon/alice_moe_convert.h"
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
+#include "lsxcommon/minimax_moe_convert.h"
+
+#include <simdjson.h>
 #include "lsxcommon/mimo_moe_convert.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/nemotron_moe_nvfp4_convert.h"
@@ -83,6 +86,8 @@ ABSL_FLAG(bool, alice, false,
           "conversion pipeline");
 ABSL_FLAG(bool, xing, false,
           "Xing4.0-29B-A4B (mHC + MLA + MTP sparse MoE) conversion pipeline");
+ABSL_FLAG(bool, minimax, false,
+          "convert MiniMax-M3 (vision tower stripped) to logestix-minimax-nvfp4");
 ABSL_FLAG(bool, mistral, false,
           "Mistral-Small-4-119B-2603 (MLA + 128-expert MoE) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
@@ -150,6 +155,7 @@ int main(int argc, char* argv[]) {
     bool alice = absl::GetFlag(FLAGS_alice);
     bool xing = absl::GetFlag(FLAGS_xing);
     bool mistral = absl::GetFlag(FLAGS_mistral);
+    bool minimax = absl::GetFlag(FLAGS_minimax);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is
@@ -185,6 +191,7 @@ int main(int argc, char* argv[]) {
     flags.alice = alice;
     flags.xing = xing;
     flags.mistral = mistral;
+    flags.minimax = minimax;
     const lsxforge::Resolution resolution = lsxforge::ResolvePipeline(flags);
     if (resolution.pipeline == lsxforge::Pipeline::kError) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
@@ -343,7 +350,38 @@ int main(int argc, char* argv[]) {
         auto pinned_dir = fs::path(input_path) / "logestix" / "pinned";
         fs::create_directories(pinned_dir);
         lsxcommon::log::info(absl::StrFormat("Building tokenizer Arrow files from %s", tokenizer_json.string()));
-        auto st = lsxcommon::BuildTokenizerArrowFiles(tokenizer_json.string(), pinned_dir);
+        // `--tokenizer <dir> --minimax` rebuilds MiniMax-M3's tokenizer with
+        // ITS policy (no auto-BOS, Llama-3/o200k pre-tokenizer, literal
+        // markers); the plain form keeps the legacy defaults for every other
+        // family.
+        lsxcommon::TokenizerSpecialPolicy tok_policy;
+        if (flags.minimax) {
+            tok_policy.bos_id = -1;
+            tok_policy.pretokenizer = 1;
+            const auto gen = fs::path(input_path) / "generation_config.json";
+            if (fs::exists(gen)) {
+                std::ifstream gf(gen);
+                std::stringstream gs;
+                gs << gf.rdbuf();
+                simdjson::ondemand::parser p;
+                simdjson::padded_string pad(gs.str());
+                simdjson::ondemand::document doc;
+                if (p.iterate(pad).get(doc) == simdjson::SUCCESS) {
+                    simdjson::ondemand::object root;
+                    if (doc.get_object().get(root) == simdjson::SUCCESS) {
+                        int64_t v = -1;
+                        if (root["eos_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            tok_policy.eos_id = static_cast<int32_t>(v);
+                        if (root["pad_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            tok_policy.pad_id = static_cast<int32_t>(v);
+                    }
+                }
+            }
+        }
+        auto st = lsxcommon::BuildTokenizerArrowFiles(tokenizer_json.string(),
+                                                      pinned_dir, tok_policy);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Tokenizer build failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
@@ -439,6 +477,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Mistral conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kMinimax: {
+        lsxcommon::log::info(
+            "MiniMax-M3 pipeline (logestix-minimax-nvfp4 layout)");
+        auto st = lsxcommon::minimax::ConvertMinimaxMoeModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("MiniMax conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("MiniMax conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

@@ -40,8 +40,9 @@ one in a ctest summary, which is why the debt rows are called out below.
 | qwen3.8-flash-next | PASS (+ eos) | 3/3 | 3/3 | 3/3 |
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
+| **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 
-- SelfCheck **13/13**, FSI **13/15**, CODE **15/15**, DET **15/15**.
+- SelfCheck **14/14**, FSI **14/17**, CODE **17/17**, DET **17/17**.
 - Two reds. The Pro FSI-02 red is an instruction-following deviation, not a
   numeric one: the prompt requires the symbolic form
   `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`,
@@ -51,6 +52,15 @@ one in a ctest summary, which is why the debt rows are called out below.
   (authored Expected Template, Pro's own `encoding_dsv4.py` framing), because
   the TP-4 FP8 source runner cannot execute on this card — they pin the
   converted path only, not source parity (`docs/OPEN_TASKS.md` §R3).
+- MiniMax-M3's FSI-01 red is the same class again: the prompt's Expected
+  Template is `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` and the model answers the
+  annuity-**due** variant `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`. Its goldens
+  are **template-derived** (the 428B BF16 source has no 32 GB-card execution
+  path), and the converted path is additionally pinned by a host
+  re-implementation over the source safetensors
+  (`tools/minimax_reference.py`: same greedy continuation) plus a per-layer
+  oracle against the checkpoint's own HF modeling code
+  (`tools/minimax_hf_layer_oracle.py`). See `docs/OPEN_TASKS.md` §R4.
 - The other red is the dense Gemma-4 member, and it is understood rather than
   mysterious: FSI-01 is a template near-tie where the dense body needs ~8 bits
   on *every* linear (33.7 GiB resident, over this card). Every partial

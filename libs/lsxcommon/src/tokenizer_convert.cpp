@@ -23,7 +23,8 @@
 namespace lsxcommon {
 
 arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
-                                       const std::filesystem::path &pinned_dir)
+                                       const std::filesystem::path &pinned_dir,
+                                       const TokenizerSpecialPolicy &policy)
 {
     std::ifstream f(tokenizer_json_path, std::ios::binary | std::ios::ate);
     if (!f) return arrow::Status::IOError("cannot open ", tokenizer_json_path);
@@ -110,11 +111,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     if (root["model"].get_object().get(model_obj) != simdjson::SUCCESS)
         return arrow::Status::Invalid("tokenizer: no model object");
 
+    int32_t model_vocab_count = 0;
     {
         simdjson::ondemand::object vocab_obj;
         if (model_obj["vocab"].get_object().get(vocab_obj) != simdjson::SUCCESS)
             return arrow::Status::Invalid("tokenizer: no model.vocab object");
         for (auto entry : vocab_obj) {
+            ++model_vocab_count;
             std::string_view key;
             int64_t id;
             if (entry.unescaped_key().get(key) != simdjson::SUCCESS) continue;
@@ -223,6 +226,12 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
             pad_id = p;
         }
     }
+
+    // Family policy override (a checkpoint whose reference tokenizer emits no
+    // BOS passes -1; see TokenizerSpecialPolicy).
+    if (policy.bos_id != INT32_MIN) bos_id = policy.bos_id;
+    if (policy.eos_id != INT32_MIN) eos_id = policy.eos_id;
+    if (policy.pad_id != INT32_MIN) pad_id = policy.pad_id;
 
     // byte_to_token_id via vocab lookup of the GPT-2 byte table. Tokenizers
     // without full GPT-2 glyph coverage (e.g. Gemma-4: SentencePiece-style
@@ -360,6 +369,14 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     meta.pad_id = pad_id;
     meta.vocab_size = vocab_size;
     meta.byte_to_token_id = byte_to_token_id;
+    if (policy.pretokenizer == 1) {
+        // Llama-3/o200k split over a separate BPE table. `base_vocab_size` is
+        // the MODEL vocab's rank space: ids at or above it are added tokens the
+        // encoder matches literally (the chat markers must never be BPE'd as
+        // raw bytes), and merging is table-driven over the rank space.
+        meta.tokenizer_kind = 3;
+        meta.base_vocab_size = model_vocab_count;
+    }
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

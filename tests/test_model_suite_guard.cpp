@@ -363,6 +363,17 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_mistral_moe_code_selfcheck"}},
           {"perf", {"test_perf_baseline_mistral_small_4"}},
           {"det", {"test_mistral_moe_det_selfcheck"}}}},
+        {"minimax-m3",
+         {{"convert", {"test_minimax_moe_convert"}},
+          {"load", {"test_minimax_moe_loader"}},
+          {"model", {"test_minimax_moe_model", "test_minimax_moe_tool_framing"}},
+          {"kernels", {"test_minimax_moe_kernels"}},
+          {"selfcheck", {"test_minimax_moe_selfcheck"}},
+          {"fsi", {"test_minimax_moe_fsi_selfcheck"}},
+          {"code", {"test_minimax_moe_code_selfcheck"}},
+          {"perf", {"test_perf_baseline_minimax_m3"}},
+          {"det", {"test_minimax_moe_det_selfcheck"}}}},
+
     };
     return v;
 }
@@ -784,6 +795,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"xing4.0-29b-a4b", {"test_xing_tool_framing"}},
         // Mistral Small 4 ships a native [INST]/[TOOL_CALLS] template.
         {"mistral-small-4-119b", {"test_mistral_moe_tool_framing"}},
+        {"minimax-m3", {"test_minimax_moe_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

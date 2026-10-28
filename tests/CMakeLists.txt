@@ -64,6 +64,38 @@ set_tests_properties(test_alice_moe_loader PROPERTIES TIMEOUT 120)
 set_tests_properties(test_alice_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_alice_moe_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# MiniMax-M3 kernel parity (CUDA OBJECT lib + CXX-linked executable).
+add_library(test_minimax_cu OBJECT
+    test_minimax_moe_kernels.cu
+)
+set_target_properties(test_minimax_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_minimax_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+# Arrow headers are reachable from lsx_moe_inference.h (expert_store.h), so
+# this OBJECT lib needs the same include set the library CUDA targets use.
+target_include_directories(test_minimax_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/simdjson-src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src")
+target_link_libraries(test_minimax_cu PRIVATE Catch2::Catch2WithMain
+    arrow_shared)
+
+add_executable(test_minimax_moe_kernels)
+set_target_properties(test_minimax_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_minimax_moe_kernels PRIVATE test_minimax_cu lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_kernels COMMAND test_minimax_moe_kernels)
+set_tests_properties(test_minimax_moe_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
+
 # Xing4.0-29B-A4B kernel parity (CUDA OBJECT lib + CXX-linked executable).
 add_library(test_xing_cu OBJECT
     test_xing_moe_kernels.cu
@@ -1486,6 +1518,61 @@ set_tests_properties(test_mistral_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_mistral_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── MiniMax-M3 converter test (MSA indexer / dense-prefix MoE classifier) ──
+add_executable(test_minimax_moe_convert test_minimax_moe_convert.cpp)
+target_include_directories(test_minimax_moe_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_convert PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_convert PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_convert COMMAND test_minimax_moe_convert)
+set_tests_properties(test_minimax_moe_convert PROPERTIES LABELS convert)
+set_tests_properties(test_minimax_moe_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_minimax_moe_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── MiniMax-M3 loader stage (pinned graph + neutral expert store) ──
+add_executable(test_minimax_moe_loader test_minimax_moe_loader.cpp)
+target_include_directories(test_minimax_moe_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_loader PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_loader COMMAND test_minimax_moe_loader)
+set_tests_properties(test_minimax_moe_loader PROPERTIES LABELS fast)
+set_tests_properties(test_minimax_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── MiniMax-M3 model stage (lifecycle + determinism) ──
+add_executable(test_minimax_moe_model test_minimax_moe_model.cpp)
+target_include_directories(test_minimax_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_model PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_model COMMAND test_minimax_moe_model)
+set_tests_properties(test_minimax_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_model PROPERTIES TIMEOUT 300)
+set_tests_properties(test_minimax_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_model PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── MiniMax-M3 native tool framing (host-only) ──
+add_executable(test_minimax_moe_tool_framing test_minimax_moe_tool_framing.cpp)
+target_compile_definitions(test_minimax_moe_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_minimax_moe_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_tool_framing COMMAND test_minimax_moe_tool_framing)
+set_tests_properties(test_minimax_moe_tool_framing PROPERTIES LABELS fast)
+
 # ── Mistral-Small-4-119B loader test (dense BF16 graph upload) ──
 add_executable(test_mistral_moe_loader test_mistral_moe_loader.cpp)
 target_include_directories(test_mistral_moe_loader PRIVATE
@@ -1528,6 +1615,63 @@ set_tests_properties(test_mistral_moe_kernels PROPERTIES LABELS inference)
 set_tests_properties(test_mistral_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_mistral_moe_kernels PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── MiniMax-M3 selfcheck + FSI/CODE/DET golden parity gates (SKIP 4 w/o vault) ──
+add_executable(test_minimax_moe_selfcheck test_minimax_moe_selfcheck.cpp)
+target_include_directories(test_minimax_moe_selfcheck PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_minimax_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_selfcheck COMMAND test_minimax_moe_selfcheck)
+set_tests_properties(test_minimax_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_minimax_moe_tokenizer_parity
+    test_minimax_moe_tokenizer_parity.cpp)
+target_compile_definitions(test_minimax_moe_tokenizer_parity PRIVATE
+    "LSX_MINIMAX_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/minimax\"")
+target_link_libraries(test_minimax_moe_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_minimax_moe_tokenizer_parity
+         COMMAND test_minimax_moe_tokenizer_parity)
+set_tests_properties(test_minimax_moe_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_tokenizer_parity
+    PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_minimax_moe_fsi_selfcheck test_minimax_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_minimax_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_minimax_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_fsi_selfcheck COMMAND test_minimax_moe_fsi_selfcheck)
+set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_minimax_moe_code_selfcheck test_minimax_moe_code_selfcheck.cpp)
+target_compile_definitions(test_minimax_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_minimax_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_code_selfcheck COMMAND test_minimax_moe_code_selfcheck)
+set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_minimax_moe_det_selfcheck test_minimax_moe_det_selfcheck.cpp)
+target_compile_definitions(test_minimax_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_minimax_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_det_selfcheck COMMAND test_minimax_moe_det_selfcheck)
+set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Mistral-Small-4-119B selfcheck (real weights; SKIP 4 without vault) ──
 add_executable(test_mistral_moe_selfcheck test_mistral_moe_selfcheck.cpp)
@@ -2747,6 +2891,16 @@ set_tests_properties(test_perf_baseline_mistral_small_4 PROPERTIES
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Mistral-Small-4-119B-2603-NVFP4")
 set_tests_properties(test_perf_baseline_mistral_small_4
+    PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_minimax_m3
+         COMMAND test_perf_baseline "perf baseline: minimax-m3")
+set_tests_properties(test_perf_baseline_minimax_m3 PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=MiniMax-M3")
+set_tests_properties(test_perf_baseline_minimax_m3
     PROPERTIES LABELS perf)
 
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────
@@ -6629,6 +6783,7 @@ set_tests_properties(
     test_ornith_moe_convert
     test_qwen_moe_exp_convert
     test_nvfp4_pack
+    test_minimax_moe_convert
     PROPERTIES TIMEOUT 120)
 
 # ── tokenizer arrows loader (host-only, index-only fixture) ──
