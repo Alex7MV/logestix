@@ -123,11 +123,14 @@ TEST_CASE("MiniMax-M3 quantization policy keeps norms and the router exact",
           "[minimax-moe-convert]")
 {
     using K = MinimaxTensorKind;
-    for (K k : {K::Embed, K::LmHead, K::AttnQ, K::AttnK, K::AttnV, K::AttnO,
-                K::IndexQ, K::IndexK, K::DenseMlpGate, K::DenseMlpUp,
-                K::DenseMlpDown, K::ExpertW1, K::ExpertW2, K::ExpertW3,
-                K::SharedGateProj, K::SharedUpProj, K::SharedDownProj})
+    for (K k : {K::AttnQ, K::AttnK, K::AttnV, K::AttnO, K::IndexQ, K::IndexK,
+                K::DenseMlpGate, K::DenseMlpUp, K::DenseMlpDown, K::ExpertW1,
+                K::ExpertW2, K::ExpertW3, K::SharedGateProj,
+                K::SharedUpProj, K::SharedDownProj})
         CHECK(minimax_tensor_is_nvfp4(k));
+    // Embed/head stay FP16 on purpose (see the convert test's 4b block).
+    CHECK_FALSE(minimax_tensor_is_nvfp4(K::Embed));
+    CHECK_FALSE(minimax_tensor_is_nvfp4(K::LmHead));
     for (K k : {K::FinalNorm, K::InputNorm, K::PostNorm, K::AttnQNorm,
                 K::AttnKNorm, K::IndexQNorm, K::IndexKNorm, K::RouterGate,
                 K::RouterBias, K::Visual, K::Unknown})
@@ -253,6 +256,29 @@ TEST_CASE("ConvertMinimaxMoeModel converts a synthetic checkpoint",
         }
         CHECK(gate);
         CHECK(bias);
+    }
+
+    // 4b) Embed + head stay FP16: BF16 raw in global.arrow, NOT in
+    //     global_nvfp4.arrow (a 4-bit head row moves every logit by ~3 at this
+    //     model's logit scale while the first-token margin is 0.4).
+    {
+        auto names = synthtest::TensorNamesIn(base / "pinned" / "global.arrow");
+        bool emb = false, hd = false;
+        for (auto &n : names) {
+            if (n.find("embed_tokens.weight") != std::string::npos) emb = true;
+            if (n.find("lm_head.weight") != std::string::npos) hd = true;
+        }
+        CHECK(emb);
+        CHECK(hd);
+        auto nv = lsxcommon::ReadRecordBatchFromFile(
+                      base / "pinned" / "global_nvfp4.arrow");
+        if (nv.ok()) {
+            auto recs =
+                lsxcommon::DenseNvfp4Schema::UnpackBatch(nv.ValueOrDie())
+                    .ValueOrDie();
+            for (auto &r : recs)
+                CHECK(r.name.find("embed_tokens") == std::string::npos);
+        }
     }
 
     // 5) Shared experts + expert files exist; dense-MLP layers have no experts.

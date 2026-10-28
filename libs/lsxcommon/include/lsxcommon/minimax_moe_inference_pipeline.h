@@ -58,7 +58,7 @@ struct MinimaxScratch {
     float *d_maxv = nullptr;
     MinimaxRoutedSlot *d_slots = nullptr;
     MinimaxRoutedSlot *h_slots = nullptr;
-    __half *d_logits = nullptr;
+    float *d_logits = nullptr;   // [vocab] F32 (head is FP16, accumulated F32)
     void Free();
 };
 

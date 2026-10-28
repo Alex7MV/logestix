@@ -384,8 +384,6 @@ ParsedMinimaxTensor classify_minimax_tensor(const std::string &name)
 bool minimax_tensor_is_nvfp4(MinimaxTensorKind kind)
 {
     switch (kind) {
-    case MinimaxTensorKind::Embed:
-    case MinimaxTensorKind::LmHead:
     case MinimaxTensorKind::AttnQ:
     case MinimaxTensorKind::AttnK:
     case MinimaxTensorKind::AttnV:
@@ -539,9 +537,21 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
 
             switch (p.kind) {
             case MinimaxTensorKind::Embed:
-            case MinimaxTensorKind::LmHead:
-                ARROW_RETURN_NOT_OK(add_nvfp4(t, data, global_nvfp4));
+            case MinimaxTensorKind::LmHead: {
+                // FP16 on the device: the head multiplies every logit, so a
+                // 9% row error moves a logit by ~3 at this model's logit scale
+                // (~38) while the first-token margin is 0.4. Same rule as
+                // phi-4 / gemma-4: no standard 4-bit recipe quantizes the
+                // embedding and the head.
+                TensorRecord r;
+                r.name = t.name;
+                r.dtype = t.dtype;
+                r.shape = t.shape;
+                r.data = std::move(data);
+                global_raw.push_back(std::move(r));
+                ++total_pinned;
                 break;
+            }
             case MinimaxTensorKind::FinalNorm: {
                 TensorRecord r;
                 r.name = t.name;
@@ -612,9 +622,35 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     // ExpertSchema file per (layer, expert). No host-resident expert pool.
     const int H = top.hidden_size;
     const int I = top.moe_intermediate_size;
-    for (int l = 0; l < top.num_layers; ++l) {
+    int experts_done = 0;
+    const int experts_total =
+        (top.num_layers - frozen::kFirstMoeLayer) * top.num_experts;
+    int last_pct = -1;
+    // Operational fast path: re-convert only the dense side (globals, router,
+    // shared experts, attention/dense-MLP layers) when the 232 GB expert store
+    // is already on disk. The written index is byte-identical (every field is
+    // topology-derived), so the tree stays a single consistent artifact.
+    const bool skip_experts = std::getenv("LSX_MINIMAX_SKIP_EXPERTS") != nullptr;
+    if (skip_experts)
+        lsxcommon::log::info(
+            "MiniMax-M3: LSX_MINIMAX_SKIP_EXPERTS set — reusing the existing "
+            "expert store");
+    for (int l = 0; !skip_experts && l < top.num_layers; ++l) {
         if (top.mlp_types[static_cast<size_t>(l)] != "sparse") continue;
         for (int e = 0; e < top.num_experts; ++e) {
+            // Progress for a multi-hour 800 GB pass: one line per 2%.
+            {
+                const int pct = experts_total > 0
+                                    ? (100 * experts_done) / experts_total
+                                    : 100;
+                if (pct != last_pct && pct % 2 == 0) {
+                    lsxcommon::log::info(absl::StrFormat(
+                        "MiniMax-M3 experts: %d/%d (%d%%) layer %d",
+                        experts_done, experts_total, pct, l));
+                    last_pct = pct;
+                }
+                ++experts_done;
+            }
             const std::string stem = absl::StrCat(
                 "language_model.model.layers.", l,
                 ".block_sparse_moe.experts.", e, ".");
@@ -702,6 +738,9 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     if (fs::exists(tok_path)) {
         TokenizerSpecialPolicy tok_policy;
         tok_policy.bos_id = -1;
+        // The checkpoint's tokenizer.json uses the Llama-3/o200k pattern
+        // (case-run alternatives, no CJK split), not the legacy GPT-2 3-split.
+        tok_policy.pretokenizer = 1;
         if (top.eos_token_id >= 0) tok_policy.eos_id = top.eos_token_id;
         if (top.pad_token_id >= 0) tok_policy.pad_id = top.pad_token_id;
         ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(

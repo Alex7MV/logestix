@@ -111,11 +111,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     if (root["model"].get_object().get(model_obj) != simdjson::SUCCESS)
         return arrow::Status::Invalid("tokenizer: no model object");
 
+    int32_t model_vocab_count = 0;
     {
         simdjson::ondemand::object vocab_obj;
         if (model_obj["vocab"].get_object().get(vocab_obj) != simdjson::SUCCESS)
             return arrow::Status::Invalid("tokenizer: no model.vocab object");
         for (auto entry : vocab_obj) {
+            ++model_vocab_count;
             std::string_view key;
             int64_t id;
             if (entry.unescaped_key().get(key) != simdjson::SUCCESS) continue;
@@ -367,6 +369,14 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     meta.pad_id = pad_id;
     meta.vocab_size = vocab_size;
     meta.byte_to_token_id = byte_to_token_id;
+    if (policy.pretokenizer == 1) {
+        // Llama-3/o200k split over a separate BPE table. `base_vocab_size` is
+        // the MODEL vocab's rank space: ids at or above it are added tokens the
+        // encoder matches literally (the chat markers must never be BPE'd as
+        // raw bytes), and merging is table-driven over the rank space.
+        meta.tokenizer_kind = 3;
+        meta.base_vocab_size = model_vocab_count;
+    }
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

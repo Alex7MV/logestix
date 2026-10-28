@@ -16,6 +16,8 @@
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/minimax_moe_convert.h"
+
+#include <simdjson.h>
 #include "lsxcommon/mimo_moe_convert.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/nemotron_moe_nvfp4_convert.h"
@@ -348,7 +350,38 @@ int main(int argc, char* argv[]) {
         auto pinned_dir = fs::path(input_path) / "logestix" / "pinned";
         fs::create_directories(pinned_dir);
         lsxcommon::log::info(absl::StrFormat("Building tokenizer Arrow files from %s", tokenizer_json.string()));
-        auto st = lsxcommon::BuildTokenizerArrowFiles(tokenizer_json.string(), pinned_dir);
+        // `--tokenizer <dir> --minimax` rebuilds MiniMax-M3's tokenizer with
+        // ITS policy (no auto-BOS, Llama-3/o200k pre-tokenizer, literal
+        // markers); the plain form keeps the legacy defaults for every other
+        // family.
+        lsxcommon::TokenizerSpecialPolicy tok_policy;
+        if (flags.minimax) {
+            tok_policy.bos_id = -1;
+            tok_policy.pretokenizer = 1;
+            const auto gen = fs::path(input_path) / "generation_config.json";
+            if (fs::exists(gen)) {
+                std::ifstream gf(gen);
+                std::stringstream gs;
+                gs << gf.rdbuf();
+                simdjson::ondemand::parser p;
+                simdjson::padded_string pad(gs.str());
+                simdjson::ondemand::document doc;
+                if (p.iterate(pad).get(doc) == simdjson::SUCCESS) {
+                    simdjson::ondemand::object root;
+                    if (doc.get_object().get(root) == simdjson::SUCCESS) {
+                        int64_t v = -1;
+                        if (root["eos_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            tok_policy.eos_id = static_cast<int32_t>(v);
+                        if (root["pad_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            tok_policy.pad_id = static_cast<int32_t>(v);
+                    }
+                }
+            }
+        }
+        auto st = lsxcommon::BuildTokenizerArrowFiles(tokenizer_json.string(),
+                                                      pinned_dir, tok_policy);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Tokenizer build failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();

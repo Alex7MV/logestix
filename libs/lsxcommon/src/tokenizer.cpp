@@ -146,7 +146,7 @@ arrow::Status load_tokenizer_metadata(
 
         // tiktoken: the vocabulary IS the merge table (adjacent pair bytes ->
         // id), and ids >= base_vocab_size are added tokens matched literally.
-        if (db.tokenizer_kind == 2) {
+        if (db.tokenizer_kind == 2 || db.tokenizer_kind == 3) {
             if (db.base_vocab_size <= 0 || db.base_vocab_size > db.vocab_size)
                 return arrow::Status::Invalid(
                     "tokenizer: bad base_vocab_size for tiktoken BPE");
@@ -685,6 +685,86 @@ int32_t tiktoken_bpe_encode(const ArrowTokenizerDb &db, const char *text,
     return static_cast<int32_t>(out.size());
 }
 
+// ── byte-level BPE with the Llama-3/o200k pre-tokenizer (kind 3) ────────────
+//
+// Same merge table and same `merge_symbols_in_place` priority as the legacy
+// kind-0 encoder (merge RANK, not token id — the vocab ids of an HF BPE are not
+// merge-ordered), but split with Llama3WordStream. Added tokens (ids at or
+// above `base_vocab_size`) are matched literally before BPE, exactly like the
+// tiktoken path, so control markers resolve to their single id.
+int32_t bpe_encode_llama3(const ArrowTokenizerDb &db, const char *text,
+                          size_t text_len, int32_t *out_tokens,
+                          size_t *max_out_len)
+{
+    bool first_byte[256] = {};
+    for (int32_t id : db.literal_ids) {
+        const int64_t b = db.token_offsets[id];
+        if (db.token_offsets[id + 1] > b) first_byte[db.token_bytes[b]] = true;
+    }
+
+    std::vector<int32_t> out;
+    out.reserve(text_len + 8);
+    size_t pos = 0;
+    int32_t stack[kMaxWordBytes];
+    while (pos < text_len) {
+        int32_t lit = -1;
+        size_t lit_len = 0;
+        if (first_byte[static_cast<uint8_t>(text[pos])]) {
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l = static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - pos) continue;
+                if (std::memcmp(text + pos, db.token_bytes + b, l) == 0) {
+                    lit = id;
+                    lit_len = l;
+                    break;
+                }
+            }
+        }
+        if (lit >= 0) {
+            out.push_back(lit);
+            pos += lit_len;
+            continue;
+        }
+        size_t gap_end = text_len;
+        for (size_t at = pos + 1; at < text_len; ++at) {
+            if (!first_byte[static_cast<uint8_t>(text[at])]) continue;
+            bool hit = false;
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l = static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - at) continue;
+                if (std::memcmp(text + at, db.token_bytes + b, l) == 0) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                gap_end = at;
+                break;
+            }
+        }
+        Llama3WordStream ws(text + pos, gap_end - pos);
+        WordSpan w;
+        while (ws.next(w)) {
+            const int32_t n = bpe_encode_word(db, w.begin, w.length, stack);
+            if (n < 0) return n;
+            out.insert(out.end(), stack, stack + n);
+        }
+        if (ws.error()) return -1;
+        pos = gap_end;
+    }
+
+    if (out.size() > *max_out_len) {
+        *max_out_len = out.size();
+        return -2;
+    }
+    if (!out.empty())
+        std::memcpy(out_tokens, out.data(), out.size() * sizeof(int32_t));
+    *max_out_len = out.size();
+    return static_cast<int32_t>(out.size());
+}
+
 } // namespace
 
 int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
@@ -698,6 +778,8 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
     if (db.tokenizer_kind == 2)
         return tiktoken_bpe_encode(db, text, text_len, out_tokens,
                                    max_out_len);
+    if (db.tokenizer_kind == 3)
+        return bpe_encode_llama3(db, text, text_len, out_tokens, max_out_len);
 
     // Pass 1: count.
     size_t total = (db.bos_id >= 0) ? 1 : 0;

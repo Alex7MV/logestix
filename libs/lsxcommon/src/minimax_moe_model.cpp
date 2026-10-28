@@ -161,6 +161,17 @@ gpu::InferenceResult MinimaxM3Model::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req, opts);
 }
 
+bool MinimaxM3Model::BuildPromptInputIds(
+    const ArrowTokenizerDb &tok, std::string_view raw_prompt,
+    std::vector<int32_t> &out_ids) const
+{
+    ChatConversation conv;
+    conv.messages.push_back({"user", std::string(raw_prompt), "", {}});
+    if (minimax::RenderMinimaxConversation(tok, conv, out_ids)) return true;
+    out_ids.clear();
+    return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+}
+
 bool MinimaxM3Model::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const

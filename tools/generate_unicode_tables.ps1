@@ -66,6 +66,9 @@ function Parse-Ranges($path, [scriptblock]$filter) {
 }
 
 $L  = Parse-Ranges $gcat { param($c) $c -in @('Lu','Ll','Lt','Lm','Lo') }
+$Lu = Parse-Ranges $gcat { param($c) $c -eq 'Lu' }
+$Ll = Parse-Ranges $gcat { param($c) $c -eq 'Ll' }
+$Lt = Parse-Ranges $gcat { param($c) $c -eq 'Lt' }
 $M  = Parse-Ranges $gcat { param($c) $c -in @('Mn','Mc','Me') }
 $N  = Parse-Ranges $gcat { param($c) $c -in @('Nd','Nl','No') }
 $P  = Parse-Ranges $gcat { param($c) $c -in @('Pc','Pd','Ps','Pe','Pi','Pf','Po') }
@@ -106,7 +109,10 @@ $body = @(
     (Emit-Ranges "kNumberRanges" $N),
     (Emit-Ranges "kPunctRanges" $P),
     (Emit-Ranges "kSymbolRanges" $S),
-    (Emit-Ranges "kWhitespaceRanges" $WS)
+    (Emit-Ranges "kWhitespaceRanges" $WS),
+    (Emit-Ranges "kUppercaseLetterRanges" $Lu),
+    (Emit-Ranges "kLowercaseLetterRanges" $Ll),
+    (Emit-Ranges "kTitlecaseLetterRanges" $Lt)
 )
 
 $footer = @"
@@ -118,4 +124,4 @@ $footer = @"
 
 $content = $header + ($body -join "`n`n") + $footer
 Set-Content -Path $OutFile -Value $content -Encoding ascii
-Write-Host "wrote $OutFile ($($L.Count) L, $($M.Count) M, $($N.Count) N, $($P.Count) P, $($S.Count) S, $($WS.Count) WS ranges)"
+Write-Host "wrote $OutFile ($($L.Count) L, $($M.Count) M, $($N.Count) N, $($P.Count) P, $($S.Count) S, $($WS.Count) WS, $($Lu.Count) Lu, $($Ll.Count) Ll, $($Lt.Count) Lt ranges)"

@@ -68,14 +68,6 @@ cudaError_t RunMinimaxEmbed(cudaStream_t stream, const __half *table,
                             const int32_t *ids, __half *out, int seq,
                             int hidden);
 
-// Token embedding lookup straight out of the NVFP4 embed table
-// (packed [V,H] row-major E2M1 nibbles, E4M3 scales [V, H/16], per-tensor
-// global scale): dequantizes ONLY the requested row, so the model never keeps
-// a dequantized 200k x 6144 FP16 copy (2.4 GiB) resident.
-cudaError_t RunMinimaxEmbedNvfp4(cudaStream_t stream, const uint8_t *packed,
-                                 const uint8_t *scales, float global_scale,
-                                 const int32_t *ids, __half *out, int seq,
-                                 int hidden);
 
 // MiniMax Sparse Attention block selection (Lightning Indexer):
 //   score[h][k] = idx_q[h] . idx_k[k]      (UNSCALED, FP32)

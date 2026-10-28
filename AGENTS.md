@@ -382,6 +382,37 @@ procedure — `perf-tuning-a-model`.
   28.0 GiB resident (host-store bound: ~13.5 GB of experts streamed per token
   from the 811 GB mmap tree) — `tests/perf/perf_baselines.json`; history in
   `docs/OPEN_TASKS.md` §R3.
+  MiniMax-M3 (~428B / ~23B active, independent family `minimax`): GQA
+  60L / 6144H / 64 Q / 4 KV / 128HD with Gemma-form (1+w) RMSNorm, per-head QK
+  norm, partial RoPE on the first 64 of 128 head dims (theta 5e6), MiniMax
+  Sparse Attention (MSA: a 4-head x 128-dim Lightning Indexer that max-pools
+  128-key blocks, always keeps the local block and selects the top-16 per KV
+  group, layers >= 3), GPT-OSS-style SwiGLU-OAI (`(up+1)*gate*sigmoid(alpha*
+  gate)`, both clamped to +-7, alpha 1.702), sigmoid router with an
+  `e_score_correction_bias` (top-4 by `sigmoid+bias`, weights renormalized from
+  the plainer sigmoid scores, routed sum x 2.0 then added to an UNGATED 3072
+  shared expert), layers 0-2 dense MLP + dense attention; 128 experts x 3072,
+  vocab 200064, tokenizer = byte-level BPE (Llama-3/o200k-style pre-tokenizer)
+  with `]~!b[]~b]system`-style native framing; `minimax_moe_constants.h` (frozen
+  passport, `lsxcommon::minimax::frozen`), `minimax_moe_convert.{h,cpp}`
+  (BF16 -> NVFP4; expert-major second pass joins w1/w2/w3 across shards so the
+  800 GB source is never resident; vision tower/projector stripped+counted),
+  `minimax_moe_load.{h,cpp}` (pinned dense graph + F32 router + neutral mmap
+  `ExpertStore` for 57x128 routed experts, `MinimaxExpertEntry` aliasing
+  `ExpertStore`, device slot LRU, `LSX_MINIMAX_EXPERT_{CACHE_SLOTS,MAX_OPEN}`),
+  `minimax_moe_kernels.{h,cu}` (router, SwiGLU-OAI, per-head norm, partial RoPE,
+  indexer block selection, masked decode attention, NVFP4 row embedding,
+  routed accumulate/combine), `minimax_moe_inference_pipeline.{h,cu}` (session =
+  pos-major KV through `KvCacheGeometry` + per-layer indexer key history;
+  token-by-token prefill/decode, streaming + abort, published result),
+  `minimax_moe_model.{h,cpp}`, `minimax_moe_tool_format.{h,cpp}` (native
+  `]<]minimax[>[<invoke name=...>` XML codec, thinking disabled = the
+  template's think-END generation prefix); format tag
+  `logestix-minimax-nvfp4`; converted with `lsxforge --minimax`. Up to
+  `topk_blocks*block_size` = 2048 tokens every key block is selected, so the
+  canonical protocol runs on the neutral coalesced attention kernel; past that
+  the two-pass masked kernel engages (perf debt, correctness first).
+  Session facts, gates and perf rows: `docs/OPEN_TASKS.md` §R4.
   Kimi-K2.7-Code (independent family `kimi`: DeepSeek-V3 MLA + 384-expert top-8
   MoE with one shared expert, 61 layers / 7168H / 64 heads / q_lora 1536 /
   kv_lora 512 / qk_nope 128 / qk_rope 64, YaRN factor 64;

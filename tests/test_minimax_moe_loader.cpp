@@ -99,10 +99,12 @@ TEST_CASE("MiniMax loader uploads the pinned graph", "[minimax][loader]")
             CHECK(lw.mlp_gate.rows == cfg.dense_inter);
         }
     }
-    CHECK(pw.embed.d_packed != nullptr);
-    CHECK(pw.head.d_packed != nullptr);
+    // Embed/head stay FP16 (the head's row error would multiply every logit).
+    CHECK(pw.d_embed != nullptr);
+    CHECK(pw.d_head != nullptr);
+    CHECK(pw.embed_elems == static_cast<int64_t>(cfg.vocab) * cfg.hidden);
+    CHECK(pw.head_elems == static_cast<int64_t>(cfg.vocab) * cfg.hidden);
     CHECK(pw.d_final_norm != nullptr);
-    CHECK(pw.head.rows == cfg.vocab);
 
     // Teardown must be complete and idempotent (a leak shows up as OOM on the
     // next model load, not here).
@@ -110,7 +112,7 @@ TEST_CASE("MiniMax loader uploads the pinned graph", "[minimax][loader]")
     pw.Free();
     CHECK(pw.layers.empty());
     CHECK(pw.resident_bytes == 0);
-    CHECK(pw.embed.d_packed == nullptr);
+    CHECK(pw.d_embed == nullptr);
 }
 
 TEST_CASE("MiniMax routed-expert store is the neutral mmap store",

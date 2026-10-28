@@ -91,6 +91,11 @@ struct TokenizerSpecialPolicy {
     int32_t bos_id = INT32_MIN;
     int32_t eos_id = INT32_MIN;
     int32_t pad_id = INT32_MIN;
+    // Pre-tokenizer family of a byte-level BPE checkpoint:
+    //   0 = legacy GPT-2 / cl100k 3-split (WordStream; default)
+    //   1 = Llama-3 / o200k 7-alternative pattern (Llama3WordStream: case runs,
+    //       no CJK split). Written as tokenizer_kind = 3.
+    int32_t pretokenizer = 0;
 };
 
 arrow::Status BuildTokenizerArrowFiles(

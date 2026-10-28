@@ -33,6 +33,13 @@ public:
     // The cache this engine actually builds (pos-major, see MinimaxSession).
     KvCacheLayout KvLayout() const override { return KvCacheLayout::kPosMajor; }
 
+    // Single-prompt framing: a chat model must never see an unframed prompt,
+    // so the raw control prompt ("The capital of France is") goes through the
+    // checkpoint's own template as one user turn, with thinking disabled.
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
+
     // Tool/function-calling bridge (Model Ingestion Protocol step 4b):
     // MiniMax-M3 native template (chat_template.jinja: `]~b]`/`[e~[` framing,
     // `]<]minimax[>[<tool_call>` + `<invoke name=...>` XML parameters).

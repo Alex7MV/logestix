@@ -1,0 +1,15 @@
+# captured from /mnt/fast_storage/huggingface/MiniMax-M3 (transformers 5.15.1)
+{"text": "The capital of France is", "ids": [758, 5505, 300, 5969, 355]}
+{"text": "Compute the present value PV of a bond with cash flow CF, rate r, and n periods. Return the value.", "ids": [63503, 275, 2040, 1982, 42305, 300, 258, 9861, 418, 10122, 4535, 30710, 44, 4260, 354, 44, 306, 311, 16913, 46, 10234, 275, 1982, 46]}
+{"text": "getUserName and setHTTPHeader and parseXMLResponse", "ids": [848, 4887, 2220, 306, 1157, 36484, 14258, 306, 16407, 43766, 5933]}
+{"text": "def compute_pv(cash_flow, rate):\n    return cash_flow * rate", "ids": [2601, 21256, 3038, 118, 5212, 1569, 93398, 44, 4260, 3345, 326, 1126, 10122, 93398, 653, 4260]}
+{"text": "    indented code line with   multiple   spaces", "ids": [326, 196157, 3817, 2670, 418, 256, 5537, 256, 14525]}
+{"text": "Numbers 1234567 and 3.14159 and -42 and 0x1F and 1e-9", "ids": [66968, 32, 10010, 26551, 55, 306, 32, 51, 46, 18745, 6184, 306, 661, 5130, 306, 32, 48, 120, 49, 70, 306, 32, 49, 101, 45, 57]}
+{"text": "JSON {\"key\": [1, 2, 3], \"nested\": {\"a\": true, \"b\": null}}", "ids": [20842, 18396, 3512, 2803, 791, 49, 44, 32, 50, 44, 32, 51, 3119, 494, 142041, 2803, 18396, 97, 2803, 2579, 44, 494, 98, 2803, 3065, 1427]}
+{"text": "Привет, мир! 你好世界 こんにちは", "ids": [45775, 31016, 44, 158440, 33, 32679, 1176, 4083, 32, 36334]}
+{"text": "]~b]user\nHello, world[e~[\n]<]minimax[>[<tool_call>", "ids": [200019, 3995, 10, 19739, 44, 2035, 200020, 10, 200058, 200052]}
+{"text": "don't won't they're I'll we've you'd it's", "ids": [84464, 12132, 12618, 13098, 24962, 27063, 3433]}
+{"text": "line one  \nline two   \n\nline three", "ids": [1182, 841, 4315, 1182, 1451, 45092, 1182, 2566]}
+{"text": "ALLCAPS mixedCASE UPPER lower TitleCase snake_case kebab-case", "ids": [2131, 10896, 66177, 13541, 149566, 604, 144819, 4581, 21936, 11766, 47776, 64259, 15997, 370, 54072]}
+{"text": "Drawdown > Threshold && Rate_A * 100000000 - Slip_B", "ids": [26071, 7197, 2922, 132465, 4911, 29993, 15377, 653, 32, 1524, 1450, 1450, 661, 114883, 7351]}
+{"text": "<|im_start|> is not a marker here; <mm:think> is.", "ids": [60, 124, 324, 22242, 109675, 355, 516, 258, 27550, 2003, 59, 32, 200059, 355, 46]}

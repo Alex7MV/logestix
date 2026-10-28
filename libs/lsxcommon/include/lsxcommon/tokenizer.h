@@ -34,7 +34,10 @@ struct ArrowTokenizerDb {
     int32_t bos_id = -1, eos_id = -1, pad_id = -1;
     int32_t byte_to_token_id[256];
     // 0 = gpt2 byte-level BPE (default), 1 = sentencepiece BPE,
-    // 2 = tiktoken byte-level BPE.
+    // 2 = tiktoken byte-level BPE (legacy GPT-2/cl100k pre-tokenizer),
+    // 3 = byte-level BPE with the Llama-3/o200k pre-tokenizer (same BPE table,
+    //     different split: case runs instead of a single letter run, no CJK
+    //     split). MiniMax-M3, Qwen2/3 and Llama-3 checkpoints use this one.
     int32_t tokenizer_kind = 0;
     // tokenizer_kind == 2 only. Ids >= base_vocab_size are added tokens that
     // the reference encoder matches literally (tiktoken allowed_special="all");

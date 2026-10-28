@@ -49,6 +49,10 @@ __device__ __forceinline__ float BlockReduceSum(float v, float *red)
 
 // ── Router ──────────────────────────────────────────────────────────────────
 
+// One warp per expert: 32 lanes stride the hidden dim and reduce with shfl —
+// no block-wide barrier per expert (the previous shape serialized E
+// __syncthreads reductions and cost 1.14 ms for E=128, 80% of the decode
+// step's kernel time). Selection stays on thread 0 for determinism.
 __global__ void minimax_router_kernel(const float *__restrict__ w,
                                       const float *__restrict__ bias,
                                       const __half *__restrict__ x, int E,
@@ -56,25 +60,29 @@ __global__ void minimax_router_kernel(const float *__restrict__ w,
                                       MinimaxRoutedSlot *__restrict__ out)
 {
     extern __shared__ float smem[];
-    float *red = smem;                 // [blockDim.x]
-    float *score = red + blockDim.x;   // [E]
-    float *choice = score + E;         // [E]
-    __half *xs = reinterpret_cast<__half *>(choice + E);  // [H]
+    float *score = smem;          // [E]
+    float *choice = score + E;    // [E]
+    __half *xs = reinterpret_cast<__half *>(choice + E);   // [H]
 
     const int t = blockIdx.x;
     const int tid = threadIdx.x;
+    const int lane = tid & 31;
+    const int warp = tid >> 5;
+    const int warps = blockDim.x >> 5;
     const __half *xt = x + static_cast<int64_t>(t) * H;
     for (int k = tid; k < H; k += blockDim.x) xs[k] = xt[k];
     __syncthreads();
 
-    for (int e = 0; e < E; ++e) {
+    for (int e = warp; e < E; e += warps) {
         const float *we = w + static_cast<int64_t>(e) * H;
         float acc = 0.0f;
-        for (int k = tid; k < H; k += blockDim.x)
+        for (int k = lane; k < H; k += 32)
             acc += we[k] * __half2float(xs[k]);
-        const float s = BlockReduceSum(acc, red);
-        if (tid == 0) {
-            const float p = SigmoidF(s);
+#pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0) {
+            const float p = SigmoidF(acc);
             score[e] = p;
             choice[e] = p + bias[e];
         }
@@ -101,7 +109,6 @@ __global__ void minimax_router_kernel(const float *__restrict__ w,
             taken[best] = true;
             sel[k] = best;
         }
-        // Insertion sort ascending by expert id (K <= 32).
         for (int i = 1; i < K; ++i) {
             const int v = sel[i];
             int j = i - 1;
@@ -220,25 +227,6 @@ __global__ void minimax_partial_rope_kernel(__half *__restrict__ x, int heads,
     const float x2 = __half2float(x[base + j + half]);
     x[base + j] = __float2half(x1 * c - x2 * s);
     x[base + j + half] = __float2half(x1 * s + x2 * c);
-}
-
-__global__ void minimax_embed_nvfp4_kernel(
-    const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
-    float global_scale, const int32_t *__restrict__ ids,
-    __half *__restrict__ out, int hidden)
-{
-    const int t = blockIdx.y;
-    const int64_t row = ids[t];
-    const uint8_t *prow = packed + (row * hidden) / 2;
-    const uint8_t *srow = scales + row * (hidden / 16);
-    __half *dst = out + static_cast<int64_t>(t) * hidden;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < hidden;
-         i += blockDim.x * gridDim.x) {
-        const uint8_t byte = prow[i >> 1];
-        const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
-        const float sc = gpu::nvfp4::E4M3ScaleToFloat(srow[i >> 4]);
-        dst[i] = __float2half(gpu::nvfp4::E2M1Value(nib) * sc * global_scale);
-    }
 }
 
 __global__ void minimax_embed_kernel(const __half *__restrict__ table,
@@ -499,20 +487,6 @@ cudaError_t RunMinimaxEmbed(cudaStream_t stream, const __half *table,
     const int bx = (hidden + 255) / 256;
     dim3 grid(bx, seq);
     minimax_embed_kernel<<<grid, 256, 0, stream>>>(table, ids, out, hidden);
-    return cudaGetLastError();
-}
-
-cudaError_t RunMinimaxEmbedNvfp4(cudaStream_t stream, const uint8_t *packed,
-                                 const uint8_t *scales, float global_scale,
-                                 const int32_t *ids, __half *out, int seq,
-                                 int hidden)
-{
-    if (seq <= 0 || hidden <= 0 || (hidden % 16) != 0)
-        return cudaErrorInvalidValue;
-    const int bx = (hidden + 255) / 256;
-    dim3 grid(bx, seq);
-    minimax_embed_nvfp4_kernel<<<grid, 256, 0, stream>>>(
-        packed, scales, global_scale, ids, out, hidden);
     return cudaGetLastError();
 }
 

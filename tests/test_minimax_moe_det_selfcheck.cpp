@@ -27,7 +27,7 @@ std::filesystem::path ModelRoot()
     if (const char *env = std::getenv("LSX_TEST_MINIMAX_ROOT"))
         return std::filesystem::path(env);
     return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           "MiniMax-M3-2603-NVFP4";
+           "MiniMax-M3";
 }
 
 std::filesystem::path GoldenPath()

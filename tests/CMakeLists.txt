@@ -1617,6 +1617,18 @@ set_tests_properties(test_minimax_moe_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_minimax_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_minimax_moe_selfcheck PROPERTIES TIMEOUT 7200)
 
+add_executable(test_minimax_moe_tokenizer_parity
+    test_minimax_moe_tokenizer_parity.cpp)
+target_compile_definitions(test_minimax_moe_tokenizer_parity PRIVATE
+    "LSX_MINIMAX_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/minimax\"")
+target_link_libraries(test_minimax_moe_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_minimax_moe_tokenizer_parity
+         COMMAND test_minimax_moe_tokenizer_parity)
+set_tests_properties(test_minimax_moe_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_tokenizer_parity
+    PROPERTIES SKIP_RETURN_CODE 4)
+
 add_executable(test_minimax_moe_fsi_selfcheck test_minimax_moe_fsi_selfcheck.cpp)
 target_compile_definitions(test_minimax_moe_fsi_selfcheck PRIVATE
     "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")

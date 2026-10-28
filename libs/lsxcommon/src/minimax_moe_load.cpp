@@ -50,8 +50,12 @@ arrow::Status ReadWholeFile(const std::filesystem::path &path,
 
 void MinimaxPinnedWeights::Free()
 {
-    embed.Free();
-    head.Free();
+    if (d_embed) cudaFree(d_embed);
+    if (d_head) cudaFree(d_head);
+    d_embed = nullptr;
+    d_head = nullptr;
+    embed_elems = 0;
+    head_elems = 0;
     if (d_final_norm) {
         cudaFree(d_final_norm);
         d_final_norm = nullptr;
@@ -258,20 +262,43 @@ bool LoadMinimaxDenseWeights(const std::string &model_path,
         }
     }
     {
-        auto nv = LoadDenseNvfp4BatchViews(pinned_dir / "global_nvfp4.arrow");
-        if (!nv.ok()) {
-            error = "global_nvfp4.arrow read failed: " + nv.status().ToString();
+        auto raw = LoadTensorBatchViews(pinned_dir / "global.arrow");
+        if (!raw.ok()) {
+            error = "global.arrow read failed: " + raw.status().ToString();
             pw.Free();
             return false;
         }
-        cudaError_t e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "embed_tokens.weight"),
-                                          pw.embed, stream, ring, bytes_acc,
-                                          &job_error);
+        auto *emb = FindTensorSuffix(*raw, "embed_tokens.weight");
+        auto *hd = FindTensorSuffix(*raw, "lm_head.weight");
+        if (!emb || emb->rank != 2 || !hd || hd->rank != 2) {
+            error = "embed_tokens/lm_head missing in global.arrow";
+            pw.Free();
+            return false;
+        }
+        pw.embed_elems = emb->shape[0] * emb->shape[1];
+        pw.head_elems = hd->shape[0] * hd->shape[1];
+        if (cudaMalloc(reinterpret_cast<void **>(&pw.d_embed),
+                       static_cast<size_t>(pw.embed_elems) * sizeof(__half)) !=
+            cudaSuccess) {
+            error = "embed table alloc failed";
+            pw.Free();
+            return false;
+        }
+        if (cudaMalloc(reinterpret_cast<void **>(&pw.d_head),
+                       static_cast<size_t>(pw.head_elems) * sizeof(__half)) !=
+            cudaSuccess) {
+            error = "head matrix alloc failed";
+            pw.Free();
+            return false;
+        }
+        cudaError_t e = ring.UploadBf16AsFp16(emb->data, pw.embed_elems,
+                                              pw.d_embed, stream, bytes_acc);
         if (e == cudaSuccess)
-            e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "lm_head.weight"),
-                                  pw.head, stream, ring, bytes_acc, &job_error);
-        if (e != cudaSuccess || !pw.embed.d_packed || !pw.head.d_packed) {
-            error = "embed/lm_head missing or upload failed: " + job_error;
+            e = ring.UploadBf16AsFp16(hd->data, pw.head_elems, pw.d_head,
+                                      stream, bytes_acc);
+        if (e != cudaSuccess) {
+            error = absl::StrCat("embed/head upload failed: ",
+                                 cudaGetErrorString(e));
             pw.Free();
             return false;
         }

@@ -932,11 +932,6 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "mistral-small-4-119b:code",
         "mistral-small-4-119b:det",
         "mistral-small-4-119b:fsi",
-        // MiniMax-M3 goldens are captured from the source safetensors on this
-        // card; declared debt until the capture run lands (docs/OPEN_TASKS.md).
-        "minimax-m3:code",
-        "minimax-m3:det",
-        "minimax-m3:fsi",
     };
 
     const fs::path root(LSX_SOURCE_DIR);

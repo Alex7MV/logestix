@@ -48,7 +48,12 @@ struct MinimaxLayerWeights {
 
 struct MinimaxPinnedWeights {
     MinimaxTopology top;
-    lsx_nvfp4::LsxNvfp4Weight embed, head;
+    // FP16 embed table and head matrix (see minimax_moe_convert.cpp: the head's
+    // row error multiplies every logit, so it must not be 4-bit).
+    __half *d_embed = nullptr;   // [V, H]
+    __half *d_head = nullptr;    // [V, H]
+    int64_t embed_elems = 0;
+    int64_t head_elems = 0;
     __half *d_final_norm = nullptr;
     std::vector<MinimaxLayerWeights> layers;
     std::uint64_t resident_bytes = 0;

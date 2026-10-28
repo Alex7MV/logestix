@@ -4,11 +4,13 @@
 #include "lsx_kernels_math.cuh"
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/model_runtime.h"
 
 #include <absl/strings/str_cat.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -285,7 +287,7 @@ gpu::InferenceResult RunMinimaxInference(
     if (scratch.logits_elems < V) {
         if (scratch.d_logits) cudaFree(scratch.d_logits);
         if (cudaMalloc(&scratch.d_logits,
-                       static_cast<size_t>(V) * sizeof(__half)) != cudaSuccess) {
+                       static_cast<size_t>(V) * sizeof(float)) != cudaSuccess) {
             out.error_msg = "logits alloc failed";
             return out;
         }
@@ -327,7 +329,7 @@ gpu::InferenceResult RunMinimaxInference(
     float *d_maxv = scratch.d_maxv;
     MinimaxRoutedSlot *d_slots = scratch.d_slots;
     MinimaxRoutedSlot *h_slots = scratch.h_slots;
-    __half *d_logits = scratch.d_logits;
+    float *d_logits = scratch.d_logits;
 
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     cudaEvent_t tok_ready = nullptr;
@@ -366,10 +368,27 @@ gpu::InferenceResult RunMinimaxInference(
         cudaMemcpyAsync(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice,
                         stream);
 
-        cudaError_t e = RunMinimaxEmbedNvfp4(
-            stream, pw.embed.d_packed, pw.embed.d_scales,
-            pw.embed.global_scale, d_ids, d_act, 1, H);
+        cudaError_t e =
+            RunMinimaxEmbed(stream, pw.d_embed, d_ids, d_act, 1, H);
         if (e != cudaSuccess) return fail(e, "embed");
+        // Diagnostic: the embedded row (stage "embed", layer -1).
+        if (const char *dump = std::getenv("LSX_MINIMAX_DUMP_LAYERS");
+            dump && step == prompt_steps - 1) {
+            std::vector<__half> hh(16);
+            cudaMemcpyAsync(hh.data(), d_act, 16 * sizeof(__half),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaEventRecord(tok_ready, stream);
+            cudaEventSynchronize(tok_ready);
+            FILE *df = std::fopen(dump, "w");
+            if (df) {
+                std::fprintf(df, "embed");
+                for (int i = 0; i < 16; ++i)
+                    std::fprintf(df, " %.6f",
+                                 __half2float(hh[static_cast<size_t>(i)]));
+                std::fprintf(df, "\n");
+                std::fclose(df);
+            }
+        }
 
         for (int l = 0; l < L; ++l) {
             const MinimaxLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
@@ -464,10 +483,19 @@ gpu::InferenceResult RunMinimaxInference(
             if (!mask) {
                 // Dense-equivalent path (every block selected): the neutral
                 // coalesced kernel, which is the hot path up to the block
-                // budget (topk_blocks * block_size = 2048 tokens).
-                e = qwen::RunAttnFullAttnKernel(
-                    stream, d_q, k_base, v_base, d_attn, 1, NH, HD, NKV, scale,
-                    static_cast<int>(pos));
+                // budget (topk_blocks * block_size = 2048 tokens). Past 512
+                // cached rows the single-block-per-head kernel is
+                // memory-latency bound, so the split-KV decode path takes over
+                // (same policy as RunAttnFullAttention).
+                if (pos + 1 > 512) {
+                    e = qwen::RunAttnFullAttnKernelSplitKV(
+                        stream, d_q, k_base, v_base, d_attn, 1, NH, HD, NKV,
+                        scale, static_cast<int>(pos));
+                } else {
+                    e = qwen::RunAttnFullAttnKernel(
+                        stream, d_q, k_base, v_base, d_attn, 1, NH, HD, NKV,
+                        scale, static_cast<int>(pos));
+                }
             } else {
                 e = RunMinimaxMaskedAttn(
                     stream, d_q, k_base, v_base, kv_len, NH, NKV, HD, scale,
@@ -483,7 +511,8 @@ gpu::InferenceResult RunMinimaxInference(
                                            NH * HD, H, false);
             if (e != cudaSuccess) return fail(e, LayerTag("o", l));
             lsxcommon::kernels::AddInPlaceKernel<__half>
-                <<<1, kThreads, 0, stream>>>(d_attn_out, d_act, H);
+                <<<(H + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
+                    d_attn_out, d_act, H);
             e = cudaGetLastError();
             if (e != cudaSuccess) return fail(e, LayerTag("res1", l));
 
@@ -567,17 +596,61 @@ gpu::InferenceResult RunMinimaxInference(
                 if (e != cudaSuccess) return fail(e, LayerTag("combine", l));
             }
             lsxcommon::kernels::AddInPlaceKernel<__half>
-                <<<1, kThreads, 0, stream>>>(d_mlp_out, d_act, H);
+                <<<(H + kThreads - 1) / kThreads, kThreads, 0, stream>>>(
+                    d_mlp_out, d_act, H);
             e = cudaGetLastError();
             if (e != cudaSuccess) return fail(e, LayerTag("res2", l));
+
+            // Diagnostic (LSX_MINIMAX_DUMP_LAYERS=<file>): the first 16
+            // hidden values after each layer of the FIRST generated step, so
+            // tools/minimax_reference.py can bisect a numeric disagreement to
+            // the layer that introduced it. Diagnostic only, never a result.
+            if (const char *dump = std::getenv("LSX_MINIMAX_DUMP_LAYERS");
+                dump && step == prompt_steps - 1) {
+                std::vector<__half> hh(static_cast<size_t>(H));
+                cudaMemcpyAsync(hh.data(), d_act, H * sizeof(__half),
+                                cudaMemcpyDeviceToHost, stream);
+                cudaEventRecord(tok_ready, stream);
+                cudaEventSynchronize(tok_ready);
+                FILE *df = std::fopen(dump, "a");
+                if (df) {
+                    std::fprintf(df, "layer %d", l);
+                    for (int i = 0; i < H; ++i)
+                        std::fprintf(df, " %.6f",
+                                     __half2float(hh[static_cast<size_t>(i)]));
+                    std::fprintf(df, "\n");
+                    std::fclose(df);
+                }
+            }
         }
 
         // ── final norm + lm_head ──
         e = RunMinimaxNorm(stream, d_act, pw.d_final_norm, d_postin, 1, H, eps);
         if (e != cudaSuccess) return fail(e, "final norm");
-        e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_postin, pw.head.d_packed,
-                                       pw.head.d_scales, pw.head.global_scale,
-                                       d_logits, 1, H, V, false);
+        // Diagnostic: the full pre/post final-norm rows of the step that
+        // produced logits (LSX_MINIMAX_DUMP_FINAL=<prefix>).
+        if (const char *dump = std::getenv("LSX_MINIMAX_DUMP_FINAL");
+            dump && step == prompt_steps - 1) {
+            std::vector<__half> hpre(static_cast<size_t>(H));
+            std::vector<__half> hpost(static_cast<size_t>(H));
+            cudaMemcpyAsync(hpre.data(), d_act, H * sizeof(__half),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(hpost.data(), d_postin, H * sizeof(__half),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaEventRecord(tok_ready, stream);
+            cudaEventSynchronize(tok_ready);
+            FILE *fp = std::fopen(absl::StrCat(dump, ".pre.txt").c_str(), "w");
+            FILE *fq = std::fopen(absl::StrCat(dump, ".post.txt").c_str(), "w");
+            for (int i = 0; i < H; ++i) {
+                if (fp) std::fprintf(fp, "%.6f\n", __half2float(hpre[static_cast<size_t>(i)]));
+                if (fq) std::fprintf(fq, "%.6f\n", __half2float(hpost[static_cast<size_t>(i)]));
+            }
+            if (fp) std::fclose(fp);
+            if (fq) std::fclose(fq);
+        }
+        e = gemv::RunLxGemmVec(stream, pw.d_head, d_postin, 1, V, H,
+                               gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
+                               d_logits, gemv::LxDtype::kF32, 0.0f);
         if (e != cudaSuccess) return fail(e, "head");
         session.kv_rows += 1;
 
@@ -594,7 +667,7 @@ gpu::InferenceResult RunMinimaxInference(
         }
 
         // ── sample ──
-        e = sampler.Sample(stream, d_logits, V, sample::LogitType::kF16,
+        e = sampler.Sample(stream, d_logits, V, sample::LogitType::kF32,
                            d_argmax, d_maxv);
         if (e != cudaSuccess) return fail(e, "argmax");
         int32_t tok = -1;
@@ -610,6 +683,43 @@ gpu::InferenceResult RunMinimaxInference(
             cudaEventRecord(t_ttft, stream);
         }
         tokens.push_back(tok);
+        // Diagnostic (LSX_MINIMAX_DEBUG=1): the first step's prompt ids and
+        // top-5 logits, for the host-reference oracle
+        // (tools/minimax_reference.py). stderr only, never the result.
+        if (generated == 0 && std::getenv("LSX_MINIMAX_DEBUG")) {
+            std::vector<float> hl(static_cast<size_t>(V));
+            cudaMemcpyAsync(hl.data(), d_logits,
+                            static_cast<size_t>(V) * sizeof(float),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaEventRecord(tok_ready, stream);
+            cudaEventSynchronize(tok_ready);
+            std::vector<int> top(5, -1);
+            std::vector<float> topv(5, -1e30f);
+            for (int i = 0; i < V; ++i) {
+                const float v = hl[static_cast<size_t>(i)];
+                for (int k = 0; k < 5; ++k)
+                    if (v > topv[static_cast<size_t>(k)]) {
+                        for (int j = 4; j > k; --j) {
+                            topv[static_cast<size_t>(j)] =
+                                topv[static_cast<size_t>(j - 1)];
+                            top[static_cast<size_t>(j)] =
+                                top[static_cast<size_t>(j - 1)];
+                        }
+                        topv[static_cast<size_t>(k)] = v;
+                        top[static_cast<size_t>(k)] = i;
+                        break;
+                    }
+            }
+            std::string pids;
+            for (size_t i = 0; i < prefill.size(); ++i)
+                pids += absl::StrCat(i ? "," : "", prefill[i]);
+            std::string t5;
+            for (int k = 0; k < 5; ++k)
+                t5 += absl::StrCat(k ? "," : "", top[static_cast<size_t>(k)],
+                                   ":", topv[static_cast<size_t>(k)]);
+            fprintf(stderr, "[minimax-debug] prompt_ids=%s\n", pids.c_str());
+            fprintf(stderr, "[minimax-debug] top5=%s\n", t5.c_str());
+        }
         if (gs) {
             gs->Emit(static_cast<std::uint32_t>(tok),
                      static_cast<std::uint32_t>(generated), maxv);
@@ -631,19 +741,16 @@ gpu::InferenceResult RunMinimaxInference(
     if (!tokens.empty()) session.last_tok = tokens.back();
     session.gen_tail = tokens;
     {
-        std::vector<__half> hlast(static_cast<size_t>(V));
+        std::vector<float> hlast(static_cast<size_t>(V));
         cudaMemcpyAsync(hlast.data(), d_logits,
-                        static_cast<size_t>(V) * sizeof(__half),
+                        static_cast<size_t>(V) * sizeof(float),
                         cudaMemcpyDeviceToHost, stream);
         cudaError_t le = cudaGetLastError();
         cudaEventRecord(t_stop, stream);
         if (cudaEventSynchronize(t_stop) != cudaSuccess)
             return fail(cudaGetLastError(), "logits fence");
         if (le != cudaSuccess) return fail(le, "logits copy");
-        out.final_logits.resize(static_cast<size_t>(V));
-        for (int i = 0; i < V; ++i)
-            out.final_logits[static_cast<size_t>(i)] =
-                __half2float(hlast[static_cast<size_t>(i)]);
+        out.final_logits = std::move(hlast);
     }
     float ms_total = 0.0f, ms_ttft = 0.0f;
     cudaEventElapsedTime(&ms_total, t_start, t_stop);
