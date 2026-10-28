@@ -94,6 +94,7 @@ target_link_libraries(test_minimax_moe_kernels PRIVATE test_minimax_cu lsxcommon
 add_test(NAME test_minimax_moe_kernels COMMAND test_minimax_moe_kernels)
 set_tests_properties(test_minimax_moe_kernels PROPERTIES LABELS inference)
 set_tests_properties(test_minimax_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
 
 # Xing4.0-29B-A4B kernel parity (CUDA OBJECT lib + CXX-linked executable).
 add_library(test_xing_cu OBJECT
@@ -1521,6 +1522,8 @@ set_tests_properties(test_mistral_moe_convert PROPERTIES
 add_executable(test_minimax_moe_convert test_minimax_moe_convert.cpp)
 target_include_directories(test_minimax_moe_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_convert PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_convert PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_minimax_moe_convert COMMAND test_minimax_moe_convert)
@@ -1528,11 +1531,14 @@ set_tests_properties(test_minimax_moe_convert PROPERTIES LABELS convert)
 set_tests_properties(test_minimax_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_minimax_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── MiniMax-M3 loader stage (pinned graph + neutral expert store) ──
 add_executable(test_minimax_moe_loader test_minimax_moe_loader.cpp)
 target_include_directories(test_minimax_moe_loader PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_loader PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_loader PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_minimax_moe_loader COMMAND test_minimax_moe_loader)
@@ -1540,11 +1546,14 @@ set_tests_properties(test_minimax_moe_loader PROPERTIES LABELS fast)
 set_tests_properties(test_minimax_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_minimax_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── MiniMax-M3 model stage (lifecycle + determinism) ──
 add_executable(test_minimax_moe_model test_minimax_moe_model.cpp)
 target_include_directories(test_minimax_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_model PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_model PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_minimax_moe_model COMMAND test_minimax_moe_model)
@@ -1553,6 +1562,7 @@ set_tests_properties(test_minimax_moe_model PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_minimax_moe_model PROPERTIES TIMEOUT 300)
 set_tests_properties(test_minimax_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_model PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── MiniMax-M3 native tool framing (host-only) ──
 add_executable(test_minimax_moe_tool_framing test_minimax_moe_tool_framing.cpp)
@@ -1616,6 +1626,7 @@ add_test(NAME test_minimax_moe_selfcheck COMMAND test_minimax_moe_selfcheck)
 set_tests_properties(test_minimax_moe_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_minimax_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_minimax_moe_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
 
 add_executable(test_minimax_moe_tokenizer_parity
     test_minimax_moe_tokenizer_parity.cpp)
@@ -1638,6 +1649,7 @@ add_test(NAME test_minimax_moe_fsi_selfcheck COMMAND test_minimax_moe_fsi_selfch
 set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_fsi_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
 
 add_executable(test_minimax_moe_code_selfcheck test_minimax_moe_code_selfcheck.cpp)
 target_compile_definitions(test_minimax_moe_code_selfcheck PRIVATE
@@ -1648,6 +1660,7 @@ add_test(NAME test_minimax_moe_code_selfcheck COMMAND test_minimax_moe_code_self
 set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_code_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
 
 add_executable(test_minimax_moe_det_selfcheck test_minimax_moe_det_selfcheck.cpp)
 target_compile_definitions(test_minimax_moe_det_selfcheck PRIVATE
@@ -1658,6 +1671,7 @@ add_test(NAME test_minimax_moe_det_selfcheck COMMAND test_minimax_moe_det_selfch
 set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Mistral-Small-4-119B selfcheck (real weights; SKIP 4 without vault) ──
 add_executable(test_mistral_moe_selfcheck test_mistral_moe_selfcheck.cpp)
@@ -2884,6 +2898,7 @@ add_test(NAME test_perf_baseline_minimax_m3
 set_tests_properties(test_perf_baseline_minimax_m3 PROPERTIES
     TIMEOUT 3000
     SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=MiniMax-M3")
 set_tests_properties(test_perf_baseline_minimax_m3
     PROPERTIES LABELS perf)
