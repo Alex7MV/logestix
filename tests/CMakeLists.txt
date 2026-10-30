@@ -6949,6 +6949,36 @@ set_tests_properties(test_flint_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_flint_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── Flint numeric kernels (sink softmax / window / router / rope / norm) ──
+add_library(test_flint_cu OBJECT
+    test_flint_moe_kernels.cu
+)
+set_target_properties(test_flint_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_flint_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_flint_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/simdjson-src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src")
+target_link_libraries(test_flint_cu PRIVATE Catch2::Catch2WithMain
+    arrow_shared)
+
+add_executable(test_flint_moe_kernels)
+set_target_properties(test_flint_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_flint_moe_kernels PRIVATE test_flint_cu lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_kernels COMMAND test_flint_moe_kernels)
+set_tests_properties(test_flint_moe_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_flint_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_flint_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Flint tokenizer parity (source-captured golden; SKIPs without the vault) ──
 add_executable(test_flint_moe_tokenizer_parity
     test_flint_moe_tokenizer_parity.cpp)

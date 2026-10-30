@@ -361,6 +361,32 @@ target_link_libraries(lsxcommon_hy_cu
     absl::strings
 )
 
+# Recursive Flint kernels + generation pipeline (learned sink column, hybrid
+# sliding/full attention with no RoPE on the full layers, sigmoid top-k router
+# and an ungated shared expert).
+add_library(lsxcommon_flint_cu OBJECT
+    src/flint_moe_kernels.cu
+    src/flint_moe_inference_attn.cu
+    src/flint_moe_inference_pipeline.cu
+)
+set_target_properties(lsxcommon_flint_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_flint_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_flint_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_flint_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_flint_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 # Mistral-Small-4-119B MLA + MoE decode kernels.
 add_library(lsxcommon_mistral_cu OBJECT
     src/mistral_moe_inference.cu
@@ -582,6 +608,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_mistral_cu
     lsxcommon_minimax_cu
     lsxcommon_hy_cu
+    lsxcommon_flint_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.
