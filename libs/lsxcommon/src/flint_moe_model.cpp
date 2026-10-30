@@ -134,10 +134,13 @@ gpu::InferenceResult FlintMoeModel::SelfCheck(const ModelRequest &req)
     // Chat model that decides on its own whether to reason: frame the raw
     // control prompt with the checkpoint's template and accept "Paris" within a
     // short window (same deviation as Hy-Memory / MiniMax / ornith).
+    // Flint reasons before it answers, so the control answer lives well past
+    // the first few tokens: the probe gets a real reasoning budget and searches
+    // a wide window for "Paris".
     const runtime::ParisSelfCheckOptions opts{
         .frame_prompt = true,
-        .min_tokens = 16,
-        .answer_window = 16,
+        .min_tokens = 256,
+        .answer_window = 96,
         .substring_match = true,
     };
     return runtime::RunParisSelfCheck(*this, req, opts);

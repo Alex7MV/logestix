@@ -367,7 +367,52 @@ TEST_CASE("ConvertFlintModel converts a synthetic checkpoint",
         CHECK(pe.w1_packed != pe.w3_packed);
     }
 
-    // 7) Determinism: a second conversion produces a byte-identical index.
+    // 7) Residual plane placement: attention + dense MLP + shared expert carry
+    // a second NVFP4 plane (`<name>.res`), and the routed experts do NOT (the
+    // decode read volume stays untouched).
+    {
+        auto recs = lsxcommon::DenseNvfp4Schema::UnpackBatch(
+                        lsxcommon::ReadRecordBatchFromFile(
+                            base / "pinned" / "layer_3_nvfp4.arrow")
+                            .ValueOrDie())
+                        .ValueOrDie();
+        bool q_res = false, o_res = false;
+        for (auto &r : recs) {
+            if (r.name.find("self_attn.q_proj.weight.res") != std::string::npos)
+                q_res = true;
+            if (r.name.find("self_attn.o_proj.weight.res") != std::string::npos)
+                o_res = true;
+        }
+        CHECK(q_res);
+        CHECK(o_res);
+        auto shared = lsxcommon::DenseNvfp4Schema::UnpackBatch(
+                          lsxcommon::ReadRecordBatchFromFile(
+                              base / "shared" / "layer_2_nvfp4.arrow")
+                              .ValueOrDie())
+                          .ValueOrDie();
+        bool sh_res = false;
+        for (auto &r : shared)
+            if (r.name.find("shared_expert.down_proj.weight.res") !=
+                std::string::npos)
+                sh_res = true;
+        CHECK(sh_res);
+        auto experts = lsxcommon::ExpertSchema::UnpackBatch(
+                           lsxcommon::ReadRecordBatchFromFile(
+                               base / "experts" / "layer_1" / "exp_0.arrow")
+                               .ValueOrDie())
+                           .ValueOrDie();
+        CHECK(static_cast<int64_t>(experts.w1_packed.size()) ==
+              static_cast<int64_t>(c.moe_inter) * c.hidden / 2);
+        // Placement policy is exposed by the converter itself.
+        CHECK(flint_tensor_has_residual(FlintTensorKind::AttnQ));
+        CHECK(flint_tensor_has_residual(FlintTensorKind::SharedDownProj));
+        CHECK_FALSE(flint_tensor_has_residual(FlintTensorKind::ExpertGate));
+        CHECK_FALSE(flint_tensor_has_residual(FlintTensorKind::RouterGate));
+        CHECK_FALSE(flint_tensor_has_residual(FlintTensorKind::SinkLogit));
+        CHECK_FALSE(flint_tensor_has_residual(FlintTensorKind::Embed));
+    }
+
+    // 8) Determinism: a second conversion produces a byte-identical index.
     {
         fs::path out2 = fs::temp_directory_path() / "lsx_flint_out2";
         fs::remove_all(out2);

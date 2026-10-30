@@ -81,9 +81,23 @@ one in a ctest summary, which is why the debt rows are called out below.
 | model | SelfCheck | FSI | CODE | DET | why |
 |---|---|---|---|---|---|
 | mistral-small-4-119b | PASS | SKIP | SKIP | SKIP | source is the Mistral "consolidated" layout (`params.json`, no `config.json`), so Transformers cannot run it and no oracle can be captured — `docs/OPEN_TASKS.md` §T |
+| flint | PASS | SKIP | SKIP | SKIP | source runs only on CPU (`tools/flint_oracle.py`, ~3-5 s/token); the capture set is hours long. The converted model is additionally parity-limited: the 4-bit routed-expert plane is the dominant residual error (an 8-bit expert set needs +21 GB, the card has ~9 GB free) — `docs/OPEN_TASKS.md` §R6 |
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | source not runnable here: `modelopt 0.44.0rc5` `MIXED_PRECISION` (W4A16_NVFP4 experts + FP8 mixers, FP8 KV cache) and the installed transformers has no modelopt quantizer; the bf16 passport is not in the vault. An attempted golden set was reverted 2026-10-25 — its `input_ids` were Qwen3.8-Flash-Next ids (up to 248069 against this model's 131072-entry vocabulary) and its `expected` values were copied from that family's goldens, so all three gates failed with an empty `raw` |
 
 Both are recorded in the golden-debt list (§K) rather than left to look green.
+
+## 2b. flint — measured engine-vs-source agreement (no golden yet)
+
+`tools/flint_oracle.py` (CPU, BF16, built on the HF Qwen3-MoE primitives plus the
+vendor's five deltas) is the external oracle. On the control prompt the
+converted engine reproduces the source's greedy continuation token-for-token for
+32 steps. On a 160-token tool prompt the top-1 token agrees at prefixes 8/16/32
+but diverges at ~64 (engine `4067` vs source `3705`), with first-step logit
+deltas of 1-4. The dense-side residual plane (attention + dense MLP + shared
+expert) closed part of that gap (prefix 56: top-1 logit -3.70 -> -0.99; prefix
+160: -2.10 -> -1.06); the remainder is the routed-expert 4-bit error. This is a
+**measurement**, not a pass: the FSI/CODE/DET rows stay SKIP until a capture
+fits the budget and the expert precision question is settled.
 
 ## 3. Golden present, **no converted tree** — SKIP (needs the vault, not a code fix)
 

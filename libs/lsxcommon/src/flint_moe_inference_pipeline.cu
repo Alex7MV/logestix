@@ -25,6 +25,23 @@ namespace {
 
 constexpr int kThreads = 256;
 
+// One projection: the base NVFP4 dot, then (when the converter wrote one) the
+// residual plane accumulated into the same FP16 buffer. Arithmetic is "base dot
+// rounds, then the residual dot adds and rounds once more".
+cudaError_t GemmWithResidual(cudaStream_t stream, const __half *x,
+                             const lsx_nvfp4::LsxNvfp4Weight &base,
+                             const lsx_nvfp4::LsxNvfp4Weight &res,
+                             __half *y, int K, int N)
+{
+    cudaError_t e = lsx_nvfp4::RunLsxNvfp4Gemm(
+        stream, x, base.d_packed, base.d_scales, base.global_scale, y, 1, K, N,
+        false);
+    if (e != cudaSuccess) return e;
+    if (!res.d_packed) return cudaSuccess;
+    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, x, res.d_packed, res.d_scales,
+                                      res.global_scale, y, 1, K, N, true);
+}
+
 std::string LayerTag(const char *what, int layer)
 {
     return absl::StrCat(what, " l", layer);
@@ -150,23 +167,23 @@ namespace {
 cudaError_t DenseMlp(cudaStream_t stream, const __half *x,
                      const lsx_nvfp4::LsxNvfp4Weight &gate,
                      const lsx_nvfp4::LsxNvfp4Weight &up,
-                     const lsx_nvfp4::LsxNvfp4Weight &down, int H, int I,
+                     const lsx_nvfp4::LsxNvfp4Weight &down,
+                     const lsx_nvfp4::LsxNvfp4Weight &gate_res,
+                     const lsx_nvfp4::LsxNvfp4Weight &up_res,
+                     const lsx_nvfp4::LsxNvfp4Weight &down_res, int H, int I,
                      __half *d_yg, __half *d_yu, __half *d_h, __half *out)
 {
-    cudaError_t e = lsx_nvfp4::RunLsxNvfp4Gemm(
-        stream, x, gate.d_packed, gate.d_scales, gate.global_scale, d_yg, 1, H,
-        I, false);
+    cudaError_t e = GemmWithResidual(stream, x, gate, gate_res, d_yg, H, I);
     if (e != cudaSuccess) return e;
-    e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, x, up.d_packed, up.d_scales,
-                                   up.global_scale, d_yu, 1, H, I, false);
+    e = GemmWithResidual(stream, x, up, up_res, d_yu, H, I);
     if (e != cudaSuccess) return e;
-    lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
-                                     false>
-        <<<Blocks(I), kThreads, 0, stream>>>(d_yg, d_yu, d_h, I, 0.0f);
-    if ((e = cudaGetLastError()) != cudaSuccess) return e;
-    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_h, down.d_packed,
-                                      down.d_scales, down.global_scale, out, 1,
-                                      I, H, false);
+    e = RunFlintSwiGLU(stream, d_yg, d_yu, d_h, I);
+    if (e != cudaSuccess) return e;
+    e = GemmWithResidual(stream, d_h, down, down_res, out, I, H);
+    if (e != cudaSuccess) return e;
+    // The SwiGLU stage stored h/kFfnOutScale, so this down projection is
+    // out/kFfnOutScale; restore the true scale (power of two, exact).
+    return RunFlintScaleHalf(stream, out, out, H, kFfnOutScale);
 }
 
 } // namespace
@@ -227,7 +244,6 @@ gpu::InferenceResult RunFlintInference(
 
     // ── Scratch (grown on demand; one arena for halves, one for floats) ──
     size_t half_sz[] = {
-        static_cast<size_t>(H),            // d_act
         static_cast<size_t>(H),            // d_normed
         static_cast<size_t>(H),            // d_attn_out
         static_cast<size_t>(H),            // d_postin
@@ -240,6 +256,7 @@ gpu::InferenceResult RunFlintInference(
         static_cast<size_t>(imax),         // d_h
         static_cast<size_t>(H),            // d_shared
         static_cast<size_t>(H),            // d_mlp_out
+        static_cast<size_t>(H),            // d_postin_s (expert input /16)
         static_cast<size_t>(I) * K,        // d_exp_gate  [K][I]
         static_cast<size_t>(I) * K,        // d_exp_up    [K][I]
         static_cast<size_t>(H) * K,        // d_exp_out   [K][H]
@@ -247,7 +264,9 @@ gpu::InferenceResult RunFlintInference(
     size_t half_bytes = 0;
     for (auto s : half_sz) half_bytes += ((s + 7) / 8) * 8 * sizeof(__half);
     half_bytes = (half_bytes + 15) & ~static_cast<size_t>(15);
-    size_t float_bytes = static_cast<size_t>(H) * sizeof(float);  // d_moe_acc
+    // FP32 residual (massive activations) + FP32 MoE accumulator + FP32 MLP
+    // branch (the MoE output itself reaches 1.6e5).
+    size_t float_bytes = static_cast<size_t>(3) * H * sizeof(float);
     float_bytes = (float_bytes + 15) & ~static_cast<size_t>(15);
     const size_t arena_need = half_bytes + float_bytes;
     if (!scratch.arena || scratch.arena_bytes < arena_need) {
@@ -285,24 +304,27 @@ gpu::InferenceResult RunFlintInference(
         ph += ((elems + 7) / 8) * 8;
         return r;
     };
-    __half *d_act = adv(half_sz[0]);
-    __half *d_normed = adv(half_sz[1]);
-    __half *d_attn_out = adv(half_sz[2]);
-    __half *d_postin = adv(half_sz[3]);
-    __half *d_q = adv(half_sz[4]);
-    __half *d_kp = adv(half_sz[5]);
-    __half *d_vp = adv(half_sz[6]);
-    __half *d_attn = adv(half_sz[7]);
-    __half *d_yg = adv(half_sz[8]);
-    __half *d_yu = adv(half_sz[9]);
-    __half *d_h = adv(half_sz[10]);
-    __half *d_shared = adv(half_sz[11]);
-    __half *d_mlp_out = adv(half_sz[12]);
-    __half *d_exp_gate = adv(half_sz[13]);
-    __half *d_exp_up = adv(half_sz[14]);
-    __half *d_exp_out = adv(half_sz[15]);
-    float *d_moe_acc = reinterpret_cast<float *>(
+    __half *d_normed = adv(half_sz[0]);
+    __half *d_attn_out = adv(half_sz[1]);
+    __half *d_postin = adv(half_sz[2]);
+    __half *d_q = adv(half_sz[3]);
+    __half *d_kp = adv(half_sz[4]);
+    __half *d_vp = adv(half_sz[5]);
+    __half *d_attn = adv(half_sz[6]);
+    __half *d_yg = adv(half_sz[7]);
+    __half *d_yu = adv(half_sz[8]);
+    __half *d_h = adv(half_sz[9]);
+    __half *d_shared = adv(half_sz[10]);
+    __half *d_mlp_out = adv(half_sz[11]);
+    __half *d_exp_gate = adv(half_sz[12]);
+    __half *d_exp_up = adv(half_sz[13]);
+    __half *d_exp_out = adv(half_sz[14]);
+    __half *d_postin_s = adv(half_sz[15]);
+    float *d_f32 = reinterpret_cast<float *>(
         reinterpret_cast<uint8_t *>(scratch.arena) + half_bytes);
+    float *d_resid = d_f32;            // [H] residual stream (FP32)
+    float *d_moe_acc = d_f32 + H;      // [H] routed MoE accumulator
+    float *d_mlp_out_f32 = d_f32 + 2 * H;  // [H] combined MoE branch
 
     int32_t *d_ids = scratch.d_ids;
     int32_t *d_top_ids = scratch.d_top_ids;
@@ -331,7 +353,7 @@ gpu::InferenceResult RunFlintInference(
     bool eos_terminated = false;
 
     auto fail = [&](cudaError_t err, const std::string &msg) {
-        out.error_msg = msg;
+        out.error_msg = absl::StrCat(msg, " @pos=", session.kv_rows);
         if (err != cudaSuccess)
             out.error_msg += absl::StrCat(" (", cudaGetErrorString(err), ")");
         if (t_start) cudaEventDestroy(t_start);
@@ -361,32 +383,25 @@ gpu::InferenceResult RunFlintInference(
         cudaMemcpyAsync(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice,
                         stream);
 
-        cudaError_t e = RunFlintEmbed(stream, pw.d_embed, d_ids, d_act, 1, H);
+        cudaError_t e = RunFlintEmbedF32(stream, pw.d_embed, d_ids, d_resid, 1, H);
         if (e != cudaSuccess) return fail(e, "embed");
 
         for (int l = 0; l < L; ++l) {
             const FlintLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
             const bool skips_rope = IsNoRopeLayer(top, l);
             const int window = IsSlidingLayer(top, l) ? top.sliding_window : 0;
-
             // ── attention block ──
-            e = RunFlintNorm(stream, d_act, lw.attn.d_input_norm, d_normed, 1, H,
-                          eps);
+            e = RunFlintNormF32In(stream, d_resid, lw.attn.d_input_norm,
+                                  d_normed, 1, H, eps);
             if (e != cudaSuccess) return fail(e, LayerTag("norm", l));
-            e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_normed, lw.attn.q.d_packed,
-                                           lw.attn.q.d_scales,
-                                           lw.attn.q.global_scale, d_q, 1, H,
-                                           NH * HD, false);
+            e = GemmWithResidual(stream, d_normed, lw.attn.q, lw.attn.q_res, d_q,
+                                 H, NH * HD);
             if (e != cudaSuccess) return fail(e, LayerTag("q", l));
-            e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_normed, lw.attn.k.d_packed,
-                                           lw.attn.k.d_scales,
-                                           lw.attn.k.global_scale, d_kp, 1, H,
-                                           NKV * HD, false);
+            e = GemmWithResidual(stream, d_normed, lw.attn.k, lw.attn.k_res, d_kp,
+                                 H, NKV * HD);
             if (e != cudaSuccess) return fail(e, LayerTag("k", l));
-            e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_normed, lw.attn.v.d_packed,
-                                           lw.attn.v.d_scales,
-                                           lw.attn.v.global_scale, d_vp, 1, H,
-                                           NKV * HD, false);
+            e = GemmWithResidual(stream, d_normed, lw.attn.v, lw.attn.v_res, d_vp,
+                                 H, NKV * HD);
             if (e != cudaSuccess) return fail(e, LayerTag("v", l));
             e = RunFlintHeadNorm(stream, d_q, lw.attn.d_q_norm, d_q, 1, NH, HD, eps);
             if (e != cudaSuccess) return fail(e, LayerTag("qnorm", l));
@@ -418,25 +433,31 @@ gpu::InferenceResult RunFlintInference(
                                    k_base, v_base, d_attn);
             if (e != cudaSuccess) return fail(e, LayerTag("attn", l));
 
-            e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_attn, lw.attn.o.d_packed,
-                                           lw.attn.o.d_scales,
-                                           lw.attn.o.global_scale, d_attn_out, 1,
-                                           NH * HD, H, false);
+            e = GemmWithResidual(stream, d_attn, lw.attn.o, lw.attn.o_res,
+                                 d_attn_out, NH * HD, H);
             if (e != cudaSuccess) return fail(e, LayerTag("o", l));
-            lsxcommon::kernels::AddInPlaceKernel<__half>
-                <<<Blocks(H), kThreads, 0, stream>>>(d_attn_out, d_act, H);
-            if ((e = cudaGetLastError()) != cudaSuccess)
-                return fail(e, LayerTag("res1", l));
+            e = RunFlintAddHalfToF32(stream, d_resid, d_attn_out, H);
+            if (e != cudaSuccess) return fail(e, LayerTag("res1", l));
 
             // ── MLP block ──
-            e = RunFlintNorm(stream, d_act, lw.attn.d_post_norm, d_postin, 1, H,
-                          eps);
+            e = RunFlintNormF32In(stream, d_resid, lw.attn.d_post_norm,
+                                  d_postin, 1, H, eps);
             if (e != cudaSuccess) return fail(e, LayerTag("postnorm", l));
 
+            // The expert/dense/shared GEMVs consume the SAME row scaled by
+            // 1/16 (power of two, exact) so the FFN intermediates cannot leave
+            // the FP16 range; the router keeps the true row.
+            e = RunFlintScaleHalf(stream, d_postin, d_postin_s, H,
+                                  1.0f / kFfnInScale);
+            if (e != cudaSuccess) return fail(e, LayerTag("scale", l));
             if (!lw.is_moe) {
-                e = DenseMlp(stream, d_postin, lw.mlp_gate, lw.mlp_up,
-                             lw.mlp_down, H, DI, d_yg, d_yu, d_h, d_mlp_out);
+                e = DenseMlp(stream, d_postin_s, lw.mlp_gate, lw.mlp_up,
+                             lw.mlp_down, lw.mlp_gate_res, lw.mlp_up_res,
+                             lw.mlp_down_res, H, DI, d_yg, d_yu, d_h,
+                             d_mlp_out);
                 if (e != cudaSuccess) return fail(e, LayerTag("mlp", l));
+                e = RunFlintAddHalfToF32(stream, d_resid, d_mlp_out, H);
+                if (e != cudaSuccess) return fail(e, LayerTag("res2", l));
             } else {
                 // Router: one D2H readback of the top-k slots per layer.
                 e = RunFlintRouter(stream, lw.d_router, d_postin, 1, E, K, H,
@@ -453,8 +474,10 @@ gpu::InferenceResult RunFlintInference(
                 }
 
                 // Gated shared expert.
-                e = DenseMlp(stream, d_postin, lw.shared_gate, lw.shared_up,
-                             lw.shared_down, H, SI, d_yg, d_yu, d_h, d_shared);
+                e = DenseMlp(stream, d_postin_s, lw.shared_gate, lw.shared_up,
+                             lw.shared_down, lw.shared_gate_res,
+                             lw.shared_up_res, lw.shared_down_res, H, SI, d_yg,
+                             d_yu, d_h, d_shared);
                 if (e != cudaSuccess) return fail(e, LayerTag("shared", l));
 
                 for (int k = 0; k < K && !ids_stream; ++k) {
@@ -478,27 +501,24 @@ gpu::InferenceResult RunFlintInference(
                 // weighted FP32 accumulate.
                 e = ids_stream
                         ? lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
-                              stream, d_postin, d_top_ids, lw.d_row_table, 0, E,
-                              K, 0, d_exp_gate, H, I)
+                              stream, d_postin_s, d_top_ids, lw.d_row_table, 0,
+                              E, K, 0, d_exp_gate, H, I)
                         : lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                              stream, d_postin, pk_gate, sc_gate, gs_gate, K, 0,
-                              d_exp_gate, H, I, false);
+                              stream, d_postin_s, pk_gate, sc_gate, gs_gate, K,
+                              0, d_exp_gate, H, I, false);
                 if (e != cudaSuccess) return fail(e, LayerTag("w1", l));
                 e = ids_stream
                         ? lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
-                              stream, d_postin, d_top_ids, lw.d_row_table, 2 * E,
-                              E, K, 0, d_exp_up, H, I)
+                              stream, d_postin_s, d_top_ids, lw.d_row_table,
+                              2 * E, E, K, 0, d_exp_up, H, I)
                         : lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                              stream, d_postin, pk_up, sc_up, gs_up, K, 0,
+                              stream, d_postin_s, pk_up, sc_up, gs_up, K, 0,
                               d_exp_up, H, I, false);
                 if (e != cudaSuccess) return fail(e, LayerTag("w3", l));
                 const int64_t kn = static_cast<int64_t>(K) * I;
-                lsxcommon::kernels::SwigluKernel<
-                    __half, lsxcommon::kernels::ExpFlavor::Glibc, false>
-                    <<<Blocks(kn), kThreads, 0, stream>>>(d_exp_gate, d_exp_up,
-                                                          d_exp_gate, kn, 0.0f);
-                if ((e = cudaGetLastError()) != cudaSuccess)
-                    return fail(e, LayerTag("swiglu", l));
+                e = RunFlintSwiGLU(stream, d_exp_gate, d_exp_up, d_exp_gate,
+                                   kn);
+                if (e != cudaSuccess) return fail(e, LayerTag("swiglu", l));
                 e = ids_stream
                         ? lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
                               stream, d_exp_gate, d_top_ids, lw.d_row_table, E,
@@ -507,21 +527,20 @@ gpu::InferenceResult RunFlintInference(
                               stream, d_exp_gate, pk_down, sc_down, gs_down, K,
                               I, d_exp_out, I, H, false);
                 if (e != cudaSuccess) return fail(e, LayerTag("w2", l));
-                e = RunFlintExpertAccumulate(stream, d_moe_acc, d_exp_out, d_slots,
-                                          K, H);
+                                e = RunFlintExpertAccumulate(stream, d_moe_acc, d_exp_out,
+                                             d_slots, K, H, kFfnOutScale);
                 if (e != cudaSuccess) return fail(e, LayerTag("acc", l));
-                e = RunFlintMoECombine(stream, d_moe_acc, d_shared, d_mlp_out, 1,
-                                    H);
+                e = RunFlintMoECombine(stream, d_moe_acc, d_shared,
+                                       d_mlp_out_f32, 1, H);
                 if (e != cudaSuccess) return fail(e, LayerTag("combine", l));
+                e = RunFlintAddF32(stream, d_resid, d_mlp_out_f32, H);
+                if (e != cudaSuccess) return fail(e, LayerTag("res2", l));
             }
-            lsxcommon::kernels::AddInPlaceKernel<__half>
-                <<<Blocks(H), kThreads, 0, stream>>>(d_mlp_out, d_act, H);
-            if ((e = cudaGetLastError()) != cudaSuccess)
-                return fail(e, LayerTag("res2", l));
         }
 
         // ── final norm + lm_head (FP16 weights, FP32 accumulate) ──
-        e = RunFlintNorm(stream, d_act, pw.d_final_norm, d_postin, 1, H, eps);
+        e = RunFlintNormF32In(stream, d_resid, pw.d_final_norm, d_postin,
+                              1, H, eps);
         if (e != cudaSuccess) return fail(e, "final norm");
         e = gemv::RunLxGemmVec(stream, pw.d_head, d_postin, 1, V, H,
                                gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
@@ -558,41 +577,46 @@ gpu::InferenceResult RunFlintInference(
             cudaEventRecord(t_ttft, stream);
         }
         tokens.push_back(tok);
-        // Diagnostic (LSX_FLINT_DEBUG=1): prompt ids + top-5 logits of the first
-        // decoded step, for the host-reference oracle. stderr only.
-        if (generated == 0 && std::getenv("LSX_FLINT_DEBUG")) {
+        // Diagnostic (LSX_FLINT_DEBUG=1): prompt ids once, then the top-5
+        // logits of the first 32 decoded steps (host-reference comparison).
+        if (std::getenv("LSX_FLINT_DEBUG")) {
             std::vector<float> hl(static_cast<size_t>(V));
             cudaMemcpyAsync(hl.data(), d_logits,
                             static_cast<size_t>(V) * sizeof(float),
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready, stream);
             cudaEventSynchronize(tok_ready);
-            std::vector<int> top(5, -1);
-            std::vector<float> topv(5, -1e30f);
-            for (int i = 0; i < V; ++i) {
-                const float v = hl[static_cast<size_t>(i)];
-                for (int k = 0; k < 5; ++k)
-                    if (v > topv[static_cast<size_t>(k)]) {
-                        for (int j = 4; j > k; --j) {
-                            topv[static_cast<size_t>(j)] =
-                                topv[static_cast<size_t>(j - 1)];
-                            top[static_cast<size_t>(j)] =
-                                top[static_cast<size_t>(j - 1)];
-                        }
-                        topv[static_cast<size_t>(k)] = v;
-                        top[static_cast<size_t>(k)] = i;
-                        break;
-                    }
+            if (generated == 0) {
+                std::string pids;
+                for (size_t i = 0; i < prefill.size(); ++i)
+                    pids += absl::StrCat(i ? "," : "", prefill[i]);
+                fprintf(stderr, "[flint-debug] prompt_ids=%s\n", pids.c_str());
             }
-            std::string pids;
-            for (size_t i = 0; i < prefill.size(); ++i)
-                pids += absl::StrCat(i ? "," : "", prefill[i]);
-            std::string t5;
-            for (int k = 0; k < 5; ++k)
-                t5 += absl::StrCat(k ? "," : "", top[static_cast<size_t>(k)], ":",
-                                   topv[static_cast<size_t>(k)]);
-            fprintf(stderr, "[flint-debug] prompt_ids=%s\n", pids.c_str());
-            fprintf(stderr, "[flint-debug] top5=%s\n", t5.c_str());
+            if (generated < 32) {
+                std::vector<int> top(5, -1);
+                std::vector<float> topv(5, -1e30f);
+                for (int i = 0; i < V; ++i) {
+                    const float v = hl[static_cast<size_t>(i)];
+                    for (int k = 0; k < 5; ++k)
+                        if (v > topv[static_cast<size_t>(k)]) {
+                            for (int j = 4; j > k; --j) {
+                                topv[static_cast<size_t>(j)] =
+                                    topv[static_cast<size_t>(j - 1)];
+                                top[static_cast<size_t>(j)] =
+                                    top[static_cast<size_t>(j - 1)];
+                            }
+                            topv[static_cast<size_t>(k)] = v;
+                            top[static_cast<size_t>(k)] = i;
+                            break;
+                        }
+                }
+                std::string t5;
+                for (int k = 0; k < 5; ++k)
+                    t5 += absl::StrCat(k ? "," : "", top[static_cast<size_t>(k)],
+                                       ":", topv[static_cast<size_t>(k)]);
+                fprintf(stderr, "[flint-debug] step=%d top5=%s\n", generated,
+                        t5.c_str());
+            }
         }
         if (gs) {
             gs->Emit(static_cast<std::uint32_t>(tok),

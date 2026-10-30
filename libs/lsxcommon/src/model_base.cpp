@@ -1,5 +1,7 @@
 #include "lsxcommon/model_base.h"
 
+#include <absl/strings/str_cat.h>
+
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/perf_calibration.h"
@@ -135,11 +137,15 @@ bool ModelBase::ValidateInferRequest(const ModelRequest &req, gpu::InferenceResu
 
 bool ModelBase::EnsureContext()
 {
-    if (!ctx_stream_ &&
-        cudaStreamCreateWithFlags(&ctx_stream_, cudaStreamNonBlocking) !=
-            cudaSuccess) {
-        ctx_stream_ = nullptr;
-        return false;
+    if (!ctx_stream_) {
+        const cudaError_t e =
+            cudaStreamCreateWithFlags(&ctx_stream_, cudaStreamNonBlocking);
+        if (e != cudaSuccess) {
+            ctx_stream_ = nullptr;
+            log::error(absl::StrCat("[model] CUDA stream create failed: ",
+                                    cudaGetErrorString(e)));
+            return false;
+        }
     }
     return true;
 }

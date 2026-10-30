@@ -69,6 +69,10 @@ void FreeFlintPinnedWeights(FlintPinnedWeights &pw)
         l.attn.k.Free();
         l.attn.v.Free();
         l.attn.o.Free();
+        l.attn.q_res.Free();
+        l.attn.k_res.Free();
+        l.attn.v_res.Free();
+        l.attn.o_res.Free();
         if (l.attn.d_arena) cudaFree(l.attn.d_arena);
         l.attn.d_arena = nullptr;
         l.attn.arena_bytes = 0;
@@ -80,12 +84,18 @@ void FreeFlintPinnedWeights(FlintPinnedWeights &pw)
         l.mlp_gate.Free();
         l.mlp_up.Free();
         l.mlp_down.Free();
+        l.mlp_gate_res.Free();
+        l.mlp_up_res.Free();
+        l.mlp_down_res.Free();
         if (l.d_router) cudaFree(l.d_router);
         l.d_router = nullptr;
         l.router_bytes = 0;
         l.shared_gate.Free();
         l.shared_up.Free();
         l.shared_down.Free();
+        l.shared_gate_res.Free();
+        l.shared_up_res.Free();
+        l.shared_down_res.Free();
         if (l.expert_slab) cudaFree(l.expert_slab);
         l.expert_slab = nullptr;
         if (l.d_row_table) cudaFree(l.d_row_table);
@@ -413,18 +423,33 @@ bool LoadFlintDenseWeights(const std::string &model_path, FlintPinnedWeights &pw
             return false;
         }
 
-        // Attention projections.
-        e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "self_attn.q_proj.weight"),
-                              lw.attn.q, stream, ring, bytes_acc, &job_error);
+        // Upload a projection plus, when the converter wrote one, its residual
+        // plane (`<name>.res`).
+        auto upload_plane = [&](const char *name,
+                                lsx_nvfp4::LsxNvfp4Weight &base,
+                                lsx_nvfp4::LsxNvfp4Weight &res) -> cudaError_t {
+            cudaError_t ce = UploadNvfp4Weight(FindNvfp4Suffix(*nv, name), base,
+                                               stream, ring, bytes_acc,
+                                               &job_error);
+            if (ce != cudaSuccess) return ce;
+            const std::string res_name = std::string(name) + ".res";
+            const auto *rn = FindNvfp4Suffix(*nv, res_name);
+            if (!rn) return cudaSuccess;   // legacy single-plane tree
+            return UploadNvfp4Weight(rn, res, stream, ring, bytes_acc,
+                                     &job_error);
+        };
         if (e == cudaSuccess)
-            e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "self_attn.k_proj.weight"),
-                                  lw.attn.k, stream, ring, bytes_acc, &job_error);
+            e = upload_plane("self_attn.q_proj.weight", lw.attn.q,
+                             lw.attn.q_res);
         if (e == cudaSuccess)
-            e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "self_attn.v_proj.weight"),
-                                  lw.attn.v, stream, ring, bytes_acc, &job_error);
+            e = upload_plane("self_attn.k_proj.weight", lw.attn.k,
+                             lw.attn.k_res);
         if (e == cudaSuccess)
-            e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "self_attn.o_proj.weight"),
-                                  lw.attn.o, stream, ring, bytes_acc, &job_error);
+            e = upload_plane("self_attn.v_proj.weight", lw.attn.v,
+                             lw.attn.v_res);
+        if (e == cudaSuccess)
+            e = upload_plane("self_attn.o_proj.weight", lw.attn.o,
+                             lw.attn.o_res);
         if (e != cudaSuccess) {
             error = absl::StrCat("layer_", l, " attention: ", job_error);
             pw.Free();
@@ -441,17 +466,14 @@ bool LoadFlintDenseWeights(const std::string &model_path, FlintPinnedWeights &pw
         }
 
         if (has_dense_mlp) {
-            e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mlp.gate_proj.weight"),
-                                  lw.mlp_gate, stream, ring, bytes_acc,
-                                  &job_error);
+            e = upload_plane("mlp.gate_proj.weight", lw.mlp_gate,
+                             lw.mlp_gate_res);
             if (e == cudaSuccess)
-                e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mlp.up_proj.weight"),
-                                      lw.mlp_up, stream, ring, bytes_acc,
-                                      &job_error);
+                e = upload_plane("mlp.up_proj.weight", lw.mlp_up,
+                                 lw.mlp_up_res);
             if (e == cudaSuccess)
-                e = UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mlp.down_proj.weight"),
-                                      lw.mlp_down, stream, ring, bytes_acc,
-                                      &job_error);
+                e = upload_plane("mlp.down_proj.weight", lw.mlp_down,
+                                 lw.mlp_down_res);
             if (e != cudaSuccess ||
                 !CheckNvfp4Shape(lw.mlp_gate, DI, H) ||
                 !CheckNvfp4Shape(lw.mlp_up, DI, H) ||
@@ -507,17 +529,28 @@ bool LoadFlintDenseWeights(const std::string &model_path, FlintPinnedWeights &pw
                 pw.Free();
                 return false;
             }
-            e = UploadNvfp4Weight(
-                FindNvfp4Suffix(*shared, "shared_expert.gate_proj.weight"),
-                lw.shared_gate, stream, ring, bytes_acc, &job_error);
+            auto upload_shared = [&](const char *name,
+                                     lsx_nvfp4::LsxNvfp4Weight &base,
+                                     lsx_nvfp4::LsxNvfp4Weight &res)
+                -> cudaError_t {
+                cudaError_t ce = UploadNvfp4Weight(
+                    FindNvfp4Suffix(*shared, name), base, stream, ring,
+                    bytes_acc, &job_error);
+                if (ce != cudaSuccess) return ce;
+                const std::string res_name = std::string(name) + ".res";
+                const auto *rn = FindNvfp4Suffix(*shared, res_name);
+                if (!rn) return cudaSuccess;
+                return UploadNvfp4Weight(rn, res, stream, ring, bytes_acc,
+                                         &job_error);
+            };
+            e = upload_shared("shared_expert.gate_proj.weight", lw.shared_gate,
+                              lw.shared_gate_res);
             if (e == cudaSuccess)
-                e = UploadNvfp4Weight(
-                    FindNvfp4Suffix(*shared, "shared_expert.up_proj.weight"),
-                    lw.shared_up, stream, ring, bytes_acc, &job_error);
+                e = upload_shared("shared_expert.up_proj.weight", lw.shared_up,
+                                  lw.shared_up_res);
             if (e == cudaSuccess)
-                e = UploadNvfp4Weight(
-                    FindNvfp4Suffix(*shared, "shared_expert.down_proj.weight"),
-                    lw.shared_down, stream, ring, bytes_acc, &job_error);
+                e = upload_shared("shared_expert.down_proj.weight",
+                                  lw.shared_down, lw.shared_down_res);
             if (e != cudaSuccess ||
                 !CheckNvfp4Shape(lw.shared_gate, SI, H) ||
                 !CheckNvfp4Shape(lw.shared_up, SI, H) ||

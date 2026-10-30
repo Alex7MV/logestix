@@ -18,6 +18,9 @@ namespace lsxcommon::flint {
 // the learned sink are FP16 (plain weight form, not Gemma's 1+w).
 struct FlintAttnWeights {
     lsx_nvfp4::LsxNvfp4Weight q, k, v, o;  // [NH*HD,H] / [NKV*HD,H] / [H,NH*HD]
+    // Second NVFP4 plane (w - dequant(base)), decoded with acc=true. Null on a
+    // legacy single-plane tree; the decode skips the accumulate pass then.
+    lsx_nvfp4::LsxNvfp4Weight q_res, k_res, v_res, o_res;
     __half *d_input_norm = nullptr;
     __half *d_post_norm = nullptr;
     __half *d_q_norm = nullptr;         // [HD]
@@ -42,13 +45,16 @@ struct FlintExpertRecord {
 struct FlintLayerWeights {
     FlintAttnWeights attn;
     bool is_moe = false;
-    // Dense SwiGLU MLP (mlp_only_layers).
+    // Dense SwiGLU MLP (mlp_only_layers), with optional residual planes.
     lsx_nvfp4::LsxNvfp4Weight mlp_gate, mlp_up, mlp_down;
+    lsx_nvfp4::LsxNvfp4Weight mlp_gate_res, mlp_up_res, mlp_down_res;
     // MoE block.
     float *d_router = nullptr;       // [E,H] F32 (high precision, never 4-bit)
     std::int64_t router_bytes = 0;
-    // Ungated shared expert (plain SwiGLU, added to the routed sum).
+    // Ungated shared expert (plain SwiGLU, added to the routed sum), with
+    // optional residual planes.
     lsx_nvfp4::LsxNvfp4Weight shared_gate, shared_up, shared_down;
+    lsx_nvfp4::LsxNvfp4Weight shared_gate_res, shared_up_res, shared_down_res;
     // ALL routed experts resident in one device slab per MoE layer (~21 GiB
     // total at NVFP4, which fits a 32 GiB card): no expert cache, no host
     // store, routing resolves offsets.

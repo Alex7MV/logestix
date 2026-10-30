@@ -83,6 +83,12 @@ TEST_CASE("flint loader uploads the pinned graph", "[flint][loader]")
         CHECK(lw.attn.q.cols == cfg.hidden);
         CHECK(lw.attn.k.rows == cfg.kv_heads * cfg.head_dim);
         CHECK(lw.attn.o.rows == cfg.hidden);
+        // Second NVFP4 plane (w - dequant(base)) on the dense side: uploaded
+        // with the base shape, and never on the routed experts.
+        CHECK(lw.attn.q_res.d_packed != nullptr);
+        CHECK(lw.attn.o_res.d_packed != nullptr);
+        CHECK(lw.attn.q_res.rows == cfg.heads * cfg.head_dim);
+        CHECK(lw.attn.q_res.cols == cfg.hidden);
         const bool moe = l >= cfg.first_moe_layer;
         CHECK(lw.is_moe == moe);
         if (moe) {
@@ -90,6 +96,7 @@ TEST_CASE("flint loader uploads the pinned graph", "[flint][loader]")
             CHECK(lw.shared_gate.d_packed != nullptr);
             CHECK(lw.shared_up.d_packed != nullptr);
             CHECK(lw.shared_down.d_packed != nullptr);
+            CHECK(lw.shared_down_res.d_packed != nullptr);
             CHECK(lw.shared_gate.rows == cfg.shared_inter);
             REQUIRE(lw.experts.size() == static_cast<size_t>(cfg.experts));
             CHECK(lw.expert_slab != nullptr);

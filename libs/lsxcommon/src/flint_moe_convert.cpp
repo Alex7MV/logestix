@@ -467,6 +467,25 @@ bool flint_tensor_is_nvfp4(FlintTensorKind kind)
     }
 }
 
+bool flint_tensor_has_residual(FlintTensorKind kind)
+{
+    switch (kind) {
+    case FlintTensorKind::AttnQ:
+    case FlintTensorKind::AttnK:
+    case FlintTensorKind::AttnV:
+    case FlintTensorKind::AttnO:
+    case FlintTensorKind::DenseMlpGate:
+    case FlintTensorKind::DenseMlpUp:
+    case FlintTensorKind::DenseMlpDown:
+    case FlintTensorKind::SharedGateProj:
+    case FlintTensorKind::SharedUpProj:
+    case FlintTensorKind::SharedDownProj:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool flint_tensor_is_routed_expert(FlintTensorKind kind)
 {
     return kind == FlintTensorKind::ExpertGate ||
@@ -574,13 +593,33 @@ arrow::Status ConvertFlintModel(const std::string &input_dir,
     int64_t total_pinned = 0;
 
     auto add_nvfp4 = [&](const TensorInfo &t, std::vector<uint8_t> &data,
-                         std::vector<DenseNvfp4Record> &dst) -> arrow::Status {
+                         std::vector<DenseNvfp4Record> &dst,
+                         bool residual) -> arrow::Status {
         DenseNvfp4Record r;
         r.name = t.name;
         r.shape = t.shape;
         r.dtype = t.dtype;
         if (!QuantizeSlice(data.data(), t.numel(), t.dtype, r))
             return arrow::Status::IOError("GPU quantization failed for ", t.name);
+        if (residual) {
+            // Second plane: the residual w - dequant(base), decoded with
+            // acc=true. Lifts the effective precision to ~8 bits for 2x the
+            // bytes (no new codec, schema or kernel).
+            DenseNvfp4Record res;
+            res.name = t.name + ".res";
+            res.shape = t.shape;
+            res.dtype = t.dtype;
+            if (!gpu::quantize_residual_tensor_gpu(
+                    data.data(), t.numel(), t.dtype, t.shape, r.packed,
+                    r.scales, r.global_scale, res.packed, res.scales,
+                    res.global_scale))
+                return arrow::Status::IOError(
+                    "GPU residual quantization failed for ", t.name);
+            dst.push_back(std::move(r));
+            dst.push_back(std::move(res));
+            total_pinned += 2;
+            return arrow::Status::OK();
+        }
         dst.push_back(std::move(r));
         ++total_pinned;
         return arrow::Status::OK();
@@ -637,7 +676,7 @@ arrow::Status ConvertFlintModel(const std::string &input_dir,
             case FlintTensorKind::SharedUpProj:
             case FlintTensorKind::SharedDownProj:
                 ARROW_RETURN_NOT_OK(
-                    add_nvfp4(t, data, shared_nvfp4_by_layer[p.layer]));
+                    add_nvfp4(t, data, shared_nvfp4_by_layer[p.layer], true));
                 break;
             case FlintTensorKind::AttnQ:
             case FlintTensorKind::AttnK:
@@ -646,7 +685,9 @@ arrow::Status ConvertFlintModel(const std::string &input_dir,
             case FlintTensorKind::DenseMlpGate:
             case FlintTensorKind::DenseMlpUp:
             case FlintTensorKind::DenseMlpDown:
-                ARROW_RETURN_NOT_OK(add_nvfp4(t, data, nvfp4_by_layer[p.layer]));
+                ARROW_RETURN_NOT_OK(add_nvfp4(
+                    t, data, nvfp4_by_layer[p.layer],
+                    flint_tensor_has_residual(p.kind)));
                 break;
             case FlintTensorKind::ExpertGate:
             case FlintTensorKind::ExpertDown:
@@ -809,7 +850,9 @@ arrow::Status ConvertFlintModel(const std::string &input_dir,
          +[](const std::string &) -> VramTensorClass {
              return VramTensorClass::Resident;
          },
-         nullptr},
+         +[](const std::string &n) {
+             return flint_tensor_has_residual(classify_flint_tensor(n).kind);
+         }},
         vg);
 
     // (7) Structural manifest (deterministic byte content).
@@ -876,6 +919,7 @@ arrow::Status ConvertFlintModel(const std::string &input_dir,
           << ",\n    \"optimal_bytes\": " << vram.optimal_bytes
           << ",\n    \"max_bytes\": " << vram.max_bytes
           << ",\n    \"context_tokens\": " << vram.context_tokens << "\n  }"
+          << ",\n  \"residual\": \"attn+mlp+shared\""
           << ",\n  \"skipped_visual_tensors\": " << top.skipped_ballast_tensors
           << ",\n  \"tokenizer\": \"" << (tokenizer_ok ? "binary" : "fixture")
           << "\""

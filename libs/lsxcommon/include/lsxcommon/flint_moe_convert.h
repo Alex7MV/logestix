@@ -56,6 +56,12 @@ bool flint_tensor_is_nvfp4(FlintTensorKind kind);
 // True when `kind` is a routed-expert payload.
 bool flint_tensor_is_routed_expert(FlintTensorKind kind);
 
+// True when the converter writes a second NVFP4 plane carrying the residual
+// (w - dequant(base), decoded with acc=true). Measured placement: the attention
+// projections, the dense-MLP prefix and the shared expert. The routed experts
+// stay single-plane so the decode read volume is untouched.
+bool flint_tensor_has_residual(FlintTensorKind kind);
+
 struct FlintTopology {
     int num_layers = 0;
     int hidden_size = 0;

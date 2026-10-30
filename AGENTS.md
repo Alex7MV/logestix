@@ -413,6 +413,37 @@ procedure — `perf-tuning-a-model`.
   canonical protocol runs on the neutral coalesced attention kernel; past that
   the two-pass masked kernel engages (perf debt, correctness first).
   Session facts, gates and perf rows: `docs/OPEN_TASKS.md` §R4.
+  Recursive Flint (39.8B / ~2.5B active, independent family `flint`): a
+  Qwen3-MoE-contour decoder (GQA + per-head QK RMSNorm + SwiGLU) with five
+  deltas in no other family — learned per-head attention sinks
+  (`self_attn.softmax_offset`, an extra softmax COLUMN with no value
+  contribution), hybrid attention from `config.layer_types` (35 sliding layers,
+  window 513) with **no positional encoding on the 14 full-attention layers**
+  (`no_rope_layer_indices` == the full set), a dense SwiGLU prefix
+  (`mlp_only_layers` 0,1), a sigmoid top-6 router with renormalized weights and
+  one **ungated** shared expert; 49L / 2048H / 32Q·4KV·128HD, 256 experts at
+  I=512, shared I=1024, vocab 150144, 4 stop ids. Files:
+  `flint_moe_constants.h` (frozen passport + layer tables), `flint_moe_convert.*`
+  (`lsxforge --flint`, `logestix-flint-nvfp4`; the dense side carries a second
+  NVFP4 plane — `"residual": "attn+mlp+shared"` — while the routed experts stay
+  4-bit), `flint_moe_load.*` (pinned graph + all 12 032 routed experts resident
+  in per-layer slabs), `flint_moe_kernels.{h,cu}`,
+  `flint_moe_inference_attn.{h,cu}` (sink column + window + per-layer RoPE
+  skip), `flint_moe_inference_pipeline.*`, `flint_moe_model.*`,
+  `flint_moe_tool_format.*` (inline `<|system|>`/`<|user|>`/`<|assistant|>`
+  framing + `<tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value>` codec),
+  `flint_moe_device_math.h` (host reference). Two numeric facts are
+  load-bearing: the checkpoint has **massive activations** (residual ~1.4e4,
+  one layer amplifies ~300x; gate 5.3e4, SwiGLU ~1.5e8 in the source's BF16), so
+  the residual stream is **FP32** and the FFN intermediates are kept in range by
+  power-of-two scaling (`kFfnInScale` 64 / `kFfnOutScale` 8192) — under FP16 the
+  model produced NaN at layer 47; and the tokenizer needs `tokenizer_kind` 4
+  (3-split: `\p{N}{1,3}` + CJK isolated, then the o200k case-run pattern with
+  `[\p{P}\p{S}]+[\r\n]*`). Source oracle: `tools/flint_oracle.py` (CPU BF16).
+  SelfCheck Paris ×3 bit-exact; tokenizer parity 27/27; tool codec byte-exact
+  against the template; FSI/CODE/DET goldens are declared debt and the
+  routed-expert 4-bit error is the measured parity gap — `docs/OPEN_TASKS.md`
+  §R6.
   Hy-Memory-30B-A3B (~30B / ~3B active, independent family `hy`): a
   long-term-memory writer built on `HYV3ForCausalLM` (model_type `hy_v3`) —
   plain RMSNorm (weight form, NOT Gemma's 1+w), full 128-dim RoPE

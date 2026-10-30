@@ -51,6 +51,7 @@ inline std::vector<lsxcommon::ToolCall> RunToolRoundTrip(
     auto r = model.Infer(req);
     spdlog::info("[tool-roundtrip] output='{}' gen_tokens={}", r.output_text,
                  r.gen_tokens.size());
+    if (!r.ok) spdlog::error("[tool-roundtrip] infer failed: {}", r.error_msg);
     REQUIRE(r.ok);
     if (gen_tokens) *gen_tokens = r.gen_tokens;
 
