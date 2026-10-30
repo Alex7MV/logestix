@@ -287,23 +287,26 @@ TEST_CASE("flint norm, expert accumulate and shared combine", "[flint][kernels]"
     for (int k = 0; k < K; ++k)
         slots[static_cast<size_t>(k)] = {k, 0.25f * static_cast<float>(k + 1)};
     float *dacc = nullptr;
-    __half *dy = ToDevice(y), *dsh = ToDevice(sh), *dcmb = nullptr;
+    __half *dy = ToDevice(y), *dsh = ToDevice(sh);
+    float *dcmb = nullptr;
     REQUIRE(cudaMalloc(&dacc, sizeof(float) * hidden) == cudaSuccess);
-    REQUIRE(cudaMalloc(&dcmb, sizeof(__half) * hidden) == cudaSuccess);
+    // The combined branch is FP32: the MoE output reaches 1.6e5 on the
+    // massive-activation layers, which FP16 cannot hold.
+    REQUIRE(cudaMalloc(&dcmb, sizeof(float) * hidden) == cudaSuccess);
     FlintRoutedSlot *dslots = ToDevice(slots);
     REQUIRE(RunFlintExpertAccumulate(nullptr, dacc, dy, dslots, K, hidden) ==
             cudaSuccess);
     REQUIRE(RunFlintMoECombine(nullptr, dacc, dsh, dcmb, 1, hidden) ==
             cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
-    std::vector<__half> cmb(hidden);
+    std::vector<float> cmb(hidden);
     FromDevice(dcmb, cmb);
     for (int i = 0; i < hidden; ++i) {
         float want = F(sh[static_cast<size_t>(i)]);
         for (int k = 0; k < K; ++k)
             want += slots[static_cast<size_t>(k)].coeff *
                     F(y[static_cast<size_t>(k * hidden + i)]);
-        CHECK(F(cmb[static_cast<size_t>(i)]) ==
+        CHECK(cmb[static_cast<size_t>(i)] ==
               Catch::Approx(want).margin(2e-3));
     }
 
