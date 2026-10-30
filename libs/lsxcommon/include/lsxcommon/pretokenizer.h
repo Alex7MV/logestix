@@ -84,4 +84,34 @@ private:
     uint32_t error_ = 0;
 };
 
+// Flint pre-tokenizer (tokenizer_kind 4). A three-split Sequence of the o200k
+// case-run pattern over a differently-shaped tail:
+//
+//   1. \p{N}{1,3} Isolated                    (as in WordStream)
+//   2. [Han|Hiragana|Katakana]+ Isolated      (as in WordStream)
+//   3. the Llama3WordStream alternatives 1, 2, 5, 6, 7 with Flint's
+//      punctuation alternative ' '? [\p{P}\p{S}]+ [\r\n]*
+//      (o200k uses ' '? [^\s\p{L}\p{N}]+ [\r\n/]* - different for marks,
+//      control characters and a slash before a newline)
+//
+// Numbers are consumed by split 1, so the pattern's own \p{N}{1,3} alternative
+// can never fire here. Same streaming contract as the other two streams.
+class FlintWordStream {
+public:
+    FlintWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool next_number(WordSpan &word);   // split 1 (<= 3 \p{N} codepoints)
+    bool next_cjk(WordSpan &word);      // split 2 (one CJK-run word)
+    bool next_main(WordSpan &word);     // split 3 (one case-run match)
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
 } // namespace lsxcommon

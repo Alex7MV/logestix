@@ -393,6 +393,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         meta.tokenizer_kind = 3;
         meta.base_vocab_size = model_vocab_count;
     }
+    if (policy.pretokenizer == 2) {
+        // Flint: the same table-driven BPE with a 3-split pre-tokenizer
+        // (\p{N}{1,3} Isolated, CJK Isolated, then the o200k case-run pattern
+        // with Flint's [\p{P}\p{S}]+ tail). Written as tokenizer_kind = 4.
+        meta.tokenizer_kind = 4;
+        meta.base_vocab_size = model_vocab_count;
+    }
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

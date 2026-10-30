@@ -384,7 +384,8 @@ inline bool cp_letter_or_mark(uint32_t cp)
     return k == CharClass::Letter || k == CharClass::Mark;
 }
 template <typename Pred>
-size_t consume_run(const char *begin, const char *end, size_t pos, Pred pred)
+size_t consume_run(const char *begin, const char *end, size_t pos, Pred pred,
+                   bool stop_at_cjk = false)
 {
     const size_t n = static_cast<size_t>(end - begin);
     size_t p = pos;
@@ -392,6 +393,7 @@ size_t consume_run(const char *begin, const char *end, size_t pos, Pred pred)
         size_t cl = 0;
         const uint32_t cp = decode_utf8(begin + p, n - p, &cl);
         if (cp == kInvalidUtf8 || !pred(cp)) break;
+        if (stop_at_cjk && is_cjk_run(cp)) break;
         p += cl;
     }
     return p;
@@ -404,26 +406,27 @@ Llama3WordStream::Llama3WordStream(const char *text, size_t length)
 {
 }
 
-size_t Llama3WordStream::consume_case_run(size_t pos) const
+size_t CaseRunEnd(const char *begin, const char *end, size_t pos,
+                  bool stop_at_cjk)
 {
     // alt1/alt2 collapse to one greedy scan: the case-run alternatives match
     // exactly the maximal [Upper*][Lower+] region (an all-upper run is alt2's
     // [Upper+][Lower*] with an empty tail, which ends at the same byte).
-    const size_t up = consume_run(begin_, end_, pos, cp_upper_class);
-    return consume_run(begin_, end_, up, cp_lower_class);
+    const size_t up = consume_run(begin, end, pos, cp_upper_class, stop_at_cjk);
+    return consume_run(begin, end, up, cp_lower_class, stop_at_cjk);
 }
 
-size_t Llama3WordStream::consume_contraction(size_t pos) const
+size_t ContractionEnd(const char *begin, const char *end, size_t pos)
 {
-    const size_t n = static_cast<size_t>(end_ - begin_);
-    if (pos >= n || begin_[pos] != '\'') return pos;
+    const size_t n = static_cast<size_t>(end - begin);
+    if (pos >= n || begin[pos] != '\'') return pos;
     static const char *const kSuffix[] = {"re", "ve", "ll", "s", "t", "m", "d"};
     for (const char *sfx : kSuffix) {
         const size_t l = std::strlen(sfx);
         if (pos + 1 + l > n) continue;
         bool ok = true;
         for (size_t i = 0; i < l; ++i) {
-            char c = begin_[pos + 1 + i];
+            char c = begin[pos + 1 + i];
             if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
             if (c != sfx[i]) { ok = false; break; }
         }
@@ -431,7 +434,7 @@ size_t Llama3WordStream::consume_contraction(size_t pos) const
         const size_t after = pos + 1 + l;
         if (after < n) {
             size_t cl = 0;
-            const uint32_t c3 = decode_utf8(begin_ + after, n - after, &cl);
+            const uint32_t c3 = decode_utf8(begin + after, n - after, &cl);
             if (c3 != kInvalidUtf8 && cp_letter_or_mark(c3)) continue;
         }
         return after;
@@ -439,12 +442,16 @@ size_t Llama3WordStream::consume_contraction(size_t pos) const
     return pos;
 }
 
-bool Llama3WordStream::match(size_t pos, size_t &len) const
+// Matches the case-run pattern at `pos`. `flint_punct` switches alternative 4
+// between o200k's `' '? [^\s\p{L}\p{N}]+ [\r\n/]*` (Llama-3 / Qwen) and
+// Flint's `' '? [\p{P}\p{S}]+ [\r\n]*`.
+bool MatchCaseRunPattern(const char *begin, const char *end, size_t pos,
+                         bool flint_punct, size_t &len)
 {
-    const size_t n = static_cast<size_t>(end_ - begin_);
+    const size_t n = static_cast<size_t>(end - begin);
     if (pos >= n) return false;
     size_t cl = 0;
-    const uint32_t cp = decode_utf8(begin_ + pos, n - pos, &cl);
+    const uint32_t cp = decode_utf8(begin + pos, n - pos, &cl);
     if (cp == kInvalidUtf8) return false;
 
     const bool is_prefix =
@@ -458,12 +465,12 @@ bool Llama3WordStream::match(size_t pos, size_t &len) const
         const size_t p = pos + (with_prefix ? cl : 0);
         if (p >= n) continue;
         size_t q = 0;
-        const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+        const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
         if (c2 == kInvalidUtf8) continue;
         if (!cp_upper_class(c2) && !cp_lower_class(c2)) continue;
-        const size_t run_end = consume_case_run(p);
+        const size_t run_end = CaseRunEnd(begin, end, p, flint_punct);
         if (run_end == p) continue;
-        len = consume_contraction(run_end) - pos;
+        len = ContractionEnd(begin, end, run_end) - pos;
         return true;
     }
 
@@ -473,7 +480,7 @@ bool Llama3WordStream::match(size_t pos, size_t &len) const
         int count = 0;
         while (p < n && count < 3) {
             size_t q = 0;
-            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
             if (c2 == kInvalidUtf8 || unicode::classify(c2) != CharClass::Number)
                 break;
             p += q;
@@ -482,25 +489,28 @@ bool Llama3WordStream::match(size_t pos, size_t &len) const
         if (p > pos) { len = p - pos; return true; }
     }
 
-    // alt4: ' '? [^\s\p{L}\p{N}]+ [\r\n/]*
+    // alt4: ' '? (o200k: [^\s\p{L}\p{N}]+ [\r\n/]* / Flint: [\p{P}\p{S}]+ [\r\n]*)
     {
         const size_t p0 = (cp == 0x20) ? pos + cl : pos;
         const size_t run_begin = p0;
         size_t p = p0;
         while (p < n) {
             size_t q = 0;
-            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
             if (c2 == kInvalidUtf8) break;
             const CharClass k = unicode::classify(c2);
-            if (k == CharClass::Whitespace || k == CharClass::Letter ||
-                k == CharClass::Number)
+            if (flint_punct) {
+                if (k != CharClass::Punct && k != CharClass::Symbol) break;
+            } else if (k == CharClass::Whitespace ||
+                       k == CharClass::Letter || k == CharClass::Number) {
                 break;
+            }
             p += q;
         }
         if (p > run_begin) {
             while (p < n) {
-                const char b = begin_[p];
-                if (b != '\r' && b != '\n' && b != '/') break;
+                const char b = begin[p];
+                if (b != '\r' && b != '\n' && (flint_punct || b != '/')) break;
                 ++p;
             }
             len = p - pos;
@@ -517,7 +527,7 @@ bool Llama3WordStream::match(size_t pos, size_t &len) const
         size_t prev_cp = pos;
         while (p < n) {
             size_t q = 0;
-            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
             if (c2 == kInvalidUtf8 || unicode::classify(c2) != CharClass::Whitespace)
                 break;
             if (c2 == 0x0D || c2 == 0x0A) last_crlf = p + q;
@@ -543,6 +553,11 @@ bool Llama3WordStream::match(size_t pos, size_t &len) const
     return false;
 }
 
+bool Llama3WordStream::match(size_t pos, size_t &len) const
+{
+    return MatchCaseRunPattern(begin_, end_, pos, /*flint_punct=*/false, len);
+}
+
 bool Llama3WordStream::next(WordSpan &word)
 {
     if (error_) return false;
@@ -556,6 +571,75 @@ bool Llama3WordStream::next(WordSpan &word)
     word = WordSpan{begin_ + pos_, len};
     pos_ += len;
     return true;
+}
+
+// ── Flint 3-split (tokenizer_kind 4) ───────────────────────────────────────
+
+FlintWordStream::FlintWordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool FlintWordStream::next_number(WordSpan &word)
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    size_t p = pos_;
+    int count = 0;
+    while (p < n && count < 3) {
+        size_t q = 0;
+        const uint32_t cp = decode_utf8(begin_ + p, n - p, &q);
+        if (cp == kInvalidUtf8 || unicode::classify(cp) != unicode::CharClass::Number)
+            break;
+        p += q;
+        ++count;
+    }
+    word = WordSpan{begin_ + pos_, p - pos_};
+    pos_ = p;
+    return true;
+}
+
+bool FlintWordStream::next_cjk(WordSpan &word)
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    size_t p = pos_;
+    while (p < n) {
+        size_t q = 0;
+        const uint32_t cp = decode_utf8(begin_ + p, n - p, &q);
+        if (cp == kInvalidUtf8 || !is_cjk_run(cp)) break;
+        p += q;
+    }
+    word = WordSpan{begin_ + pos_, p - pos_};
+    pos_ = p;
+    return true;
+}
+
+bool FlintWordStream::next_main(WordSpan &word)
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    size_t len = 0;
+    if (!MatchCaseRunPattern(begin_, end_, pos_, /*flint_punct=*/true, len) ||
+        len == 0) {
+        size_t cl = 0;
+        const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+        len = (cp == kInvalidUtf8) ? 1 : cl;   // unmatched text: its own piece
+    }
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
+bool FlintWordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    if (unicode::classify(cp) == unicode::CharClass::Number)
+        return next_number(word);
+    if (is_cjk_run(cp)) return next_cjk(word);
+    return next_main(word);
 }
 
 } // namespace lsxcommon

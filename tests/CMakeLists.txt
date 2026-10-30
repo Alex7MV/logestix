@@ -6912,6 +6912,25 @@ add_test(NAME test_hy_moe_tool_framing COMMAND test_hy_moe_tool_framing)
 set_tests_properties(test_hy_moe_tool_framing PROPERTIES LABELS fast)
 
 # ── Hy-Memory-30B-A3B tokenizer parity (real vault tree; SKIPs when absent) ──
+# ── Flint pre-tokenizer split (host-only; no vault needed) ──
+add_executable(test_flint_moe_pretokenizer test_flint_moe_pretokenizer.cpp)
+target_link_libraries(test_flint_moe_pretokenizer PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_pretokenizer COMMAND test_flint_moe_pretokenizer)
+set_tests_properties(test_flint_moe_pretokenizer PROPERTIES LABELS fast)
+
+# ── Flint tokenizer parity (source-captured golden; SKIPs without the vault) ──
+add_executable(test_flint_moe_tokenizer_parity
+    test_flint_moe_tokenizer_parity.cpp)
+target_compile_definitions(test_flint_moe_tokenizer_parity PRIVATE
+    "LSX_FLINT_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/flint\"")
+target_link_libraries(test_flint_moe_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_flint_moe_tokenizer_parity
+         COMMAND test_flint_moe_tokenizer_parity)
+set_tests_properties(test_flint_moe_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_flint_moe_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+
 add_executable(test_hy_moe_tokenizer_parity test_hy_moe_tokenizer_parity.cpp)
 target_compile_definitions(test_hy_moe_tokenizer_parity PRIVATE
     "LSX_HY_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy\"")

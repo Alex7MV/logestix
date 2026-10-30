@@ -1,0 +1,27 @@
+{"text": "The capital of France is", "ids": [630, 6963, 297, 9865, 332]}
+{"text": "getUserName", "ids": [558, 2461, 1058]}
+{"text": "HTTPRequest", "ids": [136510]}
+{"text": "FooBarBaz", "ids": [40733, 7079, 133467]}
+{"text": "v2beta FooBarBaz _call __init__", "ids": [85, 17, 7646, 37693, 7079, 133467, 1197, 8333, 2409, 2180, 638]}
+{"text": "1234567 12345 1 12 123", "ids": [4051, 9470, 22, 220, 4051, 1362, 220, 16, 220, 603, 220, 4051]}
+{"text": "2026-10-30T18:42:00Z", "ids": [1240, 21, 12, 508, 12, 835, 51, 729, 25, 2021, 25, 337, 57]}
+{"text": "中文ab 日本語テキスト", "ids": [50749, 370, 220, 86487, 108232]}
+{"text": "abcあいうえお", "ids": [14070, 6878, 85140, 12510, 11966]}
+{"text": "hello  world   two", "ids": [14347, 220, 1571, 256, 1045]}
+{"text": "  leading", "ids": [220, 5042]}
+{"text": "trailing  ", "ids": [134865, 256]}
+{"text": "\n\n\n", "ids": [2182]}
+{"text": "a\n\nb", "ids": [64, 284, 65]}
+{"text": "don't won't it's I'LL we'VE", "ids": [40634, 6474, 1700, 1567, 784, 500, 6, 3429]}
+{"text": "</tool_call><arg_key>city</arg_key><arg_value>Paris</arg_value>", "ids": [150011, 150012, 11682, 150013, 150014, 51574, 150015]}
+{"text": "<|user|>hi<|assistant|><think>ok</think>", "ids": [150003, 5921, 150004, 150006, 544, 150007]}
+{"text": "<tool_call>get_weather<arg_key>city</arg_key><arg_value>\"Paris\"</arg_value></tool_call>", "ids": [150010, 558, 87055, 150012, 11682, 150013, 150014, 1, 51574, 1, 150015, 150011]}
+{"text": "def f(x):\n    return x**2\n", "ids": [1182, 280, 1940, 1080, 279, 597, 782, 367, 17, 198]}
+{"text": "{\"a\": 1, \"b\": [1,2,3], \"c\": null}", "ids": [5482, 64, 1129, 220, 16, 11, 368, 65, 1129, 566, 16, 11, 17, 11, 18, 996, 368, 66, 1129, 1409, 92]}
+{"text": "Emoji 😀🚀 done", "ids": [87694, 145593, 119133, 2639]}
+{"text": "— “quotes” — naïve café", "ids": [1974, 1244, 66863, 975, 2911, 82867, 59029]}
+{"text": "a+=b>>2 50% #tag @user", "ids": [64, 10341, 65, 3010, 17, 220, 933, 4, 726, 7688, 827, 1486]}
+{"text": "/((^&%$#@!", "ids": [149929, 61, 5, 50559, 61476, 0]}
+{"text": "/\n/", "ids": [7061, 14]}
+{"text": "a...b", "ids": [64, 1410, 65]}
+{"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "ids": [148366, 148366, 148366, 148366, 148366, 148366, 148366, 148366, 148366, 36800, 16696]}

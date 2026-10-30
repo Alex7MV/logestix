@@ -95,6 +95,9 @@ struct TokenizerSpecialPolicy {
     //   0 = legacy GPT-2 / cl100k 3-split (WordStream; default)
     //   1 = Llama-3 / o200k 7-alternative pattern (Llama3WordStream: case runs,
     //       no CJK split). Written as tokenizer_kind = 3.
+    //   2 = Flint 3-split: \p{N}{1,3} + CJK Isolated over the o200k case-run
+    //       pattern with [\p{P}\p{S}]+[\r\n]* (FlintWordStream).
+    //       Written as tokenizer_kind = 4.
     int32_t pretokenizer = 0;
     // 1 = tolerate a vocabulary with no single-byte token for some bytes: the
     // missing ones map to -1 and the encoder skips them. The reference tokenizer

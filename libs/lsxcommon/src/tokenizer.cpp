@@ -163,7 +163,8 @@ arrow::Status load_tokenizer_metadata(
 
         // tiktoken: the vocabulary IS the merge table (adjacent pair bytes ->
         // id), and ids >= base_vocab_size are added tokens matched literally.
-        if (db.tokenizer_kind == 2 || db.tokenizer_kind == 3) {
+        if (db.tokenizer_kind == 2 || db.tokenizer_kind == 3 ||
+            db.tokenizer_kind == 4) {
             if (db.base_vocab_size <= 0 || db.base_vocab_size > db.vocab_size)
                 return arrow::Status::Invalid(
                     "tokenizer: bad base_vocab_size for tiktoken BPE");
@@ -802,9 +803,10 @@ int32_t tiktoken_bpe_encode(const ArrowTokenizerDb &db, const char *text,
 // merge-ordered), but split with Llama3WordStream. Added tokens (ids at or
 // above `base_vocab_size`) are matched literally before BPE, exactly like the
 // tiktoken path, so control markers resolve to their single id.
-int32_t bpe_encode_llama3(const ArrowTokenizerDb &db, const char *text,
-                          size_t text_len, int32_t *out_tokens,
-                          size_t *max_out_len)
+template <typename Stream>
+int32_t bpe_encode_case_run(const ArrowTokenizerDb &db, const char *text,
+                            size_t text_len, int32_t *out_tokens,
+                            size_t *max_out_len)
 {
     bool first_byte[256] = {};
     for (int32_t id : db.literal_ids) {
@@ -854,7 +856,7 @@ int32_t bpe_encode_llama3(const ArrowTokenizerDb &db, const char *text,
                 break;
             }
         }
-        Llama3WordStream ws(text + pos, gap_end - pos);
+        Stream ws(text + pos, gap_end - pos);
         WordSpan w;
         while (ws.next(w)) {
             const int32_t n = bpe_encode_word(db, w.begin, w.length, stack);
@@ -875,6 +877,22 @@ int32_t bpe_encode_llama3(const ArrowTokenizerDb &db, const char *text,
     return static_cast<int32_t>(out.size());
 }
 
+int32_t bpe_encode_llama3(const ArrowTokenizerDb &db, const char *text,
+                          size_t text_len, int32_t *out_tokens,
+                          size_t *max_out_len)
+{
+    return bpe_encode_case_run<Llama3WordStream>(db, text, text_len,
+                                                 out_tokens, max_out_len);
+}
+
+int32_t bpe_encode_flint(const ArrowTokenizerDb &db, const char *text,
+                         size_t text_len, int32_t *out_tokens,
+                         size_t *max_out_len)
+{
+    return bpe_encode_case_run<FlintWordStream>(db, text, text_len,
+                                                out_tokens, max_out_len);
+}
+
 } // namespace
 
 int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
@@ -890,6 +908,8 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
                                    max_out_len);
     if (db.tokenizer_kind == 3)
         return bpe_encode_llama3(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 4)
+        return bpe_encode_flint(db, text, text_len, out_tokens, max_out_len);
     if (db.tokenizer_kind == 0 && !db.literal_ids.empty())
         return gpt2_bpe_encode_with_literals(db, text, text_len, out_tokens,
                                              max_out_len);
