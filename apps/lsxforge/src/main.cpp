@@ -16,6 +16,7 @@
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/hy_moe_convert.h"
+#include "lsxcommon/flint_moe_convert.h"
 #include "lsxcommon/minimax_moe_convert.h"
 
 #include <simdjson.h>
@@ -89,6 +90,8 @@ ABSL_FLAG(bool, xing, false,
           "Xing4.0-29B-A4B (mHC + MLA + MTP sparse MoE) conversion pipeline");
 ABSL_FLAG(bool, minimax, false,
           "convert MiniMax-M3 (vision tower stripped) to logestix-minimax-nvfp4");
+ABSL_FLAG(bool, flint, false,
+          "Recursive Flint (hybrid sink/SWA/no-RoPE MoE) conversion pipeline");
 ABSL_FLAG(bool, hy, false,
           "convert Hy-Memory-30B-A3B (GQA + sigmoid-router MoE) to logestix-hy-nvfp4");
 ABSL_FLAG(bool, mistral, false,
@@ -160,6 +163,7 @@ int main(int argc, char* argv[]) {
     bool mistral = absl::GetFlag(FLAGS_mistral);
     bool minimax = absl::GetFlag(FLAGS_minimax);
     bool hy = absl::GetFlag(FLAGS_hy);
+    bool flint = absl::GetFlag(FLAGS_flint);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is
@@ -197,6 +201,7 @@ int main(int argc, char* argv[]) {
     flags.mistral = mistral;
     flags.minimax = minimax;
     flags.hy = hy;
+    flags.flint = flint;
     const lsxforge::Resolution resolution = lsxforge::ResolvePipeline(flags);
     if (resolution.pipeline == lsxforge::Pipeline::kError) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
@@ -389,6 +394,40 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+        if (flags.flint) {
+            // Flint: no auto-BOS (its template spells the marker out) and the
+            // 3-split digit/CJK + o200k case-run pre-tokenizer (kind 4).
+            tok_policy.bos_id = -1;
+            tok_policy.pretokenizer = 2;
+            const auto cfgp = fs::path(input_path) / "config.json";
+            if (fs::exists(cfgp)) {
+                std::ifstream cf(cfgp);
+                std::stringstream cs;
+                cs << cf.rdbuf();
+                simdjson::ondemand::parser p3;
+                simdjson::padded_string pad3(cs.str());
+                simdjson::ondemand::document doc3;
+                if (p3.iterate(pad3).get(doc3) == simdjson::SUCCESS) {
+                    simdjson::ondemand::object root;
+                    if (doc3.get_object().get(root) == simdjson::SUCCESS) {
+                        int64_t v = -1;
+                        if (root["eos_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            tok_policy.eos_id = static_cast<int32_t>(v);
+                        else if (auto arr = root["eos_token_id"].get_array();
+                                 arr.error() == simdjson::SUCCESS)
+                            for (auto e : arr.value())
+                                if (e.get_int64().get(v) == simdjson::SUCCESS) {
+                                    tok_policy.eos_id = static_cast<int32_t>(v);
+                                    break;
+                                }
+                        if (root["pad_token_id"].get_int64().get(v) ==
+                            simdjson::SUCCESS)
+                            tok_policy.pad_id = static_cast<int32_t>(v);
+                    }
+                }
+            }
+        }
         if (flags.minimax) {
             tok_policy.bos_id = -1;
             tok_policy.pretokenizer = 1;
@@ -526,6 +565,20 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("MiniMax conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kFlint: {
+        lsxcommon::log::info("Recursive Flint pipeline (logestix-flint-nvfp4 layout)");
+        auto st = lsxcommon::flint::ConvertFlintModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("flint conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("flint conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

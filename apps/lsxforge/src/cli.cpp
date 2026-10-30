@@ -18,7 +18,7 @@ Resolution ResolvePipeline(const Flags &flags)
         flags.gemma4dense ||
         flags.nemotron || flags.nemotron_nvfp4 || flags.gigachat ||
         flags.glmflash || flags.granite || flags.phi || flags.mimo ||
-        flags.alice || flags.minimax || flags.hy;
+        flags.alice || flags.minimax || flags.hy || flags.flint;
 
     // --tokenizer supplies the source directory itself (main() assigns
     // input_path = FLAGS_tokenizer before doing any work).
@@ -62,6 +62,7 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--mistral", {Pipeline::kMistral, flags.mistral}},
             {"--minimax", {Pipeline::kMinimax, flags.minimax}},
             {"--hy", {Pipeline::kHy, flags.hy}},
+            {"--flint", {Pipeline::kFlint, flags.flint}},
             {"--gemma4", {Pipeline::kGemma4, flags.gemma4}},
             {"--gemma4dense", {Pipeline::kGemma4Dense, flags.gemma4dense}},
             {"--nemotron_nvfp4",

@@ -98,6 +98,7 @@ add_library(lsxcommon STATIC
     src/minimax_moe_tool_format.cpp
     src/hy_moe_convert.cpp
     src/hy_moe_load.cpp
+    src/flint_moe_convert.cpp
     src/hy_moe_model.cpp
     src/hy_moe_tool_format.cpp
     src/mistral_moe_load.cpp
