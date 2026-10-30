@@ -123,6 +123,9 @@ const PerfModel kMistral = {
     "The capital of France is", 2048};
 const PerfModel kMinimax = {
     "minimax-m3", "MiniMax-M3", "The capital of France is", 2048};
+const PerfModel kHy = {
+    "hy-memory-30b-a3b", "Hy-Memory-30B-A3B", "The capital of France is",
+    2048};
 
 std::string BaselinePath()
 {
@@ -589,4 +592,9 @@ TEST_CASE("perf baseline: mistral-small-4-119b", "[perf]")
 TEST_CASE("perf baseline: minimax-m3", "[perf]")
 {
     RunPerfModel(kMinimax);
+}
+
+TEST_CASE("perf baseline: hy-memory-30b-a3b", "[perf]")
+{
+    RunPerfModel(kHy);
 }

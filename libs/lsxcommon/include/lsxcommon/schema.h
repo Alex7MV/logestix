@@ -267,6 +267,12 @@ struct TokenizerVocabMeta {
     int32_t byte_fallback = 0;
     int32_t add_dummy_prefix = 1;
     int32_t escape_whitespaces = 1;
+    // 1 = the vocabulary deliberately has no single-byte token for some bytes
+    // (Hy-Memory-30B-A3B drops CR: the reference tokenizer encodes "\r" to no
+    // token at all, and the 13 UTF-8-illegal lead bytes are absent). Such a
+    // byte maps to -1 in byte_to_token_id and the encoder SKIPS it, mirroring
+    // the reference. 0 = every byte must have a token (all existing models).
+    int32_t drop_unmapped_bytes = 0;
 };
 
 class TokenizerVocabSchema {

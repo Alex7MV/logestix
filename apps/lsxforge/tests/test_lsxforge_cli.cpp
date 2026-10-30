@@ -74,6 +74,9 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         {"phi", Pipeline::kPhi},
         {"mimo", Pipeline::kMimo},
         {"alice", Pipeline::kAlice},
+        {"mistral", Pipeline::kMistral},
+        {"minimax", Pipeline::kMinimax},
+        {"hy", Pipeline::kHy},
     };
     for (const auto &[name, expected] : kCases) {
         CAPTURE(name);
@@ -95,6 +98,9 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         else if (std::string(name) == "phi") f.phi = true;
         else if (std::string(name) == "mimo") f.mimo = true;
         else if (std::string(name) == "alice") f.alice = true;
+        else if (std::string(name) == "mistral") f.mistral = true;
+        else if (std::string(name) == "minimax") f.minimax = true;
+        else if (std::string(name) == "hy") f.hy = true;
         const auto r = ResolvePipeline(f);
         CHECK(r.error.empty());
         CHECK(r.pipeline == expected);

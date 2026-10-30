@@ -20,6 +20,12 @@ PROMPTS = os.path.join(HERE, "fsi_prompts.json")
 # `device`: "cuda" / "cpu" / None (auto: cuda when the full checkpoint fits in
 # free VRAM, else cpu). `dtype`: torch dtype name or None (checkpoint default).
 OVERRIDES = {
+    # Hy-Memory-30B-A3B publishes the per-expert layout (mlp.experts.E.gate_proj
+    # etc.) plus a vestigial `moe_intermediate_size`; tools/hy_v3_oracle.py
+    # assembles the fused tensors the installed HYV3ForCausalLM expects. The
+    # 60 GB bf16 tree runs on CPU (the card cannot hold it); no accelerate
+    # device map, so no meta-device offload path.
+    "hy-memory-30b-a3b": {"loader": "hy_v3"},
     # ornith-1.5-35b-a3b is served with a leading system turn (its model
     # class injects one when the caller omits it); without it the safety
     # alignment refuses the FSI-02 financial prompt. Thinking stays off so
@@ -467,6 +473,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
                                      out, max_new_tokens, transformers, torch)
     if template_only:
         lm = None
+    elif opts.get("loader") == "hy_v3":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import hy_v3_oracle
+        lm = hy_v3_oracle.load(model, opts.get("device_map"))
+        print("device:", next(lm.parameters()).device)
     elif opts.get("loader") == "qwen3_5":
         lm = _load_qwen3_5(model)
         if opts.get("device_map"):

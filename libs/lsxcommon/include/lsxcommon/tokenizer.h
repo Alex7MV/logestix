@@ -51,6 +51,9 @@ struct ArrowTokenizerDb {
     int32_t byte_fallback = 0;
     int32_t add_dummy_prefix = 1;
     int32_t escape_whitespaces = 1;
+    // 1 = bytes whose byte_to_token_id is -1 are skipped by the encoder
+    // (reference-faithful for checkpoints that never emit them; Hy-Memory).
+    int32_t drop_unmapped_bytes = 0;
     std::string error_msg;
 
     bool valid() const;

@@ -18,6 +18,12 @@ PROMPTS = os.path.join(HERE, "code_prompts.json")
 
 # Per-model capture overrides keyed by model type. Absent -> generic defaults.
 OVERRIDES = {
+    # Hy-Memory-30B-A3B publishes the per-expert layout (mlp.experts.E.gate_proj
+    # etc.) plus a vestigial `moe_intermediate_size`; tools/hy_v3_oracle.py
+    # assembles the fused tensors the installed HYV3ForCausalLM expects. The
+    # 60 GB bf16 tree runs on CPU (the card cannot hold it); no accelerate
+    # device map, so no meta-device offload path.
+    "hy-memory-30b-a3b": {"loader": "hy_v3"},
     # Mistral-Small-4-119B ships the Mistral "consolidated" layout: params.json
     # (no config.json, no model_type) plus consolidated-*.safetensors with
     # NVFP4-packed MoE experts. transformers cannot construct it, so the golden
@@ -545,7 +551,12 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
             with open(jinja, encoding="utf-8") as fh:
                 tok.chat_template = fh.read()
 
-    if opts.get("loader") == "qwen3_5":
+    if opts.get("loader") == "hy_v3":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import hy_v3_oracle
+        lm = hy_v3_oracle.load(model, opts.get("device_map"))
+        print("device:", next(lm.parameters()).device)
+    elif opts.get("loader") == "qwen3_5":
         lm = _load_qwen3_5(model)
         if opts.get("device_map"):
             lm = _dispatch_auto(lm, ["Qwen3_5DecoderLayer"])

@@ -413,6 +413,42 @@ procedure — `perf-tuning-a-model`.
   canonical protocol runs on the neutral coalesced attention kernel; past that
   the two-pass masked kernel engages (perf debt, correctness first).
   Session facts, gates and perf rows: `docs/OPEN_TASKS.md` §R4.
+  Hy-Memory-30B-A3B (~30B / ~3B active, independent family `hy`): a
+  long-term-memory writer built on `HYV3ForCausalLM` (model_type `hy_v3`) —
+  plain RMSNorm (weight form, NOT Gemma's 1+w), full 128-dim RoPE
+  (theta 11158840), per-head QK RMSNorm, a dense SwiGLU MLP on layer 0 and a
+  sigmoid router with an `expert_bias` on layers 1..47 (top-8 by
+  `sigmoid+bias`, coefficients renormalized from the plain sigmoid scores and
+  multiplied by `router_scaling_factor` 2.826) plus ONE gated shared expert
+  combined in FP32; 48L / 2048H / 32Q·4KV·128HD, 128 experts at intermediate
+  768 (config `expert_hidden_dim`; the vestigial `moe_intermediate_size` 1536
+  is NOT the tensor width — the converter pins 768 and rejects a 1536-wide
+  tree), vocab 120832, no vision/MTP ballast; `hy_moe_constants.h` (frozen
+  passport), `hy_moe_convert.{h,cpp}` (BF16 → NVFP4, embed/lm_head stay FP16),
+  `hy_moe_load.{h,cpp}` (pinned graph + **all 6016 routed experts resident** in
+  per-layer device slabs — 16.8 GiB — so there is no expert cache/LRU and no
+  host expert store), `hy_moe_kernels.{h,cu}` (full RoPE / sigmoid+bias router
+  / routed accumulate / FP32 combine; RMSNorm, GEMV, batched expert GEMV and
+  the causal GQA attention kernels are the shared neutral ones),
+  `hy_moe_inference_pipeline.{h,cu}` (pos-major KV session, token-by-token
+  prefill/decode, streaming + abort), `hy_moe_model.{h,cpp}`,
+  `hy_moe_tool_format.{h,cpp}` (native `<|User|>`/`<|Assistant|>` framing with
+  the `no_think` prefix and the `<tool_calls>`/`<tool_sep>`/`<arg_key>` XML
+  codec, byte-identical to the checkpoint's `chat_template.jinja`); format tag
+  `logestix-hy-nvfp4`; converted with `lsxforge --hy`.
+  Two tokenizer facts are load-bearing and now carried by the bridge: the
+  vocabulary has **no CR byte token** (the reference DROPS `\r`) and no
+  single-byte token for the 13 UTF-8-illegal lead bytes, so
+  `TokenizerSpecialPolicy::drop_unmapped_bytes` maps them to -1 and the encoder
+  skips them; and its 818 added tokens include **plain (special:false)**
+  control markers (`<think>`, `<tool_call>`, …) which the reference matches
+  literally — the kind-0 encoder now does too when the vocab metadata carries
+  `base_vocab_size` (only this family writes it). Source-oracle loading needs
+  `tools/hy_v3_oracle.py`: the published checkpoint is per-expert
+  (`mlp.experts.E.{gate,up,down}_proj`) with `mlp.shared_mlp.*` and
+  `mlp.router.gate`, which the stock HF class does not accept, so the oracle
+  assembles the fused tensors. Session facts, gates and perf rows:
+  `docs/OPEN_TASKS.md` §R5.
   Kimi-K2.7-Code (independent family `kimi`: DeepSeek-V3 MLA + 384-expert top-8
   MoE with one shared expert, 61 layers / 7168H / 64 heads / q_lora 1536 /
   kv_lora 512 / qk_nope 128 / qk_rope 64, YaRN factor 64;

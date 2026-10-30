@@ -251,9 +251,18 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
                 std::snprintf(lox, sizeof(lox), "<0x%02x>", b);
                 it = key_to_id.find(lox);
             }
-            if (it == key_to_id.end())
+            if (it == key_to_id.end()) {
+                if (policy.drop_unmapped_bytes) {
+                    // Reference-faithful: the checkpoint's vocabulary has no
+                    // token for this byte and its encoder never emits it (CR is
+                    // dropped, the rest are UTF-8-illegal lead bytes). The
+                    // encoder SKIPS -1 entries.
+                    byte_to_token_id[static_cast<size_t>(b)] = -1;
+                    continue;
+                }
                 return arrow::Status::Invalid(
                     "tokenizer: byte token missing in vocab: '", key, "'");
+            }
         }
         byte_to_token_id[static_cast<size_t>(b)] = it->second;
     }
@@ -369,6 +378,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     meta.pad_id = pad_id;
     meta.vocab_size = vocab_size;
     meta.byte_to_token_id = byte_to_token_id;
+    meta.drop_unmapped_bytes = policy.drop_unmapped_bytes;
+    // kind 0 with a known base-vocabulary size: ids at or above it are ADDED
+    // tokens, which the reference encoder matches literally before BPE. Without
+    // the size the classic path stays pure-BPE (every existing family).
+    if (policy.pretokenizer == 0 && model_vocab_count > 0 &&
+        model_vocab_count < vocab_size)
+        meta.base_vocab_size = model_vocab_count;
     if (policy.pretokenizer == 1) {
         // Llama-3/o200k split over a separate BPE table. `base_vocab_size` is
         // the MODEL vocab's rank space: ids at or above it are added tokens the

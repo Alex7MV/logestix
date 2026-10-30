@@ -373,6 +373,16 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_minimax_moe_code_selfcheck"}},
           {"perf", {"test_perf_baseline_minimax_m3"}},
           {"det", {"test_minimax_moe_det_selfcheck"}}}},
+        {"hy-memory-30b-a3b",
+         {{"convert", {"test_hy_moe_convert"}},
+          {"load", {"test_hy_moe_loader"}},
+          {"model", {"test_hy_moe_model", "test_hy_moe_tool_framing"}},
+          {"kernels", {"test_hy_moe_kernels"}},
+          {"selfcheck", {"test_hy_moe_selfcheck"}},
+          {"fsi", {"test_hy_moe_fsi_selfcheck"}},
+          {"code", {"test_hy_moe_code_selfcheck"}},
+          {"det", {"test_hy_moe_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_hy_memory_30b_a3b"}}}},
 
     };
     return v;
@@ -796,6 +806,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // Mistral Small 4 ships a native [INST]/[TOOL_CALLS] template.
         {"mistral-small-4-119b", {"test_mistral_moe_tool_framing"}},
         {"minimax-m3", {"test_minimax_moe_tool_framing"}},
+        {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

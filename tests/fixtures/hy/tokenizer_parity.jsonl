@@ -1,0 +1,18 @@
+# captured from /mnt/fast_storage/huggingface/Hy-Memory-30B-A3B (transformers 5.15.1)
+{"text": "The capital of France is", "ids": [628, 6801, 279, 9391, 316]}
+{"text": "Compute the present value PV of a bond with cash flow CF, rate r, and n periods. Return the value.", "ids": [49666, 252, 2682, 1364, 33934, 279, 244, 10774, 413, 12606, 3720, 28395, 11, 3243, 494, 11, 289, 302, 10598, 13, 6708, 252, 1364, 13]}
+{"text": "getUserName and setHTTPHeader and parseXMLResponse", "ids": [874, 65528, 289, 1178, 23682, 14822, 289, 11956, 20590, 7716]}
+{"text": "def compute_pv(cash_flow, rate):\n    return cash_flow * rate", "ids": [1699, 12323, 2411, 85, 3951, 2123, 70939, 11, 3243, 2156, 300, 901, 12606, 70939, 712, 3243]}
+{"text": "    indented code line with   multiple   spaces", "ids": [300, 1353, 18471, 2816, 2178, 413, 242, 4032, 242, 10004]}
+{"text": "Numbers 1234567 and 3.14159 and -42 and 0x1F and 1e-9", "ids": [44486, 206, 7827, 18695, 22, 289, 206, 18, 13, 11729, 5148, 289, 397, 4065, 289, 206, 15, 87, 16, 37, 289, 206, 16, 68, 12, 24]}
+{"text": "JSON {\"key\": [1, 2, 3], \"nested\": {\"a\": true, \"b\": null}}", "ids": [16900, 13065, 3825, 3002, 998, 16, 11, 206, 17, 11, 206, 18, 2480, 478, 77, 11301, 3002, 13065, 64, 3002, 2653, 11, 478, 65, 3002, 2837, 2025]}
+{"text": "Привет, мир! 你好世界 こんにちは", "ids": [18281, 7563, 46176, 11, 6498, 41202, 0, 206, 17687, 3042, 206, 10510, 19081, 4507, 27057, 5827]}
+{"text": "<｜hy_User｜>Hello<｜hy_Assistant｜><think></think>", "ids": [120006, 16883, 120007, 120029, 120030]}
+{"text": "<tool_calls>\n<tool_call>get_weather<tool_sep>\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>\n</tool_calls>", "ids": [120035, 185, 120033, 874, 62, 39899, 120043, 185, 120066, 29995, 120067, 185, 120068, 66410, 120069, 185, 120034, 185, 120036]}
+{"text": "don't won't they're I'll we've you'd it's", "ids": [25328, 1638, 4848, 1638, 890, 4013, 360, 5598, 459, 5544, 444, 9000, 423, 665]}
+{"text": "line one  \nline two   \n\nline three", "ids": [2020, 926, 4468, 2020, 1230, 71648, 2020, 2310]}
+{"text": "carriage\rreturn and\r\rraw CR", "ids": [11178, 11209, 3589, 289, 3049, 15808]}
+{"text": "a\rb", "ids": [64, 65]}
+{"text": "ALLCAPS mixedCASE UPPER lower TitleCase snake_case kebab-case", "ids": [12887, 49026, 50, 11530, 63411, 743, 10872, 1705, 4004, 11748, 12095, 29885, 58080, 1550, 91635, 45625]}
+{"text": "Drawdown > Threshold && Rate_A * 100000000 - Slip_B", "ids": [24403, 6918, 1955, 108185, 3765, 23587, 7933, 712, 206, 1373, 1545, 1545, 397, 13795, 701, 4760]}
+{"text": "The quick brown fox jumps over the lazy dog 0123456789.", "ids": [628, 5451, 15019, 31299, 45059, 1197, 252, 36582, 6849, 206, 20105, 21488, 34738, 24, 13]}
