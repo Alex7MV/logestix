@@ -6949,6 +6949,22 @@ set_tests_properties(test_flint_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_flint_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── Flint model stage (synthetic converted tree; lifecycle contract) ──
+add_executable(test_flint_moe_model test_flint_moe_model.cpp)
+target_include_directories(test_flint_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_flint_moe_model PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_flint_moe_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_model COMMAND test_flint_moe_model)
+set_tests_properties(test_flint_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_flint_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_flint_moe_model PROPERTIES TIMEOUT 300)
+set_tests_properties(test_flint_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_flint_moe_model PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Flint numeric kernels (sink softmax / window / router / rope / norm) ──
 add_library(test_flint_cu OBJECT
     test_flint_moe_kernels.cu
@@ -6978,6 +6994,63 @@ add_test(NAME test_flint_moe_kernels COMMAND test_flint_moe_kernels)
 set_tests_properties(test_flint_moe_kernels PROPERTIES LABELS inference)
 set_tests_properties(test_flint_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_flint_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Flint SelfCheck (real weights; SKIPs when the vault is absent) ──
+add_executable(test_flint_moe_selfcheck test_flint_moe_selfcheck.cpp)
+target_link_libraries(test_flint_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_selfcheck COMMAND test_flint_moe_selfcheck)
+set_tests_properties(test_flint_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_flint_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_flint_moe_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_flint_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Flint FSI parity gate ──
+add_executable(test_flint_moe_fsi_selfcheck test_flint_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_flint_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_flint_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_fsi_selfcheck COMMAND test_flint_moe_fsi_selfcheck)
+set_tests_properties(test_flint_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_flint_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_flint_moe_fsi_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_flint_moe_fsi_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Flint CODE parity gate ──
+add_executable(test_flint_moe_code_selfcheck test_flint_moe_code_selfcheck.cpp)
+target_compile_definitions(test_flint_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_flint_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_code_selfcheck COMMAND test_flint_moe_code_selfcheck)
+set_tests_properties(test_flint_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_flint_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_flint_moe_code_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_flint_moe_code_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Flint DET parity gate ──
+add_executable(test_flint_moe_det_selfcheck test_flint_moe_det_selfcheck.cpp)
+target_compile_definitions(test_flint_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_flint_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_det_selfcheck COMMAND test_flint_moe_det_selfcheck)
+set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Flint native tool framing (host-only; template-captured golden) ──
+add_executable(test_flint_moe_tool_framing test_flint_moe_tool_framing.cpp)
+target_compile_definitions(test_flint_moe_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    "LSX_FLINT_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/flint\"")
+target_link_libraries(test_flint_moe_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_flint_moe_tool_framing COMMAND test_flint_moe_tool_framing)
+set_tests_properties(test_flint_moe_tool_framing PROPERTIES LABELS fast)
+set_tests_properties(test_flint_moe_tool_framing PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Flint tokenizer parity (source-captured golden; SKIPs without the vault) ──
 add_executable(test_flint_moe_tokenizer_parity
@@ -7056,6 +7129,16 @@ set_tests_properties(test_perf_baseline_hy_memory_30b_a3b PROPERTIES
     RESOURCE_LOCK "gpu"
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Hy-Memory-30B-A3B")
 set_tests_properties(test_perf_baseline_hy_memory_30b_a3b
+    PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_flint
+         COMMAND test_perf_baseline "perf baseline: flint")
+set_tests_properties(test_perf_baseline_flint PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=flint")
+set_tests_properties(test_perf_baseline_flint
     PROPERTIES LABELS perf)
 
 # ── Hy-Memory-30B-A3B chat framing parity (real tokenizer + template) ──

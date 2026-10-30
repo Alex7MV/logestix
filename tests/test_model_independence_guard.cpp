@@ -106,6 +106,7 @@ const std::vector<PassportRow> kPassports = {
      "lsxcommon::mistral_moe::frozen"},
     {"minimax-m3", "minimax_moe_constants.h", "lsxcommon::minimax::frozen"},
     {"hy-memory-30b-a3b", "hy_moe_constants.h", "lsxcommon::hy::frozen"},
+    {"flint", "flint_moe_constants.h", "lsxcommon::flint::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -320,6 +321,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "mistral_moe_model.cpp",       // mistral-small-4-119b (MLA + MoE)
         "minimax_moe_model.cpp",       // minimax-m3 (GQA + MSA indexer + MoE)
         "hy_moe_model.cpp",            // hy-memory-30b-a3b (GQA + sigmoid router MoE)
+        "flint_moe_model.cpp",         // flint (hybrid sink/SWA/no-RoPE MoE)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
@@ -443,6 +445,8 @@ TEST_CASE("every family model wires the shared lifecycle contract",
          {"minimax_moe_model.cpp", "minimax_moe_inference_pipeline.cu"}},
         {"hy-memory-30b-a3b",
          {"hy_moe_model.cpp", "hy_moe_inference_pipeline.cu"}},
+        {"flint",
+         {"flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"}},
     };
     // marker group -> what it guarantees. EVERY spelling in a group must be
     // absent for the contract to be considered unwired (any-of semantics:

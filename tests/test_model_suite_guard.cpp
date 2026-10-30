@@ -46,7 +46,8 @@ const std::set<std::string> &FamilyStems()
 {
     static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
                                             "kimi", "nemotron", "gigachat",
-                                            "ornith", "granite", "mimo", "phi", "alice"};
+                                            "ornith", "granite", "mimo", "phi",
+                                            "alice", "flint"};
     return v;
 }
 
@@ -383,6 +384,17 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_hy_moe_code_selfcheck"}},
           {"det", {"test_hy_moe_det_selfcheck"}},
           {"perf", {"test_perf_baseline_hy_memory_30b_a3b"}}}},
+        {"flint",
+         {{"convert", {"test_flint_moe_convert"}},
+          {"load", {"test_flint_moe_loader", "test_flint_moe_pretokenizer",
+                    "test_flint_moe_tokenizer_parity"}},
+          {"model", {"test_flint_moe_model", "test_flint_moe_tool_framing"}},
+          {"kernels", {"test_flint_moe_kernels"}},
+          {"selfcheck", {"test_flint_moe_selfcheck"}},
+          {"fsi", {"test_flint_moe_fsi_selfcheck"}},
+          {"code", {"test_flint_moe_code_selfcheck"}},
+          {"det", {"test_flint_moe_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_flint"}}}},
 
     };
     return v;
@@ -807,6 +819,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"mistral-small-4-119b", {"test_mistral_moe_tool_framing"}},
         {"minimax-m3", {"test_minimax_moe_tool_framing"}},
         {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
+        {"flint", {"test_flint_moe_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.
@@ -912,6 +925,11 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
     // list here rather than inferring it means the test output names what is
     // missing instead of merely counting what is present.
     static const std::set<std::string> kGoldenDebt = {
+        // Flint: captured from a CPU reference built on the source BF16 tree
+        // (tools/flint_oracle.py); removed as each stage goes green.
+        "flint:code",
+        "flint:det",
+        "flint:fsi",
         "deepseek-v4-flash:code",
         "deepseek-v4-flash:det",
         "deepseek-v4-flash:fsi",
