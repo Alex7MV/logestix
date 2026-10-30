@@ -62,6 +62,9 @@ struct HyLayerWeights {
     std::vector<const uint8_t *> packed_down, scales_down;
     std::vector<const uint8_t *> packed_up, scales_up;
     std::vector<float> gs_gate, gs_down, gs_up;
+    // Device-resident [3E] LsxExpertPtrRow table ([gate E][down E][up E]) for
+    // the ids-streaming expert GEMV, so decode needs no router D2H.
+    lsx_nvfp4::LsxExpertPtrRow *d_row_table = nullptr;
     bool loaded = false;
 };
 

@@ -94,6 +94,8 @@ void FreeHyPinnedWeights(HyPinnedWeights &pw)
         l.shared_down.Free();
         if (l.expert_slab) cudaFree(l.expert_slab);
         l.expert_slab = nullptr;
+        if (l.d_row_table) cudaFree(l.d_row_table);
+        l.d_row_table = nullptr;
         l.slab_bytes = 0;
         l.experts.clear();
         l.packed_gate.clear();
@@ -620,6 +622,7 @@ bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
         lw.gs_gate.assign(n, 1.0f);
         lw.gs_down.assign(n, 1.0f);
         lw.gs_up.assign(n, 1.0f);
+        std::vector<lsx_nvfp4::LsxExpertPtrRow> table(3 * n);
         for (size_t k = 0; k < n; ++k) {
             const auto &r = lw.experts[k];
             lw.packed_gate[k] = lw.expert_slab + r.w1_off;
@@ -631,6 +634,24 @@ bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
             lw.gs_gate[k] = r.gs1;
             lw.gs_down[k] = r.gs2;
             lw.gs_up[k] = r.gs3;
+            // Same three views in one device table: [gate | down | up].
+            table[k] = {lw.packed_gate[k], lw.scales_gate[k], r.gs1};
+            table[n + k] = {lw.packed_down[k], lw.scales_down[k], r.gs2};
+            table[2 * n + k] = {lw.packed_up[k], lw.scales_up[k], r.gs3};
+        }
+        if (cudaMalloc(reinterpret_cast<void **>(&lw.d_row_table),
+                       sizeof(lsx_nvfp4::LsxExpertPtrRow) * table.size()) !=
+            cudaSuccess) {
+            error = absl::StrCat("layer ", l, ": expert pointer table alloc failed");
+            pw.Free();
+            return false;
+        }
+        if (cudaMemcpy(lw.d_row_table, table.data(),
+                       sizeof(lsx_nvfp4::LsxExpertPtrRow) * table.size(),
+                       cudaMemcpyHostToDevice) != cudaSuccess) {
+            error = absl::StrCat("layer ", l, ": expert pointer table upload failed");
+            pw.Free();
+            return false;
         }
     }
 

@@ -27,12 +27,15 @@ struct alignas(8) HyRoutedSlot {
 // Writes K slots per token, ordered by ascending expert id (deterministic
 // accumulation order for the caller).
 // Launch: <<<seq, 256, shared, stream>>>.
+// `d_ids` (optional, [seq*K]) receives the selected expert ids so the caller
+// can feed the device-table expert GEMV without a D2H round trip.
 cudaError_t RunHyRouter(cudaStream_t stream,
                         const float *router_w,     // [E,H]
                         const float *router_bias,  // [E]
                         const __half *x,           // [seq,H]
                         int seq, int E, int K, int H, float routed_scale,
-                        HyRoutedSlot *d_slots);    // [seq*K]
+                        HyRoutedSlot *d_slots,     // [seq*K]
+                        int32_t *d_ids = nullptr);
 
 // Full rotary over every head dim (HF rotate_half pairing j <-> j + head_dim/2),
 // FP16 in place. `q` may be null (k-only). Position of row t is pos_base + t.

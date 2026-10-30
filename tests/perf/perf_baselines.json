@@ -726,32 +726,32 @@
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "perf",
-      "tokens_per_sec": 86.69,
+      "tokens_per_sec": 90.19,
       "max_gen": 2048,
       "prompt": "The capital of France is",
       "date": "2026-10-30",
       "commit": "-",
       "gen_tokens": 2048,
-      "ttft_ms": 193.84,
-      "avg_power_w": 217.94,
-      "peak_power_w": 239.31,
-      "power_samples": 1178
+      "ttft_ms": 189.25,
+      "avg_power_w": 225.41,
+      "peak_power_w": 247.95,
+      "power_samples": 1132
     },
     {
       "model_type": "hy-memory-30b-a3b",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "r3",
-      "tokens_per_sec": 75.08,
+      "tokens_per_sec": 76.11,
       "max_gen": 2048,
       "prompt": "The capital of France is",
       "date": "2026-10-30",
       "commit": "-",
       "gen_tokens": 2048,
-      "ttft_ms": 227.28,
-      "avg_power_w": 209.99,
-      "peak_power_w": 226.89,
-      "power_samples": 1360
+      "ttft_ms": 220.77,
+      "avg_power_w": 211.53,
+      "peak_power_w": 228.46,
+      "power_samples": 1341
     }
   ]
 }

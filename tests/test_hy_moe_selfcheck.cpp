@@ -87,6 +87,47 @@ TEST_CASE("hy selfcheck answers Paris", "[hy][inference]")
     model->Unload();
 }
 
+TEST_CASE("hy selfcheck is deterministic on the auto (ids-streaming) path",
+          "[hy][inference]")
+{
+    // The parity goldens pin kOff, which resolves the routed ids on the host.
+    // kAuto routes the expert GEMV through the device-table ids kernel, so that
+    // code path needs its own real-shape (I=768 streaming) determinism pin.
+    const std::string root = Root();
+    if (!std::filesystem::exists(root + "/logestix/model.index.json"))
+        SKIP("Hy-Memory converted model not present");
+
+    lsxcommon::EnsureModelRegistry();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = root;
+    cfg.model_type = "hy-memory-30b-a3b";
+    cfg.fast_math_mode = lsxcommon::FastMathMode::kAuto;
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    if (!model->Load()) FAIL("Hy Load failed");
+
+    const auto &tok = model->Tokenizer();
+    std::vector<int32_t> ids;
+    REQUIRE(model->BuildPromptInputIds(tok, "The capital of France is", ids));
+    lsxcommon::ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = 8;
+    const auto a = model->Infer(req);
+    INFO(a.error_msg);
+    REQUIRE(a.ok);
+    REQUIRE_FALSE(a.gen_tokens.empty());
+    model->Unload();
+    REQUIRE(model->Load());
+    const auto b = model->Infer(req);
+    INFO(b.error_msg);
+    REQUIRE(b.ok);
+    CHECK(b.gen_tokens == a.gen_tokens);
+    REQUIRE(b.final_logits.size() == a.final_logits.size());
+    CHECK(std::memcmp(b.final_logits.data(), a.final_logits.data(),
+                      a.final_logits.size() * sizeof(float)) == 0);
+    model->Unload();
+}
+
 TEST_CASE("Hy-Memory end-to-end tool round-trip (real weights)",
           "[hy][model][tool][real-model]")
 {

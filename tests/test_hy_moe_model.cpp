@@ -132,6 +132,43 @@ TEST_CASE("Hy model runs the full lifecycle on a synthetic tree", "[hy][model]")
     model->Unload();
 }
 
+TEST_CASE("Hy model is deterministic on the device-table expert path",
+          "[hy][model]")
+{
+    // kAuto enables the TC/seq1 GEMV routing, which is what makes the
+    // ids-streaming expert GEMV available (no per-layer router D2H). That path
+    // is a different kernel than the by-value fallback, so it needs its own
+    // run-to-run determinism pin.
+    fs::path root = BuildModel();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = root.string();
+    cfg.model_type = "hy-memory-30b-a3b";
+    cfg.fast_math_mode = lsxcommon::FastMathMode::kAuto;
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    if (!model->Load()) FAIL("load failed");
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = PromptIds();
+    req.max_gen_tokens = 4;
+    const auto a = model->Infer(req);
+    INFO(a.error_msg);
+    REQUIRE(a.ok);
+    REQUIRE(a.gen_tokens.size() == 4);
+    model->Unload();
+    REQUIRE(model->Load());
+    const auto b = model->Infer(req);
+    INFO(b.error_msg);
+    REQUIRE(b.ok);
+    CHECK(b.gen_tokens == a.gen_tokens);
+    REQUIRE(b.final_logits.size() == a.final_logits.size());
+    bool bit_equal = true;
+    for (size_t i = 0; i < a.final_logits.size(); ++i)
+        if (a.final_logits[i] != b.final_logits[i]) bit_equal = false;
+    CHECK(bit_equal);
+    model->Unload();
+}
+
 TEST_CASE("Hy SelfCheck runs the framed Paris probe", "[hy][model]")
 {
     fs::path root = BuildModel();

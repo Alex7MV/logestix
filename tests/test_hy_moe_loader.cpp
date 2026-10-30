@@ -94,6 +94,9 @@ TEST_CASE("Hy loader uploads the pinned graph", "[hy][loader]")
             REQUIRE(lw.experts.size() == static_cast<size_t>(cfg.experts));
             CHECK(lw.expert_slab != nullptr);
             CHECK(lw.slab_bytes > 0);
+            // The device-resident pointer table the ids-streaming GEMV reads
+            // ([gate E][down E][up E] rows).
+            CHECK(lw.d_row_table != nullptr);
             // Pointer tables index into the slab and every expert is distinct.
             REQUIRE(lw.packed_gate.size() == static_cast<size_t>(cfg.experts));
             for (int e = 0; e < cfg.experts; ++e) {
@@ -115,6 +118,7 @@ TEST_CASE("Hy loader uploads the pinned graph", "[hy][loader]")
             CHECK(lw.mlp_gate.rows == cfg.dense_inter);
             CHECK(lw.experts.empty());
             CHECK(lw.expert_slab == nullptr);
+            CHECK(lw.d_row_table == nullptr);
         }
     }
 

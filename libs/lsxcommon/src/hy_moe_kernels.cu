@@ -25,7 +25,8 @@ __global__ void hy_router_kernel(const float *__restrict__ w,
                                  const float *__restrict__ bias,
                                  const __half *__restrict__ x, int E, int K,
                                  int H, float routed_scale,
-                                 HyRoutedSlot *__restrict__ out)
+                                 HyRoutedSlot *__restrict__ out,
+                                 int32_t *__restrict__ out_ids)
 {
     extern __shared__ float smem[];
     float *score = smem;          // [E]
@@ -95,6 +96,8 @@ __global__ void hy_router_kernel(const float *__restrict__ w,
                 sum > 0.0f ? score[sel[k]] / (sum + 1e-20f) : 0.0f;
             dst[k].eid = sel[k];
             dst[k].coeff = norm * routed_scale;
+            // Device-resident ids for the batched ids-GEMV (no D2H needed).
+            if (out_ids) out_ids[k] = sel[k];
         }
     }
 }
@@ -160,7 +163,7 @@ __global__ void hy_moe_combine_kernel(const float *__restrict__ acc,
 cudaError_t RunHyRouter(cudaStream_t stream, const float *router_w,
                         const float *router_bias, const __half *x, int seq,
                         int E, int K, int H, float routed_scale,
-                        HyRoutedSlot *d_slots)
+                        HyRoutedSlot *d_slots, int32_t *d_ids)
 {
     if (seq <= 0 || E <= 0 || K <= 0 || K > E || H <= 0)
         return cudaErrorInvalidValue;
@@ -169,7 +172,7 @@ cudaError_t RunHyRouter(cudaStream_t stream, const float *router_w,
         (kThreads + 2 * static_cast<size_t>(E)) * sizeof(float) +
         static_cast<size_t>(H) * sizeof(__half);
     hy_router_kernel<<<seq, kThreads, shmem, stream>>>(
-        router_w, router_bias, x, E, K, H, routed_scale, d_slots);
+        router_w, router_bias, x, E, K, H, routed_scale, d_slots, d_ids);
     return cudaGetLastError();
 }
 

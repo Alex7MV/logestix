@@ -111,12 +111,14 @@ void HyScratch::Free()
     half_elems = 0;
     float_elems = 0;
     if (d_ids) cudaFree(d_ids);
+    if (d_top_ids) cudaFree(d_top_ids);
     if (d_argmax) cudaFree(d_argmax);
     if (d_maxv) cudaFree(d_maxv);
     if (d_slots) cudaFree(d_slots);
     if (h_slots) cudaFreeHost(h_slots);
     if (d_logits) cudaFree(d_logits);
     d_ids = nullptr;
+    d_top_ids = nullptr;
     d_argmax = nullptr;
     d_maxv = nullptr;
     d_slots = nullptr;
@@ -244,6 +246,8 @@ gpu::InferenceResult RunHyInference(
     }
     if (!scratch.d_ids) {
         cudaMalloc(&scratch.d_ids, sizeof(int32_t));
+        cudaMalloc(&scratch.d_top_ids,
+                   sizeof(int32_t) * static_cast<size_t>(K));
         cudaMalloc(&scratch.d_argmax, sizeof(int32_t));
         cudaMalloc(&scratch.d_maxv, sizeof(float));
         cudaMalloc(&scratch.d_slots,
@@ -286,6 +290,12 @@ gpu::InferenceResult RunHyInference(
         reinterpret_cast<uint8_t *>(scratch.arena) + half_bytes);
 
     int32_t *d_ids = scratch.d_ids;
+    int32_t *d_top_ids = scratch.d_top_ids;
+    // The ids-streaming expert GEMV keeps the router's top-k on the device, so
+    // decode needs no per-layer D2H + event synchronize. Under kOff (r3) the
+    // function would synchronize internally three times per layer, so the
+    // host-resolved path stays for that numeric class.
+    const bool ids_stream = lsx_nvfp4::LsxExpertBatchIdsStreaming(H);
     int32_t *d_argmax = scratch.d_argmax;
     float *d_maxv = scratch.d_maxv;
     HyRoutedSlot *d_slots = scratch.d_slots;
@@ -418,20 +428,24 @@ gpu::InferenceResult RunHyInference(
             } else {
                 // Router: one D2H readback of the top-k slots per layer.
                 e = RunHyRouter(stream, lw.d_router, lw.d_router_bias, d_postin,
-                                1, E, K, H, routed_scale, d_slots);
+                                1, E, K, H, routed_scale, d_slots,
+                                ids_stream ? d_top_ids : nullptr);
                 if (e != cudaSuccess) return fail(e, LayerTag("router", l));
-                cudaMemcpyAsync(h_slots, d_slots,
-                                sizeof(HyRoutedSlot) * static_cast<size_t>(K),
-                                cudaMemcpyDeviceToHost, stream);
-                cudaEventRecord(tok_ready, stream);
-                cudaEventSynchronize(tok_ready);
+                if (!ids_stream) {
+                    cudaMemcpyAsync(
+                        h_slots, d_slots,
+                        sizeof(HyRoutedSlot) * static_cast<size_t>(K),
+                        cudaMemcpyDeviceToHost, stream);
+                    cudaEventRecord(tok_ready, stream);
+                    cudaEventSynchronize(tok_ready);
+                }
 
                 // Gated shared expert.
                 e = DenseMlp(stream, d_postin, lw.shared_gate, lw.shared_up,
                              lw.shared_down, H, SI, d_yg, d_yu, d_h, d_shared);
                 if (e != cudaSuccess) return fail(e, LayerTag("shared", l));
 
-                for (int k = 0; k < K; ++k) {
+                for (int k = 0; k < K && !ids_stream; ++k) {
                     const int eid = h_slots[k].eid;
                     if (eid < 0 || eid >= E)
                         return fail(cudaErrorInvalidValue,
@@ -450,13 +464,21 @@ gpu::InferenceResult RunHyInference(
 
                 // gate/up per expert (batched), swiglu, down per expert,
                 // weighted FP32 accumulate.
-                e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                    stream, d_postin, pk_gate, sc_gate, gs_gate, K, 0, d_exp_gate,
-                    H, I, false);
+                e = ids_stream
+                        ? lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+                              stream, d_postin, d_top_ids, lw.d_row_table, 0, E,
+                              K, 0, d_exp_gate, H, I)
+                        : lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                              stream, d_postin, pk_gate, sc_gate, gs_gate, K, 0,
+                              d_exp_gate, H, I, false);
                 if (e != cudaSuccess) return fail(e, LayerTag("w1", l));
-                e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                    stream, d_postin, pk_up, sc_up, gs_up, K, 0, d_exp_up, H, I,
-                    false);
+                e = ids_stream
+                        ? lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+                              stream, d_postin, d_top_ids, lw.d_row_table, 2 * E,
+                              E, K, 0, d_exp_up, H, I)
+                        : lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                              stream, d_postin, pk_up, sc_up, gs_up, K, 0,
+                              d_exp_up, H, I, false);
                 if (e != cudaSuccess) return fail(e, LayerTag("w3", l));
                 const int64_t kn = static_cast<int64_t>(K) * I;
                 lsxcommon::kernels::SwigluKernel<
@@ -465,9 +487,13 @@ gpu::InferenceResult RunHyInference(
                                                           d_exp_gate, kn, 0.0f);
                 if ((e = cudaGetLastError()) != cudaSuccess)
                     return fail(e, LayerTag("swiglu", l));
-                e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                    stream, d_exp_gate, pk_down, sc_down, gs_down, K, I,
-                    d_exp_out, I, H, false);
+                e = ids_stream
+                        ? lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+                              stream, d_exp_gate, d_top_ids, lw.d_row_table, E,
+                              E, K, I, d_exp_out, I, H)
+                        : lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                              stream, d_exp_gate, pk_down, sc_down, gs_down, K,
+                              I, d_exp_out, I, H, false);
                 if (e != cudaSuccess) return fail(e, LayerTag("w2", l));
                 e = RunHyExpertAccumulate(stream, d_moe_acc, d_exp_out, d_slots,
                                           K, H);

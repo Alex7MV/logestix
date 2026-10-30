@@ -448,20 +448,19 @@ across shards; `LSX_HY_SKIP_EXPERTS=1` re-converts the dense side only.
   (all routed experts resident; no expert cache, no host store).
 
 Open work, explicitly:
-- P1. Perf. The decode step is launch- and sync-bound, not bandwidth-bound:
-  ~1.6 GB of active weights per token against a 1531 GB/s probe is a ~950 t/s
-  roofline, and we run at 87 (9%). The two measured-cost hotspots, in order:
-  (a) **47 router D2H + `cudaEventSynchronize` per token** (one per MoE layer)
-  — the neutral `RunLsxNvfp4GemmSeq1GemmVExpertBatchIds` path removes it
-  (which needs a per-layer device `LsxExpertPtrRow` table uploaded at load);
-  (b) ~1000 kernel launches/token. Neither is a correctness risk; both are
-  follow-up work under `perf-tuning-a-model`.
-- P2. TTFT: prefill is token-by-token (correctness first, same as MiniMax).
-  A batched prefill (the dense projections are ordinary GEMMs) is the next
-  step if TTFT matters for the memory-writer workload.
+- P1. Perf. ~2.0 GB of active weights per token (of which 0.5 GB is the FP16
+  lm_head) against a 1531 GB/s probe is a **~1.3 ms / ~750 t/s roofline**; we
+  run at 87 t/s, i.e. ~12% of it. The router-sync hypothesis was tested and
+  REFUTED: the ids-streaming expert GEMV (`LsxExpertPtrRow` device tables, no
+  per-layer D2H) landed and moved the row 86.7 -> 87.2 t/s, so the 47
+  `cudaEventSynchronize` calls were not the bottleneck. What remains is the
+  weight-streaming GEMV itself (48 attention + 47x3 expert-batch + shared
+  launches per token, ~2 GB streamed at ~180 GB/s effective) — the next step is
+  an nsys decode profile under `perf-tuning-a-model`, not more plumbing.
+- P2. TTFT is token-by-token prefill (correctness first). A batched prefill is
+  the next step if TTFT matters for the memory-writer workload.
 - P3. `LSX_HY_DEBUG=1` dumps prompt ids + top-5 logits of the first decoded
   step (diagnostic only, stderr) for bisecting against the oracle.
-
 ## T. Mistral-Small-4-119B-2603-NVFP4 ingestion — later stages (2026-10-11)
 
 - **Branch** `feat/mistral-small-4-119b`; design

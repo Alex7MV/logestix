@@ -46,6 +46,7 @@ struct HyScratch {
     int64_t float_elems = 0;
     int64_t logits_elems = 0;
     int32_t *d_ids = nullptr;
+    int32_t *d_top_ids = nullptr;   // [K] router selection, device-resident
     int32_t *d_argmax = nullptr;
     float *d_maxv = nullptr;
     HyRoutedSlot *d_slots = nullptr;
