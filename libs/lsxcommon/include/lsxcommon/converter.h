@@ -96,6 +96,12 @@ struct TokenizerSpecialPolicy {
     //   1 = Llama-3 / o200k 7-alternative pattern (Llama3WordStream: case runs,
     //       no CJK split). Written as tokenizer_kind = 3.
     int32_t pretokenizer = 0;
+    // 1 = tolerate a vocabulary with no single-byte token for some bytes: the
+    // missing ones map to -1 and the encoder skips them. The reference tokenizer
+    // of Hy-Memory-30B-A3B drops CR ("\r" encodes to no token) and omits the 13
+    // UTF-8-illegal lead bytes (0xC0, 0xC1, 0xF5..0xFF); without this the bridge
+    // refuses the checkpoint. Default 0 keeps every other family strict.
+    int32_t drop_unmapped_bytes = 0;
 };
 
 arrow::Status BuildTokenizerArrowFiles(

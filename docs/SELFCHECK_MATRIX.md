@@ -41,8 +41,9 @@ one in a ctest summary, which is why the debt rows are called out below.
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
+| **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
 
-- SelfCheck **14/14**, FSI **14/17**, CODE **17/17**, DET **17/17**.
+- SelfCheck **15/15**, FSI **17/20**, CODE **20/20**, DET **20/20**.
 - Two reds. The Pro FSI-02 red is an instruction-following deviation, not a
   numeric one: the prompt requires the symbolic form
   `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`,
@@ -61,6 +62,11 @@ one in a ctest summary, which is why the debt rows are called out below.
   (`tools/minimax_reference.py`: same greedy continuation) plus a per-layer
   oracle against the checkpoint's own HF modeling code
   (`tools/minimax_hf_layer_oracle.py`). See `docs/OPEN_TASKS.md` §R4.
+- Hy-Memory-30B-A3B landed green on all four gates with **source-derived**
+  goldens (`tools/hy_v3_oracle.py` assembles the fused expert tensors the stock
+  HF class expects; the 60 GB bf16 source runs on CPU). FSI-02 answers the
+  numeric form, which is exactly what the source answered, so the golden is
+  source parity rather than a template match. See `docs/OPEN_TASKS.md` §R5.
 - The other red is the dense Gemma-4 member, and it is understood rather than
   mysterious: FSI-01 is a template near-tie where the dense body needs ~8 bits
   on *every* linear (33.7 GiB resident, over this card). Every partial

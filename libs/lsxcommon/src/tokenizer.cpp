@@ -142,6 +142,23 @@ arrow::Status load_tokenizer_metadata(
             get_opt_i32("byte_fallback", db.byte_fallback);
             get_opt_i32("add_dummy_prefix", db.add_dummy_prefix);
             get_opt_i32("escape_whitespaces", db.escape_whitespaces);
+            get_opt_i32("drop_unmapped_bytes", db.drop_unmapped_bytes);
+        }
+
+        // kind 0 with base_vocab_size: ids >= base are added tokens matched
+        // literally (the reference tokenizer's AddedVocabulary does this for
+        // special AND plain markers, e.g. Hy-Memory's <think>/<tool_call>).
+        if (db.tokenizer_kind == 0 && db.base_vocab_size > 0 &&
+            db.base_vocab_size < db.vocab_size) {
+            for (int32_t id = db.base_vocab_size; id < db.vocab_size; ++id)
+                if (db.token_offsets[id + 1] > db.token_offsets[id])
+                    db.literal_ids.push_back(id);
+            std::stable_sort(
+                db.literal_ids.begin(), db.literal_ids.end(),
+                [&](int32_t a, int32_t b) {
+                    return (db.token_offsets[a + 1] - db.token_offsets[a]) >
+                           (db.token_offsets[b + 1] - db.token_offsets[b]);
+                });
         }
 
         // tiktoken: the vocabulary IS the merge table (adjacent pair bytes ->
@@ -281,12 +298,105 @@ int32_t bpe_encode_word(const ArrowTokenizerDb &db, const char *w, size_t wlen,
 {
     if (wlen > kMaxWordBytes) return -3;
 
+    // drop_unmapped_bytes: a byte with no single-byte vocab token is skipped,
+    // mirroring the reference tokenizer (Hy-Memory-30B-A3B's vocab has no CR
+    // byte and the reference drops "\r" entirely rather than emitting UNK).
+    size_t n = 0;
     for (size_t i = 0; i < wlen; ++i) {
         int32_t t = db.byte_to_token_id[static_cast<uint8_t>(w[i])];
-        if (t < 0) return -1;
-        toks[i] = t;
+        if (t < 0) {
+            if (db.drop_unmapped_bytes) continue;
+            return -1;
+        }
+        toks[n++] = t;
     }
-    return static_cast<int32_t>(merge_symbols_in_place(db, toks, wlen));
+    if (n == 0) return 0;
+    return static_cast<int32_t>(merge_symbols_in_place(db, toks, n));
+}
+
+// ── gpt2 byte-level BPE with LITERAL added tokens (tokenizer_kind == 0) ────
+//
+// When the vocabulary metadata carries `base_vocab_size`, ids at or above it are
+// the checkpoint's ADDED tokens. The reference encoder (tokenizers'
+// AddedVocabulary) matches them literally before BPE — for `special: true` AND
+// `special: false` entries, which is how Hy-Memory's <think>/<tool_calls>
+// markers resolve to their own ids instead of a raw-byte fragmentation. Same
+// longest-first match as the tiktoken path; the gaps go through the GPT-2
+// pre-tokenizer + merge table.
+int32_t gpt2_bpe_encode_with_literals(const ArrowTokenizerDb &db, const char *text,
+                                      size_t text_len, int32_t *out_tokens,
+                                      size_t *max_out_len)
+{
+    bool first_byte[256] = {};
+    for (int32_t id : db.literal_ids) {
+        const int64_t b = db.token_offsets[id];
+        if (db.token_offsets[id + 1] > b)
+            first_byte[db.token_bytes[b]] = true;
+    }
+
+    std::vector<int32_t> out;
+    if (db.bos_id >= 0) out.push_back(db.bos_id);
+    out.reserve(text_len + 8);
+    size_t pos = 0;
+    while (pos < text_len) {
+        int32_t lit = -1;
+        size_t lit_len = 0;
+        if (first_byte[static_cast<uint8_t>(text[pos])]) {
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l = static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - pos) continue;
+                if (std::memcmp(text + pos, db.token_bytes + b, l) == 0) {
+                    lit = id;
+                    lit_len = l;
+                    break;
+                }
+            }
+        }
+        if (lit >= 0) {
+            out.push_back(lit);
+            pos += lit_len;
+            continue;
+        }
+        // BPE the run up to the next literal occurrence.
+        size_t gap_end = text_len;
+        for (size_t at = pos + 1; at < text_len; ++at) {
+            if (!first_byte[static_cast<uint8_t>(text[at])]) continue;
+            bool hit = false;
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l = static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - at) continue;
+                if (std::memcmp(text + at, db.token_bytes + b, l) == 0) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                gap_end = at;
+                break;
+            }
+        }
+        WordStream ws(text + pos, gap_end - pos);
+        WordSpan w;
+        int32_t stack[kMaxWordBytes];
+        while (ws.next(w)) {
+            const int32_t n = bpe_encode_word(db, w.begin, w.length, stack);
+            if (n < 0) return n;
+            out.insert(out.end(), stack, stack + n);
+        }
+        if (ws.error()) return -1;
+        pos = gap_end;
+    }
+
+    if (out.size() > *max_out_len) {
+        *max_out_len = out.size();
+        return -2;
+    }
+    if (!out.empty())
+        std::memcpy(out_tokens, out.data(), out.size() * sizeof(int32_t));
+    *max_out_len = out.size();
+    return static_cast<int32_t>(out.size());
 }
 
 // ── SentencePiece-BPE (tokenizer_kind == 1) ─────────────────────────────────
@@ -780,6 +890,9 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
                                    max_out_len);
     if (db.tokenizer_kind == 3)
         return bpe_encode_llama3(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 0 && !db.literal_ids.empty())
+        return gpt2_bpe_encode_with_literals(db, text, text_len, out_tokens,
+                                             max_out_len);
 
     // Pass 1: count.
     size_t total = (db.bos_id >= 0) ? 1 : 0;

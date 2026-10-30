@@ -6825,3 +6825,166 @@ foreach(_bt IN LISTS LSX_KERNEL_BUDGET_TESTS)
     # ctest -j must serialize them behind one GPU lock.
     set_tests_properties(${_bt} PROPERTIES RESOURCE_LOCK "gpu")
 endforeach()
+
+# ── Hy-Memory-30B-A3B converter test (plain-RMSNorm GQA + sigmoid-router MoE) ──
+add_executable(test_hy_moe_convert test_hy_moe_convert.cpp)
+target_include_directories(test_hy_moe_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_hy_moe_convert PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_convert PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_convert COMMAND test_hy_moe_convert)
+set_tests_properties(test_hy_moe_convert PROPERTIES LABELS convert)
+set_tests_properties(test_hy_moe_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_hy_moe_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_hy_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B loader stage (pinned graph + resident expert slabs) ──
+add_executable(test_hy_moe_loader test_hy_moe_loader.cpp)
+target_include_directories(test_hy_moe_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_hy_moe_loader PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_loader COMMAND test_hy_moe_loader)
+set_tests_properties(test_hy_moe_loader PROPERTIES LABELS fast)
+set_tests_properties(test_hy_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_hy_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B model stage (lifecycle + determinism) ──
+add_executable(test_hy_moe_model test_hy_moe_model.cpp)
+target_include_directories(test_hy_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_hy_moe_model PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_model COMMAND test_hy_moe_model)
+set_tests_properties(test_hy_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_model PROPERTIES TIMEOUT 300)
+set_tests_properties(test_hy_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_hy_moe_model PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B numeric kernels (rope/router/accumulate/norm) ──
+add_library(test_hy_cu OBJECT
+    test_hy_moe_kernels.cu
+)
+set_target_properties(test_hy_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_hy_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_hy_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/simdjson-src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src")
+target_link_libraries(test_hy_cu PRIVATE Catch2::Catch2WithMain
+    arrow_shared)
+
+add_executable(test_hy_moe_kernels)
+set_target_properties(test_hy_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_hy_moe_kernels PRIVATE test_hy_cu lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_kernels COMMAND test_hy_moe_kernels)
+set_tests_properties(test_hy_moe_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B native tool framing (host-only) ──
+add_executable(test_hy_moe_tool_framing test_hy_moe_tool_framing.cpp)
+target_compile_definitions(test_hy_moe_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_hy_moe_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_tool_framing COMMAND test_hy_moe_tool_framing)
+set_tests_properties(test_hy_moe_tool_framing PROPERTIES LABELS fast)
+
+# ── Hy-Memory-30B-A3B tokenizer parity (real vault tree; SKIPs when absent) ──
+add_executable(test_hy_moe_tokenizer_parity test_hy_moe_tokenizer_parity.cpp)
+target_compile_definitions(test_hy_moe_tokenizer_parity PRIVATE
+    "LSX_HY_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy\"")
+target_link_libraries(test_hy_moe_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_hy_moe_tokenizer_parity
+         COMMAND test_hy_moe_tokenizer_parity)
+set_tests_properties(test_hy_moe_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Hy-Memory-30B-A3B SelfCheck (real weights; SKIPs when the vault is absent) ──
+add_executable(test_hy_moe_selfcheck test_hy_moe_selfcheck.cpp)
+target_link_libraries(test_hy_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_selfcheck COMMAND test_hy_moe_selfcheck)
+set_tests_properties(test_hy_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_hy_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B FSI parity gate ──
+add_executable(test_hy_moe_fsi_selfcheck test_hy_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_hy_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_hy_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_fsi_selfcheck COMMAND test_hy_moe_fsi_selfcheck)
+set_tests_properties(test_hy_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_fsi_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_hy_moe_fsi_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B CODE parity gate ──
+add_executable(test_hy_moe_code_selfcheck test_hy_moe_code_selfcheck.cpp)
+target_compile_definitions(test_hy_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_hy_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_code_selfcheck COMMAND test_hy_moe_code_selfcheck)
+set_tests_properties(test_hy_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_code_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_hy_moe_code_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B DET determinism gate ──
+add_executable(test_hy_moe_det_selfcheck test_hy_moe_det_selfcheck.cpp)
+target_compile_definitions(test_hy_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_hy_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_det_selfcheck COMMAND test_hy_moe_det_selfcheck)
+set_tests_properties(test_hy_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_det_selfcheck PROPERTIES TIMEOUT 3600)
+set_tests_properties(test_hy_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-Memory-30B-A3B perf baseline (canonical 2048-token protocol) ──
+add_test(NAME test_perf_baseline_hy_memory_30b_a3b
+         COMMAND test_perf_baseline "perf baseline: hy-memory-30b-a3b")
+set_tests_properties(test_perf_baseline_hy_memory_30b_a3b PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Hy-Memory-30B-A3B")
+set_tests_properties(test_perf_baseline_hy_memory_30b_a3b
+    PROPERTIES LABELS perf)
+
+# ── Hy-Memory-30B-A3B chat framing parity (real tokenizer + template) ──
+add_executable(test_hy_moe_chat_framing test_hy_moe_chat_framing.cpp)
+target_compile_definitions(test_hy_moe_chat_framing PRIVATE
+    "LSX_HY_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy\"")
+target_link_libraries(test_hy_moe_chat_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_hy_moe_chat_framing COMMAND test_hy_moe_chat_framing)
+set_tests_properties(test_hy_moe_chat_framing PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_chat_framing PROPERTIES SKIP_RETURN_CODE 4)
