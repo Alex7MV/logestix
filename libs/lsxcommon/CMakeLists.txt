@@ -99,6 +99,7 @@ add_library(lsxcommon STATIC
     src/hy_moe_convert.cpp
     src/hy_moe_load.cpp
     src/flint_moe_convert.cpp
+    src/flint_moe_load.cpp
     src/hy_moe_model.cpp
     src/hy_moe_tool_format.cpp
     src/mistral_moe_load.cpp

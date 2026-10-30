@@ -6934,6 +6934,21 @@ set_tests_properties(test_flint_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_flint_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── Flint loader stage (synthetic converted tree; no vault) ──
+add_executable(test_flint_moe_loader test_flint_moe_loader.cpp)
+target_include_directories(test_flint_moe_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_flint_moe_loader PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_flint_moe_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_flint_moe_loader COMMAND test_flint_moe_loader)
+set_tests_properties(test_flint_moe_loader PROPERTIES LABELS fast)
+set_tests_properties(test_flint_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_flint_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_flint_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Flint tokenizer parity (source-captured golden; SKIPs without the vault) ──
 add_executable(test_flint_moe_tokenizer_parity
     test_flint_moe_tokenizer_parity.cpp)

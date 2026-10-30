@@ -248,7 +248,7 @@ TEST_CASE("ConvertFlintModel converts a synthetic checkpoint",
         CHECK(j.find("\"full_attention_layers\": [3]") != std::string::npos);
         CHECK(j.find("\"no_rope_layers\": [3]") != std::string::npos);
         CHECK(j.find("\"mlp_only_layers\": [0]") != std::string::npos);
-        CHECK(j.find("\"eos_token_ids\": [4,6]") != std::string::npos);
+        CHECK(j.find("\"eos_token_ids\": [269,271]") != std::string::npos);
         CHECK(j.find("\"vram\"") != std::string::npos);
         CHECK(j.find("\"total_experts\": " +
                      std::to_string(c.experts * (c.layers - c.first_moe_layer))) !=

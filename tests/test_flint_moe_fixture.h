@@ -37,7 +37,7 @@ struct Cfg {
     int window = 8;
     int first_moe_layer = 1;   // mlp_only_layers = {0}
     int full_attn_layer = 3;   // also the no-RoPE layer
-    int bos = 3, eos = 4, eos2 = 6, pad = 5;
+    int bos = 268, eos = 269, eos2 = 271, pad = 269;
 };
 
 inline const Cfg &TestCfg()
