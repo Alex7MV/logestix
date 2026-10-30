@@ -52,3 +52,7 @@ CMakeUserPresets.json
 
 # Dear ImGui runtime layout
 imgui.ini
+
+# Python bytecode (capture scripts import each other)
+__pycache__/
+*.pyc
