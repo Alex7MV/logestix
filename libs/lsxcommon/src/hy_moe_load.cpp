@@ -462,12 +462,12 @@ bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
                 pw.Free();
                 return false;
             }
+            // RunUploadJobs allocates ONE arena holding both views; the gate is
+            // the arena base and Free() releases it through lw.d_router (freeing
+            // the bias view, an interior pointer, would be an invalid free).
             lw.d_router = static_cast<float *>(router_dst);
             lw.d_router_bias = static_cast<float *>(bias_dst);
             lw.router_bytes = static_cast<int64_t>(rarena_bytes);
-            // RunUploadJobs allocates ONE arena; release it at Free() time via
-            // the router pointer (it is the first aligned view).
-            (void)rarena;
 
             // Shared expert (gated SwiGLU).
             auto shared = LoadDenseNvfp4BatchViews(
