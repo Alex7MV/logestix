@@ -33,6 +33,9 @@ struct ChatMessage {
 struct ChatConversation {
     std::vector<ChatMessage> messages;
     std::vector<ToolSpec> tools;
+    // Optional embedded-adapter selector (Granite Switch `adapter_name`).
+    // Families without embedded adapters ignore it.
+    std::string adapter_name;
 };
 
 }  // namespace lsxcommon

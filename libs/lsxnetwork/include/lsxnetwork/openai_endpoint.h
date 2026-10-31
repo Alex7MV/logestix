@@ -77,6 +77,8 @@ struct ChatRequest {
     // Opt-in sampling (v3 fabric frame). temperature <= 0 keeps greedy, the
     // numeric class the parity goldens pin.
     RequestSampling sampling;
+    // OpenAI extension: chat_template_kwargs.adapter_name (Granite Switch).
+    std::string adapter_name;
 };
 
 struct LegacyCompletionRequest {

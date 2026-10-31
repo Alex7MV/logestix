@@ -57,6 +57,8 @@ Resolution ResolvePipeline(const Flags &flags)
         kFamilies = {
             {"--glmflash", {Pipeline::kGlmFlash, flags.glmflash}},
             {"--granite", {Pipeline::kGranite, flags.granite}},
+            {"--granite_switch",
+             {Pipeline::kGraniteSwitch, flags.granite_switch}},
             {"--phi", {Pipeline::kPhi, flags.phi}},
             {"--alice", {Pipeline::kAlice, flags.alice}},
             {"--xing", {Pipeline::kXing, flags.xing}},

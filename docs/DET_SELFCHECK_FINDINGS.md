@@ -29,6 +29,19 @@ combinations, byte-identical `gen_tokens` across 3 runs); the extracted
 canonical token matched the template for all 18 **except phi-4 DET-02**
 (`CATASTROPHIC` -> `CRITICAL`, still deterministic 3/3).
 
+### granite-switch-4.1-30b — DET-02 RED is a source/prompt disagreement (2026-10-31)
+
+The CPU-BF16 source oracle (`granite-switch` 0.1.1 + transformers 5.17, native
+chat template, base adapter) answers `CRITICAL` for DET-TEST-02 where the
+prompt's Expected Template is `CATASTROPHIC`; the conversion log records
+`source answer differs from the prompt template: 'CRITICAL' != 'CATASTROPHIC'`.
+The converted engine also answers `CRITICAL`, byte-identically across 3 runs —
+so DET-01/03 pass and the determinism half of DET-02 passes; only template
+conformance fails. Unlike phi-4 DET-02 this is not a 4-bit near-tie: the source
+itself is on the other side of the fork, so no residual/high-precision placement
+can move the engine toward `CATASTROPHIC` without diverging from the source.
+Recorded red in `docs/OPEN_TASKS.md` §R10 and `docs/SELFCHECK_MATRIX.md`.
+
 ### Prompt update (2026-09-27): DET-TEST-02 / DET-TEST-03
 
 With the first prompt set, DET-02 failed for every non-granite family and DET-03

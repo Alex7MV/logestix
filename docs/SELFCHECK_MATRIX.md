@@ -42,8 +42,14 @@ one in a ctest summary, which is why the debt rows are called out below.
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
+| **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 
-- SelfCheck **15/15**, FSI **17/20**, CODE **20/20**, DET **20/20**.
+- SelfCheck **16/16**, FSI **20/23**, CODE **23/23**, DET **22/23**.
+- **Granite-Switch DET-TEST-02 is the third red.** The source CPU-BF16 oracle
+  itself answers `CRITICAL` where the prompt's Expected Template is
+  `CATASTROPHIC` (capture logged the disagreement); source and converted agree
+  3/3 deterministically, so this is a source/prompt mismatch, not a 4-bit flip.
+  See `docs/OPEN_TASKS.md` §R10.
 - Two reds. The Pro FSI-02 red is an instruction-following deviation, not a
   numeric one: the prompt requires the symbolic form
   `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`,

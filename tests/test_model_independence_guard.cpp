@@ -323,6 +323,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "gigachat_moe_model.cpp",      // gigachat3.5-432b-a28b-reasoning
         "ornith_moe_model.cpp",        // ornith-1.5-35b-a3b
         "granite_dense_model.cpp",     // granite-4.2-30b
+        "granite_dense_switch_model.cpp",  // granite-switch-4.1-30b
         "gemma_dense_model.cpp",       // gemma-4-31b-it (dense)
         "phi_dense_model.cpp",         // phi-4
         "mimo_moe_model.cpp",          // mimo-v2.6-flash-rl
@@ -443,6 +444,9 @@ TEST_CASE("every family model wires the shared lifecycle contract",
          {"ornith_moe_model.cpp", "ornith_moe_inference_pipeline.cu"}},
         {"granite-4.2-30b",
          {"granite_dense_model.cpp", "granite_dense_inference.cu"}},
+        {"granite-switch-4.1-30b",
+         {"granite_dense_switch_model.cpp",
+          "granite_dense_switch_inference.cu"}},
         {"phi-4", {"phi_dense_model.cpp", "phi_dense_inference.cu"}},
         {"nemotron-3.5-lightning-30b-a3b", {"nemotron_moe_model.cpp"}},
         {"nemotron-3.5-lightning-30b-a3b-nvfp4",

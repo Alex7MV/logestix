@@ -168,6 +168,15 @@ simdjson::error_code OpenAiEndpoint::ParseChatRequest(const char* data,
     else if (sv.error() != simdjson::NO_SUCH_FIELD)
         return sv.error();
 
+    // Optional embedded-adapter selector: chat_template_kwargs.adapter_name.
+    if (simdjson::ondemand::object kw;
+        root["chat_template_kwargs"].get_object().get(kw) ==
+        simdjson::SUCCESS) {
+        std::string_view an;
+        if (kw["adapter_name"].get_string().get(an) == simdjson::SUCCESS)
+            out.adapter_name.assign(an);
+    }
+
     simdjson::ondemand::object so;
     if (auto e = root["stream_options"].get_object().get(so)) {
         if (e != simdjson::NO_SUCH_FIELD) return e;

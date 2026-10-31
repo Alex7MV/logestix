@@ -31,7 +31,10 @@ add_library(lsxcommon STATIC
     src/granite_dense_load.cpp
     src/granite_dense_model.cpp
     src/granite_dense_switch_convert.cpp
+    src/granite_dense_switch_load.cpp
+    src/granite_dense_switch_model.cpp
     src/granite_tool_format.cpp
+    src/granite_switch_tool_format.cpp
     src/phi_dense_convert.cpp
     src/phi_dense_load.cpp
     src/phi_dense_model.cpp
@@ -599,6 +602,7 @@ target_link_libraries(lsxcommon_ornith_cu
 # required (all shared arithmetic uses explicit *_rn intrinsics).
 add_library(lsxcommon_granite_cu OBJECT
     src/granite_dense_inference.cu
+    src/granite_dense_switch_inference.cu
 )
 set_target_properties(lsxcommon_granite_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

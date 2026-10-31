@@ -34,6 +34,7 @@
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/qwen_dense_convert.h"
 #include "lsxcommon/granite_dense_convert.h"
+#include "lsxcommon/granite_dense_switch_convert.h"
 #include "lsxcommon/phi_dense_convert.h"
 #include "lsxcommon/deepseek_moe_repack.h"
 #include "lsxcommon/deepseek_moe_v41_convert.h"
@@ -83,6 +84,8 @@ ABSL_FLAG(bool, glmflash, false,
           "GLM-5.3-Flash (glm5_next) conversion pipeline");
 ABSL_FLAG(bool, granite, false,
           "Granite-4.2-30B (dense) conversion pipeline");
+ABSL_FLAG(bool, granite_switch, false,
+          "Granite-Switch-4.1-30B (dense + aLoRA adapters) conversion pipeline");
 ABSL_FLAG(bool, phi, false, "phi-4 (dense) conversion pipeline");
 ABSL_FLAG(bool, mimo, false,
           "MiMo-V2.6-Flash-RL (hybrid SWA/full sparse MoE) conversion pipeline");
@@ -168,6 +171,7 @@ int main(int argc, char* argv[]) {
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     bool granite = absl::GetFlag(FLAGS_granite);
+    bool granite_switch = absl::GetFlag(FLAGS_granite_switch);
     bool phi = absl::GetFlag(FLAGS_phi);
     bool mimo = absl::GetFlag(FLAGS_mimo);
     bool alice = absl::GetFlag(FLAGS_alice);
@@ -209,6 +213,7 @@ int main(int argc, char* argv[]) {
     flags.gigachat = gigachat;
     flags.glmflash = glmflash;
     flags.granite = granite;
+    flags.granite_switch = granite_switch;
     flags.phi = phi;
     flags.mimo = mimo;
     flags.alice = alice;
@@ -521,6 +526,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Granite conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kGraniteSwitch: {
+        lsxcommon::log::info(
+            "Granite-Switch-4.1-30B pipeline (logestix-granite-switch layout)");
+        auto st = lsxcommon::granite_switch::ConvertGraniteSwitchModel(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Granite-Switch conversion failed: %s",
+                                st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Granite-Switch conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
