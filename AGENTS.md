@@ -498,6 +498,29 @@ procedure — `perf-tuning-a-model`.
   bit-exact and a per-layer reference oracle (relL2 0.0034 → 0.1226, cos ≥
   0.9925) — `docs/open-tasks/2026-10-26-kimi-audit-verification.md`; FSI/CODE/DET
   are declared golden debt (`docs/OPEN_TASKS.md` §R2).
+  Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
+  560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
+  (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited
+  sigmoid + `expert_bias`, renorm ×2.5) + one ungated shared expert, 72 main
+  layers + MTP layer 72 (stripped+counted), 4096H / 64 heads / 128HD, vocab
+  157 184, FP8 block-128 source; `ling_moe_constants.h` (frozen passport),
+  `ling_moe_convert.{h,cpp}` (FP8→NVFP4, MTP `deferred.mtp`, per-expert
+  global scales), `ling_moe_dequant.cu`, `ling_moe_load.{h,cpp}` (pinned dense
+  graph + neutral `ExpertStore` + device slot LRU, 298 GB expert tree),
+  `ling_moe_kernels.{h,cu}` (KDA conv/delta, interleaved partial RoPE,
+  group-limited router, SwiGLU limits), `ling_moe_inference.{h,cu}`,
+  `ling_moe_model.{h,cpp}`, `ling_moe_tool_format.{h,cpp}` (native
+  `<role>…</role>` framing + `<tool_call>` XML); format tag
+  `logestix-ling-nvfp4`; converted with `lsxforge --ling`; tokenizer
+  `tokenizer_kind 5` (`LingWordStream`, parity 27/27). Two load-bearing numeric
+  facts: every routed expert carries its OWN three `global_scale`s (one shared
+  value makes the model incoherent), and the official SGLang SwiGLU limits
+  (`share_expert_swiglu_limit_list` from layer 64, `expert_swiglu_limit_list`
+  from 65) must be applied. Real-weight SelfCheck: Paris ×3 bit-exact (kOff);
+  kAuto token stream stable; tool round-trip green. Perf at 2048 tokens:
+  **2.77 t/s (perf) / 2.41 t/s (r3)**, TTFT ≈10.3 s, 10.2 GiB pinned + 16-17
+  GiB expert cache. FSI/CODE/DET are declared golden debt (560B source cannot
+  run on one card) — `docs/OPEN_TASKS.md` §R7.
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
