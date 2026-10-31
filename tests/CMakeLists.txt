@@ -834,6 +834,29 @@ set_tests_properties(test_granite_dense_convert PROPERTIES
     TIMEOUT 120)
 set_tests_properties(test_granite_dense_convert PROPERTIES LABELS convert)
 
+# ── Granite-Switch-4.1-30B converter test (classifier + index + arrow layout) ──
+add_executable(test_granite_switch_convert test_granite_switch_convert.cpp)
+target_compile_definitions(test_granite_switch_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_granite_switch_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_convert>")
+    add_custom_command(TARGET test_granite_switch_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_convert>")
+endif()
+add_test(NAME test_granite_switch_convert COMMAND test_granite_switch_convert)
+set_tests_properties(test_granite_switch_convert PROPERTIES
+    TIMEOUT 120)
+set_tests_properties(test_granite_switch_convert PROPERTIES LABELS convert)
+set_tests_properties(test_granite_switch_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── phi-4 converter test (classifier + index + arrow layout) ──
 add_executable(test_phi_dense_convert test_phi_dense_convert.cpp)
 target_compile_definitions(test_phi_dense_convert PRIVATE

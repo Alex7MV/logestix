@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing|mistral|minimax|hy|flint|ling|beam|step)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|flash|36|v41|pro|nvfp4)";
+    const std::string var    = "(?:27b|flash|36|v41|pro|nvfp4|switch)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -81,6 +81,7 @@ bool AllowedCommon(const std::string& stem)
         "ling_moe_tool_format",       // Ling <role> framing + <tool_call> XML
         "beam_moe_tool_format",       // Beam Harmony-XML codec
         "step_moe_tool_format",       // Step-5 ChatML + <tool_call> XML codec
+        "granite_switch_tool_format", // Granite-4.1 role markers + aLoRA codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
 }
@@ -156,6 +157,17 @@ TEST_CASE("naming guard accepts qwen_moe_exp_* stems", "[naming][guard]")
     CHECK(m("qwen_moe_exp_model"));
     CHECK(m("qwen_moe_exp_load"));
     CHECK(m("qwen_moe_exp_constants"));
+}
+
+TEST_CASE("naming guard accepts granite_dense_switch_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) { return std::regex_match(s, SchemeRegex()); };
+    CHECK(m("granite_dense_switch_constants"));
+    CHECK(m("granite_dense_switch_convert"));
+    CHECK(m("granite_dense_switch_load"));
+    CHECK(m("granite_dense_switch_model"));
+    CHECK(m("granite_dense_switch_inference"));
+    CHECK(m("granite_dense_switch_kernels"));
 }
 
 TEST_CASE("naming guard accepts deepseek_moe_pro_* stems", "[naming][guard]")
