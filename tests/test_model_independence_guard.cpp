@@ -108,6 +108,7 @@ const std::vector<PassportRow> kPassports = {
     {"hy-memory-30b-a3b", "hy_moe_constants.h", "lsxcommon::hy::frozen"},
     {"flint", "flint_moe_constants.h", "lsxcommon::flint::frozen"},
     {"ling", "ling_moe_constants.h", "lsxcommon::ling::frozen"},
+    {"beam", "beam_moe_constants.h", "lsxcommon::beam::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -203,6 +204,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"../include/lsxcommon/phi_dense_constants.h", "namespace frozen {"},
         {"alice_moe_constants.h", "namespace frozen {"},
         {"ling_moe_constants.h", "namespace frozen {"},
+        {"beam_moe_constants.h", "namespace frozen {"},
     };
     for (const auto &kv : owner) {
         const std::string text = ReadFile(PassportPath(kv.first.c_str()));
@@ -325,6 +327,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "hy_moe_model.cpp",            // hy-memory-30b-a3b (GQA + sigmoid router MoE)
         "flint_moe_model.cpp",         // flint (hybrid sink/SWA/no-RoPE MoE)
         "ling_moe_model.cpp",          // ling (KDA + gated MLA + 512-expert MoE)
+        "beam_moe_model.cpp",          // beam (gated GQA SWA/NoPE + 256-expert MoE)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
@@ -451,6 +454,7 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         {"flint",
          {"flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"}},
         {"ling", {"ling_moe_model.cpp", "ling_moe_inference.cu"}},
+        {"beam", {"beam_moe_model.cpp", "beam_moe_inference.cu"}},
     };
     // marker group -> what it guarantees. EVERY spelling in a group must be
     // absent for the contract to be considered unwired (any-of semantics:

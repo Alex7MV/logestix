@@ -7091,6 +7091,32 @@ set_tests_properties(test_beam_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_beam_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── Beam kernels (CUDA object library + host-reference parity) ──
+set(test_beam_cu_src
+    test_beam_moe_kernels.cu
+)
+add_library(test_beam_cu OBJECT ${test_beam_cu_src})
+set_target_properties(test_beam_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_beam_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_beam_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_beam_cu PRIVATE Catch2::Catch2WithMain)
+add_executable(test_beam_moe_kernels)
+set_target_properties(test_beam_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_beam_moe_kernels PRIVATE test_beam_cu lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_moe_kernels COMMAND test_beam_moe_kernels)
+set_tests_properties(test_beam_moe_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_beam_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_beam_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Beam loader stage (synthetic converted tree; no vault) ──
 add_executable(test_beam_moe_loader test_beam_moe_loader.cpp)
 target_include_directories(test_beam_moe_loader PRIVATE
@@ -7210,6 +7236,84 @@ set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES TIMEOUT 1800)
 set_tests_properties(test_flint_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+add_test(NAME test_perf_baseline_beam
+         COMMAND test_perf_baseline "perf baseline: beam")
+set_tests_properties(test_perf_baseline_beam PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Beam-1.0-501B-A23B")
+set_tests_properties(test_perf_baseline_beam PROPERTIES LABELS perf)
+
+# ── Beam model stage (synthetic converted tree) ──
+add_executable(test_beam_moe_model test_beam_moe_model.cpp)
+target_include_directories(test_beam_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_beam_moe_model PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_beam_moe_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_moe_model COMMAND test_beam_moe_model)
+set_tests_properties(test_beam_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_beam_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_beam_moe_model PROPERTIES TIMEOUT 300)
+set_tests_properties(test_beam_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_beam_moe_model PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Beam selfcheck (real weights; SKIPs when the vault is absent) ──
+add_executable(test_beam_moe_selfcheck test_beam_moe_selfcheck.cpp)
+target_link_libraries(test_beam_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_moe_selfcheck COMMAND test_beam_moe_selfcheck)
+set_tests_properties(test_beam_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_beam_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_beam_moe_selfcheck PROPERTIES TIMEOUT 3600)
+set_tests_properties(test_beam_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Beam FSI/CODE/DET parity gates (golden debt; SKIP when absent) ──
+add_executable(test_beam_moe_fsi_selfcheck test_beam_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_beam_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_beam_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_moe_fsi_selfcheck COMMAND test_beam_moe_fsi_selfcheck)
+set_tests_properties(test_beam_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_beam_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_beam_moe_fsi_selfcheck PROPERTIES TIMEOUT 3600)
+set_tests_properties(test_beam_moe_fsi_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_beam_moe_code_selfcheck test_beam_moe_code_selfcheck.cpp)
+target_compile_definitions(test_beam_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_beam_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_moe_code_selfcheck COMMAND test_beam_moe_code_selfcheck)
+set_tests_properties(test_beam_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_beam_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_beam_moe_code_selfcheck PROPERTIES TIMEOUT 3600)
+set_tests_properties(test_beam_moe_code_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_beam_moe_det_selfcheck test_beam_moe_det_selfcheck.cpp)
+target_compile_definitions(test_beam_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_beam_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_moe_det_selfcheck COMMAND test_beam_moe_det_selfcheck)
+set_tests_properties(test_beam_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_beam_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_beam_moe_det_selfcheck PROPERTIES TIMEOUT 3600)
+set_tests_properties(test_beam_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Beam native tool framing (host-only; synthetic tokenizer) ──
+add_executable(test_beam_tool_framing test_beam_tool_framing.cpp)
+target_compile_definitions(test_beam_tool_framing PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_beam_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_beam_tool_framing COMMAND test_beam_tool_framing)
+set_tests_properties(test_beam_tool_framing PROPERTIES LABELS fast)
 
 # ── Flint native tool framing (host-only; template-captured golden) ──
 add_executable(test_flint_moe_tool_framing test_flint_moe_tool_framing.cpp)

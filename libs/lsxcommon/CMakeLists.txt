@@ -108,6 +108,8 @@ add_library(lsxcommon STATIC
     src/ling_moe_tool_format.cpp
     src/beam_moe_convert.cpp
     src/beam_moe_load.cpp
+    src/beam_moe_model.cpp
+    src/beam_moe_tool_format.cpp
     src/hy_moe_model.cpp
     src/hy_moe_tool_format.cpp
     src/mistral_moe_load.cpp
@@ -395,6 +397,30 @@ target_link_libraries(lsxcommon_flint_cu
     absl::strings
 )
 
+# Beam-1.0 kernels + generation pipeline (gated GQA, SWA/NoPE-SSMax hybrid,
+# sandwich norms + depth-scaled residual, group-limited sigmoid-router MoE).
+add_library(lsxcommon_beam_cu OBJECT
+    src/beam_moe_kernels.cu
+    src/beam_moe_inference.cu
+)
+set_target_properties(lsxcommon_beam_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_beam_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_beam_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_beam_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_beam_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 # Ling-3.1-flash (BailingMoeV3): FP8 dequant + KDA/MLA/router/MoE decode.
 add_library(lsxcommon_ling_cu OBJECT
     src/ling_moe_dequant.cu
@@ -641,6 +667,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_minimax_cu
     lsxcommon_hy_cu
     lsxcommon_flint_cu
+    lsxcommon_beam_cu
     lsxcommon_ling_cu
     lsx_tune)
 

@@ -395,6 +395,17 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_flint_moe_code_selfcheck"}},
           {"det", {"test_flint_moe_det_selfcheck"}},
           {"perf", {"test_perf_baseline_flint"}}}},
+        {"beam",
+         {{"convert", {"test_beam_moe_convert"}},
+          {"load", {"test_beam_moe_loader", "test_beam_tokenizer_split",
+                    "test_beam_tokenizer_parity"}},
+          {"model", {"test_beam_moe_model", "test_beam_tool_framing"}},
+          {"kernels", {"test_beam_moe_kernels"}},
+          {"selfcheck", {"test_beam_moe_selfcheck"}},
+          {"fsi", {"test_beam_moe_fsi_selfcheck"}},
+          {"code", {"test_beam_moe_code_selfcheck"}},
+          {"det", {"test_beam_moe_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_beam"}}}},
         {"ling",
          {{"convert", {"test_ling_moe_convert"}},
           {"load", {"test_ling_moe_loader", "test_ling_tokenizer_parity"}},
@@ -831,6 +842,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
         {"flint", {"test_flint_moe_tool_framing"}},
         {"ling", {"test_ling_tool_framing"}},
+        {"beam", {"test_beam_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.
@@ -946,6 +958,12 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "ling:code",
         "ling:det",
         "ling:fsi",
+        // Beam: the 934 GB BF16 source (501B) cannot be loaded in 750 GB of
+        // host RAM, so no source-oracle golden can be captured on this host.
+        // The instruments are the per-layer CPU oracle and SelfCheck.
+        "beam:code",
+        "beam:det",
+        "beam:fsi",
         "deepseek-v4-flash:code",
         "deepseek-v4-flash:det",
         "deepseek-v4-flash:fsi",
