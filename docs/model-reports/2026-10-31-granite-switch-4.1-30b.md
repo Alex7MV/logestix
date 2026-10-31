@@ -79,6 +79,18 @@ reproduce the aLoRA insertion points exactly (`<guardian>` → control token +
 `chat_template_kwargs.adapter_name` from the OpenAI endpoint, an explicit
 control token in the text, or automatic invocation-text detection.
 
+#### One numeric policy decision
+
+The checkpoint's activation range is unusual: `embedding_multiplier=12` and
+`residual_multiplier=0.175` push the residual stream to ~6e3. The tensor-core
+fast-math path quantizes *activations* as well as weights (NVFP4 E2M1 with
+E4M3 block scales), whose representable ceiling is ~2.7e3; long prompts clamp
+and decode garbage. We measured this on the 197-token tool prompt: the
+fast-math path produced `x = x e^{x}` while the FP16-activation path returned
+the source's exact `<tool_call>{"name": "get_weather", "arguments": {"city":
+"Paris"}}</tool_call>`. The family therefore pins the strict FP16-activation
+path; it costs nothing measurable here (70.07 vs 69.28 t/s).
+
 #### What we did not run
 
 The 470M Granite Speech encoder is a separate artifact and is not in this
@@ -109,7 +121,8 @@ rewriting the golden or pretending the gate passed.
 | Tool framing (synthetic) | **PASS** | role markers, tools block, aLoRA insertion, bare-JSON parse |
 | Converter / loader / model / kernels | **PASS** | labels `convert` / `inference` |
 | Fast suite | **PASS 119/119** | includes naming, independence, suite, ctest-label guards |
-| Perf | **69.28 t/s (perf) / 70.07 t/s (r3)** | 2 048 tokens, TTFT 49.09 / 190.76 ms, 552.95 / 573.69 W avg, AOCC release |
+| Perf | **69.28 t/s (perf) / 70.07 t/s (r3)** | 2 048 tokens, TTFT 49.09 / 190.76 ms, 552.95 / 573.69 W avg, AOCC release; re-confirmed after pinning kOff |
+| Real-weight tool round-trip | **PASS** | native `<tool_call>` with `get_weather {"city":"Paris"}`; source `input_ids` reproduced token-for-token |
 
 ### Resident / storage
 

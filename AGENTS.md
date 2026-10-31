@@ -239,7 +239,11 @@ procedure — `perf-tuning-a-model`.
   a source-vs-prompt disagreement — source and converted both answer
   `CRITICAL` deterministically; `docs/OPEN_TASKS.md` §R10), adapter parity 3/3
   (routing 0/1/2 and token-for-token source `input_ids`), 16.22 GiB resident,
-  **69.28 t/s (perf) / 70.07 t/s (r3)** at 2048 tokens. ASR/`<|audio|>` is out
+  **69.28 t/s (perf) / 70.07 t/s (r3)** at 2048 tokens. `Infer` pins
+  `FastMathMode::kOff` because the checkpoint's ~6e3 activations exceed the
+  NVFP4 TC A4 range (TC prefill decoded garbage on the 197-token tool prompt;
+  the strict path reproduces the source tool call; kOff is also the faster r3
+  row). ASR/`<|audio|>` is out
   of scope (the 470M encoder is not in this checkpoint); 131k context KV
   (~34.4 GiB) does not fit this card.
   phi-4 (independent family `phi`: dense decoder-only, 40L / 5120H / 40Q / 10KV

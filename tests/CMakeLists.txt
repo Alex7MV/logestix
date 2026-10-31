@@ -903,6 +903,7 @@ add_test(NAME test_granite_switch_model COMMAND test_granite_switch_model)
 set_tests_properties(test_granite_switch_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_granite_switch_model PROPERTIES LABELS inference)
+set_tests_properties(test_granite_switch_model PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Granite-Switch-4.1-30B chat / aLoRA / tool framing (host-only) ──
 add_executable(test_granite_switch_tool_framing test_granite_switch_tool_framing.cpp)
@@ -910,6 +911,15 @@ target_link_libraries(test_granite_switch_tool_framing PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_granite_switch_tool_framing COMMAND test_granite_switch_tool_framing)
 set_tests_properties(test_granite_switch_tool_framing PROPERTIES LABELS fast)
+
+add_executable(test_granite_switch_tokenizer_parity test_granite_switch_tokenizer_parity.cpp)
+target_compile_definitions(test_granite_switch_tokenizer_parity PRIVATE
+    LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
+    LSX_GRANITE_SWITCH_TOKENIZER_PATH="/mnt/fast_storage/huggingface/granite-switch-4.1-30b/tokenizer.json")
+target_link_libraries(test_granite_switch_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_granite_switch_tokenizer_parity COMMAND test_granite_switch_tokenizer_parity)
+set_tests_properties(test_granite_switch_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_granite_switch_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_granite_switch_adapter_parity test_granite_switch_adapter_parity.cpp)
 target_compile_definitions(test_granite_switch_adapter_parity PRIVATE

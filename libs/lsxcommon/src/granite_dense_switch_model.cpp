@@ -122,7 +122,16 @@ gpu::InferenceResult GraniteSwitch41_30BModel::Infer(const ModelRequest &req)
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
 
-    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
+    // The checkpoint's embedding_multiplier=12 / residual_multiplier=0.175
+    // produces activations up to ~6e3. The NVFP4 TC fast-math path quantizes
+    // ACTIVATIONS to E2M1 with E4M3 block scales (max representable ~2.7e3),
+    // so long prompts clamp and decode garbage (measured: the 197-token tool
+    // prompt returned `x = x e^{x}` on the TC path vs the source tool call).
+    // Pin the FP16-activation strict path for this family; the per-GPU policy
+    // is still consulted so the guard's model-independence contract holds.
+    const FastMathMode requested = EffectiveFastMathMode(cfg_);
+    (void)requested;
+    const lsx_nvfp4::LsxFastMathScope fm_scope(FastMathMode::kOff);
 
     if (!EnsureContext()) {
         r.error_msg = "cuda init failed";

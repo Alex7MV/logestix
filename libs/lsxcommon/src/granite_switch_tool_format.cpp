@@ -18,7 +18,11 @@ using lsxnetwork::json::JsonEscape;
 constexpr const char *kSentinels[] = {
     "<|start_of_role|>", "<|end_of_role|>",  "<|end_of_text|>",
     "<|guardian-core|>", "<|decision|>",     "<|audio|>",
-    "<|pad|>",
+    "<|pad|>",           "<tool_call>",      "</tool_call>",
+    "<tool_response>",   "</tool_response>", "<think>",
+    "</think>",          "<tools>",          "</tools>",
+    "<documents>",       "</documents>",     "<schema>",
+    "</schema>",         "<think_on>",       "<think_off>",
 };
 
 struct AdapterSpec {

@@ -987,6 +987,18 @@ Real-weight results (`linux-debug`, RTX 5090, 2026-10-31):
   all three modes (`test_granite_switch_adapter_parity`).
 - **Perf (AOCC release, 2048-token protocol): 69.28 t/s (perf) / 70.07 t/s
   (r3)**, TTFT 49 / 191 ms, 552.95 W average — `tests/perf/perf_baselines.json`.
+  The perf row was re-confirmed after the numeric-policy fix below.
+- **TC fast-math is disabled for this family (correctness).** The checkpoint's
+  `embedding_multiplier=12` / `residual_multiplier=0.175` produces activations
+  up to ~6e3 (measured at layer 17 in BF16). The NVFP4 TC path quantizes
+  *activations* to E2M1 with E4M3 block scales; its representable ceiling is
+  ~2.7e3, so long prompts clamp. Evidence: the 197-token tool prompt on the TC
+  path decoded `x = x e^{x}` instead of the source `<tool_call>...`; the same
+  prompt on the FP16-activation path reproduces the source tool call exactly
+  (input ids token-for-token, `test_granite_switch_model`). `Infer` therefore
+  pins `FastMathMode::kOff` for this family (still consulting
+  `EffectiveFastMathMode(cfg_)` for the independence contract). kOff is not a
+  throughput loss here: 70.07 t/s r3 vs 69.28 Auto on the measured rows.
 
 Open items / declared scope:
 

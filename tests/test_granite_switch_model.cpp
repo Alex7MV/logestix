@@ -4,9 +4,16 @@
 #include <lsxcommon/granite_dense_switch_inference.h>
 #include <lsxcommon/granite_dense_switch_load.h>
 #include <lsxcommon/model_factory.h>
+#include <lsxcommon/path_registry.h>
 
 #include "test_granite_switch_fixture.h"
 #include "test_streaming_assert.h"
+
+#include <simdjson.h>
+
+#ifndef LSX_GRANITE_SWITCH_FIXTURE_DIR
+#define LSX_GRANITE_SWITCH_FIXTURE_DIR "tests/fixtures/granite_switch"
+#endif
 
 #include <cuda_runtime.h>
 
@@ -179,3 +186,77 @@ TEST_CASE("granite-switch continuation matches a fresh prefill",
     model->Unload();
     std::filesystem::remove_all(tmp);
 }
+
+TEST_CASE("granite-switch native tool round-trip (real weights)",
+          "[granite_switch][model][tool][real-model]")
+{
+    const char *env = std::getenv("LSX_TEST_GRANITE_SWITCH_MODEL_PATH");
+    const std::filesystem::path root =
+        env ? std::filesystem::path(env)
+            : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
+                  "granite-switch-4.1-30b";
+    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+        SKIP("granite-switch converted model not present");
+    const std::filesystem::path golden_path =
+        std::filesystem::path(LSX_GRANITE_SWITCH_FIXTURE_DIR) /
+        "tool_roundtrip.json";
+    if (!std::filesystem::exists(golden_path))
+        SKIP("granite-switch tool golden not captured");
+
+    std::ifstream gf(golden_path);
+    std::string gj((std::istreambuf_iterator<char>(gf)),
+                   std::istreambuf_iterator<char>());
+    simdjson::dom::parser parser;
+    simdjson::dom::element doc;
+    REQUIRE(parser.parse(simdjson::padded_string(gj)).get(doc) ==
+            simdjson::SUCCESS);
+    std::vector<int32_t> golden_ids;
+    for (auto x : doc["input_ids"].get_array())
+        golden_ids.push_back(static_cast<int32_t>(int64_t(x)));
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = root.string();
+    cfg.model_type = "granite-switch-4.1-30b";
+    cfg.fast_math_mode = lsxcommon::FastMathMode::kOff;
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    lsxcommon::ChatConversation conv;
+    conv.messages.push_back(
+        {"user", "What is the current weather in Paris?", "", {}});
+    lsxcommon::ToolSpec tool;
+    tool.name = "get_weather";
+    tool.description = "Get the current weather for a city";
+    tool.parameters_json =
+        R"({"type": "object", "properties": {"city": {"type": "string", "description": "City name"}}, "required": ["city"]})";
+    conv.tools.push_back(tool);
+
+    std::vector<int32_t> ids;
+    REQUIRE(model->BuildConversationInputIds(model->Tokenizer(), conv, ids));
+    if (ids != golden_ids) {
+        std::string a, b;
+        for (auto x : ids) a += std::to_string(x) + " ";
+        for (auto x : golden_ids) b += std::to_string(x) + " ";
+        INFO("got:  " << a << "\nwant: " << b);
+        { std::ofstream g("/tmp/gsw_got_ids.txt"); for (auto x : ids) g << x << "\n"; }
+        { std::ofstream w("/tmp/gsw_want_ids.txt"); for (auto x : golden_ids) w << x << "\n"; }
+    }
+    REQUIRE(ids == golden_ids);
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = 128;
+    auto r = model->Infer(req);
+    REQUIRE(r.ok);
+    { std::string t; for (auto x : r.gen_tokens) t += std::to_string(x)+" "; INFO("gen ids: " << t); }
+    INFO("output: " << r.output_text << " eos=" << r.eos_terminated);
+    std::vector<lsxcommon::ToolCall> calls;
+    REQUIRE(model->ParseToolCalls(model->Tokenizer(), r.gen_tokens, calls));
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
+
+    model->Unload();
+}
+
