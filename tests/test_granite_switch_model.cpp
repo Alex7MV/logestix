@@ -239,8 +239,6 @@ TEST_CASE("granite-switch native tool round-trip (real weights)",
         for (auto x : ids) a += std::to_string(x) + " ";
         for (auto x : golden_ids) b += std::to_string(x) + " ";
         INFO("got:  " << a << "\nwant: " << b);
-        { std::ofstream g("/tmp/gsw_got_ids.txt"); for (auto x : ids) g << x << "\n"; }
-        { std::ofstream w("/tmp/gsw_want_ids.txt"); for (auto x : golden_ids) w << x << "\n"; }
     }
     REQUIRE(ids == golden_ids);
 
@@ -249,8 +247,7 @@ TEST_CASE("granite-switch native tool round-trip (real weights)",
     req.max_gen_tokens = 128;
     auto r = model->Infer(req);
     REQUIRE(r.ok);
-    { std::string t; for (auto x : r.gen_tokens) t += std::to_string(x)+" "; INFO("gen ids: " << t); }
-    INFO("output: " << r.output_text << " eos=" << r.eos_terminated);
+    INFO("output: " << r.output_text);
     std::vector<lsxcommon::ToolCall> calls;
     REQUIRE(model->ParseToolCalls(model->Tokenizer(), r.gen_tokens, calls));
     REQUIRE(!calls.empty());
