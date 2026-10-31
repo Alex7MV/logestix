@@ -11,6 +11,7 @@
 
 #include <absl/strings/str_cat.h>
 
+#include <cmath>
 #include <cstdlib>
 
 namespace lsxcommon {
@@ -62,11 +63,16 @@ bool MinimaxM3Model::Load()
         (top.num_layers != kLayers || top.hidden_size != kHidden ||
          top.num_experts != kNumExperts || top.num_attention_heads != kHeads ||
          top.num_key_value_heads != kKvHeads || top.head_dim != kHeadDim ||
-         top.vocab_size != kVocab)) {
+         top.vocab_size != kVocab ||
+         top.first_moe_layer != kFirstMoeLayer ||
+         top.first_sparse_layer != kFirstSparseLayer ||
+         std::fabs(top.rope_theta - kRopeTheta) > kRopeTheta * 1e-6)) {
         lsxcommon::log::error(absl::StrCat(
             "[minimax-model] topology mismatches frozen passport (layers ",
             top.num_layers, "/", kLayers, ", hidden ", top.hidden_size, "/",
-            kHidden, ", experts ", top.num_experts, "/", kNumExperts, ")"));
+            kHidden, ", experts ", top.num_experts, "/", kNumExperts,
+            ", first sparse ", top.first_sparse_layer, "/", kFirstSparseLayer,
+            ", theta ", top.rope_theta, "/", kRopeTheta, ")"));
         return AbortLoad();
     }
     vram_ = top.vram;

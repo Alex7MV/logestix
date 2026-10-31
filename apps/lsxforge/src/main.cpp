@@ -22,6 +22,7 @@
 #include "lsxcommon/flint_moe_convert.h"
 #include "lsxcommon/ling_moe_convert.h"
 #include "lsxcommon/minimax_moe_convert.h"
+#include "lsxcommon/minimax_moe_flash_convert.h"
 
 #include <simdjson.h>
 #include "lsxcommon/mimo_moe_convert.h"
@@ -97,6 +98,9 @@ ABSL_FLAG(bool, xing, false,
           "Xing4.0-29B-A4B (mHC + MLA + MTP sparse MoE) conversion pipeline");
 ABSL_FLAG(bool, minimax, false,
           "convert MiniMax-M3 (vision tower stripped) to logestix-minimax-nvfp4");
+ABSL_FLAG(bool, minimax_flash, false,
+          "convert MiniMax-M3.1-Flash (MXFP8 dense + NVFP4 experts, MSA "
+          "throughout) to logestix-minimax-nvfp4");
 ABSL_FLAG(bool, flint, false,
           "Recursive Flint (hybrid sink/SWA/no-RoPE MoE) conversion pipeline");
 ABSL_FLAG(bool, ling, false,
@@ -182,6 +186,7 @@ int main(int argc, char* argv[]) {
     bool xing = absl::GetFlag(FLAGS_xing);
     bool mistral = absl::GetFlag(FLAGS_mistral);
     bool minimax = absl::GetFlag(FLAGS_minimax);
+    bool minimax_flash = absl::GetFlag(FLAGS_minimax_flash);
     bool hy = absl::GetFlag(FLAGS_hy);
     bool hy_simulmt = absl::GetFlag(FLAGS_hy_simulmt);
     bool flint = absl::GetFlag(FLAGS_flint);
@@ -225,6 +230,7 @@ int main(int argc, char* argv[]) {
     flags.xing = xing;
     flags.mistral = mistral;
     flags.minimax = minimax;
+    flags.minimax_flash = minimax_flash;
     flags.hy = hy;
     flags.hy_simulmt = hy_simulmt;
     flags.flint = flint;
@@ -469,7 +475,7 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
-        if (flags.minimax) {
+        if (flags.minimax || flags.minimax_flash) {
             tok_policy.bos_id = -1;
             tok_policy.pretokenizer = 1;
             const auto gen = fs::path(input_path) / "generation_config.json";
@@ -608,6 +614,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Mistral conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kMinimaxFlash: {
+        lsxcommon::log::info(
+            "MiniMax-M3.1-Flash pipeline (logestix-minimax-nvfp4 layout, "
+            "MXFP8 dense + NVFP4 experts, MSA throughout)");
+        auto st = lsxcommon::minimax::ConvertMinimaxFlashModel(input_path,
+                                                               output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "MiniMax-M3.1-Flash conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("MiniMax-M3.1-Flash conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

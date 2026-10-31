@@ -183,6 +183,17 @@ MinimaxTopology LoadMinimaxTopology(const std::string &model_path)
         top.error_msg = "index missing layers/experts/dispatch fields";
         return top;
     }
+    // Derived dispatch boundaries: every registered member cross-checks these
+    // against its own frozen passport (M3: sparse from layer 3; M3.1-Flash:
+    // sparse from layer 0). A value of num_layers means "never".
+    auto first_of = [](const std::vector<std::string> &v,
+                       const char *dense) -> int {
+        for (size_t i = 0; i < v.size(); ++i)
+            if (v[i] != dense) return static_cast<int>(i);
+        return static_cast<int>(v.size());
+    };
+    top.first_moe_layer = first_of(top.mlp_types, "dense");
+    top.first_sparse_layer = first_of(top.layer_types, "dense_attention");
     return top;
 }
 

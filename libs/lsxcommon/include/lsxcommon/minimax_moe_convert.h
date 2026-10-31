@@ -44,11 +44,29 @@ enum class MinimaxTensorKind {
     Visual,            // vision_tower.* / multi_modal_projector.* / patch_merge_mlp.*
 };
 
+// Source encoding of a tensor inside the checkpoint. MiniMax-M3 ships BF16
+// dense weights and BF16 routed experts; the quantized sibling
+// (MiniMax-M3.1-Flash) ships MXFP8 dense projections (`<name>.weight` +
+// `<name>.weight_scale_inv`, per-32 E8M0 exponents) and already-packed
+// ModelOpt NVFP4 experts (`w{1,2,3}.weight_packed` + `weight_scale` F8_E4M3
+// per-16 + `weight_global_scale` F32 divisor + `input_global_scale`).
+enum class MinimaxSourceEncoding {
+    kRaw,                       // BF16/F32 payload the converter quantizes
+    kMxfp8ScaleInv,             // <name>.weight_scale_inv companion
+    kExpertPacked,              // wN.weight_packed (U8 E2M1)
+    kExpertScale,               // wN.weight_scale  (F8_E4M3 per 16)
+    kExpertGlobalScale,         // wN.weight_global_scale (F32 divisor)
+    kExpertInputGlobalScale,    // wN.input_global_scale (activation; ignored)
+};
+
 struct ParsedMinimaxTensor {
     MinimaxTensorKind kind = MinimaxTensorKind::Unknown;
     int layer = -1;
     int expert = -1;   // >= 0 for ExpertW1/W2/W3
+    MinimaxSourceEncoding encoding = MinimaxSourceEncoding::kRaw;
 };
+
+
 
 // Classifies an HF MiniMax-M3 tensor name.
 ParsedMinimaxTensor classify_minimax_tensor(const std::string &name);
@@ -88,6 +106,10 @@ struct MinimaxTopology {
     // Per-layer dispatch, derived from moe_layer_freq / sparse_attention_freq.
     std::vector<std::string> mlp_types;    // "dense" | "sparse"
     std::vector<std::string> layer_types;  // "dense_attention" | "sparse_attention"
+    // Derived from the dispatch arrays: first layer of each kind (== num_layers
+    // when every layer is that kind). Passport cross-checks read these.
+    int first_moe_layer = -1;
+    int first_sparse_layer = -1;
 
     int total_pinned_tensors = 0;
     int skipped_visual_tensors = 0;
@@ -101,9 +123,29 @@ struct MinimaxTopology {
 // a non-empty error_msg.
 MinimaxTopology ParseMinimaxConfig(const std::string &input_dir);
 
+// Which member of the family a parsed topology describes. The two checkpoints
+// share the emitted artifact layout (same format tag); the discriminator is
+// the RoPE theta plus the sparse-attention pattern (M3: theta 5e6, dense
+// attention on layers 0-2; M3.1-Flash: theta 1e7, MSA on every layer).
+enum class MinimaxVariant { kUnknown, kM3, kM3Flash };
+MinimaxVariant ClassifyMinimaxVariant(const MinimaxTopology &top);
+
+// Identity a converter run stamps into model.index.json. `model` must
+// normalize (detect_model_type) to exactly the model's kType, otherwise path
+// auto-detection cannot resolve the family member.
+struct MinimaxConvertVariant {
+    MinimaxVariant variant = MinimaxVariant::kM3;
+    const char *model = "MiniMax-M3";
+    const char *model_type = "minimax-m3";
+};
+
 // Converts a MiniMax-M3 model directory (safetensors shards + config.json)
 // into the unified <output_root>/logestix arrow layout (vault convention).
 arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
                                      const std::string &output_root);
+// Same pipeline with an explicit family-member identity + discriminator gate.
+arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
+                                     const std::string &output_root,
+                                     const MinimaxConvertVariant &variant);
 
 } // namespace lsxcommon::minimax

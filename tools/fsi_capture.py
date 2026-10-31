@@ -84,6 +84,19 @@ OVERRIDES["minimax-m3"] = {
     "unrunnable": "428B/796 GB BF16 checkpoint: no 32 GB-card execution path "
                   "(vendor stack is TP-8 over the full BF16 tree)",
 }
+# MiniMax-M3.1-Flash (428B, pre-quantized MXFP8 dense + NVFP4 experts): the
+# source is not runnable on one 32 GB card (no published single-GPU runner and
+# the quantization kernel stack is QAT/vendor-side), so the golden is the
+# prompt's Expected Template (template-only mode) framed with the checkpoint's
+# own chat template. The M3.1 template has NO thinking_mode switch: thinking is
+# fixed to adaptive and the generation prompt carries no think-END prefix.
+OVERRIDES["minimax-m3.1-flash"] = {
+    "template_kwargs": {},
+    "unrunnable": "428B pre-quantized (MXFP8 dense + ModelOpt NVFP4 experts) "
+                  "checkpoint: no 32 GB-card execution path (vendor stack is "
+                  "multi-GPU), so the parity oracle is the prompt template",
+}
+
 # kimi-k2.7-code: 581 GB in the compressed-tensors INT4 layout; run on CPU
 # (device_map="cpu"), there is no GPU that holds it.
 OVERRIDES["kimi-k2.7-code"] = {

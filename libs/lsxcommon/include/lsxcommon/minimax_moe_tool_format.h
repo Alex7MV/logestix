@@ -25,8 +25,31 @@ namespace lsxcommon::minimax {
 // reasoning_content carries).
 bool MinimaxChatSentinelsPresent(const ArrowTokenizerDb &tok);
 
+// Per-checkpoint deltas of the shared MiniMax chat template. The default
+// policy reproduces MiniMax-M3 (thinking disabled + think-END generation
+// prefix, no developer blocks, one `]~b]tool` block per tool message).
+struct MinimaxRenderPolicy {
+    const char *default_system = nullptr;      // nullptr => the M3 text
+    const char *thinking_mode_line = nullptr;  // nullptr => the M3 disabled line
+    const char *system_suffix = nullptr;       // e.g. "\n\n<model_id>..."
+    bool generation_think_end = true;          // M3 prefixes </mm:think>
+    bool developer_blocks = false;             // mid-conversation system turns
+    bool batch_tool_results = false;           // consecutive tool msgs share a block
+};
+
+// The MiniMax-M3.1-Flash checkpoint's own template (chat_template.jinja):
+// model version M3.1 + `<model_id>8bb8149fe</model_id>`, fixed ADAPTIVE
+// thinking (no generation prefix), `developer` blocks for mid-conversation
+// system/developer turns, and ONE `]~b]tool` block for a run of tool results.
+MinimaxRenderPolicy MinimaxFlashRenderPolicy();
+
 bool RenderMinimaxConversation(const ArrowTokenizerDb &tok,
                                const ChatConversation &conv,
+                               std::vector<int32_t> &out_ids);
+
+bool RenderMinimaxConversation(const ArrowTokenizerDb &tok,
+                               const ChatConversation &conv,
+                               const MinimaxRenderPolicy &policy,
                                std::vector<int32_t> &out_ids);
 
 // Parses `<invoke name="f"><k>v</k>...</invoke>` blocks out of the decoded

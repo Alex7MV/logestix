@@ -11,6 +11,7 @@
 #include "step_moe_model.h"
 #include "beam_moe_model.h"
 #include "minimax_moe_model.h"
+#include "minimax_moe_flash_model.h"
 #include "lsxcommon/gigachat_moe_model.h"
 #include "deepseek_moe_model.h"
 #include "deepseek_moe_pro_model.h"
@@ -63,6 +64,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<XingMoeModel>();
         LsxModelFactory::Register<MistralSmall4MoeModel>();
         LsxModelFactory::Register<MinimaxM3Model>();
+        LsxModelFactory::Register<MiniMaxM31FlashModel>();
         LsxModelFactory::Register<HyMemoryModel>();
         LsxModelFactory::Register<HySimulMTModel>();
         LsxModelFactory::Register<FlintMoeModel>();
