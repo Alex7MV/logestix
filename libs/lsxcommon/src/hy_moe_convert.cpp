@@ -16,6 +16,7 @@
 #include <absl/strings/str_format.h>
 #include <simdjson.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -27,8 +28,6 @@
 
 namespace lsxcommon::hy {
 namespace {
-
-using frozen::kType;
 
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
@@ -44,43 +43,70 @@ auto get_d = [](simdjson::ondemand::object &o, const char *k, double dflt) {
     return dflt;
 };
 
-// Cross-checks the parsed config against the frozen passport. Returns false
-// and fills `why` on mismatch (synthetic fixtures bypass this upstream).
-bool CheckFrozenGeometry(const HyTopology &top, std::string &why)
+// Cross-checks the parsed config against the caller's frozen passport. Returns
+// false and fills `why` on mismatch (synthetic fixtures bypass this upstream).
+bool CheckFrozenGeometry(const HyPassportGeometry &g, const HyTopology &top,
+                         std::string &why)
 {
-    using namespace frozen;
     auto bad = [&why](const char *field, int got, int want) {
         why = absl::StrFormat("%s: got %d, want %d", field, got, want);
         return false;
     };
-    if (top.hidden_size != kHidden) return bad("hidden_size", top.hidden_size, kHidden);
-    if (top.num_layers != kLayers) return bad("num_hidden_layers", top.num_layers, kLayers);
-    if (top.num_attention_heads != kHeads)
-        return bad("num_attention_heads", top.num_attention_heads, kHeads);
-    if (top.num_key_value_heads != kKvHeads)
-        return bad("num_key_value_heads", top.num_key_value_heads, kKvHeads);
-    if (top.head_dim != kHeadDim) return bad("head_dim", top.head_dim, kHeadDim);
-    if (top.rotary_dim != kRotaryDim) return bad("rotary_dim", top.rotary_dim, kRotaryDim);
-    if (top.vocab_size != kVocab) return bad("vocab_size", top.vocab_size, kVocab);
-    if (top.num_experts != kNumExperts)
-        return bad("num_experts", top.num_experts, kNumExperts);
-    if (top.num_experts_per_tok != kTopK)
-        return bad("num_experts_per_tok", top.num_experts_per_tok, kTopK);
-    if (top.moe_intermediate_size != kMoeIntermediate)
-        return bad("expert_hidden_dim", top.moe_intermediate_size, kMoeIntermediate);
-    if (top.shared_intermediate_size != kSharedIntermediate)
+    if (top.hidden_size != g.hidden) return bad("hidden_size", top.hidden_size, g.hidden);
+    if (top.num_layers != g.layers) return bad("num_hidden_layers", top.num_layers, g.layers);
+    if (top.num_attention_heads != g.heads)
+        return bad("num_attention_heads", top.num_attention_heads, g.heads);
+    if (top.num_key_value_heads != g.kv_heads)
+        return bad("num_key_value_heads", top.num_key_value_heads, g.kv_heads);
+    if (top.head_dim != g.head_dim) return bad("head_dim", top.head_dim, g.head_dim);
+    if (top.rotary_dim != g.rotary_dim) return bad("rotary_dim", top.rotary_dim, g.rotary_dim);
+    if (top.vocab_size != g.vocab) return bad("vocab_size", top.vocab_size, g.vocab);
+    if (top.num_experts != g.num_experts)
+        return bad("num_experts", top.num_experts, g.num_experts);
+    if (top.num_experts_per_tok != g.top_k)
+        return bad("num_experts_per_tok", top.num_experts_per_tok, g.top_k);
+    if (top.moe_intermediate_size != g.moe_intermediate)
+        return bad("expert_hidden_dim", top.moe_intermediate_size,
+                   g.moe_intermediate);
+    if (top.shared_intermediate_size != g.shared_intermediate)
         return bad("shared_intermediate_size", top.shared_intermediate_size,
-                   kSharedIntermediate);
-    if (top.dense_intermediate_size != kDenseIntermediate)
+                   g.shared_intermediate);
+    if (top.dense_intermediate_size != g.dense_intermediate)
         return bad("dense_intermediate_size", top.dense_intermediate_size,
-                   kDenseIntermediate);
+                   g.dense_intermediate);
     for (int i = 0; i < top.num_layers; ++i) {
         const size_t ui = static_cast<size_t>(i);
-        const char *want_mlp = IsMoeLayer(i) ? "sparse" : "dense";
+        const char *want_mlp = (i >= g.first_moe_layer) ? "sparse" : "dense";
         if (top.mlp_types[ui] != want_mlp)
             return bad("mlp_layer_types[i]", i, 0);
     }
     return true;
+}
+
+// The speech encoder of Hy-SimulMT is ballast: stored + counted, never applied.
+bool IsAudioBallast(const std::string &name)
+{
+    return name.rfind("audio_tower.", 0) == 0;
+}
+
+HyPassportGeometry HyMemoryPassportGeometry()
+{
+    using namespace frozen;
+    return HyPassportGeometry{
+        .layers = kLayers,
+        .hidden = kHidden,
+        .heads = kHeads,
+        .kv_heads = kKvHeads,
+        .head_dim = kHeadDim,
+        .rotary_dim = kRotaryDim,
+        .vocab = kVocab,
+        .dense_intermediate = kDenseIntermediate,
+        .moe_intermediate = kMoeIntermediate,
+        .shared_intermediate = kSharedIntermediate,
+        .num_experts = kNumExperts,
+        .top_k = kTopK,
+        .first_moe_layer = kFirstMoeLayer,
+    };
 }
 
 std::vector<uint8_t> ReadTensorData(const std::filesystem::path &input_path,
@@ -128,6 +154,48 @@ arrow::Status WriteExpertFile(const std::filesystem::path &base_dir, int layer,
     if (!batch.ok()) return batch.status();
     return WriteRecordBatchToFile(*batch,
                                   dir / absl::StrCat("exp_", expert, ".arrow"));
+}
+
+// Appends one `eos_token_id` value, which the checkpoints encode either as a
+// single int or as an array (Hy-SimulMT: [120025, 120008]).
+void AppendEosIds(simdjson::ondemand::value val, std::vector<int> &out)
+{
+    int64_t x = 0;
+    if (val.get_int64().get(x) == simdjson::SUCCESS) {
+        out.push_back(static_cast<int>(x));
+        return;
+    }
+    auto arr = val.get_array();
+    if (arr.error() != simdjson::SUCCESS) return;
+    for (auto e : arr.value()) {
+        int64_t v = 0;
+        if (e.get_int64().get(v) == simdjson::SUCCESS)
+            out.push_back(static_cast<int>(v));
+    }
+}
+
+void ReadEosIdsFromObject(simdjson::ondemand::object &root,
+                          std::vector<int> &out)
+{
+    auto v = root["eos_token_id"];
+    if (v.error() != simdjson::SUCCESS) return;
+    AppendEosIds(v.value(), out);
+}
+
+void ReadEosIdsFile(const std::filesystem::path &path, std::vector<int> &out)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return;
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (json.empty()) return;
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS) return;
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) return;
+    ReadEosIdsFromObject(root, out);
 }
 
 void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
@@ -252,6 +320,25 @@ HyTopology ParseHyConfig(const std::string &input_dir)
         ReadGenerationIds(fs::path(input_dir) / "generation_config.json",
                           top.bos_token_id, top.eos_token_id,
                           top.pad_token_id);
+
+    // Stop ids: the config's primary eos first, then everything the
+    // generation_config declares (which may be an array).
+    top.eos_ids.clear();
+    if (top.eos_token_id >= 0) top.eos_ids.push_back(top.eos_token_id);
+    {
+        // Fresh parse (ondemand is single-pass): the config may encode the
+        // stop id as an int or an array, and the generation_config adds more.
+        ReadEosIdsFile(cfg_path, top.eos_ids);
+        ReadEosIdsFile(fs::path(input_dir) / "generation_config.json",
+                       top.eos_ids);
+        std::vector<int> uniq;
+        for (int id : top.eos_ids)
+            if (std::find(uniq.begin(), uniq.end(), id) == uniq.end())
+                uniq.push_back(id);
+        top.eos_ids = std::move(uniq);
+        if (top.eos_token_id < 0 && !top.eos_ids.empty())
+            top.eos_token_id = top.eos_ids.front();
+    }
 
     if (top.hidden_size <= 0 || top.num_layers <= 0 || top.vocab_size <= 0 ||
         top.num_attention_heads <= 0 || top.num_key_value_heads <= 0 ||
@@ -390,22 +477,24 @@ bool hy_tensor_is_routed_expert(HyTensorKind kind)
            kind == HyTensorKind::ExpertUp;
 }
 
-arrow::Status ConvertHyMoeModel(const std::string &input_dir,
-                                const std::string &output_root)
+arrow::Status ConvertHyMoeModelWithSpec(const std::string &input_dir,
+                                        const std::string &output_root,
+                                        const HyConvertSpec &spec)
 {
     namespace fs = std::filesystem;
 
     // (1) Topology: config.json is mandatory and authoritative.
     HyTopology top = ParseHyConfig(input_dir);
     if (!top.error_msg.empty())
-        return arrow::Status::Invalid("Hy-Memory config error: ", top.error_msg);
+        return arrow::Status::Invalid(spec.model_name, " config error: ",
+                                      top.error_msg);
     if (top.num_experts_per_tok > top.num_experts)
         return arrow::Status::Invalid("num_experts_per_tok > num_experts");
     if (!SyntheticGeometryAllowed()) {
         std::string why;
-        if (!CheckFrozenGeometry(top, why))
-            return arrow::Status::Invalid("Hy-Memory frozen geometry mismatch: ",
-                                          why);
+        if (!CheckFrozenGeometry(spec.geometry, top, why))
+            return arrow::Status::Invalid(spec.model_name,
+                                          " frozen geometry mismatch: ", why);
     }
 
     auto model = lsxcommon::scan_directory(input_dir);
@@ -424,10 +513,15 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
     absl::btree_map<int, int> layer_kind_count;
     for (const auto &shard : model.shards) {
         for (const auto &t : shard.tensors) {
+            if (spec.allow_audio_ballast && IsAudioBallast(t.name)) {
+                ++top.skipped_ballast_tensors;
+                continue;
+            }
             auto p = classify_hy_tensor(t.name);
             if (p.kind == HyTensorKind::Unknown)
-                return arrow::Status::Invalid(
-                    "unrecognized tensor in Hy-Memory checkpoint: ", t.name);
+                return arrow::Status::Invalid("unrecognized tensor in ",
+                                              spec.model_name, " checkpoint: ",
+                                              t.name);
             if (hy_tensor_is_routed_expert(p.kind)) {
                 if (p.layer < 0 || p.expert < 0)
                     return arrow::Status::Invalid("expert tensor without index: ",
@@ -457,6 +551,8 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
             s.filename = shard.filename;
             s.file_size = shard.file_size;
             for (const auto &t : shard.tensors) {
+                if (spec.allow_audio_ballast && IsAudioBallast(t.name))
+                    continue;
                 auto p = classify_hy_tensor(t.name);
                 if (!hy_tensor_is_routed_expert(p.kind))
                     s.tensors.push_back(t);
@@ -499,6 +595,7 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
 
     for (auto &shard : model.shards) {
         for (auto &t : shard.tensors) {
+            if (spec.allow_audio_ballast && IsAudioBallast(t.name)) continue;
             auto p = classify_hy_tensor(t.name);
             if (hy_tensor_is_routed_expert(p.kind)) continue;
 
@@ -576,16 +673,16 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
     const int I = top.moe_intermediate_size;
     int experts_done = 0;
     const int experts_total =
-        (top.num_layers - frozen::kFirstMoeLayer) * top.num_experts;
+        (top.num_layers - spec.geometry.first_moe_layer) * top.num_experts;
     int last_pct = -1;
     // Operational fast path: re-convert only the dense side when the expert
     // store is already on disk. The written index is byte-identical (every
     // field is topology-derived).
     const bool skip_experts = std::getenv("LSX_HY_SKIP_EXPERTS") != nullptr;
     if (skip_experts)
-        lsxcommon::log::info(
-            "Hy-Memory: LSX_HY_SKIP_EXPERTS set — reusing the existing expert "
-            "store");
+        lsxcommon::log::info(absl::StrCat(
+            spec.model_name,
+            ": LSX_HY_SKIP_EXPERTS set — reusing the existing expert store"));
     for (int l = 0; !skip_experts && l < top.num_layers; ++l) {
         if (top.mlp_types[static_cast<size_t>(l)] != "sparse") continue;
         for (int e = 0; e < top.num_experts; ++e) {
@@ -595,7 +692,7 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
                                     : 100;
                 if (pct != last_pct && pct % 5 == 0) {
                     lsxcommon::log::info(absl::StrFormat(
-                        "Hy-Memory experts: %d/%d (%d%%) layer %d",
+                        "%s experts: %d/%d (%d%%) layer %d", spec.model_name,
                         experts_done, experts_total, pct, l));
                     last_pct = pct;
                 }
@@ -710,14 +807,16 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
     vg.hidden_dim = top.hidden_size;
     vg.kv_dim = top.head_dim * top.num_key_value_heads;
     vg.num_attn_layers = top.num_layers;
-    vg.num_moe_layers = top.num_layers - frozen::kFirstMoeLayer;
+    vg.num_moe_layers = top.num_layers - spec.geometry.first_moe_layer;
     vg.experts_per_layer = top.num_experts;
     vg.context_length =
         ReadContextLength((fs::path(input_dir) / "config.json").string());
     std::vector<VramTensorInfo> inv;
     for (auto &shard : model.shards)
-        for (auto &t : shard.tensors)
+        for (auto &t : shard.tensors) {
+            if (spec.allow_audio_ballast && IsAudioBallast(t.name)) continue;
             inv.push_back({t.name, t.numel(), t.byte_size()});
+        }
     const VramProfile vram = EstimateVram(
         inv,
         {+[](const std::string &n) {
@@ -732,9 +831,9 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
     // (7) Structural manifest (deterministic byte content).
     {
         std::ostringstream j;
-        j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n"
-          << "  \"model\": \"" << frozen::kModelName << "\",\n"
-          << "  \"model_type\": \"" << frozen::kType << "\",\n"
+        j << "{\n  \"format\": \"" << spec.format_tag << "\",\n"
+          << "  \"model\": \"" << spec.model_name << "\",\n"
+          << "  \"model_type\": \"" << spec.model_type << "\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n  \"mlp_layer_types\": [";
         for (size_t i = 0; i < top.mlp_types.size(); ++i) {
             if (i) j << ",";
@@ -755,8 +854,14 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
           << ",\n  \"shared_intermediate_size\": "
           << top.shared_intermediate_size
           << ",\n  \"router_scaling_factor\": " << top.router_scaling_factor
-          << ",\n  \"first_moe_layer\": " << frozen::kFirstMoeLayer
+          << ",\n  \"first_moe_layer\": " << spec.geometry.first_moe_layer
           << ",\n  \"eos_token_id\": " << top.eos_token_id
+          << ",\n  \"eos_token_ids\": [";
+        for (size_t i = 0; i < top.eos_ids.size(); ++i) {
+            if (i) j << ",";
+            j << top.eos_ids[i];
+        }
+        j << "]"
           << ",\n  \"bos_token_id\": " << top.bos_token_id
           << ",\n  \"pad_token_id\": " << top.pad_token_id
           << ",\n  \"vram\": {\n    \"min_bytes\": " << vram.min_bytes
@@ -768,7 +873,7 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
           << "\""
           << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
           << ",\n  \"total_experts\": " << top.num_experts * (top.num_layers -
-                                                             frozen::kFirstMoeLayer)
+                                                             spec.geometry.first_moe_layer)
           << "\n}";
         std::ofstream out(base / "model.index.json");
         out << j.str();
@@ -789,11 +894,20 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
     }
 
     lsxcommon::log::info(absl::StrFormat(
-        "Hy-Memory conversion: %d layers (%d MoE), %d experts/layer, "
-        "%d pinned tensors",
-        top.num_layers, top.num_layers - frozen::kFirstMoeLayer, top.num_experts,
-        top.total_pinned_tensors));
+        "%s conversion: %d layers (%d MoE), %d experts/layer, "
+        "%d pinned tensors, %d ballast tensors",
+        spec.model_name, top.num_layers,
+        top.num_layers - spec.geometry.first_moe_layer, top.num_experts,
+        top.total_pinned_tensors, top.skipped_ballast_tensors));
     return arrow::Status::OK();
+}
+
+arrow::Status ConvertHyMoeModel(const std::string &input_dir,
+                                const std::string &output_root)
+{
+    HyConvertSpec spec;
+    spec.geometry = HyMemoryPassportGeometry();
+    return ConvertHyMoeModelWithSpec(input_dir, output_root, spec);
 }
 
 } // namespace lsxcommon::hy

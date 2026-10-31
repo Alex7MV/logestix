@@ -26,11 +26,22 @@ namespace lsxcommon::hy {
 // `<|Assistant|><think></think>`, so the answer starts directly.
 bool HyChatSentinelsPresent(const ArrowTokenizerDb &tok);
 
+// Per-checkpoint template deltas. Hy-Memory's tool instructions close the
+// example call with `</tool_call>`; Hy-SimulMT's template closes it with
+// `</tool_calls>` (the checkpoint's own literal). Everything else is shared.
+struct HyRenderPolicy {
+    bool example_call_close_is_calls_end = false;
+};
+
 // Renders a conversation (system prompt, optional tools, tool calls and tool
 // responses) into the checkpoint's exact token framing.
 bool RenderHyConversation(const ArrowTokenizerDb &tok,
                           const ChatConversation &conv,
                           std::vector<int32_t> &out_ids);
+bool RenderHyConversation(const ArrowTokenizerDb &tok,
+                          const ChatConversation &conv,
+                          std::vector<int32_t> &out_ids,
+                          const HyRenderPolicy &policy);
 
 // Parses the native `<tool_calls>` block out of the generated tokens; falls
 // back to the generic Hermes/bare-JSON parsers when the native markers are

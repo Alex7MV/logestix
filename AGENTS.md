@@ -510,6 +510,24 @@ procedure — `perf-tuning-a-model`.
   `mlp.router.gate`, which the stock HF class does not accept, so the oracle
   assembles the fused tensors. Session facts, gates and perf rows:
   `docs/OPEN_TASKS.md` §R5.
+  Hy-SimulMT-30B-A3B (sibling of `hy`, registry `hy-simulmt-30b-a3b`): the
+  `HYV3SpeechForCausalLM` checkpoint whose text side is the SAME `hy_v3`
+  backbone (18 673 identically-named tensors, byte-identical `tokenizer.json`)
+  plus a 24-layer speech encoder that is stripped AND counted (403
+  `audio_tower.*` tensors, `skipped_visual_tensors`); `hy_moe_simulmt_constants.h`
+  (frozen passport, `logestix-hy-simulmt-nvfp4`), the shared spec-driven
+  converter via `hy_moe_simulmt_convert.{h,cpp}` + `lsxforge --hy_simulmt`,
+  `hy_moe_simulmt_model.{h,cpp}` (reuses the parent's loader/kernels/pipeline
+  through `HyPassportGeometry`). It is a direction-bound zh↔en simultaneous
+  translator: the engine prefixes the checkpoint's own serving directive and
+  auto-selects the direction from the source script (Han → zh-en, else en-zh),
+  so a plain text request is a translation request; without the directive the
+  decoder only summarises. Two stop ids (`eos_token_ids`: `<eos>` and
+  `<|hy_EOT|>`), `HyRenderPolicy` carries the template's `</tool_calls>`
+  example-close delta. SelfCheck PASS (translation direction), FSI/CODE/DET are
+  declared debt (the source summarises the QA bodies instead of answering);
+  perf 87.57 / 74.85 t/s at 2048 tokens. Audio input/speech output are out of
+  scope. `docs/OPEN_TASKS.md` §R11.
   Kimi-K2.7-Code (independent family `kimi`: DeepSeek-V3 MLA + 384-expert top-8
   MoE with one shared expert, 61 layers / 7168H / 64 heads / q_lora 1536 /
   kv_lora 512 / qk_nope 128 / qk_rope 64, YaRN factor 64;

@@ -73,6 +73,10 @@ struct HyTopology {
     int eos_token_id = -1;
     int bos_token_id = -1;
     int pad_token_id = -1;
+    // Every stop id the checkpoint declares (`generation_config.json` may
+    // carry an ARRAY). Hy-Memory stops on the single <eos>; Hy-SimulMT also
+    // stops on <|hy_EOT|> (120008), so the generation loop must honour all.
+    std::vector<int> eos_ids;
     // Per-layer dispatch, derived from mlp_layer_types.
     std::vector<std::string> mlp_types;    // "dense" | "sparse"
 
@@ -87,9 +91,46 @@ struct HyTopology {
 // problem the returned struct carries a non-empty error_msg.
 HyTopology ParseHyConfig(const std::string &input_dir);
 
+// Frozen-geometry expectations a caller checks the parsed config against.
+// This is a neutral POD shared by the converter and the loader so a sibling
+// variant (Hy-SimulMT) can reuse both without borrowing another model's
+// `frozen` namespace.
+struct HyPassportGeometry {
+    int layers = 0;
+    int hidden = 0;
+    int heads = 0;
+    int kv_heads = 0;
+    int head_dim = 0;
+    int rotary_dim = 0;
+    int vocab = 0;
+    int dense_intermediate = 0;
+    int moe_intermediate = 0;
+    int shared_intermediate = 0;
+    int num_experts = 0;
+    int top_k = 0;
+    int first_moe_layer = 0;
+};
+
+// Model identity + policy for one conversion. The default is Hy-Memory's;
+// Hy-SimulMT supplies its own identity and audio-ballast policy.
+struct HyConvertSpec {
+    HyPassportGeometry geometry;
+    std::string model_type = "hy-memory-30b-a3b";
+    std::string model_name = "Hy-Memory-30B-A3B";
+    std::string format_tag = "logestix-hy-nvfp4";
+    // Hy-SimulMT carries a speech encoder (`audio_tower.*`) beside the text
+    // backbone. When set, those tensors are stripped AND counted.
+    bool allow_audio_ballast = false;
+};
+
 // Converts a Hy-Memory-30B-A3B model directory (safetensors shards +
 // config.json) into the unified <output_root>/logestix arrow layout.
 arrow::Status ConvertHyMoeModel(const std::string &input_dir,
                                 const std::string &output_root);
+
+// Shared implementation: the same pipeline with an explicit identity/policy.
+arrow::Status ConvertHyMoeModelWithSpec(const std::string &input_dir,
+                                        const std::string &output_root,
+                                        const HyConvertSpec &spec);
 
 } // namespace lsxcommon::hy

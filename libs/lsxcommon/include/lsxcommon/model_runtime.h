@@ -43,7 +43,12 @@ struct ParisSelfCheckOptions {
                                  // equality; with substring_match, decode the
                                  // whole window instead
     bool substring_match = false;// pass iff decoded window CONTAINS "Paris"
-                                 // instead of stripped equality
+                                // instead of stripped equality
+    // The control question. The canonical probe is the English sentence; a
+    // direction-bound model (Hy-SimulMT is a zh<->en translator) asks the SAME
+    // question in the language its decoder was trained to answer, and the
+    // needle stays "Paris" (recorded deviation in the model report).
+    const char *prompt = "The capital of France is";
 };
 
 // Item 3 — unified SelfCheck. Forces max(opts.min_tokens, req.max_gen_tokens),

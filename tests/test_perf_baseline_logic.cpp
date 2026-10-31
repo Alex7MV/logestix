@@ -342,7 +342,8 @@ std::set<std::string> PerfCaseModels(const std::string &test_src)
               std::string("granite"), std::string("phi-4"), std::string("ornith"),
               std::string("alice"), std::string("xing"),
               std::string("mistral"), std::string("minimax"),
-              std::string("hy-memory"), std::string("ling"),
+              std::string("hy-memory"), std::string("hy-simulmt"),
+              std::string("ling"),
               std::string("beam"), std::string("step-5-preview")}) {
             if (m[1].str().find(mid) != std::string::npos) out.insert(mid);
         }

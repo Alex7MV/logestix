@@ -101,6 +101,7 @@ add_library(lsxcommon STATIC
     src/minimax_moe_model.cpp
     src/minimax_moe_tool_format.cpp
     src/hy_moe_convert.cpp
+    src/hy_moe_simulmt_convert.cpp
     src/hy_moe_load.cpp
     src/step_moe_convert.cpp
     src/step_moe_load.cpp
@@ -117,6 +118,7 @@ add_library(lsxcommon STATIC
     src/beam_moe_model.cpp
     src/beam_moe_tool_format.cpp
     src/hy_moe_model.cpp
+    src/hy_moe_simulmt_model.cpp
     src/hy_moe_tool_format.cpp
     src/step_moe_model.cpp
     src/step_moe_tool_format.cpp

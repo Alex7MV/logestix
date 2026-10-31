@@ -183,6 +183,14 @@ gpu::InferenceResult RunHyInference(
     const float theta = static_cast<float>(top.rope_theta);
     const float routed_scale = static_cast<float>(top.router_scaling_factor);
     const int eos_id = top.eos_token_id;
+    // The checkpoint may declare several stop ids (Hy-SimulMT:
+    // <eos> and <|hy_EOT|>). `ignore_eos` disables all of them.
+    const auto is_stop = [&top, eos_id, ignore_eos](int32_t t) {
+        if (ignore_eos) return false;
+        if (eos_id >= 0 && t == eos_id) return true;
+        return std::find(top.eos_ids.begin(), top.eos_ids.end(), t) !=
+               top.eos_ids.end();
+    };
 
     if (H <= 0 || V <= 0 || NH <= 0 || NKV <= 0 || HD <= 0 || L <= 0 ||
         E <= 0 || K <= 0 || E > 512 || K > 32 || K > 8) {
@@ -591,7 +599,7 @@ gpu::InferenceResult RunHyInference(
             }
         }
         ++generated;
-        if (!ignore_eos && eos_id >= 0 && tok == eos_id) {
+        if (is_stop(tok)) {
             eos_terminated = true;
             break;
         }

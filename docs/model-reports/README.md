@@ -37,4 +37,5 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 |---|---|
 | Beam-1.0-501B-A23B | `2026-10-31-Beam-1.0-501B-A23B.md` |
 | Granite-Switch-4.1-30B | `2026-10-31-granite-switch-4.1-30b.md` |
+| Hy-SimulMT-30B-A3B | `2026-10-31-hy-simulmt-30b-a3b.md` |
 | Step-5-Preview | `2026-10-31-Step-5-Preview.md` |

@@ -24,6 +24,9 @@ OVERRIDES = {
     # 60 GB bf16 tree runs on CPU (the card cannot hold it); no accelerate
     # device map, so no meta-device offload path.
     "hy-memory-30b-a3b": {"loader": "hy_v3"},
+    # Hy-SimulMT-30B-A3B is the same hy_v3 text backbone (the audio tower
+    # is skipped by the oracle); text-only capture, CPU for the 60 GB tree.
+    "hy-simulmt-30b-a3b": {"loader": "hy_v3"},
     # Mistral-Small-4-119B ships the Mistral "consolidated" layout: params.json
     # (no config.json, no model_type) plus consolidated-*.safetensors with
     # NVFP4-packed MoE experts. transformers cannot construct it, so the golden

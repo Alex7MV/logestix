@@ -68,6 +68,12 @@ one in a ctest summary, which is why the debt rows are called out below.
   (`tools/minimax_reference.py`: same greedy continuation) plus a per-layer
   oracle against the checkpoint's own HF modeling code
   (`tools/minimax_hf_layer_oracle.py`). See `docs/OPEN_TASKS.md` §R4.
+- Hy-SimulMT-30B-A3B (the sibling of Hy-Memory with the same text backbone)
+  is PASS on SelfCheck and declared debt on the three QA gates: it is a
+  translation model, and the measured source output for those prompts is a
+  summary (or immediate EOT), not an answer. The serving contract (the
+  checkpoint's own direction directive, auto-selected from the source script)
+  is pinned by a real-weight bidirectional test — `docs/OPEN_TASKS.md` §R11.
 - Hy-Memory-30B-A3B landed green on all four gates with **source-derived**
   goldens (`tools/hy_v3_oracle.py` assembles the fused expert tensors the stock
   HF class expects; the 60 GB bf16 source runs on CPU). FSI-02 answers the
@@ -91,6 +97,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | beam | PASS | SKIP | SKIP | SKIP | the 934 GB BF16 source (501B) exceeds this host's 750 GB RAM, so the reference cannot be loaded for a capture; kernel parity + SelfCheck are the instruments. Two real-weight defects (the lost `<|call|>` stop id and a reserved-id decode failure) were found and fixed — `docs/OPEN_TASKS.md` §R8 |
 | ling | PASS | SKIP | SKIP | SKIP | source is 560B BF16/FP8 with GPU-only FLA KDA kernels; no oracle runnable on one RTX 5090 (a CPU reference was used for single-token probes only). Per-expert global scales + the official SwiGLU clamps were required for a coherent answer — `docs/OPEN_TASKS.md` §R7 |
 | step-5-preview | PASS | SKIP | SKIP | SKIP | converted tree present (317 GB, Paris x3 bit-exact, native tool round-trip green); the 606 GB FP8 source oracle (reference `inference/` stack) needs 4x B300 / 8x H200 per the model card, so no source golden can be captured here. The DSA indexer is stored-not-applied (dense-equivalent at <=4096 tokens) — `docs/OPEN_TASKS.md` §R9 |
+| hy-simulmt-30b-a3b | PASS | SKIP | SKIP | SKIP | zh<->en simultaneous translator: the source summarises/translates the FSI/CODE/DET bodies instead of answering (two emit EOT immediately), so no source-faithful golden can be extracted; instruments are SelfCheck (translation direction) + a real-weight bidirectional translation test — `docs/OPEN_TASKS.md` §R11 |
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | source not runnable here: `modelopt 0.44.0rc5` `MIXED_PRECISION` (W4A16_NVFP4 experts + FP8 mixers, FP8 KV cache) and the installed transformers has no modelopt quantizer; the bf16 passport is not in the vault. An attempted golden set was reverted 2026-10-25 — its `input_ids` were Qwen3.8-Flash-Next ids (up to 248069 against this model's 131072-entry vocabulary) and its `expected` values were copied from that family's goldens, so all three gates failed with an empty `raw` |
 
 Both are recorded in the golden-debt list (§K) rather than left to look green.
