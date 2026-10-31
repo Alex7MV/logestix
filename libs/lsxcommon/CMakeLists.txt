@@ -107,6 +107,7 @@ add_library(lsxcommon STATIC
     src/ling_moe_model.cpp
     src/ling_moe_tool_format.cpp
     src/beam_moe_convert.cpp
+    src/beam_moe_load.cpp
     src/hy_moe_model.cpp
     src/hy_moe_tool_format.cpp
     src/mistral_moe_load.cpp

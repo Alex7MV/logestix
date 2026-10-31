@@ -7091,6 +7091,19 @@ set_tests_properties(test_beam_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_beam_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── Beam loader stage (synthetic converted tree; no vault) ──
+add_executable(test_beam_moe_loader test_beam_moe_loader.cpp)
+target_include_directories(test_beam_moe_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_beam_moe_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_moe_loader COMMAND test_beam_moe_loader)
+set_tests_properties(test_beam_moe_loader PROPERTIES LABELS fast)
+set_tests_properties(test_beam_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_beam_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_beam_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Flint loader stage (synthetic converted tree; no vault) ──
 add_executable(test_flint_moe_loader test_flint_moe_loader.cpp)
 target_include_directories(test_flint_moe_loader PRIVATE
