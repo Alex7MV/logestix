@@ -407,6 +407,14 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         meta.tokenizer_kind = 5;
         meta.base_vocab_size = model_vocab_count;
     }
+    if (policy.pretokenizer == 4) {
+        // Beam: the Qwen2/3 single-run pattern (one letter run, one digit per
+        // number word, Qwen contraction list, \s*[\r\n]+). Written as
+        // tokenizer_kind = 6. The Harmony control markers are added tokens
+        // (special:false) and are matched literally by the encoder.
+        meta.tokenizer_kind = 6;
+        meta.base_vocab_size = model_vocab_count;
+    }
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

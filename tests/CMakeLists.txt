@@ -6919,6 +6919,13 @@ target_link_libraries(test_flint_moe_pretokenizer PRIVATE lsxcommon
 add_test(NAME test_flint_moe_pretokenizer COMMAND test_flint_moe_pretokenizer)
 set_tests_properties(test_flint_moe_pretokenizer PROPERTIES LABELS fast)
 
+# ── Beam pre-tokenizer split (host-only; no vault needed) ──
+add_executable(test_beam_tokenizer_split test_beam_tokenizer_split.cpp)
+target_link_libraries(test_beam_tokenizer_split PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_beam_tokenizer_split COMMAND test_beam_tokenizer_split)
+set_tests_properties(test_beam_tokenizer_split PROPERTIES LABELS fast)
+
 # ── Ling selfcheck (real weights; SKIPs when the vault is absent) ──
 add_executable(test_ling_moe_selfcheck test_ling_moe_selfcheck.cpp)
 target_link_libraries(test_ling_moe_selfcheck PRIVATE lsxcommon
@@ -7198,6 +7205,17 @@ add_test(NAME test_flint_moe_tokenizer_parity
          COMMAND test_flint_moe_tokenizer_parity)
 set_tests_properties(test_flint_moe_tokenizer_parity PROPERTIES LABELS inference)
 set_tests_properties(test_flint_moe_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Beam tokenizer parity (source-captured golden; SKIPs without the vault) ──
+add_executable(test_beam_tokenizer_parity test_beam_tokenizer_parity.cpp)
+target_compile_definitions(test_beam_tokenizer_parity PRIVATE
+    "LSX_BEAM_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/beam\"")
+target_link_libraries(test_beam_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_beam_tokenizer_parity
+         COMMAND test_beam_tokenizer_parity)
+set_tests_properties(test_beam_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_beam_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_hy_moe_tokenizer_parity test_hy_moe_tokenizer_parity.cpp)
 target_compile_definitions(test_hy_moe_tokenizer_parity PRIVATE

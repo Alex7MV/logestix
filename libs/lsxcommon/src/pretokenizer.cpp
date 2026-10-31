@@ -716,6 +716,150 @@ bool LingWordStream::next(WordSpan &word)
     return true;
 }
 
+// ── Beam single-run pattern (tokenizer_kind 6) ─────────────────────────────
+
+BeamWordStream::BeamWordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool BeamWordStream::match(size_t pos, size_t &len) const
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos, n - pos, &cl);
+    if (cp == kInvalid) return false;
+
+    // alt1: (?i:'s|'t|'re|'ve|'m|'ll|'d)
+    if (cp == '\'') {
+        static const char *const kSuffix[] = {"s", "t", "re", "ve", "m", "ll",
+                                              "d"};
+        for (const char *sfx : kSuffix) {
+            const size_t l = std::strlen(sfx);
+            if (pos + 1 + l > n) continue;
+            bool ok = true;
+            for (size_t i = 0; i < l; ++i) {
+                char ch = begin_[pos + 1 + i];
+                if (ch >= 'A' && ch <= 'Z')
+                    ch = static_cast<char>(ch - 'A' + 'a');
+                if (ch != sfx[i]) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
+                len = 1 + l;
+                return true;
+            }
+        }
+    }
+
+    // alt2: [^\r\n\p{L}\p{N}]? \p{L}+
+    {
+        const bool is_prefix =
+            cp != 0x0D && cp != 0x0A &&
+            unicode::classify(cp) != unicode::CharClass::Letter &&
+            unicode::classify(cp) != unicode::CharClass::Number;
+        const size_t p = pos + (is_prefix ? cl : 0);
+        if (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 != kInvalid &&
+                unicode::classify(c2) == unicode::CharClass::Letter) {
+                size_t e = p;
+                while (e < n) {
+                    size_t r = 0;
+                    const uint32_t c3 = decode_utf8(begin_ + e, n - e, &r);
+                    if (c3 == kInvalid ||
+                        unicode::classify(c3) != unicode::CharClass::Letter)
+                        break;
+                    e += r;
+                }
+                len = e - pos;
+                return true;
+            }
+        }
+    }
+
+    // alt3: \p{N} (one digit/codepoint per word)
+    if (unicode::classify(cp) == unicode::CharClass::Number) {
+        len = cl;
+        return true;
+    }
+
+    // alt4: ' '? [^\s\p{L}\p{N}]+ [\r\n]*
+    {
+        const size_t p0 = (cp == 0x20) ? pos + cl : pos;
+        size_t p = p0;
+        while (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalid) break;
+            const CharClass k = unicode::classify(c2);
+            if (k == CharClass::Whitespace || k == CharClass::Letter ||
+                k == CharClass::Number)
+                break;
+            p += q;
+        }
+        if (p > p0) {
+            while (p < n && (begin_[p] == '\r' || begin_[p] == '\n')) ++p;
+            len = p - pos;
+            return true;
+        }
+    }
+
+    // alt5-7: \s*[\r\n]+ | \s+(?!\S) | \s+
+    if (unicode::classify(cp) == unicode::CharClass::Whitespace) {
+        size_t p = pos;
+        size_t last_crlf = static_cast<size_t>(-1);
+        size_t prev_cp = pos;
+        while (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalid ||
+                unicode::classify(c2) != unicode::CharClass::Whitespace)
+                break;
+            if (c2 == 0x0D || c2 == 0x0A) last_crlf = p + q;
+            prev_cp = p;
+            p += q;
+        }
+        if (last_crlf != static_cast<size_t>(-1)) {
+            len = last_crlf - pos;
+            return true;
+        }
+        if (p >= n) {
+            len = p - pos;
+            return true;
+        }
+        if (prev_cp > pos) {
+            len = prev_cp - pos;
+            return true;
+        }
+        len = p - pos;
+        return true;
+    }
+    return false;
+}
+
+bool BeamWordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalid) {
+        error_ = 1;
+        return false;
+    }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
 // ── Flint 3-split (tokenizer_kind 4) ───────────────────────────────────────
 
 FlintWordStream::FlintWordStream(const char *text, size_t length)

@@ -101,6 +101,9 @@ struct TokenizerSpecialPolicy {
     //   3 = Ling single-run pattern: '(?i:[sdmt]|ll|ve|re) | optional-prefix
     //       letter run | one digit | punctuation run (LingWordStream).
     //       Written as tokenizer_kind = 5.
+    //   4 = Beam single-run Qwen2/3 pattern: (?i:'s|'t|'re|'ve|'m|'ll|'d) |
+    //       optional-prefix letter run | one digit | punctuation run |
+    //       \s*[\r\n]+ (BeamWordStream). Written as tokenizer_kind = 6.
     int32_t pretokenizer = 0;
     // 1 = tolerate a vocabulary with no single-byte token for some bytes: the
     // missing ones map to -1 and the encoder skips them. The reference tokenizer
