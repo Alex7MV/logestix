@@ -606,6 +606,7 @@ authoritative.
 | 4. throughput | **`perf-tuning-a-model`** | attribute the wall time, budget tests, baselines |
 | 5. launch + serve | **`running-a-model`** §2a/§2b | the ordered fast-launch runbook and the acceptance checklist |
 | 6. locating code / rules | **`logestix-repo-map`**, `nvfp4-blackwell-conventions`, `absl-in-cuda-cpp`, `coding-conventions` | which file owns what; kernel and host-C++ rules |
+| 7. report artifact | **`ingesting-a-model`** § Stage 9 | the publishable model report in `docs/model-reports/` + its evidence |
 | host resources / GPU | **`running-a-model`** §8 | one GPU workload at a time, inference exemption |
 
 Running and operating inference — skill **`running-a-model`**
@@ -624,7 +625,10 @@ Adding/adapting a new model — skill **`ingesting-a-model`**
 (lsxforge converter → NVFP4 quantization → registration in `LsxModelFactory` +
 frozen geometry → tokenizer bridge → CUDA kernels → shared-mem sandbox →
 SelfCheck/tests; stage 7 — the binary token-translation passport — is retired,
-see the skill), the model file naming convention
+see the skill) plus the mandatory stage 4b tool bridge and the closing
+**stage 9 model report** (`docs/model-reports/YYYY-MM-DD-<model-card-name>.md`: a
+publishable English post + the internal evidence, so the report can be
+re-read or published later), the model file naming convention
 (`<family>_<type>[_<variant>]_<role>[_<subsystem>]`) and the guard-test registries
 (`test_code_naming_guard`, `test_model_independence_guard`,
 `test_model_suite_guard`), which must be extended in the same commit as the

@@ -119,8 +119,20 @@ Arrow 26, PyTorch CPU oracle.
 - [x] AGENTS.md Structure, `docs/OPEN_TASKS.md`, `docs/SELFCHECK_MATRIX.md`.
 - [x] `ctest` fast/convert/inference green; guard tests green.
 
+### Task 9: model report artifact (stage 9)
+
+**Files:** create `docs/model-reports/2026-10-31-Beam-1.0-501B-A23B.md` +
+`docs/model-reports/README.md`; modify `AGENTS.md` and the
+`ingesting-a-model` skill (stage 9 rule + definition-of-done).
+
+- [x] Publish-ready English post (what the checkpoint forced, the two artifact
+  traps, measured numbers, what was not measured and why).
+- [x] Evidence section: gates actually run, defects fixed, internal references.
+- [x] Rule added to the ingestion protocol (closing stage 9) so every future
+  model produces the same artifact.
+
 ## Self-review
 
-- Stage 0 → spec; stages 1–8 + 4b → tasks 2–8; TDD RED step in every task.
+- Stage 0 → spec; stages 1–9 + 4b → tasks 2–9; TDD RED step in every task.
 - Cross-task names fixed: `BeamTopology`, `ConvertBeamModel`,
   `LoadBeamWeights`, `RunBeam*`, `BeamGenerate`, `BeamMoeModel::kType`.

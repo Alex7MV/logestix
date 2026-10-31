@@ -8,9 +8,9 @@ description: Use when adding, adapting or ingesting a new model architecture int
 ## Overview
 
 **MODEL INGEST INVARIANT**: adding a model is a **Stage 0 triage** followed by a
-fixed 8-stage sequence, plus the mandatory **stage 4b tool-calling bridge**.
-Every agent MUST follow the order; skipping or reordering a stage is a broken
-build.
+fixed 8-stage sequence, plus the mandatory **stage 4b tool-calling bridge** and
+the closing **stage 9 model report**. Every agent MUST follow the order;
+skipping or reordering a stage is a broken build.
 Reference implementations (real code anchors, not placeholders): GLM-5.2,
 DeepSeek-V4-Flash, GLM-5.3-Flash, Qwen3.5-9B, Kimi-K2.7-Code.
 Where the model came from, and whether it is even runnable here, is decided in
@@ -27,7 +27,7 @@ end.
 
 **REQUIRED SUB-SKILL:** use `test-driven-development` for every stage.
 
-## Iron rules (apply to all 8 stages)
+## Iron rules (apply to all stages)
 
 - **TDD.** No production code without a failing test first. A new test MUST get
   its ctest label in the same commit, or `test_ctest_labels_guard` goes red.
@@ -405,6 +405,37 @@ server.
   `SKIP_RETURN_CODE 4`) is `Verifying a numeric change` in
   `perf-tuning-a-model`.
 
+### 9. Model report artifact (closing stage)
+
+Every ingestion ends with one **publishable report** in
+`docs/model-reports/YYYY-MM-DD-<model-card-name>.md` (date prefix = the day the
+real-weight gates were measured; then the model card / vault directory name,
+e.g. `2026-10-31-Beam-1.0-501B-A23B.md`; the index is
+`docs/model-reports/README.md`). A later re-ingestion of the same model adds a
+NEW dated file instead of overwriting the old one, so the history stays
+readable. This is an artifact, not a status note: a
+later session must be able to re-read it instead of replaying the ingestion,
+and an operator must be able to publish it as-is.
+
+It has two clearly separated parts:
+
+- **`Publish-ready post`** — English, no repository-internal paths or
+  codenames. State what was converted and on what hardware; what the
+  checkpoint forced into the engine (the semantics that are easy to get
+  wrong) and which reference was used; the artifact-level defects/traps found
+  in the checkpoint (config/tokenizer/generation-config), each with the
+  observed failure mode and a concrete suggestion to the authors; measured
+  numbers (gates, determinism, tool round-trip, perf); and what was **not**
+  measured and why.
+- **`Evidence`** — internal references: the stage-0 design and plan,
+  `docs/OPEN_TASKS.md` section, `docs/SELFCHECK_MATRIX.md` row, perf rows,
+  and the exact gate results. A SKIP/debt entry stays a gap; never rewrite it
+  as a pass.
+
+Write it **after** the real-weight gates (stage 8) so the numbers in the post
+are measured, not projected. Do not include secrets, customer data or
+unverified claims; every number must point at the evidence section.
+
 ## Host-side weight storage — `ExpertStore` and Arrow zero-copy
 
 The routed-expert set is the largest thing a model owns, and it is the one place
@@ -557,6 +588,11 @@ without updating them fails CI.
       host store must NOT appear in that test's `kLegacyConsumers`.
 - [ ] `AGENTS.md` Structure section gets the new files; `test_model_suite_guard`
       and `test_code_naming_guard` green.
+- [ ] Model report artifact (stage 9) written to
+      `docs/model-reports/YYYY-MM-DD-<model-card-name>.md`, with a
+      publish-ready English
+      post and an evidence section; every number it quotes matches the gate
+      files, and declared debt is named as debt.
 
 ## Verification
 
@@ -618,6 +654,8 @@ ingested.
   qualitative: its all-4-bit baseline is not the engine's, so a placement it
   "proves" sufficient can be useless (or harmful) in the engine. Calibrate by
   re-converting the engine's own tree.
+- Shipping without the stage 9 model report (or writing the report before the
+  real-weight gates, so its numbers are projections and drift from the tree).
 - Rewriting a golden, or a perf row, to make a gate pass. Goldens are source
   parity (`docs/OPEN_ENDEDNESS.md`); perf rows are re-seeded through the harness
   with its own evidence, never by hand.
