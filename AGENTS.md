@@ -542,6 +542,30 @@ procedure — `perf-tuning-a-model`.
   `lsxforge --beam`; knob `LSX_BEAM_EXPERT_CACHE_SLOTS` (default 512) and
   `LSX_BEAM_EXPERT_MAX_OPEN`. Session facts, gates and debt:
   `docs/OPEN_TASKS.md` §R8.
+  Step-5-Preview (600B total / 27B active, independent family `step`): a
+  GQA + DSA-hybrid decoder with 92 layers / 4096H / 64Q·4KV·192HD and 352 routed
+  experts top-8 (I=1536) plus one gated shared expert, layers 0..2 and 91 dense.
+  Five deltas in no other family: ZERO-CENTERED RMSNorm (`(1+w)`, F32 weights —
+  the checkpoint's weights are centred on zero, so reading them as plain scales
+  zeroes every activation), NEOX-paired PARTIAL RoPE whose span is per layer
+  (192 on the 69 sliding layers, 64 on the 23 full-attention layers, thetas 1e4
+  / 1e7), a per-head sigmoid output gate (`self_attn.g_proj`, applied BEFORE
+  o_proj), FUSED FP8 expert stacks `[352,1536,4096]` + a 128x128 F32
+  `weight_scale_inv` grid that the converter splits per expert (layers 88..90
+  are BF16 experts, `modules_to_not_convert`), and an FP32 residual stream whose
+  final RMSNorm narrows to BF16 first. The DSA Lightning Indexer (region 8,
+  proxy 256, top-512 regions = 4096 tokens) is stored-not-applied: at <=4096
+  tokens every region is selected, so the dense causal path IS the reference
+  path (OPEN_TASKS §R9). Files: `step_moe_constants.h` (frozen passport),
+  `step_moe_convert.{h,cpp}` (`lsxforge --step`, `logestix-step5-nvfp4`;
+  MTP layers 92..94 and the 667-tensor vision tower stripped+counted),
+  `step_moe_dequant.{h,cu}` (FP8 stack -> BF16 on the GPU),
+  `step_moe_load.{h,cpp}` (pinned dense graph + neutral mmap `ExpertStore`,
+  `LSX_STEP_EXPERT_{CACHE_SLOTS,MAX_OPEN}`), `step_moe_kernels.{h,cu}`,
+  `step_moe_inference_attn.{h,cu}` (windowed/full GQA decode attention),
+  `step_moe_inference_pipeline.{h,cu}`, `step_moe_model.{h,cpp}`,
+  `step_moe_tool_format.{h,cpp}` (native ChatML `<|im_start|>` framing +
+  `<tool_call>\n<function=…>\n<parameter=…>` codec; `tokenizer_kind` 4).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

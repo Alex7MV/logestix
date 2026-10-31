@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing|mistral|minimax|hy|flint|ling|beam)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing|mistral|minimax|hy|flint|ling|beam|step)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|flash|36|v41|pro|nvfp4)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -51,7 +51,7 @@ const std::vector<std::string>& FamilyStems()
     static const std::vector<std::string> v =
         {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat",
          "ornith", "granite", "mimo", "phi", "alice", "xing", "mistral",
-         "minimax", "hy", "flint", "ling", "beam"};
+         "minimax", "hy", "flint", "ling", "beam", "step"};
     return v;
 }
 
@@ -80,6 +80,7 @@ bool AllowedCommon(const std::string& stem)
         "flint_moe_tool_format",      // Flint inline ChatML + <arg_key> XML codec
         "ling_moe_tool_format",       // Ling <role> framing + <tool_call> XML
         "beam_moe_tool_format",       // Beam Harmony-XML codec
+        "step_moe_tool_format",       // Step-5 ChatML + <tool_call> XML codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
 }

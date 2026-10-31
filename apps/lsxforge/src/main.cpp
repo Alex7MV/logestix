@@ -16,6 +16,7 @@
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/hy_moe_convert.h"
+#include "lsxcommon/step_moe_convert.h"
 #include "lsxcommon/beam_moe_convert.h"
 #include "lsxcommon/flint_moe_convert.h"
 #include "lsxcommon/ling_moe_convert.h"
@@ -102,6 +103,9 @@ ABSL_FLAG(bool, beam, false,
           "pipeline");
 ABSL_FLAG(bool, hy, false,
           "convert Hy-Memory-30B-A3B (GQA + sigmoid-router MoE) to logestix-hy-nvfp4");
+ABSL_FLAG(bool, step, false,
+          "convert Step-5-Preview (GQA + DSA + 352-expert MoE) to "
+          "logestix-step5-nvfp4");
 ABSL_FLAG(bool, mistral, false,
           "Mistral-Small-4-119B-2603 (MLA + 128-expert MoE) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
@@ -174,6 +178,7 @@ int main(int argc, char* argv[]) {
     bool flint = absl::GetFlag(FLAGS_flint);
     bool ling = absl::GetFlag(FLAGS_ling);
     bool beam = absl::GetFlag(FLAGS_beam);
+    bool step = absl::GetFlag(FLAGS_step);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is
@@ -214,6 +219,7 @@ int main(int argc, char* argv[]) {
     flags.flint = flint;
     flags.ling = ling;
     flags.beam = beam;
+    flags.step = step;
     const lsxforge::Resolution resolution = lsxforge::ResolvePipeline(flags);
     if (resolution.pipeline == lsxforge::Pipeline::kError) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
@@ -377,6 +383,12 @@ int main(int argc, char* argv[]) {
         // markers); the plain form keeps the legacy defaults for every other
         // family.
         lsxcommon::TokenizerSpecialPolicy tok_policy;
+        if (flags.step) {
+            // Step-5: the template spells BOS out as text; the pre-tokenizer
+            // is the Flint 3-split over the o200k case-run pattern (kind 4).
+            tok_policy.bos_id = -1;
+            tok_policy.pretokenizer = 2;
+        }
         if (flags.hy) {
             // Hy-Memory: no auto-BOS (the template spells it out), the
             // digit-run/CJK/6-alternative pre-tokenizer, and a vocabulary that
@@ -627,6 +639,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Ling conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kStep: {
+        lsxcommon::log::info(
+            "Step-5-Preview pipeline (logestix-step5-nvfp4 layout)");
+        auto st = lsxcommon::step::ConvertStepMoeModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Step-5 conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Step-5 conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

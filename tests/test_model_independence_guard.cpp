@@ -109,6 +109,7 @@ const std::vector<PassportRow> kPassports = {
     {"flint", "flint_moe_constants.h", "lsxcommon::flint::frozen"},
     {"ling", "ling_moe_constants.h", "lsxcommon::ling::frozen"},
     {"beam", "beam_moe_constants.h", "lsxcommon::beam::frozen"},
+    {"step-5-preview", "step_moe_constants.h", "lsxcommon::step::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -328,6 +329,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "flint_moe_model.cpp",         // flint (hybrid sink/SWA/no-RoPE MoE)
         "ling_moe_model.cpp",          // ling (KDA + gated MLA + 512-expert MoE)
         "beam_moe_model.cpp",          // beam (gated GQA SWA/NoPE + 256-expert MoE)
+        "step_moe_model.cpp",          // step-5-preview (GQA + DSA + 352-expert MoE)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
@@ -455,6 +457,8 @@ TEST_CASE("every family model wires the shared lifecycle contract",
          {"flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"}},
         {"ling", {"ling_moe_model.cpp", "ling_moe_inference.cu"}},
         {"beam", {"beam_moe_model.cpp", "beam_moe_inference.cu"}},
+        {"step-5-preview",
+         {"step_moe_model.cpp", "step_moe_inference_pipeline.cu"}},
     };
     // marker group -> what it guarantees. EVERY spelling in a group must be
     // absent for the contract to be considered unwired (any-of semantics:

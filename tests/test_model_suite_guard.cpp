@@ -47,7 +47,7 @@ const std::set<std::string> &FamilyStems()
     static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
                                             "kimi", "nemotron", "gigachat",
                                             "ornith", "granite", "mimo", "phi",
-                                            "alice", "flint", "ling"};
+                                            "alice", "flint", "ling", "step"};
     return v;
 }
 
@@ -406,6 +406,16 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_beam_moe_code_selfcheck"}},
           {"det", {"test_beam_moe_det_selfcheck"}},
           {"perf", {"test_perf_baseline_beam"}}}},
+        {"step-5-preview",
+         {{"convert", {"test_step_moe_convert"}},
+          {"load", {"test_step_moe_loader", "test_step_moe_tokenizer"}},
+          {"model", {"test_step_moe_model", "test_step_moe_tool_framing"}},
+          {"kernels", {"test_step_moe_kernels"}},
+          {"selfcheck", {"test_step_moe_selfcheck"}},
+          {"fsi", {"test_step_moe_fsi_selfcheck"}},
+          {"code", {"test_step_moe_code_selfcheck"}},
+          {"det", {"test_step_moe_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_step_5_preview"}}}},
         {"ling",
          {{"convert", {"test_ling_moe_convert"}},
           {"load", {"test_ling_moe_loader", "test_ling_tokenizer_parity"}},
@@ -843,6 +853,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"flint", {"test_flint_moe_tool_framing"}},
         {"ling", {"test_ling_tool_framing"}},
         {"beam", {"test_beam_tool_framing"}},
+        {"step-5-preview", {"test_step_moe_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.
@@ -964,6 +975,13 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "beam:code",
         "beam:det",
         "beam:fsi",
+        // Step-5-Preview: the 606 GB FP8 source oracle needs the reference
+        // inference stack on 4x B300 / 8x H200 (README deployment table), so no
+        // source golden can be captured on this card. The instruments are
+        // SelfCheck on the real converted weights + the kernel host references.
+        "step-5-preview:code",
+        "step-5-preview:det",
+        "step-5-preview:fsi",
         "deepseek-v4-flash:code",
         "deepseek-v4-flash:det",
         "deepseek-v4-flash:fsi",

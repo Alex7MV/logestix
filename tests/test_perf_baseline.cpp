@@ -132,6 +132,8 @@ const PerfModel kLing = {
     "ling", "Ling-3.1-flash", "The capital of France is", 2048};
 const PerfModel kBeam = {
     "beam", "Beam-1.0-501B-A23B", "The capital of France is", 2048};
+const PerfModel kStep = {
+    "step-5-preview", "Step-5-Preview", "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -618,4 +620,9 @@ TEST_CASE("perf baseline: ling", "[perf]")
 TEST_CASE("perf baseline: beam", "[perf]")
 {
     RunPerfModel(kBeam);
+}
+
+TEST_CASE("perf baseline: step-5-preview", "[perf]")
+{
+    RunPerfModel(kStep);
 }

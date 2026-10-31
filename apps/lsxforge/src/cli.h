@@ -48,6 +48,7 @@ enum class Pipeline {
     kFlint,
     kLing,
     kBeam,
+    kStep,
     kGeneric,
     kError,
 };
@@ -89,6 +90,7 @@ struct Flags {
     bool flint = false;
     bool ling = false;
     bool beam = false;
+    bool step = false;
 };
 
 struct Resolution {
