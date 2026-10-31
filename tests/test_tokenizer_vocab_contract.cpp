@@ -59,8 +59,31 @@ struct KnownFamily {
 // but missing here fails the test on purpose: adding a family has to state its
 // byte-lifting contract rather than inherit an unchecked assumption.
 constexpr KnownFamily kKnownFamilies[] = {
+    {"AliceAI-Foundation-80B-A3B-Base", LiftContract::kNoLiftedBytes},
+    {"Beam-1.0-501B-A23B", LiftContract::kNoLiftedBytes},
+    {"DeepSeek-V4-Pro-0813", LiftContract::kNoLiftedBytes},
+    {"flint", LiftContract::kNoLiftedBytes},
     {"gemma-4-26B-A4B-it", LiftContract::kNoLiftedBytes},
-    {"alice-80b-a3b-base", LiftContract::kCallerReversesLiftedBytes},
+    {"gemma-4-31B-it", LiftContract::kNoLiftedBytes},
+    {"GLM-5.3-Flash", LiftContract::kNoLiftedBytes},
+    {"granite-4.2-30b", LiftContract::kNoLiftedBytes},
+    {"granite-switch-4.1-30b", LiftContract::kNoLiftedBytes},
+    {"Hy-Memory-30B-A3B", LiftContract::kNoLiftedBytes},
+    {"Hy-SimulMT-30B-A3B", LiftContract::kNoLiftedBytes},
+    {"Kimi-K2.7-Code", LiftContract::kNoLiftedBytes},
+    {"Ling-3.1-flash", LiftContract::kNoLiftedBytes},
+    {"MiniMax-M3", LiftContract::kNoLiftedBytes},
+    {"MiniMax-M3.1-Flash", LiftContract::kNoLiftedBytes},
+    {"Mistral-Small-4-119B-2603-NVFP4", LiftContract::kNoLiftedBytes},
+    {"NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", LiftContract::kNoLiftedBytes},
+    {"Ornith-1.5-35B-A3B", LiftContract::kNoLiftedBytes},
+    {"phi-4", LiftContract::kNoLiftedBytes},
+    {"Qwen3.5-9B", LiftContract::kNoLiftedBytes},
+    {"Qwen3.6-35B-A3B", LiftContract::kNoLiftedBytes},
+    {"Qwen3.8-27B", LiftContract::kNoLiftedBytes},
+    {"Qwen3.8-Flash-Next", LiftContract::kNoLiftedBytes},
+    {"Step-5-Preview", LiftContract::kNoLiftedBytes},
+    {"Xing4.0-29B-A4B", LiftContract::kNoLiftedBytes},
 };
 
 const KnownFamily *FindKnown(const std::string &name)

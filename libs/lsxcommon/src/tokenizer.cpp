@@ -1,6 +1,7 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/pretokenizer.h"
+#include "lsxcommon/unicode.h"
 #include <arrow/ipc/reader.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/numbers.h>
@@ -143,6 +144,7 @@ arrow::Status load_tokenizer_metadata(
             get_opt_i32("add_dummy_prefix", db.add_dummy_prefix);
             get_opt_i32("escape_whitespaces", db.escape_whitespaces);
             get_opt_i32("drop_unmapped_bytes", db.drop_unmapped_bytes);
+            get_opt_i32("normalize_nfc", db.normalize_nfc);
         }
 
         // kind 0 with base_vocab_size: ids >= base are added tokens matched
@@ -153,19 +155,15 @@ arrow::Status load_tokenizer_metadata(
             for (int32_t id = db.base_vocab_size; id < db.vocab_size; ++id)
                 if (db.token_offsets[id + 1] > db.token_offsets[id])
                     db.literal_ids.push_back(id);
-            std::stable_sort(
-                db.literal_ids.begin(), db.literal_ids.end(),
-                [&](int32_t a, int32_t b) {
-                    return (db.token_offsets[a + 1] - db.token_offsets[a]) >
-                           (db.token_offsets[b + 1] - db.token_offsets[b]);
-                });
         }
 
         // tiktoken: the vocabulary IS the merge table (adjacent pair bytes ->
         // id), and ids >= base_vocab_size are added tokens matched literally.
         if (db.tokenizer_kind == 2 || db.tokenizer_kind == 3 ||
             db.tokenizer_kind == 4 || db.tokenizer_kind == 5 ||
-            db.tokenizer_kind == 6) {
+            db.tokenizer_kind == 6 || db.tokenizer_kind == 7 ||
+            db.tokenizer_kind == 8 || db.tokenizer_kind == 9 ||
+            db.tokenizer_kind == 10) {
             if (db.base_vocab_size <= 0 || db.base_vocab_size > db.vocab_size)
                 return arrow::Status::Invalid(
                     "tokenizer: bad base_vocab_size for tiktoken BPE");
@@ -182,6 +180,25 @@ arrow::Status load_tokenizer_metadata(
             for (int32_t id = db.base_vocab_size; id < db.vocab_size; ++id)
                 if (db.token_offsets[id + 1] > db.token_offsets[id])
                     db.literal_ids.push_back(id);
+        }
+
+        // The reference AddedVocabulary matches EVERY added/special marker
+        // literally, including the checkpoints whose added ids live INSIDE the
+        // model vocabulary range (phi-4, Granite-4.2, Mistral: no id-based
+        // split exists). Without this a prompt containing "<|im_start|>" or
+        // "[INST]" is BPE'd as raw bytes, unlike the source tokenizer.
+        // SentencePiece (kind 1) keeps its own control-symbol policy.
+        if (db.tokenizer_kind != 1) {
+            for (int32_t id = 0; id < db.vocab_size; ++id)
+                if (db.is_special[id] &&
+                    db.token_offsets[id + 1] > db.token_offsets[id])
+                    db.literal_ids.push_back(id);
+        }
+        if (!db.literal_ids.empty()) {
+            std::sort(db.literal_ids.begin(), db.literal_ids.end());
+            db.literal_ids.erase(
+                std::unique(db.literal_ids.begin(), db.literal_ids.end()),
+                db.literal_ids.end());
             std::stable_sort(
                 db.literal_ids.begin(), db.literal_ids.end(),
                 [&](int32_t a, int32_t b) {
@@ -439,8 +456,13 @@ bool SpBytePiece(const uint8_t *p, int64_t len, uint8_t *out)
     return true;
 }
 
-int32_t sp_bpe_encode(const ArrowTokenizerDb &db, const char *text,
-                      size_t text_len, int32_t *out_tokens, size_t *max_out_len)
+// Shared SentencePiece-style core: normalize (▁), seed, merge. `prepend_bos`
+// distinguishes the two callers: kind 1 (Alice/Xing) is encoded as one body and
+// gets the checkpoint BOS; kind 11 (Gemma-4, raw-text BPE from tokenizer.json)
+// is encoded piecewise and the framing supplies <bos> as its own token.
+int32_t sp_bpe_encode_impl(const ArrowTokenizerDb &db, const char *text,
+                           size_t text_len, int32_t *out_tokens,
+                           size_t *max_out_len, bool prepend_bos)
 {
     std::vector<int32_t> ids;
     if (text_len > 0) {
@@ -493,8 +515,8 @@ int32_t sp_bpe_encode(const ArrowTokenizerDb &db, const char *text,
         ids.resize(n);
     }
 
-    // 5. prepend BOS.
-    const size_t bos = (db.bos_id >= 0) ? 1 : 0;
+    // 5. prepend BOS (kind 1 only).
+    const size_t bos = (prepend_bos && db.bos_id >= 0) ? 1 : 0;
     const size_t total = bos + ids.size();
     if (total > *max_out_len) {
         *max_out_len = total;
@@ -505,6 +527,100 @@ int32_t sp_bpe_encode(const ArrowTokenizerDb &db, const char *text,
     for (int32_t id : ids) out_tokens[o++] = id;
     *max_out_len = o;
     return static_cast<int32_t>(o);
+}
+
+int32_t sp_bpe_encode(const ArrowTokenizerDb &db, const char *text,
+                      size_t text_len, int32_t *out_tokens, size_t *max_out_len)
+{
+    return sp_bpe_encode_impl(db, text, text_len, out_tokens, max_out_len,
+                              /*prepend_bos=*/true);
+}
+
+// ── raw-text BPE from tokenizer.json (tokenizer_kind == 11, Gemma-4) ───────
+//
+// Gemma's tokenizer is not byte-level: model.vocab keys are plain text pieces
+// (word-leading spaces stored as U+2581), model.merges are raw-text pairs, and
+// characters with no piece fall back to <0xHH> byte tokens. Added tokens are
+// matched literally (before the ▁ normalization) exactly like the reference
+// AddedVocabulary. There is no auto-BOS.
+int32_t sp_json_encode(const ArrowTokenizerDb &db, const char *text,
+                       size_t text_len, int32_t *out_tokens,
+                       size_t *max_out_len)
+{
+    bool first_byte[256] = {};
+    for (int32_t id : db.literal_ids) {
+        const int64_t b = db.token_offsets[id];
+        if (db.token_offsets[id + 1] > b) first_byte[db.token_bytes[b]] = true;
+    }
+
+    std::vector<int32_t> out;
+    out.reserve(text_len + 16);
+    size_t pos = 0;
+    while (pos < text_len) {
+        int32_t lit = -1;
+        size_t lit_len = 0;
+        if (first_byte[static_cast<uint8_t>(text[pos])]) {
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l =
+                    static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - pos) continue;
+                if (std::memcmp(text + pos, db.token_bytes + b, l) == 0) {
+                    lit = id;
+                    lit_len = l;
+                    break;
+                }
+            }
+        }
+        if (lit >= 0) {
+            out.push_back(lit);
+            pos += lit_len;
+            continue;
+        }
+        size_t gap_end = text_len;
+        for (size_t at = pos + 1; at < text_len; ++at) {
+            if (!first_byte[static_cast<uint8_t>(text[at])]) continue;
+            bool hit = false;
+            for (int32_t id : db.literal_ids) {
+                const int64_t b = db.token_offsets[id];
+                const size_t l =
+                    static_cast<size_t>(db.token_offsets[id + 1] - b);
+                if (l == 0 || l > text_len - at) continue;
+                if (std::memcmp(text + at, db.token_bytes + b, l) == 0) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                gap_end = at;
+                break;
+            }
+        }
+        const size_t gap = gap_end - pos;
+        if (gap > 0) {
+            for (size_t cap = gap * 4 + 64;; cap *= 2) {
+                std::vector<int32_t> buf(cap, 0);
+                size_t enc_cap = cap;
+                const int32_t n = sp_bpe_encode_impl(
+                    db, text + pos, gap, buf.data(), &enc_cap,
+                    /*prepend_bos=*/false);
+                if (n == -2) continue;
+                if (n < 0) return n;
+                out.insert(out.end(), buf.begin(), buf.begin() + n);
+                break;
+            }
+        }
+        pos = gap_end;
+    }
+
+    if (out.size() > *max_out_len) {
+        *max_out_len = out.size();
+        return -2;
+    }
+    if (!out.empty())
+        std::memcpy(out_tokens, out.data(), out.size() * sizeof(int32_t));
+    *max_out_len = out.size();
+    return static_cast<int32_t>(out.size());
 }
 
 // ── UTF-8 output guarantee, shared by both decode paths ──────────────────────
@@ -609,7 +725,8 @@ void FeedSpToken(const uint8_t *p, int64_t len, Sink &&sink)
 }
 
 int32_t sp_bpe_decode(const ArrowTokenizerDb &db, const int32_t *ids,
-                      size_t n_ids, char *out_text, size_t *max_out_len)
+                      size_t n_ids, char *out_text, size_t *max_out_len,
+                      bool strip_leading_space = true)
 {
     // Pass 1: sanitized length (a bad byte expands 1 -> 3, so the raw byte
     // count cannot be reused).
@@ -648,8 +765,9 @@ int32_t sp_bpe_decode(const ArrowTokenizerDb &db, const int32_t *ids,
         o += san.Finish(out_text + o);
     }
     // SentencePiece drops the leading whitespace produced by the dummy-prefix
-    // '▁' (e.g. decode('▁The') == "The", decode('▁▁') == " ").
-    if (o > 0 && out_text[0] == ' ') {
+    // '▁' (e.g. decode('▁The') == "The", decode('▁▁') == " "). Gemma's kind 11
+    // has NO dummy prefix: its leading ▁ is a real space, so it is kept.
+    if (strip_leading_space && o > 0 && out_text[0] == ' ') {
         std::memmove(out_text, out_text + 1, o - 1);
         --o;
     }
@@ -722,6 +840,7 @@ size_t tt_encode_piece(const ArrowTokenizerDb &db, const char *p, size_t n,
     return syms;
 }
 
+template <typename Stream>
 int32_t tiktoken_bpe_encode(const ArrowTokenizerDb &db, const char *text,
                             size_t text_len, int32_t *out_tokens,
                             size_t *max_out_len)
@@ -777,7 +896,10 @@ int32_t tiktoken_bpe_encode(const ArrowTokenizerDb &db, const char *text,
                 break;
             }
         }
-        WordStream ws(text + pos, gap_end - pos);
+        // tiktoken's pattern is ONE combined regex: no digit/CJK isolation
+        // stages, so the gap lookahead sees the whole tail. Kimi's own
+        // case-run/Han pattern is the Stream this instantiation is built with.
+        Stream ws(text + pos, gap_end - pos);
         WordSpan w;
         while (ws.next(w)) {
             if (tt_encode_piece(db, w.begin, w.length, out) == SIZE_MAX)
@@ -910,6 +1032,38 @@ int32_t bpe_encode_beam(const ArrowTokenizerDb &db, const char *text,
                                                max_out_len);
 }
 
+int32_t bpe_encode_qwen(const ArrowTokenizerDb &db, const char *text,
+                        size_t text_len, int32_t *out_tokens,
+                        size_t *max_out_len)
+{
+    return bpe_encode_case_run<QwenWordStream>(db, text, text_len, out_tokens,
+                                               max_out_len);
+}
+
+int32_t bpe_encode_gpt2(const ArrowTokenizerDb &db, const char *text,
+                        size_t text_len, int32_t *out_tokens,
+                        size_t *max_out_len)
+{
+    return bpe_encode_case_run<Gpt2WordStream>(db, text, text_len, out_tokens,
+                                               max_out_len);
+}
+
+int32_t bpe_encode_mistral(const ArrowTokenizerDb &db, const char *text,
+                           size_t text_len, int32_t *out_tokens,
+                           size_t *max_out_len)
+{
+    return bpe_encode_case_run<MistralWordStream>(db, text, text_len,
+                                                  out_tokens, max_out_len);
+}
+
+int32_t bpe_encode_gpt2_original(const ArrowTokenizerDb &db, const char *text,
+                                 size_t text_len, int32_t *out_tokens,
+                                 size_t *max_out_len)
+{
+    return bpe_encode_case_run<Gpt2OriginalWordStream>(
+        db, text, text_len, out_tokens, max_out_len);
+}
+
 } // namespace
 
 int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
@@ -918,11 +1072,22 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
 {
     if (!db.valid()) return -1;
     if (text_len == 0) text = "";
+    // The reference pipeline runs the tokenizer.json normalizer BEFORE the
+    // pre-tokenizer. Only NFC is declared by current checkpoints (kind 1's SP
+    // normalizer is handled inside sp_bpe_encode / rejected at conversion).
+    std::string normalized;
+    if (db.normalize_nfc && text_len > 0 && db.tokenizer_kind != 1) {
+        normalized = unicode::NfcNormalize(std::string_view(text, text_len));
+        text = normalized.data();
+        text_len = normalized.size();
+    }
     if (db.tokenizer_kind == 1)
         return sp_bpe_encode(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 11)
+        return sp_json_encode(db, text, text_len, out_tokens, max_out_len);
     if (db.tokenizer_kind == 2)
-        return tiktoken_bpe_encode(db, text, text_len, out_tokens,
-                                   max_out_len);
+        return tiktoken_bpe_encode<KimiWordStream>(db, text, text_len,
+                                                   out_tokens, max_out_len);
     if (db.tokenizer_kind == 3)
         return bpe_encode_llama3(db, text, text_len, out_tokens, max_out_len);
     if (db.tokenizer_kind == 4)
@@ -931,6 +1096,16 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
         return bpe_encode_ling(db, text, text_len, out_tokens, max_out_len);
     if (db.tokenizer_kind == 6)
         return bpe_encode_beam(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 7)
+        return bpe_encode_qwen(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 8)
+        return bpe_encode_gpt2(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 9)
+        return bpe_encode_mistral(db, text, text_len, out_tokens,
+                                  max_out_len);
+    if (db.tokenizer_kind == 10)
+        return bpe_encode_gpt2_original(db, text, text_len, out_tokens,
+                                        max_out_len);
     if (db.tokenizer_kind == 0 && !db.literal_ids.empty())
         return gpt2_bpe_encode_with_literals(db, text, text_len, out_tokens,
                                              max_out_len);
@@ -983,6 +1158,9 @@ int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
     if (!db.valid()) return -1;
     if (db.tokenizer_kind == 1)
         return sp_bpe_decode(db, ids, n_ids, out_text, max_out_len);
+    if (db.tokenizer_kind == 11)
+        return sp_bpe_decode(db, ids, n_ids, out_text, max_out_len,
+                             /*strip_leading_space=*/false);
 
     // Pass 1: sanitized length (a bad byte expands 1 -> 3, so this cannot reuse
     // the raw byte count).

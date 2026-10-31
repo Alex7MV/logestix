@@ -778,10 +778,12 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     auto tok_path = fs::path(input_path) / "tokenizer.json";
     if (!fs::exists(tok_path))
         return arrow::Status::Invalid("tokenizer.json not found in ", input_path);
+    TokenizerSpecialPolicy tok_policy;
+    tok_policy.pretokenizer = 5;
     ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
         tok_path.string(), pinned_dir,
         integrity::TokenizerSpecialIds{.bos_required = false,
-                                       .eos_required = true}));
+                                       .eos_required = true}, tok_policy));
 
     return arrow::Status::OK();
 }

@@ -402,9 +402,10 @@ int main(int argc, char* argv[]) {
         lsxcommon::TokenizerSpecialPolicy tok_policy;
         if (flags.step) {
             // Step-5: the template spells BOS out as text; the pre-tokenizer
-            // is the Flint 3-split over the o200k case-run pattern (kind 4).
+            // is the DeepSeek three-stage Sequence (digits + CJK isolated,
+            // then the six-alternative main pattern) -> WordStream / kind 0.
             tok_policy.bos_id = -1;
-            tok_policy.pretokenizer = 2;
+            tok_policy.pretokenizer = 0;
         }
         if (flags.hy || flags.hy_simulmt) {
             // Hy-Memory: no auto-BOS (the template spells it out), the
@@ -474,6 +475,39 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
+        }
+        if (flags.qwen || flags.qwen35moe || flags.qwen36moe ||
+            flags.qwen38flashnext || flags.ornith) {
+            // Qwen3.5/3.6/3.8 + Ornith: ONE Split stage, \p{L}\p{M} letter
+            // runs (Han is not isolated), one digit per number word.
+            // tokenizer_kind 7.
+            tok_policy.pretokenizer = 5;
+        }
+        if (flags.glm || flags.glmflash || flags.phi || flags.granite_switch) {
+            // GLM / phi-4 / Granite-Switch: one stage, digit groups of <= 3,
+            // standalone contraction. tokenizer_kind 8.
+            tok_policy.pretokenizer = 6;
+        }
+        if (flags.mistral || flags.nemotron || flags.nemotron_nvfp4) {
+            // Mistral-Small-4 / Nemotron: o200k case runs WITHOUT a
+            // contraction suffix, one digit, [\r\n/]* after punctuation.
+            // tokenizer_kind 9.
+            tok_policy.pretokenizer = 7;
+        }
+        if (flags.gemma4 || flags.gemma4dense) {
+            // Gemma-4: raw-text BPE from tokenizer.json (kind 11).
+            tok_policy.pretokenizer = 9;
+        }
+        if (flags.ling) {
+            // Ling: one letter run with an optional prefix, ONE digit per
+            // number word, apostrophe contractions and a punctuation run.
+            // tokenizer_kind 5.
+            tok_policy.pretokenizer = 3;
+        }
+        if (flags.granite) {
+            // Granite-4.2: original GPT-2 ByteLevel pattern (case-sensitive
+            // contractions, unbounded runs). tokenizer_kind 10.
+            tok_policy.pretokenizer = 8;
         }
         if (flags.minimax || flags.minimax_flash) {
             tok_policy.bos_id = -1;

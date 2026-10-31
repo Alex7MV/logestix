@@ -59,6 +59,28 @@ TEST_CASE("flint pre-tokenizer keeps the o200k whitespace lookahead",
     REQUIRE(Split("a\n\nb") == Pieces{"a", "\n\n", "b"});
 }
 
+TEST_CASE("flint contraction suffix is greedy even before more letters",
+          "[flint][pretokenizer]")
+{
+    // The reference pattern's optional (?i:'s|'t|...|'m|...) sits at the end of
+    // the letter-run alternative with no "must not be followed by a letter"
+    // constraint, so "majnf'mpRKP" is ["majnf'm", "p", "RKP"].
+    REQUIRE(Split("majnf'mpRKP") == Pieces{"majnf'm", "p", "RKP"});
+    REQUIRE(Split("we'll") == Pieces{"we'll"});
+}
+
+TEST_CASE("flint digit/CJK stages run before the main pattern",
+          "[flint][pretokenizer]")
+{
+    // The reference is a three-stage Sequence: the digit and CJK runs are
+    // isolated first, so the main pattern sees only the gap and its whitespace
+    // lookahead hits EOF. "a  1" is ["a", "  ", "1"], not two spaces.
+    REQUIRE(Split("a  1") == Pieces{"a", "  ", "1"});
+    REQUIRE(Split("x   9") == Pieces{"x", "   ", "9"});
+    REQUIRE(Split("a  中") == Pieces{"a", "  ", "中"});
+    REQUIRE(Split("1  2") == Pieces{"1", "  ", "2"});
+}
+
 TEST_CASE("flint punctuation run stops at the newline, not at a slash",
           "[flint][pretokenizer]")
 {

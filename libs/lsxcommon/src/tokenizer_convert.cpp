@@ -52,7 +52,12 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     // with U+2581 '▁'. The engine operates in GPT-2 byte-glyph space where
     // byte 0x20 maps to U+0120 'Ġ'. Normalize SP markers into engine keys so
     // vocab entries and merges resolve against the byte-level BPE.
-    auto EngineKey = [](std::string_view k) {
+    // kind 11 (Gemma-4) reads the vocabulary VERBATIM: its keys are raw text
+    // pieces ("▁the"), not GPT-2 byte glyphs, and its merges concatenate raw
+    // keys. Every other kind normalizes SP markers into byte-glyph space.
+    const bool raw_text = (policy.pretokenizer == 9);
+    auto EngineKey = [raw_text](std::string_view k) {
+        if (raw_text) return std::string(k);
         std::string out;
         out.reserve(k.size());
         for (size_t i = 0; i < k.size();) {
@@ -107,9 +112,38 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         special_ids.insert(2);
     }
 
+    // The normalizer runs BEFORE the pre-tokenizer in the reference pipeline.
+    // Only NFC is declared by the current checkpoints; record it so the
+    // encoder can normalize (an empty/absent normalizer, or Gemma's Replace
+    // space -> U+2581, leaves this false). Must be read before "model": the
+    // simdjson on-demand stream is forward-only.
+    bool normalize_nfc = false;
+    {
+        simdjson::ondemand::value nv;
+        if (root["normalizer"].get(nv) == simdjson::SUCCESS) {
+            std::string_view raw;
+            if (nv.raw_json().get(raw) == simdjson::SUCCESS)
+                normalize_nfc =
+                    raw.find("\"NFC\"") != std::string_view::npos;
+        }
+    }
+
     simdjson::ondemand::object model_obj;
     if (root["model"].get_object().get(model_obj) != simdjson::SUCCESS)
         return arrow::Status::Invalid("tokenizer: no model object");
+
+    std::string model_unk;
+    bool model_byte_fallback = false;
+    {
+        // Field order in every HF tokenizer.json: unk_token ... byte_fallback
+        // ... vocab ... merges; the on-demand stream is forward-only.
+        std::string_view u;
+        if (model_obj["unk_token"].get_string().get(u) == simdjson::SUCCESS)
+            model_unk.assign(u);
+        (void)model_obj["byte_fallback"]
+            .get_bool()
+            .get(model_byte_fallback);
+    }
 
     int32_t model_vocab_count = 0;
     {
@@ -240,7 +274,12 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     for (int b = 0; b < 256; ++b) {
         uint8_t b8 = static_cast<uint8_t>(b);
         std::string key = byte_unicode::bytes_to_key(&b8, 1);
-        auto it = key_to_id.find(key);
+        // Raw-text (kind 11) vocabularies are NOT written in GPT-2 glyph
+        // space: a raw "Ø" piece is the letter, not byte 0xD8. Byte fallback
+        // must therefore resolve through the "<0xHH>" pieces only (using the
+        // glyph table here would silently map the byte to an ordinary letter
+        // piece and corrupt every non-Latin script).
+        auto it = raw_text ? key_to_id.end() : key_to_id.find(key);
         if (it == key_to_id.end()) {
             char hex[8];
             std::snprintf(hex, sizeof(hex), "<0x%02X>", b);
@@ -311,15 +350,22 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
                     A.empty() || B.empty())
                     continue;
 
-                std::vector<uint8_t> bytesA, bytesB;
-                if (!byte_unicode::key_to_bytes(EngineKey(A), bytesA) ||
-                    !byte_unicode::key_to_bytes(EngineKey(B), bytesB))
-                    continue;
-
-                std::vector<uint8_t> merged_bytes = bytesA;
-                merged_bytes.insert(merged_bytes.end(), bytesB.begin(), bytesB.end());
-                std::string merged_key =
-                    byte_unicode::bytes_to_key(merged_bytes.data(), merged_bytes.size());
+                std::string merged_key;
+                if (raw_text) {
+                    // Raw-text BPE: the merged piece is the literal
+                    // concatenation of the two operands.
+                    merged_key = A + B;
+                } else {
+                    std::vector<uint8_t> bytesA, bytesB;
+                    if (!byte_unicode::key_to_bytes(EngineKey(A), bytesA) ||
+                        !byte_unicode::key_to_bytes(EngineKey(B), bytesB))
+                        continue;
+                    std::vector<uint8_t> merged_bytes = bytesA;
+                    merged_bytes.insert(merged_bytes.end(), bytesB.begin(),
+                                        bytesB.end());
+                    merged_key = byte_unicode::bytes_to_key(
+                        merged_bytes.data(), merged_bytes.size());
+                }
                 auto itM = key_to_id.find(merged_key);
                 if (itM == key_to_id.end()) continue;
 
@@ -352,13 +398,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
 
         std::vector<uint8_t> bytes;
         bool special = special_ids.count(id) > 0;
-        if (!byte_unicode::key_to_bytes(it->second, bytes)) {
+        if (raw_text || !byte_unicode::key_to_bytes(it->second, bytes)) {
             // Control tokens (e.g. DeepSeek's "<|fim▁hole|>") are shipped in
             // added_tokens with "special": false but contain chars outside the
             // GPT-2 byte table. They can never be produced by the byte-level
             // encoder, so keep them as ordinary tokens whose token_bytes carry
             // the raw UTF-8 text; decode must emit them verbatim (no stripping).
-            if (!special)
+            if (!special && !raw_text)
                 lsxcommon::log::debug(absl::StrCat(
                     "tokenizer: non-byte-level token id=", id,
                     " kept as text: '", it->second, "'"));
@@ -379,6 +425,7 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     meta.vocab_size = vocab_size;
     meta.byte_to_token_id = byte_to_token_id;
     meta.drop_unmapped_bytes = policy.drop_unmapped_bytes;
+    meta.normalize_nfc = normalize_nfc ? 1 : 0;
     // kind 0 with a known base-vocabulary size: ids at or above it are ADDED
     // tokens, which the reference encoder matches literally before BPE. Without
     // the size the classic path stays pure-BPE (every existing family).
@@ -414,6 +461,49 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         // (special:false) and are matched literally by the encoder.
         meta.tokenizer_kind = 6;
         meta.base_vocab_size = model_vocab_count;
+    }
+    if (policy.pretokenizer == 5) {
+        // Qwen3.5/3.6/3.8/Flash-Next and Ornith: ONE split stage with
+        // [:L:][:M:] letter runs (Han is NOT isolated), ONE digit per number
+        // word and a standalone contraction alternative. Written as
+        // tokenizer_kind = 7.
+        meta.tokenizer_kind = 7;
+        meta.base_vocab_size = model_vocab_count;
+    }
+    if (policy.pretokenizer == 6) {
+        // GLM-5.3-Flash / phi-4 / Granite-Switch: ONE split stage, GPT-2-style
+        // letter run (no [:M:]), digit groups of up to three, standalone
+        // contraction alternative. Written as tokenizer_kind = 8.
+        meta.tokenizer_kind = 8;
+        meta.base_vocab_size = model_vocab_count;
+    }
+    if (policy.pretokenizer == 7) {
+        // Mistral-Small-4 / Nemotron-3.5: o200k case-run alternatives WITHOUT
+        // the contraction suffix, ONE digit per number word, [\r\n/]* after
+        // the punctuation run. Written as tokenizer_kind = 9.
+        meta.tokenizer_kind = 9;
+        meta.base_vocab_size = model_vocab_count;
+    }
+    if (policy.pretokenizer == 8) {
+        // Granite-4.2: the original GPT-2 ByteLevel pattern (case-SENSITIVE
+        // contractions, unbounded letter/digit runs, a literal space prefix,
+        // no CRLF alternative). Written as tokenizer_kind = 10.
+        meta.tokenizer_kind = 10;
+        meta.base_vocab_size = model_vocab_count;
+    }
+    if (policy.pretokenizer == 9) {
+        // Gemma-4: raw-text BPE (vocabulary + merges verbatim), normalizer
+        // Replace(" " -> U+2581), ByteFallback, no dummy prefix. Written as
+        // tokenizer_kind = 11.
+        meta.tokenizer_kind = 11;
+        meta.base_vocab_size = model_vocab_count;
+        meta.byte_fallback = model_byte_fallback ? 1 : 0;
+        meta.add_dummy_prefix = 0;
+        meta.escape_whitespaces = 1;
+        if (!model_unk.empty()) {
+            auto it = key_to_id.find(model_unk);
+            if (it != key_to_id.end()) meta.unk_id = it->second;
+        }
     }
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);

@@ -145,6 +145,7 @@ add_library(lsxcommon STATIC
     src/prompt_bridge.cpp
     src/tokenizer_convert.cpp
     src/unicode.cpp
+    src/unicode_nfc.cpp
     src/vram_estimate.cpp
 )
 set_target_properties(lsxcommon PROPERTIES

@@ -273,6 +273,10 @@ struct TokenizerVocabMeta {
     // byte maps to -1 in byte_to_token_id and the encoder SKIPS it, mirroring
     // the reference. 0 = every byte must have a token (all existing models).
     int32_t drop_unmapped_bytes = 0;
+    // 1 = normalize the input with canonical NFC before pre-tokenization
+    // (tokenizer.json declares an NFC normalizer: Qwen3.5/3.6/3.8, Ornith,
+    // Ling, MiniMax-M3, Beam).
+    int32_t normalize_nfc = 0;
 };
 
 class TokenizerVocabSchema {

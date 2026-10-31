@@ -369,7 +369,11 @@ bool AppendGigaChatIds(const ArrowTokenizerDb &tok, const std::string &text,
                 tok, text.data() + run, end - run, buf.data(), &enc_cap);
             if (n == -2) continue;
             if (n < 0) return false;
-            const size_t begin = (tok.bos_id >= 0 && n > 0) ? 1 : 0;
+            // Strip the auto-prepended BOS only when it is actually there: the
+        // single-stage tokenizer kinds (7..10) do not prepend one, and
+        // an unconditional strip would eat the first real token.
+        const size_t begin =
+            (tok.bos_id >= 0 && n > 0 && buf[0] == tok.bos_id) ? 1 : 0;
             out_ids.insert(out_ids.end(), buf.begin() + begin, buf.begin() + n);
             return true;
         }

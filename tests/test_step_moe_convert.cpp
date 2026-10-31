@@ -10,6 +10,10 @@
 #include "lsxcommon/step_moe_convert.h"
 #include "test_step_moe_fixture.h"
 
+#include <arrow/io/file.h>
+
+#include <lsxcommon/tokenizer.h>
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -135,7 +139,8 @@ TEST_CASE("ConvertStepMoeModel converts a synthetic checkpoint",
     fs::path out = fs::temp_directory_path() / "lsx_step_out";
     fs::remove_all(in);
     fs::remove_all(out);
-    REQUIRE(step_test::BuildSyntheticCheckpoint(in) > 0);
+    REQUIRE(step_test::BuildSyntheticCheckpoint(
+                in, true, TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json") > 0);
 
     auto st = ConvertStepMoeModel(in.string(), out.string());
     if (!st.ok()) WARN(st.ToString());
@@ -165,6 +170,24 @@ TEST_CASE("ConvertStepMoeModel converts a synthetic checkpoint",
         CHECK(j.find("\"skipped_visual_tensors\": 2") != std::string::npos);
         CHECK(j.find("\"skipped_mtp_tensors\": 4") != std::string::npos);
         CHECK(j.find("\"vram\"") != std::string::npos);
+    }
+
+    // 1b) Tokenizer policy. Step-5's tokenizer.json is the DeepSeek three-stage
+    // Sequence (\p{N}{1,3} + CJK Isolated, then the six-alternative main
+    // pattern), NOT the Flint/o200k case-run pattern: the arrows must carry
+    // tokenizer_kind 0.
+    {
+        auto vf = arrow::io::MemoryMappedFile::Open(
+            (base / "pinned" / "tokenizer_vocab.arrow").string(),
+            arrow::io::FileMode::READ);
+        auto mf = arrow::io::MemoryMappedFile::Open(
+            (base / "pinned" / "tokenizer_merges.arrow").string(),
+            arrow::io::FileMode::READ);
+        REQUIRE(vf.ok());
+        REQUIRE(mf.ok());
+        lsxcommon::ArrowTokenizerDb db;
+        REQUIRE(lsxcommon::load_tokenizer_metadata(*vf, *mf, db).ok());
+        CHECK(db.tokenizer_kind == 0);
     }
 
     // 2) Attention projections (incl. the per-head gate) are NVFP4; q/k norms

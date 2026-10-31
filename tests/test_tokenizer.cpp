@@ -1,4 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include <arrow/io/file.h>
+#include <fstream>
+#include <iterator>
+#include <lsxcommon/tokenizer.h>
 #include <lsxcommon/unicode.h>
 
 TEST_CASE("unicode classification spot checks", "[tokenizer][unicode]")
@@ -121,6 +125,52 @@ TEST_CASE("BuildTokenizerArrowFiles from synthetic fixture", "[tokenizer][conver
     }
     CHECK(found_he);
     fs::remove_all(pinned);
+}
+
+TEST_CASE("pretokenizer policies map to the documented tokenizer kinds",
+          "[tokenizer][convert]")
+{
+    // 0 = three-stage WordStream, 5..8 = the single-stage GPT-2-family
+    // patterns (kinds 7..10). Pin the mapping so a converter and the encoder
+    // can never drift apart, and pin that an added special marker resolves to
+    // its own id on every path (the reference AddedVocabulary does this).
+    const struct { int32_t policy; int32_t kind; } cases[] = {
+        {0, 0}, {5, 7}, {6, 8}, {7, 9}, {8, 10}};
+    for (const auto &c : cases) {
+        auto pinned = fs::temp_directory_path() /
+                      ("logestix_tok_kind_" + std::to_string(c.policy));
+        fs::remove_all(pinned);
+        fs::create_directories(pinned);
+        lsxcommon::TokenizerSpecialPolicy policy;
+        policy.pretokenizer = c.policy;
+        REQUIRE(lsxcommon::BuildTokenizerArrowFiles(
+                    TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json", pinned,
+                    policy)
+                    .ok());
+        auto v = arrow::io::MemoryMappedFile::Open(
+            (pinned / "tokenizer_vocab.arrow").string(),
+            arrow::io::FileMode::READ);
+        auto m = arrow::io::MemoryMappedFile::Open(
+            (pinned / "tokenizer_merges.arrow").string(),
+            arrow::io::FileMode::READ);
+        REQUIRE(v.ok());
+        REQUIRE(m.ok());
+        lsxcommon::ArrowTokenizerDb db;
+        REQUIRE(lsxcommon::load_tokenizer_metadata(*v, *m, db).ok());
+        CHECK(db.tokenizer_kind == c.kind);
+
+        std::vector<int32_t> ids(32, -7);
+        size_t cap = ids.size();
+        const int32_t n = lsxcommon::arrow_tokenizer_encode(
+            db, "<|bos|>", 7, ids.data(), &cap);
+        REQUIRE(n > 0);
+        ids.resize(static_cast<size_t>(n));
+        // kind 0 is the legacy path, which still auto-prepends BOS; the
+        // single-stage kinds do not. Either way the marker resolves to id 0.
+        CHECK(ids.back() == db.bos_id);
+        db = lsxcommon::ArrowTokenizerDb{};
+        fs::remove_all(pinned);
+    }
 }
 
 TEST_CASE("BuildTokenizerArrowFiles parses array-format merges", "[tokenizer][convert]")
@@ -360,6 +410,321 @@ TEST_CASE("WordStream CRLF, numbers, CJK, gaps", "[tokenizer][pretokenizer]")
     CHECK(SplitWords("!abc") == V{"!abc"});
     CHECK(SplitWords("a?x") == V{"a", "?x"});
     CHECK(SplitWords("a !") == V{"a", " !"});
+}
+
+TEST_CASE("WordStream applies the digit/CJK split before the main regex",
+          "[tokenizer][pretokenizer]")
+{
+    using V = std::vector<std::string>;
+    // The reference DeepSeek pre-tokenizer is a Sequence of three Split
+    // stages: \p{N}{1,3} and CJK runs are isolated FIRST and the main regex
+    // runs on the gaps between them. The gap therefore ends where the next
+    // isolated run begins, so the whitespace lookahead sees EOF and keeps a
+    // run of spaces whole ("a  1" -> ["a", "  ", "1"]); running the main
+    // matcher against the whole buffer instead splits it into two spaces.
+    CHECK(SplitWords("a  1") == V{"a", "  ", "1"});
+    CHECK(SplitWords("x   9") == V{"x", "   ", "9"});
+    CHECK(SplitWords("1  2") == V{"1", "  ", "2"});
+    CHECK(SplitWords("a  中") == V{"a", "  ", "中"});
+    CHECK(SplitWords("x  中  1") == V{"x", "  ", "中", "  ", "1"});
+    // A newline still terminates the whitespace run at the newline itself.
+    CHECK(SplitWords("a  \n1") == V{"a", "  \n", "1"});
+}
+
+TEST_CASE("Llama3WordStream keeps a contraction suffix before more letters",
+          "[tokenizer][pretokenizer]")
+{
+    auto split = [](const char *text) {
+        lsxcommon::Llama3WordStream ws(text, std::strlen(text));
+        lsxcommon::WordSpan w;
+        std::vector<std::string> out;
+        while (ws.next(w)) out.emplace_back(w.begin, w.length);
+        REQUIRE(ws.error() == 0);
+        return out;
+    };
+    // The o200k/Llama-3 pattern's optional contraction is greedy and has no
+    // "not followed by a letter" constraint.
+    CHECK(split("majnf'mpRKP") ==
+          std::vector<std::string>{"majnf'm", "p", "RKP"});
+    CHECK(split("we'll") == std::vector<std::string>{"we'll"});
+}
+
+TEST_CASE("WordStream single-stage mode keeps the whole whitespace run split",
+          "[tokenizer][pretokenizer]")
+{
+    // tiktoken/Kimi apply ONE combined pattern: no digit/CJK isolation stage,
+    // so "  " before a digit is two pieces, unlike the three-stage check above.
+    lsxcommon::WordStream ws("a  1", 4, /*three_stage_split=*/false);
+    lsxcommon::WordSpan w;
+    std::vector<std::string> out;
+    while (ws.next(w)) out.emplace_back(w.begin, w.length);
+    REQUIRE(ws.error() == 0);
+    CHECK(out == std::vector<std::string>{"a", " ", " ", "1"});
+}
+
+TEST_CASE("QwenWordStream single-stage splits", "[tokenizer][pretokenizer]")
+{
+    auto split = [](const char *text) {
+        lsxcommon::QwenWordStream ws(text, std::strlen(text));
+        lsxcommon::WordSpan w;
+        std::vector<std::string> out;
+        while (ws.next(w)) out.emplace_back(w.begin, w.length);
+        REQUIRE(ws.error() == 0);
+        return out;
+    };
+    using V = std::vector<std::string>;
+    // Reference pieces from Qwen3.5-9B tokenizer.json.
+    CHECK(split("a  1") == V{"a", " ", " ", "1"});
+    CHECK(split("a  中") == V{"a", " ", " 中"});
+    CHECK(split("getUserName") == V{"getUserName"});
+    CHECK(split("DON'T it's") == V{"DON", "'T", " it", "'s"});
+    CHECK(split("12345") == V{"1", "2", "3", "4", "5"});
+    CHECK(split("snake_case") == V{"snake", "_case"});
+    CHECK(split("a/b/c") == V{"a", "/b", "/c"});
+    CHECK(split("it'something") == V{"it", "'s", "omething"});
+    CHECK(split(" 1") == V{" ", "1"});
+    CHECK(split("x   9") == V{"x", "  ", " ", "9"});
+}
+
+TEST_CASE("KimiWordStream isolates Han and takes the contraction",
+          "[tokenizer][pretokenizer]")
+{
+    auto split = [](const char *text) {
+        lsxcommon::KimiWordStream ws(text, std::strlen(text));
+        lsxcommon::WordSpan w;
+        std::vector<std::string> out;
+        while (ws.next(w)) out.emplace_back(w.begin, w.length);
+        REQUIRE(ws.error() == 0);
+        return out;
+    };
+    using V = std::vector<std::string>;
+    CHECK(split("majnf'mpRKP") == V{"majnf'm", "p", "RKP"});
+    CHECK(split("中文ab") == V{"中文", "ab"});
+    CHECK(split("a  1") == V{"a", " ", " ", "1"});
+    CHECK(split("getUserName") == V{"get", "User", "Name"});
+}
+
+TEST_CASE("Gpt2WordStream single-stage splits", "[tokenizer][pretokenizer]")
+{
+    auto split = [](const char *text) {
+        lsxcommon::Gpt2WordStream ws(text, std::strlen(text));
+        lsxcommon::WordSpan w;
+        std::vector<std::string> out;
+        while (ws.next(w)) out.emplace_back(w.begin, w.length);
+        REQUIRE(ws.error() == 0);
+        return out;
+    };
+    using V = std::vector<std::string>;
+    // Reference pieces from GLM-5.3-Flash / phi-4 tokenizer.json.
+    CHECK(split("a  1") == V{"a", " ", " ", "1"});
+    CHECK(split("getUserName") == V{"getUserName"});
+    CHECK(split("DON'T it's") == V{"DON", "'T", " it", "'s"});
+    CHECK(split("12345") == V{"123", "45"});
+    CHECK(split("snake_case") == V{"snake", "_case"});
+    CHECK(split("a/b/c") == V{"a", "/b", "/c"});
+    CHECK(split("it'something") == V{"it", "'s", "omething"});
+}
+
+TEST_CASE("MistralWordStream single-stage splits", "[tokenizer][pretokenizer]")
+{
+    auto split = [](const char *text) {
+        lsxcommon::MistralWordStream ws(text, std::strlen(text));
+        lsxcommon::WordSpan w;
+        std::vector<std::string> out;
+        while (ws.next(w)) out.emplace_back(w.begin, w.length);
+        REQUIRE(ws.error() == 0);
+        return out;
+    };
+    using V = std::vector<std::string>;
+    // Reference pieces from Mistral-Small-4 tokenizer.json.
+    CHECK(split("a  1") == V{"a", " ", " ", "1"});
+    CHECK(split("getUserName") == V{"get", "User", "Name"});
+    CHECK(split("DON'T it's") == V{"DON", "'T", " it", "'s"});
+    CHECK(split("12345") == V{"1", "2", "3", "4", "5"});
+    CHECK(split("snake_case") == V{"snake", "_case"});
+    CHECK(split("it'something") == V{"it", "'something"});
+}
+
+TEST_CASE("Gpt2OriginalWordStream single-stage splits",
+          "[tokenizer][pretokenizer]")
+{
+    auto split = [](const char *text) {
+        lsxcommon::Gpt2OriginalWordStream ws(text, std::strlen(text));
+        lsxcommon::WordSpan w;
+        std::vector<std::string> out;
+        while (ws.next(w)) out.emplace_back(w.begin, w.length);
+        REQUIRE(ws.error() == 0);
+        return out;
+    };
+    using V = std::vector<std::string>;
+    // Reference pieces from granite-4.2-30b tokenizer.json (original GPT-2
+    // ByteLevel pattern: case-sensitive contractions, literal space prefix).
+    CHECK(split("a  1") == V{"a", " ", " 1"});
+    CHECK(split("a  中") == V{"a", " ", " 中"});
+    CHECK(split("getUserName") == V{"getUserName"});
+    CHECK(split("DON'T it's") == V{"DON", "'", "T", " it", "'s"});
+    CHECK(split("12345") == V{"12345"});
+    CHECK(split("snake_case") == V{"snake", "_", "case"});
+    CHECK(split("a/b/c") == V{"a", "/", "b", "/", "c"});
+    CHECK(split("a\n\nb") == V{"a", "\n", "\n", "b"});
+    CHECK(split("'mp") == V{"'m", "p"});
+}
+
+TEST_CASE("NfcNormalize canonical composition", "[tokenizer][unicode]")
+{
+    auto nfc = [](const char *s, size_t n) {
+        return lsxcommon::unicode::NfcNormalize(std::string_view(s, n));
+    };
+    CHECK(nfc("e\xCC\x81", 3) == "\xC3\xA9");            // e + acute -> é
+    CHECK(nfc("A\xCC\x8A", 3) == "\xC3\x85");            // A + ring -> Å
+    CHECK(nfc("\xE2\x84\xAB", 3) == "\xC3\x85");         // ÅNGSTRÖM -> Å
+    CHECK(nfc("\xE1\x84\x80\xE1\x85\xA1", 6) ==
+          "\xEA\xB0\x80");                              // Hangul L + V -> 가
+    CHECK(nfc("\xEA\xB0\x80\xE1\x86\xA8", 6) ==
+          "\xEA\xB0\x81");                              // Hangul LV + T -> 각
+    // Canonical ordering: ccc(0315)=232 > ccc(0300)=230, so 0300 moves first
+    // and composes with 'a'; 0315 stays.
+    CHECK(nfc("a\xCC\x95\xCC\x80", 5) == "\xC3\xA0\xCC\x95");
+    // Blocked composition: e + acute + dot-below reorders dot-below (220)
+    // before acute (230); e+dot composes, the acute does not.
+    CHECK(nfc("e\xCC\x81\xCC\xA3", 5) == "\xE1\xBA\xB9\xCC\x81");
+    // Composition exclusion (U+0915 + U+093C must NOT recompose).
+    CHECK(nfc("\xE0\xA4\x95\xE0\xA4\xBC", 6) ==
+          "\xE0\xA4\x95\xE0\xA4\xBC");
+    // Already-composed input is unchanged.
+    CHECK(nfc("\xE1\xB8\x94", 3) == "\xE1\xB8\x94");
+    CHECK(nfc("plain ASCII", 11) == "plain ASCII");
+    // Malformed UTF-8 is returned untouched (the encoder rejects it later).
+    CHECK(nfc("a\xFF", 2) == "a\xFF");
+    // Idempotence.
+    const std::string once = nfc("e\xCC\x81\xCC\xA3", 5);
+    CHECK(nfc(once.data(), once.size()) == once);
+}
+
+TEST_CASE("raw-text BPE bridge (tokenizer_kind 11, Gemma-4)",
+          "[tokenizer][convert]")
+{
+    auto dir = fs::temp_directory_path() / "logestix_tok_gemma_raw";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    lsxcommon::TokenizerSpecialPolicy policy;
+    policy.pretokenizer = 9;
+    policy.bos_id = 1;
+    REQUIRE(lsxcommon::BuildTokenizerArrowFiles(
+                TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json", dir,
+                policy)
+                .ok());
+    auto v = arrow::io::MemoryMappedFile::Open(
+        (dir / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
+    auto m = arrow::io::MemoryMappedFile::Open(
+        (dir / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
+    REQUIRE(v.ok());
+    REQUIRE(m.ok());
+    lsxcommon::ArrowTokenizerDb db;
+    REQUIRE(lsxcommon::load_tokenizer_metadata(*v, *m, db).ok());
+    CHECK(db.tokenizer_kind == 11);
+    CHECK(db.byte_fallback == 1);
+    CHECK(db.add_dummy_prefix == 0);
+
+    auto encode = [&](const char *text, size_t n) {
+        std::vector<int32_t> ids(64, 0);
+        size_t cap = ids.size();
+        const int32_t rc =
+            lsxcommon::arrow_tokenizer_encode(db, text, n, ids.data(), &cap);
+        REQUIRE(rc >= 0);
+        ids.resize(static_cast<size_t>(rc));
+        return ids;
+    };
+    auto decode = [&](std::vector<int32_t> ids) {
+        std::string out(64, '\0');
+        size_t cap = out.size();
+        REQUIRE(lsxcommon::arrow_tokenizer_decode(db, ids.data(), ids.size(),
+                                                  out.data(), &cap) == 0);
+        out.resize(cap);
+        return out;
+    };
+    CHECK(encode(" ab", 3) == std::vector<int32_t>{9});   // ▁ab, one piece
+    CHECK(encode("a b", 3) == std::vector<int32_t>{5, 4, 6});
+    CHECK(encode("<|bos|>a", 8) == std::vector<int32_t>{1, 5});
+    // U+00E9 has no piece: UTF-8 bytes C3 A9 fall back to <0xC3>/<0xA9>.
+    CHECK(encode("\xC3\xA9", 2) == std::vector<int32_t>{205, 179});
+    CHECK(decode({9}) == " ab");
+    CHECK(decode({1, 5}) == "a");
+
+    db = lsxcommon::ArrowTokenizerDb{};
+    fs::remove_all(dir);
+}
+
+TEST_CASE("NFC normalizer is recorded and applied by the encoder",
+          "[tokenizer][convert]")
+{
+    // The reference pipeline normalizes before pre-tokenization: a decomposed
+    // accent must encode exactly like its composed form.
+    std::ifstream in(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json");
+    REQUIRE(in.good());
+    std::string json((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    const std::string empty_norm =
+        "\"normalizer\":{\"type\":\"Sequence\",\"normalizers\":[]}";
+    REQUIRE(json.find(empty_norm) != std::string::npos);
+    json.replace(json.find(empty_norm), empty_norm.size(),
+                 "\"normalizer\":{\"type\":\"NFC\"}");
+
+    auto dir = fs::temp_directory_path() / "logestix_tok_nfc";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    {
+        std::ofstream out(dir / "tok.json");
+        out << json;
+    }
+    REQUIRE(lsxcommon::BuildTokenizerArrowFiles((dir / "tok.json").string(),
+                                                dir)
+                .ok());
+    auto v = arrow::io::MemoryMappedFile::Open(
+        (dir / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
+    auto m = arrow::io::MemoryMappedFile::Open(
+        (dir / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
+    REQUIRE(v.ok());
+    REQUIRE(m.ok());
+    lsxcommon::ArrowTokenizerDb db;
+    REQUIRE(lsxcommon::load_tokenizer_metadata(*v, *m, db).ok());
+    CHECK(db.normalize_nfc == 1);
+
+    auto encode = [&](const char *text, size_t n) {
+        std::vector<int32_t> ids(64, 0);
+        size_t cap = ids.size();
+        const int32_t rc =
+            lsxcommon::arrow_tokenizer_encode(db, text, n, ids.data(), &cap);
+        REQUIRE(rc >= 0);
+        ids.resize(static_cast<size_t>(rc));
+        return ids;
+    };
+    CHECK(encode("e\xCC\x81", 3) == encode("\xC3\xA9", 2));
+    CHECK(encode("A\xCC\x8A", 3) == encode("\xC3\x85", 2));
+
+    // The unmodified fixture has no NFC normalizer.
+    auto dir2 = fs::temp_directory_path() / "logestix_tok_no_nfc";
+    fs::remove_all(dir2);
+    fs::create_directories(dir2);
+    REQUIRE(lsxcommon::BuildTokenizerArrowFiles(
+                TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json", dir2)
+                .ok());
+    auto v2 = arrow::io::MemoryMappedFile::Open(
+        (dir2 / "tokenizer_vocab.arrow").string(),
+        arrow::io::FileMode::READ);
+    auto m2 = arrow::io::MemoryMappedFile::Open(
+        (dir2 / "tokenizer_merges.arrow").string(),
+        arrow::io::FileMode::READ);
+    REQUIRE(v2.ok());
+    REQUIRE(m2.ok());
+    lsxcommon::ArrowTokenizerDb db2;
+    REQUIRE(lsxcommon::load_tokenizer_metadata(*v2, *m2, db2).ok());
+    CHECK(db2.normalize_nfc == 0);
+
+    db = lsxcommon::ArrowTokenizerDb{};
+    db2 = lsxcommon::ArrowTokenizerDb{};
+    fs::remove_all(dir);
+    fs::remove_all(dir2);
 }
 
 TEST_CASE("WordStream rejects malformed UTF-8", "[tokenizer][pretokenizer]")
@@ -654,11 +1019,18 @@ TEST_CASE("arrow_tokenizer_encode error codes", "[tokenizer][encode]")
     CHECK(r == -2);
     CHECK(cap == 3);
 
-    // a word longer than kMaxWordBytes -> -3 (single L-run word of 600 'a')
+    // A 600-byte run is ordinary input (long identifiers, base64, minified
+    // code) and the reference tokenizer has no such limit: it must encode.
     std::string long_word(600, 'a');
     std::vector<int32_t> big(700, -7);
     cap = big.size();
     r = lsxcommon::arrow_tokenizer_encode(db, long_word.data(), long_word.size(), big.data(), &cap);
+    CHECK(r > 0);
+    // Only a run beyond kMaxWordBytes is rejected -> -3.
+    std::string huge(lsxcommon::kMaxWordBytes + 1, 'a');
+    std::vector<int32_t> huge_out(lsxcommon::kMaxWordBytes + 16, -7);
+    cap = huge_out.size();
+    r = lsxcommon::arrow_tokenizer_encode(db, huge.data(), huge.size(), huge_out.data(), &cap);
     CHECK(r == -3);
 
     // default-constructed db -> -1

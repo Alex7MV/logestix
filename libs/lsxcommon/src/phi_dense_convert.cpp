@@ -546,11 +546,13 @@ arrow::Status ConvertPhiModel(const std::string &input_path,
     if (!fs::exists(tok_path))
         return arrow::Status::Invalid("tokenizer.json not found in ",
                                       input_path);
+    TokenizerSpecialPolicy tok_policy;
+    tok_policy.pretokenizer = 6;
     ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
         tok_path.string(), pinned_dir,
         integrity::TokenizerSpecialIds{.bos_required = true,
                                        .eos_required = true,
-                                       .pad_required = false}));
+                                       .pad_required = false}, tok_policy));
 
     return arrow::Status::OK();
 }

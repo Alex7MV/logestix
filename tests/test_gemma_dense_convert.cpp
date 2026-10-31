@@ -184,7 +184,7 @@ TEST_CASE("gemma dense convert happy path", "[gemma_dense][convert]") {
         tmp, "model.safetensors",
         gemma_dense_test::BuildSyntheticGemmaDenseModel());
     gemma_dense_test::WriteConfig(tmp);
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
 
     const auto out = tmp / "out";
@@ -308,7 +308,7 @@ TEST_CASE("convert rejects a checkpoint without config.json",
     synthtest::WriteSafetensors(
         tmp, "model.safetensors",
         gemma_dense_test::BuildSyntheticGemmaDenseModel());
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
 
     auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
@@ -327,7 +327,7 @@ TEST_CASE("convert rejects layer_types contradicting the tensor shapes",
         tmp, "model.safetensors",
         gemma_dense_test::BuildSyntheticGemmaDenseModel());
     gemma_dense_test::WriteConfig(tmp);
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
 
     // Flip layer 3 to sliding in the config while its q_proj keeps the
@@ -364,7 +364,7 @@ TEST_CASE("convert rejects a full-attention layer that ships a v_proj",
                        "BF16", {kv, H}, synthtest::MakeBf16(kv * H)});
     synthtest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemma_dense_test::WriteConfig(tmp);
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
 
     auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
@@ -390,7 +390,7 @@ TEST_CASE("convert rejects a sliding layer missing its v_proj",
                   tensors.end());
     synthtest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemma_dense_test::WriteConfig(tmp);
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
 
     auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
@@ -411,7 +411,7 @@ TEST_CASE("convert rejects a MoE checkpoint (this family is dense only)",
                        "BF16", {4, 32, 64}, synthtest::MakeBf16(4 * 32 * 64)});
     synthtest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemma_dense_test::WriteConfig(tmp);
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
 
     auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(

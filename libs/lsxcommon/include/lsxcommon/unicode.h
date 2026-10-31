@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 namespace lsxcommon {
 namespace unicode {
@@ -19,6 +21,13 @@ bool is_whitespace(uint32_t cp);
 bool is_lowercase_letter(uint32_t cp);
 bool is_uppercase_letter(uint32_t cp);
 bool is_titlecase_letter(uint32_t cp);
+
+// Canonical NFC normalization (UAX #15). The converted tokenizers whose
+// tokenizer.json declares an NFC normalizer must normalize the text BEFORE the
+// pre-tokenizer runs, exactly like the reference pipeline; otherwise a
+// decomposed accent ("e" + U+0301) tokenizes differently from its composed
+// form. Invalid UTF-8 is returned unchanged (the encoder rejects it later).
+std::string NfcNormalize(std::string_view input);
 
 } // namespace unicode
 } // namespace lsxcommon

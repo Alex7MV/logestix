@@ -80,6 +80,10 @@ TEST_CASE("phi chat framing: conversation bridge injects ChatML sentinel ids",
     REQUIRE(im_start >= 0);
     REQUIRE(im_sep >= 0);
     REQUIRE(im_end >= 0);
+    // The fixture declares <|bos|>, so arrow_tokenizer_encode prepends it to
+    // every free-text chunk. phi's template frames turns with <|im_start|>;
+    // a BOS (= <|endoftext|>) inside the transcript is not reference-faithful.
+    REQUIRE(db.bos_id >= 0);
 
     lsxcommon::ModelInitConfig cfg;
     Phi4Model model(cfg);
@@ -91,6 +95,7 @@ TEST_CASE("phi chat framing: conversation bridge injects ChatML sentinel ids",
     std::vector<int32_t> ids;
     REQUIRE(model.BuildConversationInputIds(db, conv, ids));
     REQUIRE(!ids.empty());
+    CHECK(std::count(ids.begin(), ids.end(), db.bos_id) == 0);
     // Two complete turns (system, user) + the open assistant generation prompt.
     CHECK(ids.front() == im_start);
     CHECK(std::count(ids.begin(), ids.end(), im_start) == 3);

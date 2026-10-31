@@ -73,8 +73,8 @@ size_t utf8_expected_len(uint8_t b)
     return 0;
 }
 
-WordStream::WordStream(const char *text, size_t length)
-    : begin_(text), end_(text + length)
+WordStream::WordStream(const char *text, size_t length, bool three_stage_split)
+    : begin_(text), end_(text + length), three_stage_(three_stage_split)
 {
 }
 
@@ -314,26 +314,85 @@ static bool match_main(const char *begin, const char *end, size_t pos, size_t *m
     return false;
 }
 
+// End of the gap the main regex is allowed to see.
+//
+// The reference DeepSeek pre-tokenizer is a Sequence of three Split stages:
+// \p{N}{1,3} Isolated, the CJK run Isolated, and only then the main pattern.
+// The main pattern therefore runs on the text BETWEEN isolated runs, and its
+// whitespace lookahead hits EOF at that boundary. Running it against the whole
+// remaining buffer instead splits "  " before a digit into two pieces; the
+// reference keeps the run whole ("a  1" -> ["a", "  ", "1"]).
+//
+// `pos` is never itself a digit or CJK codepoint (next() dispatches those to
+// next_number/next_cjk first), so the returned offset is > pos unless the rest
+// of the buffer is a single isolated run.
+size_t StageGapEnd(const char *begin, const char *end, size_t pos)
+{
+    const size_t n = static_cast<size_t>(end - begin);
+    size_t p = pos;
+    while (p < n) {
+        size_t cl = 0;
+        const uint32_t cp = decode_utf8(begin + p, n - p, &cl);
+        if (cp == kInvalid) return n;
+        if (unicode::classify(cp) == unicode::CharClass::Number ||
+            is_cjk_run(cp))
+            return p;
+        p += cl;
+    }
+    return n;
+}
+
 bool WordStream::next_main(WordSpan &word)
 {
-    size_t n = static_cast<size_t>(end_ - begin_);
+    if (!three_stage_) {
+        const char *gap_end = end_;
+        size_t len = 0;
+        if (match_main(begin_, gap_end, pos_, &len)) {
+            word = WordSpan{begin_ + pos_, len};
+            pos_ += len;
+            return true;
+        }
+        size_t gap_start = pos_;
+        size_t p = pos_;
+        const size_t n = static_cast<size_t>(end_ - begin_);
+        while (p < n) {
+            size_t cl = 0;
+            uint32_t c2 = decode_utf8(begin_ + p, n - p, &cl);
+            if (c2 == kInvalid) { error_ = 1; break; }
+            if (unicode::classify(c2) == unicode::CharClass::Number ||
+                is_cjk_run(c2))
+                break;
+            size_t mlen = 0;
+            if (match_main(begin_, gap_end, p, &mlen)) break;
+            p += cl;
+        }
+        word = WordSpan{begin_ + gap_start, p - gap_start};
+        pos_ = p;
+        return true;
+    }
+    if (!stage_valid_ || stage_next_ < pos_) {
+        stage_next_ = StageGapEnd(begin_, end_, pos_);
+        stage_valid_ = true;
+    }
+    const char *gap_end = begin_ + stage_next_;
+    const size_t gap_n = static_cast<size_t>(gap_end - begin_);
     size_t len = 0;
-    if (match_main(begin_, end_, pos_, &len)) {
+    if (match_main(begin_, gap_end, pos_, &len)) {
         word = WordSpan{begin_ + pos_, len};
         pos_ += len;
         return true;
     }
 
-    // Gap: extend until the next number / CJK-run / main-regex match.
+    // Gap: extend until the next number / CJK-run / main-regex match, never
+    // past the isolated-run boundary.
     size_t gap_start = pos_;
     size_t p = pos_;
-    while (p < n) {
+    while (p < gap_n) {
         size_t cl = 0;
-        uint32_t c2 = decode_utf8(begin_ + p, n - p, &cl);
+        uint32_t c2 = decode_utf8(begin_ + p, gap_n - p, &cl);
         if (c2 == kInvalid) { error_ = 1; break; }
-        if (unicode::classify(c2) == unicode::CharClass::Number || is_cjk_run(c2)) break;
         size_t mlen = 0;
-        if (match_main(begin_, end_, p, &mlen)) break;
+        if (match_main(begin_, gap_end, p, &mlen)) break;
         p += cl;
     }
     word = WordSpan{begin_ + gap_start, p - gap_start};
@@ -377,11 +436,6 @@ inline bool cp_lower_class(uint32_t cp)
     if (unicode::classify(cp) != CharClass::Letter) return false;
     return !unicode::is_uppercase_letter(cp) &&
            !unicode::is_titlecase_letter(cp);
-}
-inline bool cp_letter_or_mark(uint32_t cp)
-{
-    const CharClass k = unicode::classify(cp);
-    return k == CharClass::Letter || k == CharClass::Mark;
 }
 template <typename Pred>
 size_t consume_run(const char *begin, const char *end, size_t pos, Pred pred,
@@ -431,13 +485,12 @@ size_t ContractionEnd(const char *begin, const char *end, size_t pos)
             if (c != sfx[i]) { ok = false; break; }
         }
         if (!ok) continue;
-        const size_t after = pos + 1 + l;
-        if (after < n) {
-            size_t cl = 0;
-            const uint32_t c3 = decode_utf8(begin + after, n - after, &cl);
-            if (c3 != kInvalidUtf8 && cp_letter_or_mark(c3)) continue;
-        }
-        return after;
+        // The o200k/Llama-3 pattern's optional contraction is greedy: it is
+        // taken even when more letters follow ("majnf'mpRKP" ->
+        // ["majnf'm", "p", "RKP"]). Do not add a "next codepoint is not a
+        // letter" guard here — that is the DeepSeek alt1 behaviour, not this
+        // pattern's, and it changes the ids of mixed-case identifiers.
+        return pos + 1 + l;
     }
     return pos;
 }
@@ -446,7 +499,9 @@ size_t ContractionEnd(const char *begin, const char *end, size_t pos)
 // between o200k's `' '? [^\s\p{L}\p{N}]+ [\r\n/]*` (Llama-3 / Qwen) and
 // Flint's `' '? [\p{P}\p{S}]+ [\r\n]*`.
 bool MatchCaseRunPattern(const char *begin, const char *end, size_t pos,
-                         bool flint_punct, size_t &len)
+                         bool flint_punct, size_t &len, int digit_max = 3,
+                         bool contraction = true, bool stop_at_cjk = false,
+                         bool slash_after_punct = true)
 {
     const size_t n = static_cast<size_t>(end - begin);
     if (pos >= n) return false;
@@ -468,17 +523,18 @@ bool MatchCaseRunPattern(const char *begin, const char *end, size_t pos,
         const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
         if (c2 == kInvalidUtf8) continue;
         if (!cp_upper_class(c2) && !cp_lower_class(c2)) continue;
-        const size_t run_end = CaseRunEnd(begin, end, p, flint_punct);
+        const size_t run_end = CaseRunEnd(begin, end, p, stop_at_cjk);
         if (run_end == p) continue;
-        len = ContractionEnd(begin, end, run_end) - pos;
+        len = (contraction ? ContractionEnd(begin, end, run_end) : run_end) -
+              pos;
         return true;
     }
 
-    // alt3: \p{N}{1,3}
+    // alt3: \p{N}{1,digit_max}
     if (unicode::classify(cp) == CharClass::Number) {
         size_t p = pos;
         int count = 0;
-        while (p < n && count < 3) {
+        while (p < n && count < digit_max) {
             size_t q = 0;
             const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
             if (c2 == kInvalidUtf8 || unicode::classify(c2) != CharClass::Number)
@@ -510,7 +566,9 @@ bool MatchCaseRunPattern(const char *begin, const char *end, size_t pos,
         if (p > run_begin) {
             while (p < n) {
                 const char b = begin[p];
-                if (b != '\r' && b != '\n' && (flint_punct || b != '/')) break;
+                if (b != '\r' && b != '\n' &&
+                    !(slash_after_punct && b == '/'))
+                    break;
                 ++p;
             }
             len = p - pos;
@@ -902,12 +960,20 @@ bool FlintWordStream::next_cjk(WordSpan &word)
 
 bool FlintWordStream::next_main(WordSpan &word)
 {
-    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (!stage_valid_ || stage_next_ < pos_) {
+        stage_next_ = StageGapEnd(begin_, end_, pos_);
+        stage_valid_ = true;
+    }
+    const char *gap_end = begin_ + stage_next_;
+    const size_t gap_n = static_cast<size_t>(gap_end - begin_);
     size_t len = 0;
-    if (!MatchCaseRunPattern(begin_, end_, pos_, /*flint_punct=*/true, len) ||
+    if (!MatchCaseRunPattern(begin_, gap_end, pos_, /*flint_punct=*/true,
+                             len, /*digit_max=*/3, /*contraction=*/true,
+                             /*stop_at_cjk=*/true,
+                             /*slash_after_punct=*/false) ||
         len == 0) {
         size_t cl = 0;
-        const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+        const uint32_t cp = decode_utf8(begin_ + pos_, gap_n - pos_, &cl);
         len = (cp == kInvalidUtf8) ? 1 : cl;   // unmatched text: its own piece
     }
     word = WordSpan{begin_ + pos_, len};
@@ -927,6 +993,432 @@ bool FlintWordStream::next(WordSpan &word)
         return next_number(word);
     if (is_cjk_run(cp)) return next_cjk(word);
     return next_main(word);
+}
+
+
+// ── single-stage GPT-2-family patterns (tokenizer_kind 7-10) ───────────────
+//
+// The reference `pre_tokenizer` of these checkpoints is ONE Split stage, not
+// the three-stage Sequence WordStream models. In particular a run of spaces
+// before a digit is NOT kept whole (`\s+(?!\S)` backtracks one codepoint and
+// `\s+` takes the last), while a space IS attached to a following Han/Kana
+// letter run by the optional prefix.
+namespace {
+
+bool MatchContractionAlt(const char *begin, const char *end, size_t pos,
+                         size_t &len, bool case_insensitive)
+{
+    const size_t n = static_cast<size_t>(end - begin);
+    if (pos >= n || begin[pos] != '\'') return false;
+    static const char *const kSuffix[] = {"s", "t", "re", "ve", "m", "ll", "d"};
+    for (const char *sfx : kSuffix) {
+        const size_t l = std::strlen(sfx);
+        if (pos + 1 + l > n) continue;
+        bool ok = true;
+        for (size_t i = 0; i < l; ++i) {
+            char a = begin[pos + 1 + i];
+            if (case_insensitive && a >= 'A' && a <= 'Z')
+                a = static_cast<char>(a - 'A' + 'a');
+            if (a != sfx[i]) { ok = false; break; }
+        }
+        if (ok) {
+            len = 1 + l;
+            return true;
+        }
+    }
+    return false;
+}
+
+// alt5-7: \s*[\r\n]+ | \s+(?!\S) | \s+. `crlf_alt = false` drops the first
+// alternative (the original GPT-2 pattern has only the two lookahead forms).
+bool MatchWhitespaceAlts(const char *begin, const char *end, size_t pos,
+                         size_t &len, bool crlf_alt = true)
+{
+    const size_t n = static_cast<size_t>(end - begin);
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin + pos, n - pos, &cl);
+    if (cp == kInvalidUtf8 ||
+        unicode::classify(cp) != unicode::CharClass::Whitespace)
+        return false;
+    size_t p = pos;
+    size_t last_crlf = static_cast<size_t>(-1);
+    size_t prev_cp = pos;
+    while (p < n) {
+        size_t q = 0;
+        const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
+        if (c2 == kInvalidUtf8 ||
+            unicode::classify(c2) != unicode::CharClass::Whitespace)
+            break;
+        if (c2 == 0x0D || c2 == 0x0A) last_crlf = p + q;
+        prev_cp = p;
+        p += q;
+    }
+    if (crlf_alt && last_crlf != static_cast<size_t>(-1)) {
+        len = last_crlf - pos;
+        return true;
+    }
+    if (p >= n) {
+        len = p - pos;
+        return true;
+    }
+    if (prev_cp > pos) {
+        len = prev_cp - pos;
+        return true;
+    }
+    len = p - pos;
+    return true;
+}
+
+size_t ConsumeLetters(const char *begin, const char *end, size_t pos,
+                      bool include_marks)
+{
+    const size_t n = static_cast<size_t>(end - begin);
+    size_t p = pos;
+    while (p < n) {
+        size_t cl = 0;
+        const uint32_t cp = decode_utf8(begin + p, n - p, &cl);
+        if (cp == kInvalidUtf8) break;
+        const unicode::CharClass k = unicode::classify(cp);
+        if (k != unicode::CharClass::Letter &&
+            !(include_marks && k == unicode::CharClass::Mark))
+            break;
+        p += cl;
+    }
+    return p;
+}
+
+size_t ConsumeDigits(const char *begin, const char *end, size_t pos,
+                     int max_digits)
+{
+    const size_t n = static_cast<size_t>(end - begin);
+    size_t p = pos;
+    int count = 0;
+    while (p < n && (max_digits <= 0 || count < max_digits)) {
+        size_t cl = 0;
+        const uint32_t cp = decode_utf8(begin + p, n - p, &cl);
+        if (cp == kInvalidUtf8 ||
+            unicode::classify(cp) != unicode::CharClass::Number)
+            break;
+        p += cl;
+        ++count;
+    }
+    return p;
+}
+
+} // namespace
+
+QwenWordStream::QwenWordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool QwenWordStream::match(size_t pos, size_t &len) const
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos, n - pos, &cl);
+    if (cp == kInvalidUtf8) return false;
+
+    // alt1: (?i:'s|'t|'re|'ve|'m|'ll|'d)
+    if (MatchContractionAlt(begin_, end_, pos, len, /*case_insensitive=*/true))
+        return true;
+
+    // alt2: [^\r\n\p{L}\p{N}]? [\p{L}\p{M}]+  (Han/Kana are NOT isolated)
+    const unicode::CharClass k0 = unicode::classify(cp);
+    const bool is_prefix =
+        cp != 0x0D && cp != 0x0A && k0 != unicode::CharClass::Letter &&
+        k0 != unicode::CharClass::Number;
+    {
+        const size_t p = pos + (is_prefix ? cl : 0);
+        if (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            const unicode::CharClass k2 = unicode::classify(c2);
+            if (c2 != kInvalidUtf8 &&
+                (k2 == unicode::CharClass::Letter ||
+                 k2 == unicode::CharClass::Mark)) {
+                len = ConsumeLetters(begin_, end_, p, /*include_marks=*/true) -
+                      pos;
+                return true;
+            }
+        }
+    }
+
+    // alt3: \p{N}
+    if (k0 == unicode::CharClass::Number) {
+        len = cl;
+        return true;
+    }
+
+    // alt4: ' '? [^\s\p{L}\p{M}\p{N}]+ [\r\n]*
+    {
+        const size_t p0 = (cp == 0x20) ? pos + cl : pos;
+        size_t p = p0;
+        while (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalidUtf8) break;
+            const unicode::CharClass k = unicode::classify(c2);
+            if (k == unicode::CharClass::Whitespace ||
+                k == unicode::CharClass::Letter ||
+                k == unicode::CharClass::Mark ||
+                k == unicode::CharClass::Number)
+                break;
+            p += q;
+        }
+        if (p > p0) {
+            while (p < n && (begin_[p] == '\r' || begin_[p] == '\n')) ++p;
+            len = p - pos;
+            return true;
+        }
+    }
+
+    return MatchWhitespaceAlts(begin_, end_, pos, len);
+}
+
+bool QwenWordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
+Gpt2WordStream::Gpt2WordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool Gpt2WordStream::match(size_t pos, size_t &len) const
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos, n - pos, &cl);
+    if (cp == kInvalidUtf8) return false;
+
+    // alt1: (?i:contraction)
+    if (MatchContractionAlt(begin_, end_, pos, len, /*case_insensitive=*/true))
+        return true;
+
+    // alt2: [^\r\n\p{L}\p{N}]? \p{L}+
+    const unicode::CharClass k0 = unicode::classify(cp);
+    const bool is_prefix =
+        cp != 0x0D && cp != 0x0A && k0 != unicode::CharClass::Letter &&
+        k0 != unicode::CharClass::Number;
+    {
+        const size_t p = pos + (is_prefix ? cl : 0);
+        if (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 != kInvalidUtf8 &&
+                unicode::classify(c2) == unicode::CharClass::Letter) {
+                len = ConsumeLetters(begin_, end_, p, /*include_marks=*/false) -
+                      pos;
+                return true;
+            }
+        }
+    }
+
+    // alt3: \p{N}{1,3}
+    if (k0 == unicode::CharClass::Number) {
+        len = ConsumeDigits(begin_, end_, pos, 3) - pos;
+        return true;
+    }
+
+    // alt4: ' '? [^\s\p{L}\p{N}]+ [\r\n]*
+    {
+        const size_t p0 = (cp == 0x20) ? pos + cl : pos;
+        size_t p = p0;
+        while (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalidUtf8) break;
+            const unicode::CharClass k = unicode::classify(c2);
+            if (k == unicode::CharClass::Whitespace ||
+                k == unicode::CharClass::Letter ||
+                k == unicode::CharClass::Number)
+                break;
+            p += q;
+        }
+        if (p > p0) {
+            while (p < n && (begin_[p] == '\r' || begin_[p] == '\n')) ++p;
+            len = p - pos;
+            return true;
+        }
+    }
+
+    return MatchWhitespaceAlts(begin_, end_, pos, len);
+}
+
+bool Gpt2WordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
+MistralWordStream::MistralWordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool MistralWordStream::match(size_t pos, size_t &len) const
+{
+    // The Llama-3 case-run alternatives WITHOUT a contraction suffix, ONE digit
+    // per number word, and `[\r\n/]*` after the punctuation run.
+    return MatchCaseRunPattern(begin_, end_, pos, /*flint_punct=*/false, len,
+                               /*digit_max=*/1, /*contraction=*/false);
+}
+
+bool MistralWordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
+Gpt2OriginalWordStream::Gpt2OriginalWordStream(const char *text,
+                                               size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool Gpt2OriginalWordStream::match(size_t pos, size_t &len) const
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos, n - pos, &cl);
+    if (cp == kInvalidUtf8) return false;
+
+    // alt1: 's|'t|'re|'ve|'m|'ll|'d  (case-SENSITIVE in the GPT-2 pattern)
+    if (MatchContractionAlt(begin_, end_, pos, len, /*case_insensitive=*/false))
+        return true;
+
+    const size_t p = (cp == 0x20) ? pos + cl : pos;   // '?': one ASCII space
+    if (p < n) {
+        size_t q = 0;
+        const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+        const unicode::CharClass k2 = unicode::classify(c2);
+        // alt2: ' '? \p{L}+
+        if (c2 != kInvalidUtf8 && k2 == unicode::CharClass::Letter) {
+            len = ConsumeLetters(begin_, end_, p, /*include_marks=*/false) -
+                  pos;
+            return true;
+        }
+        // alt3: ' '? \p{N}+  (unbounded)
+        if (c2 != kInvalidUtf8 && k2 == unicode::CharClass::Number) {
+            len = ConsumeDigits(begin_, end_, p, 0) - pos;
+            return true;
+        }
+        // alt4: ' '? [^\s\p{L}\p{N}]+
+        size_t e = p;
+        while (e < n) {
+            size_t r = 0;
+            const uint32_t c3 = decode_utf8(begin_ + e, n - e, &r);
+            if (c3 == kInvalidUtf8) break;
+            const unicode::CharClass k = unicode::classify(c3);
+            if (k == unicode::CharClass::Whitespace ||
+                k == unicode::CharClass::Letter ||
+                k == unicode::CharClass::Number)
+                break;
+            e += r;
+        }
+        if (e > p) {
+            len = e - pos;
+            return true;
+        }
+    }
+
+    // alt5-6: \s+(?!\S) | \s+   (the original pattern has no \s*[\r\n]+ form)
+    return MatchWhitespaceAlts(begin_, end_, pos, len, /*crlf_alt=*/false);
+}
+
+bool Gpt2OriginalWordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
+
+// ── Kimi tiktoken pattern (tokenizer_kind 2) ───────────────────────────────
+//
+// `[\\p{Han}]+` is the first alternative in the reference pat_str, so a Han run
+// is isolated before the case-run alternatives (which exclude Han); the
+// punctuation tail is [\\r\\n]* (no slash). Everything else is the Llama-3
+// case-run pattern, contraction included.
+KimiWordStream::KimiWordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool KimiWordStream::match(size_t pos, size_t &len) const
+{
+    return MatchCaseRunPattern(begin_, end_, pos, /*flint_punct=*/false, len,
+                               /*digit_max=*/3, /*contraction=*/true,
+                               /*stop_at_cjk=*/true,
+                               /*slash_after_punct=*/false);
+}
+
+bool KimiWordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    if (is_cjk_run(cp)) {
+        size_t p = pos_;
+        while (p < n) {
+            size_t q = 0;
+            const uint32_t c2 = decode_utf8(begin_ + p, n - p, &q);
+            if (c2 == kInvalidUtf8 || !is_cjk_run(c2)) break;
+            p += q;
+        }
+        word = WordSpan{begin_ + pos_, p - pos_};
+        pos_ = p;
+        return true;
+    }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
 }
 
 } // namespace lsxcommon

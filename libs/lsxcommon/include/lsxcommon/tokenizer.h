@@ -12,7 +12,11 @@
 
 namespace lsxcommon {
 
-constexpr size_t kMaxWordBytes = 512;
+// Longest single pre-token word the BPE seed accepts. The reference
+// tokenizers have no such limit; 8 KiB covers realistic unbroken runs (long
+// identifiers, base64 payloads, minified code) without letting a pathological
+// input size the on-stack seed arrays.
+constexpr size_t kMaxWordBytes = 8192;
 
 struct ArrowTokenizerDb {
     std::shared_ptr<arrow::io::MemoryMappedFile> vocab_mmap;
@@ -60,6 +64,9 @@ struct ArrowTokenizerDb {
     // 1 = bytes whose byte_to_token_id is -1 are skipped by the encoder
     // (reference-faithful for checkpoints that never emit them; Hy-Memory).
     int32_t drop_unmapped_bytes = 0;
+    // 1 = the checkpoint's tokenizer.json declares an NFC normalizer; encode
+    // normalizes the text before the pre-tokenizer (reference pipeline order).
+    int32_t normalize_nfc = 0;
     std::string error_msg;
 
     bool valid() const;

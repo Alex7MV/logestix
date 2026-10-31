@@ -759,15 +759,18 @@ arrow::Status ConvertStepMoeModel(const std::string &input_dir,
     top.total_pinned_tensors = static_cast<int>(total_pinned);
 
     // (5) Tokenizer. The chat template spells the BOS marker out as text, so
-    // the reference tokenizer must NOT auto-prepend it; the pre-tokenizer is
-    // the Flint 3-split (numeric runs + CJK) over the o200k case-run pattern
-    // (tokenizer_kind 4).
+    // the reference tokenizer must NOT auto-prepend it. Step-5's
+    // tokenizer.json is the DeepSeek three-stage Sequence — \p{N}{1,3}
+    // Isolated, CJK Isolated, then the six-alternative main pattern — so the
+    // engine's WordStream (pretokenizer 0, tokenizer_kind 0) is the matching
+    // split. The o200k case-run pattern (kind 4) is Flint's, not Step's, and
+    // mis-splits mixed-case identifiers and letter/digit boundaries.
     const fs::path tok_path = fs::path(input_dir) / "tokenizer.json";
     bool tokenizer_ok = false;
     if (fs::exists(tok_path)) {
         TokenizerSpecialPolicy tok_policy;
         tok_policy.bos_id = -1;
-        tok_policy.pretokenizer = 2;
+        tok_policy.pretokenizer = 0;
         if (top.eos_token_id >= 0) tok_policy.eos_id = top.eos_token_id;
         if (top.pad_token_id >= 0) tok_policy.pad_id = top.pad_token_id;
         ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(

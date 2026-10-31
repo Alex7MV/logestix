@@ -510,10 +510,12 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
     const fs::path tok_path = fs::path(input_dir) / "tokenizer.json";
     bool tokenizer_ok = false;
     if (fs::exists(tok_path)) {
+        TokenizerSpecialPolicy tok_policy;
+        tok_policy.pretokenizer = 7;
         ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
             tok_path.string(), pinned_dir,
             integrity::TokenizerSpecialIds{.bos_required = false,
-                                           .eos_required = true}));
+                                           .eos_required = true}, tok_policy));
         tokenizer_ok = true;
     } else if (!SyntheticGeometryAllowed()) {
         return arrow::Status::Invalid("tokenizer.json not found in ", input_dir);

@@ -95,7 +95,16 @@ bool AppendGemmaEncoded(const ArrowTokenizerDb &tok, std::string_view text,
                                                  buf.data(), &enc_cap);
         if (n == -2) continue;
         if (n < 0) return false;
-        const size_t begin = (tok.bos_id >= 0 && n > 0) ? 1 : 0;
+        // Only kinds 0/1 auto-prepend BOS. Gemma-4's kind 11 does NOT: the
+        // rendered conversation starts with a literal "<bos>" that must stay
+        // (the template spells the marker out), so a leading bos here is
+        // content, not a duplicate.
+        const bool auto_bos =
+            tok.tokenizer_kind == 0 || tok.tokenizer_kind == 1;
+        const size_t begin =
+            (auto_bos && tok.bos_id >= 0 && n > 0 && buf[0] == tok.bos_id)
+                ? 1
+                : 0;
         ids.insert(ids.end(), buf.begin() + begin, buf.begin() + n);
         return true;
     }

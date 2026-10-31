@@ -816,10 +816,12 @@ arrow::Status ConvertGlmModel(
     if (!fs::exists(tokenizer_json))
         return arrow::Status::Invalid("tokenizer.json not found in ",
                                       input_path);
+    TokenizerSpecialPolicy tok_policy;
+    tok_policy.pretokenizer = 6;
     ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
         tokenizer_json.string(), log_root / "pinned",
         integrity::TokenizerSpecialIds{.bos_required = true,
-                                       .eos_required = true}));
+                                       .eos_required = true}, tok_policy));
 
     lsxcommon::log::info(absl::StrCat(
         "Done — ", pinned_processed, " pinned tensors, ", experts_processed,

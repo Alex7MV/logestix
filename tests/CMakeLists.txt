@@ -7922,7 +7922,8 @@ add_executable(test_step_moe_convert test_step_moe_convert.cpp)
 target_include_directories(test_step_moe_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_compile_definitions(test_step_moe_convert PRIVATE
-    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_step_moe_convert PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_step_moe_convert COMMAND test_step_moe_convert)

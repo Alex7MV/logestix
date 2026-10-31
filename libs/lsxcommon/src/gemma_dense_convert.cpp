@@ -729,10 +729,15 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
     if (!fs::exists(tok_path))
         return arrow::Status::Invalid("tokenizer.json not found in ",
                                       input_path);
+    // Gemma-4 is raw-text BPE (tokenizer.json vocab/merges verbatim,
+    // U+2581 space normalization, byte fallback), written as
+    // tokenizer_kind 11.
+    TokenizerSpecialPolicy tok_policy;
+    tok_policy.pretokenizer = 9;
     ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
         tok_path.string(), pinned_dir,
         integrity::TokenizerSpecialIds{.bos_required = true,
-                                       .eos_required = true}));
+                                       .eos_required = true}, tok_policy));
 
     return arrow::Status::OK();
 }

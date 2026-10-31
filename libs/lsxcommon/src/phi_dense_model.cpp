@@ -184,7 +184,14 @@ bool EncodePhiText(const ArrowTokenizerDb &tok, std::string_view text,
     const int32_t n = arrow_tokenizer_encode(tok, text.data(), text.size(),
                                              ids.data(), &cap);
     if (n <= 0) return false;
-    out.insert(out.end(), ids.begin(), ids.begin() + n);
+    // arrow_tokenizer_encode prepends bos_id when the checkpoint defines one
+    // (phi's bos is <|endoftext|>). ChatML frames the turn with <|im_start|>,
+    // so that leading BOS must be dropped for every free-text chunk — keeping
+    // it injects an EOS id into the middle of the transcript.
+    const size_t begin =
+        (tok.bos_id >= 0 && n > 0 && ids[0] == tok.bos_id) ? 1 : 0;
+    out.insert(out.end(), ids.begin() + static_cast<long>(begin),
+               ids.begin() + n);
     return true;
 }
 

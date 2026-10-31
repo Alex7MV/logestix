@@ -92,7 +92,7 @@ TEST_CASE("gemma topology parse + convert happy path", "[gemma][convert]") {
     gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemmatest::WriteConfig(tmp);
     std::filesystem::copy_file(
-        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
         tmp / "tokenizer.json");
 
     auto top = lsxcommon::gemma::load_gemma_topology((tmp / "config.json").string());
@@ -151,7 +151,7 @@ TEST_CASE("convert fails without config.json", "[gemma][convert]") {
     auto tensors = gemmatest::BuildSyntheticGemmaModel();
     gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
     std::filesystem::copy_file(
-        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
         tmp / "tokenizer.json");
 
     auto out = tmp / "out";
@@ -171,7 +171,7 @@ TEST_CASE("convert fails on layer_types contradicting tensor shapes",
     gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemmatest::WriteConfig(tmp);
     std::filesystem::copy_file(
-        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
         tmp / "tokenizer.json");
 
     // Flip layer 3 to sliding in the config while its q_proj keeps the
@@ -283,7 +283,7 @@ TEST_CASE("gemma MoE residual plane covers attn + dense MLP, never the experts",
     }
     gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemmatest::WriteConfig(tmp);
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
 
     auto out = tmp / "out";
@@ -355,7 +355,7 @@ TEST_CASE("gemma converter emits NVFP4 records for dense MLP",
     gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemmatest::WriteConfig(tmp);
     std::filesystem::copy_file(
-        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
         tmp / "tokenizer.json");
 
     auto out = tmp / "out";

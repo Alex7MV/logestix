@@ -104,6 +104,19 @@ struct TokenizerSpecialPolicy {
     //   4 = Beam single-run Qwen2/3 pattern: (?i:'s|'t|'re|'ve|'m|'ll|'d) |
     //       optional-prefix letter run | one digit | punctuation run |
     //       \s*[\r\n]+ (BeamWordStream). Written as tokenizer_kind = 6.
+    //   5 = Qwen3.5/3.6/3.8 + Ornith single-stage pattern: standalone
+    //       contraction, optional-prefix [\p{L}\p{M}]+ letter run (Han NOT
+    //       isolated), one digit, punctuation run without \p{M}/digits
+    //       (QwenWordStream). Written as tokenizer_kind = 7.
+    //   6 = GLM-5.3-Flash / phi-4 / Granite-Switch single-stage pattern:
+    //       standalone contraction, optional-prefix \p{L}+ run, digit groups
+    //       of <= 3, punctuation run (Gpt2WordStream). tokenizer_kind = 8.
+    //   7 = Mistral-Small-4 / Nemotron-3.5: o200k case runs WITHOUT the
+    //       contraction suffix, one digit, [\r\n/]* after punctuation
+    //       (MistralWordStream). Written as tokenizer_kind = 9.
+    //   8 = Granite-4.2 original GPT-2 ByteLevel pattern: case-SENSITIVE
+    //       contractions, unbounded letter/digit runs, literal space prefix,
+    //       no CRLF alternative (Gpt2OriginalWordStream). tokenizer_kind = 10.
     int32_t pretokenizer = 0;
     // 1 = tolerate a vocabulary with no single-byte token for some bytes: the
     // missing ones map to -1 and the encoder skips them. The reference tokenizer

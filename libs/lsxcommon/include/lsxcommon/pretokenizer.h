@@ -31,7 +31,11 @@ struct WordSpan {
 // false and error() is set to 1.
 class WordStream {
 public:
-    WordStream(const char *text, size_t length);
+    // `three_stage_split` selects the reference Sequence semantics: the digit
+    // and CJK runs are isolated FIRST and the main pattern runs on the gaps
+    // (kind 0, DeepSeek/Hy/Step). Set false for a checkpoint whose regex is a
+    // single combined pattern (tiktoken / Kimi).
+    WordStream(const char *text, size_t length, bool three_stage_split = true);
 
     bool next(WordSpan &word);
     uint32_t error() const { return error_; }
@@ -45,6 +49,11 @@ private:
     const char *const end_;
     size_t pos_ = 0;
     uint32_t error_ = 0;
+    // Cached start of the next stage-1/2 isolated run (digit or CJK). The
+    // scan is monotonic, so a long text without digits/CJK is walked once.
+    size_t stage_next_ = 0;
+    bool stage_valid_ = false;
+    bool three_stage_ = true;
 };
 
 // Llama-3 / o200k-style pre-tokenizer (Qwen2/3, MiniMax-M3, Llama-3). Same
@@ -107,6 +116,123 @@ private:
     bool next_number(WordSpan &word);   // split 1 (<= 3 \p{N} codepoints)
     bool next_cjk(WordSpan &word);      // split 2 (one CJK-run word)
     bool next_main(WordSpan &word);     // split 3 (one case-run match)
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+    size_t stage_next_ = 0;   // cached digit/CJK boundary, see WordStream
+    bool stage_valid_ = false;
+};
+
+// Qwen2/3-style single-run pre-tokenizer (tokenizer_kind 7). Qwen3.5/3.6/3.8,
+// Qwen3.8-Flash-Next, Ornith. The reference pattern is ONE stage (no digit or
+// CJK isolation):
+//
+//   (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]? [\p{L}\p{M}]+ |
+//   \p{N} | ' '? [^\s\p{L}\p{M}\p{N}]+ [\r\n]* |
+//   \s*[\r\n]+ | \s+(?!\S) | \s+
+//
+// Two properties differ from WordStream and matter in practice: a space is
+// attached to a following Han/Kana run ("  中" -> [" ", " 中"]), and whitespace
+// before a digit is NOT kept whole ("a  1" -> ["a", " ", " ", "1"]).
+class QwenWordStream {
+public:
+    QwenWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
+// GPT-2-style single-run pattern with digit groups of up to three
+// (tokenizer_kind 8). GLM-5.3-Flash, phi-4, Granite-Switch. One stage:
+//
+//   (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]? \p{L}+ |
+//   \p{N}{1,3} | ' '? [^\s\p{L}\p{N}]+ [\r\n]* |
+//   \s*[\r\n]+ | \s+(?!\S) | \s+
+class Gpt2WordStream {
+public:
+    Gpt2WordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
+// Mistral-style single-run case-run pattern (tokenizer_kind 9):
+// Mistral-Small-4-119B, Nemotron-3.5. Llama3WordStream without the contraction
+// suffix, with ONE digit per number word and `[\r\n/]*` after a punctuation
+// run.
+class MistralWordStream {
+public:
+    MistralWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
+// Original GPT-2 ByteLevel pattern (tokenizer_kind 10), Granite-4.2:
+//
+//   's|'t|'re|'ve|'m|'ll|'d | ' '? \p{L}+ | ' '? \p{N}+ |
+//   ' '? [^\s\p{L}\p{N}]+ | \s+(?!\S) | \s+
+//
+// Case-SENSITIVE contractions, unbounded letter/digit runs, a literal space as
+// the only prefix, and no CRLF alternative.
+class Gpt2OriginalWordStream {
+public:
+    Gpt2OriginalWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
+// Kimi tiktoken pattern (tokenizer_kind 2). A single combined regex:
+//   [\p{Han}]+ | case-run letter alternatives with an optional contraction |
+//   \p{N}{1,3} | ' '? [^\s\p{L}\p{N}]+ [\r\n]* | \s*[\r\n]+ |
+//   \s+(?!\S) | \s+
+// The case-run alternatives are Llama-3's minus the `[\r\n/]*` slash tail;
+// the Han alternative is isolated like Flint's, so the letter classes never
+// absorb a Han codepoint.
+class KimiWordStream {
+public:
+    KimiWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
 
     const char *const begin_;
     const char *const end_;
