@@ -1,0 +1,27 @@
+{"text": "The capital of France is", "ids": [678, 7706, 300, 11406, 341]}
+{"text": "getUserName", "ids": [749, 64699]}
+{"text": "HTTPRequest", "ids": [24714, 4472]}
+{"text": "FooBarBaz", "ids": [50759, 8507, 33, 1941]}
+{"text": "v2beta FooBarBaz _call __init__", "ids": [85, 17, 9085, 53162, 8507, 33, 1941, 1640, 11272, 3870, 3094, 1061]}
+{"text": "1234567 12345 1 12 123", "ids": [16, 17, 18, 19, 20, 21, 22, 220, 16, 17, 18, 19, 20, 220, 16, 220, 16, 17, 220, 16, 17, 18]}
+{"text": "2026-10-30T18:42:00Z", "ids": [17, 15, 17, 21, 12, 16, 15, 12, 18, 15, 51, 16, 23, 25, 19, 17, 25, 15, 15, 57]}
+{"text": "中文ab 日本語テキスト", "ids": [11719, 408, 64818, 68951, 49497, 54730, 62520]}
+{"text": "abcあいうえお", "ids": [22431, 27344, 77247, 39519, 42968]}
+{"text": "hello  world   two", "ids": [25752, 220, 1931, 256, 1307]}
+{"text": "  leading", "ids": [220, 6135]}
+{"text": "trailing  ", "ids": [20492, 7260, 256]}
+{"text": "\n\n\n", "ids": [198, 198, 198]}
+{"text": "a\n\nb", "ids": [64, 198, 198, 65]}
+{"text": "don't won't it's I'LL we'VE", "ids": [20197, 1227, 4237, 1227, 403, 698, 331, 6, 2477, 438, 6, 24387]}
+{"text": "def f(x):\n    return x**2\n", "ids": [1413, 281, 3698, 3535, 198, 305, 944, 1529, 480, 17, 198]}
+{"text": "{\"a\": 1, \"b\": [1,2,3], \"c\": null}", "ids": [12657, 64, 2275, 220, 16, 11, 477, 65, 2275, 831, 16, 11, 17, 11, 18, 2278, 477, 66, 2275, 2466, 92]}
+{"text": "Emoji 😀🚀 done", "ids": [7836, 49311, 65150, 114055, 222, 3226]}
+{"text": "— “quotes” — naïve café", "ids": [1275, 688, 429, 6379, 447, 2963, 105516, 67656]}
+{"text": "a+=b>>2 50% #tag @user", "ids": [64, 29919, 65, 5284, 17, 220, 20, 15, 4, 1260, 12718, 1192, 3840]}
+{"text": "/((^&%$#@!", "ids": [80266, 61, 5, 4, 3, 2, 31, 0]}
+{"text": "/\n/", "ids": [14, 198, 14]}
+{"text": "a...b", "ids": [64, 1152, 65]}
+{"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "ids": [63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 63714, 25054]}
+{"text": "  mixed   spaces\tand\ttabs  ", "ids": [220, 11619, 256, 11435, 197, 457, 197, 75564, 256]}
+{"text": "numbers 42 4 2 42 424242", "ids": [84857, 220, 19, 17, 220, 19, 220, 17, 220, 19, 17, 220, 19, 17, 19, 17, 19, 17]}
+{"text": "Eine Straße in Zürich, 2026.", "ids": [133834, 140099, 296, 146268, 14798, 11, 220, 17, 15, 17, 21, 13]}

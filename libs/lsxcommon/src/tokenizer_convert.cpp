@@ -400,6 +400,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         meta.tokenizer_kind = 4;
         meta.base_vocab_size = model_vocab_count;
     }
+    if (policy.pretokenizer == 3) {
+        // Ling: one letter run with an optional prefix, one digit per number
+        // word, apostrophe contractions and a punctuation run.
+        // Written as tokenizer_kind = 5.
+        meta.tokenizer_kind = 5;
+        meta.base_vocab_size = model_vocab_count;
+    }
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

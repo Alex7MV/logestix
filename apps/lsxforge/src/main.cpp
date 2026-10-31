@@ -17,6 +17,7 @@
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/hy_moe_convert.h"
 #include "lsxcommon/flint_moe_convert.h"
+#include "lsxcommon/ling_moe_convert.h"
 #include "lsxcommon/minimax_moe_convert.h"
 
 #include <simdjson.h>
@@ -92,6 +93,9 @@ ABSL_FLAG(bool, minimax, false,
           "convert MiniMax-M3 (vision tower stripped) to logestix-minimax-nvfp4");
 ABSL_FLAG(bool, flint, false,
           "Recursive Flint (hybrid sink/SWA/no-RoPE MoE) conversion pipeline");
+ABSL_FLAG(bool, ling, false,
+          "Ling-3.1-flash (63 KDA + 9 gated MLA + 512-expert MoE) conversion "
+          "pipeline");
 ABSL_FLAG(bool, hy, false,
           "convert Hy-Memory-30B-A3B (GQA + sigmoid-router MoE) to logestix-hy-nvfp4");
 ABSL_FLAG(bool, mistral, false,
@@ -164,6 +168,7 @@ int main(int argc, char* argv[]) {
     bool minimax = absl::GetFlag(FLAGS_minimax);
     bool hy = absl::GetFlag(FLAGS_hy);
     bool flint = absl::GetFlag(FLAGS_flint);
+    bool ling = absl::GetFlag(FLAGS_ling);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is
@@ -202,6 +207,7 @@ int main(int argc, char* argv[]) {
     flags.minimax = minimax;
     flags.hy = hy;
     flags.flint = flint;
+    flags.ling = ling;
     const lsxforge::Resolution resolution = lsxforge::ResolvePipeline(flags);
     if (resolution.pipeline == lsxforge::Pipeline::kError) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
@@ -579,6 +585,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("flint conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kLing: {
+        lsxcommon::log::info(
+            "Ling-3.1-flash pipeline (logestix-ling-nvfp4 layout)");
+        auto st = lsxcommon::ling::ConvertLingModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("ling conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Ling conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

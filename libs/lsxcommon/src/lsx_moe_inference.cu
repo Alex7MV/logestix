@@ -402,7 +402,8 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
                                 __half *ypart_batch,
                                 MoEGvSlotDev *d_gemv_tbl,
                                 float *d_swi_scratch,
-                                const MoERoutedTcScratch *tc_scratch)
+                                const MoERoutedTcScratch *tc_scratch,
+                                float swiglu_limit)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
@@ -437,7 +438,8 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
     bool any_miss = false;
     for (int k = 0; k < K; ++k) any_miss = any_miss || missed[k];
     if (k_gemv_batch && !any_miss && (I & 31) == 0 && (H & 31) == 0 &&
-        store.records[layer][h_slots[0].eid].w1_bytes > 0) {
+        store.records[layer][h_slots[0].eid].w1_bytes > 0 &&
+        swiglu_limit <= 0.0f) {
         const auto &rec0 =
             store.records[static_cast<size_t>(layer)]
                          [static_cast<size_t>(h_slots[0].eid)];
@@ -634,7 +636,7 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
             std::getenv("LSX_GEMV_EXPERTS") != nullptr;
         const bool tc_fused =
             qwen::QwenTcFastMath() && store.d_seg_wgs != nullptr &&
-            (I & 15) == 0 && !k_gemv_experts;
+            (I & 15) == 0 && !k_gemv_experts && swiglu_limit <= 0.0f;
         const uint8_t *w1_split = pack;
         const uint8_t *w3_split = pack + rec.w1_bytes;
         const uint8_t *s1_split = scale;
@@ -768,7 +770,7 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream, MoEExpertStore &store,
             }
             d_inv_alpha = d_alpha + 1;
             ::lsxcommon::kernels::SwigluF32Kernel<<<EltGrid(I), kEltBlock, 0, stream>>>(
-                d_yg, d_yu, sw_f32, I);
+                d_yg, d_yu, sw_f32, I, swiglu_limit);
             ::lsxcommon::kernels::SwigluAbsMaxKernel<<<1, kEltBlock, 0, stream>>>(sw_f32,
                                                                    d_alpha, I);
             ::lsxcommon::kernels::SwigluAlphaKernel<<<1, 32, 0, stream>>>(d_alpha, d_alpha,
@@ -1830,7 +1832,7 @@ int EnsureMoEExpertResident(moe::MoEExpertStore &store, int layer, int eid,
 
 // ── Routed-expert host store ───────────────────────────────────────────────
 
-void MoEExpertStore::Free()
+void MoEExpertRuntime::Free()
 {
     for (auto &p : h_slabs)
         if (p) cudaFreeHost(p);

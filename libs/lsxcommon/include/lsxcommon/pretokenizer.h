@@ -114,4 +114,28 @@ private:
     uint32_t error_ = 0;
 };
 
+// Ling-3.1-flash pre-tokenizer (tokenizer_kind 5). One split over the
+// reference pattern
+//
+//   '(?i:[sdmt]|ll|ve|re) | [^\r\n\p{L}\p{N}]?+ \p{L}+ | \p{N} |
+//   ' '? [^\s\p{L}\p{N}]++ [\r\n]* | \s*[\r\n] | \s+(?!\S) | \s+
+//
+// A SINGLE letter run (no case split, no CJK isolation) and ONE digit per
+// number word. Same streaming contract as the other streams.
+class LingWordStream {
+public:
+    LingWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
 } // namespace lsxcommon

@@ -6919,6 +6919,141 @@ target_link_libraries(test_flint_moe_pretokenizer PRIVATE lsxcommon
 add_test(NAME test_flint_moe_pretokenizer COMMAND test_flint_moe_pretokenizer)
 set_tests_properties(test_flint_moe_pretokenizer PROPERTIES LABELS fast)
 
+# ── Ling selfcheck (real weights; SKIPs when the vault is absent) ──
+add_executable(test_ling_moe_selfcheck test_ling_moe_selfcheck.cpp)
+target_link_libraries(test_ling_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_selfcheck COMMAND test_ling_moe_selfcheck)
+set_tests_properties(test_ling_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_ling_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_ling_moe_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_ling_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Ling FSI parity gate (declared golden debt) ──
+add_executable(test_ling_moe_fsi_selfcheck test_ling_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_ling_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_ling_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_fsi_selfcheck COMMAND test_ling_moe_fsi_selfcheck)
+set_tests_properties(test_ling_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_ling_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_ling_moe_fsi_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_ling_moe_fsi_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Ling CODE parity gate (declared golden debt) ──
+add_executable(test_ling_moe_code_selfcheck test_ling_moe_code_selfcheck.cpp)
+target_compile_definitions(test_ling_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_ling_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_code_selfcheck COMMAND test_ling_moe_code_selfcheck)
+set_tests_properties(test_ling_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_ling_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_ling_moe_code_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_ling_moe_code_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Ling DET parity gate (declared golden debt) ──
+add_executable(test_ling_moe_det_selfcheck test_ling_moe_det_selfcheck.cpp)
+target_compile_definitions(test_ling_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_ling_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_det_selfcheck COMMAND test_ling_moe_det_selfcheck)
+set_tests_properties(test_ling_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_ling_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_ling_moe_det_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_ling_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Ling perf baseline (seeded through the harness) ──
+add_test(NAME test_perf_baseline_ling
+         COMMAND test_perf_baseline "perf baseline: ling")
+set_tests_properties(test_perf_baseline_ling PROPERTIES
+    TIMEOUT 7200
+    SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Ling-3.1-flash")
+set_tests_properties(test_perf_baseline_ling
+    PROPERTIES LABELS perf)
+
+# ── Ling native chat/tool codec (synthetic tokenizer fixture) ──
+add_executable(test_ling_tool_framing test_ling_tool_framing.cpp)
+target_compile_definitions(test_ling_tool_framing PRIVATE
+    "TOKENIZER_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\"")
+target_link_libraries(test_ling_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_tool_framing COMMAND test_ling_tool_framing)
+set_tests_properties(test_ling_tool_framing PROPERTIES LABELS fast)
+
+# ── Ling o200k tokenizer parity (source tokenizer; SKIPs when absent) ──
+add_executable(test_ling_tokenizer_parity test_ling_tokenizer_parity.cpp)
+target_include_directories(test_ling_tokenizer_parity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(test_ling_tokenizer_parity PRIVATE
+    "LSX_LING_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ling\"")
+target_link_libraries(test_ling_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_tokenizer_parity COMMAND test_ling_tokenizer_parity)
+set_tests_properties(test_ling_tokenizer_parity PROPERTIES LABELS fast)
+set_tests_properties(test_ling_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Ling-3.1-flash model stage (synthetic converted tree; lifecycle) ──
+add_executable(test_ling_moe_model test_ling_moe_model.cpp)
+target_include_directories(test_ling_moe_model PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../libs/lsxcommon/src)
+target_compile_definitions(test_ling_moe_model PRIVATE
+    "LSX_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
+target_link_libraries(test_ling_moe_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_model COMMAND test_ling_moe_model)
+set_tests_properties(test_ling_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_ling_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_ling_moe_model PROPERTIES TIMEOUT 900)
+set_tests_properties(test_ling_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_ling_moe_model PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Ling-3.1-flash numeric kernels (host-reference parity) ──
+add_executable(test_ling_moe_kernels test_ling_moe_kernels.cpp)
+target_include_directories(test_ling_moe_kernels PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../libs/lsxcommon/src)
+target_link_libraries(test_ling_moe_kernels PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_kernels COMMAND test_ling_moe_kernels)
+set_tests_properties(test_ling_moe_kernels PROPERTIES LABELS fast)
+set_tests_properties(test_ling_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_ling_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Ling-3.1-flash loader (synthetic converted tree; no vault) ──
+add_executable(test_ling_moe_loader test_ling_moe_loader.cpp)
+target_include_directories(test_ling_moe_loader PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../libs/lsxcommon/src)
+target_compile_definitions(test_ling_moe_loader PRIVATE
+    "LSX_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
+target_link_libraries(test_ling_moe_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_loader COMMAND test_ling_moe_loader)
+set_tests_properties(test_ling_moe_loader PROPERTIES LABELS fast)
+set_tests_properties(test_ling_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_ling_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_ling_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Ling-3.1-flash converter (synthetic checkpoint; label convert) ──
+add_executable(test_ling_moe_convert test_ling_moe_convert.cpp)
+target_include_directories(test_ling_moe_convert PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../libs/lsxcommon/src)
+target_compile_definitions(test_ling_moe_convert PRIVATE
+    "LSX_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
+target_link_libraries(test_ling_moe_convert PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_ling_moe_convert COMMAND test_ling_moe_convert)
+set_tests_properties(test_ling_moe_convert PROPERTIES LABELS convert)
+set_tests_properties(test_ling_moe_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_ling_moe_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_ling_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Flint converter (synthetic checkpoint; label convert, bounded TIMEOUT) ──
 add_executable(test_flint_moe_convert test_flint_moe_convert.cpp)
 target_include_directories(test_flint_moe_convert PRIVATE

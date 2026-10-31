@@ -41,6 +41,9 @@ struct ArrowTokenizerDb {
     // 4 = byte-level BPE with the Flint 3-split: \p{N}{1,3} and CJK Isolated
     //     over the o200k case-run pattern whose punctuation alternative is
     //     [\p{P}\p{S}]+[\r\n]* (FlintWordStream, same BPE table as kind 3).
+    // 5 = byte-level BPE with the Ling pattern: apostrophe contractions, one
+    //     optional-prefix letter run, ONE digit per number word, punctuation
+    //     run (LingWordStream, same BPE table as kind 3).
     int32_t tokenizer_kind = 0;
     // tokenizer_kind == 2 only. Ids >= base_vocab_size are added tokens that
     // the reference encoder matches literally (tiktoken allowed_special="all");

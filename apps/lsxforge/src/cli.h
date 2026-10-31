@@ -46,6 +46,7 @@ enum class Pipeline {
     kMinimax,
     kHy,
     kFlint,
+    kLing,
     kGeneric,
     kError,
 };
@@ -85,6 +86,7 @@ struct Flags {
     bool minimax = false;
     bool hy = false;
     bool flint = false;
+    bool ling = false;
 };
 
 struct Resolution {

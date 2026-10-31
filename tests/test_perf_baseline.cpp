@@ -128,6 +128,8 @@ const PerfModel kHy = {
     2048};
 const PerfModel kFlint = {
     "flint", "flint", "The capital of France is", 2048};
+const PerfModel kLing = {
+    "ling", "Ling-3.1-flash", "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -604,4 +606,9 @@ TEST_CASE("perf baseline: hy-memory-30b-a3b", "[perf]")
 TEST_CASE("perf baseline: flint", "[perf]")
 {
     RunPerfModel(kFlint);
+}
+
+TEST_CASE("perf baseline: ling", "[perf]")
+{
+    RunPerfModel(kLing);
 }

@@ -84,13 +84,23 @@ constexpr float kSwiFp16Headroom = 16384.0f;
 
 __global__ inline void SwigluF32Kernel(const __half *__restrict__ g,
                                        const __half *__restrict__ u,
-                                       float *__restrict__ sw, int n)
+                                       float *__restrict__ sw, int n,
+                                       float limit = 0.0f)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     const float gf = __half2float(g[i]);
     const float uf = __half2float(u[i]);
-    sw[i] = __fdiv_rn(gf, __fadd_rn(1.0f, ExpF<ExpFlavor::Precise>(-gf))) * uf;
+    const float gate =
+        __fdiv_rn(gf, __fadd_rn(1.0f, ExpF<ExpFlavor::Precise>(-gf)));
+    if (limit > 0.0f) {
+        // SGLang BailingMLP: silu(gate).clamp(max=limit) *
+        // up.clamp(-limit, limit). Used by Ling's layers 65..71 (and the
+        // shared expert from layer 64); zero disables it (every other family).
+        sw[i] = fminf(gate, limit) * fminf(fmaxf(uf, -limit), limit);
+    } else {
+        sw[i] = gate * uf;
+    }
 }
 
 __global__ inline void SwigluAbsMaxKernel(const float *__restrict__ sw,

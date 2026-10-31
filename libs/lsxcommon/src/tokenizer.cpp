@@ -164,7 +164,7 @@ arrow::Status load_tokenizer_metadata(
         // tiktoken: the vocabulary IS the merge table (adjacent pair bytes ->
         // id), and ids >= base_vocab_size are added tokens matched literally.
         if (db.tokenizer_kind == 2 || db.tokenizer_kind == 3 ||
-            db.tokenizer_kind == 4) {
+            db.tokenizer_kind == 4 || db.tokenizer_kind == 5) {
             if (db.base_vocab_size <= 0 || db.base_vocab_size > db.vocab_size)
                 return arrow::Status::Invalid(
                     "tokenizer: bad base_vocab_size for tiktoken BPE");
@@ -893,6 +893,14 @@ int32_t bpe_encode_flint(const ArrowTokenizerDb &db, const char *text,
                                                 out_tokens, max_out_len);
 }
 
+int32_t bpe_encode_ling(const ArrowTokenizerDb &db, const char *text,
+                        size_t text_len, int32_t *out_tokens,
+                        size_t *max_out_len)
+{
+    return bpe_encode_case_run<LingWordStream>(db, text, text_len, out_tokens,
+                                               max_out_len);
+}
+
 } // namespace
 
 int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
@@ -910,6 +918,8 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
         return bpe_encode_llama3(db, text, text_len, out_tokens, max_out_len);
     if (db.tokenizer_kind == 4)
         return bpe_encode_flint(db, text, text_len, out_tokens, max_out_len);
+    if (db.tokenizer_kind == 5)
+        return bpe_encode_ling(db, text, text_len, out_tokens, max_out_len);
     if (db.tokenizer_kind == 0 && !db.literal_ids.empty())
         return gpt2_bpe_encode_with_literals(db, text, text_len, out_tokens,
                                              max_out_len);

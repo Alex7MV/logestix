@@ -47,7 +47,7 @@ const std::set<std::string> &FamilyStems()
     static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
                                             "kimi", "nemotron", "gigachat",
                                             "ornith", "granite", "mimo", "phi",
-                                            "alice", "flint"};
+                                            "alice", "flint", "ling"};
     return v;
 }
 
@@ -395,6 +395,16 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_flint_moe_code_selfcheck"}},
           {"det", {"test_flint_moe_det_selfcheck"}},
           {"perf", {"test_perf_baseline_flint"}}}},
+        {"ling",
+         {{"convert", {"test_ling_moe_convert"}},
+          {"load", {"test_ling_moe_loader", "test_ling_tokenizer_parity"}},
+          {"model", {"test_ling_moe_model", "test_ling_tool_framing"}},
+          {"kernels", {"test_ling_moe_kernels"}},
+          {"selfcheck", {"test_ling_moe_selfcheck"}},
+          {"fsi", {"test_ling_moe_fsi_selfcheck"}},
+          {"code", {"test_ling_moe_code_selfcheck"}},
+          {"det", {"test_ling_moe_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_ling"}}}},
 
     };
     return v;
@@ -820,6 +830,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"minimax-m3", {"test_minimax_moe_tool_framing"}},
         {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
         {"flint", {"test_flint_moe_tool_framing"}},
+        {"ling", {"test_ling_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.
@@ -930,6 +941,11 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "flint:code",
         "flint:det",
         "flint:fsi",
+        // Ling: the 560B source oracle (BF16/FP8 + FLA Triton KDA) cannot run
+        // on this card, so no source golden can be captured.
+        "ling:code",
+        "ling:det",
+        "ling:fsi",
         "deepseek-v4-flash:code",
         "deepseek-v4-flash:det",
         "deepseek-v4-flash:fsi",

@@ -114,7 +114,10 @@ struct alignas(16) MoEExpertMetaDev {
     float gs1, gs2, gs3;
 };
 
-struct MoEExpertStore {
+// Neutral routed-expert runtime: the zero-copy host store, the immutable
+// geometry, the fused-w13 scale tables and the legacy slab fields (empty for
+// every view-backed family; only glm-5.3-flash still fills them).
+struct MoEExpertRuntime {
     // The neutral zero-copy host store: mmap views, LRU-bounded. This REPLACED
     // per-layer pinned slabs holding every expert for the life of the session
     // (17 GiB for qwen MoE / ornith, 61 GiB for mistral — see
@@ -145,6 +148,10 @@ struct MoEExpertStore {
 
     void Free();
 };
+
+// Historical name kept for the families that predate the split; a new family
+// uses MoEExpertRuntime (same view-backed store, legacy slabs unused).
+using MoEExpertStore = MoEExpertRuntime;
 
 // Ensures an expert is resident in the device cache (see below).
 
@@ -208,7 +215,11 @@ cudaError_t RunMoERoutedFFN(cudaStream_t stream,
                                 // Optional batched-prequant scratch. Requires
                                 // ygu_batch (K*2I) and (I % 16) == 0; nullptr
                                 // keeps the per-slot path.
-                                const MoERoutedTcScratch *tc_scratch = nullptr);
+                                const MoERoutedTcScratch *tc_scratch = nullptr,
+                                // Optional SwiGLU clamp (SGLang BailingMLP):
+                                // min(silu(gate), L) * clamp(up, -L, L).
+                                // 0 = off (every family except Ling).
+                                float swiglu_limit = 0.0f);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunMoEAccToFp16(cudaStream_t stream, const float *d_acc,

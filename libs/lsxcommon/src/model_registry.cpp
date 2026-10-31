@@ -6,6 +6,7 @@
 #include "mistral_moe_model.h"
 #include "hy_moe_model.h"
 #include "flint_moe_model.h"
+#include "ling_moe_model.h"
 #include "minimax_moe_model.h"
 #include "lsxcommon/gigachat_moe_model.h"
 #include "deepseek_moe_model.h"
@@ -59,6 +60,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<MinimaxM3Model>();
         LsxModelFactory::Register<HyMemoryModel>();
         LsxModelFactory::Register<FlintMoeModel>();
+        LsxModelFactory::Register<LingMoeModel>();
         // Alias for the vault-normalized index "model" name
         // ("AliceAI-Foundation-80B-A3B-Base" -> "aliceai-foundation-80b-a3b-base"),
         // so path auto-detection (lsxbenchmark/lsxfabric) resolves the model.
@@ -66,6 +68,13 @@ void EnsureModelRegistry()
             "aliceai-foundation-80b-a3b-base",
             [](const ModelInitConfig &c) {
                 return std::make_unique<AliceFoundation80BModel>(c);
+            });
+        // Vault-normalized directory name for the Ling tree
+        // ("Ling-3.1-flash" -> "ling-3.1-flash") so path auto-detection
+        // resolves kType "ling".
+        LsxModelFactory::Register(
+            "ling-3.1-flash", [](const ModelInitConfig &c) {
+                return std::make_unique<LingMoeModel>(c);
             });
         return true;
     }();
