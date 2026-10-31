@@ -834,6 +834,114 @@ set_tests_properties(test_granite_dense_convert PROPERTIES
     TIMEOUT 120)
 set_tests_properties(test_granite_dense_convert PROPERTIES LABELS convert)
 
+# ── Granite-Switch-4.1-30B converter test (classifier + index + arrow layout) ──
+add_executable(test_granite_switch_convert test_granite_switch_convert.cpp)
+target_compile_definitions(test_granite_switch_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_granite_switch_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_convert>")
+    add_custom_command(TARGET test_granite_switch_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_convert>")
+endif()
+add_test(NAME test_granite_switch_convert COMMAND test_granite_switch_convert)
+set_tests_properties(test_granite_switch_convert PROPERTIES
+    TIMEOUT 120)
+set_tests_properties(test_granite_switch_convert PROPERTIES LABELS convert)
+set_tests_properties(test_granite_switch_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Granite-Switch-4.1-30B loader test ──
+add_executable(test_granite_switch_loader test_granite_switch_loader.cpp)
+target_compile_definitions(test_granite_switch_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_granite_switch_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_loader>")
+    add_custom_command(TARGET test_granite_switch_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_loader>")
+endif()
+add_test(NAME test_granite_switch_loader COMMAND test_granite_switch_loader)
+set_tests_properties(test_granite_switch_loader PROPERTIES LABELS inference)
+set_tests_properties(test_granite_switch_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Granite-Switch request preparation (host-only) ──
+add_executable(test_granite_switch_prepare test_granite_switch_prepare.cpp)
+target_link_libraries(test_granite_switch_prepare PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_granite_switch_prepare COMMAND test_granite_switch_prepare)
+set_tests_properties(test_granite_switch_prepare PROPERTIES LABELS fast)
+
+# ── Granite-Switch-4.1-30B model test ──
+add_executable(test_granite_switch_model test_granite_switch_model.cpp)
+target_compile_definitions(test_granite_switch_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_granite_switch_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_model>")
+    add_custom_command(TARGET test_granite_switch_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_model>")
+endif()
+add_test(NAME test_granite_switch_model COMMAND test_granite_switch_model)
+set_tests_properties(test_granite_switch_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_granite_switch_model PROPERTIES LABELS inference)
+set_tests_properties(test_granite_switch_model PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Granite-Switch-4.1-30B chat / aLoRA / tool framing (host-only) ──
+add_executable(test_granite_switch_tool_framing test_granite_switch_tool_framing.cpp)
+target_link_libraries(test_granite_switch_tool_framing PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_granite_switch_tool_framing COMMAND test_granite_switch_tool_framing)
+set_tests_properties(test_granite_switch_tool_framing PROPERTIES LABELS fast)
+
+add_executable(test_granite_switch_tokenizer_parity test_granite_switch_tokenizer_parity.cpp)
+target_compile_definitions(test_granite_switch_tokenizer_parity PRIVATE
+    LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
+    LSX_GRANITE_SWITCH_TOKENIZER_PATH="/mnt/fast_storage/huggingface/granite-switch-4.1-30b/tokenizer.json")
+target_link_libraries(test_granite_switch_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_granite_switch_tokenizer_parity COMMAND test_granite_switch_tokenizer_parity)
+set_tests_properties(test_granite_switch_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_granite_switch_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_granite_switch_adapter_parity test_granite_switch_adapter_parity.cpp)
+target_compile_definitions(test_granite_switch_adapter_parity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    LSX_ADAPTER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/adapters")
+target_include_directories(test_granite_switch_adapter_parity PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_granite_switch_adapter_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_adapter_parity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_adapter_parity>")
+    add_custom_command(TARGET test_granite_switch_adapter_parity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_adapter_parity>")
+endif()
+add_test(NAME test_granite_switch_adapter_parity COMMAND test_granite_switch_adapter_parity)
+set_tests_properties(test_granite_switch_adapter_parity PROPERTIES LABELS inference)
+set_tests_properties(test_granite_switch_adapter_parity PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── phi-4 converter test (classifier + index + arrow layout) ──
 add_executable(test_phi_dense_convert test_phi_dense_convert.cpp)
 target_compile_definitions(test_phi_dense_convert PRIVATE
@@ -995,6 +1103,37 @@ endif()
 add_test(NAME test_granite_dense_kernels COMMAND test_granite_dense_kernels)
 set_tests_properties(test_granite_dense_kernels PROPERTIES LABELS inference)
 
+# ── Granite-Switch kernel parity tests (.cu, stand-alone OBJECT lib) ──
+add_library(test_granite_switch_cu OBJECT
+    test_granite_switch_kernels.cu
+)
+set_target_properties(test_granite_switch_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_granite_switch_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_granite_switch_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_granite_switch_cu PRIVATE Catch2::Catch2WithMain)
+add_executable(test_granite_switch_kernels)
+set_target_properties(test_granite_switch_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_granite_switch_kernels PRIVATE test_granite_switch_cu lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_kernels>")
+    add_custom_command(TARGET test_granite_switch_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_kernels>")
+endif()
+add_test(NAME test_granite_switch_kernels COMMAND test_granite_switch_kernels)
+set_tests_properties(test_granite_switch_kernels PROPERTIES LABELS inference)
+
 # ── phi kernel parity tests (.cu, stand-alone OBJECT lib) ──
 add_library(test_phi_cu OBJECT
     test_phi_dense_kernels.cu
@@ -1050,6 +1189,23 @@ add_test(NAME test_granite_dense_selfcheck COMMAND test_granite_dense_selfcheck)
 set_tests_properties(test_granite_dense_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_granite_dense_selfcheck PROPERTIES
     SKIP_RETURN_CODE 4)
+
+# ── Granite-Switch-4.1-30B SelfCheck (real weights; SKIP when absent) ──
+add_executable(test_granite_switch_selfcheck test_granite_switch_selfcheck.cpp)
+target_link_libraries(test_granite_switch_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_selfcheck>")
+    add_custom_command(TARGET test_granite_switch_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_selfcheck>")
+endif()
+add_test(NAME test_granite_switch_selfcheck COMMAND test_granite_switch_selfcheck)
+set_tests_properties(test_granite_switch_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_granite_switch_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── phi-4 SelfCheck (real weights; SKIP when absent) ──
 add_executable(test_phi_dense_selfcheck test_phi_dense_selfcheck.cpp)
@@ -2838,6 +2994,15 @@ set_tests_properties(test_perf_baseline_granite_4_2_30b PROPERTIES
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=granite-4.2-30b")
 set_tests_properties(test_perf_baseline_granite_4_2_30b
+    PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_granite_switch_4_1_30b
+         COMMAND test_perf_baseline "perf baseline: granite-switch-4.1-30b")
+set_tests_properties(test_perf_baseline_granite_switch_4_1_30b PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=granite-switch-4.1-30b")
+set_tests_properties(test_perf_baseline_granite_switch_4_1_30b
     PROPERTIES LABELS perf)
 
 add_test(NAME test_perf_baseline_phi_4
@@ -4864,6 +5029,23 @@ endif()
 add_test(NAME test_granite_dense_fsi_selfcheck COMMAND test_granite_dense_fsi_selfcheck)
 set_tests_properties(test_granite_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+add_executable(test_granite_switch_fsi_selfcheck test_granite_switch_fsi_selfcheck.cpp)
+target_compile_definitions(test_granite_switch_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_granite_switch_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_fsi_selfcheck>")
+    add_custom_command(TARGET test_granite_switch_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_fsi_selfcheck>")
+endif()
+add_test(NAME test_granite_switch_fsi_selfcheck COMMAND test_granite_switch_fsi_selfcheck)
+set_tests_properties(test_granite_switch_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 add_executable(test_phi_dense_fsi_selfcheck test_phi_dense_fsi_selfcheck.cpp)
 target_compile_definitions(test_phi_dense_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
@@ -5138,6 +5320,23 @@ endif()
 add_test(NAME test_granite_dense_code_selfcheck COMMAND test_granite_dense_code_selfcheck)
 set_tests_properties(test_granite_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+add_executable(test_granite_switch_code_selfcheck test_granite_switch_code_selfcheck.cpp)
+target_compile_definitions(test_granite_switch_code_selfcheck PRIVATE
+    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
+target_link_libraries(test_granite_switch_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_code_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_code_selfcheck>")
+    add_custom_command(TARGET test_granite_switch_code_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_code_selfcheck>")
+endif()
+add_test(NAME test_granite_switch_code_selfcheck COMMAND test_granite_switch_code_selfcheck)
+set_tests_properties(test_granite_switch_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 add_executable(test_phi_dense_code_selfcheck test_phi_dense_code_selfcheck.cpp)
 target_compile_definitions(test_phi_dense_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
@@ -5397,6 +5596,23 @@ if(WIN32)
 endif()
 add_test(NAME test_granite_dense_det_selfcheck COMMAND test_granite_dense_det_selfcheck)
 set_tests_properties(test_granite_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_granite_switch_det_selfcheck test_granite_switch_det_selfcheck.cpp)
+target_compile_definitions(test_granite_switch_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_granite_switch_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_switch_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_det_selfcheck>")
+    add_custom_command(TARGET test_granite_switch_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_switch_det_selfcheck>")
+endif()
+add_test(NAME test_granite_switch_det_selfcheck COMMAND test_granite_switch_det_selfcheck)
+set_tests_properties(test_granite_switch_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_phi_dense_det_selfcheck test_phi_dense_det_selfcheck.cpp)
 target_compile_definitions(test_phi_dense_det_selfcheck PRIVATE
@@ -6674,6 +6890,7 @@ set_tests_properties(
     test_gigachat_moe_fsi_selfcheck
     test_ornith_moe_fsi_selfcheck
     test_granite_dense_fsi_selfcheck
+    test_granite_switch_fsi_selfcheck
     test_phi_dense_fsi_selfcheck
     test_glm_moe_code_selfcheck
     test_glm_moe_flash_code_selfcheck
@@ -6691,6 +6908,7 @@ set_tests_properties(
     test_nemotron_moe_code_selfcheck
     test_gigachat_moe_code_selfcheck
     test_granite_dense_code_selfcheck
+    test_granite_switch_code_selfcheck
     test_phi_dense_code_selfcheck
     test_glm_moe_det_selfcheck
     test_glm_moe_flash_det_selfcheck
@@ -6708,6 +6926,7 @@ set_tests_properties(
     test_nemotron_moe_det_selfcheck
     test_gigachat_moe_det_selfcheck
     test_granite_dense_det_selfcheck
+    test_granite_switch_det_selfcheck
     test_phi_dense_det_selfcheck
     test_qwen_moe_exp_loader
     test_qwen_moe_exp_model

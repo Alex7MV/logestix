@@ -37,7 +37,10 @@ lsxcommon::ChatConversation BuildConversation(
 }
 
 lsxcommon::ChatConversation BuildConversation(const lsxnetwork::ChatRequest& req) {
-    return BuildConversation(req.messages, req.tools);
+    lsxcommon::ChatConversation conv =
+        BuildConversation(req.messages, req.tools);
+    conv.adapter_name = req.adapter_name;
+    return conv;
 }
 
 bool ToolsRequested(const lsxnetwork::ChatRequest& req) {

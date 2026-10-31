@@ -1,0 +1,29 @@
+# Capture: tools/granite_switch_tokenizer_capture.py
+{"text": "The capital of France is", "ids": [791, 6864, 315, 9822, 374]}
+{"text": "Hello, world!", "ids": [9906, 11, 1917, 0]}
+{"text": "getUserName", "ids": [456, 19387]}
+{"text": "1234567", "ids": [4513, 10961, 22]}
+{"text": "v2beta", "ids": [85, 17, 19674]}
+{"text": "中文ab", "ids": [16325, 17161, 370]}
+{"text": "hello  world", "ids": [15339, 220, 1917]}
+{"text": "a\n\nb", "ids": [64, 271, 65]}
+{"text": "a...b", "ids": [64, 1131, 65]}
+{"text": "it's", "ids": [275, 596]}
+{"text": "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>", "ids": [100270, 198, 5018, 609, 794, 330, 456, 70464, 498, 330, 16774, 794, 5324, 9103, 794, 330, 60704, 96742, 100271]}
+{"text": "<|start_of_role|>assistant<|end_of_role|>", "ids": [100264, 78191, 100265]}
+{"text": "<|guardian-core|>guardian>As a judge agent", "ids": [100352, 27190, 1122, 29, 2170, 264, 11913, 8479]}
+{"text": "<|decision|> DECISION", "ids": [100353, 43917, 25189]}
+{"text": "<|end_of_text|>\n<|pad|>", "ids": [100257, 198, 100256]}
+{"text": "  leading and trailing  ", "ids": [220, 6522, 323, 28848, 256]}
+{"text": "\ttabbed\ntext\r\n", "ids": [59249, 2788, 198, 1342, 319]}
+{"text": "def f(x: int) -> int:\n    return x + 1\n", "ids": [755, 282, 2120, 25, 528, 8, 1492, 528, 512, 262, 471, 865, 489, 220, 16, 198]}
+{"text": "The quick brown fox jumps over the lazy dog.", "ids": [791, 4062, 14198, 39935, 35308, 927, 279, 16053, 5679, 13]}
+{"text": "naïve café — résumé", "ids": [3458, 38672, 588, 53050, 2001, 9517, 1264, 978]}
+{"text": "emoji 😀 test", "ids": [38623, 91416, 1296]}
+{"text": "1, 2, 3, 42", "ids": [16, 11, 220, 17, 11, 220, 18, 11, 220, 2983]}
+{"text": "a_b-c/d", "ids": [64, 890, 1824, 3529]}
+{"text": "Multiple   spaces   here", "ids": [33189, 256, 12908, 256, 1618]}
+{"text": "drawdown > threshold", "ids": [7788, 2996, 871, 12447]}
+{"text": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C", "ids": [21880, 41912, 4055, 28, 6774, 1041, 931, 931, 9, 11825, 1596, 7435, 7594, 575, 1596, 4911, 11825, 1702, 6354, 34215, 1702, 4911, 11825, 932, 6354, 34215, 932]}
+{"text": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))", "ids": [49569, 28, 9847, 48400, 16, 18882, 4172, 81, 24942, 68095, 16, 18882, 4172, 81, 7861]}
+{"text": "{\"score\": \"yes\"}", "ids": [5018, 12618, 794, 330, 9891, 9388]}

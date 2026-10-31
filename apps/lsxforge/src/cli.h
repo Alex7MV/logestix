@@ -38,6 +38,7 @@ enum class Pipeline {
     kGigachat,
     kGlmFlash,
     kGranite,
+    kGraniteSwitch,
     kPhi,
     kMimo,
     kAlice,
@@ -80,6 +81,7 @@ struct Flags {
     bool gigachat = false;
     bool glmflash = false;
     bool granite = false;
+    bool granite_switch = false;
     bool phi = false;
     bool mimo = false;
     bool alice = false;

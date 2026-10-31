@@ -216,6 +216,36 @@ procedure — `perf-tuning-a-model`.
   primitives), `granite_dense_model.{h,cpp}`; converted in place with
   `lsxforge --granite`; full 2048-token pipeline is correct-first
   (KV-cache decode, non-incremental prefill)).
+  Granite-Switch-4.1-30B (variant `switch` of `granite`): the Granite 4.1 30B
+  dense decoder composed with two embedded aLoRA adapters (`guardian-core`
+  rank 16 on q/k/v/o, `decision` rank 64 on q/k/v/o + MLP), control-token
+  routing and token exchange. 64 decoder layers (config says 66 = 64 + 2
+  switch cache slots), 4096H / 32Q / 8KV / 128HD / 32768I / vocab 100355,
+  tied embeddings, `embedding_multiplier=12`, `residual_multiplier=0.175`,
+  `logits_scaling=16`; `granite_dense_switch_constants.h` (frozen passport),
+  `granite_dense_switch_convert.{h,cpp}` (fused base_layer/qkv/gate_up +
+  rank-trimmed LoRA planes + LUT verification -> `logestix-granite-switch`),
+  `granite_dense_switch_load.{h,cpp}` (NVFP4 base + FP16 LoRA, tied-head
+  alias at `global_scale/16`), `granite_dense_switch_inference.{h,cu}`
+  (host prefix-scan routing, token exchange, multiplier scale/scale-add,
+  per-slice aLoRA shrink/expand over the neutral `lsx_nvfp4` layer),
+  `granite_dense_switch_model.{h,cpp}`, `granite_switch_tool_format.{h,cpp}`
+  (native `<|start_of_role|>` framing, `<tools>` block, bare-JSON tool calls,
+  aLoRA invocation insertion); converted in place with
+  `lsxforge --granite_switch`. The switch's coded-memory retrieval is exactly
+  the prefix scan over control tokens (validated against the reference on
+  random sequences), so the codebook is stored but not uploaded. Real-weight
+  results: SelfCheck Paris x3 bit-exact, FSI 3/3, CODE 3/3, DET 2/3 (DET-02 is
+  a source-vs-prompt disagreement — source and converted both answer
+  `CRITICAL` deterministically; `docs/OPEN_TASKS.md` §R10), adapter parity 3/3
+  (routing 0/1/2 and token-for-token source `input_ids`), 16.22 GiB resident,
+  **69.28 t/s (perf) / 70.07 t/s (r3)** at 2048 tokens. `Infer` pins
+  `FastMathMode::kOff` because the checkpoint's ~6e3 activations exceed the
+  NVFP4 TC A4 range (TC prefill decoded garbage on the 197-token tool prompt;
+  the strict path reproduces the source tool call; kOff is also the faster r3
+  row). ASR/`<|audio|>` is out
+  of scope (the 470M encoder is not in this checkpoint); 131k context KV
+  (~34.4 GiB) does not fit this card.
   phi-4 (independent family `phi`: dense decoder-only, 40L / 5120H / 40Q / 10KV
   / 128HD / 17920I, SwiGLU, full-dim RoPE, attention scale `1/sqrt(128)`, source
   projections pre-fused `qkv_proj`/`gate_up_proj`; `phi_dense_constants.h`

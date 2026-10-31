@@ -39,6 +39,7 @@ OVERRIDES = {
     # granite-4.2 is a reasoning model whose non-thinking mode gets FSI-02
     # wrong; low-effort thinking answers all three correctly. Its chat template
     # lives in chat_template.jinja (not tokenizer_config).
+    "granite-switch-4.1-30b": {"loader": "granite_switch"},
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
     # Mistral-Small-4-119B ships the Mistral "consolidated" layout: params.json
     # (no config.json, no model_type) plus consolidated-*.safetensors with
@@ -482,6 +483,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
         lm = _load_qwen3_5(model)
         if opts.get("device_map"):
             lm = _dispatch_auto(lm, ["Qwen3_5DecoderLayer"])
+        print("device:", next(lm.parameters()).device)
+    elif opts.get("loader") == "granite_switch":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import granite_switch_oracle
+        tok, lm = granite_switch_oracle.load(model, opts.get("adapter_name"))
         print("device:", next(lm.parameters()).device)
     elif opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)

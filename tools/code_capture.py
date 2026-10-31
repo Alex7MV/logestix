@@ -50,6 +50,7 @@ OVERRIDES = {
     # granite-4.2 is a reasoning model; low-effort thinking is the reliable
     # mode for short exact-token answers. Its chat template lives in
     # chat_template.jinja (not tokenizer_config).
+    "granite-switch-4.1-30b": {"loader": "granite_switch"},
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
     # qwen3.8-flash-next is an experimental "qwen4_exp" arch (same patches as
     # the FSI capture): layer-type allowlist + KV-cache mapping + PLE shards.
@@ -560,6 +561,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         lm = _load_qwen3_5(model)
         if opts.get("device_map"):
             lm = _dispatch_auto(lm, ["Qwen3_5DecoderLayer"])
+    elif opts.get("loader") == "granite_switch":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import granite_switch_oracle
+        tok, lm = granite_switch_oracle.load(model, opts.get("adapter_name"))
+        print("device:", next(lm.parameters()).device)
     elif opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)
     else:
