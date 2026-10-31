@@ -388,6 +388,21 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_minimax_moe_code_selfcheck"}},
           {"perf", {"test_perf_baseline_minimax_m3"}},
           {"det", {"test_minimax_moe_det_selfcheck"}}}},
+        // MiniMax-M3.1-Flash is a sibling of minimax-m3 (same backbone, MSA
+        // on every layer, pre-quantized source): it owns its convert/load/
+        // model/tool/parity stages and SHARES the parent's routed-MoE kernels
+        // and generation pipeline.
+        {"minimax-m3.1-flash",
+         {{"convert", {"test_minimax_moe_flash_convert"}},
+          {"load", {"test_minimax_moe_flash_loader"}},
+          {"model", {"test_minimax_moe_flash_model",
+                     "test_minimax_moe_flash_tool_framing"}},
+          {"kernels", {"test_minimax_moe_kernels"}},
+          {"selfcheck", {"test_minimax_moe_flash_selfcheck"}},
+          {"fsi", {"test_minimax_moe_flash_fsi_selfcheck"}},
+          {"code", {"test_minimax_moe_flash_code_selfcheck"}},
+          {"det", {"test_minimax_moe_flash_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_minimax_m31_flash"}}}},
         {"hy-memory-30b-a3b",
          {{"convert", {"test_hy_moe_convert"}},
           {"load", {"test_hy_moe_loader"}},
@@ -878,6 +893,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // Mistral Small 4 ships a native [INST]/[TOOL_CALLS] template.
         {"mistral-small-4-119b", {"test_mistral_moe_tool_framing"}},
         {"minimax-m3", {"test_minimax_moe_tool_framing"}},
+        {"minimax-m3.1-flash", {"test_minimax_moe_flash_tool_framing"}},
         {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
         {"hy-simulmt-30b-a3b", {"test_hy_moe_simulmt_tool_framing"}},
         {"flint", {"test_flint_moe_tool_framing"}},

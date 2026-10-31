@@ -16,6 +16,7 @@
 #include <absl/strings/str_format.h>
 #include <simdjson.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -27,8 +28,6 @@
 
 namespace lsxcommon::minimax {
 namespace {
-
-using frozen::kType;
 
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
@@ -84,12 +83,14 @@ bool CheckFrozenGeometry(const MinimaxTopology &top, std::string &why)
         return bad("sparse_topk_blocks", top.index_topk_blocks, kIndexTopkBlocks);
     if (top.index_local_blocks != kIndexLocalBlocks)
         return bad("sparse_local_block", top.index_local_blocks, kIndexLocalBlocks);
+    // MLP dispatch is shared by every family member (three dense-MLP layers).
+    // The ATTENTION dispatch is NOT: M3 runs full attention on layers 0-2,
+    // M3.1-Flash runs MSA on every layer. It is validated as a monotone
+    // prefix in ParseMinimaxConfig; the variant discriminator (and each
+    // model's frozen passport) pins which member it is.
     for (int i = 0; i < top.num_layers; ++i) {
         const size_t ui = static_cast<size_t>(i);
-        const char *want_attn = IsSparseLayer(i) ? "sparse_attention" : "dense_attention";
         const char *want_mlp = IsMoeLayer(i) ? "sparse" : "dense";
-        if (top.layer_types[ui] != want_attn)
-            return bad("layer_types[i]", i, 0);
         if (top.mlp_types[ui] != want_mlp)
             return bad("mlp_layer_types[i]", i, 0);
     }
@@ -114,12 +115,22 @@ std::vector<uint8_t> ReadTensorData(const std::filesystem::path &input_path,
     return buf;
 }
 
-// Quantizes a contiguous BF16/FP32 slice to NVFP4. Returns false on GPU failure.
+// Quantizes a contiguous BF16/FP32/F8_E4M3 slice to NVFP4. An E8M0 scale
+// tile (`e8m0` non-null) makes the shared quantizer dequantize the payload
+// with `float * 2^(u-127)` per tile first (MXFP8 -> NVFP4). Returns false on
+// GPU failure.
+bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
+                   const uint8_t *e8m0, const std::vector<int64_t> &shape,
+                   const std::vector<int64_t> &e8m0_shape, DenseNvfp4Record &r)
+{
+    return gpu::quantize_tensor_gpu(data, numel, dtype, e8m0, shape, e8m0_shape,
+                                    r.packed, r.scales, r.global_scale);
+}
+
 bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
                    DenseNvfp4Record &r)
 {
-    return gpu::quantize_tensor_gpu(data, numel, dtype, nullptr, r.shape, {},
-                                    r.packed, r.scales, r.global_scale);
+    return QuantizeSlice(data, numel, dtype, nullptr, r.shape, {}, r);
 }
 
 arrow::Status WriteBatch(
@@ -282,7 +293,51 @@ MinimaxTopology ParseMinimaxConfig(const std::string &input_dir)
                                      " != num_hidden_layers ", top.num_layers);
         return top;
     }
+
+    // Dispatch arrays are a monotone prefix: dense layers first, then the
+    // sparse/MoE kind. Record the boundaries and reject an interleaved pattern
+    // (a single `layer_types` assumption silently decodes garbage).
+    auto first_of = [](const std::vector<std::string> &v,
+                       const char *dense) -> int {
+        int first = static_cast<int>(v.size());
+        bool seen_sparse = false;
+        for (size_t i = 0; i < v.size(); ++i) {
+            const bool is_dense = v[i] == dense;
+            if (!is_dense && !seen_sparse) {
+                first = static_cast<int>(i);
+                seen_sparse = true;
+            } else if (is_dense && seen_sparse) {
+                return -1;  // dense after sparse: not a prefix pattern
+            }
+        }
+        return first;
+    };
+    top.first_moe_layer = first_of(top.mlp_types, "dense");
+    top.first_sparse_layer = first_of(top.layer_types, "dense_attention");
+    if (top.first_moe_layer < 0 || top.first_sparse_layer < 0) {
+        top.error_msg = "layer dispatch arrays are not a dense-prefix pattern";
+        return top;
+    }
     return top;
+}
+
+MinimaxVariant ClassifyMinimaxVariant(const MinimaxTopology &top)
+{
+    if (top.num_layers <= 0 ||
+        static_cast<int>(top.layer_types.size()) != top.num_layers ||
+        static_cast<int>(top.mlp_types.size()) != top.num_layers)
+        return MinimaxVariant::kUnknown;
+    const double theta = top.rope_theta;
+    // M3: a dense-attention prefix (layers 0-2 in the real checkpoint),
+    // theta 5e6.
+    if (top.first_sparse_layer > 0 &&
+        std::abs(theta - 5000000.0) <= 5000000.0 * 1e-6)
+        return MinimaxVariant::kM3;
+    // M3.1-Flash: MSA on every layer, theta 1e7.
+    if (top.first_sparse_layer == 0 &&
+        std::abs(theta - 10000000.0) <= 10000000.0 * 1e-6)
+        return MinimaxVariant::kM3Flash;
+    return MinimaxVariant::kUnknown;
 }
 
 ParsedMinimaxTensor classify_minimax_tensor(const std::string &name)
@@ -343,9 +398,38 @@ ParsedMinimaxTensor classify_minimax_tensor(const std::string &name)
             return r;
         r.expert = expert;
         const std::string leaf = body.substr(digits_end + 1);
-        if (leaf == "w1.weight") r.kind = MinimaxTensorKind::ExpertW1;
-        else if (leaf == "w2.weight") r.kind = MinimaxTensorKind::ExpertW2;
-        else if (leaf == "w3.weight") r.kind = MinimaxTensorKind::ExpertW3;
+        auto set = [&r](MinimaxTensorKind k, MinimaxSourceEncoding e) {
+            r.kind = k;
+            r.encoding = e;
+        };
+        using E = MinimaxSourceEncoding;
+        if (leaf == "w1.weight") set(MinimaxTensorKind::ExpertW1, E::kRaw);
+        else if (leaf == "w2.weight") set(MinimaxTensorKind::ExpertW2, E::kRaw);
+        else if (leaf == "w3.weight") set(MinimaxTensorKind::ExpertW3, E::kRaw);
+        else if (leaf == "w1.weight_packed")
+            set(MinimaxTensorKind::ExpertW1, E::kExpertPacked);
+        else if (leaf == "w2.weight_packed")
+            set(MinimaxTensorKind::ExpertW2, E::kExpertPacked);
+        else if (leaf == "w3.weight_packed")
+            set(MinimaxTensorKind::ExpertW3, E::kExpertPacked);
+        else if (leaf == "w1.weight_scale")
+            set(MinimaxTensorKind::ExpertW1, E::kExpertScale);
+        else if (leaf == "w2.weight_scale")
+            set(MinimaxTensorKind::ExpertW2, E::kExpertScale);
+        else if (leaf == "w3.weight_scale")
+            set(MinimaxTensorKind::ExpertW3, E::kExpertScale);
+        else if (leaf == "w1.weight_global_scale")
+            set(MinimaxTensorKind::ExpertW1, E::kExpertGlobalScale);
+        else if (leaf == "w2.weight_global_scale")
+            set(MinimaxTensorKind::ExpertW2, E::kExpertGlobalScale);
+        else if (leaf == "w3.weight_global_scale")
+            set(MinimaxTensorKind::ExpertW3, E::kExpertGlobalScale);
+        else if (leaf == "w1.input_global_scale")
+            set(MinimaxTensorKind::ExpertW1, E::kExpertInputGlobalScale);
+        else if (leaf == "w2.input_global_scale")
+            set(MinimaxTensorKind::ExpertW2, E::kExpertInputGlobalScale);
+        else if (leaf == "w3.input_global_scale")
+            set(MinimaxTensorKind::ExpertW3, E::kExpertInputGlobalScale);
         return r;
     }
 
@@ -376,6 +460,23 @@ ParsedMinimaxTensor classify_minimax_tensor(const std::string &name)
         if (body == suffix) {
             r.kind = kind;
             return r;
+        }
+    }
+    // MXFP8 companion: `<base>.weight` + `<base>.weight_scale_inv` (per-32
+    // E8M0 exponents). Classified as the base kind so the inventory/verifier
+    // sees one logical tensor; the read loop consumes the pair together.
+    static const std::string kScaleInv = ".weight_scale_inv";
+    if (body.size() > kScaleInv.size() &&
+        body.compare(body.size() - kScaleInv.size(), kScaleInv.size(),
+                     kScaleInv) == 0) {
+        const std::string base = body.substr(0, body.size() - kScaleInv.size()) +
+                                 ".weight";
+        for (const auto &[suffix, kind] : kMap) {
+            if (base == suffix) {
+                r.kind = kind;
+                r.encoding = MinimaxSourceEncoding::kMxfp8ScaleInv;
+                return r;
+            }
         }
     }
     return r;
@@ -415,19 +516,34 @@ bool minimax_tensor_is_routed_expert(MinimaxTensorKind kind)
 arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
                                      const std::string &output_root)
 {
+    return ConvertMinimaxMoeModel(input_dir, output_root,
+                                  MinimaxConvertVariant{});
+}
+
+arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
+                                     const std::string &output_root,
+                                     const MinimaxConvertVariant &variant)
+{
     namespace fs = std::filesystem;
 
     // (1) Topology: config.json is mandatory and authoritative.
     MinimaxTopology top = ParseMinimaxConfig(input_dir);
     if (!top.error_msg.empty())
-        return arrow::Status::Invalid("MiniMax-M3 config error: ", top.error_msg);
+        return arrow::Status::Invalid("MiniMax config error: ", top.error_msg);
     if (top.num_experts_per_tok > top.num_experts)
         return arrow::Status::Invalid("num_experts_per_tok > num_local_experts");
     if (!SyntheticGeometryAllowed()) {
         std::string why;
         if (!CheckFrozenGeometry(top, why))
-            return arrow::Status::Invalid("MiniMax-M3 frozen geometry mismatch: ",
+            return arrow::Status::Invalid("MiniMax frozen geometry mismatch: ",
                                           why);
+        const MinimaxVariant found = ClassifyMinimaxVariant(top);
+        if (found != variant.variant)
+            return arrow::Status::Invalid(
+                "checkpoint does not match the requested model '",
+                variant.model_type, "' (theta ", top.rope_theta,
+                ", first sparse layer ", top.first_sparse_layer,
+                ") — use the matching converter entry point");
     }
 
     auto model = lsxcommon::scan_directory(input_dir);
@@ -444,6 +560,9 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
         const TensorInfo *info = nullptr;
     };
     absl::btree_map<std::string, ExpertLoc> expert_index;
+    // MXFP8 companions keyed by their BASE tensor name (the read loop consumes
+    // the pair together).
+    absl::btree_map<std::string, ExpertLoc> scale_inv_index;
     absl::btree_map<int, int> layer_kind_count;
     int visual_skipped = 0;
     for (const auto &shard : model.shards) {
@@ -455,7 +574,17 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
             }
             if (p.kind == MinimaxTensorKind::Unknown)
                 return arrow::Status::Invalid(
-                    "unrecognized tensor in MiniMax-M3 checkpoint: ", t.name);
+                    "unrecognized tensor in MiniMax checkpoint: ", t.name);
+            if (p.encoding == MinimaxSourceEncoding::kMxfp8ScaleInv) {
+                const std::string base_name =
+                    t.name.substr(0, t.name.size() -
+                                         std::string(".weight_scale_inv").size()) +
+                    ".weight";
+                if (!scale_inv_index.emplace(base_name,
+                                             ExpertLoc{&shard, &t}).second)
+                    return arrow::Status::Invalid(
+                        "duplicate weight_scale_inv companion: ", t.name);
+            }
             if (minimax_tensor_is_routed_expert(p.kind)) {
                 if (p.layer < 0 || p.expert < 0)
                     return arrow::Status::Invalid("expert tensor without index: ",
@@ -516,7 +645,36 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
         r.name = t.name;
         r.shape = t.shape;
         r.dtype = t.dtype;
-        if (!QuantizeSlice(data.data(), t.numel(), t.dtype, r))
+        // MXFP8 source: the payload is F8_E4M3 and the per-32 E8M0 exponents
+        // ride in the `<base>.weight_scale_inv` companion. Pass them to the
+        // shared quantizer (dtype 2 = E8M0); a BF16 source keeps the old path.
+        const uint8_t *e8m0 = nullptr;
+        std::vector<int64_t> e8m0_shape;
+        std::vector<uint8_t> scale_bytes;
+        auto it = scale_inv_index.find(t.name);
+        if (it != scale_inv_index.end()) {
+            if (t.dtype != "F8_E4M3")
+                return arrow::Status::Invalid(
+                    "weight_scale_inv companion on a non-F8_E4M3 tensor: ",
+                    t.name);
+            scale_bytes = ReadTensorData(input_dir, *it->second.shard,
+                                         *it->second.info);
+            if (scale_bytes.empty() ||
+                static_cast<int64_t>(scale_bytes.size()) !=
+                    it->second.info->byte_size())
+                return arrow::Status::IOError("failed to read MXFP8 scales: ",
+                                              it->second.info->name);
+            const auto &ss = it->second.info->shape;
+            if (t.shape.size() != 2 || ss.size() != 2 ||
+                ss[0] != t.shape[0] || ss[1] * 32 != t.shape[1])
+                return arrow::Status::Invalid(
+                    "MXFP8 scale grid is not [rows, cols/32]: ",
+                    it->second.info->name);
+            e8m0 = scale_bytes.data();
+            e8m0_shape = ss;
+        }
+        if (!QuantizeSlice(data.data(), t.numel(), t.dtype, e8m0, t.shape,
+                           e8m0_shape, r))
             return arrow::Status::IOError("GPU quantization failed for ", t.name);
         dst.push_back(std::move(r));
         ++total_pinned;
@@ -527,6 +685,8 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
         for (auto &t : shard.tensors) {
             auto p = classify_minimax_tensor(t.name);
             if (p.kind == MinimaxTensorKind::Visual ||
+                p.encoding == MinimaxSourceEncoding::kMxfp8ScaleInv ||
+                p.encoding == MinimaxSourceEncoding::kExpertInputGlobalScale ||
                 minimax_tensor_is_routed_expert(p.kind))
                 continue;
 
@@ -624,7 +784,7 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     const int I = top.moe_intermediate_size;
     int experts_done = 0;
     const int experts_total =
-        (top.num_layers - frozen::kFirstMoeLayer) * top.num_experts;
+        (top.num_layers - top.first_moe_layer) * top.num_experts;
     int last_pct = -1;
     // Operational fast path: re-convert only the dense side (globals, router,
     // shared experts, attention/dense-MLP layers) when the 232 GB expert store
@@ -633,7 +793,7 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     const bool skip_experts = std::getenv("LSX_MINIMAX_SKIP_EXPERTS") != nullptr;
     if (skip_experts)
         lsxcommon::log::info(
-            "MiniMax-M3: LSX_MINIMAX_SKIP_EXPERTS set — reusing the existing "
+            "MiniMax: LSX_MINIMAX_SKIP_EXPERTS set — reusing the existing "
             "expert store");
     for (int l = 0; !skip_experts && l < top.num_layers; ++l) {
         if (top.mlp_types[static_cast<size_t>(l)] != "sparse") continue;
@@ -645,7 +805,7 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
                                     : 100;
                 if (pct != last_pct && pct % 2 == 0) {
                     lsxcommon::log::info(absl::StrFormat(
-                        "MiniMax-M3 experts: %d/%d (%d%%) layer %d",
+                        "MiniMax experts: %d/%d (%d%%) layer %d",
                         experts_done, experts_total, pct, l));
                     last_pct = pct;
                 }
@@ -654,34 +814,96 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
             const std::string stem = absl::StrCat(
                 "language_model.model.layers.", l,
                 ".block_sparse_moe.experts.", e, ".");
-            const char *kLeaf[3] = {"w1.weight", "w2.weight", "w3.weight"};
+            const char *kProjection[3] = {"w1", "w2", "w3"};
             DenseNvfp4Record recs[3];
             for (int k = 0; k < 3; ++k) {
-                const std::string name = stem + kLeaf[k];
-                auto it = expert_index.find(name);
-                if (it == expert_index.end())
-                    return arrow::Status::Invalid("missing expert tensor: ", name);
-                auto data = ReadTensorData(input_dir, *it->second.shard,
-                                           *it->second.info);
-                if (data.empty() ||
-                    static_cast<int64_t>(data.size()) != it->second.info->byte_size())
-                    return arrow::Status::IOError("failed to read expert tensor: ",
-                                                  name);
-                const auto &shape = it->second.info->shape;
+                const std::string base = stem + kProjection[k];
+                const std::vector<int64_t> logical_shape =
+                    (k == 1) ? std::vector<int64_t>{H, I}
+                             : std::vector<int64_t>{I, H};
+
+                auto read_ref = [&](const std::string &full,
+                                    std::vector<uint8_t> &out,
+                                    const TensorInfo *&info) -> arrow::Status {
+                    auto it = expert_index.find(full);
+                    if (it == expert_index.end())
+                        return arrow::Status::Invalid(
+                            "missing expert tensor: ", full);
+                    info = it->second.info;
+                    out = ReadTensorData(input_dir, *it->second.shard,
+                                         *it->second.info);
+                    if (out.empty() ||
+                        static_cast<int64_t>(out.size()) != info->byte_size())
+                        return arrow::Status::IOError(
+                            "failed to read expert tensor: ", full);
+                    return arrow::Status::OK();
+                };
+
+                // Already-quantized ModelOpt NVFP4 expert: verbatim passthrough
+                // (packed E2M1 nibbles + per-16 E4M3 scales), with the
+                // compressed-tensors DIVISOR global scale stored as its
+                // reciprocal (w = nibble * block_scale / weight_global_scale,
+                // the repo contour multiplies by the stored global scale).
+                if (expert_index.contains(base + ".weight_packed")) {
+                    std::vector<uint8_t> packed, scales, gs_raw;
+                    const TensorInfo *pinfo = nullptr;
+                    const TensorInfo *sinfo = nullptr;
+                    const TensorInfo *ginfo = nullptr;
+                    ARROW_RETURN_NOT_OK(
+                        read_ref(base + ".weight_packed", packed, pinfo));
+                    ARROW_RETURN_NOT_OK(
+                        read_ref(base + ".weight_scale", scales, sinfo));
+                    ARROW_RETURN_NOT_OK(read_ref(base + ".weight_global_scale",
+                                                 gs_raw, ginfo));
+                    if (pinfo->shape.size() != 2 ||
+                        pinfo->shape[0] != logical_shape[0] ||
+                        pinfo->shape[1] * 2 != logical_shape[1])
+                        return arrow::Status::Invalid(
+                            "NVFP4 packed shape is not [rows, cols/2]: ",
+                            pinfo->name);
+                    if (sinfo->shape.size() != 2 ||
+                        sinfo->shape[0] != logical_shape[0] ||
+                        sinfo->shape[1] * 16 != logical_shape[1])
+                        return arrow::Status::Invalid(
+                            "NVFP4 scale shape is not [rows, cols/16]: ",
+                            sinfo->name);
+                    if (sinfo->dtype != "F8_E4M3")
+                        return arrow::Status::Invalid(
+                            "NVFP4 block scale is not F8_E4M3: ", sinfo->name);
+                    if (gs_raw.size() != 4)
+                        return arrow::Status::Invalid(
+                            "bad NVFP4 weight_global_scale: ", ginfo->name);
+                    float gs = 0.0f;
+                    std::memcpy(&gs, gs_raw.data(), 4);
+                    if (!(gs > 0.0f))
+                        return arrow::Status::Invalid(
+                            "non-positive NVFP4 weight_global_scale: ",
+                            ginfo->name);
+                    recs[k].name = base + ".weight";
+                    recs[k].shape = logical_shape;
+                    recs[k].dtype = "F8_E4M3";
+                    recs[k].packed = std::move(packed);
+                    recs[k].scales = std::move(scales);
+                    recs[k].global_scale = 1.0f / gs;
+                    continue;
+                }
+
+                const std::string name = base + ".weight";
+                std::vector<uint8_t> data;
+                const TensorInfo *info = nullptr;
+                ARROW_RETURN_NOT_OK(read_ref(name, data, info));
+                const auto &shape = info->shape;
                 if (shape.size() != 2)
                     return arrow::Status::Invalid("expert tensor must be 2-D: ",
                                                   name);
-                if (k == 1) {
-                    if (shape[0] != H || shape[1] != I)
-                        return arrow::Status::Invalid("w2 shape != [H,I]: ", name);
-                } else if (shape[0] != I || shape[1] != H) {
-                    return arrow::Status::Invalid("w1/w3 shape != [I,H]: ", name);
-                }
+                if (shape != logical_shape)
+                    return arrow::Status::Invalid(
+                        "expert tensor has the wrong shape: ", name);
                 recs[k].name = name;
                 recs[k].shape = shape;
-                recs[k].dtype = it->second.info->dtype;
-                if (!QuantizeSlice(data.data(), it->second.info->numel(),
-                                   recs[k].dtype, recs[k]))
+                recs[k].dtype = info->dtype;
+                if (!QuantizeSlice(data.data(), info->numel(), recs[k].dtype,
+                                   recs[k]))
                     return arrow::Status::IOError("quantize failed: ", name);
             }
             PackedExpert pe;
@@ -759,7 +981,7 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     vg.hidden_dim = top.hidden_size;
     vg.kv_dim = top.head_dim * top.num_key_value_heads;
     vg.num_attn_layers = top.num_layers;
-    vg.num_moe_layers = top.num_layers - frozen::kFirstMoeLayer;
+    vg.num_moe_layers = top.num_layers - top.first_moe_layer;
     vg.experts_per_layer = top.num_experts;
     vg.context_length =
         ReadContextLength((fs::path(input_dir) / "config.json").string());
@@ -785,8 +1007,8 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n"
-          << "  \"model\": \"" << frozen::kModelName << "\",\n"
-          << "  \"model_type\": \"" << frozen::kType << "\",\n"
+          << "  \"model\": \"" << variant.model << "\",\n"
+          << "  \"model_type\": \"" << variant.model_type << "\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n  \"layer_types\": [";
         for (size_t i = 0; i < top.layer_types.size(); ++i) {
             if (i) j << ",";
@@ -819,7 +1041,7 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
           << ",\n  \"index_block_size\": " << top.index_block_size
           << ",\n  \"index_topk_blocks\": " << top.index_topk_blocks
           << ",\n  \"index_local_blocks\": " << top.index_local_blocks
-          << ",\n  \"first_moe_layer\": " << frozen::kFirstMoeLayer
+          << ",\n  \"first_moe_layer\": " << top.first_moe_layer
           << ",\n  \"eos_token_id\": " << top.eos_token_id
           << ",\n  \"bos_token_id\": " << top.bos_token_id
           << ",\n  \"pad_token_id\": " << top.pad_token_id
@@ -832,7 +1054,7 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
           << "\""
           << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
           << ",\n  \"total_experts\": " << top.num_experts * (top.num_layers -
-                                                             frozen::kFirstMoeLayer)
+                                                             top.first_moe_layer)
           << "\n}";
         std::ofstream out(base / "model.index.json");
         out << j.str();
@@ -853,9 +1075,10 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     }
 
     lsxcommon::log::info(absl::StrFormat(
-        "MiniMax-M3 conversion: %d layers (%d MoE), %d experts/layer, "
+        "MiniMax conversion (%s): %d layers (%d MoE), %d experts/layer, "
         "%d visual tensors skipped, %d pinned tensors",
-        top.num_layers, top.num_layers - frozen::kFirstMoeLayer, top.num_experts,
+        variant.model, top.num_layers,
+        top.num_layers - top.first_moe_layer, top.num_experts,
         visual_skipped, top.total_pinned_tensors));
     return arrow::Status::OK();
 }

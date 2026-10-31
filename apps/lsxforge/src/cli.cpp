@@ -18,7 +18,8 @@ Resolution ResolvePipeline(const Flags &flags)
         flags.gemma4dense ||
         flags.nemotron || flags.nemotron_nvfp4 || flags.gigachat ||
         flags.glmflash || flags.granite || flags.phi || flags.mimo ||
-        flags.alice || flags.minimax || flags.hy || flags.hy_simulmt ||
+        flags.alice || flags.minimax || flags.minimax_flash || flags.hy ||
+        flags.hy_simulmt ||
         flags.flint ||
         flags.ling || flags.beam || flags.step;
 
@@ -65,6 +66,8 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--xing", {Pipeline::kXing, flags.xing}},
             {"--mistral", {Pipeline::kMistral, flags.mistral}},
             {"--minimax", {Pipeline::kMinimax, flags.minimax}},
+            {"--minimax_flash",
+             {Pipeline::kMinimaxFlash, flags.minimax_flash}},
             {"--hy", {Pipeline::kHy, flags.hy}},
             {"--hy_simulmt", {Pipeline::kHySimulMT, flags.hy_simulmt}},
             {"--flint", {Pipeline::kFlint, flags.flint}},

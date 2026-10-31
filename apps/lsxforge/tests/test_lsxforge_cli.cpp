@@ -76,6 +76,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         {"alice", Pipeline::kAlice},
         {"mistral", Pipeline::kMistral},
         {"minimax", Pipeline::kMinimax},
+        {"minimax_flash", Pipeline::kMinimaxFlash},
         {"hy", Pipeline::kHy},
         {"hy_simulmt", Pipeline::kHySimulMT},
     };
@@ -101,6 +102,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         else if (std::string(name) == "alice") f.alice = true;
         else if (std::string(name) == "mistral") f.mistral = true;
         else if (std::string(name) == "minimax") f.minimax = true;
+        else if (std::string(name) == "minimax_flash") f.minimax_flash = true;
         else if (std::string(name) == "hy") f.hy = true;
         else if (std::string(name) == "hy_simulmt") f.hy_simulmt = true;
         const auto r = ResolvePipeline(f);

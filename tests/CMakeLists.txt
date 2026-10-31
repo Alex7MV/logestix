@@ -1689,6 +1689,36 @@ set_tests_properties(test_minimax_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_minimax_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── MiniMax-M3.1-Flash converter test (MXFP8 dense + NVFP4 experts) ──
+add_executable(test_minimax_moe_flash_convert test_minimax_moe_flash_convert.cpp)
+target_include_directories(test_minimax_moe_flash_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_flash_convert PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_flash_convert PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_convert COMMAND test_minimax_moe_flash_convert)
+set_tests_properties(test_minimax_moe_flash_convert PROPERTIES LABELS convert)
+set_tests_properties(test_minimax_moe_flash_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_minimax_moe_flash_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_flash_convert PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── MiniMax-M3.1-Flash loader stage (all-layer MSA indexer + dispatch) ──
+add_executable(test_minimax_moe_flash_loader test_minimax_moe_flash_loader.cpp)
+target_include_directories(test_minimax_moe_flash_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_flash_loader PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_flash_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_loader COMMAND test_minimax_moe_flash_loader)
+set_tests_properties(test_minimax_moe_flash_loader PROPERTIES LABELS fast)
+set_tests_properties(test_minimax_moe_flash_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_flash_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_flash_loader PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── MiniMax-M3 loader stage (pinned graph + neutral expert store) ──
 add_executable(test_minimax_moe_loader test_minimax_moe_loader.cpp)
 target_include_directories(test_minimax_moe_loader PRIVATE
@@ -1720,6 +1750,22 @@ set_tests_properties(test_minimax_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_minimax_moe_model PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── MiniMax-M3.1-Flash model stage (lifecycle + determinism) ──
+add_executable(test_minimax_moe_flash_model test_minimax_moe_flash_model.cpp)
+target_include_directories(test_minimax_moe_flash_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_flash_model PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_flash_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_model COMMAND test_minimax_moe_flash_model)
+set_tests_properties(test_minimax_moe_flash_model PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_flash_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_flash_model PROPERTIES TIMEOUT 300)
+set_tests_properties(test_minimax_moe_flash_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_minimax_moe_flash_model PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── MiniMax-M3 native tool framing (host-only) ──
 add_executable(test_minimax_moe_tool_framing test_minimax_moe_tool_framing.cpp)
 target_compile_definitions(test_minimax_moe_tool_framing PRIVATE
@@ -1728,6 +1774,19 @@ target_link_libraries(test_minimax_moe_tool_framing PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_minimax_moe_tool_framing COMMAND test_minimax_moe_tool_framing)
 set_tests_properties(test_minimax_moe_tool_framing PROPERTIES LABELS fast)
+
+# ── MiniMax-M3.1-Flash native tool framing (host-only) ──
+add_executable(test_minimax_moe_flash_tool_framing
+    test_minimax_moe_flash_tool_framing.cpp)
+target_include_directories(test_minimax_moe_flash_tool_framing PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_minimax_moe_flash_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_minimax_moe_flash_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_tool_framing
+    COMMAND test_minimax_moe_flash_tool_framing)
+set_tests_properties(test_minimax_moe_flash_tool_framing PROPERTIES LABELS fast)
 
 # ── Mistral-Small-4-119B loader test (dense BF16 graph upload) ──
 add_executable(test_mistral_moe_loader test_mistral_moe_loader.cpp)
@@ -1771,6 +1830,70 @@ set_tests_properties(test_mistral_moe_kernels PROPERTIES LABELS inference)
 set_tests_properties(test_mistral_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_mistral_moe_kernels PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── MiniMax-M3.1-Flash selfcheck + FSI/CODE/DET gates (SKIP 4 w/o vault) ──
+add_executable(test_minimax_moe_flash_selfcheck
+    test_minimax_moe_flash_selfcheck.cpp)
+target_include_directories(test_minimax_moe_flash_selfcheck PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_minimax_moe_flash_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_selfcheck
+         COMMAND test_minimax_moe_flash_selfcheck)
+set_tests_properties(test_minimax_moe_flash_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_flash_selfcheck
+    PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_flash_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_flash_selfcheck
+    PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_minimax_moe_flash_fsi_selfcheck
+    test_minimax_moe_flash_fsi_selfcheck.cpp)
+target_compile_definitions(test_minimax_moe_flash_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_minimax_moe_flash_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_fsi_selfcheck
+         COMMAND test_minimax_moe_flash_fsi_selfcheck)
+set_tests_properties(test_minimax_moe_flash_fsi_selfcheck
+    PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_flash_fsi_selfcheck
+    PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_flash_fsi_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_flash_fsi_selfcheck
+    PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_minimax_moe_flash_code_selfcheck
+    test_minimax_moe_flash_code_selfcheck.cpp)
+target_compile_definitions(test_minimax_moe_flash_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_minimax_moe_flash_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_code_selfcheck
+         COMMAND test_minimax_moe_flash_code_selfcheck)
+set_tests_properties(test_minimax_moe_flash_code_selfcheck
+    PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_flash_code_selfcheck
+    PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_flash_code_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_flash_code_selfcheck
+    PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_minimax_moe_flash_det_selfcheck
+    test_minimax_moe_flash_det_selfcheck.cpp)
+target_compile_definitions(test_minimax_moe_flash_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_minimax_moe_flash_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_minimax_moe_flash_det_selfcheck
+         COMMAND test_minimax_moe_flash_det_selfcheck)
+set_tests_properties(test_minimax_moe_flash_det_selfcheck
+    PROPERTIES LABELS inference)
+set_tests_properties(test_minimax_moe_flash_det_selfcheck
+    PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_minimax_moe_flash_det_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_minimax_moe_flash_det_selfcheck
+    PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── MiniMax-M3 selfcheck + FSI/CODE/DET golden parity gates (SKIP 4 w/o vault) ──
 add_executable(test_minimax_moe_selfcheck test_minimax_moe_selfcheck.cpp)
@@ -3066,6 +3189,16 @@ set_tests_properties(test_perf_baseline_minimax_m3 PROPERTIES
     RESOURCE_LOCK "gpu"
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=MiniMax-M3")
 set_tests_properties(test_perf_baseline_minimax_m3
+    PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_minimax_m31_flash
+         COMMAND test_perf_baseline "perf baseline: minimax-m3.1-flash")
+set_tests_properties(test_perf_baseline_minimax_m31_flash PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=MiniMax-M3.1-Flash")
+set_tests_properties(test_perf_baseline_minimax_m31_flash
     PROPERTIES LABELS perf)
 
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────

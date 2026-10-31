@@ -41,10 +41,11 @@ one in a ctest summary, which is why the debt rows are called out below.
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
+| **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 
-- SelfCheck **16/16**, FSI **20/23**, CODE **23/23**, DET **22/23**.
+- SelfCheck **17/17**, FSI **23/26**, CODE **26/26**, DET **25/26**.
 - **Granite-Switch DET-TEST-02 is the third red.** The source CPU-BF16 oracle
   itself answers `CRITICAL` where the prompt's Expected Template is
   `CATASTROPHIC` (capture logged the disagreement); source and converted agree
@@ -68,6 +69,16 @@ one in a ctest summary, which is why the debt rows are called out below.
   (`tools/minimax_reference.py`: same greedy continuation) plus a per-layer
   oracle against the checkpoint's own HF modeling code
   (`tools/minimax_hf_layer_oracle.py`). See `docs/OPEN_TASKS.md` §R4.
+- MiniMax-M3.1-Flash (the sibling of MiniMax-M3: theta 1e7, MSA on every
+  layer, pre-quantized MXFP8+NVFP4 source) landed green on **all four gates**
+  in its 2026-10-31 session, each run serially. Its goldens are
+  **template-derived** like M3's (the 428B QAT source has no 32 GB-card
+  execution path), captured with the M3.1 tokenizer + `chat_template.jinja`
+  (`input_ids` differ from M3's by the new system prompt / model-id suffix).
+  SelfCheck is bit-exact across three adaptive-thinking cycles
+  (`logits_hash 2daad7a5ba024549`) — the answer lands after the model's own
+  `<mm:think>` block, so the probe window is 192 tokens. Perf by the harness:
+  6.23/6.18 t/s at 2048 — `docs/open-tasks/2026-10-31-minimax-m31-flash-ingest.md`.
 - Hy-SimulMT-30B-A3B (the sibling of Hy-Memory with the same text backbone)
   is PASS on SelfCheck and declared debt on the three QA gates: it is a
   translation model, and the measured source output for those prompts is a

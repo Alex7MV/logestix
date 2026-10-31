@@ -279,8 +279,35 @@ std::vector<ToolCall> ParseMinimaxInvokeText(const std::string &text)
     return calls;
 }
 
+MinimaxRenderPolicy MinimaxFlashRenderPolicy()
+{
+    MinimaxRenderPolicy p;
+    p.default_system =
+        "Your model version is MiniMax-M3.1, developed by MiniMax. Knowledge "
+        "cutoff: January 2026. Founded in early 2022, MiniMax is a global AI "
+        "foundation model company committed to advancing the frontiers of AI "
+        "towards AGI.";
+    p.thinking_mode_line =
+        "Current thinking mode: adaptive. You are encouraged to think for "
+        "complex decision-making, multi-step reasoning, or when analyzing "
+        "function/tool results.";
+    p.system_suffix = "\n\n<model_id>8bb8149fe</model_id>";
+    p.generation_think_end = false;
+    p.developer_blocks = true;
+    p.batch_tool_results = true;
+    return p;
+}
+
 bool RenderMinimaxConversation(const ArrowTokenizerDb &tok,
                                const ChatConversation &conv,
+                               std::vector<int32_t> &out_ids)
+{
+    return RenderMinimaxConversation(tok, conv, MinimaxRenderPolicy{}, out_ids);
+}
+
+bool RenderMinimaxConversation(const ArrowTokenizerDb &tok,
+                               const ChatConversation &conv,
+                               const MinimaxRenderPolicy &policy,
                                std::vector<int32_t> &out_ids)
 {
     out_ids.clear();
@@ -313,8 +340,10 @@ bool RenderMinimaxConversation(const ArrowTokenizerDb &tok,
 
     std::string text;
     text += std::string(kBod) + kBos + "system\n";
-    text += system_msg && !system_msg->content.empty() ? system_msg->content
-                                                       : kDefaultSystem;
+    text += system_msg && !system_msg->content.empty()
+                ? system_msg->content
+                : (policy.default_system ? policy.default_system
+                                         : kDefaultSystem);
     text += std::string("\n\n<thinking_instructions>\n"
                         "You have a thinking capability that allows you to "
                         "reason step by step before responding. When thinking "
@@ -323,9 +352,13 @@ bool RenderMinimaxConversation(const ArrowTokenizerDb &tok,
             " tags before your response. When thinking is disabled, begin "
             "your response directly after the " + kThinkEnd +
             " prefix. When thinking is adaptive, decide on your own whether "
-            "to think for the current turn.\n"
-            "Current thinking mode: disabled. Do not output any thinking "
-            "process.\n</thinking_instructions>";
+            "to think for the current turn.\n" +
+            (policy.thinking_mode_line
+                 ? policy.thinking_mode_line
+                 : "Current thinking mode: disabled. Do not output any "
+                   "thinking process.") +
+            "\n</thinking_instructions>";
+    if (policy.system_suffix) text += policy.system_suffix;
     text += kEos;
     text += "\n";
 
@@ -374,16 +407,38 @@ bool RenderMinimaxConversation(const ArrowTokenizerDb &tok,
             }
             text += kEos;
             text += "\n";
+        } else if (policy.developer_blocks &&
+                   (m.role == "system" || m.role == "developer")) {
+            // Mid-conversation system/developer turns map to the lower-priority
+            // `developer` role and keep their position (M3.1 template).
+            text += std::string(kBos) + "developer\n" + m.content + kEos + "\n";
         } else if (m.role == "tool") {
-            text += std::string(kBos) + "tool\n<response>" + m.content +
-                    "</response>" + kEos + "\n";
+            if (policy.batch_tool_results) {
+                const bool first_of_run =
+                    i == first || conv.messages[i - 1].role != "tool";
+                const bool last_of_run =
+                    i + 1 >= conv.messages.size() ||
+                    conv.messages[i + 1].role != "tool";
+                if (first_of_run) text += std::string(kBos) + "tool";
+                text += "\n<response>" + m.content + "</response>";
+                if (last_of_run) {
+                    text += kEos;
+                    text += "\n";
+                }
+            } else {
+                text += std::string(kBos) + "tool\n<response>" + m.content +
+                        "</response>" + kEos + "\n";
+            }
         } else {  // user (and anything else)
             text += std::string(kBos) + "user\n" + m.content + kEos + "\n";
         }
     }
 
-    // Generation prompt: thinking disabled => explicit think-END prefix.
-    text += std::string(kBos) + "ai\n" + kThinkEnd;
+    // Generation prompt: M3 (thinking disabled) prefixes the think-END
+    // marker; M3.1-Flash is fixed to ADAPTIVE and emits no prefix, letting the
+    // model decide whether to open a `</mm:think>`/`<mm:think>` block.
+    text += std::string(kBos) + "ai\n";
+    if (policy.generation_think_end) text += kThinkEnd;
     return AppendTextWithSentinels(tok, text, out_ids);
 }
 

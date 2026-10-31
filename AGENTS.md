@@ -443,6 +443,29 @@ procedure — `perf-tuning-a-model`.
   canonical protocol runs on the neutral coalesced attention kernel; past that
   the two-pass masked kernel engages (perf debt, correctness first).
   Session facts, gates and perf rows: `docs/OPEN_TASKS.md` §R4.
+  MiniMax-M3.1-Flash (sibling variant of `minimax`, registry
+  `minimax-m3.1-flash`): the same M3 backbone contour with **MSA on every
+  layer** (no dense-attention prefix; the dense-MLP prefix stays), RoPE theta
+  1e7, and a **pre-quantized source** — MXFP8 dense (F8_E4M3 + per-32 E8M0
+  `weight_scale_inv`) and ModelOpt NVFP4 routed experts (`weight_packed` /
+  `weight_scale` / F32 divisor `weight_global_scale` + `input_global_scale`).
+  The shared converter DEQUANTIZES the dense side through the neutral
+  quantizer's E8M0 tile path and passes the experts through verbatim (divisor
+  global scale inverted, the Mistral rule); `minimax_moe_flash_convert.{h,cpp}`
+  is the `lsxforge --minimax_flash` entry with the variant discriminator
+  (theta + first-sparse-layer) so an M3 tree and an M3.1 tree cannot be
+  converted/loaded as each other. `minimax_moe_flash_constants.h` (frozen
+  passport, `lsxcommon::minimax_flash::frozen`), `minimax_moe_flash_model.{h,cpp}`
+  (parent loader/kernels/pipeline reused; format tag shared because the emitted
+  layout is identical — only the index `model` field distinguishes the trees),
+  and a `MinimaxRenderPolicy` on the shared tool codec for the M3.1 template
+  (fixed adaptive thinking, `<model_id>8bb8149fe</model_id>`, `developer`
+  blocks, batched tool results). `LoadMinimaxTopology` now derives
+  `first_moe_layer`/`first_sparse_layer` and every member cross-checks them +
+  its RoPE theta against its passport. Real weights: SelfCheck Paris x3
+  bit-exact, FSI/CODE/DET 3/3 (template-derived goldens), tool round-trip green;
+  **6.23 t/s (perf) / 6.18 t/s (r3)** at 2048 tokens, TTFT ~49 s. Session facts:
+  `docs/open-tasks/2026-10-31-minimax-m31-flash-ingest.md`.
   Recursive Flint (39.8B / ~2.5B active, independent family `flint`): a
   Qwen3-MoE-contour decoder (GQA + per-head QK RMSNorm + SwiGLU) with five
   deltas in no other family — learned per-head attention sinks
