@@ -324,10 +324,17 @@ bool ParseBeamToolCalls(const ArrowTokenizerDb &tok,
                         std::vector<ToolCall> &out_calls)
 {
     out_calls.clear();
-    std::vector<char> buf(gen_tokens.size() * 8 + 64);
+    // Drop ids the vocabulary does not cover (reserved embedding rows the
+    // sampler can reach but the tokenizer has no bytes for); one such id would
+    // make the whole decode fail and hide a perfectly valid call.
+    std::vector<int32_t> valid;
+    valid.reserve(gen_tokens.size());
+    for (int32_t id : gen_tokens)
+        if (id >= 0 && id < tok.vocab_size) valid.push_back(id);
+    std::vector<char> buf(valid.size() * 8 + 64);
     size_t cap = buf.size();
-    const int32_t rc = arrow_tokenizer_decode(tok, gen_tokens.data(),
-                                              gen_tokens.size(), buf.data(),
+    const int32_t rc = arrow_tokenizer_decode(tok, valid.data(),
+                                              valid.size(), buf.data(),
                                               &cap);
     if (rc < 0) return false;
     const std::string text(buf.data(), cap);

@@ -82,6 +82,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 |---|---|---|---|---|---|
 | mistral-small-4-119b | PASS | SKIP | SKIP | SKIP | source is the Mistral "consolidated" layout (`params.json`, no `config.json`), so Transformers cannot run it and no oracle can be captured — `docs/OPEN_TASKS.md` §T |
 | flint | PASS | SKIP | SKIP | SKIP | source runs only on CPU (`tools/flint_oracle.py`, ~3-5 s/token); the capture set is hours long. The converted model is additionally parity-limited: the 4-bit routed-expert plane is the dominant residual error (an 8-bit expert set needs +21 GB, the card has ~9 GB free) — `docs/OPEN_TASKS.md` §R6 |
+| beam | PASS | SKIP | SKIP | SKIP | the 934 GB BF16 source (501B) exceeds this host's 750 GB RAM, so the reference cannot be loaded for a capture; kernel parity + SelfCheck are the instruments. Two real-weight defects (the lost `<|call|>` stop id and a reserved-id decode failure) were found and fixed — `docs/OPEN_TASKS.md` §R8 |
 | ling | PASS | SKIP | SKIP | SKIP | source is 560B BF16/FP8 with GPU-only FLA KDA kernels; no oracle runnable on one RTX 5090 (a CPU reference was used for single-token probes only). Per-expert global scales + the official SwiGLU clamps were required for a coherent answer — `docs/OPEN_TASKS.md` §R7 |
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | source not runnable here: `modelopt 0.44.0rc5` `MIXED_PRECISION` (W4A16_NVFP4 experts + FP8 mixers, FP8 KV cache) and the installed transformers has no modelopt quantizer; the bf16 passport is not in the vault. An attempted golden set was reverted 2026-10-25 — its `input_ids` were Qwen3.8-Flash-Next ids (up to 248069 against this model's 131072-entry vocabulary) and its `expected` values were copied from that family's goldens, so all three gates failed with an empty `raw` |
 
@@ -99,6 +100,20 @@ expert) closed part of that gap (prefix 56: top-1 logit -3.70 -> -0.99; prefix
 160: -2.10 -> -1.06); the remainder is the routed-expert 4-bit error. This is a
 **measurement**, not a pass: the FSI/CODE/DET rows stay SKIP until a capture
 fits the budget and the expert precision question is settled.
+
+## 2c. beam — real-weight verification (no golden)
+
+The converted tree (265 GB) exists and SelfCheck answers Paris with the Harmony
+framing; the real-weight native tool round-trip returns
+`get_weather {"city":"Paris"}` (verified 2026-10-31). The numeric contract is
+pinned per kernel against `beam_moe_device_math.h` (plain/per-head RMSNorm,
+rotate-half RoPE, NoPE SSMax, sliding-window bounds, group-limited sigmoid
+router with correction bias, per-head attention gate, depth-scaled residual,
+softcap). FSI/CODE/DET stay SKIP: the BF16 source (934 GB) cannot be loaded in
+750 GB of host RAM, so there is no oracle to capture from — a declared debt, not
+a pass. Perf is also open (Debug-only observation; rows must come from the
+Release harness; now seeded at **1.61 t/s (perf) / 1.60 t/s (r3)**, TTFT ≈27 s,
+2048 tokens) — `docs/OPEN_TASKS.md` §R8.
 
 ## 3. Golden present, **no converted tree** — SKIP (needs the vault, not a code fix)
 

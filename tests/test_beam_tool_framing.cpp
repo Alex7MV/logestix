@@ -175,3 +175,43 @@ TEST_CASE("beam tool parameters that are not strings stay JSON", "[beam][tool]")
     REQUIRE(calls.size() == 1);
     CHECK(calls[0].arguments_json == "{\"n\":42,\"ok\":true,\"label\":\"hello\"}");
 }
+
+TEST_CASE("beam parses the real-weight native call token stream",
+          "[beam][tool][real-tokenizer]")
+{
+    const fs::path real =
+        "/mnt/fast_storage/huggingface/Beam-1.0-501B-A23B/tokenizer.json";
+    if (!fs::exists(real)) SKIP("Beam source tokenizer.json absent");
+    fs::path dir = fs::temp_directory_path() / "lsx_beam_tool_real";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    lsxcommon::TokenizerSpecialPolicy policy;
+    policy.bos_id = -1;
+    policy.pretokenizer = 4;
+    policy.eos_id = 151674;
+    policy.pad_id = 151643;
+    REQUIRE(lsxcommon::BuildTokenizerArrowFiles(real.string(), dir, policy).ok());
+    auto vf = arrow::io::MemoryMappedFile::Open(
+        (dir / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
+    auto mf = arrow::io::MemoryMappedFile::Open(
+        (dir / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
+    REQUIRE(vf.ok());
+    REQUIRE(mf.ok());
+    lsxcommon::ArrowTokenizerDb db;
+    REQUIRE(lsxcommon::load_tokenizer_metadata(*vf, *mf, db).ok());
+
+    const std::vector<int32_t> ids = {
+        151672, 34484, 151671, 785, 1196, 6801, 311, 1414, 279, 1482, 9104,
+        304, 12095, 13, 358, 1265, 990, 279, 633, 69364, 5392, 448, 3283,
+        330, 59604, 3263, 151670, 151669, 77091, 311, 28280, 69364, 151672,
+        34484, 220, 151673, 6455, 151671, 151679, 8926, 881, 59604, 151680,
+        151675};
+    std::vector<lsxcommon::ToolCall> calls;
+    const bool ok = lsxcommon::beam::ParseBeamToolCalls(db, ids, calls);
+    INFO("decoded: [" << Decode(db, ids) << "]");
+    REQUIRE(ok);
+    REQUIRE(calls.size() == 1);
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json == "{\"city\":\"Paris\"}");
+}

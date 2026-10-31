@@ -56,7 +56,7 @@ struct BeamPinnedWeights {
     std::vector<BeamLayerWeights> layers;
     // Routed experts (49 layers x 256) streamed through the neutral mmap store:
     // 277 GB at NVFP4 does not fit the card and is never pinned.
-    moe::MoEExpertStore expert_store;
+    moe::MoEExpertRuntime expert_store;
     std::uint64_t resident_bytes = 0;
 
     void Free();

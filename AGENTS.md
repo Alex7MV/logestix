@@ -521,6 +521,27 @@ procedure — `perf-tuning-a-model`.
   **2.77 t/s (perf) / 2.41 t/s (r3)**, TTFT ≈10.3 s, 10.2 GiB pinned + 16-17
   GiB expert cache. FSI/CODE/DET are declared golden debt (560B source cannot
   run on one card) — `docs/OPEN_TASKS.md` §R7.
+  Beam-1.0-501B-A23B (independent family `beam`; `model_type = "beam"`,
+  `BeamForCausalLM`, 52L / 5120H / 48Q·8KV·128HD, 3 dense + 49 MoE layers ×
+  256 routed experts top-8 with no shared expert, vocab 151 936);
+  `beam_moe_constants.h` (frozen passport), `beam_moe_convert.{h,cpp}` (BF16 →
+  NVFP4; the 4 sandwich norms, per-head q/k norms, per-head attention gate bias
+  and FP16 embed/lm_head stay high precision, the router + correction bias stay
+  F32), `beam_moe_load.{h,cpp}` (pinned dense graph + F32 router + the neutral
+  mmap `ExpertStore` streamed with `first_moe_layer = 3`),
+  `beam_moe_kernels.{h,cu}` (plain/per-head RMSNorm, rotate-half RoPE, NoPE
+  SSMax query scale, warp-per-head gated sliding-window decode attention,
+  group-limited sigmoid router, FP32 SwiGLU, depth-scaled residual, softcap),
+  `beam_moe_inference.{h,cu}` (token-by-token prefill/decode over the neutral
+  NVFP4 GEMV and the streamed experts; per-layer router readback is the
+  documented perf debt), `beam_moe_model.{h,cpp}`,
+  `beam_moe_tool_format.{h,cpp}` (modified-Harmony `analysis`/`final` channels,
+  `to={name}` + `<rfl:parameter>` XML bodies), `tokenizer_kind = 6`
+  (`BeamWordStream`, the Qwen2/3 single-run pattern) with the Harmony markers as
+  plain added tokens; format tag `logestix-beam-nvfp4`; converted with
+  `lsxforge --beam`; knob `LSX_BEAM_EXPERT_CACHE_SLOTS` (default 512) and
+  `LSX_BEAM_EXPERT_MAX_OPEN`. Session facts, gates and debt:
+  `docs/OPEN_TASKS.md` §R8.
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

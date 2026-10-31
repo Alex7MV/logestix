@@ -281,3 +281,33 @@ TEST_CASE("synthetic Beam checkpoint converts to the NVFP4 tree",
     fs::remove_all(src, ec);
     fs::remove_all(out, ec);
 }
+
+TEST_CASE("ParseBeamConfig reads both stop ids from generation_config.json",
+          "[beam-moe-convert]")
+{
+    // The published config.json carries `eos_token_id: null`; the real stop
+    // list lives in generation_config.json. Dropping the second id (Beam's
+    // `<|call|>`) made the model repeat a tool call forever on real weights.
+    fs::path dir = fs::temp_directory_path() / "lsx_beam_cfg_eos";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    beam_test::WriteConfig(dir);
+    std::string j = ReadAll(dir / "config.json");
+    const std::string from = "\"eos_token_id\":[61,62]";
+    const auto at = j.find(from);
+    REQUIRE(at != std::string::npos);
+    j.replace(at, from.size(), "\"eos_token_id\":null");
+    std::ofstream(dir / "config.json") << j;
+    std::ofstream(dir / "generation_config.json")
+        << R"({"eos_token_id":[151674,151675],"pad_token_id":151643})";
+    auto top = ParseBeamConfig(dir.string());
+    INFO(top.error_msg);
+    REQUIRE(top.error_msg.empty());
+    REQUIRE(top.eos_ids.size() == 2);
+    CHECK(top.eos_ids[0] == 151674);
+    CHECK(top.eos_ids[1] == 151675);
+    CHECK(top.eos_token_id == 151674);
+    CHECK(top.eos_token_id_alt == 151675);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}

@@ -53,7 +53,7 @@ bool CheckNvfp4Shape(const lsx_nvfp4::LsxNvfp4Weight &w, int rows, int cols)
 // ExpertStore.
 bool LoadBeamExpertStore(const std::string &model_path,
                          const BeamTopology &top,
-                         moe::MoEExpertStore &store, std::string &error)
+                         moe::MoEExpertRuntime &store, std::string &error)
 {
     store.Free();
     error.clear();

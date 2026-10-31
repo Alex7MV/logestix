@@ -161,7 +161,7 @@ arrow::Status WriteExpertFile(const std::filesystem::path &base_dir, int layer,
 }
 
 void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
-                       int &pad)
+                       int &pad, std::vector<int> *all_eos)
 {
     std::ifstream f(path, std::ios::binary);
     if (!f) return;
@@ -181,8 +181,10 @@ void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
         arr.error() == simdjson::SUCCESS) {
         for (auto v : arr.value()) {
             int64_t id = 0;
-            if (v.get_int64().get(id) == simdjson::SUCCESS && e < 0)
-                e = static_cast<int>(id);
+            if (v.get_int64().get(id) == simdjson::SUCCESS) {
+                if (e < 0) e = static_cast<int>(id);
+                if (all_eos) all_eos->push_back(static_cast<int>(id));
+            }
         }
     } else {
         e = get_i(root, "eos_token_id", -1);
@@ -348,12 +350,21 @@ BeamTopology ParseBeamConfig(const std::string &input_dir)
                                             top.sliding_window, frozen::kWindow);
     }
 
-    if (top.bos_token_id < 0 || top.eos_token_id < 0 || top.pad_token_id < 0)
+    if (top.bos_token_id < 0 || top.eos_token_id < 0 || top.pad_token_id < 0) {
+        std::vector<int> all_eos;
         ReadGenerationIds(fs::path(input_dir) / "generation_config.json",
                           top.bos_token_id, top.eos_token_id,
-                          top.pad_token_id);
+                          top.pad_token_id, &all_eos);
+        // config.json carries eos_token_id: null, so the list lives in
+        // generation_config.json. Both ids are real stops (`<|return|>` and
+        // `<|call|>`), and dropping the second one makes the model repeat a
+        // tool call forever.
+        if (top.eos_ids.empty() && !all_eos.empty())
+            top.eos_ids = all_eos;
+    }
     if (top.eos_ids.empty() && top.eos_token_id >= 0)
         top.eos_ids.push_back(top.eos_token_id);
+    if (top.eos_ids.size() > 1) top.eos_token_id_alt = top.eos_ids[1];
 
     if (!top.error_msg.empty()) return top;
     if (top.hidden_size <= 0 || top.num_layers <= 0 || top.vocab_size <= 0 ||

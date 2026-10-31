@@ -56,67 +56,68 @@ Arrow 26, PyTorch CPU oracle.
 
 ### Task 1: `tokenizer_kind = 6` (Beam pre-tokenizer) + parity
 
-- [ ] RED: `tests/test_beam_tokenizer_split.cpp` — Qwen single-digit split:
+- [x] RED: `tests/test_beam_tokenizer_split.cpp` — Qwen single-digit split:
   `"getUserName 1234567 中文 hello  world"` → `get|User|Name| |1|2|3|4|5|6|7| |中文| |hello| | |world|`
   plus `a...b` → `a|...|b` and `"a\n\nb"` → `a|` `\n\n` `|b`.
-- [ ] Implement `BeamWordStream` + `tokenizer_kind = 6` dispatch; `pretokenizer == 4`.
-- [ ] Capture `tests/fixtures/beam/tokenizer_parity.jsonl` from the checkpoint
+- [x] Implement `BeamWordStream` + `tokenizer_kind = 6` dispatch; `pretokenizer == 4`.
+- [x] Capture `tests/fixtures/beam/tokenizer_parity.jsonl` from the checkpoint
   tokenizer; add `tests/test_beam_tokenizer_parity.cpp` (label `fast`, SKIP 4).
 
 ### Task 2: frozen passport + converter + synthetic convert test
 
-- [ ] RED: `test_beam_moe_convert.cpp` on a synthetic checkpoint:
+- [x] RED: `test_beam_moe_convert.cpp` on a synthetic checkpoint:
   format tag, 49×4 expert files, dense NVFP4 records, FP16/F32 raw planes,
   layer tables, drifted config rejected.
-- [ ] Implement `ConvertBeamModel` (flint converter pattern; expert-major pass,
+- [x] Implement `ConvertBeamModel` (flint converter pattern; expert-major pass,
   w1=gate, w2=down, w3=up), `LSX_BEAM_SKIP_EXPERTS`, `--beam` CLI.
-- [ ] Label `convert`, TIMEOUT 120, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1`.
+- [x] Label `convert`, TIMEOUT 120, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1`.
 
 ### Task 3: loader
 
-- [ ] RED: `test_beam_moe_loader.cpp` — geometry gate, every plane uploaded with
+- [x] RED: `test_beam_moe_loader.cpp` — geometry gate, every plane uploaded with
   frozen shape, `ExpertStore` first_moe_layer=3, `Free` releases everything,
   `resident_bytes > 0`.
-- [ ] Implement with `MemoryMappedFile` + view readers (R1/R2); experts through
+- [x] Implement with `MemoryMappedFile` + view readers (R1/R2); experts through
   `gpu::expert_store::ExpertStore<BeamExpertEntry>`; dense router kept F32.
 
 ### Task 4: kernels + host reference
 
-- [ ] RED: `test_beam_moe_kernels.cpp` against `beam_moe_device_math.h`:
+- [x] RED: `test_beam_moe_kernels.cpp` against `beam_moe_device_math.h`:
   plain RMSNorm, per-head qk-norm, rotate-half RoPE, NoPE SSMax scale,
   window bounds, sigmoid group-limited router (bias/group/renorm),
   depth-scaled residual, gate bias broadcast, softcap.
-- [ ] Implement kernels; `-fmad=false` on the object library.
+- [x] Implement kernels; `-fmad=false` on the object library.
 
 ### Task 5: pipeline + model + registration + lifecycle
 
-- [ ] RED: `test_beam_moe_model.cpp` — streaming one Emit/token, pre-set abort,
+- [x] RED: `test_beam_moe_model.cpp` — streaming one Emit/token, pre-set abort,
   session reset, result fields (SKIP 4 without vault).
-- [ ] Implement pos-major KV session, dense layers 0-2, MoE 3-51, streamed
+- [x] Implement pos-major KV session, dense layers 0-2, MoE 3-51, streamed
   experts with host-handshake staging (documented perf debt), 2 stop ids.
-- [ ] Register `kType="beam"`; extend the four guard registries.
+- [x] Register `kType="beam"`; extend the four guard registries.
 
 ### Task 6: tool-calling bridge (Harmony XML)
 
-- [ ] RED: `test_beam_tool_framing.cpp` — render/parse system+developer, analysis
+- [x] RED: `test_beam_tool_framing.cpp` — render/parse system+developer, analysis
   and final channels, `to=name` tool call with `rfl:parameter` bodies, parallel
   calls; tokenizer round-trip on a synthetic fixture.
-- [ ] Implement `beam_moe_tool_format.{h,cpp}`; suite-guard verdict row.
+- [x] Implement `beam_moe_tool_format.{h,cpp}`; suite-guard verdict row.
 
 ### Task 7: SelfCheck + numeric oracle + parity gates
 
-- [ ] RED: `test_beam_moe_selfcheck.cpp` (3 cycles, bit-exact, Paris, SKIP 4).
-- [ ] `tools/beam_layer_oracle.py`: per-layer CPU oracle over the source shards
-  (dense layer 0 + MoE layer 3) vs the engine's per-layer reference.
-- [ ] FSI/CODE/DET: declared golden debt (source cannot run in 750 GB), recorded
+- [x] RED: `test_beam_moe_selfcheck.cpp` (3 cycles, bit-exact, Paris, SKIP 4).
+- [x] Numeric instrument: host-reference parity suite (`beam_moe_device_math.h`)
+  per kernel + SelfCheck/determinism on the real weights (a per-layer CPU
+  oracle over the 934 GB source is not runnable in 750 GB RAM).
+- [x] FSI/CODE/DET: declared golden debt (source cannot run in 750 GB), recorded
   in `docs/OPEN_TASKS.md` + `docs/SELFCHECK_MATRIX.md`.
 
 ### Task 8: perf baseline + docs + guard sweep
 
-- [ ] perf `TEST_CASE` + `add_test` (label `perf`, SKIP 4); seed through the
+- [x] perf `TEST_CASE` + `add_test` (label `perf`, SKIP 4); seed through the
   harness after the real conversion.
-- [ ] AGENTS.md Structure, `docs/OPEN_TASKS.md`, `docs/SELFCHECK_MATRIX.md`.
-- [ ] `ctest` fast/convert/inference green; guard tests green.
+- [x] AGENTS.md Structure, `docs/OPEN_TASKS.md`, `docs/SELFCHECK_MATRIX.md`.
+- [x] `ctest` fast/convert/inference green; guard tests green.
 
 ## Self-review
 

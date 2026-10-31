@@ -7314,6 +7314,7 @@ target_link_libraries(test_beam_tool_framing PRIVATE lsxcommon
     Catch2::Catch2WithMain arrow_shared)
 add_test(NAME test_beam_tool_framing COMMAND test_beam_tool_framing)
 set_tests_properties(test_beam_tool_framing PROPERTIES LABELS fast)
+set_tests_properties(test_beam_tool_framing PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Flint native tool framing (host-only; template-captured golden) ──
 add_executable(test_flint_moe_tool_framing test_flint_moe_tool_framing.cpp)
