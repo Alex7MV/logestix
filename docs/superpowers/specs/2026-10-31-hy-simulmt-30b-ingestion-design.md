@@ -153,3 +153,30 @@ with no expert cache. Source 57 GB → ~17 GB output. Host RAM 750 GB, disk
 7. Perf baseline + `test_perf_baseline_logic` pairing.
 8. Real conversion in place, full lifecycle sweep, docs (AGENTS.md,
    SELFCHECK_MATRIX, OPEN_TASKS, model report).
+
+## As built (2026-10-31)
+
+Three facts discovered while validating the real checkpoint changed the
+implementation from the plan above:
+
+1. **The decoder is direction-bound.** Without the checkpoint's own serving
+   directive (`SimulInfer/simulinfer/translation.py INSTRUCTIONS`) it only
+   summarises/transcribes its input. The model class prepends that directive and
+   auto-selects the direction from the source script (Han → zh-en, else en-zh),
+   which is also the single-prompt framing. SelfCheck therefore asks the
+   canonical fact in the trained direction (source "法国的首都是巴黎。" →
+   English containing "Paris"); this is a recorded deviation from the canonical
+   English prompt, not a rewritten gate.
+2. **Two stop ids.** `generation_config.json` stops on `<eos>` and
+   `<|hy_EOT|>`; the shared topology/index and the pipeline now carry the full
+   stop set.
+3. **The template has one literal delta** (the tool example closes with
+   `</tool_calls>`), carried by `HyRenderPolicy`.
+
+Gates as measured: SelfCheck PASS (3 cycles, bit-exact,
+`logits_hash 44b846591fd64cb9`); real-weight bidirectional translation PASS;
+chat framing 14/14; FSI/CODE/DET **declared debt** — the source answers those
+QA bodies with a summary or immediate EOT, so no source-faithful extractable
+golden exists (evidence in `docs/OPEN_TASKS.md` §R11 and the model report).
+Perf: 87.57 t/s (perf) / 74.85 t/s (r3) at 2048 tokens, TTFT 510/616 ms,
+16.5 GiB resident.
