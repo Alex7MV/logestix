@@ -93,6 +93,10 @@ def load(model_path, device_map=None, dtype=None):
 
     for shard in sorted(glob.glob(os.path.join(model_path, "*.safetensors"))):
         for key, tensor in load_file(shard).items():
+            # Hy-SimulMT stores a speech encoder beside the same text backbone;
+            # the oracle runs the TEXT decoder only, so that ballast is skipped.
+            if key.startswith("audio_tower."):
+                continue
             if key.startswith("model.layers.") and ".mlp.experts." in key:
                 rest = key.split(".mlp.experts.", 1)[1]
                 eid_s, leaf = rest.split(".", 1)

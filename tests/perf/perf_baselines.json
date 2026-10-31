@@ -880,6 +880,38 @@
       "avg_power_w": 573.69,
       "peak_power_w": 602.71,
       "power_samples": 1457
+    },
+    {
+      "model_type": "hy-simulmt-30b-a3b",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "perf",
+      "tokens_per_sec": 87.57,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-10-31",
+      "commit": "-",
+      "gen_tokens": 2048,
+      "ttft_ms": 510.05,
+      "avg_power_w": 218.60,
+      "peak_power_w": 239.61,
+      "power_samples": 1166
+    },
+    {
+      "model_type": "hy-simulmt-30b-a3b",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "r3",
+      "tokens_per_sec": 74.85,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-10-31",
+      "commit": "-",
+      "gen_tokens": 2048,
+      "ttft_ms": 616.09,
+      "avg_power_w": 207.34,
+      "peak_power_w": 223.65,
+      "power_samples": 1364
     }
   ]
 }

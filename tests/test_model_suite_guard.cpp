@@ -398,6 +398,20 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_hy_moe_code_selfcheck"}},
           {"det", {"test_hy_moe_det_selfcheck"}},
           {"perf", {"test_perf_baseline_hy_memory_30b_a3b"}}}},
+        // Hy-SimulMT is the same hy_v3 text backbone (audio tower stripped):
+        // it owns its convert/load/model/parity stages and shares the parent's
+        // routed-MoE kernels and generation pipeline.
+        {"hy-simulmt-30b-a3b",
+         {{"convert", {"test_hy_moe_simulmt_convert"}},
+          {"load", {"test_hy_moe_simulmt_loader"}},
+          {"model", {"test_hy_moe_simulmt_model",
+                     "test_hy_moe_simulmt_tool_framing"}},
+          {"kernels", {"test_hy_moe_kernels"}},
+          {"selfcheck", {"test_hy_moe_simulmt_selfcheck"}},
+          {"fsi", {"test_hy_moe_simulmt_fsi_selfcheck"}},
+          {"code", {"test_hy_moe_simulmt_code_selfcheck"}},
+          {"det", {"test_hy_moe_simulmt_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_hy_simulmt_30b_a3b"}}}},
         {"flint",
          {{"convert", {"test_flint_moe_convert"}},
           {"load", {"test_flint_moe_loader", "test_flint_moe_pretokenizer",
@@ -865,6 +879,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"mistral-small-4-119b", {"test_mistral_moe_tool_framing"}},
         {"minimax-m3", {"test_minimax_moe_tool_framing"}},
         {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
+        {"hy-simulmt-30b-a3b", {"test_hy_moe_simulmt_tool_framing"}},
         {"flint", {"test_flint_moe_tool_framing"}},
         {"ling", {"test_ling_tool_framing"}},
         {"beam", {"test_beam_tool_framing"}},
@@ -1028,6 +1043,17 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "mistral-small-4-119b:code",
         "mistral-small-4-119b:det",
         "mistral-small-4-119b:fsi",
+        // Hy-SimulMT is a zh<->en simultaneous translator, not a QA model.
+        // Measured on the CPU BF16 source oracle (2026-10-31): given the
+        // FSI/CODE/DET bodies (with or without the checkpoint's serving
+        // directive) it summarises/translates them instead of answering --
+        // FSI-TEST-02 and DET-TEST-01 emit EOT immediately, CODE emits a
+        // prose summary, FSI-TEST-01 loses the required exact expression.
+        // The instruments are SelfCheck (translation direction) and the
+        // bidirectional real-weight serving test; see docs/OPEN_TASKS.md §R11.
+        "hy-simulmt-30b-a3b:code",
+        "hy-simulmt-30b-a3b:det",
+        "hy-simulmt-30b-a3b:fsi",
     };
 
     const fs::path root(LSX_SOURCE_DIR);

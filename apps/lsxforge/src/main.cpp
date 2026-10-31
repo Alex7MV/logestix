@@ -16,6 +16,7 @@
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/hy_moe_convert.h"
+#include "lsxcommon/hy_moe_simulmt_convert.h"
 #include "lsxcommon/step_moe_convert.h"
 #include "lsxcommon/beam_moe_convert.h"
 #include "lsxcommon/flint_moe_convert.h"
@@ -106,6 +107,9 @@ ABSL_FLAG(bool, beam, false,
           "pipeline");
 ABSL_FLAG(bool, hy, false,
           "convert Hy-Memory-30B-A3B (GQA + sigmoid-router MoE) to logestix-hy-nvfp4");
+ABSL_FLAG(bool, hy_simulmt, false,
+          "convert Hy-SimulMT-30B-A3B (same text backbone, audio tower "
+          "stripped) to logestix-hy-simulmt-nvfp4");
 ABSL_FLAG(bool, step, false,
           "convert Step-5-Preview (GQA + DSA + 352-expert MoE) to "
           "logestix-step5-nvfp4");
@@ -179,6 +183,7 @@ int main(int argc, char* argv[]) {
     bool mistral = absl::GetFlag(FLAGS_mistral);
     bool minimax = absl::GetFlag(FLAGS_minimax);
     bool hy = absl::GetFlag(FLAGS_hy);
+    bool hy_simulmt = absl::GetFlag(FLAGS_hy_simulmt);
     bool flint = absl::GetFlag(FLAGS_flint);
     bool ling = absl::GetFlag(FLAGS_ling);
     bool beam = absl::GetFlag(FLAGS_beam);
@@ -221,6 +226,7 @@ int main(int argc, char* argv[]) {
     flags.mistral = mistral;
     flags.minimax = minimax;
     flags.hy = hy;
+    flags.hy_simulmt = hy_simulmt;
     flags.flint = flint;
     flags.ling = ling;
     flags.beam = beam;
@@ -394,7 +400,7 @@ int main(int argc, char* argv[]) {
             tok_policy.bos_id = -1;
             tok_policy.pretokenizer = 2;
         }
-        if (flags.hy) {
+        if (flags.hy || flags.hy_simulmt) {
             // Hy-Memory: no auto-BOS (the template spells it out), the
             // digit-run/CJK/6-alternative pre-tokenizer, and a vocabulary that
             // deliberately lacks the CR and UTF-8-illegal-lead-byte tokens.
@@ -676,6 +682,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Step-5 conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kHySimulMT: {
+        lsxcommon::log::info(
+            "Hy-SimulMT-30B-A3B pipeline (logestix-hy-simulmt-nvfp4 layout)");
+        auto st = lsxcommon::hy_simulmt::ConvertHySimulMTModel(input_path,
+                                                               output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "Hy-SimulMT conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Hy-SimulMT conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

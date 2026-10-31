@@ -26,6 +26,9 @@ OVERRIDES = {
     # 60 GB bf16 tree runs on CPU (the card cannot hold it); no accelerate
     # device map, so no meta-device offload path.
     "hy-memory-30b-a3b": {"loader": "hy_v3"},
+    # Hy-SimulMT-30B-A3B is the same hy_v3 text backbone (the audio tower
+    # is skipped by the oracle); text-only capture, CPU for the 60 GB tree.
+    "hy-simulmt-30b-a3b": {"loader": "hy_v3"},
     # ornith-1.5-35b-a3b is served with a leading system turn (its model
     # class injects one when the caller omits it); without it the safety
     # alignment refuses the FSI-02 financial prompt. Thinking stays off so

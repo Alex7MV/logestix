@@ -129,6 +129,9 @@ const PerfModel kMinimax = {
 const PerfModel kHy = {
     "hy-memory-30b-a3b", "Hy-Memory-30B-A3B", "The capital of France is",
     2048};
+const PerfModel kHySimulMT = {
+    "hy-simulmt-30b-a3b", "Hy-SimulMT-30B-A3B", "The capital of France is",
+    2048};
 const PerfModel kFlint = {
     "flint", "flint", "The capital of France is", 2048};
 const PerfModel kLing = {
@@ -613,6 +616,11 @@ TEST_CASE("perf baseline: minimax-m3", "[perf]")
 TEST_CASE("perf baseline: hy-memory-30b-a3b", "[perf]")
 {
     RunPerfModel(kHy);
+}
+
+TEST_CASE("perf baseline: hy-simulmt-30b-a3b", "[perf]")
+{
+    RunPerfModel(kHySimulMT);
 }
 
 TEST_CASE("perf baseline: flint", "[perf]")

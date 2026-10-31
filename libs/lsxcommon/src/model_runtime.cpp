@@ -77,9 +77,10 @@ gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req,
 {
     ModelRequest sc_req = req;
     if (opts.frame_prompt) {
-        if (!model.BuildPromptInputIds(model.Tokenizer(),
-                                       "The capital of France is",
-                                       sc_req.input_ids)) {
+        if (!model.BuildPromptInputIds(
+                model.Tokenizer(),
+                opts.prompt ? opts.prompt : "The capital of France is",
+                sc_req.input_ids)) {
             gpu::InferenceResult r;
             r.error_msg = "selfcheck prompt framing failed";
             return r;

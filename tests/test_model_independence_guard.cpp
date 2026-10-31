@@ -109,6 +109,8 @@ const std::vector<PassportRow> kPassports = {
      "lsxcommon::mistral_moe::frozen"},
     {"minimax-m3", "minimax_moe_constants.h", "lsxcommon::minimax::frozen"},
     {"hy-memory-30b-a3b", "hy_moe_constants.h", "lsxcommon::hy::frozen"},
+    {"hy-simulmt-30b-a3b", "hy_moe_simulmt_constants.h",
+     "lsxcommon::hy_simulmt::frozen"},
     {"flint", "flint_moe_constants.h", "lsxcommon::flint::frozen"},
     {"ling", "ling_moe_constants.h", "lsxcommon::ling::frozen"},
     {"beam", "beam_moe_constants.h", "lsxcommon::beam::frozen"},
@@ -332,6 +334,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "mistral_moe_model.cpp",       // mistral-small-4-119b (MLA + MoE)
         "minimax_moe_model.cpp",       // minimax-m3 (GQA + MSA indexer + MoE)
         "hy_moe_model.cpp",            // hy-memory-30b-a3b (GQA + sigmoid router MoE)
+        "hy_moe_simulmt_model.cpp",    // hy-simulmt-30b-a3b (same text backbone)
         "flint_moe_model.cpp",         // flint (hybrid sink/SWA/no-RoPE MoE)
         "ling_moe_model.cpp",          // ling (KDA + gated MLA + 512-expert MoE)
         "beam_moe_model.cpp",          // beam (gated GQA SWA/NoPE + 256-expert MoE)
@@ -462,6 +465,8 @@ TEST_CASE("every family model wires the shared lifecycle contract",
          {"minimax_moe_model.cpp", "minimax_moe_inference_pipeline.cu"}},
         {"hy-memory-30b-a3b",
          {"hy_moe_model.cpp", "hy_moe_inference_pipeline.cu"}},
+        {"hy-simulmt-30b-a3b",
+         {"hy_moe_simulmt_model.cpp", "hy_moe_inference_pipeline.cu"}},
         {"flint",
          {"flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"}},
         {"ling", {"ling_moe_model.cpp", "ling_moe_inference.cu"}},

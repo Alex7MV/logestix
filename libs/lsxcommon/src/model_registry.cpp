@@ -5,6 +5,7 @@
 #include "xing_moe_model.h"
 #include "mistral_moe_model.h"
 #include "hy_moe_model.h"
+#include "hy_moe_simulmt_model.h"
 #include "flint_moe_model.h"
 #include "ling_moe_model.h"
 #include "step_moe_model.h"
@@ -63,6 +64,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<MistralSmall4MoeModel>();
         LsxModelFactory::Register<MinimaxM3Model>();
         LsxModelFactory::Register<HyMemoryModel>();
+        LsxModelFactory::Register<HySimulMTModel>();
         LsxModelFactory::Register<FlintMoeModel>();
         LsxModelFactory::Register<LingMoeModel>();
         LsxModelFactory::Register<BeamMoeModel>();

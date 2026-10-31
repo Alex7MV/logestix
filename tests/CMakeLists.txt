@@ -7060,6 +7060,22 @@ set_tests_properties(test_hy_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_hy_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── Hy-SimulMT-30B-A3B converter test (same hy_v3 text backbone; the speech
+#    encoder is stripped and counted) ──
+add_executable(test_hy_moe_simulmt_convert test_hy_moe_simulmt_convert.cpp)
+target_include_directories(test_hy_moe_simulmt_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_hy_moe_simulmt_convert PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_convert PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_simulmt_convert COMMAND test_hy_moe_simulmt_convert)
+set_tests_properties(test_hy_moe_simulmt_convert PROPERTIES LABELS convert)
+set_tests_properties(test_hy_moe_simulmt_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_hy_moe_simulmt_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_hy_moe_simulmt_convert PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Hy-Memory-30B-A3B loader stage (pinned graph + resident expert slabs) ──
 add_executable(test_hy_moe_loader test_hy_moe_loader.cpp)
 target_include_directories(test_hy_moe_loader PRIVATE
@@ -7074,6 +7090,21 @@ set_tests_properties(test_hy_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_hy_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_hy_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-SimulMT-30B-A3B loader stage (shared loader, own passport) ──
+add_executable(test_hy_moe_simulmt_loader test_hy_moe_simulmt_loader.cpp)
+target_include_directories(test_hy_moe_simulmt_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_hy_moe_simulmt_loader PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_simulmt_loader COMMAND test_hy_moe_simulmt_loader)
+set_tests_properties(test_hy_moe_simulmt_loader PROPERTIES LABELS fast)
+set_tests_properties(test_hy_moe_simulmt_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_simulmt_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_hy_moe_simulmt_loader PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Hy-Memory-30B-A3B model stage (lifecycle + determinism) ──
 add_executable(test_hy_moe_model test_hy_moe_model.cpp)
@@ -7090,6 +7121,22 @@ set_tests_properties(test_hy_moe_model PROPERTIES TIMEOUT 300)
 set_tests_properties(test_hy_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_hy_moe_model PROPERTIES RESOURCE_LOCK "gpu")
+
+# ── Hy-SimulMT-30B-A3B model stage (lifecycle + determinism) ──
+add_executable(test_hy_moe_simulmt_model test_hy_moe_simulmt_model.cpp)
+target_include_directories(test_hy_moe_simulmt_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_hy_moe_simulmt_model PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_simulmt_model COMMAND test_hy_moe_simulmt_model)
+set_tests_properties(test_hy_moe_simulmt_model PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_simulmt_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_simulmt_model PROPERTIES TIMEOUT 300)
+set_tests_properties(test_hy_moe_simulmt_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_hy_moe_simulmt_model PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Hy-Memory-30B-A3B numeric kernels (rope/router/accumulate/norm) ──
 add_library(test_hy_cu OBJECT
@@ -7625,6 +7672,64 @@ set_tests_properties(test_hy_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_hy_moe_det_selfcheck PROPERTIES TIMEOUT 3600)
 set_tests_properties(test_hy_moe_det_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
 
+# ── Hy-SimulMT-30B-A3B selfcheck + parity gates (same text backbone) ──
+add_executable(test_hy_moe_simulmt_selfcheck
+    test_hy_moe_simulmt_selfcheck.cpp)
+target_link_libraries(test_hy_moe_simulmt_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_simulmt_selfcheck
+    COMMAND test_hy_moe_simulmt_selfcheck)
+set_tests_properties(test_hy_moe_simulmt_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_simulmt_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_simulmt_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_hy_moe_simulmt_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_hy_moe_simulmt_fsi_selfcheck
+    test_hy_moe_simulmt_fsi_selfcheck.cpp)
+target_compile_definitions(test_hy_moe_simulmt_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_hy_moe_simulmt_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_simulmt_fsi_selfcheck
+    COMMAND test_hy_moe_simulmt_fsi_selfcheck)
+set_tests_properties(test_hy_moe_simulmt_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_simulmt_fsi_selfcheck
+    PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_simulmt_fsi_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_hy_moe_simulmt_fsi_selfcheck
+    PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_hy_moe_simulmt_code_selfcheck
+    test_hy_moe_simulmt_code_selfcheck.cpp)
+target_compile_definitions(test_hy_moe_simulmt_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_hy_moe_simulmt_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_simulmt_code_selfcheck
+    COMMAND test_hy_moe_simulmt_code_selfcheck)
+set_tests_properties(test_hy_moe_simulmt_code_selfcheck
+    PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_simulmt_code_selfcheck
+    PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_simulmt_code_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_hy_moe_simulmt_code_selfcheck
+    PROPERTIES RESOURCE_LOCK "gpu")
+
+add_executable(test_hy_moe_simulmt_det_selfcheck
+    test_hy_moe_simulmt_det_selfcheck.cpp)
+target_compile_definitions(test_hy_moe_simulmt_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_hy_moe_simulmt_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_hy_moe_simulmt_det_selfcheck
+    COMMAND test_hy_moe_simulmt_det_selfcheck)
+set_tests_properties(test_hy_moe_simulmt_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_simulmt_det_selfcheck
+    PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_hy_moe_simulmt_det_selfcheck PROPERTIES TIMEOUT 3600)
+set_tests_properties(test_hy_moe_simulmt_det_selfcheck
+    PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── Hy-Memory-30B-A3B perf baseline (canonical 2048-token protocol) ──
 add_test(NAME test_perf_baseline_hy_memory_30b_a3b
          COMMAND test_perf_baseline "perf baseline: hy-memory-30b-a3b")
@@ -7634,6 +7739,17 @@ set_tests_properties(test_perf_baseline_hy_memory_30b_a3b PROPERTIES
     RESOURCE_LOCK "gpu"
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Hy-Memory-30B-A3B")
 set_tests_properties(test_perf_baseline_hy_memory_30b_a3b
+    PROPERTIES LABELS perf)
+
+# ── Hy-SimulMT-30B-A3B perf baseline (canonical 2048-token protocol) ──
+add_test(NAME test_perf_baseline_hy_simulmt_30b_a3b
+         COMMAND test_perf_baseline "perf baseline: hy-simulmt-30b-a3b")
+set_tests_properties(test_perf_baseline_hy_simulmt_30b_a3b PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Hy-SimulMT-30B-A3B")
+set_tests_properties(test_perf_baseline_hy_simulmt_30b_a3b
     PROPERTIES LABELS perf)
 
 add_test(NAME test_perf_baseline_flint
@@ -7655,6 +7771,18 @@ target_link_libraries(test_hy_moe_chat_framing PRIVATE lsxcommon
 add_test(NAME test_hy_moe_chat_framing COMMAND test_hy_moe_chat_framing)
 set_tests_properties(test_hy_moe_chat_framing PROPERTIES LABELS inference)
 set_tests_properties(test_hy_moe_chat_framing PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Hy-SimulMT chat-framing parity (shared renderer, SimulMT template) ──
+add_executable(test_hy_moe_simulmt_tool_framing
+    test_hy_moe_simulmt_tool_framing.cpp)
+target_compile_definitions(test_hy_moe_simulmt_tool_framing PRIVATE
+    "LSX_HY_SIMULMT_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy\"")
+target_link_libraries(test_hy_moe_simulmt_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_hy_moe_simulmt_tool_framing
+    COMMAND test_hy_moe_simulmt_tool_framing)
+set_tests_properties(test_hy_moe_simulmt_tool_framing PROPERTIES LABELS inference)
+set_tests_properties(test_hy_moe_simulmt_tool_framing PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Step-5-Preview converter stage (frozen passport + fused FP8 split) ──
 add_executable(test_step_moe_convert test_step_moe_convert.cpp)

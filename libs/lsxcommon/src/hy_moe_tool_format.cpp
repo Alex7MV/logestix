@@ -366,6 +366,13 @@ std::vector<ToolCall> ParseHyToolCallText(const std::string &text)
 bool RenderHyConversation(const ArrowTokenizerDb &tok, const ChatConversation &conv,
                           std::vector<int32_t> &out_ids)
 {
+    return RenderHyConversation(tok, conv, out_ids, HyRenderPolicy{});
+}
+
+bool RenderHyConversation(const ArrowTokenizerDb &tok, const ChatConversation &conv,
+                          std::vector<int32_t> &out_ids,
+                          const HyRenderPolicy &policy)
+{
     out_ids.clear();
     if (!HyChatSentinelsPresent(tok)) return false;
 
@@ -431,7 +438,8 @@ bool RenderHyConversation(const ArrowTokenizerDb &tok, const ChatConversation &c
         text += "{arg-value-2}";
         text += kArgValueEnd;
         text += "\n...\n";
-        text += kToolCallEnd;
+        text += policy.example_call_close_is_calls_end ? kToolCallsEnd
+                                                       : kToolCallEnd;
         text += "\n";
         text += "At the end of function call returns, you should print ";
         text += kToolCallsEnd;

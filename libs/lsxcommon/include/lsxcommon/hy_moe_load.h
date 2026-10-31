@@ -88,6 +88,15 @@ void FreeHyPinnedWeights(HyPinnedWeights &pw);
 // router/shared experts + every routed expert) from <model_path>/logestix.
 // Returns false with `error` set (including a loud failure when the expert set
 // does not fit the free VRAM — this family never silently streams).
+//
+// The passport variant lets a sibling (Hy-SimulMT) reuse this loader with ITS
+// frozen geometry and format tag instead of borrowing Hy-Memory's namespace.
+bool LoadHyDenseWeights(const std::string &model_path,
+                        const HyPassportGeometry &expect,
+                        const char *format_tag, HyPinnedWeights &pw,
+                        cudaStream_t stream, std::string &error);
+
+// Hy-Memory's frozen passport (the default for the parent model).
 bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
                         cudaStream_t stream, std::string &error);
 

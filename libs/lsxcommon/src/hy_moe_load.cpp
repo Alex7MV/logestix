@@ -170,6 +170,16 @@ HyTopology LoadHyTopology(const std::string &model_path)
     top.eos_token_id = gi("eos_token_id", -1);
     top.bos_token_id = gi("bos_token_id", -1);
     top.pad_token_id = gi("pad_token_id", -1);
+    // Every stop id (the checkpoint may declare several; Hy-SimulMT stops on
+    // both <eos> and <|hy_EOT|>). A legacy index has no array -> empty.
+    if (auto ea = root["eos_token_ids"].get_array();
+        ea.error() == simdjson::SUCCESS) {
+        for (auto e : ea.value()) {
+            int64_t v = 0;
+            if (e.get_int64().get(v) == simdjson::SUCCESS)
+                top.eos_ids.push_back(static_cast<int>(v));
+        }
+    }
 
     if (auto mt = root["mlp_layer_types"].get_array();
         mt.error() == simdjson::SUCCESS)
@@ -204,7 +214,9 @@ KvCacheGeometry HyKvGeometry(const HyTopology &top, int64_t capacity)
                                  top.num_layers);
 }
 
-bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
+bool LoadHyDenseWeights(const std::string &model_path,
+                        const HyPassportGeometry &expect,
+                        const char *format_tag, HyPinnedWeights &pw,
                         cudaStream_t stream, std::string &error)
 {
     pw.Free();
@@ -224,9 +236,9 @@ bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
     pw.top = LoadHyTopology(model_path);
     const std::string fmt = pw.top.error_msg;
     pw.top.error_msg.clear();
-    if (!fmt.empty() && fmt != frozen::kFormatTag) {
+    if (!fmt.empty() && fmt != format_tag) {
         error = absl::StrCat("unsupported index format '", fmt,
-                             "' — convert via lsxforge --hy");
+                             "' — convert via lsxforge --hy/--hy_simulmt");
         return false;
     }
     if (pw.top.num_layers <= 0) {
@@ -234,17 +246,17 @@ bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
         return false;
     }
     if (!SyntheticGeometryAllowed() &&
-        (pw.top.num_layers != frozen::kLayers ||
-         pw.top.hidden_size != frozen::kHidden ||
-         pw.top.num_experts != frozen::kNumExperts ||
-         pw.top.num_attention_heads != frozen::kHeads ||
-         pw.top.num_key_value_heads != frozen::kKvHeads ||
-         pw.top.head_dim != frozen::kHeadDim ||
-         pw.top.vocab_size != frozen::kVocab ||
-         pw.top.moe_intermediate_size != frozen::kMoeIntermediate ||
-         pw.top.dense_intermediate_size != frozen::kDenseIntermediate)) {
+        (pw.top.num_layers != expect.layers ||
+         pw.top.hidden_size != expect.hidden ||
+         pw.top.num_experts != expect.num_experts ||
+         pw.top.num_attention_heads != expect.heads ||
+         pw.top.num_key_value_heads != expect.kv_heads ||
+         pw.top.head_dim != expect.head_dim ||
+         pw.top.vocab_size != expect.vocab ||
+         pw.top.moe_intermediate_size != expect.moe_intermediate ||
+         pw.top.dense_intermediate_size != expect.dense_intermediate)) {
         error = absl::StrCat("topology mismatches frozen passport: layers ",
-                             pw.top.num_layers, "/", static_cast<int>(frozen::kLayers),
+                             pw.top.num_layers, "/", expect.layers,
                              " hidden ", pw.top.hidden_size,
                              " experts ", pw.top.num_experts);
         return false;
@@ -503,7 +515,7 @@ bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
     }
 
     // ── Routed experts: one device slab per MoE layer (all resident). ──
-    for (int l = frozen::kFirstMoeLayer; l < L; ++l) {
+    for (int l = 0; l < L; ++l) {
         auto &lw = pw.layers[static_cast<size_t>(l)];
         if (!lw.is_moe) continue;
         const fs::path dir = base / "experts" / absl::StrCat("layer_", l);
@@ -668,6 +680,37 @@ bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
         "hy loader: %d layers, %d experts/layer resident, %llu MiB",
         L, E, static_cast<unsigned long long>(bytes_acc >> 20)));
     return true;
+}
+
+namespace {
+
+HyPassportGeometry HyMemoryPassportGeometry()
+{
+    using namespace frozen;
+    return HyPassportGeometry{
+        .layers = kLayers,
+        .hidden = kHidden,
+        .heads = kHeads,
+        .kv_heads = kKvHeads,
+        .head_dim = kHeadDim,
+        .rotary_dim = kRotaryDim,
+        .vocab = kVocab,
+        .dense_intermediate = kDenseIntermediate,
+        .moe_intermediate = kMoeIntermediate,
+        .shared_intermediate = kSharedIntermediate,
+        .num_experts = kNumExperts,
+        .top_k = kTopK,
+        .first_moe_layer = kFirstMoeLayer,
+    };
+}
+
+} // namespace
+
+bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
+                        cudaStream_t stream, std::string &error)
+{
+    return LoadHyDenseWeights(model_path, HyMemoryPassportGeometry(),
+                              frozen::kFormatTag, pw, stream, error);
 }
 
 } // namespace lsxcommon::hy
