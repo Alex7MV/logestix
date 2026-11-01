@@ -13,10 +13,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#include "lsxcommon/byte_unicode.h"
 
 namespace gigachattest {
 
@@ -277,6 +281,97 @@ inline void WriteTokenizerArrows(const std::filesystem::path &pinned)
     if (mb.ok())
         lsxcommon::WriteRecordBatchToFile(*mb,
                                           pinned / "tokenizer_merges.arrow");
+}
+
+// Writes a minimal HF `tokenizer.json` (+ `tokenizer_config.json`) next to the
+// synthetic checkpoint so the converter's tokenizer stage has a real input.
+// The vocabulary is the GPT-2 byte table (ids 0..255), three real merges
+// (256..258) and the chatml-v5 control markers (259..264), i.e. exactly the
+// shape `BuildTokenizerArrowFiles` expects for a byte-level BPE checkpoint.
+inline void WriteTokenizerJson(const std::filesystem::path &dir)
+{
+    auto escape = [](const std::string &s) {
+        std::string out;
+        for (char c : s) {
+            switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04X",
+                                  static_cast<unsigned char>(c));
+                    out += buf;
+                } else {
+                    out.push_back(c);
+                }
+            }
+        }
+        return out;
+    };
+    auto key_of = [](const std::string &raw) {
+        return lsxcommon::byte_unicode::bytes_to_key(
+            reinterpret_cast<const uint8_t *>(raw.data()), raw.size());
+    };
+
+    std::ostringstream j;
+    // added_tokens must precede `model` (simdjson on-demand is forward-only).
+    j << "{\"added_tokens\":[";
+    const std::vector<std::pair<int32_t, std::string>> added = {
+        {259, "<s>"},
+        {260, "</s>"},
+        {261, "<|role_sep|>\n"},
+        {262, "<|message_sep|>\n\n"},
+        {263, "<think>"},
+        {264, "</think>"},
+    };
+    for (size_t i = 0; i < added.size(); ++i) {
+        if (i) j << ",";
+        j << "{\"id\":" << added[i].first << ",\"content\":\""
+          << escape(added[i].second) << "\",\"single_word\":false,"
+          << "\"lstrip\":false,\"rstrip\":false,\"normalized\":false,"
+          << "\"special\":true}";
+    }
+    j << "],\"normalizer\":null,\"pre_tokenizer\":{\"type\":\"Sequence\","
+         "\"pretokenizers\":[{\"type\":\"Split\",\"pattern\":{\"Regex\":\""
+         "[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?[\\\\p{Lu}\\\\p{Lt}\\\\p{Lm}\\\\p{Lo}"
+         "\\\\p{M}]*[\\\\p{Ll}\\\\p{Lm}\\\\p{Lo}\\\\p{M}]+"
+         "(?i:'s|'t|'re|'ve|'m|'ll|'d)?\"},\"behavior\":\"Removed\","
+         "\"invert\":true},{\"type\":\"ByteLevel\",\"add_prefix_space\":false,"
+         "\"trim_offsets\":true,\"use_regex\":false}]},"
+         "\"model\":{\"type\":\"BPE\",\"dropout\":null,\"unk_token\":null,"
+         "\"continuing_subword_prefix\":null,\"end_of_word_suffix\":null,"
+         "\"fuse_unk\":false,\"vocab\":{";
+    bool first = true;
+    auto emit = [&](int32_t id, const std::string &key) {
+        if (!first) j << ",";
+        first = false;
+        j << "\"" << escape(key) << "\":" << id;
+    };
+    for (int b = 0; b < 256; ++b) {
+        const char raw = static_cast<char>(b);
+        emit(b, key_of(std::string(1, raw)));
+    }
+    emit(256, key_of("th"));
+    emit(257, key_of("he"));
+    emit(258, key_of("in"));
+    j << "},\"merges\":[[\"";
+    j << escape(key_of("t")) << "\",\"" << escape(key_of("h")) << "\"],[\""
+      << escape(key_of("h")) << "\",\"" << escape(key_of("e")) << "\"],[\""
+      << escape(key_of("i")) << "\",\"" << escape(key_of("n")) << "\"]]},"
+         "\"post_processor\":null,\"decoder\":{\"type\":\"ByteLevel\","
+         "\"add_prefix_space\":true,\"trim_offsets\":true,"
+         "\"use_regex\":true}}";
+
+    std::ofstream f(dir / "tokenizer.json");
+    f << j.str();
+
+    // Names resolve the declared specials; the ids are read from the vocab.
+    std::ofstream cfg(dir / "tokenizer_config.json");
+    cfg << R"({"bos_token":"<s>","eos_token":"</s>","pad_token":"</s>"})";
 }
 
 // Real frozen-geometry full-attention layer set.

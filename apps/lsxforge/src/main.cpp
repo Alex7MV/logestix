@@ -504,6 +504,13 @@ int main(int argc, char* argv[]) {
             // tokenizer_kind 5.
             tok_policy.pretokenizer = 3;
         }
+        if (flags.gigachat) {
+            // GigaChat3.5: the Llama-3/o200k 7-alternative case-run pattern
+            // (contraction suffix, \p{N}{1,3}, CJK inside the letter runs).
+            // tokenizer_kind 3; `<s>`/`</s>`/pad resolve from
+            // tokenizer_config.json. The chat framing prepends the single BOS.
+            tok_policy.pretokenizer = 1;
+        }
         if (flags.granite) {
             // Granite-4.2: original GPT-2 ByteLevel pattern (case-sensitive
             // contractions, unbounded runs). tokenizer_kind 10.

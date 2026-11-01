@@ -6090,6 +6090,20 @@ target_include_directories(test_gigachat_moe_loader PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_loader COMMAND test_gigachat_moe_loader)
 
+add_executable(test_gigachat_moe_tokenizer_parity
+    test_gigachat_moe_tokenizer_parity.cpp)
+target_include_directories(test_gigachat_moe_tokenizer_parity PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(test_gigachat_moe_tokenizer_parity PRIVATE
+    "LSX_GIGACHAT_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/gigachat\"")
+target_link_libraries(test_gigachat_moe_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_gigachat_moe_tokenizer_parity
+         COMMAND test_gigachat_moe_tokenizer_parity)
+set_tests_properties(test_gigachat_moe_tokenizer_parity PROPERTIES LABELS fast)
+set_tests_properties(test_gigachat_moe_tokenizer_parity PROPERTIES
+    SKIP_RETURN_CODE 4)
+
 add_executable(test_gigachat_moe_model test_gigachat_moe_model.cpp)
 target_link_libraries(test_gigachat_moe_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
