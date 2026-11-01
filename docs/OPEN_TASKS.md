@@ -727,6 +727,37 @@ decisions, not yet-worth-it work.
   file, so a remove-then-rename fallback is compiled under `_WIN32`. It has
   never run on the Windows preset (this host is Linux).
 
+### S4. Shared-expert size contract is not validated
+- **Open, hardening.** `SharedExpertSchema` carries no encoding tag. Measured
+  reality: DeepSeek-V4-Pro/V4-Flash store shared experts as raw F8_E4M3 with
+  E8M0 128x128 tile scales (32 768 elements/scale), the NVFP4 families as
+  per-16 E4M3. The schema-level check was removed on 2026-11-01 because it
+  rejected the real trees; only offsets/ranges/global-scale are validated.
+  A truncated shared-expert payload is therefore caught late (or not at all).
+- **Fix shape:** write the shared-expert encoding/block into
+  `model.index.json` (e.g. `"shared_expert": {"encoding": "nvfp4", "scale_block": 16}`
+  or `{"encoding": "fp8_e8m0_tile", "tile": 128}`) and have
+  `load_shared_experts_metadata` / `LoadSharedExpertBatchViews` enforce it.
+
+### S5. Routed-expert proportional truncation
+- **Open, hardening.** `ExpertSchema` has no `shape`, so
+  `CheckExpertScaleCount` infers `numel = packed*2` from the payload itself.
+  It rejects an inconsistent truncation (packed and scales disagree) but not a
+  *proportional* one (both halved). The loader knows the frozen geometry
+  (`I`/`H` per family) and could cross-check `packed_bytes == ceil(I*H/2)`.
+- **Fix shape:** per-family geometry check in the loader (no format change), or
+  store the logical shape in the expert record (format change).
+
+### S6. Full-vault audit is manual
+- **Open, tooling.** `test_arrow_tree_integrity` skips without
+  `LSX_ARROW_AUDIT_ROOT` (a SKIP is not a pass), and the exhaustive
+  `LSX_ARROW_AUDIT_FULL=1` run (29 trees, ~4 TB, 783 s) exceeds the `convert`
+  label's 600 s cap, so it cannot live in CTest as-is. `lsxforge --verify` runs
+  the same verifier but is a manual post-conversion step.
+- **Fix shape:** a nightly/job that mounts the vault and runs the full verifier,
+  plus wiring `--verify` into the conversion wrapper so a converted tree is
+  never published unverified.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -734,7 +765,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
-| 2026-11-01 | Arrow IPC audit closed; glm-5.3-flash arena re-tried and rejected on measurement | Full audit of every converted model's Arrow path: owning `UnpackBatch`/`DecodeEntry` validation (SIGSEGV on a foreign shared-scale list), view payload/size checks, atomic artifact writes, zero-copy write path (`MakeBatchView`, reserved builders), gemma views, shared verifier + `lsxforge --verify`. Exhaustive `LSX_ARROW_AUDIT_FULL=1`: 29 trees / 310 158 files / 0 problems / 783 s — the full run caught that DeepSeek shared experts are raw F8_E4M3 with E8M0 128x128 tiles, not NVFP4/16 (per-16 kept for routed only). Converted the three missing trees (Qwen3.5-35B-A3B 217 s/19 GB, DeepSeek-V4.1-Flash 228 s/294 GB, DeepSeek-V4-Flash 124 s/157 GB), all verified. glm-5.3-flash neutral-store trial on real weights: SelfCheck/FSI/CODE/DET green, but 4.10 t/s at 4096 slots (57 GB) and 7.23 t/s with all 12 096 mapped (156 GB) against the arena's 12.79 t/s (171 GB) — pageable-mmap H2D; reverted, arena retained. Residuals moved to S1-S3 — [`open-tasks/2026-11-01-arrow-audit-and-arena-decision.md`](open-tasks/2026-11-01-arrow-audit-and-arena-decision.md) |
+| 2026-11-01 | Arrow IPC audit closed; glm-5.3-flash arena re-tried and rejected on measurement | Full audit of every converted model's Arrow path: owning `UnpackBatch`/`DecodeEntry` validation (SIGSEGV on a foreign shared-scale list), view payload/size checks, atomic artifact writes, zero-copy write path (`MakeBatchView`, reserved builders), gemma views, shared verifier + `lsxforge --verify`. Exhaustive `LSX_ARROW_AUDIT_FULL=1`: 29 trees / 310 158 files / 0 problems / 783 s — the full run caught that DeepSeek shared experts are raw F8_E4M3 with E8M0 128x128 tiles, not NVFP4/16 (per-16 kept for routed only). Converted the three missing trees (Qwen3.5-35B-A3B 217 s/19 GB, DeepSeek-V4.1-Flash 228 s/294 GB, DeepSeek-V4-Flash 124 s/157 GB), all verified. glm-5.3-flash neutral-store trial on real weights: SelfCheck/FSI/CODE/DET green, but 4.10 t/s at 4096 slots (57 GB) and 7.23 t/s with all 12 096 mapped (156 GB) against the arena's 12.79 t/s (171 GB) — pageable-mmap H2D; reverted, arena retained. Residuals moved to S1-S6 — [`open-tasks/2026-11-01-arrow-audit-and-arena-decision.md`](open-tasks/2026-11-01-arrow-audit-and-arena-decision.md) |
 | 2026-10-31 | MiniMax-M3.1-Flash (428B/23B active) ingested as a **sibling** of minimax-m3 | New passport `minimax_moe_flash_constants.h` (theta 1e7, MSA on every layer, no MTP), shared converter with an MXFP8-dense + ModelOpt-NVFP4-expert source path (experts verbatim, divisor global scale inverted; dense E8M0 tile fed to the neutral quantizer), `lsxforge --minimax_flash`, model class `minimax-m3.1-flash`, and a `MinimaxRenderPolicy` for the M3.1 template (adaptive thinking, `<model_id>8bb8149fe</model_id>`, developer blocks, batched tool results). The parent loader/kernels/pipeline are reused; the loader now derives the dispatch boundaries and every member cross-checks them + the RoPE theta against its passport. Real conversion 236 GB -> 227 GB in ~6 min; 10.5 GiB pinned + 607 expert slots. All gates green on real weights, serial: SelfCheck PASS x3 bit-exact, FSI 3/3, CODE 3/3, DET 3/3 (template-derived goldens: the 428B QAT source has no 32 GB execution path), tool round-trip green. Perf re-seeded by the harness: **6.23/6.18 t/s** (perf/r3) at 2048 tokens, TTFT 48.8/49.2 s — [`open-tasks/2026-10-31-minimax-m31-flash-ingest.md`](open-tasks/2026-10-31-minimax-m31-flash-ingest.md) |
 | 2026-10-24 | gemma-4-26b-a4b-it FSI/CODE closed: two defects, one recipe | §J resolved. **(a)** The NVFP4 logits kernel dropped the tied table's per-tensor global scale, so every logit was 7.01x hot and the soft cap saturated — greedy hid it (argmax is scale-invariant), the logit row/temperature semantics did not; pinned by a `gs = 0.25` CPU-table case (the latency test passed `gs = 1`, which is how it shipped). **(b)** The remaining flips were accumulated 4-bit body error on template near-ties: engine vs source cos 0.9992 after L0 and 0.960-0.965 at L29, identical router top-8, head error only ~1 logit while the body owned 3.46 rms — so FP16 edges were the wrong lever. Recipe ablation (validated: all-q4 reproduced the engine's flips): attn+MLP at 8 bits with the **routed experts still 4-bit** clears every flip, i.e. a second NVFP4 plane (`<name>.res`, `acc=true`) on attention + dense MLP only. All four gates now green (SelfCheck, FSI/CODE/DET 3/3), 15 GiB tree; throughput re-seeded by the harness with power/TTFT evidence 156.7/156.5 -> **128.25/128.34** t/s (the doubled attn+MLP read). The dense 31B sibling stays red on FSI-01: the same recipe does not transfer and no partial placement fits (§R) — [`open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md`](open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md) |
 | 2026-10-24 | phi-4 DET-TEST-02 closed: 4-bit body + residual plane + FP16 edges | The gate was a genuine 1.1-logit near-tie (source `C` 30.75 / `CR` 29.625), and the flip was **not** the quantizer being bad: our NVFP4 reconstructs weights as well as NF4 (relL2 9.5% vs 9.1%) and, with FP16 edges, matches it on perplexity (13.88 vs 13.85, source 13.48), top-1 and a 35-prompt near-tie battery (7/9 each). A per-layer ablation showed the error is spread over all 40 layers, so no high-precision subset helps; a BF16 LM head alone still answered `CR` by 0.34. Fix: every projection carries a **second NVFP4 plane with the residual** (decoded with `acc=true`, same codec/schema/kernels) and `embed_tokens`/`lm_head` stay FP16 — effective ~8-bit weights at 2x the read. All four parity gates green (Paris ×3 bit-exact, FSI/CODE/DET 3/3), 16.6 GiB resident, 71 t/s at 2048 tokens. Also fixed the VRAM profile (it ignored the residual plane) and re-seeded the perf rows 130.91/130.31 -> 71.06/71.16 with the harness's own evidence — [`open-tasks/2026-10-24-phi-4-perf-mode-closed.md`](open-tasks/2026-10-24-phi-4-perf-mode-closed.md) |
