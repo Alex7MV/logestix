@@ -46,10 +46,6 @@ namespace {
 arrow::Result<std::shared_ptr<arrow::Array>>
 make_scales_u8(const std::vector<uint8_t> &scales, arrow::MemoryPool *pool)
 {
-    arrow::UInt8Builder ub(pool);
-    ARROW_RETURN_NOT_OK(ub.Reserve(scales.size()));
-    ARROW_RETURN_NOT_OK(ub.AppendValues(scales.data(), scales.size()));
-    ARROW_ASSIGN_OR_RAISE(auto flat, ub.Finish());
     auto lb_val = std::make_shared<arrow::UInt8Builder>(pool);
     arrow::ListBuilder lb(pool, lb_val);
     ARROW_RETURN_NOT_OK(lb.Reserve(1));
@@ -125,7 +121,8 @@ ExpertSchema::MakeBatch(const PackedExpert &expert, arrow::MemoryPool *pool)
 }
 
 arrow::Result<PackedExpert>
-ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
+ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch,
+                          int32_t scale_block)
 {
     if (!batch || batch->num_columns() != kNumFields)
         return arrow::Status::Invalid("Expected 9-column expert RecordBatch");
@@ -209,9 +206,10 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     // payload is present and every global scale is finite and positive.
     // An all-empty payload encodes an inactive expert slot (GLM writes
     // all-inactive defaults); a half-empty one is malformed.
-    const auto check_expert = [](const std::vector<uint8_t> &packed,
-                                 const std::vector<uint8_t> &scales,
-                                 float gs, const char *what) -> arrow::Status {
+    const auto check_expert = [scale_block](const std::vector<uint8_t> &packed,
+                                            const std::vector<uint8_t> &scales,
+                                            float gs,
+                                            const char *what) -> arrow::Status {
         if (packed.empty() != scales.empty())
             return arrow::Status::Invalid(
                 "expert ", what, " has a partial payload (packed=",
@@ -221,6 +219,10 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
         if (!std::isfinite(gs) || gs <= 0.0f)
             return arrow::Status::Invalid(
                 "expert ", what, " has an invalid global_scale ", gs);
+        if (scale_block > 0)
+            return arrow_check::CheckExpertScaleCount(
+                static_cast<int64_t>(packed.size()),
+                static_cast<int64_t>(scales.size()), scale_block, what);
         return arrow::Status::OK();
     };
     ARROW_RETURN_NOT_OK(check_expert(pe.w1_packed, pe.w1_scales,
@@ -231,6 +233,50 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
                                      pe.w3_global_scale, "w3"));
 
     return pe;
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+ExpertSchema::MakeBatchView(const PackedExpert &expert, arrow::MemoryPool *pool)
+{
+    auto schema = Make();
+    arrow::MemoryPool *mp = pool ? pool : arrow::default_memory_pool();
+
+    // LargeBinaryArray arrow data: {validity, offsets, values}. The values
+    // buffer wraps the caller's vector, so nothing is copied here.
+    auto wrap_binary = [](const std::vector<uint8_t> &bytes)
+        -> arrow::Result<std::shared_ptr<arrow::Array>> {
+        const int64_t size = static_cast<int64_t>(bytes.size());
+        const int64_t offsets[2] = {0, size};
+        auto off = arrow::Buffer::FromString(
+            std::string(reinterpret_cast<const char *>(offsets),
+                        sizeof(offsets)));
+        auto vals = arrow::Buffer::Wrap(bytes);
+        return arrow::MakeArray(arrow::ArrayData::Make(
+            arrow::large_binary(), 1, {nullptr, off, vals},
+            /*child_data=*/{}));
+    };
+    auto make_gs = [mp](float val)
+        -> arrow::Result<std::shared_ptr<arrow::Array>> {
+        arrow::FloatBuilder fb(mp);
+        ARROW_RETURN_NOT_OK(fb.Reserve(1));
+        ARROW_RETURN_NOT_OK(fb.Append(val));
+        return fb.Finish();
+    };
+
+    ARROW_ASSIGN_OR_RAISE(auto w1_arr, wrap_binary(expert.w1_packed));
+    ARROW_ASSIGN_OR_RAISE(auto w2_arr, wrap_binary(expert.w2_packed));
+    ARROW_ASSIGN_OR_RAISE(auto w3_arr, wrap_binary(expert.w3_packed));
+    ARROW_ASSIGN_OR_RAISE(auto s1, make_scales_u8(expert.w1_scales, mp));
+    ARROW_ASSIGN_OR_RAISE(auto s2, make_scales_u8(expert.w2_scales, mp));
+    ARROW_ASSIGN_OR_RAISE(auto s3, make_scales_u8(expert.w3_scales, mp));
+    ARROW_ASSIGN_OR_RAISE(auto gs1, make_gs(expert.w1_global_scale));
+    ARROW_ASSIGN_OR_RAISE(auto gs2, make_gs(expert.w2_global_scale));
+    ARROW_ASSIGN_OR_RAISE(auto gs3, make_gs(expert.w3_global_scale));
+
+    auto batch = arrow::RecordBatch::Make(schema, 1,
+        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs1, gs2, gs3});
+    diag::ValidateBatchBuffers(*batch, "ExpertSchema::MakeBatchView result");
+    return batch;
 }
 
 // ── SharedExpertSchema ───────────────────────────────────────────────────────
@@ -396,6 +442,18 @@ SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch
         ARROW_RETURN_NOT_OK(extract_scales(s1.get(), i, e.w1_scales));
         ARROW_RETURN_NOT_OK(extract_scales(s2.get(), i, e.w2_scales));
         ARROW_RETURN_NOT_OK(extract_scales(s3.get(), i, e.w3_scales));
+        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
+            static_cast<int64_t>(e.w1_packed.size()),
+            static_cast<int64_t>(e.w1_scales.size()), kNVFP4BlockSize,
+            "shared_experts.w1[" + std::to_string(i) + "]"));
+        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
+            static_cast<int64_t>(e.w2_packed.size()),
+            static_cast<int64_t>(e.w2_scales.size()), kNVFP4BlockSize,
+            "shared_experts.w2[" + std::to_string(i) + "]"));
+        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
+            static_cast<int64_t>(e.w3_packed.size()),
+            static_cast<int64_t>(e.w3_scales.size()), kNVFP4BlockSize,
+            "shared_experts.w3[" + std::to_string(i) + "]"));
         e.w1_global_scale = gs1->Value(i);
         e.w2_global_scale = gs2->Value(i);
         e.w3_global_scale = gs3->Value(i);
@@ -946,7 +1004,8 @@ arrow::Status WriteRecordBatchToFile(
 }
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-ReadRecordBatchFromFile(const std::filesystem::path &path)
+ReadRecordBatchFromFile(const std::filesystem::path &path,
+                        int expected_columns)
 {
     ARROW_ASSIGN_OR_RAISE(auto infile,
         arrow::io::MemoryMappedFile::Open(path.string(),
@@ -956,6 +1015,13 @@ ReadRecordBatchFromFile(const std::filesystem::path &path)
     if (reader->num_record_batches() == 0)
         return arrow::Status::Invalid("No record batches in ", path.string());
     ARROW_ASSIGN_OR_RAISE(auto batch, reader->ReadRecordBatch(0));
+    if (batch->num_rows() <= 0)
+        return arrow::Status::Invalid(
+            "artifact has no rows: ", path.string());
+    if (expected_columns > 0 && batch->num_columns() != expected_columns)
+        return arrow::Status::Invalid(
+            "artifact ", path.string(), " has ", batch->num_columns(),
+            " columns, expected ", expected_columns);
     diag::ValidateBatchBuffers(*batch, ("Read " + path.filename().string()).c_str());
     return batch;
 }
@@ -1273,6 +1339,12 @@ LoadSharedExpertBatchViews(const std::filesystem::path &path)
         ARROW_RETURN_NOT_OK(CheckViewRange(
             v.w3_scales, v.w3_scale_bytes, u3->data()->buffers[1], "w3 scales",
             name));
+        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
+            v.w1_packed_bytes, v.w1_scale_bytes, kNVFP4BlockSize, name));
+        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
+            v.w2_packed_bytes, v.w2_scale_bytes, kNVFP4BlockSize, name));
+        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
+            v.w3_packed_bytes, v.w3_scale_bytes, kNVFP4BlockSize, name));
         v.w1_global_scale = gs1->Value(i);
         v.w2_global_scale = gs2->Value(i);
         v.w3_global_scale = gs3->Value(i);

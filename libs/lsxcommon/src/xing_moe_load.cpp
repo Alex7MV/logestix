@@ -501,7 +501,7 @@ cudaError_t LoadXingWeights(const std::string &model_path,
             if (!batch.ok())
                 return fail("read failed: " + path.string(),
                             cudaErrorInvalidValue);
-            auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch);
+            auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch, kNVFP4BlockSize);
             if (!pe.ok())
                 return fail("unpack failed: " + path.string(),
                             cudaErrorInvalidValue);

@@ -571,7 +571,7 @@ cudaError_t LoadGlmExpertTables(const std::string &model_path,
             if (!fs::exists(p)) continue;
             auto batch_res = ReadRecordBatchFromFile(p);
             if (!batch_res.ok()) continue;
-            auto pe_res = ExpertSchema::UnpackBatch(*batch_res);
+            auto pe_res = ExpertSchema::UnpackBatch(*batch_res, kNVFP4BlockSize);
             if (!pe_res.ok()) continue;
             const PackedExpert &pe = *pe_res;
             if (pe.w1_packed.empty() || pe.w2_packed.empty() ||

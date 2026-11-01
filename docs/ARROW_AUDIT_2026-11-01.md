@@ -193,6 +193,32 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
 устраняется ~0.8 ТБ host-memcpy; для много-записных layer-файлов пик RSS записи
 падает с ~2S до ~S. Формат на диске и путь чтения не меняются.
 
+## 3c. Точная проверка экспертов и zero-copy запись (третья итерация)
+
+- **Единый блочный контракт измерен, а не предположен**: все 19 деревьев с
+  глубокой выборкой экспертов дают `block=16` (включая DeepSeek-V4-Pro).
+  Поэтому `CheckExpertScaleCount` (один E4M3 на 16 элементов) применяется:
+  в `ExpertStore::DecodeEntry` (по умолчанию 16), в `SharedExpertSchema` и
+  `LoadSharedExpertBatchViews` (16), в `shared_experts.cu` (16) и в
+  `ExpertSchema::UnpackBatch(batch, scale_block)` — параметр опционален:
+  конвертеры/`deepseek_moe_repack` читают pre-repack источники (block 32) без
+  проверки, все загрузчики converted-деревьев передают 16.
+  Реальные деревья и 13 loader-тестов зелёные; усечённый, но валидный по
+  offsets эксперт теперь отвергается.
+- **`ReadRecordBatchFromFile(path, expected_columns=0)`**: нулевое число строк
+  и неверная ширина отвергаются сразу, а не как позднее «unpack failed».
+- **`ExpertSchema::MakeBatchView`**: zero-copy вариант батча — весовые колонки
+  оборачивают векторы `PackedExpert` (`Buffer::Wrap`), копируются только
+  scales/offsets/gs. Используется в `SaveExpertToArrow`,
+  Mistral/MiniMax/Qwen3.8-Flash-Next конвертерах; контракт времени жизни
+  задокументирован (батч живёт, пока жив источник). Бюджет: при 20 МиБ
+  payload пик пула ≤ 4 МиБ (было 20 МиБ), т.е. writer — единственная копия.
+- **Убрана мёртвая копия в `make_scales_u8`** (строитель `ub` нигде не
+  использовался).
+- **Страж `ensure_alignment`**: `test_arrow_usage_guard` запрещает выставлять
+  `IpcReadOptions::ensure_alignment`/`Alignment::k{8,32,64}Byte` — это
+  заставило бы Arrow копировать буферы и уничтожило zero-copy.
+
 ## 4. Легаси-долг (не мигрирован в этой ветке)
 
 `docs/OPEN_TASKS.md` + `ingesting-a-model` R1/R2 уже фиксируют паттерн
@@ -233,8 +259,8 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
 
 | target | label | что проверяет |
 |---|---|---|
-| `test_arrow_validation` | fast | 28 кейсов: валидаторы, битые owning-batch'и (0/2 строки, offsets, тип, усечение), view-загрузчики, `.packed`/`.scales`, атомарная запись, `DecodeEntry`, бюджеты аллокаций записи |
-| `test_arrow_usage_guard` | fast | R-A1 (нет `ReadableFile`), allowlist `MemoryMappedFile::Open`, таблица вердиктов `UnpackBatch`, отсутствие `MakeFileWriter` вне `schema.cpp`, матрица 29 моделей и существование TU |
+| `test_arrow_validation` | fast | 34 кейса: валидаторы, битые owning-batch'и (0/2 строки, offsets, тип, усечение), view-загрузчики, `.packed`/`.scales`, атомарная запись, `DecodeEntry`, бюджеты аллокаций записи |
+| `test_arrow_usage_guard` | fast | R-A1 (нет `ReadableFile`), allowlist `MemoryMappedFile::Open`, таблица вердиктов `UnpackBatch`, отсутствие `MakeFileWriter` вне `schema.cpp`, матрица 29 моделей, запрет `ensure_alignment` |
 | `test_arrow_tree_integrity` | convert (SKIP 4, TIMEOUT 1800) | все `.arrow` 26 деревьев: footer/схема + глубокая выборка |
 
 ## 6a. Прогоны

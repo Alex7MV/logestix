@@ -100,6 +100,7 @@ struct TreeStats {
     int64_t deep_bytes = 0;
     int64_t budget_skips = 0;
     std::map<Kind, int64_t> kinds;
+    std::map<int64_t, int64_t> block_hist;   // implied elems-per-scale
     std::vector<std::string> problems;
 };
 
@@ -158,7 +159,8 @@ arrow::Status ValidateScaleColumn(const arrow::RecordBatch &batch, int col,
     return arrow::Status::OK();
 }
 
-arrow::Status ValidateKind(Kind kind, const arrow::RecordBatch &batch)
+arrow::Status ValidateKind(Kind kind, const arrow::RecordBatch &batch,
+                           std::map<int64_t, int64_t> *block_hist)
 {
     if (batch.num_rows() <= 0)
         return arrow::Status::Invalid("batch has no rows");
@@ -172,6 +174,35 @@ arrow::Status ValidateKind(Kind kind, const arrow::RecordBatch &batch)
         for (int col : {3, 4, 5})
             ARROW_RETURN_NOT_OK(
                 ValidateScaleColumn(batch, col, "expert scale"));
+        // Exact converted-tree contract: one E4M3 scale per 16 elements.
+        {
+            auto bin = [&](int col) {
+                return std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+                    batch.column(col));
+            };
+            auto scales = [&](int col) {
+                return std::dynamic_pointer_cast<arrow::ListArray>(
+                    batch.column(col));
+            };
+            for (int w = 0; w < 3; ++w) {
+                auto b = bin(w);
+                auto l = scales(w + 3);
+                if (!b || !l)
+                    return arrow::Status::TypeError(
+                        "expert payload/scale column type mismatch");
+                auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(
+                    l->offsets());
+                if (!offs)
+                    return arrow::Status::TypeError(
+                        "expert scale offsets not int32");
+                for (int64_t i = 0; i < batch.num_rows(); ++i)
+                    ARROW_RETURN_NOT_OK(av::CheckExpertScaleCount(
+                        static_cast<int64_t>(b->GetView(i).size()),
+                        offs->Value(i + 1) - offs->Value(i), 16,
+                        std::string("expert[w") + std::to_string(w + 1) +
+                            "][" + std::to_string(i) + "]"));
+            }
+        }
         auto gs = batch.column(6);
         for (int col : {6, 7, 8}) {
             auto f = std::dynamic_pointer_cast<arrow::FloatArray>(
@@ -183,6 +214,22 @@ arrow::Status ValidateKind(Kind kind, const arrow::RecordBatch &batch)
                 if (!std::isfinite(f->Value(i)) || f->Value(i) <= 0.0f)
                     return arrow::Status::Invalid(
                         "expert has an invalid global_scale ", f->Value(i));
+        }
+        if (block_hist) {
+            for (int64_t i = 0; i < batch.num_rows(); ++i) {
+                auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+                    batch.column(0));
+                auto lst = std::dynamic_pointer_cast<arrow::ListArray>(
+                    batch.column(3));
+                if (!bin || !lst) continue;
+                const int64_t packed = static_cast<int64_t>(bin->GetView(i).size());
+                auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
+                auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
+                if (!u8 || !offs) continue;
+                const int64_t scales = offs->Value(i + 1) - offs->Value(i);
+                if (packed > 0 && scales > 0)
+                    (*block_hist)[(packed * 2 + scales - 1) / scales] += 1;
+            }
         }
         (void)gs;
         return arrow::Status::OK();
@@ -395,7 +442,7 @@ void ValidateTree(const fs::path &root, TreeStats &st, bool full,
             Problem(st, rel + ": read failed: " + batch.status().ToString());
             continue;
         }
-        const auto vst = ValidateKind(effective, **batch);
+        const auto vst = ValidateKind(effective, **batch, &st.block_hist);
         if (!vst.ok())
             Problem(st, rel + ": " + vst.ToString());
         ++st.deep;
@@ -461,6 +508,16 @@ TEST_CASE("Every converted model tree has a valid Arrow IPC layout",
                 << " problems=" << st.problems.size();
         for (const auto &[kind, n] : st.kinds)
             summary << " " << KindName(kind) << "=" << n;
+        if (!st.block_hist.empty()) {
+            summary << " block={";
+            bool first = true;
+            for (const auto &[b, n] : st.block_hist) {
+                if (!first) summary << ",";
+                first = false;
+                summary << b << ":" << n;
+            }
+            summary << "}";
+        }
         summary << "\n";
         if (!st.problems.empty()) {
             ++failures;

@@ -615,7 +615,7 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
             base / "experts" / absl::StrCat("layer_", layer);
         fs::create_directories(dir, ec);
         ARROW_RETURN_NOT_OK(
-            WriteBatchOr(ExpertSchema::MakeBatch(pe),
+            WriteBatchOr(ExpertSchema::MakeBatchView(pe),
                          dir / absl::StrCat("exp_", expert, ".arrow")));
         ++total_experts;
     }

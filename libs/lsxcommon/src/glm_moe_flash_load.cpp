@@ -824,7 +824,7 @@ bool LoadGlmFlashExpertStore(const std::string &model_path,
                 error = absl::StrCat("read failed: ", path);
                 return false;
             }
-            auto pe_res = ExpertSchema::UnpackBatch(*batch_res);
+            auto pe_res = ExpertSchema::UnpackBatch(*batch_res, kNVFP4BlockSize);
             if (!pe_res.ok()) {
                 error = absl::StrCat("unpack failed: ", path);
                 return false;

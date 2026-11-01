@@ -71,7 +71,7 @@ std::vector<lsxcommon::PackedExpert> SampleSharedExperts()
         e.w2_packed.assign({5, 6, 7, 8});
         e.w3_packed.assign({9, 10, 11, 12});
         e.w1_scales.assign({100});
-        e.w2_scales.assign({101, 102});
+        e.w2_scales.assign({101});
         e.w3_scales.assign({103});
         e.w1_global_scale = 0.5f + static_cast<float>(l);
         e.w2_global_scale = 0.25f;

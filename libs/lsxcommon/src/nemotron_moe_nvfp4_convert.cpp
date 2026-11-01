@@ -538,7 +538,7 @@ arrow::Result<PackedExpert> ReadDenseNvfp4Records(const std::string &path)
 {
     auto batch = ReadRecordBatchFromFile(path);
     if (!batch.ok()) return batch.status();
-    return ExpertSchema::UnpackBatch(*batch);
+    return ExpertSchema::UnpackBatch(*batch, kNVFP4BlockSize);
 }
 
 arrow::Status ConvertNemotronNvfp4Model(const std::string &input_dir,

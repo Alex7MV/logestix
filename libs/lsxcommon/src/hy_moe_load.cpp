@@ -539,7 +539,7 @@ bool LoadHyDenseWeights(const std::string &model_path,
                 pw.Free();
                 return false;
             }
-            auto pe = ExpertSchema::UnpackBatch(*batch);
+            auto pe = ExpertSchema::UnpackBatch(*batch, kNVFP4BlockSize);
             if (!pe.ok()) {
                 error = "unpack failed: " + path.string();
                 pw.Free();

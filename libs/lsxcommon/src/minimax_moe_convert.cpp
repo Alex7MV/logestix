@@ -148,7 +148,7 @@ arrow::Status WriteExpertFile(const std::filesystem::path &base_dir, int layer,
     fs::path dir = base_dir / "experts" / absl::StrCat("layer_", layer);
     std::error_code ec;
     fs::create_directories(dir, ec);
-    auto batch = ExpertSchema::MakeBatch(pe);
+    auto batch = ExpertSchema::MakeBatchView(pe);
     if (!batch.ok()) return batch.status();
     return WriteRecordBatchToFile(*batch,
                                   dir / absl::StrCat("exp_", expert, ".arrow"));

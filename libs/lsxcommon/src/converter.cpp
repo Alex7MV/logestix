@@ -529,7 +529,7 @@ arrow::Status SaveExpertToArrow(
     auto out_path = layer_dir /
         absl::StrCat("exp_", expert_idx, ".arrow");
 
-    ARROW_ASSIGN_OR_RAISE(auto batch, ExpertSchema::MakeBatch(expert));
+    ARROW_ASSIGN_OR_RAISE(auto batch, ExpertSchema::MakeBatchView(expert));
     diag::ValidateBatchBuffers(*batch, "SaveExpertToArrow pre-write");
     ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, out_path));
 

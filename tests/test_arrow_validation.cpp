@@ -204,9 +204,9 @@ lc::PackedExpert SampleExpert()
     pe.w1_packed.assign(8, 0x11u);
     pe.w2_packed.assign(8, 0x22u);
     pe.w3_packed.assign(8, 0x33u);
-    pe.w1_scales.assign(4, 0x81u);
-    pe.w2_scales.assign(4, 0x82u);
-    pe.w3_scales.assign(4, 0x83u);
+    pe.w1_scales.assign(1, 0x81u);
+    pe.w2_scales.assign(1, 0x82u);
+    pe.w3_scales.assign(1, 0x83u);
     pe.w1_global_scale = 0.5f;
     pe.w2_global_scale = 0.25f;
     pe.w3_global_scale = 0.125f;
@@ -832,4 +832,188 @@ TEST_CASE("SharedExpertSchema::MakeBatch reserves all payload buffers",
     CHECK(pool.num_growing_reallocations() == 0);
     CHECK(pool.peak() <= payload + kMiB);
     CHECK(pool.bytes_allocated() <= payload + kMiB);
+}
+
+// ── Exact routed-expert scale count (measured: every converted tree is
+//    per-16 across packs) ────────────────────────────────────────────────
+
+TEST_CASE("CheckExpertScaleCount enforces one scale per NVFP4 block",
+          "[arrow][expert][scale]")
+{
+    CHECK(av::CheckExpertScaleCount(16, 2, 16, "w").ok());   // 32 elems
+    CHECK_FALSE(av::CheckExpertScaleCount(16, 1, 16, "w").ok());
+    CHECK_FALSE(av::CheckExpertScaleCount(16, 3, 16, "w").ok());
+    CHECK(av::CheckExpertScaleCount(16, 1, 32, "w").ok());   // pre-repack
+    CHECK(av::CheckExpertScaleCount(9, 2, 16, "w").ok());    // odd tail (17)
+    CHECK(av::CheckExpertScaleCount(0, 0, 16, "w").ok());    // inactive slot
+    CHECK_FALSE(av::CheckExpertScaleCount(16, 0, 16, "w").ok());
+    CHECK_FALSE(av::CheckExpertScaleCount(0, 1, 16, "w").ok());
+    CHECK_FALSE(av::CheckExpertScaleCount(16, 2, 0, "w").ok());
+}
+
+TEST_CASE("ExpertSchema::UnpackBatch checks the scale count when asked",
+          "[arrow][expert][scale]")
+{
+    lc::PackedExpert e;
+    e.w1_packed.assign(16, 0x11u);   // 32 elements
+    e.w2_packed.assign(16, 0x22u);
+    e.w3_packed.assign(16, 0x33u);
+    e.w1_scales.assign(1, 0x81u);    // 32 / 32: a pre-repack (block-32) record
+    e.w2_scales.assign(1, 0x82u);
+    e.w3_scales.assign(1, 0x83u);
+    e.w1_global_scale = e.w2_global_scale = e.w3_global_scale = 1.0f;
+    auto batch = lc::ExpertSchema::MakeBatch(e);
+    REQUIRE(batch.ok());
+
+    // Default keeps legacy/pre-repack layouts readable.
+    CHECK(lc::ExpertSchema::UnpackBatch(*batch).ok());
+    CHECK_FALSE(lc::ExpertSchema::UnpackBatch(*batch, 16).ok());
+    CHECK(lc::ExpertSchema::UnpackBatch(*batch, 32).ok());
+}
+
+TEST_CASE("ExpertStore::DecodeEntry enforces the converted-tree block size",
+          "[arrow][expert][scale][store]")
+{
+    lc::PackedExpert e;
+    e.w1_packed.assign(16, 0x11u);
+    e.w2_packed.assign(16, 0x22u);
+    e.w3_packed.assign(16, 0x33u);
+    e.w1_scales.assign(2, 0x81u);    // block 16
+    e.w2_scales.assign(2, 0x82u);
+    e.w3_scales.assign(2, 0x83u);
+    e.w1_global_scale = e.w2_global_scale = e.w3_global_scale = 1.0f;
+    auto batch = lc::ExpertSchema::MakeBatch(e);
+    REQUIRE(batch.ok());
+
+    ProbeEntry entry;
+    CHECK(ProbeStore::DecodeEntry(*batch, entry).ok());
+    CHECK(entry.w1_bytes == 16);
+
+    auto bad = e;
+    bad.w2_scales.assign(1, 0x82u);
+    auto bad_batch = lc::ExpertSchema::MakeBatch(bad);
+    REQUIRE(bad_batch.ok());
+    ProbeEntry bad_entry;
+    CHECK_FALSE(ProbeStore::DecodeEntry(*bad_batch, bad_entry).ok());
+}
+
+TEST_CASE("Shared-expert readers enforce the per-16 scale count",
+          "[arrow][expert][scale][shared]")
+{
+    lc::PackedExpert e;
+    e.w1_packed.assign(16, 0x11u);
+    e.w2_packed.assign(16, 0x22u);
+    e.w3_packed.assign(16, 0x33u);
+    e.w1_scales.assign(2, 0x81u);   // 32 elems / 16
+    e.w2_scales.assign(2, 0x82u);
+    e.w3_scales.assign(2, 0x83u);
+    e.w1_global_scale = e.w2_global_scale = e.w3_global_scale = 1.0f;
+
+    auto valid = lc::SharedExpertSchema::MakeBatch({e});
+    REQUIRE(valid.ok());
+    const auto dir = TempDir("shared_scale");
+    const auto good_path = dir / "good.arrow";
+    REQUIRE(lc::WriteRecordBatchToFile(*valid, good_path).ok());
+    {
+        auto views = lc::LoadSharedExpertBatchViews(good_path);
+        CHECK(views.ok());
+    }
+
+    // The metadata loader reads the same artifact.
+    {
+        auto mmap = arrow::io::MemoryMappedFile::Open(
+            good_path.string(), arrow::io::FileMode::READ);
+        REQUIRE(mmap.ok());
+        lc::gpu::SharedExpertDb db;
+        CHECK(lc::gpu::load_shared_experts_metadata(*mmap, db).ok());
+    }
+
+    e.w2_scales.assign(1, 0x82u);   // 32 elems with one scale: block 32
+    auto bad = lc::SharedExpertSchema::MakeBatch({e});
+    REQUIRE(bad.ok());
+    const auto bad_path = dir / "bad.arrow";
+    REQUIRE(lc::WriteRecordBatchToFile(*bad, bad_path).ok());
+    CHECK_FALSE(lc::LoadSharedExpertBatchViews(bad_path).ok());
+    {
+        auto mmap = arrow::io::MemoryMappedFile::Open(
+            bad_path.string(), arrow::io::FileMode::READ);
+        REQUIRE(mmap.ok());
+        lc::gpu::SharedExpertDb db;
+        CHECK_FALSE(lc::gpu::load_shared_experts_metadata(*mmap, db).ok());
+    }
+    fs::remove_all(dir);
+}
+
+// ── ReadRecordBatchFromFile: fail early on an empty/foreign artifact ───────
+
+TEST_CASE("ReadRecordBatchFromFile rejects an empty or wrong-width batch",
+          "[arrow][read][schema]")
+{
+    const auto dir = TempDir("read_batch");
+    lc::TensorRecord t;
+    t.name = "model.norm.weight";
+    t.dtype = "F32";
+    t.shape = {4};
+    t.data.assign(16, 0x00u);
+    auto batch = lc::PinnedSchema::MakeBatch({t});
+    REQUIRE(batch.ok());
+
+    const auto good = dir / "good.arrow";
+    REQUIRE(lc::WriteRecordBatchToFile(*batch, good).ok());
+    CHECK(lc::ReadRecordBatchFromFile(good).ok());
+    CHECK(lc::ReadRecordBatchFromFile(good, 4).ok());
+    CHECK_FALSE(lc::ReadRecordBatchFromFile(good, 5).ok());
+
+    const auto empty = dir / "empty.arrow";
+    REQUIRE(lc::WriteRecordBatchToFile((*batch)->Slice(0, 0), empty).ok());
+    CHECK_FALSE(lc::ReadRecordBatchFromFile(empty).ok());
+    fs::remove_all(dir);
+}
+
+// ── Zero-copy expert batch (MakeBatchView) ────────────────────────────────
+
+TEST_CASE("MakeBatchView wraps the expert payload without copying",
+          "[arrow][write][view][budget]")
+{
+    constexpr int64_t kMiB = 1024 * 1024;
+    lc::PackedExpert pe;
+    pe.w1_packed.assign(static_cast<size_t>(8 * kMiB), 0x11u);
+    pe.w2_packed.assign(static_cast<size_t>(8 * kMiB), 0x22u);
+    pe.w3_packed.assign(static_cast<size_t>(4 * kMiB), 0x33u);
+    pe.w1_scales.assign(8 * kMiB / 8, 0x81u);   // payload*2 elems / 16
+    pe.w2_scales.assign(8 * kMiB / 8, 0x82u);
+    pe.w3_scales.assign(4 * kMiB / 8, 0x83u);
+    pe.w1_global_scale = pe.w2_global_scale = pe.w3_global_scale = 1.0f;
+    const int64_t payload = 20 * kMiB;
+
+    TrackedPool pool;
+    auto batch = lc::ExpertSchema::MakeBatchView(pe, &pool);
+    REQUIRE(batch.ok());
+    INFO("peak=" << pool.peak() << " payload=" << payload);
+    // The three payloads are wrapped, not allocated: only the (small) scales,
+    // offsets and global-scale floats touch the pool.
+    CHECK(pool.peak() <= 4 * kMiB);
+
+    // Zero-copy proof: mutating the source is visible through the batch.
+    auto w1 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        (*batch)->column(lc::ExpertSchema::kIdxW1Weight));
+    REQUIRE(w1 != nullptr);
+    REQUIRE(w1->Value(0).size() == 8 * kMiB);
+    pe.w1_packed[123] = 0xABu;
+    CHECK(static_cast<uint8_t>(w1->Value(0)[123]) == 0xABu);
+    pe.w1_packed[123] = 0x11u;
+
+    // And it round-trips through a write/read (the source outlives the batch).
+    const auto dir = TempDir("make_batch_view");
+    const auto path = dir / "expert.arrow";
+    REQUIRE(lc::WriteRecordBatchToFile(*batch, path).ok());
+    auto stored = lc::ReadRecordBatchFromFile(path, lc::ExpertSchema::kNumFields);
+    REQUIRE(stored.ok());
+    auto back = lc::ExpertSchema::UnpackBatch(*stored, 16);
+    REQUIRE(back.ok());
+    CHECK(back->w1_packed == pe.w1_packed);
+    CHECK(back->w2_packed == pe.w2_packed);
+    CHECK(back->w3_packed == pe.w3_packed);
+    CHECK(back->w1_scales == pe.w1_scales);
+    fs::remove_all(dir);
 }

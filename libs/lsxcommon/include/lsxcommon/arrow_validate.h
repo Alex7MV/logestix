@@ -183,6 +183,35 @@ inline arrow::Status CheckPinnedTensor(std::string_view name,
     return CheckTensorSize(shape, rank, bytes, dtype, name);
 }
 
+// Routed/shared experts carry E2M1 nibbles (2 per byte) and one scale per
+// NVFP4 block. The converted trees are uniformly per-16 (measured over all 26
+// vault trees), the pre-repack DeepSeek sources are per-32; the caller states
+// which contract it is reading (0 disables the check). An all-empty payload is
+// an inactive slot and is allowed.
+inline arrow::Status CheckExpertScaleCount(int64_t packed_bytes,
+                                           int64_t scale_bytes,
+                                           int32_t scale_block,
+                                           std::string_view name)
+{
+    if (packed_bytes == 0 && scale_bytes == 0)
+        return arrow::Status::OK();
+    if (packed_bytes <= 0 || scale_bytes <= 0)
+        return arrow::Status::Invalid(
+            "expert '", name, "' has a partial payload (packed=",
+            packed_bytes, ", scales=", scale_bytes, ")");
+    if (scale_block <= 0)
+        return arrow::Status::Invalid(
+            "expert '", name, "' scale block must be positive");
+    const int64_t want =
+        (packed_bytes * 2 + scale_block - 1) / scale_block;
+    if (scale_bytes != want)
+        return arrow::Status::Invalid(
+            "expert '", name, "' has ", scale_bytes, " scales for ",
+            packed_bytes, " packed bytes, expected ", want,
+            " (block=", scale_block, ")");
+    return arrow::Status::OK();
+}
+
 // R-A5 for NVFP4: E2M1 nibbles (2 per byte) plus one E4M3 scale per 16
 // elements and a finite, positive per-tensor global scale.
 inline arrow::Status CheckNvfp4Size(const int64_t *shape,

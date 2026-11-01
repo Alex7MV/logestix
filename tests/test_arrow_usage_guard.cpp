@@ -285,6 +285,25 @@ TEST_CASE("Every owning UnpackBatch call site has a recorded verdict",
     }
 }
 
+TEST_CASE("Arrow IPC readers keep the zero-copy alignment default",
+          "[arrow][guard]")
+{
+    // IpcReadOptions::ensure_alignment defaults to kAnyAlignment, which hands
+    // back buffers that point into the mapping. Setting it (k8Byte/k32Byte/
+    // k64Byte) makes Arrow copy every misaligned buffer into the memory pool,
+    // silently destroying the zero-copy contract the loaders rely on.
+    for (const auto &p : SourceTree()) {
+        const std::string text = ReadFile(p);
+        for (const char *forbidden : {"ensure_alignment", "Alignment::k8Byte",
+                                      "Alignment::k32Byte",
+                                      "Alignment::k64Byte"}) {
+            if (text.find(forbidden) != std::string::npos)
+                FAIL(RelativeToSource(p) << " sets " << forbidden
+                     << " — that breaks zero-copy reads");
+        }
+    }
+}
+
 TEST_CASE("Arrow IPC writers are confined to schema.cpp", "[arrow][guard]")
 {
     for (const auto &p : SourceTree()) {

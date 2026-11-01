@@ -72,6 +72,9 @@ struct ExpertStore {
     // would lock 4x the memory it is meant to save.
     int64_t pin_chunk_bytes = 0;
     std::string error_msg;
+    // Converted trees are uniformly per-16 (measured over the whole vault);
+    // a pre-repack source store sets 0 to disable the check.
+    int32_t scale_block_size = 16;
 
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
     int64_t parse_calls = 0;
@@ -193,7 +196,8 @@ struct ExpertStore {
     // Returns a status on a malformed/foreign batch so the caller never keeps a
     // partially decoded entry (null payload pointers or bogus byte counts).
     static arrow::Status DecodeEntry(const std::shared_ptr<arrow::RecordBatch> &batch,
-                                     TEntry &out)
+                                     TEntry &out,
+                                     int32_t scale_block = 16)
     {
         if (!batch ||
             batch->num_columns() != lsxcommon::ExpertSchema::kNumFields)
@@ -263,6 +267,14 @@ struct ExpertStore {
         ARROW_ASSIGN_OR_RAISE(auto g3, get_gs(
             lsxcommon::ExpertSchema::kIdxW3GlobalScale, "w3_global_scale"));
 
+        if (scale_block > 0) {
+            ARROW_RETURN_NOT_OK(lsxcommon::arrow_check::CheckExpertScaleCount(
+                w1.second, s1.second, scale_block, "w1"));
+            ARROW_RETURN_NOT_OK(lsxcommon::arrow_check::CheckExpertScaleCount(
+                w2.second, s2.second, scale_block, "w2"));
+            ARROW_RETURN_NOT_OK(lsxcommon::arrow_check::CheckExpertScaleCount(
+                w3.second, s3.second, scale_block, "w3"));
+        }
         out = {w1.first, w2.first, w3.first,
                s1.first, s2.first, s3.first, g1, g2, g3,
                w1.second, w2.second, w3.second,
@@ -299,7 +311,7 @@ struct ExpertStore {
         }
         auto batch = *batch_res;
 
-        const auto dec = DecodeEntry(batch, entries[idx]);
+        const auto dec = DecodeEntry(batch, entries[idx], scale_block_size);
         if (!dec.ok()) {
             if (log_batch_fails)
                 log::debug(log_prefix + "expert batch decode failed for " +

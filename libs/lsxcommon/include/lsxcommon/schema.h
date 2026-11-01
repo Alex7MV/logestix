@@ -184,8 +184,19 @@ public:
     MakeBatch(const PackedExpert &expert,
               arrow::MemoryPool *pool = nullptr);
 
+    // Zero-copy variant: the weight columns WRAP the PackedExpert vectors
+    // (no host copy; the IPC writer is the only remaining copy). Lifetime:
+    // the returned batch is valid only while @p expert and its vectors are
+    // alive and unmodified — use it for an immediate write.
+    static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+    MakeBatchView(const PackedExpert &expert,
+                  arrow::MemoryPool *pool = nullptr);
+
+    // scale_block > 0 enforces the expert scale count (per-16 for every
+    // converted tree; 32 for the pre-repack DeepSeek source records).
     static arrow::Result<PackedExpert>
-    UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
+    UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch,
+                int32_t scale_block = 0);
 };
 
 class PinnedSchema {
@@ -236,8 +247,11 @@ arrow::Status WriteRecordBatchToFile(
     const std::shared_ptr<arrow::RecordBatch> &batch,
     const std::filesystem::path &path);
 
+// expected_columns > 0 also enforces the artifact width; a zero-row file is
+// always rejected (no converted artifact is empty).
 arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-ReadRecordBatchFromFile(const std::filesystem::path &path);
+ReadRecordBatchFromFile(const std::filesystem::path &path,
+                        int expected_columns = 0);
 
 constexpr int kArrowAlignment = 256;
 constexpr int kNVFP4BlockSize = 16;
