@@ -3,9 +3,11 @@
 // model is present (CTest SKIP_RETURN_CODE 4).
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -15,6 +17,7 @@
 #include <lsxcommon/tokenizer.h>
 
 #include "nemotron_moe_nvfp4_model.h"
+#include "test_tool_roundtrip.h"
 
 namespace {
 
@@ -97,3 +100,28 @@ TEST_CASE("Nemotron-3.5-NVFP4 SelfCheck: 'The capital of France is' -> 'Paris', 
 
     m->Unload();
 }
+
+TEST_CASE("Nemotron-3.5-NVFP4 end-to-end tool round-trip (real weights)",
+          "[nemotron][nvfp4][model][tool][real-model]")
+{
+    // Stage 4b on real weights: frame a one-tool conversation through the
+    // checkpoint's own ChatML renderer, generate, and parse the call back out
+    // of the generated ids with the native Qwen-style XML codec.
+    const std::filesystem::path model_dir = ConvertedPath();
+    if (!std::filesystem::exists(model_dir / "logestix" / "model.index.json"))
+        SKIP("Nemotron-3.5-NVFP4 converted model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model_dir.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    const std::vector<lsxcommon::ToolCall> calls = RunToolRoundTrip(*m, 1024);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
+
+    m->Unload();
+}
+

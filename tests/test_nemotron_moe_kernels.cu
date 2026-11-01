@@ -180,37 +180,6 @@ TEST_CASE("gated rmsnorm matches the host reference", "[nemotron][kernels]")
     cudaFree(d_x); cudaFree(d_g); cudaFree(d_w); cudaFree(d_o);
 }
 
-TEST_CASE("full-dimension RoPE matches the rotate_half reference",
-          "[nemotron][kernels]")
-{
-    const int heads = 2, head_dim = 8, pos = 3;
-    const float theta = 10000.0f;
-    std::vector<float> x(heads * head_dim);
-    for (size_t i = 0; i < x.size(); ++i) x[i] = 0.1f * (i + 1);
-
-    std::vector<float> ref = x;
-    const int half = head_dim / 2;
-    for (int h = 0; h < heads; ++h) {
-        for (int j = 0; j < half; ++j) {
-            const float freq = std::pow(theta, -2.0f * j / head_dim);
-            const float a = pos * freq;
-            const float c = std::cos(a), s = std::sin(a);
-            const float x1 = x[h * head_dim + j];
-            const float x2 = x[h * head_dim + half + j];
-            ref[h * head_dim + j] = x1 * c - x2 * s;
-            ref[h * head_dim + half + j] = x1 * s + x2 * c;
-        }
-    }
-
-    float *d_x = ToDevice(x);
-    RunNemotronRope(d_x, heads, head_dim, pos, theta, 0);
-    cudaDeviceSynchronize();
-    auto got = FromDevice(d_x, x.size());
-    for (size_t i = 0; i < x.size(); ++i)
-        CHECK(got[i] == Catch::Approx(ref[i]).margin(1e-5f));
-    cudaFree(d_x);
-}
-
 TEST_CASE("GQA decode attention matches the host softmax reference",
           "[nemotron][kernels]")
 {

@@ -1,5 +1,6 @@
 // Nemotron-3.5 full-attention kernels (Model Ingestion Protocol step 5):
-// full-dimension RoPE (HF rotate_half) + single-token GQA decode attention.
+// single-token GQA decode attention. The checkpoint's full-attention layers are
+// NoPE (see the pipeline TU), so there is no rotary kernel here.
 #include "nemotron_moe_kernels.h"
 
 #include <cuda_runtime.h>
@@ -7,27 +8,6 @@
 namespace lsxcommon::nemotron_moe {
 
 namespace {
-
-__global__ void rope_kernel(float *__restrict__ x, int n_heads, int head_dim,
-                            int pos, float theta)
-{
-    const int half = head_dim / 2;
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_heads * half) return;
-    // One thread handles a (head, half-index) pair across the active heads.
-    const int h = idx / half;
-    const int j = idx % half;
-    const size_t base = static_cast<size_t>(h) * head_dim;
-    const float freq = powf(theta, -2.0f * static_cast<float>(j) /
-                                       static_cast<float>(head_dim));
-    const float angle = static_cast<float>(pos) * freq;
-    const float c = cosf(angle);
-    const float s = sinf(angle);
-    const float x1 = x[base + j];
-    const float x2 = x[base + half + j];
-    x[base + j] = x1 * c - x2 * s;
-    x[base + half + j] = x1 * s + x2 * c;
-}
 
 __global__ void attn_decode_kernel(const float *__restrict__ q,
                                    const float *__restrict__ k_cache,
@@ -69,17 +49,6 @@ __global__ void attn_decode_kernel(const float *__restrict__ q,
 }
 
 } // namespace
-
-void RunNemotronRope(float *x, int n_heads, int head_dim, int pos, float theta,
-                     cudaStream_t stream)
-{
-    const int half = (head_dim + 1) / 2;
-    const int threads = 128;
-    const int total = n_heads * half;
-    const int blocks = (total + threads - 1) / threads;
-    rope_kernel<<<blocks, threads, 0, stream>>>(x, n_heads, head_dim, pos,
-                                                theta);
-}
 
 void RunNemotronAttnDecode(const float *q, const float *k_cache,
                            const float *v_cache, int heads, int kv_heads,

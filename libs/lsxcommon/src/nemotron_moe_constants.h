@@ -36,7 +36,12 @@ inline constexpr int kMambaGroupSize = kMambaDInner / kSsmGroups;     // 512
 inline constexpr int kMambaChunk = 128;                               // reference only (milestone 1)
 inline constexpr float kDtMin = 0.001f;
 
-// Full attention (NemotronHAttention).
+// Full attention (NemotronHAttention). These layers are **NoPE**: the
+// checkpoint's own reference class has no rotary module and ignores
+// `position_ids`, so q/k carry no positional rotation (position comes from the
+// Mamba-2 layers). `kRopeTheta` is kept because `rope_theta` /
+// `partial_rotary_factor` are checkpoint config fields, NOT because they are
+// applied - see the 2026-11-01 measurement in the pipeline TU.
 inline constexpr int kHeads = 32;
 inline constexpr int kKVHeads = 2;
 inline constexpr int kHeadDim = 128;

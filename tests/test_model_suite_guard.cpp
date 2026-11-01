@@ -265,7 +265,8 @@ const std::vector<SuiteSpec> &Suites()
         {"nemotron-3.5-lightning-30b-a3b",
          {{"convert", {"test_nemotron_moe_convert"}},
           {"load",
-           {"test_nemotron_moe_loader", "test_nemotron_moe_expert_cache"}},
+           {"test_nemotron_moe_loader", "test_nemotron_moe_expert_cache",
+            "test_nemotron_moe_tokenizer_parity"}},
           {"model", {"test_nemotron_moe_model"}},
           {"kernels",
            {"test_nemotron_moe_kernels", "test_nemotron_moe_math",
@@ -278,7 +279,9 @@ const std::vector<SuiteSpec> &Suites()
         // nemotron-3.5-lightning-30b-a3b, its own converter + frozen passport.
         {"nemotron-3.5-lightning-30b-a3b-nvfp4",
          {{"convert", {"test_nemotron_moe_nvfp4_convert"}},
-          {"load", {"test_nemotron_moe_nvfp4_loader"}},
+          {"load",
+           {"test_nemotron_moe_nvfp4_loader",
+            "test_nemotron_moe_tokenizer_parity"}},
           {"model", {"test_nemotron_moe_nvfp4_model"}},
           {"kernels",
            {"test_nemotron_moe_kernels", "test_nemotron_moe_math",
@@ -1044,11 +1047,14 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "nemotron-3.5-lightning-30b-a3b:code",
         "nemotron-3.5-lightning-30b-a3b:det",
         "nemotron-3.5-lightning-30b-a3b:fsi",
-        // FSI/CODE/DET capture is unresolved for the pre-quantized source (HF
-        // transformers cannot load a ModelOpt checkpoint without
-        // compressed_tensors; the dequantized 30B reference does not answer
-        // these synthetic prompts); declared debt, see
-        // docs/open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md.
+        // FSI/CODE/DET: the source IS runnable now (tools/nemotron_nvfp4_oracle.py
+        // dequantizes the ModelOpt checkpoint to BF16 on CPU). FSI answers all
+        // three templates exactly, so the golden is capturable, but the
+        // converted NVFP4 tree does not reproduce them (FSI-01 appends an
+        // extra *exp(r) factor, FSI-02/03 emit fenced/repeated bodies), and
+        // CODE-TEST-01 / DET-TEST-01/02 make the SOURCE echo the prompt. All
+        // three stay debt with those measurements on 2026-11-01; the FSI gap is
+        // the 4-bit parity item in docs/OPEN_TASKS.md.
         "nemotron-3.5-lightning-30b-a3b-nvfp4:code",
         "nemotron-3.5-lightning-30b-a3b-nvfp4:det",
         "nemotron-3.5-lightning-30b-a3b-nvfp4:fsi",

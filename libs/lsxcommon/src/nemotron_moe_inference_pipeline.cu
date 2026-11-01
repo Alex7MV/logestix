@@ -314,10 +314,18 @@ cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
                                 lw.v.rows);
             if (e != cudaSuccess) return e;
             HalfToFloat(s.out16, kv_total, s.v, stream);
-            RunNemotronRope(s.q, attn_heads, attn_hd, pos,
-                            static_cast<float>(idx.rope_theta), stream);
-            RunNemotronRope(s.k, s.kv_heads, attn_hd, pos,
-                            static_cast<float>(idx.rope_theta), stream);
+            // NO positional encoding in the full-attention layers. The
+            // checkpoint's own `NemotronHAttention` (transformers 5.15.1) has
+            // no rotary module and ignores `position_ids`: this hybrid model
+            // is NoPE outside Mamba-2. Applying rotate_half RoPE here — as the
+            // engine did until 2026-11-01 — poisons q.k with a position-
+            // dependent rotation the weights were never trained with, and the
+            // corruption grows with context length (measured: per-layer relL2
+            // 0.09 at pos 0 -> 1.20 at pos 284 against a BF16 reference built
+            // from this same converted tree, with the Tool-calling prompt
+            // degenerating into HTML-tag soup). `rope_theta` stays in the
+            // passport because it is a checkpoint config field, not because it
+            // is applied.
             kv_store_kernel<<<s.kv_heads, attn_hd, 0, stream>>>(
                 s.k_cache[ai], s.k, pos, s.max_seq, attn_hd);
             kv_store_kernel<<<s.kv_heads, attn_hd, 0, stream>>>(

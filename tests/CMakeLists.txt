@@ -6441,8 +6441,7 @@ target_include_directories(test_nemotron_moe_nvfp4_selfcheck PRIVATE
 add_test(NAME test_nemotron_moe_nvfp4_selfcheck
          COMMAND test_nemotron_moe_nvfp4_selfcheck)
 set_tests_properties(test_nemotron_moe_nvfp4_selfcheck PROPERTIES
-    SKIP_RETURN_CODE 4
-    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+    SKIP_RETURN_CODE 4)
 
 # test_nemotron_moe_nvfp4_fsi_selfcheck — the FSI parity gate (SKIP 4).
 add_executable(test_nemotron_moe_nvfp4_fsi_selfcheck
@@ -6454,8 +6453,7 @@ target_link_libraries(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE
 add_test(NAME test_nemotron_moe_nvfp4_fsi_selfcheck
          COMMAND test_nemotron_moe_nvfp4_fsi_selfcheck)
 set_tests_properties(test_nemotron_moe_nvfp4_fsi_selfcheck PROPERTIES
-    SKIP_RETURN_CODE 4
-    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+    SKIP_RETURN_CODE 4)
 
 # test_nemotron_moe_nvfp4_code_selfcheck — the CODE parity gate (SKIP 4).
 add_executable(test_nemotron_moe_nvfp4_code_selfcheck
@@ -6467,8 +6465,7 @@ target_link_libraries(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE
 add_test(NAME test_nemotron_moe_nvfp4_code_selfcheck
          COMMAND test_nemotron_moe_nvfp4_code_selfcheck)
 set_tests_properties(test_nemotron_moe_nvfp4_code_selfcheck PROPERTIES
-    SKIP_RETURN_CODE 4
-    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+    SKIP_RETURN_CODE 4)
 
 # test_nemotron_moe_nvfp4_det_selfcheck — the DET parity gate (SKIP 4).
 add_executable(test_nemotron_moe_nvfp4_det_selfcheck
@@ -6480,8 +6477,23 @@ target_link_libraries(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE
 add_test(NAME test_nemotron_moe_nvfp4_det_selfcheck
          COMMAND test_nemotron_moe_nvfp4_det_selfcheck)
 set_tests_properties(test_nemotron_moe_nvfp4_det_selfcheck PROPERTIES
-    SKIP_RETURN_CODE 4
-    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+    SKIP_RETURN_CODE 4)
+
+# test_nemotron_moe_tokenizer_parity — real-vault tokenizer gate (SKIP 4).
+# Shared by both sibling variants: they ship one byte-identical tokenizer.json,
+# so one target polices the pair.
+add_executable(test_nemotron_moe_tokenizer_parity
+               test_nemotron_moe_tokenizer_parity.cpp)
+target_compile_definitions(test_nemotron_moe_tokenizer_parity PRIVATE
+    LSX_NEMOTRON_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron")
+target_link_libraries(test_nemotron_moe_tokenizer_parity PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_tokenizer_parity PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_nemotron_moe_tokenizer_parity
+         COMMAND test_nemotron_moe_tokenizer_parity)
+set_tests_properties(test_nemotron_moe_tokenizer_parity PROPERTIES
+    SKIP_RETURN_CODE 4)
 
 add_executable(test_nemotron_moe_loader test_nemotron_moe_loader.cpp)
 target_link_libraries(test_nemotron_moe_loader PRIVATE
@@ -6579,8 +6591,7 @@ target_include_directories(test_nemotron_moe_selfcheck PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_nemotron_moe_selfcheck COMMAND test_nemotron_moe_selfcheck)
 set_tests_properties(test_nemotron_moe_selfcheck PROPERTIES
-    SKIP_RETURN_CODE 4
-    ENVIRONMENT "LSX_TEST_NEMOTRON_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16")
+    SKIP_RETURN_CODE 4)
 
 # ── Qwen3.8-Flash-Next tests (qwen4_exp MoE) ──────────────────────────────
 add_executable(test_qwen_moe_exp_convert test_qwen_moe_exp_convert.cpp)
@@ -7148,6 +7159,7 @@ set_tests_properties(
     test_nemotron_moe_nvfp4_fsi_selfcheck
     test_nemotron_moe_nvfp4_code_selfcheck
     test_nemotron_moe_nvfp4_det_selfcheck
+    test_nemotron_moe_tokenizer_parity
     test_cuda_toolkit_guard
     PROPERTIES LABELS inference)
 

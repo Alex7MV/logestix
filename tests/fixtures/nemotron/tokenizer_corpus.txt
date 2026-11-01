@@ -1,0 +1,37 @@
+# Nemotron-3.5-Lightning tokenizer parity corpus (one case per line).
+#   - a line starting with '#' is a comment
+#   - \n, \t and \\ in a line are unescaped to a newline, a tab and a backslash
+#     by tools/nemotron_tokenizer_capture.py, so multi-line text fits one line
+# Every case is encoded by the checkpoint's own tokenizer.json and by the
+# engine's bridge (tokenizer_kind 9, MistralWordStream); ids must match exactly.
+# ASCII prose
+The capital of France is
+Hello, world!
+The quick brown fox jumps over the lazy dog.
+# contractions: this pre-tokenizer has NO contraction suffix, so "don't" splits
+# at the punctuation run rather than staying a single word
+don't stop, it's 3.14% of the total...
+we've can't they're I'll he'd
+# code and punctuation
+def f(x):\n    return x**2 + 1\n
+SELECT * FROM users WHERE id = 10;
+json {"a": [1, 2, 3], "b": null}
+\x = a + b * c / d - e
+url https://example.com/p?q=1&r=2#frag
+# digits: one digit per number word in this pre-tokenizer
+Numbers 1234567 3.14159 -42 1,000,000
+# case runs
+MixedCASE CamelCase snake_case kebab-case
+# whitespace runs and line breaks
+  leading and trailing   
+\tTabbed\tline
+multi\nline\r\ncrlf
+# non-Latin
+Переменная = 42
+变量名 = 42 中文测试
+日本語のテスト、東京。
+emoji 🚀 test ünïcode Ünïcödé façade naïve
+# single characters and short fragments
+a
+x
+ \n

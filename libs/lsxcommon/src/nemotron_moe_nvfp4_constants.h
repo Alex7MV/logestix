@@ -84,8 +84,10 @@ inline constexpr int kMambaGroupSize = kMambaDInner / kSsmGroups;      // 512
 inline constexpr int kMambaChunk = 128;
 inline constexpr float kDtMin = 0.001f;
 
-// Full attention (NemotronHAttention). partial_rotary_factor = 1.0, so the
-// rotary is full-dimension with no scaling.
+// Full attention (NemotronHAttention). These layers are **NoPE** - the
+// checkpoint's reference class has no rotary module (identical to the sibling).
+// `rope_theta` / `partial_rotary_factor` are vestigial config fields; see the
+// 2026-11-01 measurement in nemotron_moe_inference_pipeline.cu.
 inline constexpr int kHeads = 32;
 inline constexpr int kKVHeads = 2;
 inline constexpr int kHeadDim = 128;

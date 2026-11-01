@@ -39,17 +39,8 @@ void RunNemotronGatedRmsNorm(const float *x, const float *gate,
                              const float *weight, int n, int group_size,
                              float eps, float *out, cudaStream_t stream);
 
-// Full-dimension RoPE (HF rotate_half convention) applied in place to
-// x[n_heads, head_dim] at position `pos`, base `theta`.
-void RunNemotronRope(float *x, int n_heads, int head_dim, int pos, float theta,
-                     cudaStream_t stream);
-
-// Single-token GQA decode attention.
-//   q       [heads, head_dim]           (already RoPE-rotated)
-//   k_cache [kv_heads, seq_len, head_dim]
-//   v_cache [kv_heads, seq_len, head_dim]
-//   out     [heads, head_dim]
-// `cache_stride` is the KV cache row stride (max_seq).
+// Single-token GQA decode attention over the FP32 KV cache. The full-attention
+// layers are NoPE (no rotary kernel exists for this family).
 void RunNemotronAttnDecode(const float *q, const float *k_cache,
                            const float *v_cache, int heads, int kv_heads,
                            int head_dim, int seq_len, int cache_stride,

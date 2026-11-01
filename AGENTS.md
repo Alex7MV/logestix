@@ -176,8 +176,14 @@ procedure — `perf-tuning-a-model`.
   slot-LRU; dense always resident, experts streamed — the model fits in 16 GiB,
   knob `LSX_NEMOTRON_EXPERT_CACHE_SLOTS`), `nemotron_moe_model.*`,
   `nemotron_moe_kernels.{h,cu}` (conv/SSM/gated-RMSNorm/router/relu2),
-  `nemotron_moe_inference_attn.cu` (RoPE+GQA), `nemotron_moe_inference_pipeline.cu`,
-  `nemotron_moe_device_math.h`; format tag `logestix-nemotron-nvfp4`).
+  `nemotron_moe_inference_attn.cu` (**NoPE** + GQA — the checkpoint's full
+  attention has no rotary module, `position_ids` is ignored; applying RoPE, as
+  the engine did until 2026-11-01, degenerates any long prompt, measured
+  0.09 → 1.20 per-layer relL2 at ctx 285 and a broken tool call),
+  `nemotron_moe_inference_pipeline.cu`, `nemotron_moe_device_math.h`; format tag
+  `logestix-nemotron-nvfp4`). Source oracle for both siblings:
+  `tools/nemotron_nvfp4_oracle.py` (ModelOpt -> BF16 CPU reference; the tokenizer
+  gate is `test_nemotron_moe_tokenizer_parity` + `tools/nemotron_tokenizer_capture.py`).
   GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE,
   ~432B / ~28B active: 40L / 7168H / 64 MLA heads (qk 128+64, v 128,
   q_lora 1536, kv_lora 512, output gate) at layers 3,7,...,39 and GDN
