@@ -106,6 +106,20 @@ OVERRIDES["kimi-k2.7-code"] = {
     "attn_implementation": "eager",
 }
 
+# GigaChat3.5-432B-A28B-Reasoning (416 GB FP8-block-128 source, ~432B params):
+# the reference is the vendor's multi-GPU FP8 stack (`quantization_config.fp8`,
+# custom `GigaChat35ForCausalLM`); there is no single-GPU path and the BF16
+# body (864 GB) exceeds host RAM, so the golden is the prompt's Expected
+# Template (template-only mode) framed with the checkpoint's own
+# chat_template.jinja. The template spells `<s>` literally, so the ids are
+# encoded with add_special_tokens=False — exactly one BOS, like the engine's
+# chatml-v5 framing. Recorded deviation, not a silent one.
+OVERRIDES["gigachat3.5-432b-a28b-reasoning"] = {
+    "add_special_tokens": False,
+    "unrunnable": "432B FP8-block-128 vendor stack (multi-GPU reference); no "
+                  "single-GPU path and the BF16 body (864 GB) exceeds host RAM",
+}
+
 def _apply_template_kwargs(template_kwargs, opts):
     """Per-model extra chat-template variables (e.g. MiniMax's thinking_mode)."""
     extra = opts.get("template_kwargs") or {}
@@ -116,6 +130,7 @@ def _apply_template_kwargs(template_kwargs, opts):
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
            "device_map": None, "loader": None, "system": None,
+           "add_special_tokens": True,
            "unrunnable": None}
 
 _QWEN4_NGRAM_ROWS = 2500012  # rows per PLE n-gram shard (128 shards)
@@ -438,7 +453,9 @@ def capture_from_template(tok, opts, prompts, model, model_type, out,
                 kwargs.pop("enable_thinking", None)
                 prompt_text = tok.apply_chat_template(
                     _frame_messages(opts, p["body"]), **kwargs)
-        ids = tok(prompt_text, return_tensors="pt").input_ids[0].tolist()
+        ids = tok(prompt_text, return_tensors="pt",
+                  add_special_tokens=opts.get("add_special_tokens", True)
+                  ).input_ids[0].tolist()
         got = extract(p["kind"], p["anchor"], p["expected"])
         if not got:
             raise SystemExit("%s: empty template extraction" % p["id"])
@@ -564,7 +581,9 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
                 print("chat_template failed, using raw prompt:", exc,
                       file=sys.stderr)
                 prompt_text = p["body"]
-        ids = tok(prompt_text, return_tensors="pt").input_ids
+        ids = tok(prompt_text, return_tensors="pt",
+                  add_special_tokens=opts.get("add_special_tokens", True)
+                  ).input_ids
         if lm is not None:
             ids = ids.to(lm.device)
         with torch.no_grad():
