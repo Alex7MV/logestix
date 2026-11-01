@@ -26,7 +26,7 @@ fs::path MakeConvertedSynthetic()
     auto tensors = gemmatest::BuildSyntheticGemmaModel();
     gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
     gemmatest::WriteConfig(tmp);
-    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
     auto out = tmp / "out";
     REQUIRE(lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string())

@@ -243,16 +243,20 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
 |---|---|
 | `ctest --preset linux-debug -L fast` | **125/125** green (34 с) |
 | `ctest --preset linux-debug -L fast -R "test_arrow_|test_schema_views|test_expert_store"` | green |
-| loader-тесты inference-пресета (13 семейств) | 11/13; 2 красных — **предсуществующий** дефект base-коммита, не Arrow (ниже) |
+| loader-тесты inference-пресета (13 семейств) | **13/13** green |
 | `test_arrow_tree_integrity` по 26 деревьям | green, 33 с |
 
-Предсуществующий красный: `test_gemma_moe_loader` и `test_gemma_dense_loader`
-падают на этапе конвертера —
-`Invalid: tokenizer: byte token missing in vocab: 'Ā'`
-(`libs/lsxcommon/src/tokenizer_convert.cpp:303/721`), до вызова Arrow-загрузчика.
-Файл изменён в базовом коммите `b1c9c936` («exact pre-tokenizer, NFC and Gemma
-raw-text BPE»), тест — 2026-10-24; к этой ветке отношения не имеет. Arrow-путь
-gemma покрыт валидатором реального дерева и юнит-тестом NVFP4-триплета.
+Ранее красные `test_gemma_{moe,dense}_loader` и `test_gemma_{moe,dense}_model`
+падали на этапе конвертера с `tokenizer: byte token missing in vocab: 'Ā'`.
+Причина — не Arrow: эти тесты копировали generic `synthetic_tok.json` (0
+байт-fallback кусков `<0xHH>`), тогда как `tokenizer_kind 11` (Gemma) требует
+raw-text словарь с 256 `<0xHH>`; конвертерные gemma-тесты уже использовали
+`synthetic_gemma_tok.json` после `b1c9c936`. Тесты переведены на тот же fixture.
+Остаётся один красный во всём наборе — `test_gemma_dense_fsi_selfcheck`
+(FSI-01): задокументированный parity-долг, `docs/SELFCHECK_MATRIX.md:34`
+(FSI 2/3) и `docs/OPEN_TASKS.md` §R — «not a golden to rewrite»; рецепт,
+закрывающий гейт, требует ~8 бит на каждый linear (33.7 GiB, не влезает в
+карту).
 
 ## 7. Команды
 

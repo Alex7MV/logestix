@@ -25,7 +25,7 @@ std::filesystem::path MakeConvertedSynthetic()
     synthtest::WriteSafetensors(tmp, "model.safetensors",
                                 gemma_dense_test::BuildSyntheticGemmaDenseModel());
     gemma_dense_test::WriteConfig(tmp);
-    fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+    fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                   tmp / "tokenizer.json");
     auto out = tmp / "out";
     const auto st =

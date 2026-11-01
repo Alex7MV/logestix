@@ -19,14 +19,14 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// synthetic_tok.json + the Gemma-4 turn/channel sentinels and an explicit
+// synthetic_gemma_tok.json (raw-text Gemma BPE, ids 0..265) + the Gemma-4
 // bos_token, so the shared gemma framing/tool codec resolves them (the real
-// checkpoint carries exactly these markers). Mirrors the fixture used by
-// test_gemma_prompt_framing.cpp — the tokenizer bytes are the SAME file in the
-// 26B and the 31B checkpoints.
+// turn/channel sentinels and an explicit bos_token, so the shared framing/
+// tool codec resolves them. Mirrors the raw fixture the converter tests use —
+// the tokenizer bytes are the SAME file in the 26B and the 31B checkpoints.
 std::string WriteGemmaTokJson()
 {
-    std::ifstream src(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json");
+    std::ifstream src(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json");
     REQUIRE(src.good());
     std::string json((std::istreambuf_iterator<char>(src)),
                      std::istreambuf_iterator<char>());
@@ -37,7 +37,7 @@ std::string WriteGemmaTokJson()
     const size_t arr_end = json.find(']', bracket);
     REQUIRE(arr_end != std::string::npos);
     static constexpr const char *kExtra =
-        R"({"id": 268, "content": "<|turn>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 269, "content": "<turn|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 270, "content": "model", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 271, "content": "user", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 272, "content": "\n", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 273, "content": "<|channel>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 274, "content": "thought", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 275, "content": "<channel|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 276, "content": "<|tool_call>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 277, "content": "<tool_call|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true})";
+        R"({"id": 266, "content": "<|turn>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 267, "content": "<turn|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 268, "content": "model", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 269, "content": "user", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 270, "content": "\n", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 271, "content": "<|channel>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 272, "content": "thought", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 273, "content": "<channel|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 274, "content": "<|tool_call>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}, {"id": 275, "content": "<tool_call|>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true})";
     json.insert(arr_end, "," + std::string(kExtra));
     const size_t root = json.find('{');
     REQUIRE(root != std::string::npos);
@@ -61,7 +61,7 @@ fs::path MakeConvertedSynthetic(bool gemma_tok = false)
     if (gemma_tok)
         fs::copy_file(WriteGemmaTokJson(), tmp / "tokenizer.json");
     else
-        fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                       tmp / "tokenizer.json");
     auto out = tmp / "out";
     REQUIRE(lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(),
