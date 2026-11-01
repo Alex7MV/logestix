@@ -1,4 +1,5 @@
 #include "lsxcommon/converter.h"
+#include "lsxcommon/arrow_tree_verify.h"
 #include "lsxcommon/glm_moe_flash_convert.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
@@ -46,6 +47,7 @@
 #include <arrow/api.h>
 #include <fstream>
 #include <iterator>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -59,6 +61,9 @@
 
 ABSL_FLAG(std::string, input, "", "input model directory");
 ABSL_FLAG(std::string, output, "converted_model", "output directory");
+ABSL_FLAG(bool, verify, false,
+          "verify the Arrow artifacts of --input (or --output) and exit; "
+          "post-conversion step (LSX_ARROW_AUDIT_{FULL,MAX_BYTES} apply)");
 ABSL_FLAG(bool, repack_shared, false, "re-pack shared experts into shared_experts.arrow");
 ABSL_FLAG(bool, repack_experts, false, "re-pack routed experts (fp4 passthrough)");
 ABSL_FLAG(std::string, tokenizer, "", "build tokenizer Arrow files from tokenizer.json");
@@ -194,6 +199,37 @@ int main(int argc, char* argv[]) {
     bool beam = absl::GetFlag(FLAGS_beam);
     bool step = absl::GetFlag(FLAGS_step);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
+
+    // Post-conversion verification: the same shared verifier the audit test
+    // uses. Runs before pipeline resolution so it is a standalone mode:
+    //   lsxforge --verify --input <converted model root>
+    if (absl::GetFlag(FLAGS_verify)) {
+        lsxcommon::Core::Initialize("lsxforge_runtime.log");
+        const std::string target = !input_path.empty() ? input_path : output_path;
+        std::filesystem::path tree(target);
+        if (tree.empty() || !std::filesystem::exists(tree)) {
+            lsxcommon::log::error("lsxforge --verify: no such path: " + target);
+            lsxcommon::Core::Shutdown();
+            return 2;
+        }
+        if (std::filesystem::exists(tree / "logestix")) tree /= "logestix";
+        lsxcommon::arrow_check::TreeVerifyOptions opts;
+        if (const char *f = std::getenv("LSX_ARROW_AUDIT_FULL"))
+            opts.full = f[0] == '1';
+        if (const char *b = std::getenv("LSX_ARROW_AUDIT_MAX_BYTES")) {
+            const long long v = std::atoll(b);
+            if (v > 0) opts.budget_bytes = v;
+        }
+        const auto st = lsxcommon::arrow_check::VerifyArrowTree(tree, opts);
+        lsxcommon::log::info(absl::StrCat(
+            "arrow verify: ", tree.string(), " files=", st.files,
+            " footer_ok=", st.footer_ok, " deep=", st.deep, " deep_MiB=",
+            st.deep_bytes >> 20, " problems=", st.problems.size()));
+        for (const auto &msg : st.problems)
+            lsxcommon::log::error("arrow verify: " + msg);
+        lsxcommon::Core::Shutdown();
+        return st.problems.empty() ? 0 : 1;
+    }
 
     // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is
     // unit-testable; this function only executes the resolved pipeline. The

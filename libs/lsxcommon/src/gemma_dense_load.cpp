@@ -28,8 +28,9 @@ namespace {
 
 using fastload::PinnedStagingRing;
 
-const TensorRecord *FindTensor(const std::vector<TensorRecord> &tensors,
-                               const std::string &suffix)
+const lsxcommon::TensorView *FindTensor(
+    const std::vector<lsxcommon::TensorView> &tensors,
+    const std::string &suffix)
 {
     for (const auto &t : tensors) {
         if (t.name.size() >= suffix.size() &&
@@ -40,21 +41,15 @@ const TensorRecord *FindTensor(const std::vector<TensorRecord> &tensors,
     return nullptr;
 }
 
-arrow::Result<std::vector<TensorRecord>> LoadArrowFile(const std::string &path)
+// Zero-copy: the returned views point into the mapping and own it through
+// their keepalive, so the loader uploads straight from the page cache.
+arrow::Result<lsxcommon::TensorBatchViews> LoadArrowFile(const std::string &path)
 {
-    auto mmap_res =
-        arrow::io::MemoryMappedFile::Open(path, arrow::io::FileMode::READ);
-    if (!mmap_res.ok()) return mmap_res.status();
-    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
-    if (!reader_res.ok()) return reader_res.status();
-    auto batch_res = (*reader_res)->ReadRecordBatch(0);
-    if (!batch_res.ok()) return batch_res.status();
-    return PinnedSchema::UnpackBatch(*batch_res);
+    return lsxcommon::LoadTensorBatchViews(path);
 }
 
 // BF16 host bits -> F32 host (exact: BF16 is a truncated F32).
-std::vector<float> Bf16BytesToF32(const std::vector<std::uint8_t> &data,
-                                  int64_t numel)
+std::vector<float> Bf16BytesToF32(const std::uint8_t *data, int64_t numel)
 {
     std::vector<float> out(static_cast<size_t>(numel));
     for (int64_t i = 0; i < numel; ++i) {
@@ -95,7 +90,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaDensePinnedWeights &pw,
                    tensors_res.status().ToString());
         return cudaErrorInvalidValue;
     }
-    auto &tensors = *tensors_res;
+    const auto &tensors = tensors_res->tensors;
 
     PinnedStagingRing ring;
     if (!ring.ok()) return cudaErrorMemoryAllocation;
@@ -131,8 +126,8 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaDensePinnedWeights &pw,
     }
 
     auto *norm = FindTensor(tensors, "model.norm.weight");
-    if (!norm || norm->shape.size() != 1 || norm->shape[0] <= 0 ||
-        norm->data.size() < static_cast<size_t>(norm->shape[0]) * 2) {
+    if (!norm || norm->rank != 1 || norm->shape[0] <= 0 ||
+        norm->bytes < static_cast<size_t>(norm->shape[0]) * 2) {
         log::error("[gemma_dense_load] model.norm.weight missing/malformed in "
                    "global.arrow");
         return cudaErrorInvalidValue;
@@ -140,10 +135,10 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaDensePinnedWeights &pw,
     {
         std::vector<lsxcommon::TensorView> views(1);
         views[0].name = norm->name;
-        views[0].rank = static_cast<int64_t>(norm->shape.size());
-        views[0].shape = norm->shape.data();
-        views[0].bytes = norm->data.size();
-        views[0].data = norm->data.data();
+        views[0].rank = norm->rank;
+        views[0].shape = norm->shape;
+        views[0].bytes = norm->bytes;
+        views[0].data = norm->data;
         std::vector<fastload::UploadJob> jobs = {
             {&views[0], reinterpret_cast<void **>(&pw.d_final_norm),
              fastload::CvKind::kBf16ToHalf, nullptr, nullptr}};
@@ -160,7 +155,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaDensePinnedWeights &pw,
     return cudaSuccess;
 }
 
-cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
+cudaError_t LoadLayer(const std::vector<lsxcommon::TensorView> &tensors,
                       GemmaDenseLayerWeights &lw, float *h_layer_scalar,
                       cudaStream_t stream, std::uint64_t &bytes_acc)
 {
@@ -169,9 +164,9 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
 
     // NVFP4 triple detection: "<name>.packed" + ".scales" + ".global_scale".
     struct Nvfp4Recs {
-        const TensorRecord *packed = nullptr;
-        const TensorRecord *scales = nullptr;
-        const TensorRecord *gs = nullptr;
+        const lsxcommon::TensorView *packed = nullptr;
+        const lsxcommon::TensorView *scales = nullptr;
+        const lsxcommon::TensorView *gs = nullptr;
     };
     auto gather = [&](std::string_view base) {
         Nvfp4Recs r;
@@ -204,29 +199,25 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
     auto upload_nv = [&](const Nvfp4Recs &r,
                          lsx_nvfp4::LsxNvfp4Weight &w) -> cudaError_t {
         if (!complete(r)) return cudaErrorInvalidValue;
-        w.rows = r.packed->shape.size() >= 2
-                     ? static_cast<int>(r.packed->shape[0])
-                     : 0;
-        w.cols = r.packed->shape.size() >= 2
-                     ? static_cast<int>(r.packed->shape[1])
-                     : 0;
+        w.rows = r.packed->rank >= 2 ? static_cast<int>(r.packed->shape[0]) : 0;
+        w.cols = r.packed->rank >= 2 ? static_cast<int>(r.packed->shape[1]) : 0;
         if (w.rows <= 0 || w.cols <= 0) return cudaErrorInvalidValue;
-        std::memcpy(&w.global_scale, r.gs->data.data(), sizeof(float));
-        w.packed_bytes = static_cast<int64_t>(r.packed->data.size());
-        w.scale_bytes = static_cast<int64_t>(r.scales->data.size());
+        std::memcpy(&w.global_scale, r.gs->data, sizeof(float));
+        w.packed_bytes = static_cast<int64_t>(r.packed->bytes);
+        w.scale_bytes = static_cast<int64_t>(r.scales->bytes);
         void *d1 = nullptr;
-        cudaError_t e = cudaMalloc(&d1, r.packed->data.size());
+        cudaError_t e = cudaMalloc(&d1, r.packed->bytes);
         if (e != cudaSuccess) return e;
         void *d2 = nullptr;
-        e = cudaMalloc(&d2, r.scales->data.size());
+        e = cudaMalloc(&d2, r.scales->bytes);
         if (e != cudaSuccess) {
             cudaFree(d1);
             return e;
         }
-        e = ring.UploadRaw(r.packed->data.data(), d1, r.packed->data.size(),
+        e = ring.UploadRaw(r.packed->data, d1, r.packed->bytes,
                            stream, bytes_acc);
         if (e == cudaSuccess)
-            e = ring.UploadRaw(r.scales->data.data(), d2, r.scales->data.size(),
+            e = ring.UploadRaw(r.scales->data, d2, r.scales->bytes,
                                stream, bytes_acc);
         if (e != cudaSuccess) {
             cudaFree(d1);
@@ -276,17 +267,17 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
 
     std::vector<lsxcommon::TensorView> views;
     views.reserve(6);
-    auto make_job = [&](const TensorRecord *t, void **dst) {
+    auto make_job = [&](const lsxcommon::TensorView *t, void **dst) {
         if (!t) return fastload::UploadJob{nullptr, dst,
                                            fastload::CvKind::kBf16ToHalf,
                                            nullptr, nullptr};
         views.push_back(lsxcommon::TensorView{});
         auto &v = views.back();
         v.name = t->name;
-        v.rank = static_cast<int64_t>(t->shape.size());
-        v.shape = t->shape.data();
-        v.bytes = t->data.size();
-        v.data = t->data.data();
+        v.rank = t->rank;
+        v.shape = t->shape;
+        v.bytes = t->bytes;
+        v.data = t->data;
         return fastload::UploadJob{&views.back(), dst,
                                    fastload::CvKind::kBf16ToHalf, nullptr,
                                    nullptr};
@@ -309,15 +300,15 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
 
     // layer_scalar: BF16 in the real checkpoint, F32 in synthetic fixtures.
     if (const auto *sc = FindTensor(tensors, "layer_scalar");
-        sc && sc->shape.size() == 1 &&
-        ((sc->dtype == "F32" && sc->data.size() >= sizeof(float)) ||
-         (sc->dtype == "BF16" && sc->data.size() >= 2))) {
+        sc && sc->rank == 1 &&
+        ((sc->dtype == "F32" && sc->bytes >= sizeof(float)) ||
+         (sc->dtype == "BF16" && sc->bytes >= 2))) {
         if (sc->dtype == "F32") {
-            e = UploadF32(reinterpret_cast<const float *>(sc->data.data()), 1,
+            e = UploadF32(reinterpret_cast<const float *>(sc->data), 1,
                           &lw.d_layer_scalar, stream, ring, bytes_acc);
             if (h_layer_scalar)
                 *h_layer_scalar =
-                    *reinterpret_cast<const float *>(sc->data.data());
+                    *reinterpret_cast<const float *>(sc->data);
         } else {
             const auto f32 = Bf16BytesToF32(sc->data, 1);
             e = UploadF32(f32.data(), 1, &lw.d_layer_scalar, stream, ring,
@@ -404,7 +395,7 @@ cudaError_t LoadGemmaDensePinnedWeights(const std::string &model_path,
                        ": " + tensors_res.status().ToString());
             return cudaErrorInvalidValue;
         }
-        e = LoadLayer(*tensors_res, pw.layers[static_cast<size_t>(l)],
+        e = LoadLayer(tensors_res->tensors, pw.layers[static_cast<size_t>(l)],
                       &pw.h_layer_scalar[static_cast<size_t>(l)], stream,
                       bytes_acc);
         if (e != cudaSuccess) return e;

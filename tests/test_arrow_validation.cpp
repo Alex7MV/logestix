@@ -114,6 +114,7 @@ TEST_CASE("CheckNvfp4Size rounds odd element counts up", "[arrow][validate]")
 #include <vector>
 
 #include "lsxcommon/expert_store.h"
+#include "lsxcommon/arrow_tree_verify.h"
 #include "lsxcommon/schema.h"
 
 namespace {
@@ -1015,5 +1016,44 @@ TEST_CASE("MakeBatchView wraps the expert payload without copying",
     CHECK(back->w2_packed == pe.w2_packed);
     CHECK(back->w3_packed == pe.w3_packed);
     CHECK(back->w1_scales == pe.w1_scales);
+    fs::remove_all(dir);
+}
+
+// ── Shared tree verifier (also the `lsxforge --verify` body) ──────────────
+
+TEST_CASE("VerifyArrowTree reports missing and corrupt artifacts",
+          "[arrow][tree][verify]")
+{
+    const auto dir = TempDir("verify_tree");
+    {
+        const auto missing = av::VerifyArrowTree(dir / "absent");
+        CHECK_FALSE(missing.problems.empty());
+    }
+
+    lc::TensorRecord t;
+    t.name = "model.norm.weight";
+    t.dtype = "F32";
+    t.shape = {4};
+    t.data.assign(16, 0x00u);
+    auto batch = lc::PinnedSchema::MakeBatch({t});
+    REQUIRE(batch.ok());
+    const auto path = dir / "pinned" / "global.arrow";
+    fs::create_directories(path.parent_path());
+    REQUIRE(lc::WriteRecordBatchToFile(*batch, path).ok());
+
+    {
+        const auto ok = av::VerifyArrowTree(dir);
+        INFO((ok.problems.empty() ? std::string() : ok.problems.front()));
+        CHECK(ok.problems.empty());
+        CHECK(ok.files == 1);
+        CHECK(ok.footer_ok == 1);
+        CHECK(ok.kinds.at(av::TreeFileKind::kPinned) == 1);
+    }
+
+    REQUIRE(lc::WriteRecordBatchToFile((*batch)->Slice(0, 0), path).ok());
+    {
+        const auto bad = av::VerifyArrowTree(dir);
+        CHECK_FALSE(bad.problems.empty());
+    }
     fs::remove_all(dir);
 }

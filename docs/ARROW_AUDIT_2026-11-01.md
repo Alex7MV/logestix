@@ -68,8 +68,8 @@ zero-copy view-хелперами; исключение — gemma (см. A-07).
 | Step-5-Preview | step_moe_convert.cpp | step_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | Xing4.0-29B-A4B | xing_moe_convert.cpp | xing_moe_load.cpp | views + resident device slabs | schema.cpp | views+resident-slabs |
 | flint | flint_moe_convert.cpp | flint_moe_load.cpp | views + resident device slabs | schema.cpp | views+resident-slabs |
-| gemma-4-26B-A4B-it | gemma_moe_convert.cpp | gemma_moe_load.cpp | views + PinChunked (dense triple: unpack-copy) | schema.cpp | views+PinChunked |
-| gemma-4-31B-it | gemma_dense_convert.cpp | gemma_dense_load.cpp | views + dense (triple: unpack-copy) | schema.cpp | views+dense |
+| gemma-4-26B-A4B-it | gemma_moe_convert.cpp | gemma_moe_load.cpp | views + PinChunked (dense triple: views) | schema.cpp | views+PinChunked |
+| gemma-4-31B-it | gemma_dense_convert.cpp | gemma_dense_load.cpp | views + dense (triple: views) | schema.cpp | views+dense |
 | granite-4.2-30b | granite_dense_convert.cpp | granite_dense_load.cpp | views + dense | schema.cpp | views+dense |
 | granite-switch-4.1-30b | granite_dense_switch_convert.cpp | granite_dense_switch_load.cpp | views + dense (+LoRA planes) | schema.cpp | views+dense |
 | phi-4 | phi_dense_convert.cpp | phi_dense_load.cpp | views + dense | schema.cpp | views+dense |
@@ -89,7 +89,7 @@ DeepSeek-V4-Flash, DeepSeek-V4.1-Flash и Qwen3.5-35B-A3B дерева в
 | A-04 | P2 | `shared_experts.cu:307` | reversed scale offsets давали отрицательный `scale_bytes` | fixed |
 | A-05 | P2 | `schema.cpp:858` | запись не атомарна: сбой оставлял частичный `.arrow` на финальном пути | fixed |
 | A-06 | P3 | `schema.cpp:916` | `ReadRecordBatchFromFile` не сверяет схему/число строк — ошибка всплывала поздно как «unpack failed» | accepted (диагностика) |
-| A-07 | P3 | `gemma_moe_load.cpp:43`, `gemma_dense_load.cpp:43` | плотные тензоры читаются копией через `UnpackBatch` вместо view-хелперов (perf, не корректность) | accepted (долг) |
+| A-07 | P3 | `gemma_moe_load.cpp`, `gemma_dense_load.cpp` | плотные тензоры читаются копией через `UnpackBatch` вместо view-хелперов (perf, не корректность) | fixed (views) |
 | A-08 | P3 | 6 легаси-арен | pinned arena со всеми экспертами (host RAM = дерево экспертов) | accepted (долг) |
 | A-09 | ok | `tokenizer.cpp:55`, `expert_store.h:ParseFile` | эталон: `in_range` по каждому буферу, mmap+batch удерживаются | reference |
 
@@ -218,6 +218,20 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
 - **Страж `ensure_alignment`**: `test_arrow_usage_guard` запрещает выставлять
   `IpcReadOptions::ensure_alignment`/`Alignment::k{8,32,64}Byte` — это
   заставило бы Arrow копировать буферы и уничтожило zero-copy.
+
+## 3d. Post-conversion hook и gemma zero-copy (четвёртая итерация)
+
+- Верификатор вынесен в `lsxcommon::arrow_check::VerifyArrowTree` /
+  `FindConvertedTrees` (`libs/lsxcommon/{include,src}/arrow_tree_verify.*`) —
+  один код для ctest-таргета и для нового `lsxforge --verify --input <model>`.
+  Команда проверяет `<model>/logestix` (или сам logestix-каталог), печатает
+  сводку и возвращает 1 при найденных проблемах; `LSX_ARROW_AUDIT_{FULL,
+  MAX_BYTES}` действуют как в тесте. Проверено на реальном дереве Qwen3.5-9B
+  (`files=68 footer_ok=68 deep=37 problems=0`).
+- Gemma MoE/dense loader'ы переведены с `PinnedSchema::UnpackBatch` на
+  `LoadTensorBatchViews`: dense-триплет больше не копируется при загрузке
+  (A-07 закрыт). Страж `test_arrow_usage_guard` обновлён (эти файлы больше не
+  в allowlist mmap/UnpackBatch).
 
 ## 4. Легаси-долг (не мигрирован в этой ветке)
 

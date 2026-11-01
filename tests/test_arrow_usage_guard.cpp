@@ -85,13 +85,12 @@ std::size_t CountOccurrences(const std::string &haystack,
 // owner) or unpacks into transient owning records (the gemma copiers).
 const std::set<std::string> kMmapOpenAllowed = {
     "libs/lsxcommon/src/schema.cpp",
+    "libs/lsxcommon/src/arrow_tree_verify.cpp",
     "libs/lsxcommon/include/lsxcommon/expert_store.h",
     "libs/lsxcommon/src/tokenizer.cpp",
     "libs/lsxcommon/src/tokenizer_arrows.cpp",
     "libs/lsxcommon/src/model_integrity.cpp",
     "libs/lsxcommon/src/shared_experts.cu",
-    "libs/lsxcommon/src/gemma_moe_load.cpp",
-    "libs/lsxcommon/src/gemma_dense_load.cpp",
     "libs/lsxcommon/src/deepseek_moe_load.cu",
     "libs/lsxcommon/src/deepseek_moe_pro_load.cu",
 };
@@ -105,8 +104,6 @@ const std::map<std::string, std::string> kUnpackVerdict = {
     {"deepseek_moe_repack.cpp", "transient"},
     {"deepseek_moe_v41_load.cu", "transient"},
     {"flint_moe_load.cpp", "retained-legacy"},
-    {"gemma_dense_load.cpp", "transient"},
-    {"gemma_moe_load.cpp", "transient"},
     {"glm_moe_flash_load.cpp", "retained-legacy"},
     {"glm_moe_load.cpp", "transient"},
     {"hy_moe_load.cpp", "retained-legacy"},
