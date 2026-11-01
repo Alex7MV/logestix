@@ -198,13 +198,17 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
 - **Единый блочный контракт измерен, а не предположен**: все 19 деревьев с
   глубокой выборкой экспертов дают `block=16` (включая DeepSeek-V4-Pro).
   Поэтому `CheckExpertScaleCount` (один E4M3 на 16 элементов) применяется:
-  в `ExpertStore::DecodeEntry` (по умолчанию 16), в `SharedExpertSchema` и
-  `LoadSharedExpertBatchViews` (16), в `shared_experts.cu` (16) и в
+  в `ExpertStore::DecodeEntry` (по умолчанию 16) и в
   `ExpertSchema::UnpackBatch(batch, scale_block)` — параметр опционален:
   конвертеры/`deepseek_moe_repack` читают pre-repack источники (block 32) без
   проверки, все загрузчики converted-деревьев передают 16.
   Реальные деревья и 13 loader-тестов зелёные; усечённый, но валидный по
-  offsets эксперт теперь отвергается.
+  offsets routed-эксперт теперь отвергается.
+  **Shared-эксперты исключены из этой проверки**: полный аудит показал, что
+  DeepSeek-V4-Pro/V4-Flash хранят их как сырой F8_E4M3 с E8M0-тайлами 128×128
+  (`pinned/shared_experts.arrow`, 4 ГБ, 32 768 элементов на scale), а NVFP4-
+  семейства — per-16. Схема не несёт кодировку, поэтому для shared проверяются
+  только offsets/границы/GS.
 - **`ReadRecordBatchFromFile(path, expected_columns=0)`**: нулевое число строк
   и неверная ширина отвергаются сразу, а не как позднее «unpack failed».
 - **`ExpertSchema::MakeBatchView`**: zero-copy вариант батча — весовые колонки
@@ -264,6 +268,12 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
 - проблем: **0**;
 - время прогона: ~211 с (footer-фаза с `CountRows` по всем файлам + выборка);
 - лог: `/mnt/fast_storage/tmp/arrow_tree_audit3.log`.
+
+**Полный прогон** (`LSX_ARROW_AUDIT_FULL=1`, все payload'ы, 3.6 ТБ):
+26 деревьев, **0 проблем**, ~696 с. Он же нашёл кодировку shared-экспертов
+DeepSeek (см. §3c) — проверка блока для shared была снята, routed остаётся
+per-16. Лог: `/mnt/fast_storage/tmp/arrow_tree_full2.log`. Полный режим не
+входит в ctest TIMEOUT 600 — запускается вручную.
 
 Типы по дереву стабильны: `expert`, `dense-nvfp4`, `pinned`, `shared-expert`
 (только Mistral/Kimi/DeepSeek-Pro), `tokenizer-vocab`, `tokenizer-merges`.

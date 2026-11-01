@@ -327,18 +327,8 @@ arrow::Status load_shared_experts_metadata(
         ARROW_RETURN_NOT_OK(extract_scales(s1, db.w1, i));
         ARROW_RETURN_NOT_OK(extract_scales(s2, db.w2, i));
         ARROW_RETURN_NOT_OK(extract_scales(s3, db.w3, i));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            db.w1[static_cast<size_t>(i)].packed_bytes,
-            db.w1[static_cast<size_t>(i)].scale_bytes, kVFP4BlockSize,
-            "shared_experts.w1[" + std::to_string(i) + "]"));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            db.w2[static_cast<size_t>(i)].packed_bytes,
-            db.w2[static_cast<size_t>(i)].scale_bytes, kVFP4BlockSize,
-            "shared_experts.w2[" + std::to_string(i) + "]"));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            db.w3[static_cast<size_t>(i)].packed_bytes,
-            db.w3[static_cast<size_t>(i)].scale_bytes, kVFP4BlockSize,
-            "shared_experts.w3[" + std::to_string(i) + "]"));
+        // No block-size check: DeepSeek shared experts are raw F8_E4M3 with
+        // E8M0 128x128 tile scales, the NVFP4 families use per-16 E4M3.
         db.w1[static_cast<size_t>(i)].global_scale = gs1->Value(i);
         db.w2[static_cast<size_t>(i)].global_scale = gs2->Value(i);
         db.w3[static_cast<size_t>(i)].global_scale = gs3->Value(i);

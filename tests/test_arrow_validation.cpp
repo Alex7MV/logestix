@@ -898,55 +898,6 @@ TEST_CASE("ExpertStore::DecodeEntry enforces the converted-tree block size",
     CHECK_FALSE(ProbeStore::DecodeEntry(*bad_batch, bad_entry).ok());
 }
 
-TEST_CASE("Shared-expert readers enforce the per-16 scale count",
-          "[arrow][expert][scale][shared]")
-{
-    lc::PackedExpert e;
-    e.w1_packed.assign(16, 0x11u);
-    e.w2_packed.assign(16, 0x22u);
-    e.w3_packed.assign(16, 0x33u);
-    e.w1_scales.assign(2, 0x81u);   // 32 elems / 16
-    e.w2_scales.assign(2, 0x82u);
-    e.w3_scales.assign(2, 0x83u);
-    e.w1_global_scale = e.w2_global_scale = e.w3_global_scale = 1.0f;
-
-    auto valid = lc::SharedExpertSchema::MakeBatch({e});
-    REQUIRE(valid.ok());
-    const auto dir = TempDir("shared_scale");
-    const auto good_path = dir / "good.arrow";
-    REQUIRE(lc::WriteRecordBatchToFile(*valid, good_path).ok());
-    {
-        auto views = lc::LoadSharedExpertBatchViews(good_path);
-        CHECK(views.ok());
-    }
-
-    // The metadata loader reads the same artifact.
-    {
-        auto mmap = arrow::io::MemoryMappedFile::Open(
-            good_path.string(), arrow::io::FileMode::READ);
-        REQUIRE(mmap.ok());
-        lc::gpu::SharedExpertDb db;
-        CHECK(lc::gpu::load_shared_experts_metadata(*mmap, db).ok());
-    }
-
-    e.w2_scales.assign(1, 0x82u);   // 32 elems with one scale: block 32
-    auto bad = lc::SharedExpertSchema::MakeBatch({e});
-    REQUIRE(bad.ok());
-    const auto bad_path = dir / "bad.arrow";
-    REQUIRE(lc::WriteRecordBatchToFile(*bad, bad_path).ok());
-    CHECK_FALSE(lc::LoadSharedExpertBatchViews(bad_path).ok());
-    {
-        auto mmap = arrow::io::MemoryMappedFile::Open(
-            bad_path.string(), arrow::io::FileMode::READ);
-        REQUIRE(mmap.ok());
-        lc::gpu::SharedExpertDb db;
-        CHECK_FALSE(lc::gpu::load_shared_experts_metadata(*mmap, db).ok());
-    }
-    fs::remove_all(dir);
-}
-
-// ── ReadRecordBatchFromFile: fail early on an empty/foreign artifact ───────
-
 TEST_CASE("ReadRecordBatchFromFile rejects an empty or wrong-width batch",
           "[arrow][read][schema]")
 {

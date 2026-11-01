@@ -442,18 +442,10 @@ SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch
         ARROW_RETURN_NOT_OK(extract_scales(s1.get(), i, e.w1_scales));
         ARROW_RETURN_NOT_OK(extract_scales(s2.get(), i, e.w2_scales));
         ARROW_RETURN_NOT_OK(extract_scales(s3.get(), i, e.w3_scales));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            static_cast<int64_t>(e.w1_packed.size()),
-            static_cast<int64_t>(e.w1_scales.size()), kNVFP4BlockSize,
-            "shared_experts.w1[" + std::to_string(i) + "]"));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            static_cast<int64_t>(e.w2_packed.size()),
-            static_cast<int64_t>(e.w2_scales.size()), kNVFP4BlockSize,
-            "shared_experts.w2[" + std::to_string(i) + "]"));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            static_cast<int64_t>(e.w3_packed.size()),
-            static_cast<int64_t>(e.w3_scales.size()), kNVFP4BlockSize,
-            "shared_experts.w3[" + std::to_string(i) + "]"));
+        // Shared-expert encoding is family-specific (DeepSeek stores raw
+        // F8_E4M3 with E8M0 128x128 tile scales; the NVFP4 families use
+        // per-16 E4M3), so the schema cannot infer a block size. Offsets and
+        // ranges are checked above; the size contract belongs to the loader.
         e.w1_global_scale = gs1->Value(i);
         e.w2_global_scale = gs2->Value(i);
         e.w3_global_scale = gs3->Value(i);
@@ -1339,12 +1331,6 @@ LoadSharedExpertBatchViews(const std::filesystem::path &path)
         ARROW_RETURN_NOT_OK(CheckViewRange(
             v.w3_scales, v.w3_scale_bytes, u3->data()->buffers[1], "w3 scales",
             name));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            v.w1_packed_bytes, v.w1_scale_bytes, kNVFP4BlockSize, name));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            v.w2_packed_bytes, v.w2_scale_bytes, kNVFP4BlockSize, name));
-        ARROW_RETURN_NOT_OK(arrow_check::CheckExpertScaleCount(
-            v.w3_packed_bytes, v.w3_scale_bytes, kNVFP4BlockSize, name));
         v.w1_global_scale = gs1->Value(i);
         v.w2_global_scale = gs2->Value(i);
         v.w3_global_scale = gs3->Value(i);

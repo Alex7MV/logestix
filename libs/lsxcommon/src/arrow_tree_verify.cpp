@@ -107,8 +107,10 @@ arrow::Status ValidateKind(TreeFileKind kind, const arrow::RecordBatch &batch,
         for (int col : {3, 4, 5})
             ARROW_RETURN_NOT_OK(
                 ValidateScaleColumn(batch, col, "expert scale"));
-        // Exact converted-tree contract: one E4M3 scale per 16 elements.
-        {
+        // Exact converted-tree contract for ROUTED experts: one E4M3 scale
+        // per 16 elements. Shared experts are excluded: DeepSeek stores them
+        // as raw F8_E4M3 with E8M0 128x128 tile scales.
+        if (kind == TreeFileKind::kExpert) {
             auto bin = [&](int col) {
                 return std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
                     batch.column(col));
