@@ -35,6 +35,7 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 
 | model | report |
 |---|---|
+| GigaChat3.5-432B-A28B-Reasoning | `2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md` |
 | MiniMax-M3.1-Flash | `2026-10-31-MiniMax-M3.1-Flash.md` |
 | Beam-1.0-501B-A23B | `2026-10-31-Beam-1.0-501B-A23B.md` |
 | Granite-Switch-4.1-30B | `2026-10-31-granite-switch-4.1-30b.md` |

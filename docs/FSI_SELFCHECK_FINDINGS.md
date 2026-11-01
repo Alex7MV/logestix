@@ -27,7 +27,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | Qwen3.5-9B | captured (all 3; FSI-01/02 numeric substitution) — see the `qwen3_5` note below |
 | ornith-1.5-35B-A3B | captured (all 3 exact) from the upstream **transformers** release — the retired MLX export was not capturable (its `language_model.*` keys MISS against the `model.language_model.` HF layout); see the ornith note below |
 | DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
-| GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
+| GigaChat3.5-432B | **template-derived golden committed 2026-10-31**; converted **PASS 3/3** at a 1536-token budget (FSI-02 overruns 512). Source not runnable locally: FP8 (416 G) multi-GPU vendor stack + custom `gigachat3_5` code, BF16 body 864 G > host RAM |
 | DeepSeek-V4.1-Flash | not capturable locally — `deepseek_v41` is not in transformers 5.15.1 and the release ships its **own inference stack** (`inference/model.py`, `convert.py`, `generate.py`; tilelang FP8/FP4 kernels, tensor-parallel, target 2×80 GB GPU), not HF remote code. Do not confuse it with the flat FP8 + FP4 MoE checkpoint in the vault. |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 (template-derived golden; **green 3/3 at a 512-token budget since 2026-10-23**, see the update below) |
 | Qwen3.5-35B-A3B | captured (all 3 exact) on **CPU**, no `OVERRIDES` entry — see below |

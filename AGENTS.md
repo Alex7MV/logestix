@@ -178,17 +178,33 @@ procedure — `perf-tuning-a-model`.
   `nemotron_moe_kernels.{h,cu}` (conv/SSM/gated-RMSNorm/router/relu2),
   `nemotron_moe_inference_attn.cu` (RoPE+GQA), `nemotron_moe_inference_pipeline.cu`,
   `nemotron_moe_device_math.h`; format tag `logestix-nemotron-nvfp4`).
-  GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE:
+  GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE,
+  ~432B / ~28B active: 40L / 7168H / 64 MLA heads (qk 128+64, v 128,
+  q_lora 1536, kv_lora 512, output gate) at layers 3,7,...,39 and GDN
+  (32K·64V·128HD, conv-4) elsewhere / 256 routed experts top-8 (I=2048) + one
+  shared expert / ZeroCenteredGatedNorm on every norm / FP8 block-128 source;
   `gigachat_moe_constants.h` (frozen passport), `gigachat_moe_convert.{h,cpp}`
-  (FP8 block-128 -> neutral NVFP4), `gigachat_moe_dequant.cu` (partial-tile
-  FP8->BF16),   `gigachat_moe_load.{h,cpp}`, `gigachat_moe_model.{h,cpp}`,
-  `gigachat_moe_device_math.h`, `gigachat_moe_norm_kernels.cu` /
-  `gigachat_moe_kernels.{h,cu}` (ZeroCenteredGatedNorm, GDN output norm,
-  sigmoid router, swiglu_limit, sigmoid gate),
-  `gigachat_moe_expert_cache.{h,cpp}` (host mmap store of 9472 experts + device
-  slot-LRU, knob `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`);
-  format tag `logestix-gigachat-nvfp4`; MLA/GatedDeltaNet attention + decode
-  pipeline land in Plan 2b).
+  (FP8 block-128 -> neutral NVFP4; also builds and verifies the tokenizer
+  arrows), `gigachat_moe_dequant.cu` (partial-tile FP8->BF16),
+  `gigachat_moe_load.{h,cpp}`, `gigachat_moe_model.{h,cpp}`,
+  `gigachat_moe_device_math.h`, `gigachat_moe_inference_attn.{h,cu}` (MLA +
+  GDN decode), `gigachat_moe_inference_pipeline.{h,cu}` (the 40-layer hybrid
+  driver), `gigachat_moe_norm_kernels.cu` / `gigachat_moe_kernels.{h,cu}`
+  (ZeroCenteredGatedNorm, GDN output norm, sigmoid router, swiglu_limit,
+  sigmoid gate), `gigachat_moe_expert_cache.{h,cpp}` (host mmap store of 9472
+  experts + device slot-LRU, knob `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`),
+  `gigachat_tool_format.{h,cpp}` (native chatml-v5 GCML codec);
+  format tag `logestix-gigachat-nvfp4`; converted in place with
+  `lsxforge --gigachat`; tokenizer `tokenizer_kind 3` (Llama-3/o200k case-run
+  pre-tokenizer, parity 30/30 — the legacy kind-0 split mis-splits mixed-case
+  identifiers). Real weights (241 GB tree: 219 GB routed experts + 13 GB MTP
+  stored-not-applied + 9.7 GB pinned): SelfCheck Paris ×3 bit-exact
+  (`logits_hash 2743ee1c26f859d5`, top-1 19904), native tool round-trip
+  `get_weather {"city":"Paris"}`, FSI/CODE/DET 3/3 each on **template-derived**
+  goldens (the 432B FP8 vendor stack is multi-GPU and the BF16 body exceeds
+  host RAM), **11.32 t/s (perf) / 11.10 (r3)** at 2048 tokens, TTFT ~3.9 s,
+  26.2 GiB resident; report
+  `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md`).
   Ornith-1.5-35B-A3B (independent family `ornith`: a Qwen3.5-MoE reasoning
   fine-tune, architecture-identical to Qwen3.5/3.6-35B; `ornith_moe_constants.h`
   (frozen passport), the standalone converter `ornith_moe_convert.{h,cpp}`

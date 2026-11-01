@@ -91,6 +91,20 @@ OVERRIDES["minimax-m3.1-flash"] = {
                   "checkpoint: no 32 GB-card execution path (vendor stack is "
                   "multi-GPU), so the parity oracle is the prompt template",
 }
+# GigaChat3.5-432B-A28B-Reasoning (416 GB FP8-block-128 source, ~432B params):
+# the reference is the vendor's multi-GPU FP8 stack (`quantization_config.fp8`,
+# custom `GigaChat35ForCausalLM`); there is no single-GPU path and the BF16
+# body (864 GB) exceeds host RAM, so the golden is the prompt's Expected
+# Template (template-only mode) framed with the checkpoint's own
+# chat_template.jinja. The template spells `<s>` literally, so the ids are
+# encoded with add_special_tokens=False — exactly one BOS, like the engine's
+# chatml-v5 framing. Recorded deviation, not a silent one.
+OVERRIDES["gigachat3.5-432b-a28b-reasoning"] = {
+    "add_special_tokens": False,
+    "unrunnable": "432B FP8-block-128 vendor stack (multi-GPU reference); no "
+                  "single-GPU path and the BF16 body (864 GB) exceeds host RAM",
+}
+
 def _apply_template_kwargs(template_kwargs, opts):
     """Per-model extra chat-template variables (e.g. MiniMax's thinking_mode)."""
     extra = opts.get("template_kwargs") or {}
@@ -101,6 +115,7 @@ def _apply_template_kwargs(template_kwargs, opts):
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
            "device_map": None, "loader": None, "system": None,
+           "add_special_tokens": True,
            "chat_template": None}
 
 _STRESS_RUNS = 3
@@ -406,7 +421,10 @@ def template_golden(model, model_type, out, max_new_tokens):
     cases = []
     for p in load_prompts():
         prompt_text = frame(model, tok, p["body"], opts)
-        ids = tok(prompt_text).input_ids
+        ids = tok(
+            prompt_text,
+            add_special_tokens=opts.get("add_special_tokens", True),
+        ).input_ids
         got = extract(p["kind"], p["expected"])
         assert got == p["expected"], (p["id"], got, p["expected"])
         cases.append({"id": p["id"], "kind": p["kind"],
@@ -499,7 +517,9 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
     cases = []
     for p in load_prompts():
         prompt_text = frame(model, tok, p["body"], opts)
-        ids = tok(prompt_text, return_tensors="pt").input_ids.to(lm.device)
+        ids = tok(prompt_text, return_tensors="pt",
+                  add_special_tokens=opts.get("add_special_tokens", True)
+                  ).input_ids.to(lm.device)
         with torch.no_grad():
             out_ids = lm.generate(ids, do_sample=False,
                                   max_new_tokens=max_new_tokens)

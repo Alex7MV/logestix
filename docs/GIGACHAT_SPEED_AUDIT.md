@@ -9,6 +9,13 @@ Model: `/mnt/llm_models/models/GigaChat3.5-432B-A28B-Reasoning`
 full-attention at {3,7,…,39}, GatedDeltaNet elsewhere, ZeroCenteredGatedNorm
 everywhere).
 
+> **2026-10-31 re-measurement** (vault moved to
+> `/mnt/fast_storage/huggingface`, tree re-converted 241 GB): harness rows
+> **11.32 t/s (perf) / 11.10 t/s (r3)** at 2048 tokens, TTFT 3905 / 3975 ms,
+> 189 / 192 W, 26.2 GiB resident. The old `r3 3.47` row predates P0a/P0b and
+> the pinned embed; the strict class now costs ~2%. See
+> `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md`.
+
 Tooling: `nsys profile -t cuda` + `nsys export sqlite` (`ncu` unavailable on
 this box). nsys overhead is negligible for wall rate: profiled 256-token run
 179.9 ms/token vs canonical plain 2048-token run 176.8 ms/token decode (<2%).

@@ -6,11 +6,16 @@
 #include "test_gigachat_moe_fixture.h"
 
 #include "lsxcommon/gigachat_moe_convert.h"
+#include "lsxcommon/tokenizer.h"
 
+#include <arrow/io/file.h>
+
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 using namespace lsxcommon::gigachat;
 namespace fs = std::filesystem;
@@ -96,6 +101,7 @@ TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
     const auto src = gigachattest::MakeTempDir("gc_src");
     const auto dst = gigachattest::MakeTempDir("gc_dst");
     gigachattest::WriteGigaChatCheckpoint(src);
+    gigachattest::WriteTokenizerJson(src);
 
     auto st = ConvertGigaChatModel(src.string(), dst.string());
     INFO("convert status: " << st.ToString());
@@ -117,4 +123,44 @@ TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
     CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_001_nvfp4.arrow"));
     CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow"));
     CHECK(fs::exists(dst / "logestix" / "mtp" / "layer_040.arrow"));
+    // Model Ingestion Protocol stage 4: the converter owns the tokenizer
+    // bridge. GigaChat's checkpoint is the Llama-3/o200k case-run BPE, so the
+    // emitted metadata must say tokenizer_kind 3 (not the legacy kind 0, which
+    // mis-splits mixed-case identifiers).
+    CHECK(json.find("\"tokenizer\": \"arrow-bpe\"") != std::string::npos);
+    CHECK(fs::exists(dst / "logestix" / "pinned" / "tokenizer_vocab.arrow"));
+    CHECK(fs::exists(dst / "logestix" / "pinned" / "tokenizer_merges.arrow"));
+
+    auto vf = arrow::io::MemoryMappedFile::Open(
+        (dst / "logestix" / "pinned" / "tokenizer_vocab.arrow").string(),
+        arrow::io::FileMode::READ);
+    auto mf = arrow::io::MemoryMappedFile::Open(
+        (dst / "logestix" / "pinned" / "tokenizer_merges.arrow").string(),
+        arrow::io::FileMode::READ);
+    REQUIRE(vf.ok());
+    REQUIRE(mf.ok());
+    lsxcommon::ArrowTokenizerDb db;
+    auto meta = lsxcommon::load_tokenizer_metadata(*vf, *mf, db);
+    INFO(meta.ToString());
+    REQUIRE(meta.ok());
+    CHECK(db.tokenizer_kind == 3);
+    CHECK(db.bos_id == 259);
+    CHECK(db.eos_id == 2);
+    CHECK(db.pad_id == 2);
+    // The emitted bridge must encode/decode byte-exactly on a mixed-case
+    // sample (its exact ids are pinned against the source tokenizer by
+    // test_gigachat_moe_tokenizer_parity).
+    std::vector<int32_t> ids(256, 0);
+    size_t cap = ids.size();
+    const char *text = "getUserName";
+    const int32_t n =
+        lsxcommon::arrow_tokenizer_encode(db, text, std::strlen(text),
+                                          ids.data(), &cap);
+    REQUIRE(n > 0);
+    ids.resize(static_cast<size_t>(n));
+    std::vector<char> back(64, '\0');
+    size_t back_len = back.size();
+    REQUIRE(lsxcommon::arrow_tokenizer_decode(db, ids.data(), ids.size(),
+                                              back.data(), &back_len) == 0);
+    CHECK(std::string(back.data(), back_len) == text);
 }

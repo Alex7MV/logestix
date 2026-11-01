@@ -7,6 +7,7 @@
 #include "gigachat_moe_constants.h"
 #include "lsxcommon/converter.h"
 #include "lsxcommon/log.h"
+#include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/schema.h"
@@ -595,6 +596,37 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
         ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(recs),
                                          mtp_dir / LayerFile(layer, ".arrow")));
 
+    // Model Ingestion Protocol stage 4 (tokenizer bridge). GigaChat's
+    // checkpoint is a byte-level BPE with the Llama-3/o200k case-run
+    // pre-tokenizer (contraction suffix, \p{N}{1,3}, CJK inside the letter
+    // runs), i.e. engine tokenizer_kind 3 — NOT the legacy kind-0 split, which
+    // mis-splits mixed-case identifiers. The builder resolves `<s>`/`</s>`
+    // from tokenizer_config.json; the config's bos/eos/pad are passed through
+    // as the authoritative override.
+    bool tokenizer_ok = false;
+    {
+        const fs::path tok_path = fs::path(input_dir) / "tokenizer.json";
+        if (fs::exists(tok_path))
+        {
+            TokenizerSpecialPolicy tok_policy;
+            tok_policy.pretokenizer = 1;  // Llama3WordStream -> kind 3
+            if (top.eos_id >= 0) tok_policy.eos_id = top.eos_id;
+            if (top.pad_id >= 0) tok_policy.pad_id = top.pad_id;
+            ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
+                tok_path.string(), pinned_dir,
+                integrity::TokenizerSpecialIds{.bos_required = true,
+                                               .eos_required = true,
+                                               .pad_required = true},
+                tok_policy));
+            tokenizer_ok = true;
+        }
+        else if (!SyntheticGeometryAllowed())
+        {
+            return arrow::Status::Invalid("tokenizer.json not found in ",
+                                          input_dir);
+        }
+    }
+
     // Conversion-time VRAM profile.
     VramGeometry vg;
     vg.hidden_dim = top.hidden;
@@ -662,7 +694,8 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
           << ",\n    \"optimal_bytes\": " << vram.optimal_bytes
           << ",\n    \"max_bytes\": " << vram.max_bytes
           << ",\n    \"context_tokens\": " << vram.context_tokens << "\n  }"
-          << ",\n  \"tokenizer\": \"fixture\""
+          << ",\n  \"tokenizer\": \""
+          << (tokenizer_ok ? "arrow-bpe" : "fixture") << "\""
           << ",\n  \"deferred\": {\"mtp\": \"stored\", \"mtp_layers\": [40,41,42]"
              ", \"mtp_tensors\": "
           << mtp_count << "}"

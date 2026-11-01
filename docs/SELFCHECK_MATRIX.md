@@ -1,8 +1,9 @@
 # SelfCheck matrix — model x parity gate, as measured
 
-Snapshot of **2026-10-24/25** on the reference host (RTX 5090, CUDA 13.4,
-`linux-release-znver4-aocc`), one test at a time (GPU exclusivity).
-Commit at capture: `f38fba84`.
+Snapshot of **2026-10-24/25**, updated **2026-10-31** (GigaChat3.5-432B-A28B),
+on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
+one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
+GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`.
 
 This is a **measurement**, not a policy. The machine-checked registry is the
 source of truth for which target covers which model and stage:
@@ -44,8 +45,21 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
+| **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 
-- SelfCheck **17/17**, FSI **23/26**, CODE **26/26**, DET **25/26**.
+- SelfCheck **18/18**, FSI **26/29**, CODE **29/29**, DET **28/29**.
+- **GigaChat3.5-432B-A28B-Reasoning** landed green on all four gates in its
+  2026-10-31 session (241 GB tree, 219 GB of routed experts pinned, 26.2 GiB
+  resident). Its goldens are **template-derived** — the 432B FP8-block-128
+  vendor reference is multi-GPU and the BF16 body (864 GB) exceeds this host's
+  RAM — captured with the checkpoint's own `chat_template.jinja` and a 1536-token
+  budget (FSI-02's reasoning trace overruns 512). SelfCheck is Paris ×3
+  bit-exact (`logits_hash 2743ee1c26f859d5`, top-1 19904) and the native
+  chatml-v5 tool round-trip returns `get_weather {"city":"Paris"}`. The
+  tokenizer moved to `tokenizer_kind 3` (o200k case-run) with a 30/30 parity
+  golden; the previous kind-0 split mis-split mixed-case identifiers. Perf by
+  the harness: **11.32 t/s (perf) / 11.10 (r3)** at 2048 —
+  `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md`.
 - **Granite-Switch DET-TEST-02 is the third red.** The source CPU-BF16 oracle
   itself answers `CRITICAL` where the prompt's Expected Template is
   `CATASTROPHIC` (capture logged the disagreement); source and converted agree
@@ -148,8 +162,9 @@ when the converted tree exists; SelfCheck skips with them.
 ## 4. Neither — SKIP
 
 `glm-5.2`, `deepseek-v4-flash`, `nemotron-3.5-lightning-30b-a3b` (bf16 sibling),
-`gigachat3.5-432b-a28b-reasoning`, `mimo-v2.6-flash-rl`. Registered stages
-exist; converted trees and goldens do not. `deepseek-v4-pro-0813` moved out of
+`mimo-v2.6-flash-rl`. Registered stages exist; converted trees and goldens do
+not. `gigachat3.5-432b-a28b-reasoning` moved out of this section on 2026-10-31
+(241 GB tree, all four gates measured). `deepseek-v4-pro-0813` moved out of
 this section on 2026-10-26: the 838 GB tree exists and SelfCheck passes on real
 weights (Paris x3, bit-exact logits) — its FSI/CODE/DET remain declared debt
 because the source oracle is the TP-4 FP8 runner (`docs/OPEN_TASKS.md` §R3).
@@ -173,7 +188,7 @@ ctest --test-dir build/linux-release-znver4-aocc --timeout 1500 -R \
   "alice.*selfcheck|gemma_(moe|dense).*selfcheck|glm_moe_flash.*selfcheck|\
 granite_dense.*selfcheck|nemotron_moe_nvfp4.*selfcheck|ornith_moe.*selfcheck|\
 phi_dense.*selfcheck|qwen_dense.*selfcheck|qwen_moe_36.*selfcheck|\
-qwen_moe_exp.*selfcheck|xing_moe.*selfcheck"
+qwen_moe_exp.*selfcheck|xing_moe.*selfcheck|gigachat_moe.*selfcheck"
 
 # 2. the debt rows (SelfCheck only; the three parity stages SKIP by design)
 ctest --test-dir build/linux-release-znver4-aocc -R "mistral.*selfcheck"
@@ -181,7 +196,7 @@ ctest --test-dir build/linux-release-znver4-aocc -R "mistral.*selfcheck"
 # 3. the absent-vault families (all SKIP; proves the SKIP is the vault, not code)
 ctest --test-dir build/linux-release-znver4-aocc -R \
   "deepseek_moe(_v41)?_selfcheck|glm_moe_selfcheck|kimi_moe_selfcheck|\
-mimo_moe_selfcheck|nemotron_moe_selfcheck|qwen_moe_selfcheck|gigachat_moe_selfcheck"
+mimo_moe_selfcheck|nemotron_moe_selfcheck|qwen_moe_selfcheck"
 
 # 4. the harness' own self-tests (no model): formula extraction/canonicalisation
 ctest --test-dir build/linux-release-znver4-aocc -R \

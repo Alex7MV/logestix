@@ -142,7 +142,7 @@ known fragility.
 | gemma-4-26b-a4b-it | **wired** | source (CPU) / tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |
 | kimi-k2.7-code | pending | — | — | source not in vault; test SKIPs |
 | nemotron-3.5-lightning-30b-a3b | pending | — | — | runnable source available; DET not captured |
-| gigachat3.5-432b-a28b-reasoning | pending | — | — | 432B source; template golden only |
+| gigachat3.5-432b-a28b-reasoning | **wired** | tokenizer-only (template golden, 1536 budget) | `deterministic=true` | **PASS 3/3**; golden committed 2026-10-31 (432B FP8 source not runnable here) |
 | granite-4.2-30b | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3**; golden committed |
 | phi-4 | **wired** | source (Phi3ForCausalLM) | `deterministic=true` | **DET-02 RED (2026-10-07)**: after the E4M3FN re-conversion the model emits `CRITICAL` (deterministic 3/3) instead of the source golden `CATASTROPHIC`; DET-01/03 still pass. A borderline NVFP4 greedy flip — see below and `OPEN_TASKS.md` section O |
 
