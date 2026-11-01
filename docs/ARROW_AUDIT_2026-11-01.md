@@ -75,9 +75,9 @@ zero-copy view-хелперами; исключение — gemma (см. A-07).
 | phi-4 | phi_dense_convert.cpp | phi_dense_load.cpp | views + dense | schema.cpp | views+dense |
 <!-- arrow-matrix:end -->
 
-DeepSeek-V4-Flash, DeepSeek-V4.1-Flash и Qwen3.5-35B-A3B дерева в
-`/mnt/fast_storage/huggingface` не имеют — для них проверен только код
-(конвертер/загрузчик/схемы), не артефакты.
+Все 29 моделей имеют сконвертированное дерево. Ранее отсутствовавшие
+DeepSeek-V4-Flash, DeepSeek-V4.1-Flash и Qwen3.5-35B-A3B сконвертированы в
+этой итерации (см. §5a) и проверены полным аудитом.
 
 ## 3. Находки
 
@@ -269,11 +269,26 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
 - время прогона: ~211 с (footer-фаза с `CountRows` по всем файлам + выборка);
 - лог: `/mnt/fast_storage/tmp/arrow_tree_audit3.log`.
 
-**Полный прогон** (`LSX_ARROW_AUDIT_FULL=1`, все payload'ы, 3.6 ТБ):
-26 деревьев, **0 проблем**, ~696 с. Он же нашёл кодировку shared-экспертов
-DeepSeek (см. §3c) — проверка блока для shared была снята, routed остаётся
-per-16. Лог: `/mnt/fast_storage/tmp/arrow_tree_full2.log`. Полный режим не
-входит в ctest TIMEOUT 600 — запускается вручную.
+**Полный прогон** (`LSX_ARROW_AUDIT_FULL=1`, все payload'ы, ~4.1 ТБ):
+**29 деревьев, 310 158 файлов, 0 проблем**, ~783 с. Он же нашёл кодировку
+shared-экспертов DeepSeek (см. §3c) — проверка блока для shared была снята,
+routed остаётся per-16. Логи:
+`/mnt/fast_storage/tmp/arrow_tree_full2.log` (26 деревьев) и
+`/mnt/fast_storage/tmp/arrow_tree_full29.log` (29). Полный режим не входит в
+ctest TIMEOUT 600 — запускается вручную.
+
+## 5a. Конвертация трёх оставшихся деревьев
+
+| модель | исходник | флаг | время | дерево | файлы | verify |
+|---|---|---|---|---|---|---|
+| Qwen3.5-35B-A3B | 67 ГБ | `--qwen35moe` | 217 с | 19 ГБ | 10 446 | 0 проблем |
+| DeepSeek-V4.1-Flash | 476 ГБ | `--deepseek_v41` | 228 с | 294 ГБ | 15 403 | 0 проблем |
+| DeepSeek-V4-Flash | 155 ГБ | generic (`--input/--output`) | 124 с | 157 ГБ | 11 055 | 0 проблем |
+
+Generic-конвертер для V4-Flash дал `logestix-v1-nvfp4` с routed-экспертами
+per-16 (полный аудит это подтвердил), отдельный `--deepseek_nvfp4` не
+потребовался. Все три дерева проходят `lsxforge --verify` и полный аудит;
+свободно на диске после конвертации — 2.8 ТБ.
 
 Типы по дереву стабильны: `expert`, `dense-nvfp4`, `pinned`, `shared-expert`
 (только Mistral/Kimi/DeepSeek-Pro), `tokenizer-vocab`, `tokenizer-merges`.
