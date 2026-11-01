@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arrow/api.h>
+#include <arrow/memory_pool.h>
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -156,7 +157,8 @@ public:
     static std::shared_ptr<arrow::Schema> Make();
 
     static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-    MakeBatch(const std::vector<DenseNvfp4Record> &records);
+    MakeBatch(const std::vector<DenseNvfp4Record> &records,
+              arrow::MemoryPool *pool = nullptr);
 
     static arrow::Result<std::vector<DenseNvfp4Record>>
     UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
@@ -179,7 +181,8 @@ public:
     static std::shared_ptr<arrow::Schema> Make();
 
     static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-    MakeBatch(const PackedExpert &expert);
+    MakeBatch(const PackedExpert &expert,
+              arrow::MemoryPool *pool = nullptr);
 
     static arrow::Result<PackedExpert>
     UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
@@ -195,7 +198,8 @@ public:
     static std::shared_ptr<arrow::Schema> Make();
 
     static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-    MakeBatch(const std::vector<TensorRecord> &tensors);
+    MakeBatch(const std::vector<TensorRecord> &tensors,
+              arrow::MemoryPool *pool = nullptr);
 
     static arrow::Result<std::vector<TensorRecord>>
     UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
@@ -221,7 +225,8 @@ public:
     static std::shared_ptr<arrow::Schema> Make();
 
     static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-    MakeBatch(const std::vector<PackedExpert> &layers);
+    MakeBatch(const std::vector<PackedExpert> &layers,
+              arrow::MemoryPool *pool = nullptr);
 
     static arrow::Result<std::vector<PackedExpert>>
     UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);

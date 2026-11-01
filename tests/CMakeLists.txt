@@ -231,6 +231,32 @@ endif()
 
 add_test(NAME test_schema_views COMMAND test_schema_views)
 
+# ── Arrow IPC validation: malformed batches must fail, not over-read ──
+add_executable(test_arrow_validation test_arrow_validation.cpp)
+target_link_libraries(test_arrow_validation PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_arrow_validation COMMAND test_arrow_validation)
+
+# Guard: Arrow IPC usage — mmap-only reads, recorded UnpackBatch verdicts,
+# atomic writes, and an audit matrix that covers every adapted model.
+add_executable(test_arrow_usage_guard test_arrow_usage_guard.cpp)
+target_link_libraries(test_arrow_usage_guard PRIVATE Catch2::Catch2WithMain)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_AUG)
+target_compile_definitions(test_arrow_usage_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_AUG}\"")
+add_test(NAME test_arrow_usage_guard COMMAND test_arrow_usage_guard)
+
+# Environment-gated validator over the CONVERTED vault trees (26 models);
+# SKIP when no tree is present. Footer pass for every .arrow plus a bounded
+# payload sample (LSX_ARROW_AUDIT_{ROOT,FULL,MAX_BYTES}).
+add_executable(test_arrow_tree_integrity test_arrow_tree_integrity.cpp)
+target_link_libraries(test_arrow_tree_integrity PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_arrow_tree_integrity COMMAND test_arrow_tree_integrity)
+set_tests_properties(test_arrow_tree_integrity PROPERTIES LABELS convert)
+set_tests_properties(test_arrow_tree_integrity PROPERTIES TIMEOUT 600)
+set_tests_properties(test_arrow_tree_integrity PROPERTIES SKIP_RETURN_CODE 4)
+
 
 # ── DeepSeek loader round-trip test ─────────────────────────────────
 add_executable(test_deepseek_moe_loader test_deepseek_moe_loader.cpp)
@@ -6871,6 +6897,8 @@ set_tests_properties(
     test_gpu_power
     test_perf_baseline_logic
     test_schema_views
+    test_arrow_validation
+    test_arrow_usage_guard
     test_deepseek_moe_loader
     test_deepseek_moe_model
     test_deepseek_moe_pro_model

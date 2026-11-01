@@ -1,4 +1,5 @@
 #include "lsxcommon/schema.h"
+#include "lsxcommon/arrow_validate.h"
 #include "lsxcommon/diagnostics.h"
 #include "lsxcommon/log.h"
 #include "nvfp4_scale.h"
@@ -13,15 +14,12 @@
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_split.h>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-
-#if defined(__linux__)
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
+#include <system_error>
 
 namespace lsxcommon {
 
@@ -46,14 +44,14 @@ float e4m3_to_float(uint8_t e4m3)
 namespace {
 
 arrow::Result<std::shared_ptr<arrow::Array>>
-make_scales_u8(const std::vector<uint8_t> &scales)
+make_scales_u8(const std::vector<uint8_t> &scales, arrow::MemoryPool *pool)
 {
-    arrow::UInt8Builder ub;
+    arrow::UInt8Builder ub(pool);
     ARROW_RETURN_NOT_OK(ub.Reserve(scales.size()));
     ARROW_RETURN_NOT_OK(ub.AppendValues(scales.data(), scales.size()));
     ARROW_ASSIGN_OR_RAISE(auto flat, ub.Finish());
-    auto lb_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
-    arrow::ListBuilder lb(arrow::default_memory_pool(), lb_val);
+    auto lb_val = std::make_shared<arrow::UInt8Builder>(pool);
+    arrow::ListBuilder lb(pool, lb_val);
     ARROW_RETURN_NOT_OK(lb.Reserve(1));
     ARROW_RETURN_NOT_OK(lb.Append());
     auto *vb = static_cast<arrow::UInt8Builder *>(lb.value_builder());
@@ -82,50 +80,36 @@ std::shared_ptr<arrow::Schema> ExpertSchema::Make()
 }
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-ExpertSchema::MakeBatch(const PackedExpert &expert)
+ExpertSchema::MakeBatch(const PackedExpert &expert, arrow::MemoryPool *pool)
 {
     auto schema = Make();
+    arrow::MemoryPool *mp = pool ? pool : arrow::default_memory_pool();
 
-    ARROW_ASSIGN_OR_RAISE(auto w1_buf,
-        arrow::AllocateBuffer(expert.w1_packed.size(), kArrowAlignment));
-    ARROW_ASSIGN_OR_RAISE(auto w2_buf,
-        arrow::AllocateBuffer(expert.w2_packed.size(), kArrowAlignment));
-    ARROW_ASSIGN_OR_RAISE(auto w3_buf,
-        arrow::AllocateBuffer(expert.w3_packed.size(), kArrowAlignment));
-
-    diag::LogBuffer("ExpertSchema::MakeBatch w1", *w1_buf);
-    diag::LogBuffer("ExpertSchema::MakeBatch w2", *w2_buf);
-    diag::LogBuffer("ExpertSchema::MakeBatch w3", *w3_buf);
-    diag::ValidateCpuBuffer(*w1_buf, "ExpertSchema::MakeBatch w1 mutable_data");
-    diag::ValidateCpuBuffer(*w2_buf, "ExpertSchema::MakeBatch w2 mutable_data");
-    diag::ValidateCpuBuffer(*w3_buf, "ExpertSchema::MakeBatch w3 mutable_data");
-
-    std::memcpy(w1_buf->mutable_data(), expert.w1_packed.data(),
-                expert.w1_packed.size());
-    std::memcpy(w2_buf->mutable_data(), expert.w2_packed.data(),
-                expert.w2_packed.size());
-    std::memcpy(w3_buf->mutable_data(), expert.w3_packed.data(),
-                expert.w3_packed.size());
-
-    auto make_binary = [](const void *data, int64_t size)
+    // The IPC writer copies each payload into the file stream; there is no
+    // reason to stage it in a second host buffer first. Append straight from
+    // the PackedExpert vectors (one copy instead of two).
+    auto make_binary = [mp](const uint8_t *data, int64_t size)
         -> arrow::Result<std::shared_ptr<arrow::Array>>
     {
-        arrow::LargeBinaryBuilder bb;
+        arrow::LargeBinaryBuilder bb(mp);
         ARROW_RETURN_NOT_OK(bb.Reserve(1));
-        ARROW_RETURN_NOT_OK(bb.Append(
-            static_cast<const uint8_t *>(data), size));
+        ARROW_RETURN_NOT_OK(bb.ReserveData(size));
+        ARROW_RETURN_NOT_OK(bb.Append(data, size));
         return bb.Finish();
     };
-    ARROW_ASSIGN_OR_RAISE(auto w1_arr, make_binary(w1_buf->data(), w1_buf->size()));
-    ARROW_ASSIGN_OR_RAISE(auto w2_arr, make_binary(w2_buf->data(), w2_buf->size()));
-    ARROW_ASSIGN_OR_RAISE(auto w3_arr, make_binary(w3_buf->data(), w3_buf->size()));
+    ARROW_ASSIGN_OR_RAISE(auto w1_arr, make_binary(
+        expert.w1_packed.data(), static_cast<int64_t>(expert.w1_packed.size())));
+    ARROW_ASSIGN_OR_RAISE(auto w2_arr, make_binary(
+        expert.w2_packed.data(), static_cast<int64_t>(expert.w2_packed.size())));
+    ARROW_ASSIGN_OR_RAISE(auto w3_arr, make_binary(
+        expert.w3_packed.data(), static_cast<int64_t>(expert.w3_packed.size())));
 
-    ARROW_ASSIGN_OR_RAISE(auto s1, make_scales_u8(expert.w1_scales));
-    ARROW_ASSIGN_OR_RAISE(auto s2, make_scales_u8(expert.w2_scales));
-    ARROW_ASSIGN_OR_RAISE(auto s3, make_scales_u8(expert.w3_scales));
+    ARROW_ASSIGN_OR_RAISE(auto s1, make_scales_u8(expert.w1_scales, mp));
+    ARROW_ASSIGN_OR_RAISE(auto s2, make_scales_u8(expert.w2_scales, mp));
+    ARROW_ASSIGN_OR_RAISE(auto s3, make_scales_u8(expert.w3_scales, mp));
 
-    auto make_gs = [](float val) -> arrow::Result<std::shared_ptr<arrow::Array>> {
-        arrow::FloatBuilder fb;
+    auto make_gs = [mp](float val) -> arrow::Result<std::shared_ptr<arrow::Array>> {
+        arrow::FloatBuilder fb(mp);
         ARROW_RETURN_NOT_OK(fb.Reserve(1));
         ARROW_RETURN_NOT_OK(fb.Append(val));
         return fb.Finish();
@@ -145,6 +129,9 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
 {
     if (!batch || batch->num_columns() != kNumFields)
         return arrow::Status::Invalid("Expected 9-column expert RecordBatch");
+    if (batch->num_rows() != 1)
+        return arrow::Status::Invalid(
+            "ExpertSchema expects exactly one row, got ", batch->num_rows());
 
     diag::ValidateBatchBuffers(*batch, "ExpertSchema::UnpackBatch input");
 
@@ -160,6 +147,10 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
             return arrow::Status::TypeError("Column is not large_binary");
 
         auto view = bin->GetView(0);
+        ARROW_RETURN_NOT_OK(arrow_check::CheckViewRange(
+            view.data(), static_cast<int64_t>(view.size()),
+            bin->value_data(), "expert weight column",
+            std::to_string(idx)));
         out.assign(view.begin(), view.end());
 
         return arrow::Status::OK();
@@ -182,6 +173,9 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
         auto offset_arr = std::dynamic_pointer_cast<arrow::Int32Array>(offsets);
         if (!offset_arr)
             return arrow::Status::TypeError("Offsets array is not int32");
+        ARROW_RETURN_NOT_OK(arrow_check::CheckListSlice(
+            *offset_arr, 0, u8->length(), "expert scale list",
+            std::to_string(idx)));
         int64_t begin = offset_arr->Value(0);
         int64_t end   = offset_arr->Value(1);
         scales.assign(u8->raw_values() + begin,
@@ -209,6 +203,33 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     ARROW_RETURN_NOT_OK(read_gs(kIdxW2GlobalScale, pe.w2_global_scale));
     ARROW_RETURN_NOT_OK(read_gs(kIdxW3GlobalScale, pe.w3_global_scale));
 
+    // The routed-expert BLOCK SIZE is model-dependent (per-16 E4M3 for the
+    // fresh-NVFP4 families, per-32/per-128 E8M0 for DeepSeek passthrough), so
+    // only the encoding-independent invariants are enforced here: every
+    // payload is present and every global scale is finite and positive.
+    // An all-empty payload encodes an inactive expert slot (GLM writes
+    // all-inactive defaults); a half-empty one is malformed.
+    const auto check_expert = [](const std::vector<uint8_t> &packed,
+                                 const std::vector<uint8_t> &scales,
+                                 float gs, const char *what) -> arrow::Status {
+        if (packed.empty() != scales.empty())
+            return arrow::Status::Invalid(
+                "expert ", what, " has a partial payload (packed=",
+                packed.size(), ", scales=", scales.size(), ")");
+        if (packed.empty())
+            return arrow::Status::OK();
+        if (!std::isfinite(gs) || gs <= 0.0f)
+            return arrow::Status::Invalid(
+                "expert ", what, " has an invalid global_scale ", gs);
+        return arrow::Status::OK();
+    };
+    ARROW_RETURN_NOT_OK(check_expert(pe.w1_packed, pe.w1_scales,
+                                     pe.w1_global_scale, "w1"));
+    ARROW_RETURN_NOT_OK(check_expert(pe.w2_packed, pe.w2_scales,
+                                     pe.w2_global_scale, "w2"));
+    ARROW_RETURN_NOT_OK(check_expert(pe.w3_packed, pe.w3_scales,
+                                     pe.w3_global_scale, "w3"));
+
     return pe;
 }
 
@@ -233,29 +254,50 @@ std::shared_ptr<arrow::Schema> SharedExpertSchema::Make()
 }
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-SharedExpertSchema::MakeBatch(const std::vector<PackedExpert> &layers)
+SharedExpertSchema::MakeBatch(const std::vector<PackedExpert> &layers,
+                              arrow::MemoryPool *pool)
 {
     auto schema = Make();
     int64_t n = static_cast<int64_t>(layers.size());
+    arrow::MemoryPool *mp = pool ? pool : arrow::default_memory_pool();
 
-    auto w1_builder = std::make_shared<arrow::LargeBinaryBuilder>();
-    auto w2_builder = std::make_shared<arrow::LargeBinaryBuilder>();
-    auto w3_builder = std::make_shared<arrow::LargeBinaryBuilder>();
+    // Pre-size every values buffer: a geometrically growing builder
+    // reallocates and re-copies its contents (up to ~2x the final size).
+    int64_t bytes_w1 = 0, bytes_w2 = 0, bytes_w3 = 0;
+    int64_t scales_w1 = 0, scales_w2 = 0, scales_w3 = 0;
+    for (const auto &e : layers) {
+        bytes_w1 += static_cast<int64_t>(e.w1_packed.size());
+        bytes_w2 += static_cast<int64_t>(e.w2_packed.size());
+        bytes_w3 += static_cast<int64_t>(e.w3_packed.size());
+        scales_w1 += static_cast<int64_t>(e.w1_scales.size());
+        scales_w2 += static_cast<int64_t>(e.w2_scales.size());
+        scales_w3 += static_cast<int64_t>(e.w3_scales.size());
+    }
+
+    auto w1_builder = std::make_shared<arrow::LargeBinaryBuilder>(mp);
+    auto w2_builder = std::make_shared<arrow::LargeBinaryBuilder>(mp);
+    auto w3_builder = std::make_shared<arrow::LargeBinaryBuilder>(mp);
     ARROW_RETURN_NOT_OK(w1_builder->Reserve(n));
     ARROW_RETURN_NOT_OK(w2_builder->Reserve(n));
     ARROW_RETURN_NOT_OK(w3_builder->Reserve(n));
+    ARROW_RETURN_NOT_OK(w1_builder->ReserveData(bytes_w1));
+    ARROW_RETURN_NOT_OK(w2_builder->ReserveData(bytes_w2));
+    ARROW_RETURN_NOT_OK(w3_builder->ReserveData(bytes_w3));
 
-    auto s1_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
-    auto s2_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
-    auto s3_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
-    arrow::ListBuilder s1_builder(arrow::default_memory_pool(), s1_val);
-    arrow::ListBuilder s2_builder(arrow::default_memory_pool(), s2_val);
-    arrow::ListBuilder s3_builder(arrow::default_memory_pool(), s3_val);
-    ARROW_RETURN_NOT_OK(s1_builder.Reserve(n));
-    ARROW_RETURN_NOT_OK(s2_builder.Reserve(n));
-    ARROW_RETURN_NOT_OK(s3_builder.Reserve(n));
+    auto s1_val = std::make_shared<arrow::UInt8Builder>(mp);
+    auto s2_val = std::make_shared<arrow::UInt8Builder>(mp);
+    auto s3_val = std::make_shared<arrow::UInt8Builder>(mp);
+    arrow::ListBuilder s1_builder(mp, s1_val);
+    arrow::ListBuilder s2_builder(mp, s2_val);
+    arrow::ListBuilder s3_builder(mp, s3_val);
+    ARROW_RETURN_NOT_OK(s1_builder.Reserve(n + 1));
+    ARROW_RETURN_NOT_OK(s2_builder.Reserve(n + 1));
+    ARROW_RETURN_NOT_OK(s3_builder.Reserve(n + 1));
+    ARROW_RETURN_NOT_OK(s1_val->Reserve(scales_w1));
+    ARROW_RETURN_NOT_OK(s2_val->Reserve(scales_w2));
+    ARROW_RETURN_NOT_OK(s3_val->Reserve(scales_w3));
 
-    arrow::FloatBuilder gs1_builder, gs2_builder, gs3_builder;
+    arrow::FloatBuilder gs1_builder(mp), gs2_builder(mp), gs3_builder(mp);
     ARROW_RETURN_NOT_OK(gs1_builder.Reserve(n));
     ARROW_RETURN_NOT_OK(gs2_builder.Reserve(n));
     ARROW_RETURN_NOT_OK(gs3_builder.Reserve(n));
@@ -319,32 +361,41 @@ SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch
     if (!w1 || !w2 || !w3 || !s1 || !s2 || !s3 || !gs1 || !gs2 || !gs3)
         return arrow::Status::Invalid("Shared-expert batch column type mismatch");
 
+    // The scale columns are list<uint8>; casting the values/offsets lazily
+    // (as the old lambda did) dereferenced null on a foreign schema.
     auto extract_scales = [](const arrow::ListArray *lst, int64_t row,
-                             std::vector<uint8_t> &out) -> void {
+                             std::vector<uint8_t> &out) -> arrow::Status {
         auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
         auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
-        int64_t begin = offs->Value(row);
-        int64_t end   = offs->Value(row + 1);
+        if (!u8 || !offs)
+            return arrow::Status::TypeError(
+                "Shared-expert scale column is not list<uint8>");
+        ARROW_RETURN_NOT_OK(arrow_check::CheckListSlice(
+            *offs, row, u8->length(), "shared-expert scale list",
+            std::to_string(row)));
+        const int64_t begin = offs->Value(row);
+        const int64_t end = offs->Value(row + 1);
         out.assign(u8->raw_values() + begin, u8->raw_values() + end);
+        return arrow::Status::OK();
+    };
+    auto extract_binary = [](const arrow::LargeBinaryArray *arr, int64_t row,
+                             std::vector<uint8_t> &out) -> arrow::Status {
+        auto v = arr->GetView(row);
+        ARROW_RETURN_NOT_OK(arrow_check::CheckViewRange(
+            v.data(), static_cast<int64_t>(v.size()), arr->value_data(),
+            "shared-expert weight", std::to_string(row)));
+        out.assign(v.begin(), v.end());
+        return arrow::Status::OK();
     };
 
     for (int64_t i = 0; i < n; ++i) {
         auto &e = layers[static_cast<size_t>(i)];
-        {
-            auto v = w1->GetView(i);
-            e.w1_packed.assign(v.begin(), v.end());
-        }
-        {
-            auto v = w2->GetView(i);
-            e.w2_packed.assign(v.begin(), v.end());
-        }
-        {
-            auto v = w3->GetView(i);
-            e.w3_packed.assign(v.begin(), v.end());
-        }
-        extract_scales(s1.get(), i, e.w1_scales);
-        extract_scales(s2.get(), i, e.w2_scales);
-        extract_scales(s3.get(), i, e.w3_scales);
+        ARROW_RETURN_NOT_OK(extract_binary(w1.get(), i, e.w1_packed));
+        ARROW_RETURN_NOT_OK(extract_binary(w2.get(), i, e.w2_packed));
+        ARROW_RETURN_NOT_OK(extract_binary(w3.get(), i, e.w3_packed));
+        ARROW_RETURN_NOT_OK(extract_scales(s1.get(), i, e.w1_scales));
+        ARROW_RETURN_NOT_OK(extract_scales(s2.get(), i, e.w2_scales));
+        ARROW_RETURN_NOT_OK(extract_scales(s3.get(), i, e.w3_scales));
         e.w1_global_scale = gs1->Value(i);
         e.w2_global_scale = gs2->Value(i);
         e.w3_global_scale = gs3->Value(i);
@@ -368,27 +419,44 @@ std::shared_ptr<arrow::Schema> DenseNvfp4Schema::Make()
 }
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-DenseNvfp4Schema::MakeBatch(const std::vector<DenseNvfp4Record> &records)
+DenseNvfp4Schema::MakeBatch(const std::vector<DenseNvfp4Record> &records,
+                            arrow::MemoryPool *pool)
 {
     auto schema = Make();
     int64_t n = static_cast<int64_t>(records.size());
+    arrow::MemoryPool *mp = pool ? pool : arrow::default_memory_pool();
 
-    arrow::StringBuilder name_builder;
-    arrow::StringBuilder dtype_builder;
-    arrow::LargeBinaryBuilder packed_builder;
-    arrow::FloatBuilder gs_builder;
+    int64_t bytes_packed = 0, bytes_scales = 0, shape_rank = 0;
+    int64_t name_bytes = 0, dtype_bytes = 0;
+    for (const auto &r : records) {
+        bytes_packed += static_cast<int64_t>(r.packed.size());
+        bytes_scales += static_cast<int64_t>(r.scales.size());
+        shape_rank += static_cast<int64_t>(r.shape.size());
+        name_bytes += static_cast<int64_t>(r.name.size());
+        dtype_bytes += static_cast<int64_t>(r.dtype.size());
+    }
 
-    auto shape_val_builder = std::make_shared<arrow::Int64Builder>();
-    arrow::ListBuilder shape_builder(arrow::default_memory_pool(), shape_val_builder);
-    auto scale_val_builder = std::make_shared<arrow::UInt8Builder>();
-    arrow::ListBuilder scale_builder(arrow::default_memory_pool(), scale_val_builder);
+    arrow::StringBuilder name_builder(mp);
+    arrow::StringBuilder dtype_builder(mp);
+    arrow::LargeBinaryBuilder packed_builder(mp);
+    arrow::FloatBuilder gs_builder(mp);
+
+    auto shape_val_builder = std::make_shared<arrow::Int64Builder>(mp);
+    arrow::ListBuilder shape_builder(mp, shape_val_builder);
+    auto scale_val_builder = std::make_shared<arrow::UInt8Builder>(mp);
+    arrow::ListBuilder scale_builder(mp, scale_val_builder);
 
     ARROW_RETURN_NOT_OK(name_builder.Reserve(n));
     ARROW_RETURN_NOT_OK(dtype_builder.Reserve(n));
     ARROW_RETURN_NOT_OK(packed_builder.Reserve(n));
     ARROW_RETURN_NOT_OK(gs_builder.Reserve(n));
-    ARROW_RETURN_NOT_OK(shape_builder.Reserve(n));
-    ARROW_RETURN_NOT_OK(scale_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(shape_builder.Reserve(n + 1));
+    ARROW_RETURN_NOT_OK(scale_builder.Reserve(n + 1));
+    ARROW_RETURN_NOT_OK(name_builder.ReserveData(name_bytes));
+    ARROW_RETURN_NOT_OK(dtype_builder.ReserveData(dtype_bytes));
+    ARROW_RETURN_NOT_OK(packed_builder.ReserveData(bytes_packed));
+    ARROW_RETURN_NOT_OK(shape_val_builder->Reserve(shape_rank));
+    ARROW_RETURN_NOT_OK(scale_val_builder->Reserve(bytes_scales));
 
     for (auto &r : records) {
         ARROW_RETURN_NOT_OK(name_builder.Append(r.name));
@@ -455,17 +523,33 @@ DenseNvfp4Schema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
         rec.global_scale = gs_arr->Value(i);
 
         auto pv = packeds->GetView(i);
+        ARROW_RETURN_NOT_OK(arrow_check::CheckViewRange(
+            pv.data(), static_cast<int64_t>(pv.size()), packeds->value_data(),
+            "packed payload", rec.name));
         rec.packed.assign(pv.begin(), pv.end());
 
+        ARROW_RETURN_NOT_OK(arrow_check::CheckListSlice(
+            *shape_offsets, i, flat_shapes->length(), "shape", rec.name));
         int64_t sb = shape_offsets->Value(i);
         int64_t se = shape_offsets->Value(i + 1);
         for (int64_t j = sb; j < se; ++j)
             rec.shape.push_back(flat_shapes->Value(j));
 
+        ARROW_RETURN_NOT_OK(arrow_check::CheckListSlice(
+            *scale_offsets, i, flat_scales->length(), "scales", rec.name));
         int64_t cb = scale_offsets->Value(i);
         int64_t ce = scale_offsets->Value(i + 1);
         const uint8_t *sraw = flat_scales->raw_values();
         rec.scales.insert(rec.scales.end(), sraw + cb, sraw + ce);
+
+        // The payload of a DenseNvfp4 record is always NVFP4; `dtype` names
+        // the SOURCE tensor dtype (BF16/F8_E4M3/...), never the payload
+        // encoding. Validate the packed/scale/global-scale invariant.
+        ARROW_RETURN_NOT_OK(arrow_check::CheckNvfp4Size(
+            rec.shape.data(), static_cast<int64_t>(rec.shape.size()),
+            static_cast<int64_t>(rec.packed.size()),
+            static_cast<int64_t>(rec.scales.size()), rec.global_scale,
+            rec.name));
 
         records.push_back(std::move(rec));
     }
@@ -485,22 +569,37 @@ std::shared_ptr<arrow::Schema> PinnedSchema::Make()
 }
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>>
-PinnedSchema::MakeBatch(const std::vector<TensorRecord> &tensors)
+PinnedSchema::MakeBatch(const std::vector<TensorRecord> &tensors,
+                        arrow::MemoryPool *pool)
 {
     auto schema = Make();
     int64_t n = static_cast<int64_t>(tensors.size());
+    arrow::MemoryPool *mp = pool ? pool : arrow::default_memory_pool();
 
-    arrow::StringBuilder name_builder;
-    arrow::StringBuilder dtype_builder;
-    arrow::LargeBinaryBuilder data_builder;
+    int64_t bytes_data = 0, shape_rank = 0;
+    int64_t name_bytes = 0, dtype_bytes = 0;
+    for (const auto &t : tensors) {
+        bytes_data += static_cast<int64_t>(t.data.size());
+        shape_rank += static_cast<int64_t>(t.shape.size());
+        name_bytes += static_cast<int64_t>(t.name.size());
+        dtype_bytes += static_cast<int64_t>(t.dtype.size());
+    }
 
-    auto shape_val_builder = std::make_shared<arrow::Int64Builder>();
-    arrow::ListBuilder shape_builder(arrow::default_memory_pool(), shape_val_builder);
+    arrow::StringBuilder name_builder(mp);
+    arrow::StringBuilder dtype_builder(mp);
+    arrow::LargeBinaryBuilder data_builder(mp);
+
+    auto shape_val_builder = std::make_shared<arrow::Int64Builder>(mp);
+    arrow::ListBuilder shape_builder(mp, shape_val_builder);
 
     ARROW_RETURN_NOT_OK(name_builder.Reserve(n));
     ARROW_RETURN_NOT_OK(dtype_builder.Reserve(n));
     ARROW_RETURN_NOT_OK(data_builder.Reserve(n));
-    ARROW_RETURN_NOT_OK(shape_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(shape_builder.Reserve(n + 1));
+    ARROW_RETURN_NOT_OK(name_builder.ReserveData(name_bytes));
+    ARROW_RETURN_NOT_OK(dtype_builder.ReserveData(dtype_bytes));
+    ARROW_RETURN_NOT_OK(data_builder.ReserveData(bytes_data));
+    ARROW_RETURN_NOT_OK(shape_val_builder->Reserve(shape_rank));
 
     for (auto &t : tensors) {
         ARROW_RETURN_NOT_OK(name_builder.Append(t.name));
@@ -538,6 +637,13 @@ PinnedSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     if (!names || !dtypes || !datas || !shapes)
         return arrow::Status::Invalid("Pinned batch column type mismatch");
 
+    auto flat_shapes = std::dynamic_pointer_cast<arrow::Int64Array>(shapes->values());
+    if (!flat_shapes)
+        return arrow::Status::Invalid("Shape array is not int64");
+    auto offset_arr = std::dynamic_pointer_cast<arrow::Int32Array>(shapes->offsets());
+    if (!offset_arr)
+        return arrow::Status::Invalid("Shape offsets not int32");
+
     int64_t n = batch->num_rows();
     std::vector<TensorRecord> tensors;
     tensors.reserve(static_cast<size_t>(n));
@@ -547,21 +653,22 @@ PinnedSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
         t.name = names->GetString(i);
         t.dtype = dtypes->GetString(i);
         auto view = datas->GetView(i);
+        ARROW_RETURN_NOT_OK(arrow_check::CheckViewRange(
+            view.data(), static_cast<int64_t>(view.size()), datas->value_data(),
+            "tensor data", t.name));
         t.data.assign(view.begin(), view.end());
 
-        auto flat_shapes = std::dynamic_pointer_cast<arrow::Int64Array>(shapes->values());
-        if (!flat_shapes)
-            return arrow::Status::Invalid("Shape array is not int64");
-
-        auto offsets = shapes->offsets();
-        auto offset_arr = std::dynamic_pointer_cast<arrow::Int32Array>(offsets);
-        if (!offset_arr)
-            return arrow::Status::Invalid("Shape offsets not int32");
-
-        int64_t begin = offset_arr->Value(i);
-        int64_t end = offset_arr->Value(i + 1);
+        ARROW_RETURN_NOT_OK(arrow_check::CheckListSlice(
+            *offset_arr, i, flat_shapes->length(), "shape", t.name));
+        const int64_t begin = offset_arr->Value(i);
+        const int64_t end = offset_arr->Value(i + 1);
         for (int64_t j = begin; j < end; ++j)
             t.shape.push_back(flat_shapes->Value(j));
+
+        ARROW_RETURN_NOT_OK(arrow_check::CheckPinnedTensor(
+            t.name, t.dtype, t.shape.data(),
+            static_cast<int64_t>(t.shape.size()),
+            static_cast<int64_t>(t.data.size())));
 
         tensors.push_back(std::move(t));
     }
@@ -746,19 +853,92 @@ TokenizerMergesSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &ba
 
 // ── File I/O helpers ────────────────────────────────────────────────────────
 
+namespace {
+
+// Removes the partially written temp artifact unless it was committed.
+struct TempFileGuard {
+    std::filesystem::path path;
+    bool armed = true;
+    ~TempFileGuard()
+    {
+        if (!armed) return;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+};
+
+// Fault-injection seam for the atomicity regression test: the writer still
+// writes the temp artifact. LSX_TEST_* is the established test-only env class.
+bool ArrowWriteFailureInjected()
+{
+#if defined(_WIN32)
+    char *value = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&value, &len, "LSX_TEST_ARROW_WRITE_FAIL") == 0 && value) {
+        const bool on = value[0] == '1';
+        std::free(value);
+        return on;
+    }
+    return false;
+#else
+    const char *value = std::getenv("LSX_TEST_ARROW_WRITE_FAIL");
+    return value && value[0] == '1';
+#endif
+}
+
+} // namespace
+
 arrow::Status WriteRecordBatchToFile(
     const std::shared_ptr<arrow::RecordBatch> &batch,
     const std::filesystem::path &path)
 {
+    if (!batch)
+        return arrow::Status::Invalid("WriteRecordBatchToFile: null batch");
+    const auto parent = path.parent_path();
+    if (!parent.empty() && !std::filesystem::exists(parent))
+        return arrow::Status::IOError(
+            "output directory does not exist: ", parent.string());
+
     diag::LogArrowSystemState("WriteRecordBatchToFile");
     diag::ValidateBatchBuffers(*batch, ("Write " + path.filename().string()).c_str());
-    ARROW_ASSIGN_OR_RAISE(auto outfile,
-        arrow::io::FileOutputStream::Open(path.string()));
-    ARROW_ASSIGN_OR_RAISE(auto writer,
-        arrow::ipc::MakeFileWriter(outfile.get(), batch->schema()));
-    ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
-    ARROW_RETURN_NOT_OK(writer->Close());
-    ARROW_RETURN_NOT_OK(outfile->Close());
+
+    // Write to a sibling temp file and rename on success, so a failure (or a
+    // crash) can never leave a partially written artifact at the final path.
+    static std::atomic<uint64_t> write_seq{0};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path tmp = path;
+    tmp += ".tmp." + std::to_string(stamp) + "." +
+           std::to_string(write_seq.fetch_add(1));
+    TempFileGuard guard{tmp};
+
+    {
+        ARROW_ASSIGN_OR_RAISE(auto outfile,
+            arrow::io::FileOutputStream::Open(tmp.string()));
+        ARROW_ASSIGN_OR_RAISE(auto writer,
+            arrow::ipc::MakeFileWriter(outfile.get(), batch->schema()));
+        ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
+        ARROW_RETURN_NOT_OK(writer->Close());
+        ARROW_RETURN_NOT_OK(outfile->Close());
+    }
+    if (ArrowWriteFailureInjected())
+        return arrow::Status::IOError("injected Arrow write failure for ",
+                                      path.string());
+
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+#if defined(_WIN32)
+    // Windows rename cannot replace an existing file.
+    if (ec) {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+        ec.clear();
+        std::filesystem::rename(tmp, path, ec);
+    }
+#endif
+    if (ec)
+        return arrow::Status::IOError("cannot commit artifact ", path.string(),
+                                      ": ", ec.message());
+    guard.armed = false;
     lsxcommon::log::debug(absl::StrCat(
         "[DIAG] wrote batch to ", path.string(), " (", batch->num_columns(),
         " columns, ", batch->num_rows(), " rows)"));
@@ -784,19 +964,17 @@ ReadRecordBatchFromFile(const std::filesystem::path &path)
 
 namespace {
 
-// Kicks an async kernel-side readahead for the whole file so cold-start disk
-// reads overlap with the GPU upload of previously opened files instead of
-// stalling the first page faults of each mmap view.
-void KickWholeFileReadahead(const std::filesystem::path &path)
+// Kicks an async kernel-side readahead for the whole mapping so cold-start
+// disk reads overlap with the GPU upload of previously opened files instead of
+// stalling the first page faults of each mmap view. Arrow's WillNeed is the
+// portable form of the madvise hint (Windows included); the fadvise call it
+// replaces was Linux-only.
+void KickWholeFileReadahead(const std::shared_ptr<arrow::io::MemoryMappedFile> &mmap)
 {
-#if defined(__linux__)
-    int fd = ::open(path.c_str(), O_RDONLY);
-    if (fd < 0) return;
-    struct stat st {};
-    if (::fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
-        (void)::posix_fadvise(fd, 0, st.st_size, POSIX_FADV_WILLNEED);
-    ::close(fd);
-#endif
+    if (!mmap) return;
+    const auto size = mmap->GetSize();
+    if (!size.ok() || *size <= 0) return;
+    (void)mmap->WillNeed({{0, *size}});
 }
 
 } // namespace
@@ -825,6 +1003,9 @@ const int64_t *ShapePtr(const arrow::ListArray &shapes, int64_t i,
 {
     auto offsets = std::dynamic_pointer_cast<arrow::Int32Array>(shapes.offsets());
     if (!offsets) return nullptr;
+    if (!arrow_check::CheckListSlice(*offsets, i, flat.length(),
+                                     "shape", "view").ok())
+        return nullptr;
     *rank = offsets->Value(i + 1) - offsets->Value(i);
     return flat.raw_values() + offsets->Value(i);
 }
@@ -874,11 +1055,11 @@ arrow::Status CheckListSlice(const arrow::Int32Array &offsets, int64_t row,
 arrow::Result<TensorBatchViews>
 LoadTensorBatchViews(const std::filesystem::path &path)
 {
-    KickWholeFileReadahead(path);
     auto k = std::make_shared<BatchKeepalive>();
     ARROW_ASSIGN_OR_RAISE(
         k->infile, arrow::io::MemoryMappedFile::Open(path.string(),
                                                      arrow::io::FileMode::READ));
+    KickWholeFileReadahead(k->infile);
     ARROW_ASSIGN_OR_RAISE(
         k->reader, arrow::ipc::RecordBatchFileReader::Open(k->infile.get()));
     if (k->reader->num_record_batches() == 0)
@@ -915,6 +1096,9 @@ LoadTensorBatchViews(const std::filesystem::path &path)
             datas->value_data(), "tensor data", v.name));
         v.data = reinterpret_cast<const uint8_t *>(view.data());
         v.bytes = static_cast<size_t>(view.size());
+        ARROW_RETURN_NOT_OK(arrow_check::CheckPinnedTensor(
+            v.name, v.dtype, v.shape, v.rank,
+            static_cast<int64_t>(v.bytes)));
     }
     return out;
 }
@@ -922,11 +1106,11 @@ LoadTensorBatchViews(const std::filesystem::path &path)
 arrow::Result<DenseNvfp4BatchViews>
 LoadDenseNvfp4BatchViews(const std::filesystem::path &path)
 {
-    KickWholeFileReadahead(path);
     auto k = std::make_shared<BatchKeepalive>();
     ARROW_ASSIGN_OR_RAISE(
         k->infile, arrow::io::MemoryMappedFile::Open(path.string(),
                                                      arrow::io::FileMode::READ));
+    KickWholeFileReadahead(k->infile);
     ARROW_ASSIGN_OR_RAISE(
         k->reader, arrow::ipc::RecordBatchFileReader::Open(k->infile.get()));
     if (k->reader->num_record_batches() == 0)
@@ -990,6 +1174,11 @@ LoadDenseNvfp4BatchViews(const std::filesystem::path &path)
         ARROW_RETURN_NOT_OK(CheckViewRange(
             v.scales, v.scale_bytes, flat_scales->data()->buffers[1],
             "scales", v.name));
+        // See DenseNvfp4Schema::UnpackBatch: `dtype` is the source dtype; the
+        // payload is always NVFP4.
+        ARROW_RETURN_NOT_OK(arrow_check::CheckNvfp4Size(
+            v.shape, v.rank, v.packed_bytes, v.scale_bytes,
+            v.global_scale, v.name));
     }
     return out;
 }
@@ -997,11 +1186,11 @@ LoadDenseNvfp4BatchViews(const std::filesystem::path &path)
 arrow::Result<SharedExpertBatchViews>
 LoadSharedExpertBatchViews(const std::filesystem::path &path)
 {
-    KickWholeFileReadahead(path);
     auto k = std::make_shared<BatchKeepalive>();
     ARROW_ASSIGN_OR_RAISE(
         k->infile, arrow::io::MemoryMappedFile::Open(path.string(),
                                                      arrow::io::FileMode::READ));
+    KickWholeFileReadahead(k->infile);
     ARROW_ASSIGN_OR_RAISE(
         k->reader, arrow::ipc::RecordBatchFileReader::Open(k->infile.get()));
     if (k->reader->num_record_batches() == 0)

@@ -691,7 +691,11 @@ procedure — `perf-tuning-a-model`.
   (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
   (`FastMathMode::kOff`); the only app with a numeric mode.
 - `tests/` — Catch2 v3.16.1 suite; labels `fast`/`convert`/`inference`/`perf`
-  (see § Test) + model/naming/absl/toolchain guard tests.
+  (see § Test) + model/naming/absl/toolchain guard tests. Arrow IPC rules are
+  machine-checked by `test_arrow_usage_guard` (mmap-only reads, recorded
+  `UnpackBatch` verdicts, atomic writes, the per-model audit matrix), hardened
+  by `test_arrow_validation` and validated against the real converted trees by
+  `test_arrow_tree_integrity`; findings — `docs/ARROW_AUDIT_2026-11-01.md`.
 - `third_party/flatbuffers/`, `third_party/libzmq/`, `third_party/simdjson/` —
   submodules. CCCL is not vendored: it comes from the CUDA toolkit bundle
   (`<include>/cccl`), band-guarded at configure time (root `CMakeLists.txt`).

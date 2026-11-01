@@ -1,4 +1,5 @@
 #include "lsxcommon/shared_experts.h"
+#include "lsxcommon/arrow_validate.h"
 #include "lsxcommon/schema.h"
 #include "nvfp4_codec.h"
 #include "lsx_kernels_quant.cuh"
@@ -303,6 +304,9 @@ arrow::Status load_shared_experts_metadata(
         if (!u8 || !offs)
             return arrow::Status::TypeError(
                 "shared_experts: scale column not list<uint8>");
+        ARROW_RETURN_NOT_OK(arrow_check::CheckListSlice(
+            *offs, row, u8->length(), "shared-expert scale list",
+            std::to_string(row)));
         int64_t begin = offs->Value(row);
         int64_t end   = offs->Value(row + 1);
         const uint8_t* ptr = u8->raw_values() + begin;

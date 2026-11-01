@@ -29,6 +29,7 @@
 #include <thread>
 #include <vector>
 
+#include "lsxcommon/arrow_validate.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/schema.h"
 
@@ -189,46 +190,84 @@ struct ExpertStore {
     }
 
     // Decodes the shared 6-bin + 3-float ExpertSchema fields into @p out.
-    static void DecodeEntry(const std::shared_ptr<arrow::RecordBatch> &batch,
-                            TEntry &out)
+    // Returns a status on a malformed/foreign batch so the caller never keeps a
+    // partially decoded entry (null payload pointers or bogus byte counts).
+    static arrow::Status DecodeEntry(const std::shared_ptr<arrow::RecordBatch> &batch,
+                                     TEntry &out)
     {
-        auto get_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-            auto arr = batch->column(col);
-            auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
-            if (!bin) return {nullptr, 0};
+        if (!batch ||
+            batch->num_columns() != lsxcommon::ExpertSchema::kNumFields)
+            return arrow::Status::Invalid(
+                "expert batch has ", batch ? batch->num_columns() : 0,
+                " columns, expected ", lsxcommon::ExpertSchema::kNumFields);
+        if (batch->num_rows() != 1)
+            return arrow::Status::Invalid(
+                "expert batch must have one row, got ", batch->num_rows());
+
+        auto get_bin = [&](int col, const char *what)
+            -> arrow::Result<std::pair<const uint8_t *, int64_t>> {
+            auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+                batch->column(col));
+            if (!bin)
+                return arrow::Status::TypeError(what, " is not large_binary");
             auto view = bin->GetView(0);
-            return {reinterpret_cast<const uint8_t *>(view.data()),
-                    static_cast<int64_t>(view.size())};
+            ARROW_RETURN_NOT_OK(lsxcommon::arrow_check::CheckViewRange(
+                view.data(), static_cast<int64_t>(view.size()),
+                bin->value_data(), what, "expert"));
+            return std::make_pair(
+                reinterpret_cast<const uint8_t *>(view.data()),
+                static_cast<int64_t>(view.size()));
         };
-        auto get_scale_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-            auto lst = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(col));
-            if (!lst) return {nullptr, 0};
-            auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
-            if (!u8) return {nullptr, 0};
-            auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
-            if (!offs) return {nullptr, 0};
-            int64_t begin = offs->Value(0);
-            int64_t end   = offs->Value(1);
-            return {u8->raw_values() + begin, end - begin};
+        auto get_scale_bin = [&](int col, const char *what)
+            -> arrow::Result<std::pair<const uint8_t *, int64_t>> {
+            auto lst = std::dynamic_pointer_cast<arrow::ListArray>(
+                batch->column(col));
+            if (!lst)
+                return arrow::Status::TypeError(what, " is not list");
+            auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(
+                lst->values());
+            auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(
+                lst->offsets());
+            if (!u8 || !offs)
+                return arrow::Status::TypeError(what, " is not list<uint8>");
+            ARROW_RETURN_NOT_OK(lsxcommon::arrow_check::CheckListSlice(
+                *offs, 0, u8->length(), what, "expert"));
+            const int64_t begin = offs->Value(0);
+            const int64_t end = offs->Value(1);
+            return std::make_pair(u8->raw_values() + begin, end - begin);
         };
-        auto get_gs = [&](int col) -> float {
-            auto arr = batch->column(col);
-            auto f = std::dynamic_pointer_cast<arrow::FloatArray>(arr);
-            return f ? f->Value(0) : 1.0f;
+        auto get_gs = [&](int col, const char *what) -> arrow::Result<float> {
+            auto f = std::dynamic_pointer_cast<arrow::FloatArray>(
+                batch->column(col));
+            if (!f)
+                return arrow::Status::TypeError(what, " is not float32");
+            return f->Value(0);
         };
 
-        auto [w1p, w1s] = get_bin(lsxcommon::ExpertSchema::kIdxW1Weight);
-        auto [w2p, w2s] = get_bin(lsxcommon::ExpertSchema::kIdxW2Weight);
-        auto [w3p, w3s] = get_bin(lsxcommon::ExpertSchema::kIdxW3Weight);
-        auto [w1sp, w1ss] = get_scale_bin(lsxcommon::ExpertSchema::kIdxW1Scale);
-        auto [w2sp, w2ss] = get_scale_bin(lsxcommon::ExpertSchema::kIdxW2Scale);
-        auto [w3sp, w3ss] = get_scale_bin(lsxcommon::ExpertSchema::kIdxW3Scale);
+        ARROW_ASSIGN_OR_RAISE(auto w1, get_bin(
+            lsxcommon::ExpertSchema::kIdxW1Weight, "w1_weight"));
+        ARROW_ASSIGN_OR_RAISE(auto w2, get_bin(
+            lsxcommon::ExpertSchema::kIdxW2Weight, "w2_weight"));
+        ARROW_ASSIGN_OR_RAISE(auto w3, get_bin(
+            lsxcommon::ExpertSchema::kIdxW3Weight, "w3_weight"));
+        ARROW_ASSIGN_OR_RAISE(auto s1, get_scale_bin(
+            lsxcommon::ExpertSchema::kIdxW1Scale, "w1_scale"));
+        ARROW_ASSIGN_OR_RAISE(auto s2, get_scale_bin(
+            lsxcommon::ExpertSchema::kIdxW2Scale, "w2_scale"));
+        ARROW_ASSIGN_OR_RAISE(auto s3, get_scale_bin(
+            lsxcommon::ExpertSchema::kIdxW3Scale, "w3_scale"));
+        ARROW_ASSIGN_OR_RAISE(auto g1, get_gs(
+            lsxcommon::ExpertSchema::kIdxW1GlobalScale, "w1_global_scale"));
+        ARROW_ASSIGN_OR_RAISE(auto g2, get_gs(
+            lsxcommon::ExpertSchema::kIdxW2GlobalScale, "w2_global_scale"));
+        ARROW_ASSIGN_OR_RAISE(auto g3, get_gs(
+            lsxcommon::ExpertSchema::kIdxW3GlobalScale, "w3_global_scale"));
 
-        out = {w1p, w2p, w3p, w1sp, w2sp, w3sp,
-               get_gs(lsxcommon::ExpertSchema::kIdxW1GlobalScale),
-               get_gs(lsxcommon::ExpertSchema::kIdxW2GlobalScale),
-               get_gs(lsxcommon::ExpertSchema::kIdxW3GlobalScale),
-               w1s, w2s, w3s, w1ss, w2ss, w3ss};
+        out = {w1.first, w2.first, w3.first,
+               s1.first, s2.first, s3.first, g1, g2, g3,
+               w1.second, w2.second, w3.second,
+               s1.second, s2.second, s3.second};
+        return arrow::Status::OK();
     }
 
     bool ParseFile(size_t idx)
@@ -260,7 +299,13 @@ struct ExpertStore {
         }
         auto batch = *batch_res;
 
-        DecodeEntry(batch, entries[idx]);
+        const auto dec = DecodeEntry(batch, entries[idx]);
+        if (!dec.ok()) {
+            if (log_batch_fails)
+                log::debug(log_prefix + "expert batch decode failed for " +
+                           apath + ": " + dec.ToString());
+            return false;
+        }
 
         if (emit_diag && (idx == 0 || idx == 1 ||
                           idx == static_cast<size_t>(experts_per_layer))) {
