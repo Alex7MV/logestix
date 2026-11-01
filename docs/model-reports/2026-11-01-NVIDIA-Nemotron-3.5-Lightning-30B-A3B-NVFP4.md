@@ -5,7 +5,7 @@
 | Model | `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4`, `model_type = "nemotron_h"`, `architectures = ["NemotronHForCausalLM"]` |
 | Converted layout | `logestix-nemotron-nvfp4` (NVFP4 dense + streamed NVFP4 experts; F32 router, BF16 norms / conv / SSM scalars, BF16 embeddings + head) |
 | Source | 20.1 GB ModelOpt `MIXED_PRECISION`: W4A16_NVFP4 routed + shared experts and `lm_head` (E2M1 + full-E4M3 per-16 scales + F32 `weight_scale_2`), per-tensor FP8 Mamba `in_proj`/`out_proj`, BF16 attention projections carrying FP8 KV-cache scales, F32 router; 52 shards |
-| Converted tree | 18 GB on disk: 2944 routed experts (23 MoE layers × 128), 355 pinned tensors, 270 MTP tensors stored+counted, 12 FP8 KV scales dropped; ~13.4 GiB device-resident + 14.7 GiB expert slot cache |
+| Converted tree | 18 GB on disk: 2944 routed experts (23 MoE layers × 128), 355 pinned tensors, 270 MTP tensors stored+counted, 12 FP8 KV scales dropped; 17.5 GiB device-resident (dense graph + expert slot cache) |
 | Hardware | 1 × RTX 5090 (32 GB), 750 GB host RAM, CUDA 13.4 |
 | Runtime | token-by-token prefill/decode over the neutral NVFP4 GEMV, FP32 KV cache + FP32 Mamba-2 state, single stream |
 | Date | 2026-11-01 |
@@ -66,8 +66,8 @@ back to BF16, it separates "the conversion is lossy" from "the runtime is
 wrong" — the first question to ask when a green suite hides a defect.
 
 Measured, on one RTX 5090: **127.55 t/s** and **120.39 t/s** (strict mode) at
-2 048 generated tokens, 84 ms to first token, 242 W average, 13.4 GiB resident
-plus a 14.7 GiB expert slot cache. Paris is bit-exact across three cycles,
+2 048 generated tokens, 84 ms to first token, 242 W average, 17.5 GiB resident
+(dense graph + expert slot cache). Paris is bit-exact across three cycles,
 tokenizer parity is 22/22 against the checkpoint's own `tokenizer.json`, and the
 tool round-trip is green. FSI/CODE/DET remain declared debt: the source answers
 the FSI templates exactly but the converted 4-bit body shifts them (FSI-01 gains
