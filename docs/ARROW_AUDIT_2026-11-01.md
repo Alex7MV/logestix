@@ -57,12 +57,12 @@ zero-copy view-хелперами; исключение — gemma (см. A-07).
 | Ling-3.1-flash | ling_moe_convert.cpp | ling_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | MiniMax-M3 | minimax_moe_convert.cpp | minimax_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | MiniMax-M3.1-Flash | minimax_moe_flash_convert.cpp | minimax_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
-| Mistral-Small-4-119B-2603-NVFP4 | mistral_moe_convert.cpp | mistral_moe_load.cpp | unpack + pinned arena (MoEExpertStore) | schema.cpp | unpack+pinned-arena |
+| Mistral-Small-4-119B-2603-NVFP4 | mistral_moe_convert.cpp | mistral_moe_load.cpp | views + neutral ExpertStore (shared: unpack) | schema.cpp | views+ExpertStore |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 | nemotron_moe_convert.cpp, nemotron_moe_nvfp4_convert.cpp | nemotron_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
-| Ornith-1.5-35B-A3B | ornith_moe_convert.cpp | ornith_moe_load.cpp | unpack + pinned arena (MoEExpertStore) | schema.cpp | unpack+pinned-arena |
-| Qwen3.5-35B-A3B | qwen_moe_convert.cpp | qwen_moe_load.cpp | unpack + pinned arena (MoEExpertStore) | schema.cpp | unpack+pinned-arena |
+| Ornith-1.5-35B-A3B | ornith_moe_convert.cpp | ornith_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
+| Qwen3.5-35B-A3B | qwen_moe_convert.cpp | qwen_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | Qwen3.5-9B | qwen_dense_convert.cpp | qwen_inference_load.cpp | views + dense | schema.cpp | views+dense |
-| Qwen3.6-35B-A3B | qwen_moe_36_convert.cpp | qwen_moe_load.cpp | unpack + pinned arena (MoEExpertStore) | schema.cpp | unpack+pinned-arena |
+| Qwen3.6-35B-A3B | qwen_moe_36_convert.cpp | qwen_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | Qwen3.8-27B | qwen_dense_convert.cpp | qwen_inference_load.cpp | views + dense | schema.cpp | views+dense |
 | Qwen3.8-Flash-Next | qwen_moe_exp_convert.cpp | qwen_moe_exp_load.cpp | unpack + pinned arena | schema.cpp | unpack+pinned-arena |
 | Step-5-Preview | step_moe_convert.cpp | step_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
@@ -237,23 +237,20 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
   (A-07 закрыт). Страж `test_arrow_usage_guard` обновлён (эти файлы больше не
   в allowlist mmap/UnpackBatch).
 
-## 4. Легаси-долг (не мигрирован в этой ветке)
+## 4. Host-хранение экспертов — итог
 
 `docs/OPEN_TASKS.md` + `ingesting-a-model` R1/R2 уже фиксируют паттерн
-«все эксперты в pinned-арене». Аудит подтверждает его границы:
+«все эксперты в pinned-арене». Аудит уточняет его границы (на 2026-11-01):
 
-| семейство | host-хранение | цена |
+| семейство | host-хранение | статус |
 |---|---|---|
-| Qwen3.6 / Ornith | `MoEExpertStore` pinned slabs | ≈ дерево экспертов на диске (17 GiB) |
-| Qwen3.8-Flash-Next | `LoadQwen4ExpExpertStore` pinned arena | 64 GiB + второй проход по диску |
-| Mistral | `MoEExpertStore` pinned slabs | 61 GiB |
-| GLM-5.3-Flash | pinned arena | ≈ дерево экспертов |
+| Qwen3.5/3.6, Ornith, Mistral | нейтральный `ExpertStore` (mmap views + LRU) | мигрированы 2026-10-14 (17.5 → 7.0 ГБ у qwen3.6 при неизменных 141 t/s) |
+| Qwen3.8-Flash-Next | `LoadQwen4ExpExpertStore` pinned arena | **осознанно** (2026-10-14, §V1: рабочий набор = весь набор экспертов; bounded store даёт 9.2 t/s против 32.0 у арены) |
+| GLM-5.3-Flash | pinned arena | **осознанно, по замеру 2026-11-01**: нейтральный стор дал 4.10 t/s при 4096 слотах (57 ГБ) и 7.23 t/s со всеми 12 096 (156 ГБ) против 12.79 t/s у арены (171 ГБ) — H2D из pageable mmap; миграция откачена, см. `open-tasks/2026-11-01-arrow-audit-and-arena-decision.md` |
 | Xing / flint / Hy | все эксперты резидентно на device | host-копия транзитна |
 
-Это осознанное решение ветки: миграция — отдельная работа на 6+ семейств,
-требующая бенчмарков до/после. Страж `test_arrow_usage_guard` фиксирует
-вердикт каждого `UnpackBatch`-call-site, чтобы новый код не расширил долг
-молча.
+Страж `test_arrow_usage_guard` фиксирует вердикт каждого `UnpackBatch`-call-
+site, чтобы новый код не расширил долг молча.
 
 ## 5. Валидация 26 деревьев
 
