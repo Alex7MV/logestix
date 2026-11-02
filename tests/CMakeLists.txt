@@ -2667,6 +2667,25 @@ endif()
 
 add_test(NAME test_qwen_tool_framing COMMAND test_qwen_tool_framing)
 
+# ── Kimi-K3 XTML chat/tool codec (host-only, synthetic tokenizer) ───────────
+add_executable(test_kimi_k3_tool_framing test_kimi_k3_tool_framing.cpp)
+target_include_directories(test_kimi_k3_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_kimi_k3_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_kimi_k3_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_tool_framing COMMAND test_kimi_k3_tool_framing)
+set_tests_properties(test_kimi_k3_tool_framing PROPERTIES LABELS fast)
+
+# ── Kimi-K3 tiktoken id parity (golden from the checkpoint tokenizer) ───────
+add_executable(test_kimi_k3_tokenizer_parity test_kimi_k3_tokenizer_parity.cpp)
+target_compile_definitions(test_kimi_k3_tokenizer_parity PRIVATE
+    LSX_KIMI_K3_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/kimi_k3")
+target_link_libraries(test_kimi_k3_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_tokenizer_parity COMMAND test_kimi_k3_tokenizer_parity)
+set_tests_properties(test_kimi_k3_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_k3_tokenizer_parity PROPERTIES LABELS fast)
+
 # ── Kimi-K3 frozen passport (host-only, no CUDA) ─────────────────────────────
 add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp)
 target_link_libraries(test_kimi_k3_constants PRIVATE lsxcommon Catch2::Catch2WithMain)

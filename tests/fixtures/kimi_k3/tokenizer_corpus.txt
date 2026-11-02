@@ -1,0 +1,23 @@
+The capital of France is Paris.
+Hello, world!  This is a test.
+MixedCase identifiers: getUserById, HTTPServer, foo_bar_baz.
+Numbers 1 12 123 1234 1234567 and 3.14159.
+Contractions: it's, they're, we've, I'd, you'll, don't.
+Punctuation!!! ... (parens) [brackets] {braces} -- dashes
+	Cannot start with a tab and spaces   inside.
+multi-line
+text with CRLF\r\nand a second line
+中文混合文本 with English words inside
+日本語のテキストとEnglishが混ざった文
+Emoji 🙂 🚀 and symbols © ™ €
+JSON: {"city":"Paris","units":"celsius","n":3}
+XML markers <|open|> message <|sep|> body <|close|> message <|sep|>
+tool call: get_weather({"city": "Paris"})
+SQL: SELECT * FROM t WHERE a = 1;
+code: for (int i = 0; i < n; ++i) { sum += x[i]; }
+Leading space  and trailing space 
+ALL CAPS SENTENCE WITH SPACES
+snake_case_and-kebab-case/mixed
+2026-11-03T12:34:56Z log line
+A very long word: supercalifragilisticexpialidocious
+function(a, b) -> a + b
