@@ -387,6 +387,99 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     return true;
 }
 
+// ── F8_E4M3 + F32 128x128 tile scales -> BF16 ───────────────────────────────
+__global__ void fp8_f32tile128_to_bf16_kernel(const uint8_t *__restrict__ src,
+                                              const float *__restrict__ scale,
+                                              uint16_t *__restrict__ dst,
+                                              int64_t numel, int64_t cols,
+                                              int64_t sc_tiles)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x
+                    + threadIdx.x;
+    if (i >= numel) return;
+    const int64_t r = i / cols;
+    const int64_t c = i % cols;
+    const float v = kernels::F8E4m3ToFloat(src[i])
+                  * scale[(r / 128) * sc_tiles + (c / 128)];
+    uint32_t bits = __float_as_uint(v);
+    bits += 0x7FFF + ((bits >> 16) & 1);
+    dst[i] = static_cast<uint16_t>(bits >> 16);
+}
+
+arrow::Status DequantFp8Tile128ToBf16Gpu(const std::vector<uint8_t> &fp8,
+                                         const std::vector<int64_t> &shape,
+                                         const std::vector<uint8_t> &scale_f32,
+                                         const std::vector<int64_t> &scale_shape,
+                                         std::vector<uint8_t> &bf16)
+{
+    if (shape.size() != 2)
+        return arrow::Status::Invalid("FP8 tensor must be 2-D");
+    if (scale_shape.size() != 2)
+        return arrow::Status::Invalid("scale must be 2-D");
+    const int64_t rows = shape[0], cols = shape[1];
+    const int64_t sr = scale_shape[0], sc = scale_shape[1];
+    if (rows <= 0 || cols <= 0)
+        return arrow::Status::Invalid("empty FP8 tensor");
+    if (sr != (rows + 127) / 128 || sc != (cols + 127) / 128)
+        return arrow::Status::Invalid("scale tile grid mismatch: expected ",
+                                      (rows + 127) / 128, " x ",
+                                      (cols + 127) / 128);
+    const int64_t numel = rows * cols;
+    if (static_cast<int64_t>(fp8.size()) != numel)
+        return arrow::Status::Invalid("fp8 byte size != rows*cols");
+    if (static_cast<int64_t>(scale_f32.size()) != sr * sc * 4)
+        return arrow::Status::Invalid("scale byte size != SR*SC*4");
+
+    uint8_t *d_fp8 = nullptr;
+    float *d_scale = nullptr;
+    uint16_t *d_out = nullptr;
+    auto cleanup = [&] {
+        cudaFree(d_fp8);
+        cudaFree(d_scale);
+        cudaFree(d_out);
+    };
+    if (cudaMalloc(&d_fp8, fp8.size()) != cudaSuccess
+        || cudaMalloc(&d_scale, scale_f32.size()) != cudaSuccess
+        || cudaMalloc(&d_out, numel * 2) != cudaSuccess)
+    {
+        cleanup();
+        return arrow::Status::IOError("cudaMalloc failed: ",
+                                      cudaGetErrorString(cudaGetLastError()));
+    }
+    cudaStream_t stream = nullptr;
+    if (cudaMemcpyAsync(d_fp8, fp8.data(), fp8.size(),
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess
+        || cudaMemcpyAsync(d_scale, scale_f32.data(), scale_f32.size(),
+                           cudaMemcpyHostToDevice, stream) != cudaSuccess)
+    {
+        cleanup();
+        return arrow::Status::IOError("H2D copy failed: ",
+                                      cudaGetErrorString(cudaGetLastError()));
+    }
+    const int threads = 256;
+    const int64_t grid64 = (numel + threads - 1) / threads;
+    const int blocks = static_cast<int>(std::min<int64_t>(grid64, 65535LL * 16));
+    fp8_f32tile128_to_bf16_kernel<<<blocks, threads, 0, stream>>>(
+        d_fp8, d_scale, d_out, numel, cols, sc);
+    if (cudaGetLastError() != cudaSuccess)
+    {
+        cleanup();
+        return arrow::Status::IOError("kernel launch failed: ",
+                                      cudaGetErrorString(cudaGetLastError()));
+    }
+    bf16.resize(static_cast<size_t>(numel) * 2);
+    if (cudaMemcpyAsync(bf16.data(), d_out, bf16.size(),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess
+        || cudaStreamSynchronize(stream) != cudaSuccess)
+    {
+        cleanup();
+        return arrow::Status::IOError("D2H copy failed: ",
+                                      cudaGetErrorString(cudaGetLastError()));
+    }
+    cleanup();
+    return arrow::Status::OK();
+}
+
 // ── Residual plane (second NVFP4 pass) ──────────────────────────────────────
 // The 4-bit plane cannot express every near-tie decision: on phi-4 the DET-02
 // answer flips on the base alone, and a per-layer ablation showed the error is

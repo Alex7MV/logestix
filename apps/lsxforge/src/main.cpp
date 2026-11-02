@@ -16,6 +16,7 @@
 #include "lsxcommon/alice_moe_convert.h"
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
+#include "lsxcommon/mistral_moe_large4_convert.h"
 #include "lsxcommon/hy_moe_convert.h"
 #include "lsxcommon/hy_moe_simulmt_convert.h"
 #include "lsxcommon/step_moe_convert.h"
@@ -124,6 +125,9 @@ ABSL_FLAG(bool, step, false,
           "logestix-step5-nvfp4");
 ABSL_FLAG(bool, mistral, false,
           "Mistral-Small-4-119B-2603 (MLA + 128-expert MoE) conversion pipeline");
+ABSL_FLAG(bool, mistral_large4, false,
+          "Mistral-Large-4-1T-A52B (MLA + DSA indexer + KV sharing + "
+          "128-expert MoE) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
@@ -190,6 +194,7 @@ int main(int argc, char* argv[]) {
     bool alice = absl::GetFlag(FLAGS_alice);
     bool xing = absl::GetFlag(FLAGS_xing);
     bool mistral = absl::GetFlag(FLAGS_mistral);
+    bool mistral_large4 = absl::GetFlag(FLAGS_mistral_large4);
     bool minimax = absl::GetFlag(FLAGS_minimax);
     bool minimax_flash = absl::GetFlag(FLAGS_minimax_flash);
     bool hy = absl::GetFlag(FLAGS_hy);
@@ -265,6 +270,7 @@ int main(int argc, char* argv[]) {
     flags.alice = alice;
     flags.xing = xing;
     flags.mistral = mistral;
+    flags.mistral_large4 = mistral_large4;
     flags.minimax = minimax;
     flags.minimax_flash = minimax_flash;
     flags.hy = hy;
@@ -767,6 +773,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Ling conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kMistralLarge4: {
+        lsxcommon::log::info(
+            "Mistral-Large-4-1T-A52B pipeline "
+            "(logestix-mistral-large4-nvfp4 layout)");
+        auto st = lsxcommon::mistral_large4::ConvertMistralLarge4Model(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "Mistral-Large-4 conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Mistral-Large-4 conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

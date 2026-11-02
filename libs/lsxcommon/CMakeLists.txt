@@ -96,6 +96,7 @@ add_library(lsxcommon STATIC
     src/xing_moe_model.cpp
     src/xing_moe_tool_format.cpp
     src/mistral_moe_convert.cpp
+    src/mistral_moe_large4_convert.cpp
     src/minimax_moe_convert.cpp
     src/minimax_moe_flash_convert.cpp
     src/minimax_moe_flash_model.cpp

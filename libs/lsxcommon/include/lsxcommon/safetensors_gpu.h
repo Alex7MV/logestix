@@ -1,11 +1,24 @@
 #pragma once
 
+#include <arrow/api.h>
+
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace lsxcommon {
 namespace gpu {
+
+// Dequantizes an F8_E4M3 tensor with per-128x128 F32 tile scales into BF16
+// (row-major [rows, cols], `bf16.size() == rows*cols*2`). The scale grid must
+// be `[ceil(rows/128), ceil(cols/128)]`; a partial last tile is read from the
+// grid normally (no clamping needed — the tile index is always in range).
+// Used by the offline converters' FP8 -> NVFP4 requant path.
+arrow::Status DequantFp8Tile128ToBf16Gpu(const std::vector<uint8_t> &fp8,
+                                         const std::vector<int64_t> &shape,
+                                         const std::vector<uint8_t> &scale_f32,
+                                         const std::vector<int64_t> &scale_shape,
+                                         std::vector<uint8_t> &bf16);
 
 // Quantizes `raw_data` (dtype) to NVFP4 E2M1 nibbles + per-16 E4M3 scales +
 // a global float scale. If the source weights are already quantized

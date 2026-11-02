@@ -44,6 +44,7 @@ enum class Pipeline {
     kAlice,
     kXing,
     kMistral,
+    kMistralLarge4,
     kMinimax,
     kMinimaxFlash,
     kHy,
@@ -89,6 +90,7 @@ struct Flags {
     bool alice = false;
     bool xing = false;
     bool mistral = false;
+    bool mistral_large4 = false;
     bool minimax = false;
     bool minimax_flash = false;
     bool hy = false;

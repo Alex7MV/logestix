@@ -65,6 +65,8 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--alice", {Pipeline::kAlice, flags.alice}},
             {"--xing", {Pipeline::kXing, flags.xing}},
             {"--mistral", {Pipeline::kMistral, flags.mistral}},
+            {"--mistral_large4",
+             {Pipeline::kMistralLarge4, flags.mistral_large4}},
             {"--minimax", {Pipeline::kMinimax, flags.minimax}},
             {"--minimax_flash",
              {Pipeline::kMinimaxFlash, flags.minimax_flash}},
