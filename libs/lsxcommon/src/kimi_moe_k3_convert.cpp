@@ -149,7 +149,7 @@ arrow::Status write_batch(
     return WriteRecordBatchToFile(*batch, path);
 }
 
-bool check_frozen_geometry(const KimiK3Topology &top, std::string &why)
+bool check_frozen_geometry(const KimiK3ConvertTopology &top, std::string &why)
 {
     using namespace frozen;
     auto bad = [&why](const char *field, int got, int want) {
@@ -373,9 +373,9 @@ bool KimiK3TensorIsStreamed(KimiK3TensorKind kind)
     }
 }
 
-KimiK3Topology ParseKimiK3Config(const std::string &input_dir)
+KimiK3ConvertTopology ParseKimiK3Config(const std::string &input_dir)
 {
-    KimiK3Topology top;
+    KimiK3ConvertTopology top;
     const fs::path cfg_path = fs::path(input_dir) / "config.json";
     std::error_code ec;
     if (!fs::exists(cfg_path, ec)) {
@@ -498,7 +498,7 @@ KimiK3Topology ParseKimiK3Config(const std::string &input_dir)
 arrow::Status ConvertKimiK3Model(const std::string &input_dir,
                                  const std::string &output_root)
 {
-    KimiK3Topology top = ParseKimiK3Config(input_dir);
+    KimiK3ConvertTopology top = ParseKimiK3Config(input_dir);
     if (!top.error_msg.empty())
         return arrow::Status::Invalid("Kimi-K3 config error: ", top.error_msg);
 
@@ -800,6 +800,7 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
           << "  \"num_layers\": " << top.num_layers << ",\n"
           << "  \"num_dense_layers\": " << top.dense_layers << ",\n"
           << "  \"hidden_size\": " << top.hidden_size << ",\n"
+          << "  \"intermediate_size\": " << top.dense_intermediate << ",\n"
           << "  \"vocab_size\": " << top.vocab_size << ",\n"
           << "  \"attn_res_block_size\": " << top.attn_res_block << ",\n"
           << "  \"mla_layers\": [";

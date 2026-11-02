@@ -84,7 +84,7 @@ struct ParsedKimiK3Tensor {
 
 // Parses config.json (KimiK3 wrapper -> text_config) into the topology.
 // Fills `error_msg` and leaves fields at defaults on failure.
-struct KimiK3Topology {
+struct KimiK3ConvertTopology {
     int hidden_size = 0;
     int num_layers = 0;
     int vocab_size = 0;
@@ -137,7 +137,7 @@ struct KimiK3Topology {
     std::string error_msg;
 };
 
-KimiK3Topology ParseKimiK3Config(const std::string &input_dir);
+KimiK3ConvertTopology ParseKimiK3Config(const std::string &input_dir);
 ParsedKimiK3Tensor ClassifyKimiK3Tensor(const std::string &name);
 
 // True when the tensor is uploaded to the device for the whole session.

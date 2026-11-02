@@ -2667,6 +2667,47 @@ endif()
 
 add_test(NAME test_qwen_tool_framing COMMAND test_qwen_tool_framing)
 
+# ── Kimi-K3 kernels (CUDA, host references) ────────────────────────────────
+add_executable(test_kimi_k3_kernels test_kimi_k3_kernels.cu)
+target_include_directories(test_kimi_k3_kernels PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+set_target_properties(test_kimi_k3_kernels PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_link_libraries(test_kimi_k3_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_kernels COMMAND test_kimi_k3_kernels)
+set_tests_properties(test_kimi_k3_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_kernels PROPERTIES TIMEOUT 300)
+set_tests_properties(test_kimi_k3_kernels PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Kimi-K3 loader (synthetic converted tree) ──────────────────────────────
+add_executable(test_kimi_k3_loader test_kimi_k3_loader.cpp)
+target_include_directories(test_kimi_k3_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_kimi_k3_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_loader COMMAND test_kimi_k3_loader)
+set_tests_properties(test_kimi_k3_loader PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_loader PROPERTIES TIMEOUT 300)
+set_tests_properties(test_kimi_k3_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_k3_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Kimi-K3 model + lifecycle (synthetic converted tree) ───────────────────
+add_executable(test_kimi_k3_model test_kimi_k3_model.cpp)
+target_include_directories(test_kimi_k3_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_kimi_k3_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_model COMMAND test_kimi_k3_model)
+set_tests_properties(test_kimi_k3_model PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_model PROPERTIES TIMEOUT 600)
+set_tests_properties(test_kimi_k3_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_k3_model PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Kimi-K3 SelfCheck (real weights; SKIP without a model) ─────────────────
+add_executable(test_kimi_k3_selfcheck test_kimi_k3_selfcheck.cpp)
+target_link_libraries(test_kimi_k3_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_selfcheck COMMAND test_kimi_k3_selfcheck)
+set_tests_properties(test_kimi_k3_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_kimi_k3_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Kimi-K3 XTML chat/tool codec (host-only, synthetic tokenizer) ───────────
 add_executable(test_kimi_k3_tool_framing test_kimi_k3_tool_framing.cpp)
 target_include_directories(test_kimi_k3_tool_framing PRIVATE

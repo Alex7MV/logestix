@@ -132,8 +132,7 @@ inline void WriteShard(const fs::path &dir, bool with_ballast = true)
     };
     const std::string P = "language_model.";
 
-    ts.push_back(FakeTensor{P + "model.embed_tokens.weight", "BF16",
-                            {kVocab, kHidden}, synthtest::MakeBf16(kVocab * kHidden)});
+    ts.push_back(bf16(P + "model.embed_tokens.weight", kVocab, kHidden));
     ts.push_back(bf16(P + "lm_head.weight", kVocab, kHidden));
     ts.push_back(synthtest::FakeTensor{P + "model.norm.weight", "BF16", {kHidden},
                                        synthtest::MakeBf16Values(kHidden,
