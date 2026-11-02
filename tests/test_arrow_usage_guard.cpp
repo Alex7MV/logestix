@@ -112,6 +112,10 @@ const std::map<std::string, std::string> kUnpackVerdict = {
     {"nemotron_moe_nvfp4_convert.cpp", "transient"},
     {"qwen_moe_exp_load.cpp", "retained-legacy"},
     {"xing_moe_load.cpp", "retained-legacy"},
+    // Kimi-K3: the pinned graph is unpacked, uploaded and freed per layer; the
+    // streamed latent/shared plane is read through LoadDenseNvfp4BatchViews
+    // (mmap views retained for the session), never through UnpackBatch.
+    {"kimi_moe_k3_load.cpp", "transient"},
 };
 
 // R-A8: every adapted model checked by the audit, and the scan roots below
@@ -127,6 +131,7 @@ const std::vector<std::string> kModels = {
     "Hy-Memory-30B-A3B",
     "Hy-SimulMT-30B-A3B",
     "Kimi-K2.7-Code",
+    "Kimi-K3",
     "Ling-3.1-flash",
     "MiniMax-M3",
     "MiniMax-M3.1-Flash",
