@@ -126,6 +126,7 @@ add_library(lsxcommon STATIC
     src/step_moe_model.cpp
     src/step_moe_tool_format.cpp
     src/mistral_moe_load.cpp
+    src/mistral_moe_large4_load.cpp
     src/mistral_moe_tool_format.cpp
     src/mistral_moe_model.cpp
     src/qwen_moe_exp_load.cpp

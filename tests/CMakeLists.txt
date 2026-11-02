@@ -1712,6 +1712,19 @@ add_test(NAME test_mistral_moe_large4_tokenizer_parity
 set_tests_properties(test_mistral_moe_large4_tokenizer_parity PROPERTIES LABELS inference)
 set_tests_properties(test_mistral_moe_large4_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Mistral-Large-4 loader ────────────────────────────────────────────────
+add_executable(test_mistral_moe_large4_loader test_mistral_moe_large4_loader.cpp)
+target_include_directories(test_mistral_moe_large4_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_mistral_moe_large4_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_loader COMMAND test_mistral_moe_large4_loader)
+set_tests_properties(test_mistral_moe_large4_loader PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_loader PROPERTIES TIMEOUT 300)
+set_tests_properties(test_mistral_moe_large4_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_mistral_moe_large4_loader PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Mistral-Large-4 pre-tokenizer (kind 12) ───────────────────────────────
 add_executable(test_mistral_moe_large4_pretokenizer test_mistral_moe_large4_pretokenizer.cpp)
 target_link_libraries(test_mistral_moe_large4_pretokenizer PRIVATE lsxcommon

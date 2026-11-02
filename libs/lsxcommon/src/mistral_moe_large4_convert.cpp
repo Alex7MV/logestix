@@ -673,6 +673,7 @@ arrow::Status ConvertMistralLarge4Model(const std::string &input_dir,
     f << "  \"num_layers\": " << top.layers << ",\n";
     f << "  \"experts_per_layer\": " << top.num_experts << ",\n";
     f << "  \"hidden_size\": " << top.hidden << ",\n";
+    f << "  \"vocab_size\": " << top.vocab << ",\n";
     f << "  \"num_attention_heads\": " << top.heads << ",\n";
     f << "  \"kv_lora_rank\": " << top.kv_lora << ",\n";
     f << "  \"qk_nope_head_dim\": " << top.qk_nope << ",\n";

@@ -1882,11 +1882,16 @@ bool LoadMoEExpertStore(const std::string &model_path,
     store.num_layers = max_layer + 1;
     store.records.resize(static_cast<size_t>(store.num_layers));
 
-    // Expert count from the files in the first layer dir; every later layer
+    // A family with a dense prefix (Mistral-Large-4: layer 0 is dense) sets
+    // first_moe_layer BEFORE the call: layers below it have no expert dirs.
+    const int first_moe = std::max(0, store.experts.first_moe_layer);
+
+    // Expert count from the files in the first MoE layer dir; every later layer
     // must have the same count or the store geometry would lie.
     if (store.num_experts <= 0) {
         int e_max = -1;
-        const fs::path first_dir = experts_dir / absl::StrCat("layer_", 0);
+        const fs::path first_dir =
+            experts_dir / absl::StrCat("layer_", first_moe);
         for (fs::directory_iterator it(first_dir), dit; it != dit; ++it) {
             const std::string name = it->path().filename().string();
             if (name.rfind("exp_", 0) != 0) continue;
@@ -1899,7 +1904,7 @@ bool LoadMoEExpertStore(const std::string &model_path,
         store.num_experts = e_max + 1;
     }
     if (store.num_experts <= 0) {
-        error = absl::StrCat("no expert files in layer_0 under ",
+        error = absl::StrCat("no expert files in layer_", first_moe, " under ",
                              experts_dir.string());
         return false;
     }
@@ -1919,14 +1924,14 @@ bool LoadMoEExpertStore(const std::string &model_path,
         const long v = std::atol(env);
         if (v > 0) db.max_open = static_cast<size_t>(v);
     }
-    db.first_moe_layer = 0;  // every layer routes in these families
+    db.first_moe_layer = first_moe;
     if (!db.Load(model_path, /*fallback=*/true)) {
         error = absl::StrCat("expert store load failed: ", model_path);
         return false;
     }
 
     cudaStream_t map_stream = nullptr;
-    for (int l = 0; l < store.num_layers; ++l) {
+    for (int l = first_moe; l < store.num_layers; ++l) {
         auto &recs = store.records[static_cast<size_t>(l)];
         recs.assign(static_cast<size_t>(store.num_experts), {});
         for (int e = 0; e < store.num_experts; ++e) {
@@ -1960,7 +1965,9 @@ bool LoadMoEExpertStore(const std::string &model_path,
     const int flats = store.num_layers * store.num_experts;
     if (flats > 0) {
         std::vector<float> hw(static_cast<size_t>(flats) * 2);
-        for (int l = 0; l < store.num_layers; ++l)
+        // Dense-prefix layers keep empty records; their device slots are never
+        // read (the flat index stays layer*experts+e).
+        for (int l = first_moe; l < store.num_layers; ++l)
             for (int e = 0; e < store.num_experts; ++e) {
                 const auto &r =
                     store.records[static_cast<size_t>(l)]
