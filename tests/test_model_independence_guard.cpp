@@ -107,6 +107,8 @@ const std::vector<PassportRow> kPassports = {
     {"xing4.0-29b-a4b", "xing_moe_constants.h", "lsxcommon::xing::frozen"},
     {"mistral-small-4-119b", "mistral_moe_constants.h",
      "lsxcommon::mistral_moe::frozen"},
+    {"mistral-large-4-1t", "mistral_moe_large4_constants.h",
+     "lsxcommon::mistral_large4::frozen"},
     {"minimax-m3", "minimax_moe_constants.h", "lsxcommon::minimax::frozen"},
     {"minimax-m3.1-flash", "minimax_moe_flash_constants.h",
      "lsxcommon::minimax_flash::frozen"},

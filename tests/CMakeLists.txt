@@ -1700,6 +1700,18 @@ set_tests_properties(test_mistral_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_mistral_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Mistral-Large-4 converter test (MLA + DSA indexer + KV sharing) ───────
+add_executable(test_mistral_moe_large4_convert test_mistral_moe_large4_convert.cpp)
+target_include_directories(test_mistral_moe_large4_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_mistral_moe_large4_convert PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_convert COMMAND test_mistral_moe_large4_convert)
+set_tests_properties(test_mistral_moe_large4_convert PROPERTIES LABELS convert)
+set_tests_properties(test_mistral_moe_large4_convert PROPERTIES TIMEOUT 240)
+set_tests_properties(test_mistral_moe_large4_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── MiniMax-M3 converter test (MSA indexer / dense-prefix MoE classifier) ──
 add_executable(test_minimax_moe_convert test_minimax_moe_convert.cpp)
 target_include_directories(test_minimax_moe_convert PRIVATE
