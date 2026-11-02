@@ -127,8 +127,10 @@ TEST_CASE("Mistral-Large-4 loader uploads the dense graph and expert store",
     REQUIRE(pw.expert_store.num_layers == g.layers);
     REQUIRE(pw.expert_store.num_experts == g.experts);
     REQUIRE(pw.expert_store.experts.first_moe_layer == 1);
-    REQUIRE(pw.expert_store.records[0].empty());
-    REQUIRE(!pw.expert_store.records[1].empty());
+    // Layer 0 is dense: its records stay zero-sized, the MoE layers carry the
+    // real geometry.
+    for (const auto &r : pw.expert_store.records[0]) REQUIRE(r.w1_bytes == 0);
+    REQUIRE(pw.expert_store.records[1][0].w1_bytes > 0);
 
     pw.Free();
     REQUIRE(pw.layers.empty());

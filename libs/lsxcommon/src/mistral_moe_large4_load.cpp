@@ -493,10 +493,59 @@ cudaError_t LoadMistralLarge4Weights(const std::string &model_path,
     }
 
     // ── routed experts (neutral mmap store) ────────────────────────────────
-    // Layer 0 is dense: tell the store before it probes the expert dirs.
-    pw.expert_store.experts.first_moe_layer = frozen::kMoeFirstLayer;
-    if (!moe::LoadMoEExpertStore(model_path, pw.expert_store, error))
-        return cudaErrorInvalidValue;
+    {
+        moe::MoEExpertRuntime &store = pw.expert_store;
+        const int E = pw.dims.experts;
+        store.num_layers = pw.dims.layers;
+        store.num_experts = E;
+        store.records.assign(static_cast<size_t>(pw.dims.layers),
+                             std::vector<moe::MoEExpertRecord>(
+                                 static_cast<size_t>(E)));
+        moe::MoEExpertDb &db = store.experts;
+        db.num_layers = pw.dims.layers;
+        db.experts_per_layer = E;
+        db.first_moe_layer = frozen::kMoeFirstLayer;
+        db.zero_pad_expert_names = false;
+        db.max_open = moe::kMoEExpertMaxOpen;
+        if (const char *env = std::getenv("LSX_MISTRAL_LARGE4_MAX_OPEN"))
+        {
+            const long v = std::atol(env);
+            if (v > 0) db.max_open = static_cast<size_t>(v);
+        }
+        db.log_prefix = "[mistral-large4-expert] ";
+        if (!db.Load(model_path, /*fallback=*/false))
+        {
+            error = "expert store load failed: " + model_path;
+            return cudaErrorInvalidValue;
+        }
+        for (int l = frozen::kMoeFirstLayer; l < pw.dims.layers; ++l)
+        {
+            auto &recs = store.records[static_cast<size_t>(l)];
+            for (int e = 0; e < E; ++e)
+            {
+                moe::EnsureMoEExpertView(db, l, e, nullptr);
+                const size_t idx = static_cast<size_t>(l) * E +
+                                   static_cast<size_t>(e);
+                if (idx >= db.entries.size() || !db.entries[idx].host_w1)
+                {
+                    error = absl::StrCat("expert read failed: layer_", l,
+                                         "/exp_", e);
+                    return cudaErrorInvalidValue;
+                }
+                const auto &v = db.entries[idx];
+                auto &r = recs[static_cast<size_t>(e)];
+                r.w1_bytes = v.w1_bytes;
+                r.w2_bytes = v.w2_bytes;
+                r.w3_bytes = v.w3_bytes;
+                r.s1_bytes = v.w1_scales_bytes;
+                r.s2_bytes = v.w2_scales_bytes;
+                r.s3_bytes = v.w3_scales_bytes;
+                r.gs1 = v.w1_global_scale;
+                r.gs2 = v.w2_global_scale;
+                r.gs3 = v.w3_global_scale;
+            }
+        }
+    }
 
     pw.resident_bytes = accounted;
     log::info(absl::StrCat("[mistral-large4] resident weights ",

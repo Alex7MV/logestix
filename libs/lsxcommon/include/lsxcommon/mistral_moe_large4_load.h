@@ -104,8 +104,9 @@ struct Large4PinnedWeights {
     std::vector<float> lerope_alpha_host;  // host mirror (rope table build)
     std::vector<Large4LayerWeights> layers;
     // Neutral host expert store (mmap views + LRU): 71 x 128 experts streamed
-    // through a device slot cache.
-    lsxcommon::moe::MoEExpertStore expert_store;
+    // through a device slot cache. The dense layer 0 is skipped
+    // (first_moe_layer).
+    lsxcommon::moe::MoEExpertRuntime expert_store;
     std::size_t resident_bytes = 0;
 
     void Free();
