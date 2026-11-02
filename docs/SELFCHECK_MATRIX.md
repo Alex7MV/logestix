@@ -40,6 +40,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | qwen3.8-27b | PASS | 3/3 | 3/3 | 3/3 |
 | qwen3.8-flash-next | PASS (+ eos) | 3/3 | 3/3 | 3/3 |
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
+| **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
@@ -126,6 +127,17 @@ one in a ctest summary, which is why the debt rows are called out below.
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | the source IS runnable now — `tools/nemotron_nvfp4_oracle.py` dequantizes the ModelOpt checkpoint (W4A16_NVFP4 experts + FP8 mixers) to a CPU BF16 `NemotronHForCausalLM` and it answers FSI 3/3 per the Expected Template — but the converted tree does not reproduce them (FSI-01 extracts `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`, FSI-02/03 emit fenced/repeated bodies), and CODE-TEST-01 / DET-TEST-01/02 make the SOURCE echo the prompt body, so no source-faithful CODE/DET golden can be extracted. Gates stay debt with these measurements; the FSI gap is the 4-bit body precision item in `docs/OPEN_TASKS.md` §R13 |
 
 Both are recorded in the golden-debt list (§K) rather than left to look green.
+
+`mistral-large-4-1t` (2026-11-02) is the third shape: the parity goldens are
+**template-derived** (the 988 GB FP8 source is a multi-node FP8 runner and
+cannot execute on this card), `expected` comes from each prompt set's own
+Expected Template, and the goldens are committed — so the stages RUN rather than
+SKIP. All four gates are green: SelfCheck x3 bit-exact, FSI 3/3, CODE 3/3, DET 3/3
+with byte-identical streams. The first runs read CODE/FSI as red because the
+model reasons inline and its `[THINK]`/`[/THINK]` markers are special ids that
+the decoder drops; two opt-in extraction knobs (default off) cut the chain by id
+and both final answers are correct — provenance and the trap are recorded in
+`docs/OPEN_TASKS.md` §R14.
 
 ## 2b. flint — measured engine-vs-source agreement (no golden yet)
 

@@ -401,6 +401,47 @@ procedure — `perf-tuning-a-model`.
   RTX 5090/Linux, 2048-token protocol); `perf` carries an accepted -4.5% for
   the overflow-proof TC SwiGLU quantizer (one extra launch per slot per layer),
   `r3` is unaffected.
+  Mistral-Large-4-1T-A52B (variant `large4` of the `mistral` family, registry
+  `mistral-large-4-1t`; 1T total / ~52B active): 72L / 6144H / 64 MLA heads
+  with NO Q-LoRA (kv_lora 512, qk_nope 64 + qk_rope 64, v 128) / 128 routed
+  experts top-4 (I=6144) + one gated shared expert / dense layer 0 / vocab
+  204800 / final logit softcap 30. Five components no other family has:
+  **hybrid RoPE/NoPE** (every 4th layer is NoPE and its 64 rotary dims become
+  plain key dims; `wkv_a` is 512 vs 576 and `wkv_b` 16384 vs 12288 rows),
+  **LeRoPE** (learned per-frequency `inv_freq *= exp(lerope.alpha)` over YaRN
+  θ=1e4 / factor 2048 / original 512, interleaved pairs, attention_factor 1.0),
+  **ssmax** (per-head position-dependent query scale `s[h]*log(pos+1)+b[h]`
+  applied before QK), a **DSA Lightning Indexer** (32 heads × 128, top-2048,
+  44 full layers, 28 reusing the previous full layer's mask) and **cross-layer
+  latent-KV sharing** (layers 39,43,…,71 have no `kv_a` and read layer 35).
+  Files: `mistral_moe_large4_constants.h` (frozen passport + the four per-layer
+  tables), `mistral_moe_large4_convert.{h,cpp}` (`lsxforge --mistral_large4`,
+  `logestix-mistral-large4-nvfp4`; FP8-E4M3 + F32 128×128 tile `qscale_weight`
+  -> NVFP4 via the neutral `DequantFp8Tile128ToBf16Gpu`, BF16 edges verbatim,
+  vision tower + `mtp_dspark` stripped and counted),
+  `mistral_moe_large4_load.{h,cpp}` (NVFP4 projections + BF16 edges + the
+  neutral `MoEExpertRuntime` store with `first_moe_layer = 1`),
+  `mistral_moe_large4_kernels.{h,cu}` (LeRoPE tables, interleaved rotation,
+  ssmax, FP32 router, indexer scoring + exact top-k, MLA absorption),
+  `mistral_moe_large4_inference_attn.{h,cu}` (latent cache + absorbed decode:
+  q_abs = q_nope @ W_k, ctx = Σ p_t latent_t, out = W_v ctx —
+  mathematically the reference's `expand_kv`; KV sharing; DSA gather),
+  `mistral_moe_large4_inference_pipeline.{h,cu}` (72-layer driver, MoE +
+  shared expert + dense MLP, softcap), `mistral_moe_large4_model.{h,cpp}`;
+  tool codec reuses the allowlisted `mistral_moe_tool_format` with a
+  `MistralFormat::kLarge4` policy (always-on `[MODEL_SETTINGS]
+  {"reasoning_effort":"high"}`); tokenizer `tokenizer_kind` 12 (o200k case-run
+  pattern, RIGHT-grouped digits) with 50/50 parity against the checkpoint's own
+  tokenizer. Real weights (988 GB FP8 -> 555 GB tree; 16.1 GB pinned + 547 GB
+  mmap-streamed experts): SelfCheck Paris ×3 bit-exact
+  (`logits_hash 747bf131f1ac557f`), FSI/CODE/DET 3/3 each on
+  **template-derived** goldens (an inline-reasoning trap: the `[THINK]` markers
+  are special ids the decoder drops, so the harness cuts by id —
+  `docs/OPEN_TASKS.md` §R14), native tool
+  round-trip `get_weather {"city":"Paris"}`. Perf at 2048 tokens:
+  **1.04 t/s (perf) / 1.03 t/s (r3)**, TTFT 5.7 s, host-store bound (17 GB of experts
+  streamed per token). Knobs `LSX_MISTRAL_LARGE4_EXPERT_CACHE_SLOTS`,
+  `LSX_MISTRAL_LARGE4_MAX_OPEN`.
   DeepSeek-V4-Pro-0813 (independent family `deepseek` variant `pro`: the same
   DeepseekV4ForCausalLM contour as V4-Flash — MLA + Hyper-Connections +
   compressed-KV/indexer + hash router + sqrtsoftplus MoE — with Pro geometry

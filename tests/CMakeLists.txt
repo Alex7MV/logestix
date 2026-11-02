@@ -3322,8 +3322,10 @@ set_tests_properties(test_perf_baseline_alice_foundation_80b_a3b
 
 add_test(NAME test_perf_baseline_mistral_large4
          COMMAND test_perf_baseline "perf baseline: mistral-large-4-1t")
+# Host-store bound (~1 t/s): two 2048-token modes plus the probe do not fit the
+# 3000 s budget the dense families use.
 set_tests_properties(test_perf_baseline_mistral_large4 PROPERTIES
-    TIMEOUT 3000
+    TIMEOUT 9600
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Mistral-Large-4-1T-A52B")
 set_tests_properties(test_perf_baseline_mistral_large4 PROPERTIES LABELS perf)
