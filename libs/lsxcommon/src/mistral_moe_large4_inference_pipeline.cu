@@ -11,6 +11,8 @@
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/log.h"
 
+#include <absl/strings/str_cat.h>
+
 #include <algorithm>
 #include <string>
 

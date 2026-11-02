@@ -62,7 +62,9 @@ inline std::vector<uint8_t> F32Vals(int64_t n, float base = 0.01f)
     });
 }
 
-// Small synthetic geometry. It does NOT match the frozen passport;
+// Small synthetic geometry. Every NVFP4 GEMV's K must be a multiple of 32
+// (the neutral streaming GEMV contract), so hidden/moe_inter/dense_inter and
+// heads*v_head are all multiples of 32. It does NOT match the frozen passport;
 // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 relaxes the gate (a RUNTIME env var set by
 // tests/CMakeLists.txt).
 struct Large4SynthGeom {
@@ -72,11 +74,11 @@ struct Large4SynthGeom {
     int kv_lora = 16;
     int qk_nope = 8;
     int qk_rope = 8;
-    int v_head = 8;
+    int v_head = 16;
     int index_heads = 2;
     int index_head_dim = 16;
     int moe_inter = 32;
-    int dense_inter = 48;
+    int dense_inter = 64;
     int experts = 2;
     int vocab = 64;
 

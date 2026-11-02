@@ -1724,6 +1724,19 @@ set_tests_properties(test_mistral_moe_large4_kernels PROPERTIES LABELS inference
 set_tests_properties(test_mistral_moe_large4_kernels PROPERTIES TIMEOUT 300)
 set_tests_properties(test_mistral_moe_large4_kernels PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Mistral-Large-4 model (synthetic converted tree) ──────────────────────
+add_executable(test_mistral_moe_large4_model test_mistral_moe_large4_model.cpp)
+target_include_directories(test_mistral_moe_large4_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_mistral_moe_large4_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_model COMMAND test_mistral_moe_large4_model)
+set_tests_properties(test_mistral_moe_large4_model PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_model PROPERTIES TIMEOUT 600)
+set_tests_properties(test_mistral_moe_large4_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_mistral_moe_large4_model PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Mistral-Large-4 loader ────────────────────────────────────────────────
 add_executable(test_mistral_moe_large4_loader test_mistral_moe_large4_loader.cpp)
 target_include_directories(test_mistral_moe_large4_loader PRIVATE
