@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing|mistral|minimax|hy|flint|ling|beam|step)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|flash|36|v41|pro|nvfp4|switch|simulmt|large4)";
+    const std::string var    = "(?:27b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -81,6 +81,7 @@ bool AllowedCommon(const std::string& stem)
         "ling_moe_tool_format",       // Ling <role> framing + <tool_call> XML
         "beam_moe_tool_format",       // Beam Harmony-XML codec
         "step_moe_tool_format",       // Step-5 ChatML + <tool_call> XML codec
+        "kimi_moe_k3_tool_format",    // Kimi-K3 XTML chat/tool codec
         "granite_switch_tool_format", // Granite-4.1 role markers + aLoRA codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
@@ -186,6 +187,23 @@ TEST_CASE("naming guard accepts deepseek_moe_pro_* stems", "[naming][guard]")
     CHECK(m("deepseek_moe_pro_inference_moe"));
     CHECK(m("deepseek_moe_pro_inference_pipeline"));
     CHECK(m("deepseek_moe_pro_norm_kernels"));
+}
+
+TEST_CASE("naming guard accepts kimi_moe_k3_* stems", "[naming][guard]")
+{
+    const auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("kimi_moe_k3_constants"));
+    CHECK(m("kimi_moe_k3_convert"));
+    CHECK(m("kimi_moe_k3_dequant"));
+    CHECK(m("kimi_moe_k3_load"));
+    CHECK(m("kimi_moe_k3_model"));
+    CHECK(m("kimi_moe_k3_inference"));
+    CHECK(m("kimi_moe_k3_inference_attn"));
+    CHECK(m("kimi_moe_k3_inference_pipeline"));
+    CHECK(m("kimi_moe_k3_kernels"));
+    CHECK(m("kimi_moe_k3_expert_cache"));
 }
 
 TEST_CASE("naming guard accepts deepseek_moe_v41_* stems", "[naming][guard]")

@@ -2658,6 +2658,12 @@ endif()
 
 add_test(NAME test_qwen_tool_framing COMMAND test_qwen_tool_framing)
 
+# ── Kimi-K3 frozen passport (host-only, no CUDA) ─────────────────────────────
+add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp)
+target_link_libraries(test_kimi_k3_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_constants COMMAND test_kimi_k3_constants)
+set_tests_properties(test_kimi_k3_constants PROPERTIES LABELS fast)
+
 # ── phi-4 ChatML token bridge test (host-only, synthetic tokenizer) ──
 add_executable(test_phi_tool_framing test_phi_tool_framing.cpp)
 target_include_directories(test_phi_tool_framing PRIVATE
