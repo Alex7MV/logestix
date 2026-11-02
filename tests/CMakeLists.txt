@@ -47,6 +47,15 @@ set_tests_properties(test_alice_moe_model PROPERTIES TIMEOUT 300)
 set_tests_properties(test_alice_moe_model PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_alice_moe_model PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Kimi-K3 synthetic converter E2E (label convert, bounded) ────────────────
+add_executable(test_kimi_k3_convert test_kimi_k3_convert.cpp)
+target_link_libraries(test_kimi_k3_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_convert COMMAND test_kimi_k3_convert)
+set_tests_properties(test_kimi_k3_convert PROPERTIES LABELS convert)
+set_tests_properties(test_kimi_k3_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_kimi_k3_convert PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)

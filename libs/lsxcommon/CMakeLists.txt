@@ -57,6 +57,7 @@ add_library(lsxcommon STATIC
     src/mimo_moe_expert_cache.cpp
     src/mimo_moe_model.cpp
     src/alice_moe_convert.cpp
+    src/kimi_moe_k3_convert.cpp
     src/alice_moe_load.cpp
     src/alice_moe_model.cpp
     src/alice_tool_format.cpp

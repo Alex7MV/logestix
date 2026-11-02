@@ -59,6 +59,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
     const std::pair<const char *, Pipeline> kCases[] = {
         {"glm", Pipeline::kGlm},
         {"kimi", Pipeline::kKimi},
+        {"kimi_k3", Pipeline::kKimiK3},
         {"qwen", Pipeline::kQwenDense},
         {"qwen35moe", Pipeline::kQwen35Moe},
         {"qwen36moe", Pipeline::kQwen36Moe},
@@ -85,6 +86,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         Flags f = Base();
         if (std::string(name) == "glm") f.glm = true;
         else if (std::string(name) == "kimi") f.kimi = true;
+        else if (std::string(name) == "kimi_k3") f.kimi_k3 = true;
         else if (std::string(name) == "qwen") f.qwen = true;
         else if (std::string(name) == "qwen35moe") f.qwen35moe = true;
         else if (std::string(name) == "qwen36moe") f.qwen36moe = true;
