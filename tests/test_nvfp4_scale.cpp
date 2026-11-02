@@ -153,6 +153,10 @@ TEST_CASE("no test re-implements the unsigned NVFP4 block-scale decode",
         // Deliberately independent oracles for the codec under test.
         "test_nvfp4_scale.cpp",
         "test_nemotron_moe_nvfp4_convert.cpp",
+        // Kimi-K3: independent host oracles for the codec the kernels/converter
+        // consume (the point is not to share the implementation under test).
+        "test_kimi_k3_kernels.cu",
+        "test_kimi_k3_convert.cpp",
         // pow2-only payload by construction: E8m0ToE4m3Pow2Pair emits
         // (e4 << 3), so the mantissa is always 0 and the pow2 and full-E4M3
         // decodes agree on every byte this file can see.
