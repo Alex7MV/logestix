@@ -194,6 +194,28 @@ private:
     uint32_t error_ = 0;
 };
 
+// Mistral-Large-4 style case-run pattern (tokenizer_kind 12): identical to
+// MistralWordStream except that number runs are grouped 1..3 digits aligned to
+// the RIGHT end of the run (tokenizer.json), i.e. the o200k
+// `\p{N}{1,3}(?=(?:\p{N}{3})*(?!\p{N}))|\p{N}{1,2}` alternative:
+//   "1234567" -> "1","234","567"   (NOT left-grouped "123","456","7")
+//   "1234"    -> "1","234"
+class MistralGroupedWordStream {
+public:
+    MistralGroupedWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    bool match(size_t pos, size_t &len) const;
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+};
+
 // Original GPT-2 ByteLevel pattern (tokenizer_kind 10), Granite-4.2:
 //
 //   's|'t|'re|'ve|'m|'ll|'d | ' '? \p{L}+ | ' '? \p{N}+ |

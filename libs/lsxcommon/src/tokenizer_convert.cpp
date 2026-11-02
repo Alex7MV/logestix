@@ -491,6 +491,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         meta.tokenizer_kind = 10;
         meta.base_vocab_size = model_vocab_count;
     }
+    if (policy.pretokenizer == 10) {
+        // Mistral-Large-4: the Small-4 case-run pattern with o200k's
+        // RIGHT-grouped number alternative (\p{N}{1,3} aligned to the run's
+        // right end). Written as tokenizer_kind = 12.
+        meta.tokenizer_kind = 12;
+        meta.base_vocab_size = model_vocab_count;
+    }
     if (policy.pretokenizer == 9) {
         // Gemma-4: raw-text BPE (vocabulary + merges verbatim), normalizer
         // Replace(" " -> U+2581), ByteFallback, no dummy prefix. Written as

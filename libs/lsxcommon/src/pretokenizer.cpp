@@ -501,7 +501,8 @@ size_t ContractionEnd(const char *begin, const char *end, size_t pos)
 bool MatchCaseRunPattern(const char *begin, const char *end, size_t pos,
                          bool flint_punct, size_t &len, int digit_max = 3,
                          bool contraction = true, bool stop_at_cjk = false,
-                         bool slash_after_punct = true)
+                         bool slash_after_punct = true,
+                         bool grouped_digits = false)
 {
     const size_t n = static_cast<size_t>(end - begin);
     if (pos >= n) return false;
@@ -530,11 +531,27 @@ bool MatchCaseRunPattern(const char *begin, const char *end, size_t pos,
         return true;
     }
 
-    // alt3: \p{N}{1,digit_max}
+    // alt3: \p{N}{1,digit_max}; with `grouped_digits` the count is the one
+    // that makes the remainder a multiple of three (right-grouped runs).
     if (unicode::classify(cp) == CharClass::Number) {
         size_t p = pos;
         int count = 0;
-        while (p < n && count < digit_max) {
+        int limit = digit_max;
+        if (grouped_digits) {
+            int run = 0;
+            while (p < n) {
+                size_t q = 0;
+                const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
+                if (c2 == kInvalidUtf8 ||
+                    unicode::classify(c2) != CharClass::Number)
+                    break;
+                p += q;
+                ++run;
+            }
+            limit = (run % 3 == 0) ? 3 : (run % 3 == 1 ? 1 : 2);
+            p = pos;
+        }
+        while (p < n && count < limit) {
             size_t q = 0;
             const uint32_t c2 = decode_utf8(begin + p, n - p, &q);
             if (c2 == kInvalidUtf8 || unicode::classify(c2) != CharClass::Number)
@@ -1260,6 +1277,37 @@ bool Gpt2WordStream::match(size_t pos, size_t &len) const
 }
 
 bool Gpt2WordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalidUtf8) { error_ = 1; return false; }
+    size_t len = 0;
+    if (!match(pos_, len) || len == 0) len = cl;
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
+MistralGroupedWordStream::MistralGroupedWordStream(const char *text,
+                                                   size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool MistralGroupedWordStream::match(size_t pos, size_t &len) const
+{
+    // Mistral case-run pattern with o200k's RIGHT-grouped number alternative.
+    return MatchCaseRunPattern(begin_, end_, pos, /*flint_punct=*/false, len,
+                               /*digit_max=*/3, /*contraction=*/false,
+                               /*stop_at_cjk=*/false,
+                               /*slash_after_punct=*/true,
+                               /*grouped_digits=*/true);
+}
+
+bool MistralGroupedWordStream::next(WordSpan &word)
 {
     if (error_) return false;
     const size_t n = static_cast<size_t>(end_ - begin_);

@@ -117,6 +117,10 @@ struct TokenizerSpecialPolicy {
     //   8 = Granite-4.2 original GPT-2 ByteLevel pattern: case-SENSITIVE
     //       contractions, unbounded letter/digit runs, literal space prefix,
     //       no CRLF alternative (Gpt2OriginalWordStream). tokenizer_kind = 10.
+    //   10 = Mistral-Large-4: the Small-4 case-run pattern with o200k's
+    //       RIGHT-grouped number alternative (\p{N}{1,3} aligned to the run's
+    //       right end): "1234567" -> 1|234|567.
+    //       (MistralGroupedWordStream). tokenizer_kind = 12.
     int32_t pretokenizer = 0;
     // 1 = tolerate a vocabulary with no single-byte token for some bytes: the
     // missing ones map to -1 and the encoder skips them. The reference tokenizer

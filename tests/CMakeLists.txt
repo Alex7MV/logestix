@@ -1700,6 +1700,25 @@ set_tests_properties(test_mistral_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_mistral_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Mistral-Large-4 tokenizer parity (source-captured golden) ─────────────
+add_executable(test_mistral_moe_large4_tokenizer_parity
+    test_mistral_moe_large4_tokenizer_parity.cpp)
+target_compile_definitions(test_mistral_moe_large4_tokenizer_parity PRIVATE
+    "LSX_MISTRAL_LARGE4_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mistral_large4\"")
+target_link_libraries(test_mistral_moe_large4_tokenizer_parity PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_mistral_moe_large4_tokenizer_parity
+         COMMAND test_mistral_moe_large4_tokenizer_parity)
+set_tests_properties(test_mistral_moe_large4_tokenizer_parity PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Mistral-Large-4 pre-tokenizer (kind 12) ───────────────────────────────
+add_executable(test_mistral_moe_large4_pretokenizer test_mistral_moe_large4_pretokenizer.cpp)
+target_link_libraries(test_mistral_moe_large4_pretokenizer PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_pretokenizer COMMAND test_mistral_moe_large4_pretokenizer)
+set_tests_properties(test_mistral_moe_large4_pretokenizer PROPERTIES LABELS fast)
+
 # ── Mistral-Large-4 converter test (MLA + DSA indexer + KV sharing) ───────
 add_executable(test_mistral_moe_large4_convert test_mistral_moe_large4_convert.cpp)
 target_include_directories(test_mistral_moe_large4_convert PRIVATE
