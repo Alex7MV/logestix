@@ -1712,6 +1712,18 @@ add_test(NAME test_mistral_moe_large4_tokenizer_parity
 set_tests_properties(test_mistral_moe_large4_tokenizer_parity PROPERTIES LABELS inference)
 set_tests_properties(test_mistral_moe_large4_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Mistral-Large-4 family kernels (LeRoPE / ssmax / router / indexer) ────
+add_executable(test_mistral_moe_large4_kernels test_mistral_moe_large4_kernels.cu)
+target_include_directories(test_mistral_moe_large4_kernels PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+set_target_properties(test_mistral_moe_large4_kernels PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_link_libraries(test_mistral_moe_large4_kernels PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_kernels COMMAND test_mistral_moe_large4_kernels)
+set_tests_properties(test_mistral_moe_large4_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_kernels PROPERTIES TIMEOUT 300)
+set_tests_properties(test_mistral_moe_large4_kernels PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Mistral-Large-4 loader ────────────────────────────────────────────────
 add_executable(test_mistral_moe_large4_loader test_mistral_moe_large4_loader.cpp)
 target_include_directories(test_mistral_moe_large4_loader PRIVATE

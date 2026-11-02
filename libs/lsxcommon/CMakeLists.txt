@@ -492,6 +492,7 @@ target_link_libraries(lsxcommon_step_cu
 # Mistral-Small-4-119B MLA + MoE decode kernels.
 add_library(lsxcommon_mistral_cu OBJECT
     src/mistral_moe_inference.cu
+    src/mistral_moe_large4_kernels.cu
 )
 set_target_properties(lsxcommon_mistral_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
