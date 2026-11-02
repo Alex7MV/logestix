@@ -33,14 +33,27 @@ namespace lsxcommon {
 namespace mistral_moe {
 namespace tool_format {
 
+// Per-family render policy. The two checkpoints share the Mistral native frame
+// but differ in the `[MODEL_SETTINGS]` block:
+//   small4: emitted only when tools are present, always "none";
+//   large4: always emitted before the first user turn, reasoning_effort
+//           defaults to "high" (chat_template.jinja) and may be low/medium/high.
+enum class MistralFormat { kSmall4 = 0, kLarge4 = 1 };
+
+struct RenderOptions {
+    MistralFormat format = MistralFormat::kSmall4;
+    const char *reasoning_effort = "high";
+};
+
 // Renders the conversation exactly as chat_template.jinja would.
 bool Render(const ArrowTokenizerDb &tok, const ChatConversation &conv,
-            std::vector<int32_t> &out_ids, bool add_generation_prompt = true);
+            std::vector<int32_t> &out_ids, bool add_generation_prompt = true,
+            const RenderOptions &opts = {});
 
 // Same transcript as TEXT. Exposed for tests that pin the frame shape without a
 // tokenizer.
 bool RenderText(const ChatConversation &conv, std::string &out,
-                bool add_generation_prompt = true);
+                bool add_generation_prompt = true, const RenderOptions &opts = {});
 
 // True when every control marker this codec needs exists in the vocabulary.
 bool SentinelsPresent(const ArrowTokenizerDb &tok);

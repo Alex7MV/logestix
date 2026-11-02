@@ -4,6 +4,7 @@
 #include "alice_moe_model.h"
 #include "xing_moe_model.h"
 #include "mistral_moe_model.h"
+#include "mistral_moe_large4_model.h"
 #include "hy_moe_model.h"
 #include "hy_moe_simulmt_model.h"
 #include "flint_moe_model.h"
@@ -71,6 +72,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<LingMoeModel>();
         LsxModelFactory::Register<BeamMoeModel>();
         LsxModelFactory::Register<Step5PreviewModel>();
+        LsxModelFactory::Register<MistralLarge4MoeModel>();
         // Alias for the vault-normalized index "model" name
         // ("AliceAI-Foundation-80B-A3B-Base" -> "aliceai-foundation-80b-a3b-base"),
         // so path auto-detection (lsxbenchmark/lsxfabric) resolves the model.

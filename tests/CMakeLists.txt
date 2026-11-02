@@ -1737,6 +1737,17 @@ set_tests_properties(test_mistral_moe_large4_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_mistral_moe_large4_loader PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Mistral-Large-4 tool framing (host-only, step 4b) ─────────────────────
+add_executable(test_mistral_moe_large4_tool_framing
+    test_mistral_moe_large4_tool_framing.cpp)
+target_compile_definitions(test_mistral_moe_large4_tool_framing PRIVATE
+    "LSX_LARGE4_TOK_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/data/synthetic_mistral_large4_tok.json\"")
+target_link_libraries(test_mistral_moe_large4_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain arrow_shared)
+add_test(NAME test_mistral_moe_large4_tool_framing
+         COMMAND test_mistral_moe_large4_tool_framing)
+set_tests_properties(test_mistral_moe_large4_tool_framing PROPERTIES LABELS fast)
+
 # ── Mistral-Large-4 pre-tokenizer (kind 12) ───────────────────────────────
 add_executable(test_mistral_moe_large4_pretokenizer test_mistral_moe_large4_pretokenizer.cpp)
 target_link_libraries(test_mistral_moe_large4_pretokenizer PRIVATE lsxcommon

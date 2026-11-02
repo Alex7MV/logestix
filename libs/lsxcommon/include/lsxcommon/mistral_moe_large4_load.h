@@ -101,6 +101,7 @@ struct Large4PinnedWeights {
     Large4Bf16Weight head;
     const __nv_bfloat16 *final_norm = nullptr;
     const __nv_bfloat16 *lerope_alpha = nullptr;  // [qk_rope/2]
+    std::vector<float> lerope_alpha_host;  // host mirror (rope table build)
     std::vector<Large4LayerWeights> layers;
     // Neutral host expert store (mmap views + LRU): 71 x 128 experts streamed
     // through a device slot cache.

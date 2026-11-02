@@ -109,20 +109,19 @@ std::string ToolsJson(const std::vector<ToolSpec> &tools)
 } // namespace
 
 bool RenderText(const ChatConversation &conv, std::string &out,
-                bool add_generation_prompt)
+                bool add_generation_prompt, const RenderOptions &opts)
 {
     (void)add_generation_prompt;  // the template appends nothing after the last turn
     out.clear();
     out += kBos.text;
-    if (!conv.tools.empty())
-    {
-        out += kAvail.text;
-        out += ToolsJson(conv.tools);
-        out += kAvailEnd.text;
-        out += kSettings.text;
-        out += "{\"reasoning_effort\": \"none\"}";
-        out += kSettingsEnd.text;
-    }
+    bool emitted = false;
+    const std::string settings_json =
+        absl::StrCat("{\"reasoning_effort\": \"",
+                     opts.format == MistralFormat::kLarge4
+                         ? (opts.reasoning_effort ? opts.reasoning_effort
+                                                  : "high")
+                         : "none",
+                     "\"}");
     for (const auto &m : conv.messages)
     {
         if (m.role == "system")
@@ -133,6 +132,25 @@ bool RenderText(const ChatConversation &conv, std::string &out,
         }
         else if (m.role == "user")
         {
+            // chat_template.jinja emits the tools block + MODEL_SETTINGS right
+            // before the first user turn.
+            if (!emitted)
+            {
+                if (!conv.tools.empty())
+                {
+                    out += kAvail.text;
+                    out += ToolsJson(conv.tools);
+                    out += kAvailEnd.text;
+                }
+                if (!conv.tools.empty() ||
+                    opts.format == MistralFormat::kLarge4)
+                {
+                    out += kSettings.text;
+                    out += settings_json;
+                    out += kSettingsEnd.text;
+                }
+                emitted = true;
+            }
             out += kInst.text;
             out += m.content;
             out += kInstEnd.text;
@@ -160,21 +178,20 @@ bool RenderText(const ChatConversation &conv, std::string &out,
 }
 
 bool Render(const ArrowTokenizerDb &tok, const ChatConversation &conv,
-            std::vector<int32_t> &out_ids, bool add_generation_prompt)
+            std::vector<int32_t> &out_ids, bool add_generation_prompt,
+            const RenderOptions &opts)
 {
     if (!MarkersPresentIn(tok)) return false;
     out_ids.clear();
     out_ids.push_back(frozen::kBosId);
-    if (!conv.tools.empty())
-    {
-        out_ids.push_back(frozen::kAvailableToolsId);
-        if (!AppendEncoded(tok, ToolsJson(conv.tools), out_ids)) return false;
-        out_ids.push_back(frozen::kAvailableToolsEndId);
-        out_ids.push_back(frozen::kModelSettingsId);
-        if (!AppendEncoded(tok, "{\"reasoning_effort\": \"none\"}", out_ids))
-            return false;
-        out_ids.push_back(frozen::kModelSettingsEndId);
-    }
+    const std::string settings_json =
+        absl::StrCat("{\"reasoning_effort\": \"",
+                     opts.format == MistralFormat::kLarge4
+                         ? (opts.reasoning_effort ? opts.reasoning_effort
+                                                  : "high")
+                         : "none",
+                     "\"}");
+    bool emitted = false;
     for (const auto &m : conv.messages)
     {
         if (m.role == "system")
@@ -185,6 +202,25 @@ bool Render(const ArrowTokenizerDb &tok, const ChatConversation &conv,
         }
         else if (m.role == "user")
         {
+            if (!emitted)
+            {
+                if (!conv.tools.empty())
+                {
+                    out_ids.push_back(frozen::kAvailableToolsId);
+                    if (!AppendEncoded(tok, ToolsJson(conv.tools), out_ids))
+                        return false;
+                    out_ids.push_back(frozen::kAvailableToolsEndId);
+                }
+                if (!conv.tools.empty() ||
+                    opts.format == MistralFormat::kLarge4)
+                {
+                    out_ids.push_back(frozen::kModelSettingsId);
+                    if (!AppendEncoded(tok, settings_json, out_ids))
+                        return false;
+                    out_ids.push_back(frozen::kModelSettingsEndId);
+                }
+                emitted = true;
+            }
             out_ids.push_back(frozen::kInstId);
             if (!AppendEncoded(tok, m.content, out_ids)) return false;
             out_ids.push_back(frozen::kInstEndId);

@@ -333,6 +333,20 @@ cudaError_t LoadMistralLarge4Weights(const std::string &model_path,
         error = "global weight upload failed";
         return cudaErrorMemoryAllocation;
     }
+    pw.lerope_alpha_host.resize(static_cast<size_t>(alpha->bytes / 2));
+    {
+        // Host mirror of the BF16 alpha tensor (rope tables are built on the
+        // host at request time).
+        std::vector<uint16_t> bits(pw.lerope_alpha_host.size());
+        std::memcpy(bits.data(), alpha->data, alpha->bytes);
+        for (size_t i = 0; i < bits.size(); ++i)
+        {
+            const uint32_t u = static_cast<uint32_t>(bits[i]) << 16;
+            float v;
+            std::memcpy(&v, &u, sizeof(v));
+            pw.lerope_alpha_host[i] = v;
+        }
+    }
     if (pw.head.rows != pw.dims.vocab || pw.embed.cols != pw.dims.hidden ||
         pw.embed.rows != pw.dims.vocab)
     {

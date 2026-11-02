@@ -72,6 +72,36 @@ __global__ void ssmax_scale_kernel(float *q, int heads, int head_dim,
     q[idx] *= scale;
 }
 
+__global__ void rms_norm_kernel(const float *x,
+                                const __nv_bfloat16 *w, int n, float eps,
+                                __nv_bfloat16 *out)
+{
+    __shared__ float s_ss;
+    float acc = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+    {
+        const float v = x[i];
+        acc += v * v;
+    }
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    __shared__ float s_part[32];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    if (lane == 0) s_part[warp] = acc;
+    __syncthreads();
+    if (threadIdx.x == 0)
+    {
+        float t = 0.0f;
+        const int warps = (blockDim.x + 31) / 32;
+        for (int i = 0; i < warps; ++i) t += s_part[i];
+        s_ss = t;
+    }
+    __syncthreads();
+    const float inv = rsqrtf(s_ss / static_cast<float>(n) + eps);
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        out[i] = __float2bfloat16(x[i] * inv * bf16_to_f32(w[i]));
+}
+
 // ── LayerNorm (weight + bias) ─────────────────────────────────────────────
 __global__ void layernorm_kernel(const __nv_bfloat16 *x,
                                  const __nv_bfloat16 *w,
@@ -378,6 +408,22 @@ __global__ void value_project_kernel(const __nv_bfloat16 *__restrict__ wkv_b,
 }
 
 // ── elementwise ───────────────────────────────────────────────────────────
+__global__ void bf16_to_f32_kernel(const __nv_bfloat16 *src, float *dst, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = __bfloat162float(src[i]);
+}
+__global__ void acc_add_scaled_f16_kernel(float *acc, const __half *src,
+                                          const float *scale, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) acc[i] += (*scale) * __half2float(src[i]);
+}
+__global__ void logit_softcap_kernel(float *logits, int n, float cap)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) logits[i] = tanhf(logits[i] / cap) * cap;
+}
 __global__ void bf16_to_f16_kernel(const __nv_bfloat16 *src, __half *dst,
                                    int n)
 {
@@ -518,6 +564,14 @@ cudaError_t LaunchLarge4SsmaxScale(float *q, int heads, int head_dim,
     return cudaGetLastError();
 }
 
+cudaError_t LaunchLarge4RmsNorm(const float *x, const __nv_bfloat16 *w, int n,
+                                float eps, __nv_bfloat16 *out,
+                                cudaStream_t stream)
+{
+    rms_norm_kernel<<<1, kBlock, 0, stream>>>(x, w, n, eps, out);
+    return cudaGetLastError();
+}
+
 cudaError_t LaunchLarge4LayerNorm(const __nv_bfloat16 *x,
                                   const __nv_bfloat16 *w,
                                   const __nv_bfloat16 *b, int n, float eps,
@@ -585,6 +639,26 @@ cudaError_t LaunchLarge4ValueProject(const __nv_bfloat16 *wkv_b,
     return cudaGetLastError();
 }
 
+cudaError_t LaunchLarge4Bf16ToF32(const __nv_bfloat16 *src, float *dst,
+                                  int n, cudaStream_t stream)
+{
+    bf16_to_f32_kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
+    return cudaGetLastError();
+}
+cudaError_t LaunchLarge4AccAddScaledF16ToF32(float *acc, const __half *src,
+                                             const float *d_scale, int n,
+                                             cudaStream_t stream)
+{
+    acc_add_scaled_f16_kernel<<<Grid(n), kBlock, 0, stream>>>(acc, src, d_scale,
+                                                              n);
+    return cudaGetLastError();
+}
+cudaError_t LaunchLarge4LogitSoftcap(float *logits, int n, float cap,
+                                     cudaStream_t stream)
+{
+    logit_softcap_kernel<<<Grid(n), kBlock, 0, stream>>>(logits, n, cap);
+    return cudaGetLastError();
+}
 cudaError_t LaunchLarge4Bf16ToF16(const __nv_bfloat16 *src, __half *dst,
                                   int n, cudaStream_t stream)
 {

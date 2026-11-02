@@ -51,6 +51,21 @@ cudaError_t LaunchLarge4SsmaxScale(float *q, int heads, int head_dim,
                                    const __nv_bfloat16 *b, int pos,
                                    cudaStream_t stream);
 
+// Plain RMSNorm (weight multiply, no 1+w offset) over an F32 input:
+// out = bf16(x/rms * w).
+cudaError_t LaunchLarge4RmsNorm(const float *x, const __nv_bfloat16 *w, int n,
+                                float eps, __nv_bfloat16 *out,
+                                cudaStream_t stream);
+
+// acc += scale * src (scale read on device; src FP16).
+cudaError_t LaunchLarge4AccAddScaledF16ToF32(float *acc, const __half *src,
+                                             const float *d_scale, int n,
+                                             cudaStream_t stream);
+
+// z = tanh(z / cap) * cap (final logit softcapping).
+cudaError_t LaunchLarge4LogitSoftcap(float *logits, int n, float cap,
+                                     cudaStream_t stream);
+
 // ── LayerNorm (indexer q_input_norm / k_norm: weight + bias) ──────────────
 cudaError_t LaunchLarge4LayerNorm(const __nv_bfloat16 *x,
                                   const __nv_bfloat16 *w,
@@ -94,6 +109,8 @@ cudaError_t LaunchLarge4ValueProject(const __nv_bfloat16 *wkv_b,
                                      cudaStream_t stream);
 
 // ── elementwise helpers ───────────────────────────────────────────────────
+cudaError_t LaunchLarge4Bf16ToF32(const __nv_bfloat16 *src, float *dst,
+                                  int n, cudaStream_t stream);
 cudaError_t LaunchLarge4Bf16ToF16(const __nv_bfloat16 *src, __half *dst,
                                   int n, cudaStream_t stream);
 cudaError_t LaunchLarge4F16ToF32(const __half *src, float *dst, int n,

@@ -129,6 +129,7 @@ add_library(lsxcommon STATIC
     src/mistral_moe_large4_load.cpp
     src/mistral_moe_tool_format.cpp
     src/mistral_moe_model.cpp
+    src/mistral_moe_large4_model.cpp
     src/qwen_moe_exp_load.cpp
     src/qwen_moe_exp_model.cpp
     src/qwen_moe_load.cpp
@@ -493,6 +494,8 @@ target_link_libraries(lsxcommon_step_cu
 add_library(lsxcommon_mistral_cu OBJECT
     src/mistral_moe_inference.cu
     src/mistral_moe_large4_kernels.cu
+    src/mistral_moe_large4_inference_attn.cu
+    src/mistral_moe_large4_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_mistral_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
