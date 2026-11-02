@@ -287,6 +287,10 @@ bool ParseCodeGolden(std::string_view json, CodeGolden &out, std::string *error)
         bool ign = false;
         if (o["ignore_eos"].get_bool().get(ign) == simdjson::SUCCESS)
             c.ignore_eos = ign;
+        int64_t ans = -1;
+        if (o["answer_start_token_id"].get_int64().get(ans) ==
+            simdjson::SUCCESS)
+            c.answer_start_token_id = static_cast<int32_t>(ans);
         if (o["expected"].get_string().get(sv) != simdjson::SUCCESS ||
             sv.empty()) {
             if (error) *error = c.id + ": missing expected";
@@ -345,6 +349,16 @@ std::string CutPromptEcho(std::string_view text, std::string_view body)
     return s;
 }
 
+std::vector<int32_t> TailAfter(const std::vector<int32_t> &ids, int32_t marker)
+{
+    if (marker < 0) return ids;
+    for (std::size_t i = ids.size(); i > 0; --i)
+        if (ids[i - 1] == marker)
+            return std::vector<int32_t>(ids.begin() + static_cast<long>(i),
+                                        ids.end());
+    return ids;
+}
+
 CodeCaseResult RunCodeCase(IModel &model, const CodeGoldenCase &c,
                            const CodeDecodeFn &decode)
 {
@@ -360,7 +374,8 @@ CodeCaseResult RunCodeCase(IModel &model, const CodeGoldenCase &c,
         r.error = ir.error_msg.empty() ? "inference failed" : ir.error_msg;
         return r;
     }
-    const std::string text = decode(ir.gen_tokens);
+    const std::string text = decode(TailAfter(ir.gen_tokens,
+                                              c.answer_start_token_id));
     r.raw = text;
     r.extracted =
         ExtractCodeAnswer(c.kind, c.anchor, CutPromptEcho(text, c.body));

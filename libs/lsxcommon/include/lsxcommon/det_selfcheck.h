@@ -21,6 +21,13 @@ struct DetGoldenCase {
     bool ignore_eos = false;   // run the full token budget (no EOS stop)
     int stress_runs = 3;       // determinism repetition count (floored at 3)
     std::string expected;
+    // Reasoning models: the id of the marker that ENDS the thinking block
+    // (e.g. Mistral-Large-4's [THINK]==34 / [/THINK]==35, which are special
+    // tokens and therefore dropped by the decoder). When >= 0 the harness
+    // decodes only the tokens AFTER its LAST occurrence, so the final answer —
+    // not a line from the reasoning chain — is what gets extracted. -1 keeps
+    // the historical behaviour.
+    int32_t answer_start_token_id = -1;
     std::string raw;           // diagnostic
     std::string body;          // optional prompt body for the echo cut
 };

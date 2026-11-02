@@ -21,6 +21,13 @@ struct CodeGoldenCase {
     int max_new_tokens = 128;
     bool ignore_eos = false;   // run the full token budget (no EOS stop)
     std::string expected;
+    // Reasoning models: the id of the marker that ENDS the thinking block
+    // (e.g. Mistral-Large-4's [THINK]==34 / [/THINK]==35, which are special
+    // tokens and therefore dropped by the decoder). When >= 0 the harness
+    // decodes only the tokens AFTER its LAST occurrence, so the final answer —
+    // not a line from the reasoning chain — is what gets extracted. -1 keeps
+    // the historical behaviour.
+    int32_t answer_start_token_id = -1;
     std::string raw;
     // Optional prompt body: if the model echoes the prompt after its answer
     // (degeneration), the harness cuts the echo at the body's prefix before

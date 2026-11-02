@@ -360,8 +360,10 @@ Large4Topology mistral_large4_load_topology(const std::string &config_path)
         chk("index_n_heads", top.index_heads, frozen::kIndexHeads);
         chk("index_head_dim", top.index_head_dim, frozen::kIndexHeadDim);
         chk("index_topk", top.index_topk, frozen::kIndexTopk);
-        chk("first_k_dense", top.layers - static_cast<int>(top.dense_layers.size()),
+        chk("first_k_dense", static_cast<int>(top.dense_layers.size()),
             frozen::kFirstKDense);
+        for (size_t i = 0; i < top.dense_layers.size(); ++i)
+            chk("dense_prefix", top.dense_layers[i], static_cast<int>(i));
         for (int i = 0; i < top.layers; ++i)
         {
             chk("rope_layers[i]", top.rope_layers[static_cast<size_t>(i)],

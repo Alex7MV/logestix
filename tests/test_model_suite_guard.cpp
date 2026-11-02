@@ -1048,14 +1048,6 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "step-5-preview:code",
         "step-5-preview:det",
         "step-5-preview:fsi",
-        // Mistral-Large-4: the 988 GB FP8 source is a multi-node FP8 runner and
-        // cannot execute on this 32 GB card, so no SOURCE golden can be
-        // captured. The parity instruments are SelfCheck on the real converted
-        // weights, the kernel host references and (once the gates run) the
-        // template-derived goldens. Declared now; removed as each goes green.
-        "mistral-large-4-1t:code",
-        "mistral-large-4-1t:det",
-        "mistral-large-4-1t:fsi",
         "deepseek-v4-flash:code",
         "deepseek-v4-flash:det",
         "deepseek-v4-flash:fsi",

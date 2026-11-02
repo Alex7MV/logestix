@@ -3320,6 +3320,14 @@ set_tests_properties(test_perf_baseline_alice_foundation_80b_a3b PROPERTIES
 set_tests_properties(test_perf_baseline_alice_foundation_80b_a3b
     PROPERTIES LABELS perf)
 
+add_test(NAME test_perf_baseline_mistral_large4
+         COMMAND test_perf_baseline "perf baseline: mistral-large-4-1t")
+set_tests_properties(test_perf_baseline_mistral_large4 PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Mistral-Large-4-1T-A52B")
+set_tests_properties(test_perf_baseline_mistral_large4 PROPERTIES LABELS perf)
+
 add_test(NAME test_perf_baseline_mistral_small_4
          COMMAND test_perf_baseline "perf baseline: mistral-small-4-119b")
 set_tests_properties(test_perf_baseline_mistral_small_4 PROPERTIES

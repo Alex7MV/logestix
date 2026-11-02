@@ -44,7 +44,7 @@ std::string Unfence(std::string_view raw)
 }
 
 std::string SelectAnswerLine(const std::string &s, std::string_view anchor,
-                             FsiKind kind)
+                             FsiKind kind, bool prefer_last = false)
 {
     std::vector<std::string> lines;
     std::size_t pos = 0;
@@ -55,17 +55,30 @@ std::string SelectAnswerLine(const std::string &s, std::string_view anchor,
         if (nl == std::string::npos) break;
         pos = nl + 1;
     }
-    for (const std::string &line : lines) {
-        const std::size_t a = line.find(anchor);
-        if (a == std::string::npos) continue;
-        std::size_t i = a + anchor.size();
-        while (i < line.size() && std::isspace((unsigned char)line[i])) ++i;
-        if (i >= line.size()) continue;
-        if (kind == FsiKind::kArithmetic && line[i] == '=') return line;
-        if (kind == FsiKind::kComparison && IsComparisonOp(line[i])) return line;
+    // A line whose anchor is followed by '=' (arithmetic) or a comparison op
+    // (comparison) is a candidate answer. `prefer_last` scans the candidates
+    // from the end, so a model that reasons inline cannot shadow its own final
+    // answer with a line from the chain.
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool forward = (pass == 0) ? !prefer_last : prefer_last;
+        for (std::size_t k = 0; k < lines.size(); ++k) {
+            const std::string &line =
+                lines[forward ? k : lines.size() - 1 - k];
+            const std::size_t a = line.find(anchor);
+            if (a == std::string::npos) continue;
+            std::size_t i = a + anchor.size();
+            while (i < line.size() && std::isspace((unsigned char)line[i]))
+                ++i;
+            if (i >= line.size()) continue;
+            if (kind == FsiKind::kArithmetic && line[i] == '=') return line;
+            if (kind == FsiKind::kComparison && IsComparisonOp(line[i]))
+                return line;
+        }
     }
-    for (const std::string &line : lines)
+    for (std::size_t k = 0; k < lines.size(); ++k) {
+        const std::string &line = lines[prefer_last ? lines.size() - 1 - k : k];
         if (line.find(anchor) != std::string::npos) return line;
+    }
     return s;
 }
 
@@ -262,7 +275,7 @@ std::string CanonicalizeFsiAnswer(FsiKind kind, std::string_view anchor,
 } // namespace
 
 std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
-                              std::string_view raw)
+                              std::string_view raw, bool prefer_last = false)
 {
     std::string text = Unfence(raw);
     // Reasoning models emit a chain-of-thought that can contain competing
@@ -275,7 +288,7 @@ std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
         c != std::string::npos && (after == std::string::npos || c + 9 > after))
         after = c + 9;
     if (after != std::string::npos) text = text.substr(after);
-    const std::string line = SelectAnswerLine(text, anchor, kind);
+    const std::string line = SelectAnswerLine(text, anchor, kind, prefer_last);
     if (kind == FsiKind::kComparison) {
         const std::size_t a = line.find(anchor);
         if (a == std::string::npos) return {};
@@ -412,6 +425,13 @@ bool ParseFsiGolden(std::string_view json, FsiGolden &out, std::string *error)
         bool ign = false;
         if (o["ignore_eos"].get_bool().get(ign) == simdjson::SUCCESS)
             c.ignore_eos = ign;
+        int64_t ans = -1;
+        if (o["answer_start_token_id"].get_int64().get(ans) ==
+            simdjson::SUCCESS)
+            c.answer_start_token_id = static_cast<int32_t>(ans);
+        bool pl = false;
+        if (o["prefer_last_answer"].get_bool().get(pl) == simdjson::SUCCESS)
+            c.prefer_last_answer = pl;
         if (o["expected"].get_string().get(sv) != simdjson::SUCCESS ||
             sv.empty()) {
             if (error) *error = c.id + ": missing expected";
@@ -451,6 +471,18 @@ bool LoadFsiGoldenFile(const std::string &path, FsiGolden &out,
 
 namespace {
 
+// Drops everything up to and including the LAST occurrence of the marker that
+// ends the thinking block (a special id, so the decoder never sees it).
+std::vector<int32_t> TailAfter(const std::vector<int32_t> &ids, int32_t marker)
+{
+    if (marker < 0) return ids;
+    for (std::size_t i = ids.size(); i > 0; --i)
+        if (ids[i - 1] == marker)
+            return std::vector<int32_t>(ids.begin() + static_cast<long>(i),
+                                        ids.end());
+    return ids;
+}
+
 FsiCaseResult RunFsiCase(IModel &model, const FsiGoldenCase &c,
                          const FsiDecodeFn &decode)
 {
@@ -466,9 +498,11 @@ FsiCaseResult RunFsiCase(IModel &model, const FsiGoldenCase &c,
         r.error = ir.error_msg.empty() ? "inference failed" : ir.error_msg;
         return r;
     }
-    const std::string text = decode(ir.gen_tokens);
+    const std::string text = decode(TailAfter(ir.gen_tokens,
+                                              c.answer_start_token_id));
     r.raw = text;
-    r.extracted = ExtractFsiFormula(c.kind, c.anchor, text);
+    r.extracted = ExtractFsiFormula(c.kind, c.anchor, text,
+                                    c.prefer_last_answer);
     r.passed =
         (r.extracted == CanonicalizeFsiAnswer(c.kind, c.anchor, c.expected));
     return r;

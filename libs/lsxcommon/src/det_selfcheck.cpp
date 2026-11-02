@@ -168,6 +168,10 @@ bool ParseDetGolden(std::string_view json, DetGolden &out, std::string *error)
         bool ign = false;
         if (o["ignore_eos"].get_bool().get(ign) == simdjson::SUCCESS)
             c.ignore_eos = ign;
+        int64_t ans = -1;
+        if (o["answer_start_token_id"].get_int64().get(ans) ==
+            simdjson::SUCCESS)
+            c.answer_start_token_id = static_cast<int32_t>(ans);
         int64_t sr = 0;
         if (o["stress_runs"].get_int64().get(sr) == simdjson::SUCCESS) {
             if (sr < 1) {
@@ -267,7 +271,17 @@ DetCaseResult RunDetCase(IModel &model, const DetGoldenCase &c,
         else if (ir.gen_tokens != first) identical = false;
     }
     r.deterministic = identical;
-    const std::string text = decode(first);
+    std::vector<int32_t> tail = first;
+    if (c.answer_start_token_id >= 0)
+    {
+        for (std::size_t i = first.size(); i > 0; --i)
+            if (first[i - 1] == c.answer_start_token_id)
+            {
+                tail.assign(first.begin() + static_cast<long>(i), first.end());
+                break;
+            }
+    }
+    const std::string text = decode(tail);
     r.raw = text;
     r.extracted = ExtractDetAnswer(c.kind, CutPromptEcho(text, c.body));
     r.passed = r.deterministic && (r.extracted == c.expected);
