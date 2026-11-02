@@ -1750,6 +1750,47 @@ set_tests_properties(test_mistral_moe_large4_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_mistral_moe_large4_loader PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Mistral-Large-4 selfcheck + FSI/CODE/DET gates (SKIP 4 without vault) ──
+add_executable(test_mistral_moe_large4_selfcheck test_mistral_moe_large4_selfcheck.cpp)
+target_include_directories(test_mistral_moe_large4_selfcheck PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_mistral_moe_large4_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_selfcheck COMMAND test_mistral_moe_large4_selfcheck)
+set_tests_properties(test_mistral_moe_large4_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_mistral_moe_large4_selfcheck PROPERTIES TIMEOUT 3600)
+
+add_executable(test_mistral_moe_large4_fsi_selfcheck test_mistral_moe_large4_fsi_selfcheck.cpp)
+target_compile_definitions(test_mistral_moe_large4_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_mistral_moe_large4_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_fsi_selfcheck COMMAND test_mistral_moe_large4_fsi_selfcheck)
+set_tests_properties(test_mistral_moe_large4_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_mistral_moe_large4_fsi_selfcheck PROPERTIES TIMEOUT 3600)
+
+add_executable(test_mistral_moe_large4_code_selfcheck test_mistral_moe_large4_code_selfcheck.cpp)
+target_compile_definitions(test_mistral_moe_large4_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_mistral_moe_large4_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_code_selfcheck COMMAND test_mistral_moe_large4_code_selfcheck)
+set_tests_properties(test_mistral_moe_large4_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_mistral_moe_large4_code_selfcheck PROPERTIES TIMEOUT 3600)
+
+add_executable(test_mistral_moe_large4_det_selfcheck test_mistral_moe_large4_det_selfcheck.cpp)
+target_compile_definitions(test_mistral_moe_large4_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_mistral_moe_large4_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_mistral_moe_large4_det_selfcheck COMMAND test_mistral_moe_large4_det_selfcheck)
+set_tests_properties(test_mistral_moe_large4_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mistral_moe_large4_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_mistral_moe_large4_det_selfcheck PROPERTIES TIMEOUT 3600)
+
 # ── Mistral-Large-4 tool framing (host-only, step 4b) ─────────────────────
 add_executable(test_mistral_moe_large4_tool_framing
     test_mistral_moe_large4_tool_framing.cpp)
@@ -1760,6 +1801,7 @@ target_link_libraries(test_mistral_moe_large4_tool_framing PRIVATE lsxcommon
 add_test(NAME test_mistral_moe_large4_tool_framing
          COMMAND test_mistral_moe_large4_tool_framing)
 set_tests_properties(test_mistral_moe_large4_tool_framing PROPERTIES LABELS fast)
+set_tests_properties(test_mistral_moe_large4_tool_framing PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Mistral-Large-4 pre-tokenizer (kind 12) ───────────────────────────────
 add_executable(test_mistral_moe_large4_pretokenizer test_mistral_moe_large4_pretokenizer.cpp)

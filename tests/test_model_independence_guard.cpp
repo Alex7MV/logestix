@@ -336,6 +336,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "alice_moe_model.cpp",         // alice-foundation-80b-a3b
         "xing_moe_model.cpp",          // xing4.0-29b-a4b (mHC four-stream)
         "mistral_moe_model.cpp",       // mistral-small-4-119b (MLA + MoE)
+        "mistral_moe_large4_model.cpp", // mistral-large-4-1t (MLA + DSA + MoE)
         "minimax_moe_model.cpp",       // minimax-m3 (GQA + MSA indexer + MoE)
         "minimax_moe_flash_model.cpp", // minimax-m3.1-flash (MSA throughout)
         "hy_moe_model.cpp",            // hy-memory-30b-a3b (GQA + sigmoid router MoE)
@@ -466,6 +467,9 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         {"xing4.0-29b-a4b", {"xing_moe_model.cpp"}},
         {"mistral-small-4-119b",
          {"mistral_moe_model.cpp", "mistral_moe_inference.cu"}},
+        {"mistral-large-4-1t",
+         {"mistral_moe_large4_model.cpp",
+          "mistral_moe_large4_inference_pipeline.cu"}},
         {"minimax-m3",
          {"minimax_moe_model.cpp", "minimax_moe_inference_pipeline.cu"}},
         {"minimax-m3.1-flash",

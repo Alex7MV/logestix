@@ -382,6 +382,18 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_mistral_moe_code_selfcheck"}},
           {"perf", {"test_perf_baseline_mistral_small_4"}},
           {"det", {"test_mistral_moe_det_selfcheck"}}}},
+        {"mistral-large-4-1t",
+         {{"convert", {"test_mistral_moe_large4_convert"}},
+          {"load", {"test_mistral_moe_large4_loader"}},
+          {"model", {"test_mistral_moe_large4_model",
+                     "test_mistral_moe_large4_tool_framing"}},
+          {"kernels", {"test_mistral_moe_large4_kernels",
+                       "test_mistral_moe_large4_pretokenizer"}},
+          {"selfcheck", {"test_mistral_moe_large4_selfcheck"}},
+          {"fsi", {"test_mistral_moe_large4_fsi_selfcheck"}},
+          {"code", {"test_mistral_moe_large4_code_selfcheck"}},
+          {"perf", {"test_perf_baseline_mistral_large4"}},
+          {"det", {"test_mistral_moe_large4_det_selfcheck"}}}},
         {"minimax-m3",
          {{"convert", {"test_minimax_moe_convert"}},
           {"load", {"test_minimax_moe_loader"}},
@@ -896,6 +908,10 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"xing4.0-29b-a4b", {"test_xing_tool_framing"}},
         // Mistral Small 4 ships a native [INST]/[TOOL_CALLS] template.
         {"mistral-small-4-119b", {"test_mistral_moe_tool_framing"}},
+        // Mistral Large 4 adds the always-on [MODEL_SETTINGS] block; the
+        // verdict is proven on a synthetic tokenizer fixture whose special ids
+        // match the passport. It also proves the new pre-tokenizer kind (12).
+        {"mistral-large-4-1t", {"test_mistral_moe_large4_tool_framing"}},
         {"minimax-m3", {"test_minimax_moe_tool_framing"}},
         {"minimax-m3.1-flash", {"test_minimax_moe_flash_tool_framing"}},
         {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
@@ -1032,6 +1048,14 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "step-5-preview:code",
         "step-5-preview:det",
         "step-5-preview:fsi",
+        // Mistral-Large-4: the 988 GB FP8 source is a multi-node FP8 runner and
+        // cannot execute on this 32 GB card, so no SOURCE golden can be
+        // captured. The parity instruments are SelfCheck on the real converted
+        // weights, the kernel host references and (once the gates run) the
+        // template-derived goldens. Declared now; removed as each goes green.
+        "mistral-large-4-1t:code",
+        "mistral-large-4-1t:det",
+        "mistral-large-4-1t:fsi",
         "deepseek-v4-flash:code",
         "deepseek-v4-flash:det",
         "deepseek-v4-flash:fsi",
