@@ -32,20 +32,25 @@ perf-строки обязаны остаться прежними; любое �
 
 Автоматический скан повторяющихся `__global__`/`__device__` определений
 (тела сравниваются после нормализации идентификаторов, комментариев и
-пробелов) даёт **39 групп дубликатов ≥ 8 строк, 3 050 строк** в
+пробелов) даёт **40 групп дубликатов ≥ 8 строк, 3 121 строку** в
 продублированных определениях. Это нижняя оценка: скан не видит
-хост-кода и не видит копий, отличающихся на одну строку.
+хост-кода и не видит копий, отличающихся на одну строку. Инструмент фазы 3
+(`tools/dedup_scan.py`) — эталонный для всех замеров «до/после», чтобы
+числа сравнивались одним и тем же прибором.
 
 Три кластера:
 
 ### 2.1 DeepSeek V4 Flash ↔ V4 Pro — 5 595 LOC
 
-Pro-вариант — 15 файлов (12 в `src/`, 3 в `include/`), из которых **12 —
-пофайловые копии** flash-варианта (10 в `src/` + `inference_csa.h`,
-`norm_kernels.h`), а 3 копиями не являются: `deepseek_moe_pro_constants.h`
+Pro-вариант — 15 файлов (12 в `src/`, 3 в `include/`), из которых **10 —
+пофайловые копии** flash-варианта (8 в `src/` + `inference_csa.h`,
+`norm_kernels.h`). Копиями не являются пять: `deepseek_moe_pro_constants.h`
 (паспорт, 133 строки), `convert.{h,cpp}` (30-строчный шим на общий
-`Converter` с `SetSkipPrefixes({"mtp."})`). Копии отличаются на
-единицы-десятки строк:
+`Converter` с `SetSkipPrefixes({"mtp."})`) и `model.{h,cpp}` — последние
+лишь на ~57 % совпадают с flash-аналогом (90 различающихся строк из ~155) и
+держат семейный glue: `kType`, регистрацию и `SelfCheck`; гварды
+`kLifecycle` и `consumers` адресуют модели именно по этим файлам, поэтому
+они сохраняются. Копии отличаются на единицы-десятки строк:
 
 | файл | flash | pro | различающихся строк (после нормализации имён) |
 |---|---|---|---|
@@ -101,11 +106,18 @@ Hyper-Connections: Pro держит его в FP32 (`float* d_single`, `y[i] = a
 
 - `depth_mix_kernel` (AttnRes depth-softmax, блок 4) — 42 строки, побайтово
   одинаков в `alice_moe_kernels.cu` и `kimi_moe_k3_kernels.cu`.
-- Примитивы конверсии и масштабирования размазаны по семействам вместо
-  `lsx_kernels_*.cuh`: `f32_to_f16_kernel` — 8 файлов, `f16_to_f32_kernel` —
-  6, `half_to_float_kernel` / `float_to_half_kernel` — по 10,
-  `silu_mul_kernel` — 2 копии вне `lsx_kernels_act.cuh`,
-  `scale_half_kernel` / `scale_float_kernel` — по 2–3.
+- Примитивы конверсии размазаны по семействам вместо `lsx_kernels_common.cuh`:
+  `f32_to_f16_kernel` и `f16_to_f32_kernel` — по 6 файлов, `half_to_float_kernel`
+  и `float_to_half_kernel` — по 3 (после Ф2, которая уносит deepseek-пару).
+  Тела **не** побайтово одинаковы (grid-stride против one-shot, `int` против
+  `int64_t`, разный `__restrict__`), поэтому это единственная намеренно
+  не-дословная консолидация: один grid-stride `int64_t` вариант плюс тест
+  эквивалентности на `n ∈ {1, 255, 1024, 100000}`.
+- `scale_half_kernel`, `scale_float_kernel` и `silu_mul_kernel`
+  дублировались только внутри пары flash/pro и исчезают в Ф2. `silu_mul_kernel`
+  сознательно **не** сливается с `lsx_kernels_act.cuh`: у deepseek
+  асимметричный clamp (только сверху по gate), это зафиксировано в
+  комментарии `lsx_kernels_act.cuh:14`.
 
 ## 3. Рассмотренные подходы
 
@@ -213,10 +225,14 @@ cudaError_t RunDenseSwiGLUKernel(cudaStream_t, const __half* gu, __half* out,
    параметризуются шаблоном:
 
    ```cpp
-   template <class P, typename ResidualT> struct V4Driver;
-   // P: deepseek::Passport | deepseek_pro::Passport
-   // ResidualT: __half (flash) | float (pro)
+   template <class T> cudaError_t run_csa_attention(...);   // и остальные
+   // T: deepseek::Passport | deepseek_pro::Passport
+   // typename T::ResidualT: __half (flash) | float (pro)
    ```
+
+   Шаблон — свободные функции (не класс `V4Driver`): каждый `.cu` держит
+   свои явные инстанцирования, поэтому нет требования видеть определения
+   всех членов в одной ТУ.
 
    Файловые `constexpr`-алиасы заменяются на `P::k*`; параметр шаблона
    `ResidualT` заменяет `__half`/`float` ровно в трёх местах (`y[i] = acc`,
@@ -226,12 +242,14 @@ cudaError_t RunDenseSwiGLUKernel(cudaStream_t, const __half* gu, __half* out,
 3. Явные инстанцирования в одном ТУ:
    `template struct V4Driver<deepseek::Passport, __half>;` и
    `<deepseek_pro::Passport, float>;`.
-4. Удаляются 12 файлов-копий (`deepseek_moe_pro_inference_{attn,csa,head,moe,pipeline}.cu`,
+4. Удаляются 10 файлов-копий (`deepseek_moe_pro_inference_{attn,csa,head,moe,pipeline}.cu`,
    `deepseek_moe_pro_load.{cuh,cu}`, `deepseek_moe_pro_norm_kernels.cu`,
-   `deepseek_moe_pro_model.{h,cpp}`, `deepseek_moe_pro_inference_csa.h`,
-   `deepseek_moe_pro_norm_kernels.h`); `constants.h` и `convert.{h,cpp}`
-   остаются. `DeepSeekV4ProModel` остаётся тонкой обёрткой (registry id,
-   паспорт, `PinnedWeights pw_`), но инстанцирует общий шаблон.
+   `deepseek_moe_pro_inference_csa.h`, `deepseek_moe_pro_norm_kernels.h`);
+   `constants.h`, `convert.{h,cpp}` и `model.{h,cpp}` остаются.
+   `DeepSeekV4ProModel` остаётся тонкой обёрткой (registry id, паспорт,
+   `PinnedWeights pw_`), но инстанцирует общий шаблон — поэтому записи
+   `kLifecycle` и `consumers` в `test_model_independence_guard.cpp` не
+   меняются.
 
 Ожидаемая дельта: ≈ −5 300 LOC.
 
@@ -241,12 +259,14 @@ cudaError_t RunDenseSwiGLUKernel(cudaStream_t, const __half* gu, __half* out,
 
 1. `depth_mix_kernel` → `attn::RunAttnResDepthMix` в `lsx_attn_inference.{h,cu}`
    (alice и kimi-k3 переключаются, семейные копии удаляются).
-2. `f32_to_f16`/`f16_to_f32`/`half_to_float`/`float_to_half`/`silu_mul`/
-   `scale_half`/`scale_float` → `lsx_kernels_common.cuh` /
-   `lsx_kernels_act.cuh`; семейные копии удаляются, включая заголовки,
-   которые их реэкспортировали.
+2. `f32_to_f16`/`f16_to_f32`/`half_to_float`/`float_to_half` →
+   `lsx_kernels_common.cuh` (один grid-stride `int64_t` вариант + тест
+   эквивалентности); семейные копии удаляются. `silu_mul`/`scale_*` к этому
+   моменту уже не дублируются (Ф2), а `silu_mul` не сливается с
+   `lsx_kernels_act.cuh` из-за асимметричного clamp.
 
-Ожидаемая дельта: ≈ −250 LOC.
+Ожидаемая дельта: ≈ −120 LOC (копии конверсий в 9 файлах), плюс ~40 LOC
+нейтрального кода и теста.
 
 ## 6. Поток данных и обработка ошибок
 
@@ -272,11 +292,14 @@ cudaError_t RunDenseSwiGLUKernel(cudaStream_t, const __half* gu, __half* out,
 
 ### Уровень 0 — «это перенос»
 
-Скрипт сравнивает `git show <base>:<file>` с новым файлом после
-нормализации имён (семейный стем → нейтральный; `granite`/`phi`/`switch` →
-`X`). Требование: **0 различий** в перенесённых телах. Скрипт кладётся в
-`tools/` рядом с прочими проверками и запускается вручную в каждой фазе;
-его вывод — часть артефактов фазы.
+`tools/dedup_provenance.py` сравнивает определения в источнике и приёмнике
+после удаления комментариев, схлопывания пробелов и подстановки
+`--rename old=new` (например `granite_=dense_`). Требование: **0
+несовпадений** в перенесённых телах (каждый исходный кернел имеет
+идентичного двойника, приёмник не добавляет лишнего). Скрипт кладётся в
+`tools/` и запускается в каждой фазе; его вывод — часть артефактов фазы.
+Второй прибор, `tools/dedup_scan.py` (создаётся в фазе 3), измеряет
+абсолютный остаток дублирования.
 
 ### Уровень 1 — быстрые гейты
 
