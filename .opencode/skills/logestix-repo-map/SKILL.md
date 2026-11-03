@@ -142,6 +142,7 @@ env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness (`--bench` — default mode, real generation `IModel::Infer`; `--selfcheck` — Paris check; `--bit-exact` — `FastMathMode::kOff` for the active mode; `--model`, `--prompt`, `--max-gen`; CLI parse in `src/cli.{h,cpp}`); the only app with a numeric mode — the rest always run at maximum speed
   - `apps/lsxbenchmark/tests/` — `test_lsxbenchmark_cli` (6 cases / 26 assertions, label fast)
+- `cmake/LsxTestHelpers.cmake` — `lsx_add_test()` / `lsx_add_cuda_test()` / `lsx_copy_arrow_dlls()`; the single registration path for new tests (see `test-lifecycle`). Included from the root `CMakeLists.txt`; `LSX_CUDA_ARCH` and `lsx_dep_includes` are also defined there.
 - `tests/` — Catch2 test suite; GLM and DeepSeek tests are autonomous and run separately (`ctest -R glm` / `ctest -R deepseek`)
   - `tests/test_core.cpp` — integration tests for dependencies (Arrow, CCCL, FlatBuffers, ZMQ, simdjson); 13 test cases, 122 assertions
   - `tests/test_deepseek_moe_loader.cpp` — 9 test cases, 133 assertions (round-trip, empty fields, E4M3 encoding)

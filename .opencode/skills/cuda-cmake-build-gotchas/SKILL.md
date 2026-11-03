@@ -41,6 +41,18 @@ Abseil-specific build patches (crc32 SIMD, format checker) live in the
   keep only `CMAKE_POLICY_VERSION_MINIMUM`.
 - Set `CMAKE_RUNTIME_OUTPUT_DIRECTORY` to `${CMAKE_BINARY_DIR}/bin` **before**
   `add_subdirectory` — the `POST_BUILD` `arrow.dll` copies target that dir.
+- **Dependency includes go through `lsx_dep_includes`** (root `CMakeLists.txt`),
+  never `${CMAKE_BINARY_DIR}/_deps/...` at a call site. It links the real
+  imported targets (`arrow_shared`, `arrow_cuda_shared`, `spdlog::spdlog`,
+  `simdjson::simdjson`, `absl::strings`) and adds the toolkit/CCCL dirs.
+  Arrow is the exception that forces the module to read
+  `${FETCHCONTENT_BASE_DIR}/arrow-src/cpp/src` + `${FETCHCONTENT_BASE_DIR}/arrow-build/src`:
+  its build-tree headers are added with directory-scoped
+  `include_directories()` and are not exported on the target, so a target that
+  only links `arrow_shared` still cannot include `arrow/api.h`.
+- **One CUDA arch list**: `${LSX_CUDA_ARCH}` (`120-real;121-real`). Do not
+  write the literal at a target; tests use `lsx_add_cuda_test()`, which reads
+  it (`cmake/LsxTestHelpers.cmake`).
 - **Isolate NVCC by putting every `.cu` into its own OBJECT library** and
   linking those into the static library. Host-only flags then cannot reach
   NVCC, and a `.cu` group can carry its own options (e.g. `-fmad=false` for
@@ -81,8 +93,9 @@ Abseil-specific build patches (crc32 SIMD, format checker) live in the
 
 ## CUDA codegen
 
-- Architectures: `120-real;121-real` (Blackwell only). Hopper/Ada/Ampere are
-  deliberately unsupported — there is no backward compatibility.
+- Architectures: `${LSX_CUDA_ARCH}` = `120-real;121-real` (Blackwell only; one
+  definition in the root `CMakeLists.txt`). Hopper/Ada/Ampere are deliberately
+  unsupported — there is no backward compatibility.
 - `--extended-lambda` is required for `__host__ __device__` thrust lambdas.
 - `cub::BlockReduce` / `cub::DeviceReduce` need CUDA 13.3+ on Linux; on MSVC
   use thrust as the fallback (thrust uses CUB internally).

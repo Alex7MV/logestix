@@ -45,6 +45,36 @@ A new test MUST carry its label **in the same commit**. `test_ctest_labels_guard
 fails the build otherwise. Classification rules for a changed path are the
 `lsx_router_rule(...)` table in `tools/test_router.cmake`.
 
+## Registering a test
+
+Use the helpers in `cmake/LsxTestHelpers.cmake` (included from the root
+`CMakeLists.txt`) instead of repeating add_executable / link / defines /
+add_test / set_tests_properties / the Windows Arrow-DLL copy:
+
+```cmake
+lsx_add_test(NAME test_foo
+    LINK lsxcommon              # Catch2::Catch2WithMain is added automatically
+    INCLUDE "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+    LABEL fast                  # omit when the grouped label list owns it
+    TIMEOUT 120
+    SKIP                        # SKIP_RETURN_CODE 4
+    ENV "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+lsx_add_cuda_test(NAME test_bar_kernels     # OBJECT lib: test_bar_kernels_cu
+    OBJECT_LINK lsxcommon_kimi_cu           # extra link into the OBJECT lib
+    FMAD_OFF                                # bit-exact kernels
+    LABEL inference)
+```
+
+`lsx_add_test` also copies the Arrow DLLs on Windows when `LINK` contains
+`lsxcommon` / `lsxnetwork` / `lsx_dep_includes` / `arrow_shared`
+(`NO_DLLS` / `ARROW_DLLS_ONLY` override). `lsx_add_cuda_test` builds the `.cu`
+OBJECT library with `LSX_CUDA_ARCH`, the standard CCCL/MSVC defines,
+`lsx_dep_includes` and `LSX_KERNEL_BUDGETS_FILE`, then links a CXX executable
+against `lsxcommon`. Dependency include paths live only in `lsx_dep_includes`
+(root `CMakeLists.txt`); never spell `${CMAKE_BINARY_DIR}/_deps/...`.
+
 ## Guard tests
 
 | Guard (in `tests/`) | Rule it enforces |

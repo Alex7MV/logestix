@@ -14,18 +14,7 @@ target_compile_definitions(test_core PRIVATE
     LSX_CCCL_VERSION_MAX=${LSX_CCCL_BAND_MAX})
 
 # Copy arrow.dll and arrow_cuda.dll into the test executable directory
-if(WIN32)
-    add_custom_command(TARGET test_core POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_core>"
-    )
-    add_custom_command(TARGET test_core POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_core>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_core)
 
 add_test(NAME test_core COMMAND test_core)
 
@@ -79,7 +68,7 @@ add_library(test_minimax_cu OBJECT
 )
 set_target_properties(test_minimax_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_minimax_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
@@ -88,12 +77,9 @@ target_compile_options(test_minimax_cu PRIVATE
 target_include_directories(test_minimax_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/simdjson-src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src")
+    )
 target_link_libraries(test_minimax_cu PRIVATE Catch2::Catch2WithMain
+        lsx_dep_includes
     arrow_shared)
 
 add_executable(test_minimax_moe_kernels)
@@ -111,7 +97,7 @@ add_library(test_xing_cu OBJECT
 )
 set_target_properties(test_xing_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_xing_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
@@ -136,7 +122,7 @@ add_library(test_alice_cu OBJECT
 )
 set_target_properties(test_alice_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_alice_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
@@ -225,18 +211,7 @@ set_tests_properties(test_gpu_power PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_schema_views test_schema_views.cpp)
 target_link_libraries(test_schema_views PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_schema_views POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_schema_views>"
-    )
-    add_custom_command(TARGET test_schema_views POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_schema_views>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_schema_views)
 
 add_test(NAME test_schema_views COMMAND test_schema_views)
 
@@ -248,12 +223,8 @@ add_test(NAME test_arrow_validation COMMAND test_arrow_validation)
 
 # Guard: Arrow IPC usage — mmap-only reads, recorded UnpackBatch verdicts,
 # atomic writes, and an audit matrix that covers every adapted model.
-add_executable(test_arrow_usage_guard test_arrow_usage_guard.cpp)
-target_link_libraries(test_arrow_usage_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_AUG)
-target_compile_definitions(test_arrow_usage_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_AUG}\"")
-add_test(NAME test_arrow_usage_guard COMMAND test_arrow_usage_guard)
+lsx_add_test(NAME test_arrow_usage_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Environment-gated validator over the CONVERTED vault trees (26 models);
 # SKIP when no tree is present. Footer pass for every .arrow plus a bounded
@@ -273,18 +244,7 @@ target_link_libraries(test_deepseek_moe_loader PRIVATE lsxcommon Catch2::Catch2W
 target_include_directories(test_deepseek_moe_loader PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_loader>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_loader)
 
 add_test(NAME test_deepseek_moe_loader COMMAND test_deepseek_moe_loader)
 
@@ -299,18 +259,7 @@ file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_NVFP4)
 target_compile_definitions(test_nvfp4_scale
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_NVFP4}\"")
 
-if(WIN32)
-    add_custom_command(TARGET test_nvfp4_scale POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nvfp4_scale>"
-    )
-    add_custom_command(TARGET test_nvfp4_scale POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nvfp4_scale>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_nvfp4_scale)
 
 add_test(NAME test_nvfp4_scale COMMAND test_nvfp4_scale)
 set_tests_properties(test_nvfp4_scale PROPERTIES LABELS fast)
@@ -324,18 +273,7 @@ target_link_libraries(test_deepseek_moe_model PRIVATE lsxcommon Catch2::Catch2Wi
 target_include_directories(test_deepseek_moe_model PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_model>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_model)
 
 add_test(NAME test_deepseek_moe_model COMMAND test_deepseek_moe_model)
 
@@ -345,18 +283,7 @@ target_link_libraries(test_deepseek_moe_v41_model PRIVATE lsxcommon Catch2::Catc
 target_include_directories(test_deepseek_moe_v41_model PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_model>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_v41_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_model)
 
 add_test(NAME test_deepseek_moe_v41_model COMMAND test_deepseek_moe_v41_model)
 
@@ -366,18 +293,7 @@ target_link_libraries(test_deepseek_moe_v41_loader PRIVATE lsxcommon Catch2::Cat
 target_include_directories(test_deepseek_moe_v41_loader PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_loader>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_v41_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_loader)
 
 add_test(NAME test_deepseek_moe_v41_loader COMMAND test_deepseek_moe_v41_loader)
 
@@ -415,16 +331,7 @@ target_link_libraries(test_deepseek_moe_pro_loader PRIVATE lsxcommon
                       Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_pro_loader PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_pro_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_loader>")
-    add_custom_command(TARGET test_deepseek_moe_pro_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_loader>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_pro_loader)
 add_test(NAME test_deepseek_moe_pro_loader COMMAND test_deepseek_moe_pro_loader)
 
 # ── DeepSeek-V4-Pro-0813: model stage (host-only) ────────────────────────
@@ -433,16 +340,7 @@ target_link_libraries(test_deepseek_moe_pro_model PRIVATE lsxcommon
                       Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_pro_model PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_pro_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_model>")
-    add_custom_command(TARGET test_deepseek_moe_pro_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_model>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_pro_model)
 add_test(NAME test_deepseek_moe_pro_model COMMAND test_deepseek_moe_pro_model)
 
 # ── DeepSeek-V4-Pro-0813: fast-load primitives (CUDA OBJECT lib) ─────────
@@ -461,32 +359,20 @@ target_include_directories(test_deepseek_moe_pro_load_fast_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_deepseek_moe_pro_load_fast_cu PRIVATE
     LOGESTIX_HAS_CUDA
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_link_libraries(test_deepseek_moe_pro_load_fast_cu PRIVATE
+        lsx_dep_includes
     Catch2::Catch2WithMain)
 add_executable(test_deepseek_moe_pro_load_fast)
 set_target_properties(test_deepseek_moe_pro_load_fast PROPERTIES
     LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_pro_load_fast PRIVATE
     test_deepseek_moe_pro_load_fast_cu lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_pro_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_load_fast>")
-    add_custom_command(TARGET test_deepseek_moe_pro_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_pro_load_fast>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_pro_load_fast)
 add_test(NAME test_deepseek_moe_pro_load_fast
          COMMAND test_deepseek_moe_pro_load_fast)
 
@@ -494,19 +380,18 @@ add_test(NAME test_deepseek_moe_pro_load_fast
 add_library(test_deepseek_moe_pro_kernels_cu OBJECT
             test_deepseek_moe_pro_kernels.cu)
 set_target_properties(test_deepseek_moe_pro_kernels_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real")
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}")
 target_compile_options(test_deepseek_moe_pro_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_deepseek_moe_pro_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include")
+    )
 target_compile_definitions(test_deepseek_moe_pro_kernels_cu PRIVATE
     LOGESTIX_HAS_CUDA)
 target_link_libraries(test_deepseek_moe_pro_kernels_cu PRIVATE
+        lsx_dep_includes
     Catch2::Catch2WithMain)
 add_executable(test_deepseek_moe_pro_kernels)
 set_target_properties(test_deepseek_moe_pro_kernels PROPERTIES
@@ -579,35 +464,20 @@ target_include_directories(test_deepseek_moe_v41_dequant_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_v41_dequant_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_deepseek_moe_v41_dequant_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_v41_dequant_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_v41_dequant)
 set_target_properties(test_deepseek_moe_v41_dequant PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_v41_dequant PRIVATE
     test_deepseek_moe_v41_dequant_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_dequant POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_dequant>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_v41_dequant POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_dequant>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_dequant)
 
 add_test(NAME test_deepseek_moe_v41_dequant COMMAND test_deepseek_moe_v41_dequant)
 
@@ -628,35 +498,20 @@ target_include_directories(test_deepseek_moe_v41_load_fast_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_v41_load_fast_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_deepseek_moe_v41_load_fast_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_v41_load_fast_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_v41_load_fast)
 set_target_properties(test_deepseek_moe_v41_load_fast PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_v41_load_fast PRIVATE
     test_deepseek_moe_v41_load_fast_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_load_fast>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_v41_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_load_fast>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_load_fast)
 
 add_test(NAME test_deepseek_moe_v41_load_fast COMMAND test_deepseek_moe_v41_load_fast)
 
@@ -677,35 +532,20 @@ target_include_directories(test_deepseek_moe_v41_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_v41_kernels_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_deepseek_moe_v41_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_v41_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_v41_kernels)
 set_target_properties(test_deepseek_moe_v41_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_v41_kernels PRIVATE
     test_deepseek_moe_v41_kernels_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_kernels>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_v41_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_kernels)
 
 add_test(NAME test_deepseek_moe_v41_kernels COMMAND test_deepseek_moe_v41_kernels)
 
@@ -726,10 +566,6 @@ target_include_directories(test_deepseek_moe_v41_pipeline_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_v41_pipeline_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -737,6 +573,7 @@ target_compile_definitions(test_deepseek_moe_v41_pipeline_cu PRIVATE
     LOGESTIX_HAS_CUDA
 )
 target_link_libraries(test_deepseek_moe_v41_pipeline_cu PRIVATE
+        lsx_dep_includes
     Catch2::Catch2WithMain absl::strings)
 
 add_executable(test_deepseek_moe_v41_pipeline)
@@ -744,18 +581,7 @@ set_target_properties(test_deepseek_moe_v41_pipeline PROPERTIES LINKER_LANGUAGE 
 target_link_libraries(test_deepseek_moe_v41_pipeline PRIVATE
     test_deepseek_moe_v41_pipeline_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_pipeline POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_pipeline>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_v41_pipeline POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_pipeline>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_pipeline)
 
 add_test(NAME test_deepseek_moe_v41_pipeline COMMAND test_deepseek_moe_v41_pipeline)
 
@@ -775,17 +601,13 @@ target_include_directories(test_deepseek_moe_v41_actquant_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_v41_actquant_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_deepseek_moe_v41_actquant_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_v41_actquant_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_v41_actquant)
 set_target_properties(test_deepseek_moe_v41_actquant PROPERTIES LINKER_LANGUAGE CXX)
@@ -806,18 +628,7 @@ set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_expert_store POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_expert_store>"
-    )
-    add_custom_command(TARGET test_expert_store POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_expert_store>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_expert_store)
 
 add_test(NAME test_expert_store COMMAND test_expert_store)
 set_tests_properties(test_expert_store PROPERTIES SKIP_RETURN_CODE 4)
@@ -829,18 +640,7 @@ target_compile_definitions(test_qwen_dense_convert PRIVATE
 )
 target_link_libraries(test_qwen_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_convert>"
-    )
-    add_custom_command(TARGET test_qwen_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_convert)
 
 add_test(NAME test_qwen_dense_convert COMMAND test_qwen_dense_convert)
 
@@ -851,18 +651,7 @@ target_compile_definitions(test_granite_dense_convert PRIVATE
 )
 target_link_libraries(test_granite_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_convert>"
-    )
-    add_custom_command(TARGET test_granite_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_convert)
 
 add_test(NAME test_granite_dense_convert COMMAND test_granite_dense_convert)
 set_tests_properties(test_granite_dense_convert PROPERTIES
@@ -875,16 +664,7 @@ target_compile_definitions(test_granite_switch_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_link_libraries(test_granite_switch_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_convert>")
-    add_custom_command(TARGET test_granite_switch_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_convert>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_convert)
 add_test(NAME test_granite_switch_convert COMMAND test_granite_switch_convert)
 set_tests_properties(test_granite_switch_convert PROPERTIES
     TIMEOUT 120)
@@ -898,16 +678,7 @@ target_compile_definitions(test_granite_switch_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_link_libraries(test_granite_switch_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_loader>")
-    add_custom_command(TARGET test_granite_switch_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_loader>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_loader)
 add_test(NAME test_granite_switch_loader COMMAND test_granite_switch_loader)
 set_tests_properties(test_granite_switch_loader PROPERTIES LABELS inference)
 set_tests_properties(test_granite_switch_loader PROPERTIES
@@ -924,16 +695,7 @@ add_executable(test_granite_switch_model test_granite_switch_model.cpp)
 target_compile_definitions(test_granite_switch_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_granite_switch_model PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_model>")
-    add_custom_command(TARGET test_granite_switch_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_model>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_model)
 add_test(NAME test_granite_switch_model COMMAND test_granite_switch_model)
 set_tests_properties(test_granite_switch_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -963,16 +725,7 @@ target_compile_definitions(test_granite_switch_adapter_parity PRIVATE
 target_include_directories(test_granite_switch_adapter_parity PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_granite_switch_adapter_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_adapter_parity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_adapter_parity>")
-    add_custom_command(TARGET test_granite_switch_adapter_parity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_adapter_parity>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_adapter_parity)
 add_test(NAME test_granite_switch_adapter_parity COMMAND test_granite_switch_adapter_parity)
 set_tests_properties(test_granite_switch_adapter_parity PROPERTIES LABELS inference)
 set_tests_properties(test_granite_switch_adapter_parity PROPERTIES SKIP_RETURN_CODE 4)
@@ -988,18 +741,7 @@ target_include_directories(test_phi_dense_convert PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_phi_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_convert>"
-    )
-    add_custom_command(TARGET test_phi_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_convert)
 
 add_test(NAME test_phi_dense_convert COMMAND test_phi_dense_convert)
 set_tests_properties(test_phi_dense_convert PROPERTIES
@@ -1013,18 +755,7 @@ target_compile_definitions(test_granite_dense_loader PRIVATE
 )
 target_link_libraries(test_granite_dense_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_loader>"
-    )
-    add_custom_command(TARGET test_granite_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_loader)
 
 add_test(NAME test_granite_dense_loader COMMAND test_granite_dense_loader)
 set_tests_properties(test_granite_dense_loader PROPERTIES LABELS inference)
@@ -1036,18 +767,7 @@ target_compile_definitions(test_phi_dense_loader PRIVATE
 )
 target_link_libraries(test_phi_dense_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_loader>"
-    )
-    add_custom_command(TARGET test_phi_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_loader)
 
 add_test(NAME test_phi_dense_loader COMMAND test_phi_dense_loader)
 set_tests_properties(test_phi_dense_loader PROPERTIES LABELS inference)
@@ -1059,18 +779,7 @@ target_compile_definitions(test_granite_dense_model PRIVATE
 )
 target_link_libraries(test_granite_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_model>"
-    )
-    add_custom_command(TARGET test_granite_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_model)
 
 add_test(NAME test_granite_dense_model COMMAND test_granite_dense_model)
 set_tests_properties(test_granite_dense_model PROPERTIES
@@ -1084,18 +793,7 @@ target_compile_definitions(test_phi_dense_model PRIVATE
 )
 target_link_libraries(test_phi_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_model>"
-    )
-    add_custom_command(TARGET test_phi_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_model)
 
 add_test(NAME test_phi_dense_model COMMAND test_phi_dense_model)
 set_tests_properties(test_phi_dense_model PROPERTIES
@@ -1108,7 +806,7 @@ add_library(test_granite_cu OBJECT
 )
 set_target_properties(test_granite_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_granite_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
@@ -1123,18 +821,7 @@ set_target_properties(test_granite_dense_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_granite_dense_kernels PRIVATE test_granite_cu lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_kernels>"
-    )
-    add_custom_command(TARGET test_granite_dense_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_kernels)
 add_test(NAME test_granite_dense_kernels COMMAND test_granite_dense_kernels)
 set_tests_properties(test_granite_dense_kernels PROPERTIES LABELS inference)
 
@@ -1144,7 +831,7 @@ add_library(test_granite_switch_cu OBJECT
 )
 set_target_properties(test_granite_switch_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_granite_switch_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
@@ -1156,16 +843,7 @@ target_link_libraries(test_granite_switch_cu PRIVATE Catch2::Catch2WithMain)
 add_executable(test_granite_switch_kernels)
 set_target_properties(test_granite_switch_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_granite_switch_kernels PRIVATE test_granite_switch_cu lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_kernels>")
-    add_custom_command(TARGET test_granite_switch_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_kernels>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_kernels)
 add_test(NAME test_granite_switch_kernels COMMAND test_granite_switch_kernels)
 set_tests_properties(test_granite_switch_kernels PROPERTIES LABELS inference)
 
@@ -1175,7 +853,7 @@ add_library(test_phi_cu OBJECT
 )
 set_target_properties(test_phi_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_phi_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
@@ -1190,36 +868,14 @@ set_target_properties(test_phi_dense_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_phi_dense_kernels PRIVATE test_phi_cu lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_phi_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_kernels>"
-    )
-    add_custom_command(TARGET test_phi_dense_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_kernels)
 add_test(NAME test_phi_dense_kernels COMMAND test_phi_dense_kernels)
 set_tests_properties(test_phi_dense_kernels PROPERTIES LABELS inference)
 
 # ── Granite-4.2-30B SelfCheck (real weights; SKIP when absent) ──
 add_executable(test_granite_dense_selfcheck test_granite_dense_selfcheck.cpp)
 target_link_libraries(test_granite_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_selfcheck>"
-    )
-    add_custom_command(TARGET test_granite_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_selfcheck)
 add_test(NAME test_granite_dense_selfcheck COMMAND test_granite_dense_selfcheck)
 set_tests_properties(test_granite_dense_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_granite_dense_selfcheck PROPERTIES
@@ -1228,16 +884,7 @@ set_tests_properties(test_granite_dense_selfcheck PROPERTIES
 # ── Granite-Switch-4.1-30B SelfCheck (real weights; SKIP when absent) ──
 add_executable(test_granite_switch_selfcheck test_granite_switch_selfcheck.cpp)
 target_link_libraries(test_granite_switch_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_selfcheck>")
-    add_custom_command(TARGET test_granite_switch_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_selfcheck)
 add_test(NAME test_granite_switch_selfcheck COMMAND test_granite_switch_selfcheck)
 set_tests_properties(test_granite_switch_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_granite_switch_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -1245,18 +892,7 @@ set_tests_properties(test_granite_switch_selfcheck PROPERTIES SKIP_RETURN_CODE 4
 # ── phi-4 SelfCheck (real weights; SKIP when absent) ──
 add_executable(test_phi_dense_selfcheck test_phi_dense_selfcheck.cpp)
 target_link_libraries(test_phi_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_selfcheck>"
-    )
-    add_custom_command(TARGET test_phi_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_selfcheck)
 add_test(NAME test_phi_dense_selfcheck COMMAND test_phi_dense_selfcheck)
 set_tests_properties(test_phi_dense_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_phi_dense_selfcheck PROPERTIES
@@ -1269,18 +905,7 @@ target_compile_definitions(test_qwen_dense_loader PRIVATE
 )
 target_link_libraries(test_qwen_dense_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_loader>"
-    )
-    add_custom_command(TARGET test_qwen_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_loader)
 
 add_test(NAME test_qwen_dense_loader COMMAND test_qwen_dense_loader)
 
@@ -1288,18 +913,7 @@ add_test(NAME test_qwen_dense_loader COMMAND test_qwen_dense_loader)
 foreach(qt test_qwen_dense_norm test_qwen_dense_rotary)
     add_executable(${qt} ${qt}.cpp)
     target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
-    if(WIN32)
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_cuda_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-    endif()
+    lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
@@ -1325,27 +939,14 @@ target_compile_options(test_blackwell_tc_cu PRIVATE
 target_include_directories(test_blackwell_tc_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
-target_link_libraries(test_blackwell_tc_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_blackwell_tc_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 foreach(qt test_blackwell_tc_mma)
     add_executable(${qt})
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(${qt} PRIVATE test_blackwell_tc_cu lsxcommon Catch2::Catch2WithMain)
-    if(WIN32)
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_cuda_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-    endif()
+    lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
     set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
 endforeach()
@@ -1357,7 +958,7 @@ add_library(test_lsx_kernels_cu OBJECT
 )
 set_target_properties(test_lsx_kernels_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_lsx_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
@@ -1371,18 +972,7 @@ foreach(qt test_lsx_kernels)
     add_executable(${qt})
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(${qt} PRIVATE test_lsx_kernels_cu lsxcommon Catch2::Catch2WithMain)
-    if(WIN32)
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_cuda_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-    endif()
+    lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
@@ -1391,7 +981,7 @@ add_library(test_cuda_toolkit_guard_cu OBJECT
 )
 set_target_properties(test_cuda_toolkit_guard_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_cuda_toolkit_guard_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
@@ -1403,18 +993,7 @@ foreach(qt test_cuda_toolkit_guard)
     add_executable(${qt})
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(${qt} PRIVATE test_cuda_toolkit_guard_cu Catch2::Catch2WithMain)
-    if(WIN32)
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_cuda_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-    endif()
+    lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
     set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
 endforeach()
@@ -1424,52 +1003,10 @@ endforeach()
 # the binaries were byte-identical, each ran the full ~187k assertions, and a
 # single failing assertion marked all 14 ctest targets failed (docs/open-tasks/2026-09-30-..., item E1).
 # Per-file objects keep the target names/labels but run only their own cases.
-function(lsx_add_qwen_cu_test name)
-    add_library(${name}_cu OBJECT ${name}.cu)
-    set_target_properties(${name}_cu PROPERTIES
-        CUDA_SEPARABLE_COMPILATION OFF
-        CUDA_ARCHITECTURES OFF
-    )
-    target_compile_options(${name}_cu PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
-        --generate-code=arch=compute_120,code=sm_120;
-        --generate-code=arch=compute_121,code=sm_121;
-        $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
-    target_include_directories(${name}_cu PRIVATE
-        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
-        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-        "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-        "${LSX_CCCL_INCLUDE_DIR}"
-        "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-        "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    )
-    target_compile_definitions(${name}_cu PRIVATE
-        THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
-        CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
-        LOGESTIX_HAS_CUDA
-    )
-    target_link_libraries(${name}_cu PRIVATE Catch2::Catch2WithMain)
-
-    add_executable(${name})
-    set_target_properties(${name} PROPERTIES LINKER_LANGUAGE CXX)
-    target_link_libraries(${name} PRIVATE ${name}_cu lsxcommon Catch2::Catch2WithMain)
-    if(WIN32)
-        add_custom_command(TARGET ${name} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_shared>"
-                "$<TARGET_FILE_DIR:${name}>"
-        )
-        add_custom_command(TARGET ${name} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_cuda_shared>"
-                "$<TARGET_FILE_DIR:${name}>"
-        )
-    endif()
-    target_compile_definitions(${name}_cu PRIVATE
-        LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
-    add_test(NAME ${name} COMMAND ${name})
-endfunction()
-
+#
+# The shared helper lives in cmake/LsxTestHelpers.cmake; each entry keeps its
+# own per-file OBJECT library (the target name/label is unchanged) so one
+# failing case no longer marks the whole group failed.
 foreach(qt
     test_qwen_dense_shuffle_reduce
     test_qwen_dense_mlp
@@ -1486,7 +1023,7 @@ foreach(qt
     test_qwen_dense_fused_linear_attn
     test_blackwell_micro_gemm
 )
-    lsx_add_qwen_cu_test(${qt})
+    lsx_add_cuda_test(NAME ${qt})
 endforeach()
 
 # ── Qwen3.5-9B model test (factory + IModel + generation) ──────────────
@@ -1496,18 +1033,7 @@ target_compile_definitions(test_qwen_dense_model PRIVATE
 )
 target_link_libraries(test_qwen_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_model>"
-    )
-    add_custom_command(TARGET test_qwen_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_model)
 
 add_test(NAME test_qwen_dense_model COMMAND test_qwen_dense_model)
 # Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
@@ -1517,13 +1043,7 @@ set_tests_properties(test_qwen_dense_model PROPERTIES
 # ── GLM expert device-cache: host-side LRU bookkeeping (no CUDA) ────────
 add_executable(test_glm_moe_expert_cache test_glm_moe_expert_cache.cpp)
 target_link_libraries(test_glm_moe_expert_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_expert_cache POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_expert_cache>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_expert_cache ARROW_ONLY)
 add_test(NAME test_glm_moe_expert_cache COMMAND test_glm_moe_expert_cache)
 
 # ── Qwen incremental KV cache (Task 7) ─────────────────────────────────
@@ -1533,18 +1053,7 @@ target_compile_definitions(test_qwen_dense_kv_cache PRIVATE
 )
 target_link_libraries(test_qwen_dense_kv_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_kv_cache POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_kv_cache>"
-    )
-    add_custom_command(TARGET test_qwen_dense_kv_cache POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_kv_cache>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_kv_cache)
 
 add_test(NAME test_qwen_dense_kv_cache COMMAND test_qwen_dense_kv_cache)
 set_tests_properties(test_qwen_dense_kv_cache PROPERTIES SKIP_RETURN_CODE 4)
@@ -1556,18 +1065,7 @@ target_compile_definitions(test_qwen_dense_kv_parity PRIVATE
 )
 target_link_libraries(test_qwen_dense_kv_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_kv_parity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_kv_parity>"
-    )
-    add_custom_command(TARGET test_qwen_dense_kv_parity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_kv_parity>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_kv_parity)
 
 add_test(NAME test_qwen_dense_kv_parity COMMAND test_qwen_dense_kv_parity)
 
@@ -1578,18 +1076,7 @@ target_compile_definitions(test_qwen_dense_27b_model PRIVATE
 )
 target_link_libraries(test_qwen_dense_27b_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_27b_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_model>"
-    )
-    add_custom_command(TARGET test_qwen_dense_27b_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_27b_model)
 
 add_test(NAME test_qwen_dense_27b_model COMMAND test_qwen_dense_27b_model)
 # Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
@@ -1603,18 +1090,7 @@ target_compile_definitions(test_model_integrity PRIVATE
 )
 target_link_libraries(test_model_integrity PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_model_integrity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_model_integrity>"
-    )
-    add_custom_command(TARGET test_model_integrity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_model_integrity>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_model_integrity)
 
 add_test(NAME test_model_integrity COMMAND test_model_integrity)
 
@@ -1625,18 +1101,7 @@ target_compile_definitions(test_qwen_dense_converter_integrity PRIVATE
 )
 target_link_libraries(test_qwen_dense_converter_integrity PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_converter_integrity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_converter_integrity>"
-    )
-    add_custom_command(TARGET test_qwen_dense_converter_integrity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_converter_integrity>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_converter_integrity)
 
 add_test(NAME test_qwen_dense_converter_integrity COMMAND test_qwen_dense_converter_integrity)
 
@@ -1647,18 +1112,7 @@ target_compile_definitions(test_glm_moe_convert PRIVATE
 )
 target_link_libraries(test_glm_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_convert>"
-    )
-    add_custom_command(TARGET test_glm_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_convert)
 
 add_test(NAME test_glm_moe_convert COMMAND test_glm_moe_convert)
 
@@ -1672,13 +1126,7 @@ target_link_libraries(test_glm_moe_flash_convert PRIVATE
 target_include_directories(test_glm_moe_flash_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_convert ARROW_ONLY)
 
 add_test(NAME test_glm_moe_flash_convert COMMAND test_glm_moe_flash_convert)
 set_tests_properties(test_glm_moe_flash_convert PROPERTIES SKIP_RETURN_CODE 4)
@@ -2250,18 +1698,7 @@ target_compile_definitions(test_kimi_moe_convert PRIVATE
 )
 target_link_libraries(test_kimi_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_convert>"
-    )
-    add_custom_command(TARGET test_kimi_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_convert)
 
 add_test(NAME test_kimi_moe_convert COMMAND test_kimi_moe_convert)
 set_tests_properties(test_kimi_moe_convert PROPERTIES
@@ -2277,18 +1714,7 @@ target_compile_definitions(test_glm_moe_loader PRIVATE
 )
 target_link_libraries(test_glm_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_loader>"
-    )
-    add_custom_command(TARGET test_glm_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_loader)
 
 add_test(NAME test_glm_moe_loader COMMAND test_glm_moe_loader)
 
@@ -2299,18 +1725,7 @@ target_compile_definitions(test_glm_moe_model PRIVATE
 )
 target_link_libraries(test_glm_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_model>"
-    )
-    add_custom_command(TARGET test_glm_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_model)
 
 add_test(NAME test_glm_moe_model COMMAND test_glm_moe_model)
 
@@ -2324,18 +1739,7 @@ target_compile_definitions(test_glm_moe_selfcheck PRIVATE
 )
 target_link_libraries(test_glm_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_selfcheck>"
-    )
-    add_custom_command(TARGET test_glm_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_selfcheck)
 
 add_test(NAME test_glm_moe_selfcheck COMMAND test_glm_moe_selfcheck)
 set_tests_properties(test_glm_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -2345,18 +1749,7 @@ set_tests_properties(test_glm_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_blackwell_perf_glm test_blackwell_perf_glm.cpp)
 target_link_libraries(test_blackwell_perf_glm PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_blackwell_perf_glm POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_glm>"
-    )
-    add_custom_command(TARGET test_blackwell_perf_glm POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_glm>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_blackwell_perf_glm)
 
 add_test(NAME test_blackwell_perf_glm COMMAND test_blackwell_perf_glm)
 set_tests_properties(test_blackwell_perf_glm PROPERTIES SKIP_RETURN_CODE 4)
@@ -2365,18 +1758,7 @@ set_tests_properties(test_blackwell_perf_glm PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_blackwell_perf_dense test_blackwell_perf_dense.cpp)
 target_link_libraries(test_blackwell_perf_dense PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_blackwell_perf_dense POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_dense>"
-    )
-    add_custom_command(TARGET test_blackwell_perf_dense POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_dense>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_blackwell_perf_dense)
 
 add_test(NAME test_blackwell_perf_dense COMMAND test_blackwell_perf_dense)
 set_tests_properties(test_blackwell_perf_dense PROPERTIES SKIP_RETURN_CODE 4)
@@ -2385,18 +1767,7 @@ set_tests_properties(test_blackwell_perf_dense PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_blackwell_perf_moe test_blackwell_perf_moe.cpp)
 target_link_libraries(test_blackwell_perf_moe PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_blackwell_perf_moe POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_moe>"
-    )
-    add_custom_command(TARGET test_blackwell_perf_moe POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_moe>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_blackwell_perf_moe)
 
 # One binary, two ctest entries (Catch2 tag filters) so each MoE model is
 # individually selectable and named in ctest output.
@@ -2411,18 +1782,7 @@ set_tests_properties(test_blackwell_perf_moe_gemma PROPERTIES SKIP_RETURN_CODE 4
 add_executable(test_blackwell_perf_deepseek test_blackwell_perf_deepseek.cpp)
 target_link_libraries(test_blackwell_perf_deepseek PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_blackwell_perf_deepseek POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_deepseek>"
-    )
-    add_custom_command(TARGET test_blackwell_perf_deepseek POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_deepseek>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_blackwell_perf_deepseek)
 
 add_test(NAME test_blackwell_perf_deepseek COMMAND test_blackwell_perf_deepseek)
 set_tests_properties(test_blackwell_perf_deepseek PROPERTIES SKIP_RETURN_CODE 4)
@@ -2439,18 +1799,7 @@ target_compile_definitions(test_glm_moe_prefill_seqp PRIVATE
 )
 target_link_libraries(test_glm_moe_prefill_seqp PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_prefill_seqp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_prefill_seqp>"
-    )
-    add_custom_command(TARGET test_glm_moe_prefill_seqp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_prefill_seqp>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_prefill_seqp)
 
 add_test(NAME test_glm_moe_prefill_seqp COMMAND test_glm_moe_prefill_seqp)
 set_tests_properties(test_glm_moe_prefill_seqp PROPERTIES SKIP_RETURN_CODE 4)
@@ -2462,18 +1811,7 @@ target_compile_definitions(test_glm_moe_prompt_output PRIVATE
 )
 target_link_libraries(test_glm_moe_prompt_output PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_prompt_output POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_prompt_output>"
-    )
-    add_custom_command(TARGET test_glm_moe_prompt_output POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_prompt_output>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_prompt_output)
 
 add_test(NAME test_glm_moe_prompt_output COMMAND test_glm_moe_prompt_output)
 set_tests_properties(test_glm_moe_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
@@ -2482,18 +1820,7 @@ set_tests_properties(test_glm_moe_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_deepseek_moe_prompt_output test_deepseek_moe_prompt_output.cpp)
 target_link_libraries(test_deepseek_moe_prompt_output PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_prompt_output POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_prompt_output>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_prompt_output POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_prompt_output>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_prompt_output)
 
 add_test(NAME test_deepseek_moe_prompt_output COMMAND test_deepseek_moe_prompt_output)
 set_tests_properties(test_deepseek_moe_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
@@ -2504,18 +1831,7 @@ set_tests_properties(test_deepseek_moe_prompt_output PROPERTIES SKIP_RETURN_CODE
 add_executable(test_deepseek_moe_selfcheck test_deepseek_moe_selfcheck.cpp)
 target_link_libraries(test_deepseek_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_selfcheck>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_selfcheck)
 
 add_test(NAME test_deepseek_moe_selfcheck COMMAND test_deepseek_moe_selfcheck)
 set_tests_properties(test_deepseek_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -2529,18 +1845,7 @@ target_compile_definitions(test_qwen_dense_selfcheck PRIVATE
 )
 target_link_libraries(test_qwen_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_selfcheck>"
-    )
-    add_custom_command(TARGET test_qwen_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_selfcheck)
 
 add_test(NAME test_qwen_dense_selfcheck COMMAND test_qwen_dense_selfcheck)
 set_tests_properties(test_qwen_dense_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -2554,18 +1859,7 @@ target_compile_definitions(test_qwen_dense_27b_selfcheck PRIVATE
 )
 target_link_libraries(test_qwen_dense_27b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_27b_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_selfcheck>"
-    )
-    add_custom_command(TARGET test_qwen_dense_27b_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_27b_selfcheck)
 
 add_test(NAME test_qwen_dense_27b_selfcheck COMMAND test_qwen_dense_27b_selfcheck)
 set_tests_properties(test_qwen_dense_27b_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -2574,18 +1868,7 @@ set_tests_properties(test_qwen_dense_27b_selfcheck PROPERTIES SKIP_RETURN_CODE 4
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_model_factory POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_model_factory>"
-    )
-    add_custom_command(TARGET test_model_factory POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_model_factory>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_model_factory)
 
 add_test(NAME test_model_factory COMMAND test_model_factory)
 set_tests_properties(test_model_factory PROPERTIES SKIP_RETURN_CODE 4)
@@ -2594,18 +1877,7 @@ set_tests_properties(test_model_factory PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_generation_cli test_generation_cli.cpp)
 target_link_libraries(test_generation_cli PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_generation_cli POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_generation_cli>"
-    )
-    add_custom_command(TARGET test_generation_cli POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_generation_cli>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_generation_cli)
 
 add_test(NAME test_generation_cli COMMAND test_generation_cli)
 
@@ -2616,18 +1888,7 @@ target_compile_definitions(test_glm_moe_prompt_framing PRIVATE
 )
 target_link_libraries(test_glm_moe_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_prompt_framing POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_prompt_framing>"
-    )
-    add_custom_command(TARGET test_glm_moe_prompt_framing POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_prompt_framing>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_prompt_framing)
 
 add_test(NAME test_glm_moe_prompt_framing COMMAND test_glm_moe_prompt_framing)
 
@@ -2638,13 +1899,7 @@ target_compile_definitions(test_gemma_prompt_framing PRIVATE
 )
 target_link_libraries(test_gemma_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_prompt_framing POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_prompt_framing>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_prompt_framing ARROW_ONLY)
 
 add_test(NAME test_gemma_prompt_framing COMMAND test_gemma_prompt_framing)
 
@@ -2657,13 +1912,7 @@ target_compile_definitions(test_qwen_tool_framing PRIVATE
 )
 target_link_libraries(test_qwen_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_tool_framing POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_tool_framing>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_tool_framing ARROW_ONLY)
 
 add_test(NAME test_qwen_tool_framing COMMAND test_qwen_tool_framing)
 
@@ -2770,13 +2019,7 @@ target_compile_definitions(test_phi_tool_framing PRIVATE
 )
 target_link_libraries(test_phi_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_phi_tool_framing POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_tool_framing>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_phi_tool_framing ARROW_ONLY)
 
 add_test(NAME test_phi_tool_framing COMMAND test_phi_tool_framing)
 
@@ -2808,13 +2051,7 @@ target_compile_definitions(test_glm_flash_tool_framing PRIVATE
 )
 target_link_libraries(test_glm_flash_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_flash_tool_framing POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_flash_tool_framing>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_flash_tool_framing ARROW_ONLY)
 
 add_test(NAME test_glm_flash_tool_framing COMMAND test_glm_flash_tool_framing)
 
@@ -2827,13 +2064,7 @@ target_compile_definitions(test_deepseek_tool_framing PRIVATE
 )
 target_link_libraries(test_deepseek_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_tool_framing POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_tool_framing>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_tool_framing ARROW_ONLY)
 
 add_test(NAME test_deepseek_tool_framing COMMAND test_deepseek_tool_framing)
 
@@ -2848,18 +2079,7 @@ target_include_directories(test_gemma_moe_convert PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_gemma_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_convert>"
-    )
-    add_custom_command(TARGET test_gemma_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_moe_convert)
 
 add_test(NAME test_gemma_moe_convert COMMAND test_gemma_moe_convert)
 set_tests_properties(test_gemma_moe_convert PROPERTIES
@@ -2869,18 +2089,7 @@ set_tests_properties(test_gemma_moe_convert PROPERTIES
 add_executable(test_gemma_dense_kernels test_gemma_dense_kernels.cpp)
 target_link_libraries(test_gemma_dense_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_kernels>"
-    )
-    add_custom_command(TARGET test_gemma_dense_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_kernels)
 
 add_test(NAME test_gemma_dense_kernels COMMAND test_gemma_dense_kernels)
 
@@ -2891,18 +2100,7 @@ target_compile_definitions(test_gemma_dense_loader PRIVATE
 )
 target_link_libraries(test_gemma_dense_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_loader>"
-    )
-    add_custom_command(TARGET test_gemma_dense_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_loader)
 
 add_test(NAME test_gemma_dense_loader COMMAND test_gemma_dense_loader)
 set_tests_properties(test_gemma_dense_loader PROPERTIES
@@ -2918,18 +2116,7 @@ target_compile_definitions(test_gemma_dense_model PRIVATE
 )
 target_link_libraries(test_gemma_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_model>"
-    )
-    add_custom_command(TARGET test_gemma_dense_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_model)
 
 add_test(NAME test_gemma_dense_model COMMAND test_gemma_dense_model)
 set_tests_properties(test_gemma_dense_model PROPERTIES
@@ -2945,18 +2132,7 @@ target_compile_definitions(test_gemma_dense_selfcheck PRIVATE
 )
 target_link_libraries(test_gemma_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_selfcheck>"
-    )
-    add_custom_command(TARGET test_gemma_dense_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_selfcheck)
 
 add_test(NAME test_gemma_dense_selfcheck COMMAND test_gemma_dense_selfcheck)
 set_tests_properties(test_gemma_dense_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -2969,18 +2145,7 @@ target_compile_definitions(test_gemma_dense_fsi_selfcheck PRIVATE
 )
 target_link_libraries(test_gemma_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_fsi_selfcheck>"
-    )
-    add_custom_command(TARGET test_gemma_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_fsi_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_fsi_selfcheck)
 
 add_test(NAME test_gemma_dense_fsi_selfcheck COMMAND test_gemma_dense_fsi_selfcheck)
 set_tests_properties(test_gemma_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -2993,18 +2158,7 @@ target_compile_definitions(test_gemma_dense_code_selfcheck PRIVATE
 )
 target_link_libraries(test_gemma_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_code_selfcheck>"
-    )
-    add_custom_command(TARGET test_gemma_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_code_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_code_selfcheck)
 
 add_test(NAME test_gemma_dense_code_selfcheck COMMAND test_gemma_dense_code_selfcheck)
 set_tests_properties(test_gemma_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -3017,18 +2171,7 @@ target_compile_definitions(test_gemma_dense_det_selfcheck PRIVATE
 )
 target_link_libraries(test_gemma_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_det_selfcheck>"
-    )
-    add_custom_command(TARGET test_gemma_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_det_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_det_selfcheck)
 
 add_test(NAME test_gemma_dense_det_selfcheck COMMAND test_gemma_dense_det_selfcheck)
 set_tests_properties(test_gemma_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -3040,18 +2183,7 @@ target_compile_definitions(test_gemma_dense_convert PRIVATE
 )
 target_link_libraries(test_gemma_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_convert>"
-    )
-    add_custom_command(TARGET test_gemma_dense_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_dense_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_dense_convert)
 
 add_test(NAME test_gemma_dense_convert COMMAND test_gemma_dense_convert)
 set_tests_properties(test_gemma_dense_convert PROPERTIES
@@ -3064,18 +2196,7 @@ target_compile_definitions(test_gemma_moe_loader PRIVATE
 )
 target_link_libraries(test_gemma_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_loader>"
-    )
-    add_custom_command(TARGET test_gemma_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_moe_loader)
 
 add_test(NAME test_gemma_moe_loader COMMAND test_gemma_moe_loader)
 
@@ -3088,18 +2209,7 @@ target_compile_definitions(test_gemma_moe_model PRIVATE
 )
 target_link_libraries(test_gemma_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_model>"
-    )
-    add_custom_command(TARGET test_gemma_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_moe_model)
 
 add_test(NAME test_gemma_moe_model COMMAND test_gemma_moe_model)
 set_tests_properties(test_gemma_moe_model PROPERTIES
@@ -3115,18 +2225,7 @@ target_compile_definitions(test_gemma_moe_selfcheck PRIVATE
 )
 target_link_libraries(test_gemma_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gemma_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_selfcheck>"
-    )
-    add_custom_command(TARGET test_gemma_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gemma_moe_selfcheck)
 
 add_test(NAME test_gemma_moe_selfcheck COMMAND test_gemma_moe_selfcheck)
 set_tests_properties(test_gemma_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -3137,18 +2236,7 @@ foreach(qt test_gemma_moe_norm test_gemma_moe_rotary test_gemma_moe_attn test_ge
     target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
     target_compile_definitions(${qt} PRIVATE
         LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
-    if(WIN32)
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-        add_custom_command(TARGET ${qt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:arrow_cuda_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
-        )
-    endif()
+    lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
@@ -3165,33 +2253,11 @@ target_link_libraries(test_model_runtime PRIVATE lsxcommon Catch2::Catch2WithMai
 add_executable(test_model_engine test_model_engine.cpp)
 target_link_libraries(test_model_engine PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_model_engine POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_model_engine>"
-    )
-    add_custom_command(TARGET test_model_engine POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_model_engine>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_model_engine)
 
 add_test(NAME test_model_engine COMMAND test_model_engine)
 
-if(WIN32)
-    add_custom_command(TARGET test_model_runtime POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_model_runtime>"
-    )
-    add_custom_command(TARGET test_model_runtime POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_model_runtime>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_model_runtime)
 
 add_test(NAME test_model_runtime COMMAND test_model_runtime)
 
@@ -3544,18 +2610,7 @@ target_link_libraries(test_kv_cache_layout PRIVATE lsxcommon Catch2::Catch2WithM
 add_test(NAME test_kv_cache_layout COMMAND test_kv_cache_layout)
 set_tests_properties(test_kv_cache_layout PROPERTIES LABELS fast)
 
-if(WIN32)
-    add_custom_command(TARGET test_tokenizer POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_tokenizer>"
-    )
-    add_custom_command(TARGET test_tokenizer POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_tokenizer>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_tokenizer)
 
 add_test(NAME test_tokenizer COMMAND test_tokenizer)
 
@@ -3565,18 +2620,7 @@ target_compile_definitions(test_alice_tokenizer PRIVATE
     LSX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(test_alice_tokenizer PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_alice_tokenizer POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_alice_tokenizer>"
-    )
-    add_custom_command(TARGET test_alice_tokenizer POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_alice_tokenizer>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_alice_tokenizer)
 add_test(NAME test_alice_tokenizer COMMAND test_alice_tokenizer)
 set_tests_properties(test_alice_tokenizer PROPERTIES LABELS fast)
 set_tests_properties(test_alice_tokenizer PROPERTIES SKIP_RETURN_CODE 4)
@@ -3585,18 +2629,7 @@ set_tests_properties(test_alice_tokenizer PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_glm_moe_layer_compute test_glm_moe_layer_compute.cpp)
 target_link_libraries(test_glm_moe_layer_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_layer_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_layer_compute>"
-    )
-    add_custom_command(TARGET test_glm_moe_layer_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_layer_compute>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_layer_compute)
 
 add_test(NAME test_glm_moe_layer_compute COMMAND test_glm_moe_layer_compute)
 set_tests_properties(test_glm_moe_layer_compute PROPERTIES SKIP_RETURN_CODE 4)
@@ -3609,18 +2642,7 @@ set_tests_properties(test_glm_moe_layer_compute PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_glm_moe_dense_compute test_glm_moe_dense_compute.cpp)
 target_link_libraries(test_glm_moe_dense_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_dense_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_dense_compute>"
-    )
-    add_custom_command(TARGET test_glm_moe_dense_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_dense_compute>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_dense_compute)
 
 add_test(NAME test_glm_moe_dense_compute COMMAND test_glm_moe_dense_compute)
 
@@ -3628,18 +2650,7 @@ add_test(NAME test_glm_moe_dense_compute COMMAND test_glm_moe_dense_compute)
 add_executable(test_glm_moe_moe_router test_glm_moe_moe_router.cpp)
 target_link_libraries(test_glm_moe_moe_router PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_moe_router POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_moe_router>"
-    )
-    add_custom_command(TARGET test_glm_moe_moe_router POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_moe_router>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_moe_router)
 
 add_test(NAME test_glm_moe_moe_router COMMAND test_glm_moe_moe_router)
 set_tests_properties(test_glm_moe_moe_router PROPERTIES SKIP_RETURN_CODE 4)
@@ -3648,18 +2659,7 @@ set_tests_properties(test_glm_moe_moe_router PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_glm_moe_experts test_glm_moe_experts.cpp)
 target_link_libraries(test_glm_moe_experts PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_experts POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_experts>"
-    )
-    add_custom_command(TARGET test_glm_moe_experts POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_experts>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_experts)
 
 add_test(NAME test_glm_moe_experts COMMAND test_glm_moe_experts)
 
@@ -3671,18 +2671,7 @@ add_test(NAME test_glm_moe_experts COMMAND test_glm_moe_experts)
 add_executable(test_glm_moe_moe_compute test_glm_moe_moe_compute.cpp)
 target_link_libraries(test_glm_moe_moe_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_moe_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_moe_compute>"
-    )
-    add_custom_command(TARGET test_glm_moe_moe_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_moe_compute>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_moe_compute)
 
 add_test(NAME test_glm_moe_moe_compute COMMAND test_glm_moe_moe_compute)
 
@@ -3690,18 +2679,7 @@ add_test(NAME test_glm_moe_moe_compute COMMAND test_glm_moe_moe_compute)
 add_executable(test_glm_moe_attention test_glm_moe_attention.cpp)
 target_link_libraries(test_glm_moe_attention PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_attention POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_attention>"
-    )
-    add_custom_command(TARGET test_glm_moe_attention POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_attention>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_attention)
 
 add_test(NAME test_glm_moe_attention COMMAND test_glm_moe_attention)
 
@@ -3709,18 +2687,7 @@ add_test(NAME test_glm_moe_attention COMMAND test_glm_moe_attention)
 add_executable(test_glm_moe_inference test_glm_moe_inference.cpp)
 target_link_libraries(test_glm_moe_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_inference POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_inference>"
-    )
-    add_custom_command(TARGET test_glm_moe_inference POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_inference>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_inference)
 
 add_test(NAME test_glm_moe_inference COMMAND test_glm_moe_inference)
 
@@ -3738,18 +2705,7 @@ set_tests_properties(test_glm_moe_inference PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_glm_moe_full_compute test_glm_moe_full_compute.cpp)
 target_link_libraries(test_glm_moe_full_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_full_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_full_compute>"
-    )
-    add_custom_command(TARGET test_glm_moe_full_compute POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_full_compute>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_full_compute)
 
 add_test(NAME test_glm_moe_full_compute COMMAND test_glm_moe_full_compute)
 set_tests_properties(test_glm_moe_full_compute PROPERTIES SKIP_RETURN_CODE 4)
@@ -3781,18 +2737,7 @@ target_link_libraries(test_integrated_pipeline PRIVATE lsxcommon lsxnetwork Catc
 target_compile_definitions(test_integrated_pipeline PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
-if(WIN32)
-    add_custom_command(TARGET test_integrated_pipeline POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_integrated_pipeline>"
-    )
-    add_custom_command(TARGET test_integrated_pipeline POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_integrated_pipeline>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_integrated_pipeline)
 
 add_test(NAME test_integrated_pipeline COMMAND test_integrated_pipeline)
 
@@ -3906,35 +2851,20 @@ target_compile_options(test_deepseek_moe_inference_kernels_cu PRIVATE
 target_include_directories(test_deepseek_moe_inference_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_inference_kernels_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_deepseek_moe_inference_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_inference_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_inference_kernels)
 set_target_properties(test_deepseek_moe_inference_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_inference_kernels PRIVATE
     test_deepseek_moe_inference_kernels_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_inference_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_inference_kernels>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_inference_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_inference_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_inference_kernels)
 
 add_test(NAME test_deepseek_moe_inference_kernels COMMAND test_deepseek_moe_inference_kernels)
 
@@ -3956,23 +2886,19 @@ target_include_directories(test_deepseek_moe_moe_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_moe_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_deepseek_moe_moe_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_moe_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 # ── Nemotron-3.5 device session (allocation + layer-slot bookkeeping) ──
 add_library(test_nemotron_session_cu OBJECT test_nemotron_session.cu)
 set_target_properties(test_nemotron_session_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real")
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}")
 target_compile_options(test_nemotron_session_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_nemotron_session_cu PRIVATE
@@ -3992,19 +2918,17 @@ set_tests_properties(test_nemotron_session PROPERTIES SKIP_RETURN_CODE 4)
 add_library(test_deepseek_moe_norm_kernels_cu OBJECT
     test_deepseek_moe_norm_kernels.cu)
 set_target_properties(test_deepseek_moe_norm_kernels_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real")
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}")
 target_compile_options(test_deepseek_moe_norm_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_deepseek_moe_norm_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include")
+    )
 target_compile_definitions(test_deepseek_moe_norm_kernels_cu PRIVATE
     LOGESTIX_HAS_CUDA)
-target_link_libraries(test_deepseek_moe_norm_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_norm_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_norm_kernels)
 set_target_properties(test_deepseek_moe_norm_kernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -4019,18 +2943,7 @@ set_target_properties(test_deepseek_moe_moe PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_moe PRIVATE
     test_deepseek_moe_moe_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_moe POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_moe>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_moe POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_moe>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_moe)
 
 add_test(NAME test_deepseek_moe_moe COMMAND test_deepseek_moe_moe)
 
@@ -4052,35 +2965,20 @@ target_include_directories(test_deepseek_moe_arena_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_deepseek_moe_arena_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_deepseek_moe_arena_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_arena_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_arena)
 set_target_properties(test_deepseek_moe_arena PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_arena PRIVATE
     test_deepseek_moe_arena_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_arena POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_arena>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_arena POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_arena>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_arena)
 
 add_test(NAME test_deepseek_moe_arena COMMAND test_deepseek_moe_arena)
 
@@ -4101,35 +2999,20 @@ target_compile_options(test_sampling_cu PRIVATE
 target_include_directories(test_sampling_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
 target_compile_definitions(test_sampling_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_sampling_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_sampling_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_sampling)
 set_target_properties(test_sampling PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_sampling PRIVATE
     test_sampling_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_sampling POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_sampling>"
-    )
-    add_custom_command(TARGET test_sampling POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_sampling>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_sampling)
 
 add_test(NAME test_sampling COMMAND test_sampling)
 
@@ -4148,34 +3031,19 @@ target_include_directories(test_glm_moe_load_fast_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_glm_moe_load_fast_cu PRIVATE
     LOGESTIX_HAS_CUDA
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_glm_moe_load_fast_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_glm_moe_load_fast_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_glm_moe_load_fast)
 set_target_properties(test_glm_moe_load_fast PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_glm_moe_load_fast PRIVATE
     test_glm_moe_load_fast_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_load_fast>"
-    )
-    add_custom_command(TARGET test_glm_moe_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_load_fast>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_load_fast)
 
 add_test(NAME test_glm_moe_load_fast COMMAND test_glm_moe_load_fast)
 
@@ -4195,34 +3063,19 @@ target_include_directories(test_glm_moe_model_lifecycle_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_glm_moe_model_lifecycle_cu PRIVATE
     LOGESTIX_HAS_CUDA
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_glm_moe_model_lifecycle_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_glm_moe_model_lifecycle_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_glm_moe_model_lifecycle)
 set_target_properties(test_glm_moe_model_lifecycle PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_glm_moe_model_lifecycle PRIVATE
     test_glm_moe_model_lifecycle_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_model_lifecycle POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_model_lifecycle>"
-    )
-    add_custom_command(TARGET test_glm_moe_model_lifecycle POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_model_lifecycle>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_model_lifecycle)
 
 add_test(NAME test_glm_moe_model_lifecycle COMMAND test_glm_moe_model_lifecycle)
 set_tests_properties(test_glm_moe_model_lifecycle PROPERTIES SKIP_RETURN_CODE 4)
@@ -4243,34 +3096,19 @@ target_include_directories(test_deepseek_moe_load_fast_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_deepseek_moe_load_fast_cu PRIVATE
     LOGESTIX_HAS_CUDA
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_deepseek_moe_load_fast_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_moe_load_fast_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_deepseek_moe_load_fast)
 set_target_properties(test_deepseek_moe_load_fast PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_deepseek_moe_load_fast PRIVATE
     test_deepseek_moe_load_fast_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_load_fast>"
-    )
-    add_custom_command(TARGET test_deepseek_moe_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_load_fast>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_load_fast)
 
 add_test(NAME test_deepseek_moe_load_fast COMMAND test_deepseek_moe_load_fast)
 
@@ -4278,18 +3116,7 @@ add_test(NAME test_deepseek_moe_load_fast COMMAND test_deepseek_moe_load_fast)
 add_executable(test_path_registry test_path_registry.cpp)
 target_link_libraries(test_path_registry PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_path_registry POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_path_registry>"
-    )
-    add_custom_command(TARGET test_path_registry POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_path_registry>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_path_registry)
 
 add_test(NAME test_path_registry COMMAND test_path_registry)
 
@@ -4297,90 +3124,35 @@ add_test(NAME test_path_registry COMMAND test_path_registry)
 add_executable(test_vram_estimate test_vram_estimate.cpp)
 target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_vram_estimate POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_vram_estimate>"
-    )
-    add_custom_command(TARGET test_vram_estimate POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_vram_estimate>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_vram_estimate)
 
 add_test(NAME test_vram_estimate COMMAND test_vram_estimate)
 
 add_executable(test_resource_governor test_resource_governor.cpp)
 target_link_libraries(test_resource_governor PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_resource_governor POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_resource_governor>"
-    )
-    add_custom_command(TARGET test_resource_governor POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_resource_governor>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_resource_governor)
 
 add_test(NAME test_resource_governor COMMAND test_resource_governor)
 
 add_executable(test_hardware_profile test_hardware_profile.cpp)
 target_link_libraries(test_hardware_profile PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_hardware_profile POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_hardware_profile>"
-    )
-    add_custom_command(TARGET test_hardware_profile POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_hardware_profile>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_hardware_profile)
 
 add_test(NAME test_hardware_profile COMMAND test_hardware_profile)
 
 add_executable(test_lifecycle_plan test_lifecycle_plan.cpp)
 target_link_libraries(test_lifecycle_plan PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_lifecycle_plan POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_lifecycle_plan>"
-    )
-    add_custom_command(TARGET test_lifecycle_plan POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_lifecycle_plan>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_lifecycle_plan)
 
 add_test(NAME test_lifecycle_plan COMMAND test_lifecycle_plan)
 
 add_executable(test_runtime_tuner test_runtime_tuner.cpp)
 target_link_libraries(test_runtime_tuner PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_runtime_tuner POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_runtime_tuner>"
-    )
-    add_custom_command(TARGET test_runtime_tuner POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_runtime_tuner>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_runtime_tuner)
 
 add_test(NAME test_runtime_tuner COMMAND test_runtime_tuner)
 
@@ -4399,12 +3171,9 @@ target_include_directories(test_kimi_moe_int4_dequant_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
 target_compile_definitions(test_kimi_moe_int4_dequant_cu PRIVATE LOGESTIX_HAS_CUDA)
-target_link_libraries(test_kimi_moe_int4_dequant_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_int4_dequant_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_int4_dequant_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_int4_dequant)
@@ -4412,13 +3181,7 @@ set_target_properties(test_kimi_moe_int4_dequant PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_int4_dequant PRIVATE
     test_kimi_moe_int4_dequant_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_int4_dequant POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_int4_dequant>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_int4_dequant ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_int4_dequant COMMAND test_kimi_moe_int4_dequant)
 
@@ -4426,13 +3189,7 @@ add_test(NAME test_kimi_moe_int4_dequant COMMAND test_kimi_moe_int4_dequant)
 add_executable(test_kimi_moe_tokenizer test_kimi_moe_tokenizer.cpp)
 target_link_libraries(test_kimi_moe_tokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_tokenizer POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_tokenizer>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_tokenizer ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_tokenizer COMMAND test_kimi_moe_tokenizer)
 set_tests_properties(test_kimi_moe_tokenizer PROPERTIES SKIP_RETURN_CODE 4)
@@ -4444,18 +3201,7 @@ target_compile_definitions(test_kimi_moe_loader PRIVATE
 )
 target_link_libraries(test_kimi_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_loader>"
-    )
-    add_custom_command(TARGET test_kimi_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_loader)
 
 add_test(NAME test_kimi_moe_loader COMMAND test_kimi_moe_loader)
 # Converts a synthetic checkpoint: the frozen gates (incl. the token ids) are
@@ -4478,12 +3224,9 @@ target_include_directories(test_kimi_moe_router_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
 target_compile_definitions(test_kimi_moe_router_cu PRIVATE LOGESTIX_HAS_CUDA)
-target_link_libraries(test_kimi_moe_router_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_router_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_router_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_router)
@@ -4491,13 +3234,7 @@ set_target_properties(test_kimi_moe_router PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_router PRIVATE
     test_kimi_moe_router_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_router POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_router>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_router ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_router COMMAND test_kimi_moe_router)
 
@@ -4516,12 +3253,9 @@ target_include_directories(test_kimi_moe_attention_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
 target_compile_definitions(test_kimi_moe_attention_cu PRIVATE LOGESTIX_HAS_CUDA)
-target_link_libraries(test_kimi_moe_attention_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_attention_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_attention_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_attention)
@@ -4529,13 +3263,7 @@ set_target_properties(test_kimi_moe_attention PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_attention PRIVATE
     test_kimi_moe_attention_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_attention POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_attention>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_attention ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_attention COMMAND test_kimi_moe_attention)
 
@@ -4581,12 +3309,9 @@ target_include_directories(test_kimi_moe_mla_proj_real_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
 target_compile_definitions(test_kimi_moe_mla_proj_real_cu PRIVATE LOGESTIX_HAS_CUDA)
-target_link_libraries(test_kimi_moe_mla_proj_real_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_mla_proj_real_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_mla_proj_real_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_mla_proj_real)
@@ -4612,16 +3337,12 @@ target_include_directories(test_kimi_moe_experts_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_kimi_moe_experts_cu PRIVATE
     LOGESTIX_HAS_CUDA
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_kimi_moe_experts_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_experts_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_experts_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_experts)
@@ -4629,13 +3350,7 @@ set_target_properties(test_kimi_moe_experts PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_experts PRIVATE
     test_kimi_moe_experts_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_experts POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_experts>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_experts ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_experts COMMAND test_kimi_moe_experts)
 set_tests_properties(test_kimi_moe_experts PROPERTIES SKIP_RETURN_CODE 4)
@@ -4655,16 +3370,12 @@ target_include_directories(test_kimi_moe_tc_batch_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_kimi_moe_tc_batch_cu PRIVATE
     LOGESTIX_HAS_CUDA
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_kimi_moe_tc_batch_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_tc_batch_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_tc_batch_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_tc_batch)
@@ -4672,13 +3383,7 @@ set_target_properties(test_kimi_moe_tc_batch PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_tc_batch PRIVATE
     test_kimi_moe_tc_batch_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_tc_batch POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_tc_batch>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_tc_batch ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_tc_batch COMMAND test_kimi_moe_tc_batch)
 
@@ -4696,16 +3401,12 @@ target_include_directories(test_kimi_moe_tc_diag_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_kimi_moe_tc_diag_cu PRIVATE
     LOGESTIX_HAS_CUDA
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_kimi_moe_tc_diag_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_tc_diag_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_tc_diag_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_tc_diag)
@@ -4713,13 +3414,7 @@ set_target_properties(test_kimi_moe_tc_diag PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_tc_diag PRIVATE
     test_kimi_moe_tc_diag_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_tc_diag POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_tc_diag>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_tc_diag ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_tc_diag COMMAND test_kimi_moe_tc_diag)
 set_tests_properties(test_kimi_moe_tc_diag PROPERTIES SKIP_RETURN_CODE 4)
@@ -4731,13 +3426,7 @@ target_compile_definitions(test_kimi_moe_model PRIVATE
 )
 target_link_libraries(test_kimi_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_model ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_model COMMAND test_kimi_moe_model)
 set_tests_properties(test_kimi_moe_model PROPERTIES SKIP_RETURN_CODE 4)
@@ -4751,18 +3440,7 @@ target_compile_definitions(test_kimi_moe_selfcheck PRIVATE
 )
 target_link_libraries(test_kimi_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_selfcheck>"
-    )
-    add_custom_command(TARGET test_kimi_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_selfcheck)
 
 add_test(NAME test_kimi_moe_selfcheck COMMAND test_kimi_moe_selfcheck)
 set_tests_properties(test_kimi_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -4774,13 +3452,7 @@ target_compile_definitions(test_blackwell_perf_kimi PRIVATE
 )
 target_link_libraries(test_blackwell_perf_kimi PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_blackwell_perf_kimi POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_blackwell_perf_kimi>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_blackwell_perf_kimi ARROW_ONLY)
 
 add_test(NAME test_blackwell_perf_kimi COMMAND test_blackwell_perf_kimi)
 set_tests_properties(test_blackwell_perf_kimi PROPERTIES SKIP_RETURN_CODE 4)
@@ -4795,13 +3467,7 @@ target_include_directories(test_kimi_moe_inference PRIVATE
 )
 target_link_libraries(test_kimi_moe_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_inference POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_inference>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_inference ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_inference COMMAND test_kimi_moe_inference)
 set_tests_properties(test_kimi_moe_inference PROPERTIES SKIP_RETURN_CODE 4)
@@ -4821,14 +3487,10 @@ target_include_directories(test_kimi_moe_int4_real_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_kimi_moe_int4_real_cu PRIVATE LOGESTIX_HAS_CUDA)
-target_link_libraries(test_kimi_moe_int4_real_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_int4_real_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_link_libraries(test_kimi_moe_int4_real_cu PRIVATE lsxcommon_kimi_cu)
 
 add_executable(test_kimi_moe_int4_real)
@@ -4836,13 +3498,7 @@ set_target_properties(test_kimi_moe_int4_real PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_int4_real PRIVATE
     test_kimi_moe_int4_real_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_int4_real POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_int4_real>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_int4_real ARROW_ONLY)
 
 add_test(NAME test_kimi_moe_int4_real COMMAND test_kimi_moe_int4_real)
 set_tests_properties(test_kimi_moe_int4_real PROPERTIES SKIP_RETURN_CODE 4)
@@ -4854,18 +3510,7 @@ target_compile_definitions(test_qwen_moe_convert PRIVATE
 )
 target_link_libraries(test_qwen_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_convert>"
-    )
-    add_custom_command(TARGET test_qwen_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_convert)
 
 add_test(NAME test_qwen_moe_convert COMMAND test_qwen_moe_convert)
 # Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
@@ -4879,18 +3524,7 @@ target_compile_definitions(test_qwen_moe_36_convert PRIVATE
 )
 target_link_libraries(test_qwen_moe_36_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_36_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_convert>"
-    )
-    add_custom_command(TARGET test_qwen_moe_36_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_36_convert)
 
 add_test(NAME test_qwen_moe_36_convert COMMAND test_qwen_moe_36_convert)
 set_tests_properties(test_qwen_moe_36_convert PROPERTIES
@@ -4903,18 +3537,7 @@ target_compile_definitions(test_ornith_moe_convert PRIVATE
 )
 target_link_libraries(test_ornith_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_convert>"
-    )
-    add_custom_command(TARGET test_ornith_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_convert)
 
 add_test(NAME test_ornith_moe_convert COMMAND test_ornith_moe_convert)
 set_tests_properties(test_ornith_moe_convert PROPERTIES
@@ -4926,18 +3549,7 @@ target_compile_definitions(test_ornith_moe_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_ornith_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_loader>"
-    )
-    add_custom_command(TARGET test_ornith_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_loader)
 
 add_test(NAME test_ornith_moe_loader COMMAND test_ornith_moe_loader)
 set_tests_properties(test_ornith_moe_loader PROPERTIES
@@ -4949,13 +3561,7 @@ target_include_directories(test_ornith_moe_model PRIVATE
 target_compile_definitions(test_ornith_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_ornith_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_model ARROW_ONLY)
 add_test(NAME test_ornith_moe_model COMMAND test_ornith_moe_model)
 set_tests_properties(test_ornith_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -4967,13 +3573,7 @@ target_compile_definitions(test_ornith_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_link_libraries(test_ornith_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_selfcheck ARROW_ONLY)
 add_test(NAME test_ornith_moe_selfcheck COMMAND test_ornith_moe_selfcheck)
 set_tests_properties(test_ornith_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -4999,11 +3599,6 @@ target_compile_options(test_qwen_moe_kernels_cu PRIVATE
 target_include_directories(test_qwen_moe_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
     "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
@@ -5019,7 +3614,7 @@ target_compile_definitions(test_qwen_moe_kernels_cu PRIVATE
     ZMQ_STATIC
     SIMDJSON_THREADS_ENABLED=1
 )
-target_link_libraries(test_qwen_moe_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_qwen_moe_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_compile_definitions(test_qwen_moe_kernels_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
@@ -5028,18 +3623,7 @@ set_target_properties(test_qwen_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_qwen_moe_kernels PRIVATE
     test_qwen_moe_kernels_cu lsxcommon_moe_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_kernels>"
-    )
-    add_custom_command(TARGET test_qwen_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_kernels)
 
 add_test(NAME test_qwen_moe_kernels COMMAND test_qwen_moe_kernels)
 
@@ -5057,11 +3641,6 @@ target_compile_options(test_ornith_moe_kernels_cu PRIVATE
 target_include_directories(test_ornith_moe_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
     "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
@@ -5077,7 +3656,7 @@ target_compile_definitions(test_ornith_moe_kernels_cu PRIVATE
     ZMQ_STATIC
     SIMDJSON_THREADS_ENABLED=1
 )
-target_link_libraries(test_ornith_moe_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_ornith_moe_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_ornith_moe_kernels)
 set_target_properties(test_ornith_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -5086,18 +3665,7 @@ target_link_libraries(test_ornith_moe_kernels PRIVATE
 target_compile_definitions(test_ornith_moe_kernels_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_kernels>"
-    )
-    add_custom_command(TARGET test_ornith_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_kernels)
 
 add_test(NAME test_ornith_moe_kernels COMMAND test_ornith_moe_kernels)
 
@@ -5107,18 +3675,7 @@ target_compile_definitions(test_qwen_moe_loader PRIVATE
 )
 target_link_libraries(test_qwen_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_loader>"
-    )
-    add_custom_command(TARGET test_qwen_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_loader)
 
 add_test(NAME test_qwen_moe_loader COMMAND test_qwen_moe_loader)
 set_tests_properties(test_qwen_moe_loader PROPERTIES
@@ -5130,13 +3687,7 @@ target_include_directories(test_qwen_moe_model PRIVATE
 target_compile_definitions(test_qwen_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_qwen_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_model ARROW_ONLY)
 add_test(NAME test_qwen_moe_model COMMAND test_qwen_moe_model)
 set_tests_properties(test_qwen_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -5147,13 +3698,7 @@ target_include_directories(test_qwen_moe_36_model PRIVATE
 target_compile_definitions(test_qwen_moe_36_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_qwen_moe_36_model PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_36_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_36_model ARROW_ONLY)
 add_test(NAME test_qwen_moe_36_model COMMAND test_qwen_moe_36_model)
 set_tests_properties(test_qwen_moe_36_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -5165,13 +3710,7 @@ target_compile_definitions(test_qwen_moe_36_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_link_libraries(test_qwen_moe_36_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_36_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_36_selfcheck ARROW_ONLY)
 add_test(NAME test_qwen_moe_36_selfcheck COMMAND test_qwen_moe_36_selfcheck)
 set_tests_properties(test_qwen_moe_36_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5181,16 +3720,7 @@ add_executable(test_qwen_moe_36_fsi_selfcheck test_qwen_moe_36_fsi_selfcheck.cpp
 target_compile_definitions(test_qwen_moe_36_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_36_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_36_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_fsi_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_36_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_36_fsi_selfcheck)
 add_test(NAME test_qwen_moe_36_fsi_selfcheck COMMAND test_qwen_moe_36_fsi_selfcheck)
 set_tests_properties(test_qwen_moe_36_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5198,16 +3728,7 @@ add_executable(test_glm_moe_fsi_selfcheck test_glm_moe_fsi_selfcheck.cpp)
 target_compile_definitions(test_glm_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_glm_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_glm_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_fsi_selfcheck)
 add_test(NAME test_glm_moe_fsi_selfcheck COMMAND test_glm_moe_fsi_selfcheck)
 set_tests_properties(test_glm_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5215,16 +3736,7 @@ add_executable(test_glm_moe_flash_fsi_selfcheck test_glm_moe_flash_fsi_selfcheck
 target_compile_definitions(test_glm_moe_flash_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_glm_moe_flash_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_fsi_selfcheck>")
-    add_custom_command(TARGET test_glm_moe_flash_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_fsi_selfcheck)
 add_test(NAME test_glm_moe_flash_fsi_selfcheck COMMAND test_glm_moe_flash_fsi_selfcheck)
 set_tests_properties(test_glm_moe_flash_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5232,16 +3744,7 @@ add_executable(test_deepseek_moe_fsi_selfcheck test_deepseek_moe_fsi_selfcheck.c
 target_compile_definitions(test_deepseek_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_deepseek_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_deepseek_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_fsi_selfcheck)
 add_test(NAME test_deepseek_moe_fsi_selfcheck COMMAND test_deepseek_moe_fsi_selfcheck)
 set_tests_properties(test_deepseek_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5249,16 +3752,7 @@ add_executable(test_deepseek_moe_v41_fsi_selfcheck test_deepseek_moe_v41_fsi_sel
 target_compile_definitions(test_deepseek_moe_v41_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_deepseek_moe_v41_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_fsi_selfcheck>")
-    add_custom_command(TARGET test_deepseek_moe_v41_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_fsi_selfcheck)
 add_test(NAME test_deepseek_moe_v41_fsi_selfcheck COMMAND test_deepseek_moe_v41_fsi_selfcheck)
 set_tests_properties(test_deepseek_moe_v41_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5266,16 +3760,7 @@ add_executable(test_qwen_dense_fsi_selfcheck test_qwen_dense_fsi_selfcheck.cpp)
 target_compile_definitions(test_qwen_dense_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_fsi_selfcheck>")
-    add_custom_command(TARGET test_qwen_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_fsi_selfcheck)
 add_test(NAME test_qwen_dense_fsi_selfcheck COMMAND test_qwen_dense_fsi_selfcheck)
 set_tests_properties(test_qwen_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5283,16 +3768,7 @@ add_executable(test_qwen_dense_27b_fsi_selfcheck test_qwen_dense_27b_fsi_selfche
 target_compile_definitions(test_qwen_dense_27b_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_dense_27b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_27b_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_fsi_selfcheck>")
-    add_custom_command(TARGET test_qwen_dense_27b_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_27b_fsi_selfcheck)
 add_test(NAME test_qwen_dense_27b_fsi_selfcheck COMMAND test_qwen_dense_27b_fsi_selfcheck)
 set_tests_properties(test_qwen_dense_27b_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5300,16 +3776,7 @@ add_executable(test_qwen_moe_fsi_selfcheck test_qwen_moe_fsi_selfcheck.cpp)
 target_compile_definitions(test_qwen_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_fsi_selfcheck)
 add_test(NAME test_qwen_moe_fsi_selfcheck COMMAND test_qwen_moe_fsi_selfcheck)
 set_tests_properties(test_qwen_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5317,16 +3784,7 @@ add_executable(test_qwen_moe_exp_fsi_selfcheck test_qwen_moe_exp_fsi_selfcheck.c
 target_compile_definitions(test_qwen_moe_exp_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_exp_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_fsi_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_exp_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_fsi_selfcheck)
 add_test(NAME test_qwen_moe_exp_fsi_selfcheck COMMAND test_qwen_moe_exp_fsi_selfcheck)
 set_tests_properties(test_qwen_moe_exp_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5334,16 +3792,7 @@ add_executable(test_gemma_moe_fsi_selfcheck test_gemma_moe_fsi_selfcheck.cpp)
 target_compile_definitions(test_gemma_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_gemma_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gemma_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_gemma_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_gemma_moe_fsi_selfcheck)
 add_test(NAME test_gemma_moe_fsi_selfcheck COMMAND test_gemma_moe_fsi_selfcheck)
 set_tests_properties(test_gemma_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5351,16 +3800,7 @@ add_executable(test_kimi_moe_fsi_selfcheck test_kimi_moe_fsi_selfcheck.cpp)
 target_compile_definitions(test_kimi_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_kimi_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_kimi_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_fsi_selfcheck)
 add_test(NAME test_kimi_moe_fsi_selfcheck COMMAND test_kimi_moe_fsi_selfcheck)
 set_tests_properties(test_kimi_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5368,16 +3808,7 @@ add_executable(test_nemotron_moe_fsi_selfcheck test_nemotron_moe_fsi_selfcheck.c
 target_compile_definitions(test_nemotron_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_nemotron_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_nemotron_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_nemotron_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_nemotron_moe_fsi_selfcheck)
 add_test(NAME test_nemotron_moe_fsi_selfcheck COMMAND test_nemotron_moe_fsi_selfcheck)
 set_tests_properties(test_nemotron_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5385,16 +3816,7 @@ add_executable(test_gigachat_moe_fsi_selfcheck test_gigachat_moe_fsi_selfcheck.c
 target_compile_definitions(test_gigachat_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_gigachat_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_gigachat_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_fsi_selfcheck)
 add_test(NAME test_gigachat_moe_fsi_selfcheck COMMAND test_gigachat_moe_fsi_selfcheck)
 set_tests_properties(test_gigachat_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5402,16 +3824,7 @@ add_executable(test_ornith_moe_fsi_selfcheck test_ornith_moe_fsi_selfcheck.cpp)
 target_compile_definitions(test_ornith_moe_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_ornith_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_fsi_selfcheck>")
-    add_custom_command(TARGET test_ornith_moe_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_fsi_selfcheck)
 add_test(NAME test_ornith_moe_fsi_selfcheck COMMAND test_ornith_moe_fsi_selfcheck)
 set_tests_properties(test_ornith_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5419,16 +3832,7 @@ add_executable(test_granite_dense_fsi_selfcheck test_granite_dense_fsi_selfcheck
 target_compile_definitions(test_granite_dense_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_granite_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_fsi_selfcheck>")
-    add_custom_command(TARGET test_granite_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_fsi_selfcheck)
 add_test(NAME test_granite_dense_fsi_selfcheck COMMAND test_granite_dense_fsi_selfcheck)
 set_tests_properties(test_granite_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5436,16 +3840,7 @@ add_executable(test_granite_switch_fsi_selfcheck test_granite_switch_fsi_selfche
 target_compile_definitions(test_granite_switch_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_granite_switch_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_fsi_selfcheck>")
-    add_custom_command(TARGET test_granite_switch_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_fsi_selfcheck)
 add_test(NAME test_granite_switch_fsi_selfcheck COMMAND test_granite_switch_fsi_selfcheck)
 set_tests_properties(test_granite_switch_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5453,16 +3848,7 @@ add_executable(test_phi_dense_fsi_selfcheck test_phi_dense_fsi_selfcheck.cpp)
 target_compile_definitions(test_phi_dense_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
 target_link_libraries(test_phi_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_fsi_selfcheck>")
-    add_custom_command(TARGET test_phi_dense_fsi_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_fsi_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_fsi_selfcheck)
 add_test(NAME test_phi_dense_fsi_selfcheck COMMAND test_phi_dense_fsi_selfcheck)
 set_tests_properties(test_phi_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5472,16 +3858,7 @@ add_executable(test_glm_moe_code_selfcheck test_glm_moe_code_selfcheck.cpp)
 target_compile_definitions(test_glm_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_glm_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_code_selfcheck>")
-    add_custom_command(TARGET test_glm_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_code_selfcheck)
 add_test(NAME test_glm_moe_code_selfcheck COMMAND test_glm_moe_code_selfcheck)
 set_tests_properties(test_glm_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5489,16 +3866,7 @@ add_executable(test_glm_moe_flash_code_selfcheck test_glm_moe_flash_code_selfche
 target_compile_definitions(test_glm_moe_flash_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_glm_moe_flash_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_code_selfcheck>")
-    add_custom_command(TARGET test_glm_moe_flash_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_code_selfcheck)
 add_test(NAME test_glm_moe_flash_code_selfcheck COMMAND test_glm_moe_flash_code_selfcheck)
 set_tests_properties(test_glm_moe_flash_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5506,16 +3874,7 @@ add_executable(test_deepseek_moe_code_selfcheck test_deepseek_moe_code_selfcheck
 target_compile_definitions(test_deepseek_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_deepseek_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_code_selfcheck>")
-    add_custom_command(TARGET test_deepseek_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_code_selfcheck)
 add_test(NAME test_deepseek_moe_code_selfcheck COMMAND test_deepseek_moe_code_selfcheck)
 set_tests_properties(test_deepseek_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5523,16 +3882,7 @@ add_executable(test_deepseek_moe_v41_code_selfcheck test_deepseek_moe_v41_code_s
 target_compile_definitions(test_deepseek_moe_v41_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_deepseek_moe_v41_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_code_selfcheck>")
-    add_custom_command(TARGET test_deepseek_moe_v41_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_code_selfcheck)
 add_test(NAME test_deepseek_moe_v41_code_selfcheck COMMAND test_deepseek_moe_v41_code_selfcheck)
 set_tests_properties(test_deepseek_moe_v41_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5540,16 +3890,7 @@ add_executable(test_qwen_dense_code_selfcheck test_qwen_dense_code_selfcheck.cpp
 target_compile_definitions(test_qwen_dense_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_code_selfcheck>")
-    add_custom_command(TARGET test_qwen_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_code_selfcheck)
 add_test(NAME test_qwen_dense_code_selfcheck COMMAND test_qwen_dense_code_selfcheck)
 set_tests_properties(test_qwen_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5557,16 +3898,7 @@ add_executable(test_qwen_dense_27b_code_selfcheck test_qwen_dense_27b_code_selfc
 target_compile_definitions(test_qwen_dense_27b_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_dense_27b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_27b_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_code_selfcheck>")
-    add_custom_command(TARGET test_qwen_dense_27b_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_27b_code_selfcheck)
 add_test(NAME test_qwen_dense_27b_code_selfcheck COMMAND test_qwen_dense_27b_code_selfcheck)
 set_tests_properties(test_qwen_dense_27b_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5574,16 +3906,7 @@ add_executable(test_qwen_moe_code_selfcheck test_qwen_moe_code_selfcheck.cpp)
 target_compile_definitions(test_qwen_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_code_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_code_selfcheck)
 add_test(NAME test_qwen_moe_code_selfcheck COMMAND test_qwen_moe_code_selfcheck)
 set_tests_properties(test_qwen_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5591,16 +3914,7 @@ add_executable(test_qwen_moe_36_code_selfcheck test_qwen_moe_36_code_selfcheck.c
 target_compile_definitions(test_qwen_moe_36_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_36_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_36_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_code_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_36_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_36_code_selfcheck)
 add_test(NAME test_qwen_moe_36_code_selfcheck COMMAND test_qwen_moe_36_code_selfcheck)
 set_tests_properties(test_qwen_moe_36_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5608,16 +3922,7 @@ add_executable(test_ornith_moe_code_selfcheck test_ornith_moe_code_selfcheck.cpp
 target_compile_definitions(test_ornith_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_ornith_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_code_selfcheck>")
-    add_custom_command(TARGET test_ornith_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_code_selfcheck)
 add_test(NAME test_ornith_moe_code_selfcheck COMMAND test_ornith_moe_code_selfcheck)
 set_tests_properties(test_ornith_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5625,16 +3930,7 @@ add_executable(test_qwen_moe_exp_code_selfcheck test_qwen_moe_exp_code_selfcheck
 target_compile_definitions(test_qwen_moe_exp_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_exp_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_code_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_exp_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_code_selfcheck)
 add_test(NAME test_qwen_moe_exp_code_selfcheck COMMAND test_qwen_moe_exp_code_selfcheck)
 set_tests_properties(test_qwen_moe_exp_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5642,16 +3938,7 @@ add_executable(test_gemma_moe_code_selfcheck test_gemma_moe_code_selfcheck.cpp)
 target_compile_definitions(test_gemma_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_gemma_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gemma_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_code_selfcheck>")
-    add_custom_command(TARGET test_gemma_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_gemma_moe_code_selfcheck)
 add_test(NAME test_gemma_moe_code_selfcheck COMMAND test_gemma_moe_code_selfcheck)
 set_tests_properties(test_gemma_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5659,16 +3946,7 @@ add_executable(test_kimi_moe_code_selfcheck test_kimi_moe_code_selfcheck.cpp)
 target_compile_definitions(test_kimi_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_kimi_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_code_selfcheck>")
-    add_custom_command(TARGET test_kimi_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_code_selfcheck)
 add_test(NAME test_kimi_moe_code_selfcheck COMMAND test_kimi_moe_code_selfcheck)
 set_tests_properties(test_kimi_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5676,16 +3954,7 @@ add_executable(test_nemotron_moe_code_selfcheck test_nemotron_moe_code_selfcheck
 target_compile_definitions(test_nemotron_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_nemotron_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_nemotron_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_code_selfcheck>")
-    add_custom_command(TARGET test_nemotron_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_nemotron_moe_code_selfcheck)
 add_test(NAME test_nemotron_moe_code_selfcheck COMMAND test_nemotron_moe_code_selfcheck)
 set_tests_properties(test_nemotron_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5693,16 +3962,7 @@ add_executable(test_gigachat_moe_code_selfcheck test_gigachat_moe_code_selfcheck
 target_compile_definitions(test_gigachat_moe_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_gigachat_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_code_selfcheck>")
-    add_custom_command(TARGET test_gigachat_moe_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_code_selfcheck)
 add_test(NAME test_gigachat_moe_code_selfcheck COMMAND test_gigachat_moe_code_selfcheck)
 set_tests_properties(test_gigachat_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5710,16 +3970,7 @@ add_executable(test_granite_dense_code_selfcheck test_granite_dense_code_selfche
 target_compile_definitions(test_granite_dense_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_granite_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_code_selfcheck>")
-    add_custom_command(TARGET test_granite_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_code_selfcheck)
 add_test(NAME test_granite_dense_code_selfcheck COMMAND test_granite_dense_code_selfcheck)
 set_tests_properties(test_granite_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5727,16 +3978,7 @@ add_executable(test_granite_switch_code_selfcheck test_granite_switch_code_selfc
 target_compile_definitions(test_granite_switch_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_granite_switch_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_code_selfcheck>")
-    add_custom_command(TARGET test_granite_switch_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_code_selfcheck)
 add_test(NAME test_granite_switch_code_selfcheck COMMAND test_granite_switch_code_selfcheck)
 set_tests_properties(test_granite_switch_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5744,16 +3986,7 @@ add_executable(test_phi_dense_code_selfcheck test_phi_dense_code_selfcheck.cpp)
 target_compile_definitions(test_phi_dense_code_selfcheck PRIVATE
     LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
 target_link_libraries(test_phi_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_code_selfcheck>")
-    add_custom_command(TARGET test_phi_dense_code_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_code_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_code_selfcheck)
 add_test(NAME test_phi_dense_code_selfcheck COMMAND test_phi_dense_code_selfcheck)
 set_tests_properties(test_phi_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -5763,240 +3996,105 @@ add_executable(test_glm_moe_det_selfcheck test_glm_moe_det_selfcheck.cpp)
 target_compile_definitions(test_glm_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_glm_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_det_selfcheck>")
-    add_custom_command(TARGET test_glm_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_det_selfcheck)
 add_test(NAME test_glm_moe_det_selfcheck COMMAND test_glm_moe_det_selfcheck)
 set_tests_properties(test_glm_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_glm_moe_flash_det_selfcheck test_glm_moe_flash_det_selfcheck.cpp)
 target_compile_definitions(test_glm_moe_flash_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_glm_moe_flash_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_det_selfcheck>")
-    add_custom_command(TARGET test_glm_moe_flash_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_det_selfcheck)
 add_test(NAME test_glm_moe_flash_det_selfcheck COMMAND test_glm_moe_flash_det_selfcheck)
 set_tests_properties(test_glm_moe_flash_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_deepseek_moe_det_selfcheck test_deepseek_moe_det_selfcheck.cpp)
 target_compile_definitions(test_deepseek_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_deepseek_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_det_selfcheck>")
-    add_custom_command(TARGET test_deepseek_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_det_selfcheck)
 add_test(NAME test_deepseek_moe_det_selfcheck COMMAND test_deepseek_moe_det_selfcheck)
 set_tests_properties(test_deepseek_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_deepseek_moe_v41_det_selfcheck test_deepseek_moe_v41_det_selfcheck.cpp)
 target_compile_definitions(test_deepseek_moe_v41_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_deepseek_moe_v41_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_deepseek_moe_v41_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_det_selfcheck>")
-    add_custom_command(TARGET test_deepseek_moe_v41_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_deepseek_moe_v41_det_selfcheck)
 add_test(NAME test_deepseek_moe_v41_det_selfcheck COMMAND test_deepseek_moe_v41_det_selfcheck)
 set_tests_properties(test_deepseek_moe_v41_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_qwen_dense_det_selfcheck test_qwen_dense_det_selfcheck.cpp)
 target_compile_definitions(test_qwen_dense_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_det_selfcheck>")
-    add_custom_command(TARGET test_qwen_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_det_selfcheck)
 add_test(NAME test_qwen_dense_det_selfcheck COMMAND test_qwen_dense_det_selfcheck)
 set_tests_properties(test_qwen_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_qwen_dense_27b_det_selfcheck test_qwen_dense_27b_det_selfcheck.cpp)
 target_compile_definitions(test_qwen_dense_27b_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_dense_27b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_dense_27b_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_det_selfcheck>")
-    add_custom_command(TARGET test_qwen_dense_27b_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_dense_27b_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_dense_27b_det_selfcheck)
 add_test(NAME test_qwen_dense_27b_det_selfcheck COMMAND test_qwen_dense_27b_det_selfcheck)
 set_tests_properties(test_qwen_dense_27b_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_qwen_moe_det_selfcheck test_qwen_moe_det_selfcheck.cpp)
 target_compile_definitions(test_qwen_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_det_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_det_selfcheck)
 add_test(NAME test_qwen_moe_det_selfcheck COMMAND test_qwen_moe_det_selfcheck)
 set_tests_properties(test_qwen_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_qwen_moe_36_det_selfcheck test_qwen_moe_36_det_selfcheck.cpp)
 target_compile_definitions(test_qwen_moe_36_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_36_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_36_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_det_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_36_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_36_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_36_det_selfcheck)
 add_test(NAME test_qwen_moe_36_det_selfcheck COMMAND test_qwen_moe_36_det_selfcheck)
 set_tests_properties(test_qwen_moe_36_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_ornith_moe_det_selfcheck test_ornith_moe_det_selfcheck.cpp)
 target_compile_definitions(test_ornith_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_ornith_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_ornith_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_det_selfcheck>")
-    add_custom_command(TARGET test_ornith_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_ornith_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_ornith_moe_det_selfcheck)
 add_test(NAME test_ornith_moe_det_selfcheck COMMAND test_ornith_moe_det_selfcheck)
 set_tests_properties(test_ornith_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_qwen_moe_exp_det_selfcheck test_qwen_moe_exp_det_selfcheck.cpp)
 target_compile_definitions(test_qwen_moe_exp_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_qwen_moe_exp_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_det_selfcheck>")
-    add_custom_command(TARGET test_qwen_moe_exp_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_det_selfcheck)
 add_test(NAME test_qwen_moe_exp_det_selfcheck COMMAND test_qwen_moe_exp_det_selfcheck)
 set_tests_properties(test_qwen_moe_exp_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_gemma_moe_det_selfcheck test_gemma_moe_det_selfcheck.cpp)
 target_compile_definitions(test_gemma_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_gemma_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gemma_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_det_selfcheck>")
-    add_custom_command(TARGET test_gemma_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gemma_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_gemma_moe_det_selfcheck)
 add_test(NAME test_gemma_moe_det_selfcheck COMMAND test_gemma_moe_det_selfcheck)
 set_tests_properties(test_gemma_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_kimi_moe_det_selfcheck test_kimi_moe_det_selfcheck.cpp)
 target_compile_definitions(test_kimi_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_kimi_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_det_selfcheck>")
-    add_custom_command(TARGET test_kimi_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_kimi_moe_det_selfcheck)
 add_test(NAME test_kimi_moe_det_selfcheck COMMAND test_kimi_moe_det_selfcheck)
 set_tests_properties(test_kimi_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_nemotron_moe_det_selfcheck test_nemotron_moe_det_selfcheck.cpp)
 target_compile_definitions(test_nemotron_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_nemotron_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_nemotron_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_det_selfcheck>")
-    add_custom_command(TARGET test_nemotron_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_nemotron_moe_det_selfcheck)
 add_test(NAME test_nemotron_moe_det_selfcheck COMMAND test_nemotron_moe_det_selfcheck)
 set_tests_properties(test_nemotron_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_gigachat_moe_det_selfcheck test_gigachat_moe_det_selfcheck.cpp)
 target_compile_definitions(test_gigachat_moe_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_gigachat_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_det_selfcheck>")
-    add_custom_command(TARGET test_gigachat_moe_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_det_selfcheck)
 add_test(NAME test_gigachat_moe_det_selfcheck COMMAND test_gigachat_moe_det_selfcheck)
 set_tests_properties(test_gigachat_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_granite_dense_det_selfcheck test_granite_dense_det_selfcheck.cpp)
 target_compile_definitions(test_granite_dense_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_granite_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_det_selfcheck>")
-    add_custom_command(TARGET test_granite_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_dense_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_granite_dense_det_selfcheck)
 add_test(NAME test_granite_dense_det_selfcheck COMMAND test_granite_dense_det_selfcheck)
 set_tests_properties(test_granite_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -6004,16 +4102,7 @@ add_executable(test_granite_switch_det_selfcheck test_granite_switch_det_selfche
 target_compile_definitions(test_granite_switch_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_granite_switch_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_granite_switch_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_det_selfcheck>")
-    add_custom_command(TARGET test_granite_switch_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_granite_switch_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_granite_switch_det_selfcheck)
 add_test(NAME test_granite_switch_det_selfcheck COMMAND test_granite_switch_det_selfcheck)
 set_tests_properties(test_granite_switch_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -6021,16 +4110,7 @@ add_executable(test_phi_dense_det_selfcheck test_phi_dense_det_selfcheck.cpp)
 target_compile_definitions(test_phi_dense_det_selfcheck PRIVATE
     LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
 target_link_libraries(test_phi_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_phi_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_det_selfcheck>")
-    add_custom_command(TARGET test_phi_dense_det_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_phi_dense_det_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_phi_dense_det_selfcheck)
 add_test(NAME test_phi_dense_det_selfcheck COMMAND test_phi_dense_det_selfcheck)
 set_tests_properties(test_phi_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -6042,13 +4122,7 @@ target_compile_definitions(test_qwen_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_link_libraries(test_qwen_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_selfcheck ARROW_ONLY)
 add_test(NAME test_qwen_moe_selfcheck COMMAND test_qwen_moe_selfcheck)
 set_tests_properties(test_qwen_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -6056,13 +4130,7 @@ set_tests_properties(test_qwen_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_nvfp4_pack test_nvfp4_pack.cpp)
 target_link_libraries(test_nvfp4_pack PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_nvfp4_pack POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nvfp4_pack>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_nvfp4_pack ARROW_ONLY)
 
 add_test(NAME test_nvfp4_pack COMMAND test_nvfp4_pack)
 set_tests_properties(test_nvfp4_pack PROPERTIES SKIP_RETURN_CODE 4)
@@ -6088,14 +4156,7 @@ add_executable(test_mimo_moe_convert test_mimo_moe_convert.cpp)
 target_compile_definitions(test_mimo_moe_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_mimo_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_mimo_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_convert>")
-    add_custom_command(TARGET test_mimo_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_convert>")
-endif()
+lsx_copy_arrow_dlls(test_mimo_moe_convert)
 add_test(NAME test_mimo_moe_convert COMMAND test_mimo_moe_convert)
 set_tests_properties(test_mimo_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_mimo_moe_convert PROPERTIES
@@ -6109,14 +4170,7 @@ target_include_directories(test_mimo_moe_loader PRIVATE
 target_compile_definitions(test_mimo_moe_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_mimo_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_mimo_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_loader>")
-    add_custom_command(TARGET test_mimo_moe_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_loader>")
-endif()
+lsx_copy_arrow_dlls(test_mimo_moe_loader)
 add_test(NAME test_mimo_moe_loader COMMAND test_mimo_moe_loader)
 set_tests_properties(test_mimo_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -6125,11 +4179,7 @@ set_tests_properties(test_mimo_moe_loader PROPERTIES LABELS inference)
 # MiMo routed-expert host store + device slot LRU (host logic + device staging).
 add_executable(test_mimo_moe_expert_cache test_mimo_moe_expert_cache.cpp)
 target_link_libraries(test_mimo_moe_expert_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_mimo_moe_expert_cache POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_expert_cache>")
-endif()
+lsx_copy_arrow_dlls(test_mimo_moe_expert_cache ARROW_ONLY)
 add_test(NAME test_mimo_moe_expert_cache COMMAND test_mimo_moe_expert_cache)
 set_tests_properties(test_mimo_moe_expert_cache PROPERTIES LABELS inference)
 
@@ -6140,7 +4190,7 @@ add_library(test_mimo_cu OBJECT
 )
 set_target_properties(test_mimo_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_mimo_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
@@ -6152,28 +4202,14 @@ target_link_libraries(test_mimo_cu PRIVATE Catch2::Catch2WithMain)
 add_executable(test_mimo_moe_kernels)
 set_target_properties(test_mimo_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_mimo_moe_kernels PRIVATE test_mimo_cu lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_mimo_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_kernels>")
-    add_custom_command(TARGET test_mimo_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_kernels>")
-endif()
+lsx_copy_arrow_dlls(test_mimo_moe_kernels)
 add_test(NAME test_mimo_moe_kernels COMMAND test_mimo_moe_kernels)
 set_tests_properties(test_mimo_moe_kernels PROPERTIES LABELS inference)
 
 # MiMo FP8/MXFP4 dequant parity (host scalar reference).
 add_executable(test_mimo_moe_dequant test_mimo_moe_dequant.cpp)
 target_link_libraries(test_mimo_moe_dequant PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_mimo_moe_dequant POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_dequant>")
-    add_custom_command(TARGET test_mimo_moe_dequant POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_dequant>")
-endif()
+lsx_copy_arrow_dlls(test_mimo_moe_dequant)
 add_test(NAME test_mimo_moe_dequant COMMAND test_mimo_moe_dequant)
 set_tests_properties(test_mimo_moe_dequant PROPERTIES LABELS inference)
 
@@ -6182,14 +4218,7 @@ add_executable(test_mimo_moe_model test_mimo_moe_model.cpp)
 target_compile_definitions(test_mimo_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_mimo_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_mimo_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_model>")
-    add_custom_command(TARGET test_mimo_moe_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_model>")
-endif()
+lsx_copy_arrow_dlls(test_mimo_moe_model)
 add_test(NAME test_mimo_moe_model COMMAND test_mimo_moe_model)
 set_tests_properties(test_mimo_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -6198,14 +4227,7 @@ set_tests_properties(test_mimo_moe_model PROPERTIES LABELS inference)
 # MiMo SelfCheck (real weights; SKIP when absent).
 add_executable(test_mimo_moe_selfcheck test_mimo_moe_selfcheck.cpp)
 target_link_libraries(test_mimo_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_mimo_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_selfcheck>")
-    add_custom_command(TARGET test_mimo_moe_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_selfcheck>")
-endif()
+lsx_copy_arrow_dlls(test_mimo_moe_selfcheck)
 add_test(NAME test_mimo_moe_selfcheck COMMAND test_mimo_moe_selfcheck)
 set_tests_properties(test_mimo_moe_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_mimo_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
@@ -6230,44 +4252,28 @@ set_tests_properties(test_mimo_moe_det_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_mimo_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
-add_executable(test_code_naming_guard test_code_naming_guard.cpp)
-target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD)
-target_compile_definitions(test_code_naming_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD}\"")
-add_test(NAME test_code_naming_guard COMMAND test_code_naming_guard)
+lsx_add_test(NAME test_code_naming_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Guard: absl::StrFormat & friends are printf-style; fmt-style "{}" in their
 # format strings prints literally (checker inert on GCC). Host-only static scan.
-add_executable(test_absl_format_guard test_absl_format_guard.cpp)
-target_link_libraries(test_absl_format_guard PRIVATE Catch2::Catch2WithMain
-    absl::str_format)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_FMT)
-target_compile_definitions(test_absl_format_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_FMT}\"")
-add_test(NAME test_absl_format_guard COMMAND test_absl_format_guard)
+lsx_add_test(NAME test_absl_format_guard
+    LINK absl::str_format
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Guard: abseil containers do not compile under NVCC, so no .cu/.cuh may
 # transitively include <absl/container/...> (raw_hash_map C2794/C2938).
 # Host-only transitive-closure scan; the machine check for absl-in-cuda-cpp §2.
-add_executable(test_absl_container_guard test_absl_container_guard.cpp)
-target_link_libraries(test_absl_container_guard PRIVATE Catch2::Catch2WithMain
-    absl::flat_hash_map)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_ABSC)
-target_compile_definitions(test_absl_container_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_ABSC}\"")
-add_test(NAME test_absl_container_guard COMMAND test_absl_container_guard)
+lsx_add_test(NAME test_absl_container_guard
+    LINK absl::flat_hash_map
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Guard: host logging goes through spdlog / lsxcommon::log only; no std::cout
 # and no stdio logging (printf/fprintf/...) in production code. Host-only
 # static scan of libs/ and apps/ with a two-way allowlist (device printf,
 # env-gated perf probes, logger teardown).
-add_executable(test_logging_guard test_logging_guard.cpp)
-target_link_libraries(test_logging_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_LOG)
-target_compile_definitions(test_logging_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LOG}\"")
-add_test(NAME test_logging_guard COMMAND test_logging_guard)
+lsx_add_test(NAME test_logging_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Guard: the E1 FastMathScope depth must be process-global across TUs. The
 # header used to keep it in an anonymous-namespace static (one copy per TU),
@@ -6299,22 +4305,14 @@ add_test(NAME test_granite_tool_framing COMMAND test_granite_tool_framing)
 # container; every entry view must alias the neutral ExpertStore; the legacy
 # all-experts-in-pinned-slabs store (MoEExpertStore) must not spread. Host-only
 # static scan; the machine check for ingesting-a-model R1/R2.
-add_executable(test_expert_store_guard test_expert_store_guard.cpp)
-target_link_libraries(test_expert_store_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_ESG)
-target_compile_definitions(test_expert_store_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_ESG}\"")
-add_test(NAME test_expert_store_guard COMMAND test_expert_store_guard)
+lsx_add_test(NAME test_expert_store_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Guard: license compliance — no GPL/LGPL/AGPL/copyleft headers or SPDX license
 # tags in first-party source (would block the commercial Enterprise license).
 # Host-only static scan of libs/, apps/, tests/ and tools/.
-add_executable(test_license_guard test_license_guard.cpp)
-target_link_libraries(test_license_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_LIC)
-target_compile_definitions(test_license_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LIC}\"")
-add_test(NAME test_license_guard COMMAND test_license_guard)
+lsx_add_test(NAME test_license_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Kimi MoE expert cache bookkeeping (host-only, pure logic, no CUDA).
 add_executable(test_kimi_moe_expert_cache test_kimi_moe_expert_cache.cpp)
@@ -6345,13 +4343,7 @@ target_link_libraries(test_gigachat_moe_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_convert ARROW_ONLY)
 add_test(NAME test_gigachat_moe_convert COMMAND test_gigachat_moe_convert)
 set_tests_properties(test_gigachat_moe_convert PROPERTIES
     TIMEOUT 120
@@ -6415,12 +4407,7 @@ target_link_libraries(test_gigachat_moe_load_fast PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_load_fast PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_load_fast POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_load_fast>")
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_load_fast ARROW_ONLY)
 add_test(NAME test_gigachat_moe_load_fast COMMAND test_gigachat_moe_load_fast)
 set_tests_properties(test_gigachat_moe_load_fast PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
@@ -6442,11 +4429,6 @@ target_include_directories(test_gigachat_moe_devkernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
     "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
@@ -6462,7 +4444,7 @@ target_compile_definitions(test_gigachat_moe_devkernels_cu PRIVATE
     ZMQ_STATIC
     SIMDJSON_THREADS_ENABLED=1
 )
-target_link_libraries(test_gigachat_moe_devkernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_gigachat_moe_devkernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_compile_definitions(test_gigachat_moe_devkernels_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
@@ -6471,12 +4453,7 @@ set_target_properties(test_gigachat_moe_devkernels PROPERTIES LINKER_LANGUAGE CX
 target_link_libraries(test_gigachat_moe_devkernels PRIVATE
     test_gigachat_moe_devkernels_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_devkernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_devkernels>")
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_devkernels ARROW_ONLY)
 
 add_test(NAME test_gigachat_moe_devkernels
          COMMAND test_gigachat_moe_devkernels)
@@ -6503,11 +4480,6 @@ target_include_directories(test_gigachat_moe_attn_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
     "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
@@ -6523,18 +4495,13 @@ target_compile_definitions(test_gigachat_moe_attn_cu PRIVATE
     ZMQ_STATIC
     SIMDJSON_THREADS_ENABLED=1
 )
-target_link_libraries(test_gigachat_moe_attn_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_gigachat_moe_attn_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_gigachat_moe_attn)
 set_target_properties(test_gigachat_moe_attn PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_gigachat_moe_attn PRIVATE
     test_gigachat_moe_attn_cu lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_attn POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_attn>")
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_attn ARROW_ONLY)
 add_test(NAME test_gigachat_moe_attn COMMAND test_gigachat_moe_attn)
 set_tests_properties(test_gigachat_moe_attn PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -6555,11 +4522,6 @@ target_include_directories(test_gigachat_moe_parity_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
     "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
@@ -6575,18 +4537,13 @@ target_compile_definitions(test_gigachat_moe_parity_cu PRIVATE
     ZMQ_STATIC
     SIMDJSON_THREADS_ENABLED=1
 )
-target_link_libraries(test_gigachat_moe_parity_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_gigachat_moe_parity_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
 add_executable(test_gigachat_moe_parity)
 set_target_properties(test_gigachat_moe_parity PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_gigachat_moe_parity PRIVATE
     test_gigachat_moe_parity_cu lsxcommon Catch2::Catch2WithMain)
-if(WIN32)
-    add_custom_command(TARGET test_gigachat_moe_parity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_gigachat_moe_parity>")
-endif()
+lsx_copy_arrow_dlls(test_gigachat_moe_parity ARROW_ONLY)
 add_test(NAME test_gigachat_moe_parity COMMAND test_gigachat_moe_parity)
 set_tests_properties(test_gigachat_moe_parity PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -6599,18 +4556,7 @@ target_link_libraries(test_nemotron_moe_convert PRIVATE
 target_include_directories(test_nemotron_moe_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
-if(WIN32)
-    add_custom_command(TARGET test_nemotron_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_convert>"
-    )
-    add_custom_command(TARGET test_nemotron_moe_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_nemotron_moe_convert)
 
 add_test(NAME test_nemotron_moe_convert COMMAND test_nemotron_moe_convert)
 set_tests_properties(test_nemotron_moe_convert PROPERTIES
@@ -6626,18 +4572,7 @@ target_link_libraries(test_nemotron_moe_nvfp4_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_nvfp4_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_nemotron_moe_nvfp4_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_convert>"
-    )
-    add_custom_command(TARGET test_nemotron_moe_nvfp4_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_nemotron_moe_nvfp4_convert)
 add_test(NAME test_nemotron_moe_nvfp4_convert
          COMMAND test_nemotron_moe_nvfp4_convert)
 set_tests_properties(test_nemotron_moe_nvfp4_convert PROPERTIES
@@ -6668,18 +4603,7 @@ target_link_libraries(test_nemotron_moe_nvfp4_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_nvfp4_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_nemotron_moe_nvfp4_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_model>"
-    )
-    add_custom_command(TARGET test_nemotron_moe_nvfp4_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_nemotron_moe_nvfp4_model)
 add_test(NAME test_nemotron_moe_nvfp4_model
          COMMAND test_nemotron_moe_nvfp4_model)
 set_tests_properties(test_nemotron_moe_nvfp4_model PROPERTIES
@@ -6795,11 +4719,6 @@ target_include_directories(test_nemotron_moe_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
     "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
@@ -6815,7 +4734,7 @@ target_compile_definitions(test_nemotron_moe_kernels_cu PRIVATE
     ZMQ_STATIC
     SIMDJSON_THREADS_ENABLED=1
 )
-target_link_libraries(test_nemotron_moe_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_nemotron_moe_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_compile_definitions(test_nemotron_moe_kernels_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
@@ -6824,18 +4743,7 @@ set_target_properties(test_nemotron_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_nemotron_moe_kernels PRIVATE
     test_nemotron_moe_kernels_cu lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_nemotron_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_kernels>"
-    )
-    add_custom_command(TARGET test_nemotron_moe_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_nemotron_moe_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_nemotron_moe_kernels)
 
 add_test(NAME test_nemotron_moe_kernels COMMAND test_nemotron_moe_kernels)
 
@@ -6857,18 +4765,7 @@ target_link_libraries(test_qwen_moe_exp_convert PRIVATE
 target_include_directories(test_qwen_moe_exp_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_convert>"
-    )
-    add_custom_command(TARGET test_qwen_moe_exp_convert POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_convert>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_convert)
 
 add_test(NAME test_qwen_moe_exp_convert COMMAND test_qwen_moe_exp_convert)
 # Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
@@ -6883,18 +4780,7 @@ target_link_libraries(test_qwen_moe_exp_loader PRIVATE
 target_include_directories(test_qwen_moe_exp_loader PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_loader>"
-    )
-    add_custom_command(TARGET test_qwen_moe_exp_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_loader)
 
 add_test(NAME test_qwen_moe_exp_loader COMMAND test_qwen_moe_exp_loader)
 set_tests_properties(test_qwen_moe_exp_loader PROPERTIES
@@ -6904,7 +4790,7 @@ set_tests_properties(test_qwen_moe_exp_loader PROPERTIES
 # indexer, PLE inject) against host-replica oracles.
 add_library(test_qwen_moe_exp_kernels_cu OBJECT test_qwen_moe_exp_kernels.cu)
 set_target_properties(test_qwen_moe_exp_kernels_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -6915,14 +4801,9 @@ target_compile_options(test_qwen_moe_exp_kernels_cu PRIVATE
 target_include_directories(test_qwen_moe_exp_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
-target_link_libraries(test_qwen_moe_exp_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_qwen_moe_exp_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_compile_definitions(test_qwen_moe_exp_kernels_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
@@ -6932,20 +4813,14 @@ target_link_libraries(test_qwen_moe_exp_kernels PRIVATE
     test_qwen_moe_exp_kernels_cu lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_kernels PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_kernels ARROW_ONLY)
 add_test(NAME test_qwen_moe_exp_kernels COMMAND test_qwen_moe_exp_kernels)
 
 # test_glm_moe_flash_kernels — GLM-5.3-Flash kernel tests (conv1d, KDA
 # per-channel-decay gated delta, router) against host references.
 add_library(test_glm_moe_flash_kernels_cu OBJECT test_glm_moe_flash_kernels.cu)
 set_target_properties(test_glm_moe_flash_kernels_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -6956,14 +4831,9 @@ target_compile_options(test_glm_moe_flash_kernels_cu PRIVATE
 target_include_directories(test_glm_moe_flash_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
-target_link_libraries(test_glm_moe_flash_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_glm_moe_flash_kernels_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 target_compile_definitions(test_glm_moe_flash_kernels_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
@@ -6973,13 +4843,7 @@ target_link_libraries(test_glm_moe_flash_kernels PRIVATE
     test_glm_moe_flash_kernels_cu lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_kernels PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_kernels POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_kernels>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_kernels ARROW_ONLY)
 add_test(NAME test_glm_moe_flash_kernels COMMAND test_glm_moe_flash_kernels)
 
 add_executable(test_glm_moe_flash_loader test_glm_moe_flash_loader.cpp)
@@ -6989,13 +4853,7 @@ target_link_libraries(test_glm_moe_flash_loader PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_loader PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_loader POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_loader>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_loader ARROW_ONLY)
 add_test(NAME test_glm_moe_flash_loader COMMAND test_glm_moe_flash_loader)
 # Synthetic-converted fixture: the load-side frozen-geometry gate is open
 # only under this env (loader-test discipline: no vault loads).
@@ -7009,13 +4867,7 @@ target_link_libraries(test_glm_moe_flash_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_model ARROW_ONLY)
 add_test(NAME test_glm_moe_flash_model COMMAND test_glm_moe_flash_model)
 # Synthetic-converted fixture: load-side gates open only under this env.
 set_tests_properties(test_glm_moe_flash_model PROPERTIES
@@ -7026,13 +4878,7 @@ target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_selfcheck PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_glm_moe_flash_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_glm_moe_flash_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_glm_moe_flash_selfcheck ARROW_ONLY)
 add_test(NAME test_glm_moe_flash_selfcheck COMMAND test_glm_moe_flash_selfcheck)
 set_tests_properties(test_glm_moe_flash_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -7043,18 +4889,7 @@ target_link_libraries(test_qwen_moe_exp_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_model>"
-    )
-    add_custom_command(TARGET test_qwen_moe_exp_model POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_model>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_model)
 add_test(NAME test_qwen_moe_exp_model COMMAND test_qwen_moe_exp_model)
 set_tests_properties(test_qwen_moe_exp_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -7064,18 +4899,7 @@ target_link_libraries(test_qwen_moe_exp_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_selfcheck PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_selfcheck>"
-    )
-    add_custom_command(TARGET test_qwen_moe_exp_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_selfcheck)
 add_test(NAME test_qwen_moe_exp_selfcheck COMMAND test_qwen_moe_exp_selfcheck)
 set_tests_properties(test_qwen_moe_exp_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -7086,51 +4910,28 @@ target_link_libraries(test_qwen_moe_exp_eos_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_eos_selfcheck PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-if(WIN32)
-    add_custom_command(TARGET test_qwen_moe_exp_eos_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_eos_selfcheck>"
-    )
-    add_custom_command(TARGET test_qwen_moe_exp_eos_selfcheck POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_qwen_moe_exp_eos_selfcheck>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_qwen_moe_exp_eos_selfcheck)
 add_test(NAME test_qwen_moe_exp_eos_selfcheck COMMAND test_qwen_moe_exp_eos_selfcheck)
 set_tests_properties(test_qwen_moe_exp_eos_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_qwen_moe_exp_eos_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # Guard: model independence — unique frozen passports, no cross-model
 # geometry borrowing (host-only, no lsxcommon deps).
-add_executable(test_model_independence_guard test_model_independence_guard.cpp)
-target_link_libraries(test_model_independence_guard PRIVATE Catch2::Catch2WithMain
-    absl::btree)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD2)
-target_compile_definitions(test_model_independence_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD2}\"")
-add_test(NAME test_model_independence_guard COMMAND test_model_independence_guard)
+lsx_add_test(NAME test_model_independence_guard
+    LINK absl::btree
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Guard: ctest category-label discipline (fast | inference | perf).
 # Host-only static scan of tests/CMakeLists.txt (see spec 2026-09-10).
-add_executable(test_ctest_labels_guard test_ctest_labels_guard.cpp)
-target_link_libraries(test_ctest_labels_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_LABELS)
-target_compile_definitions(test_ctest_labels_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LABELS}\"")
-add_test(NAME test_ctest_labels_guard COMMAND test_ctest_labels_guard)
+lsx_add_test(NAME test_ctest_labels_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # Guard: model test-suite autonomy + full-lifecycle coverage. Host-only static
 # scan: per-model lifecycle registry (convert -> load -> model -> kernels ->
 # selfcheck), SKIP_RETURN_CODE 4 on selfcheck targets, and a cross-family
 # fixture-borrowing ban (test-side mirror of model independence).
-add_executable(test_model_suite_guard test_model_suite_guard.cpp)
-target_link_libraries(test_model_suite_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_SUITE)
-target_compile_definitions(test_model_suite_guard
-    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_SUITE}\"")
-add_test(NAME test_model_suite_guard COMMAND test_model_suite_guard)
+lsx_add_test(NAME test_model_suite_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # ── FSISelfCheck: host-only extraction/golden/harness unit tests (no GPU) ──
 add_executable(test_fsi_selfcheck test_fsi_selfcheck.cpp)
@@ -7587,19 +5388,16 @@ add_library(test_hy_cu OBJECT
 )
 set_target_properties(test_hy_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_hy_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_hy_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/simdjson-src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src")
+    )
 target_link_libraries(test_hy_cu PRIVATE Catch2::Catch2WithMain
+        lsx_dep_includes
     arrow_shared)
 
 add_executable(test_hy_moe_kernels)
@@ -7807,7 +5605,7 @@ set(test_beam_cu_src
 add_library(test_beam_cu OBJECT ${test_beam_cu_src})
 set_target_properties(test_beam_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_beam_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
@@ -7876,19 +5674,16 @@ add_library(test_flint_cu OBJECT
 )
 set_target_properties(test_flint_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_flint_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_flint_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_BINARY_DIR}/_deps/simdjson-src"
-    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src")
+    )
 target_link_libraries(test_flint_cu PRIVATE Catch2::Catch2WithMain
+        lsx_dep_includes
     arrow_shared)
 
 add_executable(test_flint_moe_kernels)
@@ -8264,17 +6059,16 @@ add_library(test_step_cu OBJECT
 )
 set_target_properties(test_step_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
 target_compile_options(test_step_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_step_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
 target_link_libraries(test_step_cu PRIVATE Catch2::Catch2WithMain
+        lsx_dep_includes
     arrow_shared)
 
 add_executable(test_step_moe_kernels)

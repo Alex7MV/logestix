@@ -3,18 +3,7 @@ target_link_libraries(lsxforge PRIVATE lsxcommon arrow_shared arrow_cuda_shared 
 
 lsx_copy_third_party_notices(lsxforge)
 
-if(WIN32)
-    add_custom_command(TARGET lsxforge POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:lsxforge>"
-    )
-    add_custom_command(TARGET lsxforge POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:lsxforge>"
-    )
-endif()
+lsx_copy_arrow_dlls(lsxforge)
 
 install(TARGETS lsxforge RUNTIME DESTINATION bin)
 

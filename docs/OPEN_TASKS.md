@@ -827,6 +827,28 @@ NVFP4 tree, 16.1 GB pinned + 547 GB mmap-streamed experts; RTX 5090, CUDA 13.4):
   leaves ~13 GB); the working set per token is 284 expert touches, so the
   streaming is the throughput ceiling.
 
+## M. Test-registration migration (CMake boilerplate, 2026-11-03)
+
+`cmake/LsxTestHelpers.cmake` now provides `lsx_add_test()` /
+`lsx_add_cuda_test()` / `lsx_copy_arrow_dlls()`; `LSX_CUDA_ARCH` is the single
+device-codegen arch and `lsx_dep_includes` is the only dependency-include
+propagator (no `${CMAKE_BINARY_DIR}/_deps/...` at a call site).
+
+Done in the first pass (verified by `ctest --show-only=json-v1` property
+equality: 493 tests, 0 name/property diffs, plus a full build and the `fast` +
+kernel-inference suites): 212 Windows Arrow-DLL blocks replaced by
+`lsx_copy_arrow_dlls`; 130 `_deps` call-site paths removed (37 include blocks
+now link `lsx_dep_includes`); the 14-test qwen CUDA loop and the 10 guard tests
+use the helpers.
+
+**Remaining, mechanical:** ~390 host registrations still spell out
+`add_executable` / `target_link_libraries` / `add_test` /
+`set_tests_properties`. Migrate them family by family in the same commit as
+their next change, keeping the JSON property diff at zero (the helper already
+covers LINK/INCLUDE/DEFINE/LABEL/TIMEOUT/SKIP/ENV and the DLL copy; add a
+property to the helper only when a target genuinely needs one, e.g.
+`RESOURCE_LOCK`).
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

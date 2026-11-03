@@ -157,7 +157,7 @@ add_library(lsxcommon STATIC
     src/vram_estimate.cpp
 )
 set_target_properties(lsxcommon PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -184,9 +184,6 @@ set(LSXCOMMON_CU_INCLUDES
     "${CMAKE_CURRENT_BINARY_DIR}/include"
     "${CUDA_INCLUDE_DIR}"
     "${LSX_CCCL_INCLUDE_DIR}"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/simdjson/singleheader"
 )
 set(LSXCOMMON_CU_DEFS
@@ -214,7 +211,7 @@ add_library(lsxcommon_cu OBJECT
     src/sampling.cu
 )
 set_target_properties(lsxcommon_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -227,9 +224,7 @@ target_include_directories(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 add_library(lsxcommon_glm_cu OBJECT
@@ -238,7 +233,7 @@ add_library(lsxcommon_glm_cu OBJECT
     src/glm_moe_flash_inference.cu
 )
 set_target_properties(lsxcommon_glm_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -251,9 +246,7 @@ target_include_directories(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_glm_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 # FMA policy: object-lib -fmad flags are historical (qwen_moe/glm/kimi off,
 # qwen dense on). Shared kernels in lsx_kernels_*.cuh use explicit *_rn
@@ -274,7 +267,7 @@ add_library(lsxcommon_qwen_cu OBJECT
     src/qwen_dense_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_qwen_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -287,16 +280,14 @@ target_include_directories(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 add_library(lsxcommon_moe_cu OBJECT
     src/lsx_moe_inference.cu
     src/qwen_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_moe_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -309,9 +300,7 @@ target_include_directories(lsxcommon_moe_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_moe_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_moe_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Xing4.0-29B-A4B kernels + inference (mHC four-stream residual, MLA,
@@ -322,7 +311,7 @@ add_library(lsxcommon_xing_cu OBJECT
     src/xing_moe_inference.cu
 )
 set_target_properties(lsxcommon_xing_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -334,9 +323,7 @@ target_include_directories(lsxcommon_xing_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_xing_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_xing_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # MiniMax-M3 kernels + generation pipeline (MSA indexer, SwiGLU-OAI, MoE).
@@ -348,7 +335,7 @@ add_library(lsxcommon_minimax_cu OBJECT
     src/minimax_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_minimax_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -360,9 +347,7 @@ target_include_directories(lsxcommon_minimax_cu PRIVATE ${LSXCOMMON_CU_INCLUDES}
 target_compile_definitions(lsxcommon_minimax_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_minimax_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Hy-Memory-30B-A3B kernels + generation pipeline (full RoPE, plain per-head
@@ -375,7 +360,7 @@ add_library(lsxcommon_hy_cu OBJECT
     src/hy_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_hy_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -387,9 +372,7 @@ target_include_directories(lsxcommon_hy_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_hy_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_hy_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Recursive Flint kernels + generation pipeline (learned sink column, hybrid
@@ -401,7 +384,7 @@ add_library(lsxcommon_flint_cu OBJECT
     src/flint_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_flint_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -413,9 +396,7 @@ target_include_directories(lsxcommon_flint_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_flint_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_flint_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Beam-1.0 kernels + generation pipeline (gated GQA, SWA/NoPE-SSMax hybrid,
@@ -425,7 +406,7 @@ add_library(lsxcommon_beam_cu OBJECT
     src/beam_moe_inference.cu
 )
 set_target_properties(lsxcommon_beam_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -437,9 +418,7 @@ target_include_directories(lsxcommon_beam_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_beam_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_beam_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Ling-3.1-flash (BailingMoeV3): FP8 dequant + KDA/MLA/router/MoE decode.
@@ -449,7 +428,7 @@ add_library(lsxcommon_ling_cu OBJECT
     src/ling_moe_inference.cu
 )
 set_target_properties(lsxcommon_ling_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -461,9 +440,7 @@ target_include_directories(lsxcommon_ling_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_ling_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_ling_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Step-5-Preview: FP8 expert dequant (converter), partial-RoPE/windowed GQA
@@ -477,7 +454,7 @@ add_library(lsxcommon_step_cu OBJECT
     src/step_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_step_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -489,9 +466,7 @@ target_include_directories(lsxcommon_step_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_step_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_step_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Mistral-Small-4-119B MLA + MoE decode kernels.
@@ -502,7 +477,7 @@ add_library(lsxcommon_mistral_cu OBJECT
     src/mistral_moe_large4_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_mistral_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -514,9 +489,7 @@ target_include_directories(lsxcommon_mistral_cu PRIVATE ${LSXCOMMON_CU_INCLUDES}
 target_compile_definitions(lsxcommon_mistral_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_mistral_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Tensor-core NVFP4 fast path (audit Phase 3, F-01): kind::mxf4nvf4 PTX
@@ -552,7 +525,7 @@ add_library(lsxcommon_kimi_cu OBJECT
     src/kimi_moe_expert_cache.cu
 )
 set_target_properties(lsxcommon_kimi_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -564,9 +537,7 @@ target_include_directories(lsxcommon_kimi_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_kimi_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_kimi_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 add_library(lsxcommon_gemma_cu OBJECT
@@ -574,7 +545,7 @@ add_library(lsxcommon_gemma_cu OBJECT
     src/gemma_dense_inference.cu
 )
 set_target_properties(lsxcommon_gemma_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -586,9 +557,7 @@ target_include_directories(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_gemma_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 # Ornith-1.5-35B-A3B MoE kernels (duplicated qwen_moe layer).
 # -fmad=false: bit-exact router/expert math (protocol invariant).
@@ -596,7 +565,7 @@ add_library(lsxcommon_ornith_cu OBJECT
     src/ornith_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_ornith_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -608,9 +577,7 @@ target_include_directories(lsxcommon_ornith_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_ornith_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_ornith_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Granite-4.2-30B dense runtime: family-local RoPE + causal GQA attention,
@@ -621,7 +588,7 @@ add_library(lsxcommon_granite_cu OBJECT
     src/granite_dense_switch_inference.cu
 )
 set_target_properties(lsxcommon_granite_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -634,9 +601,7 @@ target_include_directories(lsxcommon_granite_cu PRIVATE ${LSXCOMMON_CU_INCLUDES}
 target_compile_definitions(lsxcommon_granite_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_granite_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # phi-4 dense runtime: family-local RoPE + causal GQA attention,
@@ -646,7 +611,7 @@ add_library(lsxcommon_phi_cu OBJECT
     src/phi_dense_inference.cu
 )
 set_target_properties(lsxcommon_phi_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -659,9 +624,7 @@ target_include_directories(lsxcommon_phi_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_phi_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_phi_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # Kimi-K3 runtime: KDA + gated NoPE MLA + AttnRes + Stable LatentMoE.
@@ -671,7 +634,7 @@ add_library(lsxcommon_kimi_k3_cu OBJECT
     src/kimi_moe_k3_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_kimi_k3_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -684,9 +647,7 @@ target_include_directories(lsxcommon_kimi_k3_cu PRIVATE ${LSXCOMMON_CU_INCLUDES}
 target_compile_definitions(lsxcommon_kimi_k3_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_kimi_k3_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # AliceAI runtime: KDA + gated attention + AttnRes + sigmoid router MoE.
@@ -697,7 +658,7 @@ add_library(lsxcommon_alice_cu OBJECT
     src/alice_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_alice_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -710,9 +671,7 @@ target_include_directories(lsxcommon_alice_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_alice_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_alice_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # NVCC options a translation unit that includes the PUBLIC headers in
@@ -760,7 +719,7 @@ add_library(lsxcommon_nemotron_cu OBJECT
     src/nemotron_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_nemotron_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -772,7 +731,7 @@ target_include_directories(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_INCLUDES
 target_compile_definitions(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_nemotron_cu
     "${CUDA_CUDART_LIBRARY}"
-    absl::strings
+    lsx_dep_includes
 )
 
 # GigaChat3.5 (hybrid MLA+GatedDeltaNet+MoE) kernels. Plan 1 ships the FP8
@@ -785,7 +744,7 @@ add_library(lsxcommon_gigachat_cu OBJECT
     src/gigachat_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_gigachat_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -797,7 +756,7 @@ target_include_directories(lsxcommon_gigachat_cu PRIVATE ${LSXCOMMON_CU_INCLUDES
 target_compile_definitions(lsxcommon_gigachat_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_gigachat_cu
     "${CUDA_CUDART_LIBRARY}"
-    absl::strings
+    lsx_dep_includes
 )
 
 # MiMo-V2.6-Flash-RL: family-local FP8/MXFP4 -> BF16 dequant (converter). The
@@ -808,7 +767,7 @@ add_library(lsxcommon_mimo_cu OBJECT
     src/mimo_moe_inference_attn.cu
 )
 set_target_properties(lsxcommon_mimo_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -820,7 +779,7 @@ target_include_directories(lsxcommon_mimo_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_mimo_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_mimo_cu
     "${CUDA_CUDART_LIBRARY}"
-    absl::strings
+    lsx_dep_includes
 )
 
 # qwen4_exp (Qwen3.8-Flash-Next) bit-exact kernels: hc GatedResidual, QSA
@@ -829,7 +788,7 @@ add_library(lsxcommon_qwen_moe_exp_cu OBJECT
     src/qwen_moe_exp_inference.cu
 )
 set_target_properties(lsxcommon_qwen_moe_exp_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -845,8 +804,7 @@ target_include_directories(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_INCL
 target_compile_definitions(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_moe_exp_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # DeepSeek-V4.1-Flash load-time dense dequant (F8_E4M3 x UE8M0 32x32 -> FP16)
@@ -859,7 +817,7 @@ add_library(lsxcommon_deepseek_v41_cu OBJECT
     src/deepseek_moe_v41_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_deepseek_v41_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -871,8 +829,7 @@ target_include_directories(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_INCL
 target_compile_definitions(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_deepseek_v41_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 # DeepSeek-V4-Pro-0813 inference contour (MLA + HC + CSA/indexer + hash-router
@@ -888,7 +845,7 @@ add_library(lsxcommon_deepseek_pro_cu OBJECT
     src/deepseek_moe_pro_norm_kernels.cu
 )
 set_target_properties(lsxcommon_deepseek_pro_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
@@ -901,9 +858,7 @@ target_include_directories(lsxcommon_deepseek_pro_cu PRIVATE ${LSXCOMMON_CU_INCL
 target_compile_definitions(lsxcommon_deepseek_pro_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_deepseek_pro_cu
     "${CUDA_CUDART_LIBRARY}"
-    arrow_shared
-    arrow_cuda_shared
-    absl::strings
+    lsx_dep_includes
 )
 
 target_compile_definitions(lsxcommon PUBLIC
@@ -918,8 +873,6 @@ target_include_directories(lsxcommon
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
         "$<BUILD_INTERFACE:${CUDA_INCLUDE_DIR}>"
         "$<BUILD_INTERFACE:${LSX_CCCL_INCLUDE_DIR}>"
-        "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src>"
-        "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/_deps/arrow-build/src>"
 )
 
 configure_file(
@@ -929,6 +882,7 @@ configure_file(
 )
 
 target_link_libraries(lsxcommon PUBLIC
+    lsx_dep_includes
     spdlog::spdlog
     flatbuffers
     libzmq-static
@@ -938,9 +892,6 @@ target_link_libraries(lsxcommon PUBLIC
     absl::strings
 )
 target_link_libraries(lsxcommon PRIVATE
-    arrow_shared
-    arrow_cuda_shared
-    simdjson::simdjson
     ${CMAKE_DL_LIBS}
 )
 # lsx_orchestrator.h lives in the PUBLIC include tree and exposes

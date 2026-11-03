@@ -3,18 +3,7 @@ target_link_libraries(lsxbenchmark PRIVATE lsxcommon arrow_shared arrow_cuda_sha
 
 lsx_copy_third_party_notices(lsxbenchmark)
 
-if(WIN32)
-    add_custom_command(TARGET lsxbenchmark POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:lsxbenchmark>"
-    )
-    add_custom_command(TARGET lsxbenchmark POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:lsxbenchmark>"
-    )
-endif()
+lsx_copy_arrow_dlls(lsxbenchmark)
 
 install(TARGETS lsxbenchmark RUNTIME DESTINATION bin)
 

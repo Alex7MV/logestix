@@ -3,18 +3,7 @@ target_sources(test_lsxfabric PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test_validator
 target_include_directories(test_lsxfabric PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(test_lsxfabric PRIVATE lsxcommon simdjson::simdjson Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_lsxfabric POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_lsxfabric>"
-    )
-    add_custom_command(TARGET test_lsxfabric POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_lsxfabric>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_lsxfabric)
 
 add_test(NAME test_lsxfabric COMMAND test_lsxfabric)
 set_tests_properties(test_lsxfabric PROPERTIES LABELS fast)
@@ -24,18 +13,7 @@ target_sources(test_fabric_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test_fabric_c
 target_include_directories(test_fabric_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(test_fabric_cli PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_fabric_cli POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_fabric_cli>"
-    )
-    add_custom_command(TARGET test_fabric_cli POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_fabric_cli>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_fabric_cli)
 
 add_test(NAME test_fabric_cli COMMAND test_fabric_cli)
 set_tests_properties(test_fabric_cli PROPERTIES LABELS fast)
@@ -45,18 +23,7 @@ add_executable(test_fabric_server test_fabric_server.cpp ../src/fabric_server.cp
 target_include_directories(test_fabric_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(test_fabric_server PRIVATE lsxcommon lsxnetwork arrow_shared arrow_cuda_shared Catch2::Catch2WithMain)
 
-if(WIN32)
-    add_custom_command(TARGET test_fabric_server POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_fabric_server>"
-    )
-    add_custom_command(TARGET test_fabric_server POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_fabric_server>"
-    )
-endif()
+lsx_copy_arrow_dlls(test_fabric_server)
 
 add_test(NAME test_fabric_server COMMAND test_fabric_server)
 set_tests_properties(test_fabric_server PROPERTIES LABELS fast)

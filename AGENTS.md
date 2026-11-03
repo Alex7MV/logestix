@@ -835,15 +835,29 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
 ## CMake Key Points
 
 - `lsxcommon` — STATIC (`libs/lsxcommon/CMakeLists.txt`); PUBLIC links to spdlog,
-  flatbuffers, libzmq-static, cudart, lsxnetwork; PRIVATE — arrow_shared,
-  arrow_cuda_shared, simdjson. Arrow include paths are added PUBLIC directly to
-  `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`).
+  flatbuffers, libzmq-static, cudart, lsxnetwork and the dependency propagator
+  `lsx_dep_includes`; PRIVATE — `${CMAKE_DL_LIBS}`.
+- `lsx_dep_includes` (root `CMakeLists.txt`) is the ONLY place dependency
+  include paths live: it links `arrow_shared`, `arrow_cuda_shared`,
+  `spdlog::spdlog`, `simdjson::simdjson`, `absl::strings` and adds the toolkit /
+  CCCL dirs, plus Arrow's build-tree headers (`${FETCHCONTENT_BASE_DIR}/...`,
+  because Arrow's own target keeps them directory-scoped). Targets link it —
+  never `${CMAKE_BINARY_DIR}/_deps/...` (a dependency source swap must not
+  break the build). `LSX_CUDA_ARCH` (`120-real;121-real`) is the single source
+  of truth for device codegen.
 - CUDA `.cu` files are split into separate OBJECT libraries (`lsxcommon_cu`,
   `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), linked into `lsxcommon`
   PUBLIC — this isolates NVCC from MSVC flags. `cudart` is found via
   `find_package(CUDAToolkit)` (Linux and Windows), not hardcoded paths; cuBLAS is not
   linked and not used at all — the only GEMM path is device-independent `lsx_gemv`
   (see `numeric-conformance-audit.md`).
+- Test registration goes through `cmake/LsxTestHelpers.cmake`:
+  `lsx_add_test(NAME … SOURCES … LINK … INCLUDE … DEFINE … LABEL … TIMEOUT … SKIP … ENV …)`
+  and `lsx_add_cuda_test(NAME …)` (the .cu OBJECT-library + CXX-executable
+  shape, `FMAD_OFF`, arch from `LSX_CUDA_ARCH`); both add the Windows Arrow DLL
+  copy (`lsx_copy_arrow_dlls`, `ARROW_ONLY` for the arrow_shared-only case).
+  New tests use these helpers; the remaining legacy registrations are being
+  migrated mechanically, not by rewriting labels.
 - `lsxnetwork` — STATIC; simdjson, libzmq-static and Threads PUBLIC
   (a STATIC library re-exports link dependencies), spdlog PRIVATE.
 - Every app in `apps/*/` links `lsxcommon` PRIVATE; Catch2 v3.16.1
@@ -851,7 +865,7 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` **Win32 only**
   (`if(WIN32)` before `add_subdirectory`) — on Linux the binaries stay in
   `build/<preset>/apps/<app>/`; POST_BUILD copies `arrow.dll`/`arrow_cuda.dll`
-  (Win32).
+  (Win32) through `lsx_copy_arrow_dlls()`.
 - Flags (MSVC/NVCC), `lsx_tune`/LTO gating, dependency patches and CUDA architectures
   — skill `cuda-cmake-build-gotchas`.
 

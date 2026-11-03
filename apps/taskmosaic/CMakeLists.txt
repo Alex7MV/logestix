@@ -9,18 +9,7 @@ target_link_libraries(taskmosaic PRIVATE lsxcommon lsxnetwork simdjson::simdjson
 
 lsx_copy_third_party_notices(taskmosaic)
 
-if(WIN32)
-    add_custom_command(TARGET taskmosaic POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:taskmosaic>"
-    )
-    add_custom_command(TARGET taskmosaic POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:taskmosaic>"
-    )
-endif()
+lsx_copy_arrow_dlls(taskmosaic)
 
 install(TARGETS taskmosaic RUNTIME DESTINATION bin)
 

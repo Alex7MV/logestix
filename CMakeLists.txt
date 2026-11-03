@@ -8,6 +8,14 @@ project(logestix
 
 find_package(CUDAToolkit REQUIRED)
 
+# ── CUDA codegen ─────────────────────────────────────────────────────────────
+# Blackwell-only: CC 12.0 / 12.1. One source of truth for every target that
+# emits device code (library OBJECT libs, apps, tests, helpers); pre-Blackwell
+# arches are deliberately unsupported (AGENTS.md). Override the cache entry only
+# for a local experiment, never in a shipped preset.
+set(LSX_CUDA_ARCH "120-real;121-real" CACHE STRING
+    "CUDA architectures (Blackwell CC 12.0/12.1 only)")
+
 # ── Toolkit consistency guard (docs/open-tasks/2026-09-30-..., item G1) ──────────
 # Upgrading CUDA leaves an existing build/ pinned to the previous toolkit: the
 # cached `CUDAToolkit_*` entries stay valid, so a new CUDAToolkit_ROOT is not
@@ -496,6 +504,41 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
 option(LOGESTIX_BUILD_APPS "Build the logestix applications" ON)
 option(LOGESTIX_BUILD_TOOLS "Build the logestix offline tools" ON)
 option(LOGESTIX_BUILD_TESTS "Build the logestix test suite" ON)
+
+# ── Dependency usage requirements ─────────────────────────────────────────────
+# One interface target instead of `${CMAKE_BINARY_DIR}/_deps/...` in dozens of
+# test/library targets: a FetchContent directory rename, a different dependency
+# source, or a system package swap must not break the build. Consumers link
+# `lsx_dep_includes` and get Arrow (shared + CUDA), spdlog, simdjson, abseil and
+# the toolkit/CCCL include dirs from the real imported targets.
+add_library(lsx_dep_includes INTERFACE)
+# Arrow's build-tree headers are directory-scoped in its own CMakeLists, so the
+# imported target does not export them; take the paths from the FetchContent
+# variables instead of the literal `_deps/...` layout (empty when Arrow comes
+# from a system package, where the target exports its install include dir).
+set(_lsx_arrow_includes "")
+foreach(_lsx_arrow_candidate
+    "${FETCHCONTENT_BASE_DIR}/arrow-src/cpp/src"
+    "${FETCHCONTENT_BASE_DIR}/arrow-build/src")
+    if(EXISTS "${_lsx_arrow_candidate}")
+        list(APPEND _lsx_arrow_includes "${_lsx_arrow_candidate}")
+    endif()
+endforeach()
+unset(_lsx_arrow_candidate)
+target_include_directories(lsx_dep_includes INTERFACE
+    ${_lsx_arrow_includes}
+    ${CUDAToolkit_INCLUDE_DIRS}
+    "${LSX_CCCL_INCLUDE_DIR}")
+target_link_libraries(lsx_dep_includes INTERFACE
+    arrow_shared
+    arrow_cuda_shared
+    spdlog::spdlog
+    simdjson::simdjson
+    absl::strings)
+
+# ── Test registration helpers ─────────────────────────────────────────────────
+# lsx_add_test() / lsx_add_cuda_test() — see cmake/LsxTestHelpers.cmake.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LsxTestHelpers.cmake")
 
 # ── Subdirectories ────────────────────────────────────────────────────────────
 
