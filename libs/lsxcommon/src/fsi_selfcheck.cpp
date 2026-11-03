@@ -275,7 +275,7 @@ std::string CanonicalizeFsiAnswer(FsiKind kind, std::string_view anchor,
 } // namespace
 
 std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
-                              std::string_view raw, bool prefer_last = false)
+                              std::string_view raw, bool prefer_last)
 {
     std::string text = Unfence(raw);
     // Reasoning models emit a chain-of-thought that can contain competing

@@ -55,8 +55,10 @@ struct FsiResult {
     std::string error;
 };
 
+// `prefer_last` keeps the LAST matching answer segment: a reasoning model's
+// chain of thought can contain competing formulas before the final answer.
 std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
-                              std::string_view raw);
+                              std::string_view raw, bool prefer_last = false);
 
 bool ParseFsiGolden(std::string_view json, FsiGolden &out, std::string *error);
 bool LoadFsiGoldenFile(const std::string &path, FsiGolden &out,
