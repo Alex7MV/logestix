@@ -394,7 +394,8 @@ inline std::atomic<std::uint64_t>& InferenceAllocCount()
 struct DeepSeekInferArena {
     // device block
     uint8_t* d_base = nullptr;
-    __half* d_single = nullptr;      // [kHiddenDim]
+    __half* d_single = nullptr;      // [kHiddenDim] embedding row (FP16)
+    float*  d_single_f32 = nullptr;  // [kHiddenDim] hc_pre/head combine (FP32)
     __half* d_normed = nullptr;      // [kHiddenDim]
     __half* d_ffn_out = nullptr;     // [kHiddenDim]
     float*  d_hidden = nullptr;      // [kHcDim]

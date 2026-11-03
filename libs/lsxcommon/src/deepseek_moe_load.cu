@@ -977,6 +977,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
         return at;
     };
     const int64_t o_single       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
+    const int64_t o_single_f32   = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
     const int64_t o_normed       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
     const int64_t o_ffn_out      = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
     const int64_t o_hidden       = page(static_cast<int64_t>(kHcDim) * sizeof(float), 16);
@@ -1067,6 +1068,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
 
     // Bind device slices.
     d_single       = reinterpret_cast<__half*>(d_base + o_single);
+    d_single_f32   = reinterpret_cast<float*>(d_base + o_single_f32);
     d_normed       = reinterpret_cast<__half*>(d_base + o_normed);
     d_ffn_out      = reinterpret_cast<__half*>(d_base + o_ffn_out);
     d_hidden       = reinterpret_cast<float*>(d_base + o_hidden);
@@ -1164,6 +1166,7 @@ void DeepSeekInferArena::Free()
     delete[] csa_states;
     d_base = nullptr; h_base = nullptr; csa_states = nullptr;
     d_single = d_normed = d_ffn_out = nullptr;
+    d_single_f32 = nullptr;
     d_hidden = d_hidden_next = nullptr;
     d_shared_int = d_shared_gate = d_routed_buf = nullptr;
     d_dequant_scratch = d_act_quant = d_ffn_accum = d_swiglu_out = nullptr;
