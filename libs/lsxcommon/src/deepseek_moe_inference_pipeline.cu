@@ -113,19 +113,7 @@ cudaError_t issue_routed_staging(
 // deepseek_moe_inference_attn.cu (float* d_dequant), so this file no longer
 // needs its own local, previously-stale (__half*) redeclaration.
 
-// From deepseek_moe_inference_attn.cu
-cudaError_t run_csa_attention(
-    cudaStream_t stream,
-    const LayerWeights& lw,
-    const __half* d_x,
-    __half* d_kv_cache_layer,
-    CSAState& csa_state,
-    int start_pos,
-    __half* d_q, __half* d_qr, __half* d_qr2,
-    __half* d_kv, __half* d_kv2,
-    __half* d_o, __half* d_olora, __half* d_out,
-    float* d_dequant,
-    float* d_norm_scratch, float* d_norm_gamma_scratch);
+// run_csa_attention is declared in deepseek_moe_inference_csa.h.
 
 
 // Sanity ceiling for a model-reported vocab_size. d_logits is now allocated

@@ -17,7 +17,7 @@
 #include "lsxcommon/expert_store.h"
 #include "lsxcommon/vram_estimate.h"
 
-#include "deepseek_moe_constants.h"
+#include "lsxcommon/deepseek_moe_constants.h"
 
 namespace lsxcommon {
 namespace gpu {
@@ -457,27 +457,32 @@ cudaError_t load_pinned_weights(const std::string &model_path,
 // need a small FP32 scratch of ≥ (kHcMix + 2) * 32 floats; the caller's
 // d_norm_scratch is safe to pass (stream ordering: rmsnorm runs strictly
 // after hc_pre completes).
+template <class T = deepseek::Passport>
 cudaError_t run_hc_pre(cudaStream_t stream,
                        const float *d_state, const float *d_fn,
                        const float *d_scale, const float *d_base,
-                       __half *d_single, float *d_post, float *d_comb,
+                       typename T::ResidualT *d_single, float *d_post, float *d_comb,
                        float *d_pre, float *d_scratch,
                        float rms_eps = 1e-6f);
 
+template <class T = deepseek::Passport>
 cudaError_t run_hc_post(cudaStream_t stream,
                          const float *d_x, const float *d_residual,
                          const float *d_post, const float *d_comb,
                          float *d_y);
 
+template <class T = deepseek::Passport>
 cudaError_t run_hc_head(cudaStream_t stream,
                         const float *d_state, const float *d_fn,
                         const float *d_scale, const float *d_base,
-                        __half *d_single, float *d_scratch);
+                        typename T::ResidualT *d_single, float *d_scratch);
 
+template <class T = deepseek::Passport>
 cudaError_t run_expand_hc(cudaStream_t stream,
                           const __half *d_single, float *d_state);
 
 // MLA forward (one token)
+template <class T = deepseek::Passport>
 cudaError_t run_mla_attention(
     cudaStream_t stream,
     const LayerWeights &lw,

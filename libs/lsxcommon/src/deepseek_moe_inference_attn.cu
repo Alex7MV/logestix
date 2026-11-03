@@ -12,6 +12,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsx_kernels_quant.cuh"
 #include "lsxcommon/log.h"
+#include "deepseek_moe_pro_constants.h"
 #include "deepseek_moe_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -36,6 +37,7 @@ namespace {
 // Applies FP8_E4M3 quantization+dequantization (fused) to the non-RoPE dims
 // of the KV vector. The RoPE dims (last 64) are left untouched.
 // This matches QAT behavior and prevents precision drift in KV cache.
+template <class T>
 __global__ void kv_act_quant_kernel(
     __half* d_kv,   // [head_dim] in-place FP8 quantize+dequant for first 448 dims
     int nope_dim)    // head_dim - rope_head_dim = 448
@@ -106,6 +108,7 @@ __global__ void kv_act_quant_kernel(
 }
 
 // ── F8_E4M3 → FP16 dequant with per-128x128-tile E8M0 scales ─────────────────
+template <class T>
 __global__ void dequant_f8_to_half_kernel(
     const uint8_t* __restrict__ w, const uint8_t* __restrict__ scales,
     __half* __restrict__ out, int64_t n,
@@ -142,6 +145,7 @@ namespace {
 constexpr int kHcPartThreads = 256;
 constexpr int kHcTiles = 32;   // tiles per row; partials = (M+1)*kHcTiles floats
 
+template <class T>
 __global__ void __launch_bounds__(kHcPartThreads)
 hc_mix_partials_kernel(
     const float* __restrict__ x,
@@ -174,6 +178,7 @@ hc_mix_partials_kernel(
 
 // Reduce partials (fixed ascending order), apply rsqrt + scale/base, and run
 // the thread-0 sinkhorn exactly as before. M == kHcMix, H == kHcMult.
+template <class T>
 __global__ void __launch_bounds__(256)
 hc_pre_finalize_kernel(
     const float* __restrict__ partials,
@@ -185,7 +190,7 @@ hc_pre_finalize_kernel(
     float* __restrict__ pre,
     float rms_eps)
 {
-    constexpr int D = kHiddenDim;
+    constexpr int D = T::kHidden;
     __shared__ float s_red[32];
     __shared__ float s_mixes[64];
     const int tid = threadIdx.x;
@@ -215,11 +220,11 @@ hc_pre_finalize_kernel(
     // phases replacing the program order.
     __shared__ float s_pre[8];
     __shared__ float s_post[8];
-    __shared__ float s_comb[16];  // [H*H], H = kHcMult = 4
+    __shared__ float s_comb[16];  // [H*H], H = T::kHcMult = 4
     if (tid < H)
         s_pre[tid] =
             1.0f / (1.0f + expf(-(s_mixes[tid] * hc_scale[0] + hc_base[tid]))) +
-            kRmsEps;
+            T::kRmsEps;
     if (tid < H)
         s_post[tid] =
             2.0f /
@@ -243,7 +248,7 @@ hc_pre_finalize_kernel(
         float rs = 0.0f;
         for (int k = 0; k < H; ++k) rs += s_comb[tid * H + k];
         for (int k = 0; k < H; ++k)
-            s_comb[tid * H + k] = s_comb[tid * H + k] / rs + kRmsEps;
+            s_comb[tid * H + k] = s_comb[tid * H + k] / rs + T::kRmsEps;
     }
     __syncthreads();
     // column normalize
@@ -251,23 +256,23 @@ hc_pre_finalize_kernel(
         float cs = 0.0f;
         for (int j = 0; j < H; ++j) cs += s_comb[j * H + tid];
         for (int j = 0; j < H; ++j)
-            s_comb[j * H + tid] = s_comb[j * H + tid] / (cs + kRmsEps);
+            s_comb[j * H + tid] = s_comb[j * H + tid] / (cs + T::kRmsEps);
     }
     __syncthreads();
     // sinkhorn iterations (kSinkhornIters - 1)
-    for (int it = 1; it < kSinkhornIters; ++it) {
+    for (int it = 1; it < T::kSinkhornIters; ++it) {
         if (tid < H) {
             float rs = 0.0f;
             for (int k = 0; k < H; ++k) rs += s_comb[tid * H + k];
             for (int k = 0; k < H; ++k)
-                s_comb[tid * H + k] = s_comb[tid * H + k] / (rs + kRmsEps);
+                s_comb[tid * H + k] = s_comb[tid * H + k] / (rs + T::kRmsEps);
         }
         __syncthreads();
         if (tid < H) {
             float cs = 0.0f;
             for (int j = 0; j < H; ++j) cs += s_comb[j * H + tid];
             for (int j = 0; j < H; ++j)
-                s_comb[j * H + tid] = s_comb[j * H + tid] / (cs + kRmsEps);
+                s_comb[j * H + tid] = s_comb[j * H + tid] / (cs + T::kRmsEps);
         }
         __syncthreads();
     }
@@ -278,25 +283,29 @@ hc_pre_finalize_kernel(
 }
 
 // y[d] = Σ_j pre[j] * x[j·D + d]
+template <class T>
 __global__ void hc_combine_kernel(
     const float* __restrict__ x,
     const float* __restrict__ pre,
-    __half* __restrict__ y)
+    typename T::ResidualT* __restrict__ y)
 {
-    constexpr int D = kHiddenDim;
-    constexpr int H = kHcMult;
+    constexpr int D = T::kHidden;
+    constexpr int H = T::kHcMult;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= D) return;
     float acc = 0.0f;
     for (int j = 0; j < H; ++j)
         acc += pre[j] * x[j * D + i];
-    y[i] = __float2half(acc);
+    // The residual type is the passport's: FP16 on V4-Flash, FP32 on
+    // V4-Pro (its HC sum exceeds the FP16 range before the norm).
+    y[i] = static_cast<typename T::ResidualT>(acc);
 }
 
 } // anonymous namespace
 
 // ── HC post: y[j] = post[j]·x + Σ_k comb[j,k]·residual[k] ────────────────────
 // x is now FP32 (module output stays in FP32 — no FP16 conversion)
+template <class T>
 __global__ void hc_post_kernel(
     const float* __restrict__ x,      // [dim] FP32 (module output)
     const float* __restrict__ residual, // [hc_mult·dim] FP32 (HC state)
@@ -304,8 +313,8 @@ __global__ void hc_post_kernel(
     const float* __restrict__ comb,    // [hc_mult·hc_mult]
     float* __restrict__ y)            // [hc_mult·dim] FP32
 {
-    constexpr int D = kHiddenDim;
-    constexpr int H = kHcMult;
+    constexpr int D = T::kHidden;
+    constexpr int H = T::kHcMult;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= D) return;
     for (int j = 0; j < H; ++j) {
@@ -320,6 +329,7 @@ __global__ void hc_post_kernel(
 // ── HC head: y = Σ_j sigmoid(mixes[j]·scale + base + eps)·x[j] ───────────────
 // Two-phase variant of hc_pre (M = H = kHcMult rows, no sinkhorn/post/comb).
 // pre[] is staged through the scratch tail so the combine kernel can read it.
+template <class T>
 __global__ void __launch_bounds__(kHcPartThreads)
 hc_head_partials_kernel(
     const float* __restrict__ x,
@@ -350,6 +360,7 @@ hc_head_partials_kernel(
     if (tid == 0) partials[m * tiles_per_row + b] = total;
 }
 
+template <class T>
 __global__ void __launch_bounds__(256)
 hc_head_finalize_kernel(
     const float* __restrict__ partials,
@@ -366,7 +377,7 @@ hc_head_finalize_kernel(
     for (int b = tid; b < tiles_per_row; b += blockDim.x)
         ssq += partials[M * tiles_per_row + b];
     const float ssq_tot = lsx_block_reduce_sum(ssq, s_red);
-    const float rsqrt_v = rsqrtf(ssq_tot / static_cast<float>(N) + kRmsEps);
+    const float rsqrt_v = rsqrtf(ssq_tot / static_cast<float>(N) + T::kRmsEps);
 
     if (tid < M) {
         float acc = 0.0f;
@@ -377,12 +388,13 @@ hc_head_finalize_kernel(
     __syncthreads();
     if (tid == 0) {
         for (int j = 0; j < H; ++j)
-            pre[j] = 1.0f / (1.0f + expf(-(s_mixes[j] * hc_scale[0] + hc_base[j]))) + kRmsEps;
+            pre[j] = 1.0f / (1.0f + expf(-(s_mixes[j] * hc_scale[0] + hc_base[j]))) + T::kRmsEps;
     }
 }
 
 // ── RoPE with optional YaRN scaling (applied on the last rope_head_dim dims) ──────────
 // yarn_enabled: 0 = plain RoPE (MLA layers), 1 = YaRN with factor=16 (CSA layers)
+template <class T>
 __global__ void rope_apply_kernel(
     __half* __restrict__ data, int rows, int row_stride,
     int offset, int rope_dim, float pos, float theta, int yarn_enabled)
@@ -441,6 +453,7 @@ __global__ void rope_apply_kernel(
 }
 
 // ── Per-head RMS norm on q (like q *= rsqrt(mean(q^2) + eps)) ────────────────
+template <class T>
 __global__ void __launch_bounds__(128)
 per_head_rms_kernel(__half* __restrict__ q, int n_heads, int head_dim)
 {
@@ -456,17 +469,18 @@ per_head_rms_kernel(__half* __restrict__ q, int n_heads, int head_dim)
         sum_sq += v * v;
     }
     const float total = lsx_block_reduce_sum(sum_sq, s_red);
-    const float r = rsqrtf(total / static_cast<float>(head_dim) + kRmsEps);
+    const float r = rsqrtf(total / static_cast<float>(head_dim) + T::kRmsEps);
     for (int d = tid; d < head_dim; d += kThreads)
         row[d] = __float2half(__half2float(row[d]) * r);
 }
 
 // ── Expand single hidden vector to hc_mult copies ────────────────────────────
+template <class T>
 __global__ void expand_hc_kernel(const __half* __restrict__ src,
                                  float* __restrict__ dst)
 {
-    constexpr int D = kHiddenDim;
-    constexpr int H = kHcMult;
+    constexpr int D = T::kHidden;
+    constexpr int H = T::kHcMult;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= D) return;
     const float v = __half2float(src[i]);
@@ -486,6 +500,7 @@ __global__ void expand_hc_kernel(const __half* __restrict__ src,
 //     lsx_block_reduce_sum — the old tree walk issued ~2000 __syncthreads()
 //     per head per token.
 //   • 256-thread blocks (8 warps) double per-SM warp occupancy.
+template <class T>
 __global__ void __launch_bounds__(256)
 mla_attn_kernel(
     const __half* __restrict__ q,
@@ -495,7 +510,7 @@ mla_attn_kernel(
     int start_pos, int window, float scale)
 {
     constexpr int kThreads = 256;
-    constexpr int kHD = kHeadDim;      // 512
+    constexpr int kHD = T::kHeadDim;      // 512
     const int h = blockIdx.x;
     const int tid = threadIdx.x;
     const __half* qrow = q + h * kHD;
@@ -571,6 +586,7 @@ static __global__ void clamp_f32_to_f16_kernel(const float* __restrict__ src,
 // runs on the 5th-gen Tensor Cores instead of the FP32 CUDA-core path.
 // d_scratch needs (n halves + rows floats) — strictly less than the old
 // (n + cols + rows) floats footprint.
+template <class T>
 static cudaError_t f8_gemm_1d(cudaStream_t stream,
                               const uint8_t* d_w, const uint8_t* d_scale,
                               int rows, int cols,
@@ -600,6 +616,7 @@ static cudaError_t f8_gemm_1d(cudaStream_t stream,
 // deepseek_moe_load.cuh (included above) and shared across this
 // pipeline's .cu files.
 
+template <class T>
 static cudaError_t run_rmsnorm_attn(
     cudaStream_t stream, const __half* d_input, const __half* d_weight,
     __half* d_output, float* /*d_scratch*/, float* /*d_gamma_scratch*/,
@@ -614,74 +631,78 @@ static cudaError_t run_rmsnorm_attn(
 } // anonymous namespace
 
 // ── Public: HC pre ───────────────────────────────────────────────────────────
+template <class T>
 cudaError_t run_hc_pre(cudaStream_t stream,
                        const float* d_state,          // [hc_mult·dim] FP32
                        const float* d_fn,              // [mix_hc, hc_mult·dim]
                        const float* d_scale,           // [3]
                        const float* d_base,            // [mix_hc]
-                       __half* d_single,               // [dim] FP16
+                       typename T::ResidualT* d_single, // [dim] residual
                        float* d_post, float* d_comb,   // [hc_mult], [hc_mult·hc_mult]
                        float* d_pre,                   // [hc_mult]
-                       float* d_scratch,               // ≥ (kHcMix+1)*kHcTiles floats
+                       float* d_scratch,               // ≥ (T::kHcMix+1)*kHcTiles floats
                        float rms_eps)                  // input RMSNorm eps
 {
-    constexpr int M = kHcMix;
-    constexpr int H = kHcMult;
+    constexpr int M = T::kHcMix;
+    constexpr int H = T::kHcMult;
     dim3 grid(M + 1, kHcTiles);
-    hc_mix_partials_kernel<<<grid, kHcPartThreads, 0, stream>>>(
-        d_state, d_fn, M, kHcDim, kHcTiles, d_scratch);
+    hc_mix_partials_kernel<T><<<grid, kHcPartThreads, 0, stream>>>(
+        d_state, d_fn, M, T::kHcDim, kHcTiles, d_scratch);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    hc_pre_finalize_kernel<<<1, 256, 0, stream>>>(
-        d_scratch, d_scale, d_base, M, H, kHcDim, kHcTiles,
+    hc_pre_finalize_kernel<T><<<1, 256, 0, stream>>>(
+        d_scratch, d_scale, d_base, M, H, T::kHcDim, kHcTiles,
         d_post, d_comb, d_pre, rms_eps);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    hc_combine_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+    hc_combine_kernel<T><<<(T::kHidden + 255) / 256, 256, 0, stream>>>(
         d_state, d_pre, d_single);
     return cudaGetLastError();
 }
 
+template <class T>
 cudaError_t run_hc_post(cudaStream_t stream,
                         const float* d_x,              // [dim] FP32
                         const float* d_residual,       // [hc_mult·dim] FP32
                         const float* d_post, const float* d_comb,
                         float* d_y)                    // [hc_mult·dim] FP32
 {
-    hc_post_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+    hc_post_kernel<T><<<(T::kHidden + 255) / 256, 256, 0, stream>>>(
         d_x, d_residual, d_post, d_comb, d_y);
     return cudaGetLastError();
 }
 
+template <class T>
 cudaError_t run_hc_head(cudaStream_t stream,
                         const float* d_state,         // [hc_mult·dim] FP32
                         const float* d_fn,             // [hc_mult, hc_mult·dim]
                         const float* d_scale,          // [1]
                         const float* d_base,           // [hc_mult]
-                        __half* d_single,              // [dim] FP16
-                        float* d_scratch)              // ≥ (kHcMult+1)*kHcTiles + kHcMult floats
+                        typename T::ResidualT* d_single, // [dim] residual
+                        float* d_scratch)              // ≥ (T::kHcMult+1)*kHcTiles + T::kHcMult floats
 {
-    constexpr int M = kHcMult;
-    constexpr int H = kHcMult;
+    constexpr int M = T::kHcMult;
+    constexpr int H = T::kHcMult;
     float* const d_pre = d_scratch + (M + 1) * kHcTiles;
     dim3 grid(M + 1, kHcTiles);
-    hc_head_partials_kernel<<<grid, kHcPartThreads, 0, stream>>>(
-        d_state, d_fn, M, kHcDim, kHcTiles, d_scratch);
+    hc_head_partials_kernel<T><<<grid, kHcPartThreads, 0, stream>>>(
+        d_state, d_fn, M, T::kHcDim, kHcTiles, d_scratch);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    hc_head_finalize_kernel<<<1, 256, 0, stream>>>(
-        d_scratch, d_scale, d_base, M, H, kHcDim, kHcTiles, d_pre);
+    hc_head_finalize_kernel<T><<<1, 256, 0, stream>>>(
+        d_scratch, d_scale, d_base, M, H, T::kHcDim, kHcTiles, d_pre);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    hc_combine_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+    hc_combine_kernel<T><<<(T::kHidden + 255) / 256, 256, 0, stream>>>(
         d_state, d_pre, d_single);
     return cudaGetLastError();
 }
 
+template <class T>
 cudaError_t run_expand_hc(cudaStream_t stream,
                           const __half* d_single, float* d_state)
 {
-    expand_hc_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(d_single, d_state);
+    expand_hc_kernel<T><<<(T::kHidden + 255) / 256, 256, 0, stream>>>(d_single, d_state);
     return cudaGetLastError();
 }
 
@@ -699,6 +720,7 @@ cudaError_t run_expand_hc(cudaStream_t stream,
 // as a single cublasGemmStridedBatchedEx (16F inputs, 32F accumulate) —
 // 3 launches instead of the old 24 (per-group dequant + convert + GEMM +
 // clamp × 8), with proper tensor-core GEMM shapes.
+template <class T>
 static cudaError_t run_o_projection(
     cudaStream_t stream,
     const LayerWeights &lw,
@@ -713,34 +735,35 @@ static cudaError_t run_o_projection(
 
     // O-projection: 8 batched FP16 TC GEMMs ([1024×4096] × [4096] each) →
     // FP32 olora scratch, then one clamped FP16 store.
-    const int gd = (kAttnHeads / kOGroups) * kHeadDim;  // 4096
+    const int gd = (T::kHeads / T::kOGroups) * T::kHeadDim;  // 4096
     float* d_olora_f32 = reinterpret_cast<float*>(d_w_half + n);
     const float alpha = 1.0f, beta = 0.0f;
     // Device-independent per-group GEMV (numeric-contract 1.1.1); the former
     // strided-batched cuBLAS call selected its algorithm by device.
-    for (int b = 0; b < kOGroups; ++b) {
-        const __half *wb = d_w_half + static_cast<int64_t>(b) * kOloraRank * gd;
+    for (int b = 0; b < T::kOGroups; ++b) {
+        const __half *wb = d_w_half + static_cast<int64_t>(b) * T::kOLoraRank * gd;
         const __half *xb = d_o + static_cast<int64_t>(b) * gd;
-        float *yb = d_olora_f32 + static_cast<int64_t>(b) * kOloraRank;
+        float *yb = d_olora_f32 + static_cast<int64_t>(b) * T::kOLoraRank;
         const cudaError_t e = gemv::RunLxGemmVec(
-            stream, wb, xb, 1, kOloraRank, gd, gemv::LxDtype::kF16,
+            stream, wb, xb, 1, T::kOLoraRank, gd, gemv::LxDtype::kF16,
             gemv::LxDtype::kF16, alpha, yb, gemv::LxDtype::kF32, beta);
         if (e != cudaSuccess) return e;
     }
     {
         int block = 256;
-        int g3 = (kOGroups * kOloraRank + block - 1) / block;
+        int g3 = (T::kOGroups * T::kOLoraRank + block - 1) / block;
         clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(
-            d_olora_f32, d_olora, kOGroups * kOloraRank);
+            d_olora_f32, d_olora, T::kOGroups * T::kOLoraRank);
         err = cudaGetLastError();
         if (err != cudaSuccess) return err;
     }
 
     // out = wo_b @ olora → [kHiddenDim]
-    return f8_gemm_1d(stream, lw.d_wo_b, lw.d_wo_b_scales,
+    return f8_gemm_1d<T>(stream, lw.d_wo_b, lw.d_wo_b_scales,
                       lw.wo_b_rows, lw.wo_b_cols, d_olora, d_out, d_dequant);
 }
 
+template <class T>
 cudaError_t run_mla_attention(
     cudaStream_t stream,
     const LayerWeights& lw,
@@ -765,79 +788,79 @@ cudaError_t run_mla_attention(
     }
 
     // qr = wq_a @ x
-    cudaError_t e = f8_gemm_1d(stream, lw.d_wq_a, lw.d_wq_a_scales,
+    cudaError_t e = f8_gemm_1d<T>(stream, lw.d_wq_a, lw.d_wq_a_scales,
                                lw.wq_a_rows, lw.wq_a_cols, d_x, d_qr, d_dequant);
     if (e != cudaSuccess) return e;
     // qr = q_norm(qr)
-    e = run_rmsnorm_attn(stream, d_qr, lw.d_q_norm, d_qr2,
-                         d_norm_scratch, d_norm_gamma_scratch, kQloraRank, kRmsEps);
+    e = run_rmsnorm_attn<T>(stream, d_qr, lw.d_q_norm, d_qr2,
+                         d_norm_scratch, d_norm_gamma_scratch, T::kQLoraRank, T::kRmsEps);
     if (e != cudaSuccess) return e;
     // q = wq_b @ qr2 → [32768]
-    e = f8_gemm_1d(stream, lw.d_wq_b, lw.d_wq_b_scales,
+    e = f8_gemm_1d<T>(stream, lw.d_wq_b, lw.d_wq_b_scales,
                    lw.wq_b_rows, lw.wq_b_cols, d_qr2, d_q, d_dequant);
     if (e != cudaSuccess) return e;
     // per-head RMS + RoPE on last 64 dims
-    per_head_rms_kernel<<<kAttnHeads, 128, 0, stream>>>(d_q, kAttnHeads, kHeadDim);
+    per_head_rms_kernel<T><<<T::kHeads, 128, 0, stream>>>(d_q, T::kHeads, T::kHeadDim);
     {
-        int total = kAttnHeads * (kRopeHeadDim / 2);
+        int total = T::kHeads * (T::kRopeHeadDim / 2);
         int block = 128;
-        rope_apply_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
-            d_q, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
+        rope_apply_kernel<T><<<(total + block - 1) / block, block, 0, stream>>>(
+            d_q, T::kHeads, T::kHeadDim, T::kHeadDim - T::kRopeHeadDim,
+            T::kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
             lw.compress_ratio > 0 ? 1 : 0);
     }
 
     // kv = wkv @ x → [512]
-    e = f8_gemm_1d(stream, lw.d_wkv, lw.d_wkv_scales,
+    e = f8_gemm_1d<T>(stream, lw.d_wkv, lw.d_wkv_scales,
                    lw.wkv_rows, lw.wkv_cols, d_x, d_kv, d_dequant);
     if (e != cudaSuccess) return e;
-    e = run_rmsnorm_attn(stream, d_kv, lw.d_kv_norm, d_kv2,
-                         d_norm_scratch, d_norm_gamma_scratch, kHeadDim, kRmsEps);
+    e = run_rmsnorm_attn<T>(stream, d_kv, lw.d_kv_norm, d_kv2,
+                         d_norm_scratch, d_norm_gamma_scratch, T::kHeadDim, T::kRmsEps);
     if (e != cudaSuccess) return e;
     {
-        int total = kRopeHeadDim / 2;
+        int total = T::kRopeHeadDim / 2;
         int block = 32;   // total == 32: one full warp, no idle lanes
-        rope_apply_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
-            d_kv2, 1, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
+        rope_apply_kernel<T><<<(total + block - 1) / block, block, 0, stream>>>(
+            d_kv2, 1, T::kHeadDim, T::kHeadDim - T::kRopeHeadDim,
+            T::kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
             lw.compress_ratio > 0 ? 1 : 0);
     }
 
     // write kv into circular cache slot (with FP8 act_quant on non-RoPE dims)
     {
         // Apply act_quant(kv[..., :-rd], 64, inplace=True) — FP8 quantize+dequant
-        int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
-        kv_act_quant_kernel<<<n_blocks_q, 64, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
+        int n_blocks_q = (T::kHeadDim - T::kRopeHeadDim + 63) / 64;
+        kv_act_quant_kernel<T><<<n_blocks_q, 64, 0, stream>>>(d_kv2, T::kHeadDim - T::kRopeHeadDim);
     }
     const int slot = start_pos % kAttnWindow;
-    e = cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
-                        static_cast<size_t>(kHeadDim) * sizeof(__half),
+    e = cudaMemcpyAsync(d_kv_cache_layer + slot * T::kHeadDim, d_kv2,
+                        static_cast<size_t>(T::kHeadDim) * sizeof(__half),
                         cudaMemcpyDeviceToDevice, stream);
     if (e != cudaSuccess) return e;
 
     // attention
     {
-        float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
+        float scale = 1.0f / sqrtf(static_cast<float>(T::kHeadDim));
         const int n_attend = min(start_pos + 1, kAttnWindow);
         const size_t smem = static_cast<size_t>(n_attend + 8) * sizeof(float);
-        mla_attn_kernel<<<kAttnHeads, 256, smem, stream>>>(
+        mla_attn_kernel<T><<<T::kHeads, 256, smem, stream>>>(
             d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
             start_pos, kAttnWindow, scale);
     }
 
     // inverse RoPE on o[..., -64:]
     {
-        int total = kAttnHeads * (kRopeHeadDim / 2);
+        int total = T::kHeads * (T::kRopeHeadDim / 2);
         int block = 128;
-        rope_apply_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
-            d_o, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
+        rope_apply_kernel<T><<<(total + block - 1) / block, block, 0, stream>>>(
+            d_o, T::kHeads, T::kHeadDim, T::kHeadDim - T::kRopeHeadDim,
+            T::kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
             lw.compress_ratio > 0 ? 3 : 2);
     }
 
     // o-projection: o[64,512] → view [8,4096]; per-group wo_a[1024,4096] → [8,1024]
     // wo_a.weight [8192,4096] row-major, groups are contiguous 1024-row blocks.
-    e = run_o_projection(stream, lw, d_o, d_olora, d_out, d_dequant);
+    e = run_o_projection<T>(stream, lw, d_o, d_olora, d_out, d_dequant);
     if (e != cudaSuccess) return e;
 
     return cudaSuccess;
@@ -849,6 +872,7 @@ cudaError_t run_mla_attention(
 // [compressed_slots, head_dim] in a single contiguous buffer.
 // Same Blackwell optimizations as mla_attn_kernel: single QK pass with cached
 // scores in dynamic shared memory + warp-shuffle reductions.
+template <class T>
 __global__ void __launch_bounds__(256)
 csa_sparse_attn_kernel(
     const __half* __restrict__ q,         // [n_heads, head_dim]
@@ -862,7 +886,7 @@ csa_sparse_attn_kernel(
     float scale)
 {
     constexpr int kThreads = 256;
-    constexpr int kHD = kHeadDim;      // 512
+    constexpr int kHD = T::kHeadDim;      // 512
 
     const int h = blockIdx.x;
     const int tid = threadIdx.x;
@@ -925,6 +949,7 @@ csa_sparse_attn_kernel(
 }
 
 // ── CSA: apply RMSNorm to compressed KV ──────────────────────────────────────
+template <class T>
 __global__ void compress_kv_norm_kernel(
     __half* d_kv,                    // [head_dim] compressed KV (in-place)
     const __half* d_weight,          // [head_dim] norm weight
@@ -957,7 +982,7 @@ __global__ void compress_kv_norm_kernel(
     }
     __syncthreads();
     float s_sum = s_partial[0];
-    float inv = rsqrtf(s_sum / static_cast<float>(head_dim) + kRmsEps);
+    float inv = rsqrtf(s_sum / static_cast<float>(head_dim) + T::kRmsEps);
     for (int i = tid; i < head_dim; i += blockDim.x)
         d_kv[i] = __float2half(__half2float(d_kv[i]) * inv * __half2float(d_weight[i]));
 }
@@ -971,6 +996,7 @@ __global__ void compress_kv_norm_kernel(
 //     On compress: pool over 2*ratio rows (row r<ratio -> col i; row r>=ratio -> col d+i),
 //     then shift rows [ratio,2ratio) into [0,ratio) for the next round.
 //   non-overlap (ratio==128, coff==1): token written to `sp%ratio`, pool over ratio rows.
+template <class T>
 __global__ void compressor_step_kernel(
     const __half *d_kv, const __half *d_score,
     const float  *d_ape,
@@ -1044,6 +1070,7 @@ __global__ void compressor_step_kernel(
 // Uses the SAME Q/KV/O-projection as MLA, plus the compressor step.
 // For now, uses mla_attn_kernel for attention (window-only, no compressed positions).
 // The compressor state is maintained for future use when sparse_attn is added.
+template <class T>
 cudaError_t run_csa_attention(
     cudaStream_t stream,
     const LayerWeights& lw,
@@ -1069,45 +1096,45 @@ cudaError_t run_csa_attention(
     }
 
     // ── Q projection (identical to MLA) ──────────────────────────────────
-    cudaError_t e = f8_gemm_1d(stream, lw.d_wq_a, lw.d_wq_a_scales,
+    cudaError_t e = f8_gemm_1d<T>(stream, lw.d_wq_a, lw.d_wq_a_scales,
                                lw.wq_a_rows, lw.wq_a_cols, d_x, d_qr, d_dequant);
     if (e != cudaSuccess) return e;
-    e = run_rmsnorm_attn(stream, d_qr, lw.d_q_norm, d_qr2,
-                         d_norm_scratch, d_norm_gamma_scratch, kQloraRank, kRmsEps);
+    e = run_rmsnorm_attn<T>(stream, d_qr, lw.d_q_norm, d_qr2,
+                         d_norm_scratch, d_norm_gamma_scratch, T::kQLoraRank, T::kRmsEps);
     if (e != cudaSuccess) return e;
-    e = f8_gemm_1d(stream, lw.d_wq_b, lw.d_wq_b_scales,
+    e = f8_gemm_1d<T>(stream, lw.d_wq_b, lw.d_wq_b_scales,
                    lw.wq_b_rows, lw.wq_b_cols, d_qr2, d_q, d_dequant);
     if (e != cudaSuccess) return e;
-    per_head_rms_kernel<<<kAttnHeads, 128, 0, stream>>>(d_q, kAttnHeads, kHeadDim);
+    per_head_rms_kernel<T><<<T::kHeads, 128, 0, stream>>>(d_q, T::kHeads, T::kHeadDim);
     {
-        int total = kAttnHeads * (kRopeHeadDim / 2);
-        rope_apply_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
-            d_q, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
+        int total = T::kHeads * (T::kRopeHeadDim / 2);
+        rope_apply_kernel<T><<<(total + 127) / 128, 128, 0, stream>>>(
+            d_q, T::kHeads, T::kHeadDim, T::kHeadDim - T::kRopeHeadDim,
+            T::kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
     }
 
     // ── KV projection (identical to MLA) ──────────────────────────────────
-    e = f8_gemm_1d(stream, lw.d_wkv, lw.d_wkv_scales,
+    e = f8_gemm_1d<T>(stream, lw.d_wkv, lw.d_wkv_scales,
                    lw.wkv_rows, lw.wkv_cols, d_x, d_kv, d_dequant);
     if (e != cudaSuccess) return e;
-    e = run_rmsnorm_attn(stream, d_kv, lw.d_kv_norm, d_kv2,
-                         d_norm_scratch, d_norm_gamma_scratch, kHeadDim, kRmsEps);
+    e = run_rmsnorm_attn<T>(stream, d_kv, lw.d_kv_norm, d_kv2,
+                         d_norm_scratch, d_norm_gamma_scratch, T::kHeadDim, T::kRmsEps);
     if (e != cudaSuccess) return e;
     {
-        int total = kRopeHeadDim / 2;
-        rope_apply_kernel<<<(total + 31) / 32, 32, 0, stream>>>(
-            d_kv2, 1, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
+        int total = T::kRopeHeadDim / 2;
+        rope_apply_kernel<T><<<(total + 31) / 32, 32, 0, stream>>>(
+            d_kv2, 1, T::kHeadDim, T::kHeadDim - T::kRopeHeadDim,
+            T::kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
     }
 
     // Store KV in sliding-window cache (with FP8 act_quant on non-RoPE dims)
     {
-        int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
-        kv_act_quant_kernel<<<n_blocks_q, 64, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
+        int n_blocks_q = (T::kHeadDim - T::kRopeHeadDim + 63) / 64;
+        kv_act_quant_kernel<T><<<n_blocks_q, 64, 0, stream>>>(d_kv2, T::kHeadDim - T::kRopeHeadDim);
     }
     const int slot = start_pos % kAttnWindow;
-    e = cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
-        static_cast<size_t>(kHeadDim) * sizeof(__half),
+    e = cudaMemcpyAsync(d_kv_cache_layer + slot * T::kHeadDim, d_kv2,
+        static_cast<size_t>(T::kHeadDim) * sizeof(__half),
         cudaMemcpyDeviceToDevice, stream);
     if (e != cudaSuccess) return e;
 
@@ -1116,18 +1143,18 @@ cudaError_t run_csa_attention(
     // Both are large enough for comp_out = coff*head_dim = 1024 (ratio=4) or 512 (ratio=128)
     if (lw.d_comp_wkv && lw.d_comp_wgate && lw.d_comp_ape) {
         int coff = lw.comp_coff;
-        int comp_out = coff * kHeadDim;
+        int comp_out = coff * T::kHeadDim;
         {
             float alpha = 1.0f, beta = 0.0f;
                     if (gemv::RunLxGemmVec(
-                    stream, lw.d_comp_wkv, d_x, 1, comp_out, kHiddenDim,
+                    stream, lw.d_comp_wkv, d_x, 1, comp_out, T::kHidden,
                     gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha, d_qr2,
                     gemv::LxDtype::kF16, beta) != cudaSuccess) {
                 log::error("[csa] compressor wkv GEMM failed");
                 return cudaErrorInvalidValue;
             }
             if (gemv::RunLxGemmVec(
-                    stream, lw.d_comp_wgate, d_x, 1, comp_out, kHiddenDim,
+                    stream, lw.d_comp_wgate, d_x, 1, comp_out, T::kHidden,
                     gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha, d_qr,
                     gemv::LxDtype::kF16, beta) != cudaSuccess) {
                 log::error("[csa] compressor wgate GEMM failed");
@@ -1136,31 +1163,31 @@ cudaError_t run_csa_attention(
         }
         bool should_compress = ((start_pos + 1) % lw.compress_ratio) == 0;
         __half* d_compressed_slot =
-            csa_state.d_compressed_kv + csa_state.n_compressed * kHeadDim;
-        compressor_step_kernel<<<1, 256, 0, stream>>>(
+            csa_state.d_compressed_kv + csa_state.n_compressed * T::kHeadDim;
+        compressor_step_kernel<T><<<1, 256, 0, stream>>>(
             d_qr2, d_qr, lw.d_comp_ape,
             csa_state.d_comp_kv_state, csa_state.d_comp_score_state,
             d_compressed_slot,
-            lw.compress_ratio, coff, kHeadDim, start_pos);
+            lw.compress_ratio, coff, T::kHeadDim, start_pos);
         if (should_compress) {
             // Apply RMSNorm to compressed KV
             if (lw.d_comp_norm) {
-                compress_kv_norm_kernel<<<1, 256, 0, stream>>>(
-                    d_compressed_slot, lw.d_comp_norm, kHeadDim);
+                compress_kv_norm_kernel<T><<<1, 256, 0, stream>>>(
+                    d_compressed_slot, lw.d_comp_norm, T::kHeadDim);
             }
             // Apply RoPE to last 64 dims of compressed KV
             int comp_pos = start_pos + 1 - lw.compress_ratio;
             {
-                int total = kRopeHeadDim / 2;
-                rope_apply_kernel<<<(total + 31) / 32, 32, 0, stream>>>(
-                    d_compressed_slot, 1, kHeadDim, kHeadDim - kRopeHeadDim,
-                    kRopeHeadDim, static_cast<float>(comp_pos), lw.rope_theta, 1);
+                int total = T::kRopeHeadDim / 2;
+                rope_apply_kernel<T><<<(total + 31) / 32, 32, 0, stream>>>(
+                    d_compressed_slot, 1, T::kHeadDim, T::kHeadDim - T::kRopeHeadDim,
+                    T::kRopeHeadDim, static_cast<float>(comp_pos), lw.rope_theta, 1);
             }
             // Main compressor (rotate=False) applies FP8 act_quant to non-RoPE dims
             // (reference model.py:372 act_quant(kv[..., :-rd], 64, ..., True)).
             {
-                int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
-                kv_act_quant_kernel<<<n_blocks_q, 64, 0, stream>>>(d_compressed_slot, kHeadDim - kRopeHeadDim);
+                int n_blocks_q = (T::kHeadDim - T::kRopeHeadDim + 63) / 64;
+                kv_act_quant_kernel<T><<<n_blocks_q, 64, 0, stream>>>(d_compressed_slot, T::kHeadDim - T::kRopeHeadDim);
             }
             csa_state.n_compressed++;
         }
@@ -1173,9 +1200,9 @@ cudaError_t run_csa_attention(
     // Compressed slots: [kAttnWindow, kAttnWindow + n_compressed)
     int n_compressed = csa_state.n_compressed;
     if (n_compressed > 0) {
-        size_t bytes = static_cast<size_t>(n_compressed) * kHeadDim * sizeof(__half);
+        size_t bytes = static_cast<size_t>(n_compressed) * T::kHeadDim * sizeof(__half);
         e = cudaMemcpyAsync(
-            d_kv_cache_layer + static_cast<size_t>(kAttnWindow) * kHeadDim,
+            d_kv_cache_layer + static_cast<size_t>(kAttnWindow) * T::kHeadDim,
             csa_state.d_compressed_kv,
             bytes, cudaMemcpyDeviceToDevice, stream);
         if (e != cudaSuccess) return e;
@@ -1184,16 +1211,16 @@ cudaError_t run_csa_attention(
     // ── Sparse attention over window + compressed positions ─────────────
     {
         int n_attend = std::min(start_pos + 1, kAttnWindow);
-        float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
+        float scale = 1.0f / sqrtf(static_cast<float>(T::kHeadDim));
         if (n_compressed > 0) {
             const size_t smem = static_cast<size_t>(n_attend + n_compressed + 8)
                                 * sizeof(float);
-            csa_sparse_attn_kernel<<<kAttnHeads, 256, smem, stream>>>(
+            csa_sparse_attn_kernel<T><<<T::kHeads, 256, smem, stream>>>(
                 d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
                 start_pos, kAttnWindow, n_attend, n_compressed, scale);
         } else {
             const size_t smem = static_cast<size_t>(n_attend + 8) * sizeof(float);
-            mla_attn_kernel<<<kAttnHeads, 256, smem, stream>>>(
+            mla_attn_kernel<T><<<T::kHeads, 256, smem, stream>>>(
                 d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
                 start_pos, kAttnWindow, scale);
         }
@@ -1201,16 +1228,30 @@ cudaError_t run_csa_attention(
 
     // ── Inverse RoPE on output ───────────────────────────────────────────
     {
-        int total = kAttnHeads * (kRopeHeadDim / 2);
-        rope_apply_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
-            d_o, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 3);
+        int total = T::kHeads * (T::kRopeHeadDim / 2);
+        rope_apply_kernel<T><<<(total + 127) / 128, 128, 0, stream>>>(
+            d_o, T::kHeads, T::kHeadDim, T::kHeadDim - T::kRopeHeadDim,
+            T::kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 3);
     }
 
     // ── O-projection (identical to MLA — FP32×FP32→FP32→FP16) ────────────
-    e = run_o_projection(stream, lw, d_o, d_olora, d_out, d_dequant);
+    e = run_o_projection<T>(stream, lw, d_o, d_olora, d_out, d_dequant);
     return e;
 }
+
+// ── Explicit instantiations: V4-Flash and V4-Pro-0813 ───────────────────────
+template cudaError_t run_hc_pre<lsxcommon::deepseek::Passport>(cudaStream_t stream, const float* d_state, const float* d_fn, const float* d_scale, const float* d_base, __half* d_single, float* d_post, float* d_comb, float* d_pre, float* d_scratch, float rms_eps);
+template cudaError_t run_hc_pre<lsxcommon::deepseek_pro::Passport>(cudaStream_t stream, const float* d_state, const float* d_fn, const float* d_scale, const float* d_base, float* d_single, float* d_post, float* d_comb, float* d_pre, float* d_scratch, float rms_eps);
+template cudaError_t run_hc_post<lsxcommon::deepseek::Passport>(cudaStream_t stream, const float* d_x, const float* d_residual, const float* d_post, const float* d_comb, float* d_y);
+template cudaError_t run_hc_post<lsxcommon::deepseek_pro::Passport>(cudaStream_t stream, const float* d_x, const float* d_residual, const float* d_post, const float* d_comb, float* d_y);
+template cudaError_t run_hc_head<lsxcommon::deepseek::Passport>(cudaStream_t stream, const float* d_state, const float* d_fn, const float* d_scale, const float* d_base, __half* d_single, float* d_scratch);
+template cudaError_t run_hc_head<lsxcommon::deepseek_pro::Passport>(cudaStream_t stream, const float* d_state, const float* d_fn, const float* d_scale, const float* d_base, float* d_single, float* d_scratch);
+template cudaError_t run_expand_hc<lsxcommon::deepseek::Passport>(cudaStream_t stream, const __half* d_single, float* d_state);
+template cudaError_t run_expand_hc<lsxcommon::deepseek_pro::Passport>(cudaStream_t stream, const __half* d_single, float* d_state);
+template cudaError_t run_mla_attention<lsxcommon::deepseek::Passport>(cudaStream_t stream, const LayerWeights& lw, const __half* d_x, __half* d_kv_cache_layer, int start_pos, __half* d_q, __half* d_qr, __half* d_qr2, __half* d_kv, __half* d_kv2, __half* d_o, __half* d_olora, __half* d_out, float* d_dequant, float* d_norm_scratch, float* d_norm_gamma_scratch);
+template cudaError_t run_mla_attention<lsxcommon::deepseek_pro::Passport>(cudaStream_t stream, const LayerWeights& lw, const __half* d_x, __half* d_kv_cache_layer, int start_pos, __half* d_q, __half* d_qr, __half* d_qr2, __half* d_kv, __half* d_kv2, __half* d_o, __half* d_olora, __half* d_out, float* d_dequant, float* d_norm_scratch, float* d_norm_gamma_scratch);
+template cudaError_t run_csa_attention<lsxcommon::deepseek::Passport>(cudaStream_t stream, const LayerWeights& lw, const __half* d_x, __half* d_kv_cache_layer, CSAState& csa_state, int start_pos, __half* d_q, __half* d_qr, __half* d_qr2, __half* d_kv, __half* d_kv2, __half* d_o, __half* d_olora, __half* d_out, float* d_dequant, float* d_norm_scratch, float* d_norm_gamma_scratch);
+template cudaError_t run_csa_attention<lsxcommon::deepseek_pro::Passport>(cudaStream_t stream, const LayerWeights& lw, const __half* d_x, __half* d_kv_cache_layer, CSAState& csa_state, int start_pos, __half* d_q, __half* d_qr, __half* d_qr2, __half* d_kv, __half* d_kv2, __half* d_o, __half* d_olora, __half* d_out, float* d_dequant, float* d_norm_scratch, float* d_norm_gamma_scratch);
 
 } // namespace gpu
 } // namespace lsxcommon
