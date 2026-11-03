@@ -11,8 +11,9 @@
 
 1. **M1 — дедупликация «механизма» конвертеров.** Три I/O-хелпера, которые
    по-прежнему скопированы по семействам, выносятся в единый слой
-   `lsxcommon`. Это тот же класс дефекта, из-за которого 26 копий
-   `ReadTensorData` разошлись в валидации (закрыто 2026-11-03).
+   `lsxcommon`. Полный инвентарь (с учётом snake_case-вариантов) — **39
+   определений в 20 файлах**. Это тот же класс дефекта, из-за которого 26
+   копий `ReadTensorData` разошлись в валидации (закрыто 2026-11-03).
 2. **M2 — guard-тесты инфраструктуры.** Централизация CMake-путей, архива и
    общего ридера тензоров сейчас держится дисциплиной; ничто не мешает
    вернуть `${CMAKE_BINARY_DIR}/_deps`, литерал `120-real;121-real` или
@@ -29,16 +30,16 @@
 | предупреждений в full build | 51 408 (Arrow 4 807, absl 5 730, …) |
 | «style of line directive» в наших файлах | 2024 в `test_glm_moe_flash_kernels.cu`, 834 в `expert_store.h`, … |
 | строк лога сборки | 159 487 |
-| `WriteBatch` / `WriteExpertFile` копий | 6 / 6 |
-| `QuantizeSlice` копий | 5 |
+| `WriteBatch` / `WriteExpertFile` копий | 14 / 13 (Pascal + snake_case) |
+| `QuantizeSlice` копий | 12 |
 | `converter.cpp` (эталон цены TU) | 14.4 s, 1.1 GiB RSS |
 
 ## 2. Границы
 
 ### Входит
 
-- M1: `WriteBatch`, `WriteExpertFile`, `QuantizeSlice` — единые реализации и
-  миграция 17 копий.
+- M1: `WriteBatch`, `WriteExpertArrow` (плюс `ExpertArrowPath`), `QuantizeSlice`
+  (2 перегрузки) — единые реализации и миграция 39 копий.
 - M2: три статических guard-проверки (пути `_deps`, единственность
   определений, литералы `CUDA_ARCHITECTURES`) + реестр guard-тестов.
 - M3: `SYSTEM`-include для зависимостей, `-Wpedantic` только для C/CXX,
@@ -62,18 +63,25 @@
 
 ### 3.1 Инвентарь дублей
 
-| хелпер | файлы | расхождения |
+| хелпер | копий | расхождения |
 |---|---|---|
-| `WriteBatch(arrow::Result<RecordBatch>, path)` | `hy`, `beam`, `ling`, `step`, `flint`, `minimax` | нет; только `fs::path` vs `std::filesystem::path` (алиас) |
-| `WriteExpertFile(base, layer, expert, PackedExpert&&)` | те же 6 | 5 через `ExpertSchema::MakeBatch` (копия payload), `minimax` — через `MakeBatchView` |
-| `QuantizeSlice(data, numel, dtype, DenseNvfp4Record&)` | `hy`, `flint`, `step`, `beam`, `minimax` | нет |
+| `WriteBatch` / `write_batch` | 14 | нет; Pascal в 6 файлах, snake_case в 8 |
+| `WriteExpertFile` / `write_expert_file` | 13 | 11 — `(base, layer, expert)` с `MakeBatch`; `qwen_moe_exp` — `MakeBatchView`; `glm_moe_flash` — zero-padded `layer_%03d`/`exp_%03d`; `alice` — `(dir, expert)` без слоя |
+| `QuantizeSlice` / `quantize_slice` | 12 | 4 с параметром `dtype` (step/flint/hy/beam); 2 у `minimax` (полная с E8M0 и удобная); 5 BF16-only (qwen_moe/ornith/alice/nemotron/qwen_moe_exp); 1 у `kimi_k3` берёт dtype из `TensorInfo` |
 
 Рядом уже есть `SaveExpertToArrow`: та же запись, но через `MakeBatchView`
 (zero-copy) + `diag::ValidateBatchBuffers` + info-лог на каждый файл.
 Логировать на каждый эксперт нельзя (десятки тысяч файлов), поэтому общий
 хелпер берёт zero-copy запись и валидацию, но не лог; `SaveExpertToArrow`
-остаётся тонкой обёрткой с логом. Побочный эффект: 5 семейств перестают
-копировать payload эксперта перед записью (`minimax` уже так делает).
+остаётся тонкой обёрткой с логом. Побочный эффект: 11 семейств перестают
+копировать payload эксперта перед записью (`minimax`/`qwen_moe_exp` уже так
+делают).
+
+Имя файла эксперта — часть формата семейства, поэтому общий хелпер принимает
+**готовый путь**, а не `(base, layer, expert)`: `glm_moe_flash` пишет
+zero-padded `layer_%03d/exp_%03d.arrow` (и его загрузчик это ожидает), `alice`
+получает каталог слоя от вызывающего кода. Канонический путь для остальных 11
+семейств строит маленький `ExpertArrowPath`.
 
 ### 3.2 API
 
@@ -82,27 +90,37 @@
 `converter.cpp`:
 
 ```cpp
-// Unwraps a MakeBatch() result and writes it. The converters' 6 identical
-// copies of this adapter.
+// Unwraps a MakeBatch() result and writes it (14 identical copies).
 arrow::Status WriteBatch(
     const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
     const std::filesystem::path &path);
 
-// Writes <model_root>/experts/layer_<layer>/exp_<expert>.arrow (creates the
-// layer directory), validating the buffers before the write. No per-file log.
-arrow::Status WriteExpertFile(const std::filesystem::path &model_root,
-                              int layer, int expert, PackedExpert &&expert);
+// <model_root>/experts/layer_<layer>/exp_<expert>.arrow — the canonical layout
+// of the 11 families that do not pad names.
+std::filesystem::path ExpertArrowPath(const std::filesystem::path &model_root,
+                                      int layer, int expert);
 
-// Quantizes a contiguous BF16/FP32 slice to NVFP4. Same semantics as the five
-// per-family copies (no E8M0 companion).
+// Creates the parent directory, builds a zero-copy batch over `expert`,
+// validates it and writes it. The path carries the family's naming format
+// (glm_moe_flash pads, alice passes the layer directory). No per-file log.
+arrow::Status WriteExpertArrow(const std::filesystem::path &path,
+                               const PackedExpert &expert);
+
+// Quantizes a contiguous slice to NVFP4. The full form carries the optional
+// E8M0 companion scales (minimax); the short form passes nullptr and uses
+// `out.shape`.
+bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
+                   const uint8_t *e8m0, const std::vector<int64_t> &shape,
+                   const std::vector<int64_t> &e8m0_shape,
+                   DenseNvfp4Record &out);
 bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
                    DenseNvfp4Record &out);
 ```
 
-Семантика вывода сохраняется побайтово: `WriteExpertFile` кладёт файл в
-`model_root / "experts" / ("layer_" + layer)` (как все 6 копий), но пишет
-через `MakeBatchView` + `ValidateBatchBuffers`; `QuantizeSlice` вызывает `gpu::quantize_tensor_gpu(data, numel, dtype, nullptr,
-shape, {}, packed, scales, global_scale)` без изменений.
+Семантика вывода сохраняется побайтово: путь файла остаётся за семейством
+(`ExpertArrowPath` или собственный), запись идёт через `MakeBatchView` +
+`ValidateBatchBuffers`; `QuantizeSlice` — тонкая обёртка над
+`gpu::quantize_tensor_gpu` без изменения аргументов.
 
 ### 3.3 TDD
 
@@ -111,18 +129,18 @@ RED — новый `tests/test_converter_helpers.cpp` (label `fast`, host-only):
 1. `WriteBatch` возвращает статус ошибочного `arrow::Result` и не создаёт файл.
 2. `WriteBatch` на валидном `DenseNvfp4Batch` пишет файл, читаемый
    `ReadRecordBatchFromFile(path, 6)` с теми же payload-байтами.
-3. `WriteExpertFile` создаёт `experts/layer_7/exp_3.arrow` при пустом
-   `model_root` (проверяет `create_directories`) и round-trip через
-   `ExpertSchema::UnpackBatch` (w1/w2/w3 packed + scales + global scales).
-4. `WriteExpertFile` возвращает non-OK (и не бросает), если каталог создать
+3. `WriteExpertArrow` создаёт каталог слоя и round-trip через
+   `ExpertSchema::UnpackBatch` (w1/w2/w3 packed + scales + global scales);
+   `ExpertArrowPath` даёт канонический путь.
+4. `WriteExpertArrow` возвращает non-OK (и не бросает), если каталог создать
    нельзя (под `model_root` лежит обычный файл), и не оставляет файла.
 
 `QuantizeSlice` — GPU-путь: кейс в `tests/test_lsx_nvfp4_dispatch.cpp`
 (label `inference`): BF16-срез → `packed == ceil(n/2)`, `scales == ceil(n/16)`,
 `global_scale` конечен и > 0; повтор детерминирован.
 
-GREEN: реализации в `converter.cpp`, удаление 17 копий, `SaveExpertToArrow`
-делегирует в `WriteExpertFile`. Проверка: `ctest -L convert` (37/37) —
+GREEN: реализации в `converter.cpp`, удаление 39 копий, `SaveExpertToArrow`
+делегирует в `WriteExpertArrow`. Проверка: `ctest -L convert` (37/37) —
 конвертерные тесты сверяют содержимое, не только коды возврата.
 
 ## 4. M2 — guard-тесты инфраструктуры
@@ -138,9 +156,12 @@ GREEN: реализации в `converter.cpp`, удаление 17 копий, 
    `apps/**/CMakeLists.txt`, `tests/CMakeLists.txt`. `third_party/` не
    сканируется. `${FETCHCONTENT_BASE_DIR}` разрешён только в
    `lsx_dep_includes` (корневой файл).
-2. **Единственность определений.** В `libs/`, `apps/`, `tests/` запрещены
-   определения `ReadTensorData`/`read_tensor_data`, `WriteBatch`,
-   `WriteExpertFile`, `QuantizeSlice` вне `libs/lsxcommon/src/converter.cpp`.
+2. **Единственность определений.** В `libs/` и `apps/` (production-код;
+   тестовые фикстуры не сканируются) запрещены определения
+   `ReadTensorData`/`read_tensor_data`, `WriteBatch`/`write_batch`,
+   `WriteExpertArrow`/`WriteExpertFile`/`write_expert_file`,
+   `ExpertArrowPath`, `QuantizeSlice`/`quantize_slice` вне
+   `libs/lsxcommon/src/converter.cpp`.
 3. **Архитектура кубиков.** В CMake-файлах запрещены литералы
    `CUDA_ARCHITECTURES "90"|"89"|"80"|"<числа>-real..."`; разрешены только
    `${LSX_CUDA_ARCH}` и `OFF` (не-CUDA цели).
