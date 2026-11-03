@@ -1,4 +1,5 @@
 #include "lsxcommon/inference_gpu.h"
+#include "lsxcommon/deepseek_moe_inference_head.h"
 #include "lsxcommon/deepseek_moe_norm_kernels.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/log.h"
@@ -123,16 +124,6 @@ cudaError_t run_csa_attention(
     float* d_dequant,
     float* d_norm_scratch, float* d_norm_gamma_scratch);
 
-// From deepseek_moe_inference_head.cu
-cudaError_t run_lm_head(
-    cudaStream_t stream,
-    const __half *d_head_weight,
-    const __half *d_hidden,
-    int vocab_size,
-    int hidden_dim,
-    float *d_logits,
-    int32_t *d_next_token,
-    float *d_next_maxv);
 
 // Sanity ceiling for a model-reported vocab_size. d_logits is now allocated
 // dynamically to the actual vocab_size (see RunInferenceModel), but any
