@@ -36,6 +36,24 @@ bool PinnedHasName(const fs::path &path, const std::string &name)
     return false;
 }
 
+fs::path ConvertSyntheticAlice(const char *tag)
+{
+    REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
+    const fs::path in = fs::temp_directory_path() /
+                        (std::string("alice_synth_in_") + tag);
+    const fs::path out = fs::temp_directory_path() /
+                         (std::string("alice_synth_out_") + tag);
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+    WriteAliceConfigJson(in);
+    WriteAliceShard(in);
+    auto st = lsxcommon::alice::ConvertAliceModel(in.string(), out.string());
+    if (!st.ok()) FAIL(st.ToString());
+    REQUIRE(st.ok());
+    return out;
+}
+
 bool DenseNvfp4HasName(const fs::path &path, const std::string &name)
 {
     auto batch = lsxcommon::ReadRecordBatchFromFile(path);
@@ -110,4 +128,47 @@ TEST_CASE("alice synthetic convert emits logestix-alice-nvfp4", "[alice][convert
     // Embedding stays high precision.
     REQUIRE(PinnedHasName(base / "pinned" / "global.arrow",
                           "model.embed_tokens.weight"));
+}
+
+TEST_CASE("alice vram profile streams routed experts as NVFP4",
+          "[alice][convert]")
+{
+    // The routed-expert set is the memory bulk and is streamed from the host
+    // store, so it is neither device-resident (min_bytes) nor stored at BF16 in
+    // the profile. Before this was pinned, the converter's NVFP4 predicate
+    // omitted the fused expert tensors and the estimator was given no
+    // memory-class rule at all: the emitted index advertised
+    // min_bytes == the whole BF16 source (162 GB on the real checkpoint) and
+    // max_bytes == optimal_bytes (no expert pool), which is exactly backwards.
+    using K = lsxcommon::alice::AliceTensorKind;
+    REQUIRE(lsxcommon::alice::alice_tensor_is_nvfp4(K::FusedExpertsGateUp));
+    REQUIRE(lsxcommon::alice::alice_tensor_is_nvfp4(K::FusedExpertsDown));
+    REQUIRE(lsxcommon::alice::alice_tensor_is_routed_expert(K::FusedExpertsGateUp));
+    REQUIRE(lsxcommon::alice::alice_tensor_is_routed_expert(K::FusedExpertsDown));
+    REQUIRE_FALSE(lsxcommon::alice::alice_tensor_is_routed_expert(K::Embed));
+    REQUIRE_FALSE(lsxcommon::alice::alice_tensor_is_routed_expert(K::SharedUpProj));
+
+    const fs::path out = ConvertSyntheticAlice("vram");
+    const std::string json = ReadFile(out / "logestix" / "model.index.json");
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(json);
+    auto doc = parser.iterate(pad);
+    int64_t min_bytes = 0, optimal_bytes = 0, max_bytes = 0;
+    REQUIRE(doc["vram"]["min_bytes"].get_int64().get(min_bytes) ==
+            simdjson::SUCCESS);
+    REQUIRE(doc["vram"]["optimal_bytes"].get_int64().get(optimal_bytes) ==
+            simdjson::SUCCESS);
+    REQUIRE(doc["vram"]["max_bytes"].get_int64().get(max_bytes) ==
+            simdjson::SUCCESS);
+
+    const int64_t expert_numel =
+        static_cast<int64_t>(kLayers) * kExperts * 3 * kMoeInter * kHidden;
+    const int64_t expert_nvfp4_bytes =
+        expert_numel / 2 + (expert_numel + 15) / 16;
+    INFO("min=" << min_bytes << " optimal=" << optimal_bytes
+                << " max=" << max_bytes << " expert_nvfp4=" << expert_nvfp4_bytes);
+    REQUIRE(min_bytes > 0);
+    REQUIRE(optimal_bytes > min_bytes);          // KV cache + workspace
+    REQUIRE(max_bytes > optimal_bytes);          // routed-expert pool
+    REQUIRE(max_bytes - optimal_bytes == expert_nvfp4_bytes);
 }

@@ -3,6 +3,8 @@
 #include <lsxcommon/alice_moe_convert.h>
 #include <lsxcommon/alice_moe_load.h>
 
+#include <simdjson.h>
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -67,3 +69,37 @@ TEST_CASE("alice loader parses topology and gates the format", "[alice][load]")
         lsxcommon::alice::LoadAliceTopology(out.string(), bad).ok());
 }
 
+TEST_CASE("alice resident bytes count every uploaded weight", "[alice][load]")
+{
+    // `ResidentWeightBytes()` drives the governor lease and the `resident:`
+    // line of lsxbenchmark, so it must be the sum of what the loader actually
+    // uploads. It used to be a hand-derived formula that counted only the
+    // embed/head, router gates and shared experts, silently omitting every
+    // KDA/attention FP16 projection (the dense body is 4.4 GiB on the real
+    // checkpoint, the old report was 1.2 GiB). The converter's VRAM profile
+    // independently computes the same quantity from the source inventory
+    // (`vram.min_bytes` = device-resident weights only), so the two must agree.
+    const fs::path out = ConvertFixture();
+
+    std::string json;
+    {
+        std::ifstream f(out / "logestix" / "model.index.json");
+        json.assign((std::istreambuf_iterator<char>(f)),
+                    std::istreambuf_iterator<char>());
+    }
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(json);
+    auto doc = parser.iterate(pad);
+    int64_t min_bytes = 0;
+    REQUIRE(doc["vram"]["min_bytes"].get_int64().get(min_bytes) ==
+            simdjson::SUCCESS);
+
+    lsxcommon::alice::AlicePinnedWeights pw;
+    REQUIRE(lsxcommon::alice::LoadAlicePinnedWeights(out.string(), pw,
+                                                     /*stream=*/nullptr));
+    INFO("loader resident=" << pw.resident_bytes
+                            << " index min_bytes=" << min_bytes);
+    REQUIRE(pw.resident_bytes > 0);
+    REQUIRE(static_cast<int64_t>(pw.resident_bytes) == min_bytes);
+    lsxcommon::alice::FreeAlicePinnedWeights(pw);
+}

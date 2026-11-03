@@ -96,6 +96,9 @@ struct AliceTopology {
 AliceTopology ParseAliceConfig(const std::string &input_dir);
 ParsedAliceTensor classify_alice_tensor(const std::string &name);
 bool alice_tensor_is_nvfp4(AliceTensorKind kind);
+// True for the fused routed-expert stacks: they live in the host ExpertStore
+// and are streamed per token, never held device-resident.
+bool alice_tensor_is_routed_expert(AliceTensorKind kind);
 
 // Converts the BF16 checkpoint into the logestix-alice-nvfp4 layout under
 // <output_root>/logestix.
