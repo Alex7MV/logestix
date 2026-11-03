@@ -30,6 +30,9 @@ add_test(NAME test_fast_load COMMAND test_fast_load)
 # reader every converter calls.
 lsx_add_test(NAME test_safetensors LINK lsxcommon)
 
+# ── Shared converter write helpers (host-only, synthetic batches) ──────
+lsx_add_test(NAME test_converter_helpers LINK lsxcommon)
+
 # Opt-in libFuzzer harness for the safetensors header parser (tests/fuzz/ is
 # outside the naming/label guards because it is not a ctest). Off by default:
 # a fuzzer needs a corpus, a time budget and an instrumented library build —
@@ -4983,6 +4986,7 @@ set_tests_properties(
     test_core
     test_fast_load
     test_safetensors
+    test_converter_helpers
     test_geometry_guard
     test_gpu_perf
     test_gpu_power
