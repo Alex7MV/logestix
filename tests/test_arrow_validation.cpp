@@ -8,9 +8,17 @@
 
 #include <arrow/api.h>
 #include <arrow/array/concatenate.h>
+#include <arrow/array/data.h>
+#include <arrow/io/file.h>
+#include <arrow/ipc/writer.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 
@@ -1006,5 +1014,101 @@ TEST_CASE("VerifyArrowTree reports missing and corrupt artifacts",
         const auto bad = av::VerifyArrowTree(dir);
         CHECK_FALSE(bad.problems.empty());
     }
+    fs::remove_all(dir);
+}
+
+// ── GH-54936: a malformed map array from IPC must be rejected, not crash ───
+//
+// Arrow's writer always serializes a consistent FieldNode.null_count, so the
+// malformed metadata the hardened reader guards against cannot be produced by
+// building an invalid batch in memory: it has to be patched into the file.
+namespace {
+
+// FieldNode = {int64 length, int64 null_count}. A one-column map batch of
+// `rows` rows serializes four nodes with identical values (map, entries
+// struct, keys, items), i.e. one 64-byte run. Patch the second node (the
+// entries struct) to advertise an unknown null count and a length far larger
+// than the validity buffer Arrow wrote for it -- the exact shape GH-54936
+// describes: `GetNullCount()` then counts set bits past the buffer.
+bool PatchMapChildNullCount(const fs::path &path, int64_t rows)
+{
+    std::vector<char> bytes;
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) return false;
+        bytes.assign(std::istreambuf_iterator<char>(in), {});
+    }
+
+    std::array<char, 64> pattern{};
+    for (std::size_t i = 0; i < pattern.size(); i += 16)
+        std::memcpy(pattern.data() + i, &rows, sizeof(rows));
+
+    const auto it = std::search(bytes.begin(), bytes.end(),
+                                pattern.begin(), pattern.end());
+    if (it == bytes.end()) return false;
+
+    const int64_t unknown = arrow::kUnknownNullCount;
+    const int64_t huge = int64_t{1} << 40;
+    std::memcpy(&*(it + 16 + 0), &huge, sizeof(huge));
+    std::memcpy(&*(it + 16 + 8), &unknown, sizeof(unknown));
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return out.good();
+}
+
+} // namespace
+
+TEST_CASE("ReadRecordBatchFromFile rejects a malformed map array instead of crashing",
+          "[arrow][ipc][regression]")
+{
+    const auto dir = TempDir("ipc_map");
+    const auto path = dir / "map.arrow";
+    constexpr int64_t kRows = 2;
+
+    auto keys = std::make_shared<arrow::StringBuilder>();
+    auto items = std::make_shared<arrow::Int32Builder>();
+    arrow::MapBuilder mb(arrow::default_memory_pool(), keys, items);
+    REQUIRE(mb.Append().ok());
+    REQUIRE(keys->Append("a").ok());
+    REQUIRE(items->Append(1).ok());
+    REQUIRE(mb.Append().ok());
+    REQUIRE(keys->Append("b").ok());
+    REQUIRE(items->Append(2).ok());
+    auto map_array = mb.Finish().ValueOrDie();
+    REQUIRE(map_array->length() == kRows);
+
+    auto schema = arrow::schema({arrow::field("m", map_array->type())});
+    auto batch = arrow::RecordBatch::Make(schema, kRows, {map_array});
+
+    const auto write_file = [&] {
+        auto sink = arrow::io::FileOutputStream::Open(path.string()).ValueOrDie();
+        auto writer =
+            arrow::ipc::MakeFileWriter(sink.get(), schema).ValueOrDie();
+        REQUIRE(writer->WriteRecordBatch(*batch).ok());
+        REQUIRE(writer->Close().ok());
+        REQUIRE(sink->Close().ok());
+    };
+
+    SECTION("a well-formed map file round-trips")
+    {
+        write_file();
+        auto stored = lc::ReadRecordBatchFromFile(path, 1);
+        REQUIRE(stored.ok());
+        CHECK((*stored)->num_rows() == kRows);
+        CHECK((*stored)->schema()->field(0)->type()->Equals(*map_array->type()));
+    }
+
+    SECTION("a map child claiming an unknown null count is rejected")
+    {
+        write_file();
+        REQUIRE(PatchMapChildNullCount(path, kRows));
+        auto stored = lc::ReadRecordBatchFromFile(path, 1);
+        REQUIRE_FALSE(stored.ok());
+        CHECK(stored.status().IsInvalid());
+        CHECK(stored.status().ToString().find("Map array") != std::string::npos);
+    }
+
     fs::remove_all(dir);
 }

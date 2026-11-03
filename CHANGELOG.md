@@ -20,6 +20,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- Bumped Apache Arrow 26.0.0 -> 26.0.1 (FetchContent pin `apache-arrow-26.0.1`;
+  the IPC reader now returns `Invalid` for a malformed map array instead of
+  crashing — GH-54936. No new APIs in our IPC/io/CUDA surface, so no call site
+  changed).
 - Bumped simdjson v5.0.5 -> v5.0.6 (submodule `third_party/simdjson`; the
   `test_core.cpp` version guard now asserts 5.0.6).
 - Bumped cpp-httplib v0.61.0 -> v0.63.0 (FetchContent pin; the `test_core.cpp`

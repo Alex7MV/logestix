@@ -45,17 +45,17 @@
 #include <memory>
 #include <cstring>
 
-TEST_CASE("Apache Arrow pinned version 26.0.0 matches loaded shared library", "[dependencies][arrow]") {
+TEST_CASE("Apache Arrow pinned version 26.0.1 matches loaded shared library", "[dependencies][arrow]") {
     // Compile-time headers and the loaded shared library must stay in lockstep
-    STATIC_REQUIRE(ARROW_VERSION == 26 * 1000000 + 0 * 1000 + 0);
-    REQUIRE(std::string(ARROW_VERSION_STRING) == "26.0.0");
+    STATIC_REQUIRE(ARROW_VERSION == 26 * 1000000 + 0 * 1000 + 1);
+    REQUIRE(std::string(ARROW_VERSION_STRING) == "26.0.1");
 
     const auto& build_info = arrow::GetBuildInfo();
     REQUIRE(build_info.version == ARROW_VERSION);
     REQUIRE(build_info.version_major == 26);
     REQUIRE(build_info.version_minor == 0);
-    REQUIRE(build_info.version_patch == 0);
-    REQUIRE(build_info.version_string == "26.0.0");
+    REQUIRE(build_info.version_patch == 1);
+    REQUIRE(build_info.version_string == "26.0.1");
 }
 
 TEST_CASE("Apache Arrow deep memory and serialization validation", "[dependencies][arrow]") {
