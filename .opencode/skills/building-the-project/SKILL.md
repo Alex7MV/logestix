@@ -60,7 +60,7 @@ cmake --build build/linux-release-znver4-aocc -j 160
 ctest --test-dir build/linux-release-znver4-aocc
 ```
 
-### AOCC: two flags the tree needs on CMake 4.2 + Arrow 26.0.0
+### AOCC: two flags the tree needs on CMake 4.2 + Arrow 26.0.1
 
 Configuring this tree with the command above **fails at the Generate step** on
 CMake 4.2:

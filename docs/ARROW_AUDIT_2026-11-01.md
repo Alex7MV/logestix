@@ -238,6 +238,20 @@ Arrow 26.0.0 в нашем узком пути (IPC + mmap + zero-copy) новы
   (A-07 закрыт). Страж `test_arrow_usage_guard` обновлён (эти файлы больше не
   в allowlist mmap/UnpackBatch).
 
+## 3e. 26.0.1 (2026-11-03)
+
+Patch release (24 коммита) с одним изменением в нашей зоне: GH-54936 —
+IPC-ридер отвергает невалидный `map`-массив статусом `Invalid` вместо
+крэша в `MapArray::ValidateChildData` (проверка `null_count` до
+`GetNullCount()`). Новых API в IPC/`io`/CUDA нет, вывод §3b остаётся в силе.
+Фикс принят регресс-тестом `test_arrow_validation` →
+`ReadRecordBatchFromFile rejects a malformed map array instead of crashing`:
+боевой вход (`mmap` + `RecordBatchFileReader`) на файле с пропатченным
+`FieldNode` (`length = 1<<40`, `null_count = -1`) возвращает `Invalid`, не
+SIGSEGV. Остальные файлы дельты — Parquet/CDC, Gandiva, Thrift 0.24
+(bundled), CI/пакетирование — наш конфиг не собирает (Parquet/Gandiva off,
+Boost не скачивается, bundled-набор — uriparser/xsimd).
+
 ## 4. Host-хранение экспертов — итог
 
 `docs/OPEN_TASKS.md` + `ingesting-a-model` R1/R2 уже фиксируют паттерн

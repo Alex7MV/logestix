@@ -207,7 +207,7 @@ set(ARROW_ENABLE_THREADING ON CACHE INTERNAL "Enable threading in Arrow core")
 FetchContent_Declare(
   Arrow
   GIT_REPOSITORY "https://github.com/apache/arrow.git"
-  GIT_TAG        "apache-arrow-26.0.0"
+  GIT_TAG        "apache-arrow-26.0.1"
   SOURCE_SUBDIR  "cpp"
   GIT_SHALLOW    TRUE
 )
@@ -222,8 +222,8 @@ set(ARROW_RUNTIME_SIMD_LEVEL "NONE" CACHE STRING "Arrow runtime SIMD level")
 FetchContent_MakeAvailable(Arrow)
 
 # Patch Boost 1.92.0 multiprecision literals.hpp for MSVC C++20 compat (Arrow
-# 26.0.0 bundles Boost 1.92.0; the same four macro invocations are still there in
-# the same shape, so this string-keyed patch still matches).
+# 26.0.1 still bundles Boost 1.92.0; the same four macro invocations are still
+# there in the same shape, so this string-keyed patch still matches).
 # The `operator""_cppi` / `_cppui` variadic UDL templates fail with MSVC 2026
 # due to redefinition errors between the unsized and sized (_cppi128 etc)
 # literal operators. Arrow doesn't use these literal suffixes, so we drop the
