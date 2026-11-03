@@ -232,6 +232,22 @@ bool alice_tensor_is_nvfp4(AliceTensorKind kind)
     case AliceTensorKind::SharedGateProj:
     case AliceTensorKind::SharedUpProj:
     case AliceTensorKind::SharedDownProj:
+    case AliceTensorKind::FusedExpertsGateUp:
+    case AliceTensorKind::FusedExpertsDown:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool alice_tensor_is_routed_expert(AliceTensorKind kind)
+{
+    // The 512-expert stacks are written per expert and streamed from the host
+    // ExpertStore; they are never device-resident, so min_bytes must exclude
+    // them and max_bytes must carry their full NVFP4 pool.
+    switch (kind) {
+    case AliceTensorKind::FusedExpertsGateUp:
+    case AliceTensorKind::FusedExpertsDown:
         return true;
     default:
         return false;
@@ -623,12 +639,22 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
 
     std::vector<VramTensorInfo> vram_inventory;
     for (const auto &shard : model.shards)
-        for (const auto &t : shard.tensors)
+        for (const auto &t : shard.tensors) {
+            // The MTP tree is stored under mtp/ and counted as deferred; the
+            // loader never uploads it, so it is not a runtime weight.
+            if (t.name.rfind("mtp.", 0) == 0) continue;
             vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
+        }
     VramProfile vram = EstimateVram(
         vram_inventory,
         {+[](const std::string &n) {
              return alice_tensor_is_nvfp4(classify_alice_tensor(n).kind);
+         },
+         +[](const std::string &n) {
+             return alice_tensor_is_routed_expert(
+                        classify_alice_tensor(n).kind)
+                        ? VramTensorClass::RoutedExpert
+                        : VramTensorClass::Resident;
          },
          nullptr},
         vg);

@@ -246,18 +246,28 @@ bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
         return true;
     };
 
+    // Count at the allocation sites (never a re-derived formula): resident
+    // bytes drive the governor lease and the `resident:` line, so an omitted
+    // term is a silent under-report, not a cosmetic number.
+    std::uint64_t resident = 0;
+    auto upload_global = [&](const std::vector<TensorRecord> &rows,
+                             std::string_view name) -> __half * {
+        const TensorRecord *r = FindRaw(rows, name);
+        if (!r) return nullptr;
+        __half *p = UploadHalf(r->data, stream);
+        if (p) resident += static_cast<std::uint64_t>(r->data.size());
+        return p;
+    };
+
     std::vector<TensorRecord> g_raw;
     if (!load_raw_file(pinned / "global.arrow", g_raw)) return false;
-    if (const auto *r = FindRaw(g_raw, "model.embed_tokens.weight"))
-        pw.embed = UploadHalf(r->data, stream);
-    if (const auto *r = FindRaw(g_raw, "lm_head.weight"))
-        pw.head = UploadHalf(r->data, stream);
-    if (const auto *r = FindRaw(g_raw, "model.norm.weight"))
-        pw.final_norm = UploadHalf(r->data, stream);
-    if (const auto *r = FindRaw(g_raw, "model.attnres_final.res_proj.weight"))
-        pw.attnres_final_proj = UploadHalf(r->data, stream);
-    if (const auto *r = FindRaw(g_raw, "model.attnres_final.res_norm_weight"))
-        pw.attnres_final_norm = UploadHalf(r->data, stream);
+    pw.embed = upload_global(g_raw, "model.embed_tokens.weight");
+    pw.head = upload_global(g_raw, "lm_head.weight");
+    pw.final_norm = upload_global(g_raw, "model.norm.weight");
+    pw.attnres_final_proj =
+        upload_global(g_raw, "model.attnres_final.res_proj.weight");
+    pw.attnres_final_norm =
+        upload_global(g_raw, "model.attnres_final.res_norm_weight");
     if (!pw.embed || !pw.head || !pw.final_norm || !pw.attnres_final_proj ||
         !pw.attnres_final_norm)
         return false;
@@ -279,12 +289,18 @@ bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
         lw.full = (l % 4 == 3);
         auto H = [&](std::string_view suffix) -> __half * {
             const auto *r = FindRaw(raw, tag + std::string(suffix));
-            return r ? UploadHalf(r->data, stream) : nullptr;
+            if (!r) return nullptr;
+            __half *p = UploadHalf(r->data, stream);
+            if (p) resident += static_cast<std::uint64_t>(r->data.size());
+            return p;
         };
         auto W = [&](std::string_view suffix,
                      lsx_nvfp4::LsxNvfp4Weight &w) -> bool {
             const auto *r = FindNvfp4(nv, tag + std::string(suffix));
-            return r ? UploadNvfp4(*r, w, stream) : false;
+            if (!r || !UploadNvfp4(*r, w, stream)) return false;
+            resident += static_cast<std::uint64_t>(w.packed_bytes +
+                                                   w.scale_bytes);
+            return true;
         };
         lw.input_norm = H("input_layernorm.weight");
         lw.post_norm = H("post_attention_layernorm.weight");
@@ -330,26 +346,7 @@ bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
         lw.loaded = true;
     }
 
-    // Resident weight estimate (dense NVFP4 + FP16 small tensors + embed/head).
-    pw.resident_bytes = 0;
-    auto add_nv = [&](const lsx_nvfp4::LsxNvfp4Weight &w) {
-        pw.resident_bytes +=
-            static_cast<std::uint64_t>(w.packed_bytes + w.scale_bytes);
-    };
-    pw.resident_bytes +=
-        static_cast<std::uint64_t>(pw.top.vocab_size) * pw.top.hidden_size * 2ull *
-        2ull;  // embed + head FP16
-    pw.resident_bytes += static_cast<std::uint64_t>(pw.top.hidden_size) * 2 * 8;
-    for (const auto &lw : pw.layers) {
-
-        add_nv(lw.shared_gate_proj); add_nv(lw.shared_up_proj);
-        add_nv(lw.shared_down_proj);
-        // small FP16 tensors (~hidden + gates)
-        pw.resident_bytes +=
-            static_cast<std::uint64_t>(pw.top.hidden_size) * 2 * 12;
-        pw.resident_bytes += static_cast<std::uint64_t>(pw.top.num_experts) *
-                             pw.top.hidden_size * 2;  // router gate
-    }
+    pw.resident_bytes = resident;
     return true;
 }
 
