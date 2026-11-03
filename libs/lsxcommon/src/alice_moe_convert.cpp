@@ -79,26 +79,6 @@ bool quantize_slice(const uint8_t *data, int64_t numel, DenseNvfp4Record &r)
                                     r.packed, r.scales, r.global_scale);
 }
 
-arrow::Status write_batch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const std::filesystem::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
-
-arrow::Status write_expert_file(const std::filesystem::path &dir, int expert,
-                                PackedExpert &&pe)
-{
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    auto batch = ExpertSchema::MakeBatch(pe);
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch,
-                                  dir / absl::StrCat("exp_", expert, ".arrow"));
-}
-
 bool ends_with(const std::string &s, std::string_view suffix)
 {
     return s.size() >= suffix.size() &&
@@ -563,7 +543,9 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
             pe.w2_scales = dn->second.scales;
             pe.w2_shape = dn->second.shape;
             pe.w2_global_scale = dn->second.global_scale;
-            ARROW_RETURN_NOT_OK(write_expert_file(dir, e, std::move(pe)));
+            ARROW_RETURN_NOT_OK(
+                WriteExpertArrow(dir / absl::StrCat("exp_", e, ".arrow"),
+                                 pe));
         }
         return arrow::Status::OK();
     };
@@ -575,21 +557,21 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
                                                 mtp_dir / "experts"));
 
     if (!global_raw.empty())
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
     for (auto &[layer, recs] : nvfp4_by_layer)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     for (auto &[layer, recs] : raw_by_layer)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
     if (!mtp_nvfp4.empty())
-        ARROW_RETURN_NOT_OK(write_batch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
+        ARROW_RETURN_NOT_OK(WriteBatch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
                                         mtp_dir / "nvfp4.arrow"));
     if (!mtp_raw.empty())
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(mtp_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(mtp_raw),
                                         mtp_dir / "raw.arrow"));
 
     total_pinned += static_cast<int64_t>(E) * 3;  // expert tensors

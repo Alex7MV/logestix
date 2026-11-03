@@ -124,14 +124,6 @@ bool quantize_slice(const uint8_t *data, int64_t numel, const TensorInfo &t,
                                     r.global_scale);
 }
 
-arrow::Status write_batch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const fs::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
-
 bool check_frozen_geometry(const KimiK3ConvertTopology &top, std::string &why)
 {
     using namespace frozen;
@@ -704,21 +696,21 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
 
     // ── Write the pinned / streamed / global batches ──
     if (!global_nvfp4.empty())
-        ARROW_RETURN_NOT_OK(write_batch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
+        ARROW_RETURN_NOT_OK(WriteBatch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
                                         pinned_dir / "global_nvfp4.arrow"));
     if (!global_raw.empty())
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
     for (auto &[layer, recs] : pinned_nvfp4)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     for (auto &[layer, recs] : pinned_raw)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
     for (auto &[layer, recs] : streamed_nvfp4)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             streamed_dir / absl::StrCat("layer_", layer, ".arrow")));
 

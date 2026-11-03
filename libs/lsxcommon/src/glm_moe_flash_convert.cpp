@@ -382,14 +382,6 @@ FlashTopology ParseFlashConfig(const std::string &input_dir)
 
 namespace {
 
-arrow::Status write_batch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const fs::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
-
 // NVFP4-quantizes a raw FP8 + F32-tile-scale tensor: GPU dequant to BF16
 // then quantize_tensor_gpu("BF16").
 arrow::Status quantize_fp8_nvfp4(const std::vector<uint8_t> &fp8,
@@ -414,22 +406,6 @@ arrow::Status quantize_fp8_nvfp4(const std::vector<uint8_t> &fp8,
 }
 
 // Writes one expert's NVFP4 payload triple to experts/layer_<l>/exp_<e>.arrow.
-arrow::Status write_expert_file(const fs::path &base_dir, int layer,
-                                int expert, PackedExpert &&pe)
-{
-    const std::string l3 = absl::StrCat("layer_",
-                                        absl::Dec(layer, absl::kZeroPad3));
-    fs::path dir = base_dir / "experts" / l3;
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    auto batch = ExpertSchema::MakeBatch(pe);
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(
-        *batch,
-        dir / absl::StrCat("exp_", absl::Dec(expert, absl::kZeroPad3),
-                           ".arrow"));
-}
-
 arrow::Status FillPackedExpert(int proj_id, DenseNvfp4Record r,
                                PackedExpert &pe)
 {
@@ -622,13 +598,20 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                 return arrow::Status::IOError("short read: ", g);
             global_raw.push_back(std::move(r));
         }
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
     }
 
     // ── Experts pass (per MoE layer, bounded RAM): collect the three FP8
     // projections + F32 scale tiles per expert, dequant->requant on GPU,
     // write per-expert arrow files. ──
+    // GLM-5.3-Flash pads the routed-expert names (layer_%03d/exp_%03d.arrow)
+    // and its loader reads that layout, so it builds the path itself.
+    const auto expert_path = [](const fs::path &root, int l, int e) {
+        return root / "experts" /
+               absl::StrCat("layer_", absl::Dec(l, absl::kZeroPad3)) /
+               absl::StrCat("exp_", absl::Dec(e, absl::kZeroPad3), ".arrow");
+    };
     for (int layer = frozen::kMoeFirstLayer; layer <= frozen::kMtpLayer;
          ++layer) {
         struct ExpertParts {
@@ -698,8 +681,8 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                                        absl::StrCat("layer_", layer, ".e",
                                                     eid, ".w3"), r3));
                 ARROW_RETURN_NOT_OK(FillPackedExpert(3, std::move(r3), pe));
-                ARROW_RETURN_NOT_OK(write_expert_file(base, layer, eid,
-                                                      std::move(pe)));
+                ARROW_RETURN_NOT_OK(
+                    WriteExpertArrow(expert_path(base, layer, eid), pe));
                 ep.done = true;
                 ep.w1.clear(); ep.w2.clear(); ep.w3.clear();
                 ep.s1.clear(); ep.s2.clear(); ep.s3.clear();
@@ -782,11 +765,11 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
 
         const std::string l3 =
             absl::StrCat("layer_", absl::Dec(layer, absl::kZeroPad3));
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(raw_recs),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(raw_recs),
                                         pinned_dir / (l3 + ".arrow")));
         if (!nvfp4_recs.empty()) {
             ARROW_RETURN_NOT_OK(
-                write_batch(DenseNvfp4Schema::MakeBatch(nvfp4_recs),
+                WriteBatch(DenseNvfp4Schema::MakeBatch(nvfp4_recs),
                             pinned_dir / (l3 + "_nvfp4.arrow")));
         }
     }

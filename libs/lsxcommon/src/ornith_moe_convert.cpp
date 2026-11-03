@@ -76,28 +76,7 @@ bool quantize_slice(const uint8_t *data, int64_t numel,
                                     {}, r.packed, r.scales, r.global_scale);
 }
 
-arrow::Status write_batch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const std::filesystem::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
-
 // Writes one expert's NVFP4 payload triple to experts/layer_<l>/exp_<e>.arrow.
-arrow::Status write_expert_file(const std::filesystem::path &base_dir,
-                                int layer, int expert, PackedExpert &&pe)
-{
-    namespace fs = std::filesystem;
-    fs::path dir = base_dir / "experts" / absl::StrCat("layer_", layer);
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    auto batch = ExpertSchema::MakeBatch(pe);
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch,
-                                  dir / absl::StrCat("exp_", expert, ".arrow"));
-}
-
 } // namespace
 
 // ── Frozen-geometry gate ──────────────────────────────────────────────────
@@ -699,51 +678,51 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             pe.w2_scales = c->second.scales;
             pe.w2_shape = c->second.shape;
             pe.w2_global_scale = c->second.global_scale;
-            ARROW_RETURN_NOT_OK(write_expert_file(base, l, e, std::move(pe)));
+            ARROW_RETURN_NOT_OK(WriteExpertArrow(ExpertArrowPath(base, l, e), pe));
         }
     }
 
     if (!global_raw.empty()) {
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
     }
     if (!global_nvfp4.empty()) {
         ARROW_RETURN_NOT_OK(
-            write_batch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
+            WriteBatch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
                         pinned_dir / "global_nvfp4.arrow"));
     }
     for (auto &[layer, recs] : nvfp4_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     }
     for (auto &[layer, recs] : raw_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
     }
     for (auto &[layer, recs] : router_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             router_dir / absl::StrCat("layer_", layer, ".arrow")));
     }
     for (auto &[layer, recs] : shared_nvfp4_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             shared_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     }
     for (auto &[layer, recs] : shared_gate_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             shared_dir / absl::StrCat("layer_", layer, "_gate.arrow")));
     }
     if (!mtp_nvfp4.empty()) {
         ARROW_RETURN_NOT_OK(
-            write_batch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
+            WriteBatch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
                         mtp_dir / "mtp_nvfp4.arrow"));
     }
     if (!mtp_raw.empty()) {
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(mtp_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(mtp_raw),
                                         mtp_dir / "mtp_raw.arrow"));
     }
 

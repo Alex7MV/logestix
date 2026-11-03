@@ -18,6 +18,25 @@ arrow::Status SaveExpertToArrow(
     int expert_idx,
     const std::filesystem::path &output_root);
 
+// Unwraps a `MakeBatch()` result and writes it (14 identical per-family
+// adapters were deleted in favour of this one).
+arrow::Status WriteBatch(
+    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
+    const std::filesystem::path &path);
+
+// <model_root>/experts/layer_<layer>/exp_<expert>.arrow — the canonical layout
+// of the families that do not zero-pad names. glm-mode-flash pads its own path
+// and alice passes its layer directory; both call WriteExpertArrow directly.
+std::filesystem::path ExpertArrowPath(const std::filesystem::path &model_root,
+                                      int layer, int expert);
+
+// Creates the parent directory, wraps `expert` in a zero-copy batch,
+// validates the buffers and writes the record. No per-file log: converters
+// write tens of thousands of experts (SaveExpertToArrow is the logging
+// single-file wrapper).
+arrow::Status WriteExpertArrow(const std::filesystem::path &path,
+                               const PackedExpert &expert);
+
 // Reads only the shared-expert tensors (w{1,2,3}.weight + w{1,2,3}.scale)
 // from the source safetensors shards and re-packs them into
 // <output_root>/pinned/shared_experts.arrow. Used to regenerate the shared
