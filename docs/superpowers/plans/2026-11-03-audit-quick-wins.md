@@ -1058,12 +1058,12 @@ rg "warning:" /tmp/opencode/build_after.log | rg -v "_deps|third_party/" | wc -l
 ```
 Expected: `exit=0`; total warnings ≤ 5 % of the Step 1 count.
 
-Measured after execution (2026-11-03): 51408 -> 484 total, with 238 from our own
-sources. Those 238 are pre-existing defects that were previously buried; fixing
-them means touching shared `__restrict__` kernel signatures (39 in-place
-activation call sites) and 130 smaller sites, so they are recorded with a
-per-kind breakdown in `docs/OPEN_TASKS.md` § W instead of being rushed into this
-branch. Do not suppress them.
+Measured after execution (2026-11-03): the flag work alone took the build from
+51408 to 484 lines, 238 of them ours. Those 238 were then cleared in a follow-up
+commit (39 `__restrict__` in-place call sites, fail-closed config parsers, one
+dangling test reference, `memcpy` into `__half`, 19 dead functions): the final
+clean build is **246 lines, 0 from our sources**, and the trail is archived in
+`docs/open-tasks/2026-11-03-warning-backlog-closed.md`. Do not silence.
 
 - [ ] **Step 5: Inspect the remaining warnings**
 

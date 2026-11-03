@@ -860,7 +860,9 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
   then flags nvcc's own `#line` markers. Three machine checks keep this state:
   `test_infrastructure_guard` (no `${CMAKE_BINARY_DIR}/_deps` paths, one
   definition per shared converter helper, `CUDA_ARCHITECTURES` only
-  `${LSX_CUDA_ARCH}`/`OFF`).
+  `${LSX_CUDA_ARCH}`/`OFF`). Our own sources build with **zero** warnings (a
+  clean Linux build is 246 lines, all from the vendored targets' own builds);
+  `-Werror` is still gated on validating the MSVC/AOCC presets.
 - CUDA `.cu` files are split into separate OBJECT libraries (`lsxcommon_cu`,
   `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), linked into `lsxcommon`
   PUBLIC — this isolates NVCC from MSVC flags. `cudart` is found via
