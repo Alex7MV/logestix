@@ -9,7 +9,7 @@ description: Use when writing or reviewing logestix host code — spdlog-only lo
 
 Repo-wide style and layout rules for logestix host code. They are small but
 enforced by review, and the logging rule has a mechanical check
-(`test_absl_format_guard` plus the `rg` scan). Language/container policy and
+(`test_logging_guard`, label `fast`). Language/container policy and
 kernel-level rules live in dedicated skills (see **Related**).
 
 ## Language and logging
@@ -17,6 +17,11 @@ kernel-level rules live in dedicated skills (see **Related**).
 - **C++20 / C23.**
 - All logging goes through **spdlog** (`lsxcommon/log.h`, `spdlog::…`). No
   `std::cout`, no `printf`, no `fprintf` in production code.
+  Machine-checked by `tests/test_logging_guard.cpp` (static scan of `libs/`
+  and `apps/`): a stray stdio/stdout call fails, and every declared exception
+  (device printf, env-gated perf probes, logger teardown, header-only
+  invariants) is an exact trimmed line in its two-way `Allowlist()` — an
+  undeclared call and a stale entry both fail.
 - `absl::StrFormat`/`StrCat` are the string-formatting tools; `absl::StrFormat`
   takes printf-style conversions only (`%s/%d/%u/%f`) — a `{}` prints literally.
   The guard `test_absl_format_guard` scans `libs/` and `apps/`.
@@ -52,7 +57,9 @@ kernel-level rules live in dedicated skills (see **Related**).
 
 ## Common mistakes
 
-- Adding a `std::cout` for a quick debug and leaving it in.
+- Adding a `std::cout` or a `printf`/`fprintf(stderr, …)` probe for a quick
+  debug and leaving it in — convert it to `log::debug/info/warn/error`, or
+  declare the exact line in `test_logging_guard`'s allowlist with a category.
 - Putting new logic in `apps/*/src/` instead of `libs/lsxcommon/`.
 - Replacing `#include` lines with annotated ones.
 - Using `{}` in `absl::StrFormat` and shipping a literal `{}` (see

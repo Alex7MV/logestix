@@ -221,13 +221,14 @@ cudaError_t LingSession::EnsureCapacity(const LingIndex &top, int64_t want,
                 nk + l * g.LayerStride(), d_kv + l * geom.LayerStride(),
                 bytes, cudaMemcpyDeviceToDevice, stream);
             if (ce != cudaSuccess) {
-                std::fprintf(stderr,
-                             "[ling-dbg] kv copy fail l=%lld bytes=%zu src_off=%lld "
-                             "dst_off=%lld: %s\n",
-                             static_cast<long long>(l), bytes,
-                             static_cast<long long>(l * geom.LayerStride()),
-                             static_cast<long long>(l * g.LayerStride()),
-                             cudaGetErrorString(ce));
+                log::error(absl::StrFormat(
+                    "[ling] kv copy failed l=%lld bytes=%llu src_off=%lld "
+                    "dst_off=%lld: %s",
+                    static_cast<long long>(l),
+                    static_cast<unsigned long long>(bytes),
+                    static_cast<long long>(l * geom.LayerStride()),
+                    static_cast<long long>(l * g.LayerStride()),
+                    cudaGetErrorString(ce)));
                 cudaFree(nk);
                 return ce;
             }

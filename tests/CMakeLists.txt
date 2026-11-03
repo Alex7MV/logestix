@@ -6258,6 +6258,17 @@ target_compile_definitions(test_absl_container_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_ABSC}\"")
 add_test(NAME test_absl_container_guard COMMAND test_absl_container_guard)
 
+# Guard: host logging goes through spdlog / lsxcommon::log only; no std::cout
+# and no stdio logging (printf/fprintf/...) in production code. Host-only
+# static scan of libs/ and apps/ with a two-way allowlist (device printf,
+# env-gated perf probes, logger teardown).
+add_executable(test_logging_guard test_logging_guard.cpp)
+target_link_libraries(test_logging_guard PRIVATE Catch2::Catch2WithMain)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_LOG)
+target_compile_definitions(test_logging_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LOG}\"")
+add_test(NAME test_logging_guard COMMAND test_logging_guard)
+
 # Guard: the E1 FastMathScope depth must be process-global across TUs. The
 # header used to keep it in an anonymous-namespace static (one copy per TU),
 # which leaked the counter and printed false VIOLATION lines. Two TUs on
@@ -7195,6 +7206,7 @@ set_tests_properties(
     test_code_naming_guard
     test_absl_format_guard
     test_absl_container_guard
+    test_logging_guard
     test_fast_math_guard_cross_tu
     test_granite_tool_framing
     test_cuda_event_wait

@@ -773,7 +773,7 @@ procedure — `perf-tuning-a-model`.
   (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
   (`FastMathMode::kOff`); the only app with a numeric mode.
 - `tests/` — Catch2 v3.16.1 suite; labels `fast`/`convert`/`inference`/`perf`
-  (see § Test) + model/naming/absl/toolchain guard tests. Arrow IPC rules are
+  (see § Test) + model/naming/absl/logging/toolchain guard tests. Arrow IPC rules are
   machine-checked by `test_arrow_usage_guard` (mmap-only reads, recorded
   `UnpackBatch` verdicts, atomic writes, the per-model audit matrix), hardened
   by `test_arrow_validation` and validated against the real converted trees by
@@ -857,7 +857,8 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
 
 ## Conventions
 
-Language C++20/C23, logging only via spdlog (no `std::cout`/`printf`),
+Language C++20/C23, logging only via spdlog (no `std::cout`/`printf`;
+machine-checked by `test_logging_guard`, label `fast`),
 `#include` style, `target_include_directories` with `$<BUILD_INTERFACE:...>`, placement
 of new `.cpp` files (app `add_executable` vs `libs/lsxcommon/`) and preservation of
 Doxygen/JSDoc — skill **`coding-conventions`**

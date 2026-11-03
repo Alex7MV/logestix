@@ -557,6 +557,7 @@ without updating them fails CI.
 | `test_ctest_labels_guard.cpp` | — (just label new tests) | every test carries a label in the same commit |
 | `test_model_suite_guard.cpp` (golden case) | fsi/code/det **golden files**, or an explicit `kGoldenDebt` entry | a parity stage whose golden is absent SKIPs, and a SKIP is indistinguishable from a pass — this is how gemma reported SUCCESS on two stages that never ran |
 | `test_absl_format_guard.cpp` | — | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
+| `test_logging_guard.cpp` | — (fix the call or add an exact-line allowlist entry with a category) | host logging uses spdlog / `lsxcommon::log`: no `std::cout` and no stdio logging (`printf`/`fprintf`/…) in the family's `libs/`/`apps/` code |
 | `test_expert_store_guard.cpp` | only if you migrate a **legacy** model off `MoEExpertStore` — then delete its rows from `kLegacyConsumers` | the host routed-expert store is the neutral `ExpertStore`, never a family-private OWNING container: no owning map of `PackedExpert`/`TensorRecord`/`DenseNvfp4Record`/`SharedExpertRecord`, no `…ExpertHost`/`…ExpertTable` identifier, every `*ExpertEntry` view file aliases `ExpertStore<`, and the legacy all-experts-in-pinned-slabs store cannot spread to a new family. Enforces R1/R2 below |
 
 ## Definition of done

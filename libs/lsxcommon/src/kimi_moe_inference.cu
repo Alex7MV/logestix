@@ -1600,8 +1600,10 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                             stream, ent, h_w[k], row, acc,
                             d_staging, staging_bytes, v);
                         if (fe != cudaSuccess) {
-                            fprintf(stderr, "[trace] FFN l=%d e=%d err=%s\n",
-                                    l, h_ids[k], cudaGetErrorString(fe));
+                            log::error("[kimi] routed FFN failed l=" +
+                                       std::to_string(l) + " e=" +
+                                       std::to_string(h_ids[k]) + ": " +
+                                       cudaGetErrorString(fe));
                             return fe;
                         }
                         // Publish the read so a later upload evicting this
@@ -1619,8 +1621,10 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                              db.entries[(size_t)l * kKimiNumRouted + h_ids[k]],
                              h_w[k], row, acc, d_staging, staging_bytes);
                         if (fe != cudaSuccess) {
-                            fprintf(stderr, "[trace] FFN l=%d e=%d err=%s\n",
-                                    l, h_ids[k], cudaGetErrorString(fe));
+                            log::error("[kimi] routed FFN failed l=" +
+                                       std::to_string(l) + " e=" +
+                                       std::to_string(h_ids[k]) + ": " +
+                                       cudaGetErrorString(fe));
                             return fe;
                         }
                     }
