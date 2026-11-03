@@ -1,7 +1,9 @@
 # Warning backlog closed (2026-11-03)
 
-Branch `audit/2026-11-03-quick-wins`. Snapshot of the `§ W` item that the
-build-noise work created and the follow-up session closed.
+Branch `audit/2026-11-03-quick-wins`. Snapshot of the warning-backlog item
+that the build-noise work created and the follow-up session closed (it briefly
+used the letter W, which the 2026-10-23 environment-oracle entry had already
+retired).
 
 ## What the item was
 
