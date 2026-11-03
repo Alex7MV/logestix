@@ -20,6 +20,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- Consolidated the duplicated dense-decoder kernels: a new model-neutral
+  `lsxcommon::dense` layer (`lsx_dense_inference.{h,cu}`) now owns RMSNorm,
+  full-dim RoPE, causal GQA attention (with the split-KV path), fused split-QKV
+  and fused SwiGLU; granite, granite-switch and phi keep their layer drivers
+  and delegate through their existing `RunGranite*`/`RunGraniteSwitch*`/`RunPhi*`
+  entry points. Net -729 lines in `libs/`, -206 in `tests/`, zero behaviour
+  change (`tools/dedup_provenance.py` proves the kernels moved verbatim;
+  `logits_hash` unchanged on all three models).
 - Bumped Apache Arrow 26.0.0 -> 26.0.1 (FetchContent pin `apache-arrow-26.0.1`;
   the IPC reader now returns `Invalid` for a malformed map array instead of
   crashing — GH-54936. No new APIs in our IPC/io/CUDA surface, so no call site
