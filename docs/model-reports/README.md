@@ -43,3 +43,4 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | Step-5-Preview | `2026-10-31-Step-5-Preview.md` |
 | Mistral-Large-4-1T-A52B | `2026-11-02-Mistral-Large-4-1T-A52B.md` |
 | Qwen3.8-27B | `2026-11-03-Qwen3.8-27B.md` |
+| AliceAI-Foundation-80B-A3B-Base | `2026-11-03-AliceAI-Foundation-80B-A3B-Base.md` |

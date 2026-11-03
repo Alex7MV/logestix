@@ -1,6 +1,7 @@
 # SelfCheck matrix — model x parity gate, as measured
 
 Snapshot of **2026-10-24/25**, updated **2026-10-31** (GigaChat3.5-432B-A28B),
+re-verified **2026-11-03** (AliceAI-Foundation-80B-A3B re-ingestion),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`.

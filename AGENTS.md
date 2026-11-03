@@ -320,8 +320,13 @@ procedure — `perf-tuning-a-model`.
   (gated full attention: per-head q/gate split + ZC q/k norm + partial RoPE +
   GQA + output gate), `alice_moe_inference_pipeline.{h,cu}` (AttnRes-blocked
   layer graph + generation), `alice_moe_model.{h,cpp}`; format tag
-  `logestix-alice-nvfp4`; converted with `lsxforge --alice`; real-weight
-  selfcheck passes).
+  `logestix-alice-nvfp4`; converted with `lsxforge --alice`; re-ingested
+  2026-11-03 on real weights — SelfCheck Paris ×3 bit-exact
+  (`logits_hash f900547d25be7914`), FSI/CODE/DET 3/3 each, native tool
+  round-trip `get_weather {"city":"Paris"}`, **45.70 t/s (perf) / 45.88 (r3)**
+  at 2048 tokens, 4.13 GiB device-resident (2.9 s load), routed experts
+  host-streamed; report
+  `docs/model-reports/2026-11-03-AliceAI-Foundation-80B-A3B-Base.md`).
   Xing4.0-29B-A4B (independent family `xing`: TeleChat, mHC (hyper-connection)
   depth mixer with **4 parallel hidden streams** + full MLA + stored MTP layer,
   40L resident + MTP layer 40 / 3584H / 32 MLA heads / `q_lora=768` /
