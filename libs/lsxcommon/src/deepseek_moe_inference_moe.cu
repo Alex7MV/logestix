@@ -3,6 +3,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/log.h"
+#include "deepseek_moe_pro_constants.h"
 #include "deepseek_moe_load.cuh"
 #include "lsx_kernels_act.cuh"
 #include <cuda_runtime.h>
@@ -235,6 +236,7 @@ __global__ void scale_float_kernel(float* d_buf, float scalar, int n)
 // as CUDA_R_16F inputs with CUBLAS_COMPUTE_32F — half the weight-materialization
 // traffic of the old FP32 path and full 5th-gen Tensor Core utilization.
 // W1/W3 GEMM outputs stay FP32 to prevent FP16 overflow.
+template <class T>
 cudaError_t run_shared_experts_ffn(
     cudaStream_t stream,
     const __half *d_hidden,
@@ -244,16 +246,16 @@ cudaError_t run_shared_experts_ffn(
     int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
     float *d_intermediate_f32, float *d_gate_f32,   // FP32 W1/W3 outputs
     float *d_dequant, __half *d_output,
-    const __half *d_w1_h_cache = nullptr,
-    const __half *d_w3_h_cache = nullptr,
-    const float *d_w2_f32_cache = nullptr)
+    const __half *d_w1_h_cache,
+    const __half *d_w3_h_cache,
+    const float *d_w2_f32_cache)
 {
     float alpha = 1.0f, beta = 0.0f;
 
-    int hidden_dim = kHiddenDim;
+    int hidden_dim = T::kHidden;
     // F8_E4M3: 1 byte per element. intermediate_dim = n_elements / hidden_dim
     int intermediate_dim = w1_bytes > 0
-        ? static_cast<int>(w1_bytes / hidden_dim) : kIntermediateDim;
+        ? static_cast<int>(w1_bytes / hidden_dim) : T::kMoeIntermediate;
     int w1_el = hidden_dim * intermediate_dim;
     int w2_el = intermediate_dim * hidden_dim;
 
@@ -375,6 +377,7 @@ __global__ void coeff_add_f32_kernel(const __half* __restrict__ y, float w,
     dst[i] += w * __half2float(y[i]);
 }
 
+template <class T>
 cudaError_t run_routed_expert_ffn(
     cudaStream_t stream,
     const __half *d_hidden,
@@ -385,8 +388,8 @@ cudaError_t run_routed_expert_ffn(
     float *d_output,
     float weight)
 {
-    constexpr int I = kIntermediateDim;
-    constexpr int H = kHiddenDim;
+    constexpr int I = T::kMoeIntermediate;
+    constexpr int H = T::kHidden;
 
 
     if (lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(stream, d_hidden, d_w13, d_s13,
@@ -419,6 +422,7 @@ cudaError_t run_routed_expert_ffn(
 // selection; hash layers 0..2 use tid2eid) → norm_topk_prob → ×route_scale.
 // `d_logits_scratch` / `h_logits_scratch` are caller-owned arena carves sized
 // [num_routed] — route_token performs ZERO CUDA allocations (spec item 12).
+template <class T>
 cudaError_t route_token_begin(
     cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -426,7 +430,7 @@ cudaError_t route_token_begin(
     __half *d_logits_scratch, float *h_logits_scratch,
     cudaEvent_t ev)
 {
-    if (num_routed <= 0 || num_routed > kNumRouted)
+    if (num_routed <= 0 || num_routed > T::kNumRouted)
         return cudaErrorInvalidValue;
 
     float alpha = 1.0f, beta = 0.0f;
@@ -452,6 +456,7 @@ namespace {
 // Host-side scoring over the readback logits: identical math to the original
 // fused route_token (sqrt(softplus) scores → biased top-k selection →
 // normalized weights ×route_scale). Bit-exact by construction.
+template <class T>
 cudaError_t route_scores_host(
     int num_routed, int token_id,
     const int64_t *h_tid2eid, int tid2eid_stride,
@@ -460,27 +465,27 @@ cudaError_t route_scores_host(
     float *h_logits_scratch,
     int *h_top_indices, float *h_top_weights)
 {
-    constexpr float kRouteScale = 1.5f;
+    constexpr float kRouteScale = T::kRouteScale;
 
     // Defensive bounds: `scores`/`sel`/`selected` are fixed-size stack arrays
     // sized for the model's known geometry (kNumRouted, declared in
     // deepseek_moe_load.cuh). A `num_routed`
     // larger than that would overflow them; a `topk` larger than the actual
     // candidate pool would leave `h_top_indices` slots unfilled further down.
-    if (num_routed <= 0 || num_routed > kNumRouted)
+    if (num_routed <= 0 || num_routed > T::kNumRouted)
         return cudaErrorInvalidValue;
     if (topk > num_routed) topk = num_routed;
     if (topk <= 0) return cudaErrorInvalidValue;
 
     // scores[i] = sqrt(softplus(logit[i]))  (unbiased)
-    float scores[kNumRouted];
+    float scores[T::kNumRouted];
     for (int i = 0; i < num_routed; ++i) {
         float x = __half2float(reinterpret_cast<__half*>(h_logits_scratch)[i]);
         scores[i] = sqrtf(log1pf(expf(x)));
     }
 
     // Selection scores: biased (bias is null for hash layers)
-    float sel[kNumRouted];
+    float sel[T::kNumRouted];
     for (int i = 0; i < num_routed; ++i)
         sel[i] = scores[i] + (h_gate_bias ? h_gate_bias[i] : 0.0f);
 
@@ -500,7 +505,7 @@ cudaError_t route_scores_host(
         for (int k = 0; k < topk; ++k)
             h_top_indices[k] = static_cast<int>(h_tid2eid[base + k]);
     } else {
-        bool selected[kNumRouted] = {false};
+        bool selected[T::kNumRouted] = {false};
         bool any_unfilled = false;
         for (int k = 0; k < topk; ++k) {
             float best_val = -FLT_MAX;
@@ -547,6 +552,7 @@ cudaError_t route_scores_host(
 
 } // namespace
 
+template <class T>
 cudaError_t route_token_finish(
     int num_routed, int token_id,
     const int64_t *h_tid2eid, int tid2eid_stride,
@@ -561,11 +567,12 @@ cudaError_t route_token_finish(
     // for whatever else the pipeline enqueued behind them on this stream.
     cudaError_t e = cudaEventSynchronize(ev);
     if (e != cudaSuccess) return e;
-    return route_scores_host(num_routed, token_id, h_tid2eid, tid2eid_stride,
+    return route_scores_host<T>(num_routed, token_id, h_tid2eid, tid2eid_stride,
                              h_gate_bias, topk, h_logits_scratch,
                              h_top_indices, h_top_weights);
 }
 
+template <class T>
 cudaError_t route_token(
     cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -576,13 +583,13 @@ cudaError_t route_token(
     __half *d_logits_scratch, float *h_logits_scratch,
     int *h_top_indices, float *h_top_weights)
 {
-    cudaEvent_t ev = nullptr;
+    cudaEvent_t ev;
     cudaError_t e = cudaEventCreate(&ev);
     if (e != cudaSuccess) return e;
-    e = route_token_begin(stream, d_gate, d_hidden, hidden_dim,
+    e = route_token_begin<T>(stream, d_gate, d_hidden, hidden_dim,
                           num_routed, d_logits_scratch, h_logits_scratch, ev);
     if (e == cudaSuccess)
-        e = route_token_finish(num_routed, token_id, h_tid2eid, tid2eid_stride,
+        e = route_token_finish<T>(num_routed, token_id, h_tid2eid, tid2eid_stride,
                                h_gate_bias, topk, h_logits_scratch,
                                h_top_indices, h_top_weights, ev);
     cudaEventDestroy(ev);
@@ -596,6 +603,7 @@ cudaError_t route_token(
 // expert already lives in the resident device cache (@p cache), in which case
 // the H2D copies are skipped entirely and the cached slot is addressed
 // directly (single-stream ordering makes slot reuse safe).
+template <class T>
 cudaError_t run_routed_experts_ex(
     cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
     cudaEvent_t pre_ev,
@@ -608,8 +616,8 @@ cudaError_t run_routed_experts_ex(
     int64_t pack_stage_bytes, int64_t scale_stage_bytes,
     const ExpertDeviceCache *cache)
 {
-    const int64_t w1_el = static_cast<int64_t>(kHiddenDim) * kIntermediateDim;
-    const int64_t w2_el = static_cast<int64_t>(kIntermediateDim) * kHiddenDim;
+    const int64_t w1_el = static_cast<int64_t>(T::kHidden) * T::kMoeIntermediate;
+    const int64_t w2_el = static_cast<int64_t>(T::kMoeIntermediate) * T::kHidden;
     const int64_t w3_el = w1_el;
 
     // d_output already holds the shared-expert FFN result (or was freshly
@@ -774,7 +782,7 @@ cudaError_t e = cudaSuccess;
             ee = cudaStreamWaitEvent(stream, stage_ev[k], 0);
             if (ee != cudaSuccess) return ee;
         }
-        cudaError_t e = run_routed_expert_ffn(stream, d_normed,
+        cudaError_t e = run_routed_expert_ffn<T>(stream, d_normed,
             p13, s13, en.w1_global_scale, en.w3_global_scale,
             p2, s2, en.w2_global_scale,
             d_yg, d_y2, d_output, h_top_weights[k]);
@@ -785,6 +793,7 @@ cudaError_t e = cudaSuccess;
 
 // Legacy entry point (no resident cache) — kept stable for existing callers
 // and tests; the production pipeline uses run_routed_experts_ex with a cache.
+template <class T>
 cudaError_t run_routed_experts(
     cudaStream_t stream,
     const __half *d_normed,
@@ -795,7 +804,7 @@ cudaError_t run_routed_experts(
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes)
 {
-    return run_routed_experts_ex(stream, nullptr, nullptr, nullptr, d_normed,
+    return run_routed_experts_ex<T>(stream, nullptr, nullptr, nullptr, d_normed,
         db_entries, layer, experts_per_layer,
         h_top_indices, h_top_weights, topk,
         d_output, d_yg, d_y2,
@@ -808,6 +817,7 @@ cudaError_t run_routed_experts(
 // the shared-expert FFN the compute stream is about to run. Fills resident
 // cache slots in the pair layout; misses only — hits are free. Records
 // @p ev on @p copy_stream when any copy was issued (the consumer waits on it).
+template <class T>
 cudaError_t issue_routed_staging(
     cudaStream_t copy_stream, cudaEvent_t ev, ExpertDeviceCache *cache,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
@@ -920,6 +930,144 @@ if (en.pinned_blob) {
     }
     return cudaSuccess;
 }
+
+// ── Explicit instantiations: V4-Flash and V4-Pro-0813 ───────────────────────
+template cudaError_t run_shared_experts_ffn<lsxcommon::deepseek::Passport>(
+    cudaStream_t stream,
+    const __half *d_hidden,
+    const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
+    const uint8_t *d_w1_scales, const uint8_t *d_w2_scales, const uint8_t *d_w3_scales,
+    float /*w1_gs*/, float /*w2_gs*/, float /*w3_gs*/,
+    int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
+    float *d_intermediate_f32, float *d_gate_f32,   // FP32 W1/W3 outputs
+    float *d_dequant, __half *d_output,
+    const __half *d_w1_h_cache,
+    const __half *d_w3_h_cache,
+    const float *d_w2_f32_cache);
+template cudaError_t run_shared_experts_ffn<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t stream,
+    const __half *d_hidden,
+    const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
+    const uint8_t *d_w1_scales, const uint8_t *d_w2_scales, const uint8_t *d_w3_scales,
+    float /*w1_gs*/, float /*w2_gs*/, float /*w3_gs*/,
+    int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
+    float *d_intermediate_f32, float *d_gate_f32,   // FP32 W1/W3 outputs
+    float *d_dequant, __half *d_output,
+    const __half *d_w1_h_cache,
+    const __half *d_w3_h_cache,
+    const float *d_w2_f32_cache);
+template cudaError_t run_routed_expert_ffn<lsxcommon::deepseek::Passport>(
+    cudaStream_t stream,
+    const __half *d_hidden,
+    const uint8_t *d_w13, const uint8_t *d_s13, float gs1, float gs3,
+    const uint8_t *d_w2, const uint8_t *d_s2, float gs2,
+    __half *d_yg,        // [2*I] halves: [gate | up] pair-GEMV output
+    __half *d_y2,        // [H] halves: w2 GEMV output
+    float *d_output,
+    float weight);
+template cudaError_t run_routed_expert_ffn<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t stream,
+    const __half *d_hidden,
+    const uint8_t *d_w13, const uint8_t *d_s13, float gs1, float gs3,
+    const uint8_t *d_w2, const uint8_t *d_s2, float gs2,
+    __half *d_yg,        // [2*I] halves: [gate | up] pair-GEMV output
+    __half *d_y2,        // [H] halves: w2 GEMV output
+    float *d_output,
+    float weight);
+template cudaError_t route_token_begin<lsxcommon::deepseek::Passport>(
+    cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    __half *d_logits_scratch, float *h_logits_scratch,
+    cudaEvent_t ev);
+template cudaError_t route_token_begin<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    __half *d_logits_scratch, float *h_logits_scratch,
+    cudaEvent_t ev);
+template cudaError_t route_token_finish<lsxcommon::deepseek::Passport>(
+    int num_routed, int token_id,
+    const int64_t *h_tid2eid, int tid2eid_stride,
+    const float *h_gate_bias,
+    int topk,
+    float *h_logits_scratch,
+    int *h_top_indices, float *h_top_weights,
+    cudaEvent_t ev);
+template cudaError_t route_token_finish<lsxcommon::deepseek_pro::Passport>(
+    int num_routed, int token_id,
+    const int64_t *h_tid2eid, int tid2eid_stride,
+    const float *h_gate_bias,
+    int topk,
+    float *h_logits_scratch,
+    int *h_top_indices, float *h_top_weights,
+    cudaEvent_t ev);
+template cudaError_t route_token<lsxcommon::deepseek::Passport>(
+    cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
+    const float *h_gate_bias,
+    int topk,
+    __half *d_logits_scratch, float *h_logits_scratch,
+    int *h_top_indices, float *h_top_weights);
+template cudaError_t route_token<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
+    const float *h_gate_bias,
+    int topk,
+    __half *d_logits_scratch, float *h_logits_scratch,
+    int *h_top_indices, float *h_top_weights);
+template cudaError_t run_routed_experts_ex<lsxcommon::deepseek::Passport>(
+    cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
+    cudaEvent_t pre_ev,
+    const __half *d_normed,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, const float *h_top_weights, int topk,
+    float *d_output,
+    __half *d_yg, __half *d_y2,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes,
+    const ExpertDeviceCache *cache);
+template cudaError_t run_routed_experts_ex<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
+    cudaEvent_t pre_ev,
+    const __half *d_normed,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, const float *h_top_weights, int topk,
+    float *d_output,
+    __half *d_yg, __half *d_y2,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes,
+    const ExpertDeviceCache *cache);
+template cudaError_t run_routed_experts<lsxcommon::deepseek::Passport>(
+    cudaStream_t stream,
+    const __half *d_normed,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, const float *h_top_weights, int topk,
+    float *d_output,
+    __half *d_yg, __half *d_y2,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes);
+template cudaError_t run_routed_experts<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t stream,
+    const __half *d_normed,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, const float *h_top_weights, int topk,
+    float *d_output,
+    __half *d_yg, __half *d_y2,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes);
+template cudaError_t issue_routed_staging<lsxcommon::deepseek::Passport>(
+    cudaStream_t copy_stream, cudaEvent_t ev, ExpertDeviceCache *cache,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, int topk);
+template cudaError_t issue_routed_staging<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t copy_stream, cudaEvent_t ev, ExpertDeviceCache *cache,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, int topk);
 
 } // namespace gpu
 } // namespace lsxcommon

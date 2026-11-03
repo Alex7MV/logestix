@@ -340,6 +340,7 @@ struct PinnedWeights {
 // Routes one token: gate GEMM → sqrt(softplus) scores → top-k → weights.
 // `d_logits_scratch` / `h_logits_scratch` are caller-owned (arena carve) — the
 // function performs ZERO CUDA allocations (spec item 12, malloc-per-layer kill).
+template <class T = deepseek::Passport>
 cudaError_t route_token(
     cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -356,6 +357,7 @@ cudaError_t route_token(
 // @p ev only (the caller is free to enqueue independent GPU work in between,
 // e.g. the shared-expert FFN) and then runs the identical host-side scoring.
 // Fused route_token == begin + finish, bit-exact.
+template <class T = deepseek::Passport>
 cudaError_t route_token_begin(
     cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -364,6 +366,7 @@ cudaError_t route_token_begin(
     float *h_logits_scratch,    // caller-owned [num_routed] float (pinned)
     cudaEvent_t ev);
 
+template <class T = deepseek::Passport>
 cudaError_t route_token_finish(
     int num_routed, int token_id,
     const int64_t *h_tid2eid, int tid2eid_stride,

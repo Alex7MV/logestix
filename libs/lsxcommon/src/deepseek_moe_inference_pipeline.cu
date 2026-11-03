@@ -73,6 +73,7 @@ static __host__ cudaError_t run_rmsnorm(
 }
 
 // From deepseek_moe_inference_moe.cu
+template <class T = deepseek::Passport>
 cudaError_t run_shared_experts_ffn(
     cudaStream_t stream,
     const __half *d_hidden,
@@ -86,6 +87,7 @@ cudaError_t run_shared_experts_ffn(
     const __half *d_w3_h_cache = nullptr,
     const float *d_w2_f32_cache = nullptr);
 
+template <class T = deepseek::Passport>
 cudaError_t run_routed_experts_ex(
     cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
     cudaEvent_t pre_ev,
@@ -100,6 +102,7 @@ cudaError_t run_routed_experts_ex(
 
 // Early-issue phase: stages top-k cache misses onto copy_stream right after
 // the router readback so the transfers overlap the shared-expert FFN.
+template <class T = deepseek::Passport>
 cudaError_t issue_routed_staging(
     cudaStream_t copy_stream, cudaEvent_t ev, ExpertDeviceCache *cache,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
