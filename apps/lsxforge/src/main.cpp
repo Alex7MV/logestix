@@ -14,6 +14,7 @@
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gigachat_moe_convert.h"
 #include "lsxcommon/alice_moe_convert.h"
+#include "lsxcommon/kimi_moe_k3_convert.h"
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/mistral_moe_large4_convert.h"
@@ -97,6 +98,9 @@ ABSL_FLAG(bool, granite_switch, false,
 ABSL_FLAG(bool, phi, false, "phi-4 (dense) conversion pipeline");
 ABSL_FLAG(bool, mimo, false,
           "MiMo-V2.6-Flash-RL (hybrid SWA/full sparse MoE) conversion pipeline");
+ABSL_FLAG(bool, kimi_k3, false,
+          "Kimi-K3 (KDA + gated NoPE MLA + AttnRes + Stable LatentMoE) "
+          "conversion pipeline");
 ABSL_FLAG(bool, alice, false,
           "AliceAI-Foundation-80B-A3B-Base (KDA + gated attention sparse MoE) "
           "conversion pipeline");
@@ -191,6 +195,7 @@ int main(int argc, char* argv[]) {
     bool granite_switch = absl::GetFlag(FLAGS_granite_switch);
     bool phi = absl::GetFlag(FLAGS_phi);
     bool mimo = absl::GetFlag(FLAGS_mimo);
+    bool kimi_k3 = absl::GetFlag(FLAGS_kimi_k3);
     bool alice = absl::GetFlag(FLAGS_alice);
     bool xing = absl::GetFlag(FLAGS_xing);
     bool mistral = absl::GetFlag(FLAGS_mistral);
@@ -267,6 +272,7 @@ int main(int argc, char* argv[]) {
     flags.granite_switch = granite_switch;
     flags.phi = phi;
     flags.mimo = mimo;
+    flags.kimi_k3 = kimi_k3;
     flags.alice = alice;
     flags.xing = xing;
     flags.mistral = mistral;
@@ -652,6 +658,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("phi conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kKimiK3: {
+        lsxcommon::log::info(
+            "Kimi-K3 pipeline (logestix-kimi-k3-nvfp4 layout)");
+        auto st = lsxcommon::kimi_k3::ConvertKimiK3Model(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Kimi-K3 conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Kimi-K3 conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

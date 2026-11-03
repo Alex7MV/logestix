@@ -13,7 +13,7 @@ Resolution ResolvePipeline(const Flags &flags)
         flags.repack_shared || flags.repack_experts || flags.vram_recompute ||
         flags.deepseek_nvfp4 || flags.deepseek_v41 || flags.deepseek_pro ||
         flags.glm ||
-        flags.kimi || flags.qwen || flags.qwen35moe || flags.qwen36moe ||
+        flags.kimi || flags.kimi_k3 || flags.qwen || flags.qwen35moe || flags.qwen36moe ||
         flags.ornith || flags.qwen38flashnext || flags.gemma4 ||
         flags.gemma4dense ||
         flags.nemotron || flags.nemotron_nvfp4 || flags.gigachat ||
@@ -91,6 +91,7 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--qwen", {Pipeline::kQwenDense, flags.qwen}},
             {"--glm", {Pipeline::kGlm, flags.glm}},
             {"--kimi", {Pipeline::kKimi, flags.kimi}},
+            {"--kimi_k3", {Pipeline::kKimiK3, flags.kimi_k3}},
         };
 
     const char *chosen = nullptr;

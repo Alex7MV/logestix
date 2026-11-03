@@ -57,6 +57,10 @@ add_library(lsxcommon STATIC
     src/mimo_moe_expert_cache.cpp
     src/mimo_moe_model.cpp
     src/alice_moe_convert.cpp
+    src/kimi_moe_k3_convert.cpp
+    src/kimi_moe_k3_load.cpp
+    src/kimi_moe_k3_model.cpp
+    src/kimi_moe_k3_tool_format.cpp
     src/alice_moe_load.cpp
     src/alice_moe_model.cpp
     src/alice_tool_format.cpp
@@ -660,6 +664,31 @@ target_link_libraries(lsxcommon_phi_cu
     absl::strings
 )
 
+# Kimi-K3 runtime: KDA + gated NoPE MLA + AttnRes + Stable LatentMoE.
+# -fmad=false: bit-exact against the host references (protocol invariant).
+add_library(lsxcommon_kimi_k3_cu OBJECT
+    src/kimi_moe_k3_kernels.cu
+    src/kimi_moe_k3_inference_pipeline.cu
+)
+set_target_properties(lsxcommon_kimi_k3_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_kimi_k3_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+)
+target_include_directories(lsxcommon_kimi_k3_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_kimi_k3_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_kimi_k3_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 # AliceAI runtime: KDA + gated attention + AttnRes + sigmoid router MoE.
 # -fmad=false: bit-exact against the host reference (protocol invariant).
 add_library(lsxcommon_alice_cu OBJECT
@@ -711,6 +740,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_granite_cu
     lsxcommon_phi_cu
     lsxcommon_alice_cu
+    lsxcommon_kimi_k3_cu
     lsxcommon_xing_cu
     lsxcommon_mistral_cu
     lsxcommon_minimax_cu

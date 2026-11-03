@@ -54,6 +54,7 @@ zero-copy view-хелперами; исключение — gemma (см. A-07).
 | Hy-Memory-30B-A3B | hy_moe_convert.cpp | hy_moe_load.cpp | views + resident device slabs | schema.cpp | views+resident-slabs |
 | Hy-SimulMT-30B-A3B | hy_moe_simulmt_convert.cpp | hy_moe_load.cpp | views + resident device slabs | schema.cpp | views+resident-slabs |
 | Kimi-K2.7-Code | kimi_moe_convert.cpp | kimi_moe_load.cpp | views + PinChunked | schema.cpp | views+PinChunked |
+| Kimi-K3 | kimi_moe_k3_convert.cpp | kimi_moe_k3_load.cpp | views+ExpertStore (+ transient pinned unpack) | schema.cpp | views+dense |
 | Ling-3.1-flash | ling_moe_convert.cpp | ling_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | MiniMax-M3 | minimax_moe_convert.cpp | minimax_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | MiniMax-M3.1-Flash | minimax_moe_flash_convert.cpp | minimax_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |

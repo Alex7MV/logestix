@@ -47,6 +47,15 @@ set_tests_properties(test_alice_moe_model PROPERTIES TIMEOUT 300)
 set_tests_properties(test_alice_moe_model PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_alice_moe_model PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Kimi-K3 synthetic converter E2E (label convert, bounded) ────────────────
+add_executable(test_kimi_k3_convert test_kimi_k3_convert.cpp)
+target_link_libraries(test_kimi_k3_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_convert COMMAND test_kimi_k3_convert)
+set_tests_properties(test_kimi_k3_convert PROPERTIES LABELS convert)
+set_tests_properties(test_kimi_k3_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_kimi_k3_convert PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
@@ -2658,6 +2667,100 @@ endif()
 
 add_test(NAME test_qwen_tool_framing COMMAND test_qwen_tool_framing)
 
+# ── Kimi-K3 kernels (CUDA, host references) ────────────────────────────────
+add_executable(test_kimi_k3_kernels test_kimi_k3_kernels.cu)
+target_include_directories(test_kimi_k3_kernels PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+set_target_properties(test_kimi_k3_kernels PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_link_libraries(test_kimi_k3_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_kernels COMMAND test_kimi_k3_kernels)
+set_tests_properties(test_kimi_k3_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_kernels PROPERTIES TIMEOUT 300)
+set_tests_properties(test_kimi_k3_kernels PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Kimi-K3 loader (synthetic converted tree) ──────────────────────────────
+add_executable(test_kimi_k3_loader test_kimi_k3_loader.cpp)
+target_include_directories(test_kimi_k3_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_kimi_k3_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_loader COMMAND test_kimi_k3_loader)
+set_tests_properties(test_kimi_k3_loader PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_loader PROPERTIES TIMEOUT 300)
+set_tests_properties(test_kimi_k3_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_k3_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Kimi-K3 model + lifecycle (synthetic converted tree) ───────────────────
+add_executable(test_kimi_k3_model test_kimi_k3_model.cpp)
+target_include_directories(test_kimi_k3_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_kimi_k3_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_model COMMAND test_kimi_k3_model)
+set_tests_properties(test_kimi_k3_model PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_model PROPERTIES TIMEOUT 600)
+set_tests_properties(test_kimi_k3_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_k3_model PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Kimi-K3 FSI / CODE / DET parity gates (template-derived goldens) ───────
+add_executable(test_kimi_k3_fsi_selfcheck test_kimi_k3_fsi_selfcheck.cpp)
+target_compile_definitions(test_kimi_k3_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi")
+target_link_libraries(test_kimi_k3_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_fsi_selfcheck COMMAND test_kimi_k3_fsi_selfcheck)
+set_tests_properties(test_kimi_k3_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_fsi_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_kimi_k3_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_kimi_k3_code_selfcheck test_kimi_k3_code_selfcheck.cpp)
+target_compile_definitions(test_kimi_k3_code_selfcheck PRIVATE
+    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code")
+target_link_libraries(test_kimi_k3_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_code_selfcheck COMMAND test_kimi_k3_code_selfcheck)
+set_tests_properties(test_kimi_k3_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_code_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_kimi_k3_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_kimi_k3_det_selfcheck test_kimi_k3_det_selfcheck.cpp)
+target_compile_definitions(test_kimi_k3_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det")
+target_link_libraries(test_kimi_k3_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_det_selfcheck COMMAND test_kimi_k3_det_selfcheck)
+set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Kimi-K3 SelfCheck (real weights; SKIP without a model) ─────────────────
+add_executable(test_kimi_k3_selfcheck test_kimi_k3_selfcheck.cpp)
+target_link_libraries(test_kimi_k3_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_selfcheck COMMAND test_kimi_k3_selfcheck)
+set_tests_properties(test_kimi_k3_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_k3_selfcheck PROPERTIES TIMEOUT 5400)
+set_tests_properties(test_kimi_k3_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Kimi-K3 XTML chat/tool codec (host-only, synthetic tokenizer) ───────────
+add_executable(test_kimi_k3_tool_framing test_kimi_k3_tool_framing.cpp)
+target_include_directories(test_kimi_k3_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_kimi_k3_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_kimi_k3_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_tool_framing COMMAND test_kimi_k3_tool_framing)
+set_tests_properties(test_kimi_k3_tool_framing PROPERTIES LABELS fast)
+
+# ── Kimi-K3 tiktoken id parity (golden from the checkpoint tokenizer) ───────
+add_executable(test_kimi_k3_tokenizer_parity test_kimi_k3_tokenizer_parity.cpp)
+target_compile_definitions(test_kimi_k3_tokenizer_parity PRIVATE
+    LSX_KIMI_K3_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/kimi_k3")
+target_link_libraries(test_kimi_k3_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_tokenizer_parity COMMAND test_kimi_k3_tokenizer_parity)
+set_tests_properties(test_kimi_k3_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_k3_tokenizer_parity PROPERTIES LABELS fast)
+
+# ── Kimi-K3 frozen passport (host-only, no CUDA) ─────────────────────────────
+add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp)
+target_link_libraries(test_kimi_k3_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_k3_constants COMMAND test_kimi_k3_constants)
+set_tests_properties(test_kimi_k3_constants PROPERTIES LABELS fast)
+
 # ── phi-4 ChatML token bridge test (host-only, synthetic tokenizer) ──
 add_executable(test_phi_tool_framing test_phi_tool_framing.cpp)
 target_include_directories(test_phi_tool_framing PRIVATE
@@ -3329,6 +3432,15 @@ set_tests_properties(test_perf_baseline_mistral_large4 PROPERTIES
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Mistral-Large-4-1T-A52B")
 set_tests_properties(test_perf_baseline_mistral_large4 PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_kimi_k3
+         COMMAND test_perf_baseline "perf baseline: kimi-k3")
+# Host-store bound (~0.3 t/s: 27 GiB routed + 9.5 GiB streamed per token): the
+# two 2048-token modes plus the probe need a long budget.
+set_tests_properties(test_perf_baseline_kimi_k3 PROPERTIES
+    TIMEOUT 21600
+    SKIP_RETURN_CODE 4)
+set_tests_properties(test_perf_baseline_kimi_k3 PROPERTIES LABELS perf)
 
 add_test(NAME test_perf_baseline_mistral_small_4
          COMMAND test_perf_baseline "perf baseline: mistral-small-4-119b")
