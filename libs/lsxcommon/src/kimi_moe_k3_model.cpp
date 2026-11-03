@@ -140,12 +140,28 @@ gpu::InferenceResult KimiK3Model::SelfCheck(const ModelRequest &req)
 {
     // Chat model: the control prompt is framed, and the answer is the first
     // decoded token(s).
+    // Chat model: the control prompt is XTML-framed, and K3 answers inside its
+    // thinking channel, so the window covers the reasoning prefix as well.
     runtime::ParisSelfCheckOptions opts;
     opts.frame_prompt = true;
-    opts.min_tokens = 8;
-    opts.answer_window = 16;
+    opts.min_tokens = 64;
+    opts.answer_window = 64;
     opts.substring_match = true;
     return runtime::RunParisSelfCheck(*this, req, opts);
+}
+
+bool KimiK3Model::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                     std::string_view raw_prompt,
+                                     std::vector<int32_t> &out_ids) const
+{
+    ChatConversation conv;
+    conv.messages.push_back(
+        {"user", std::string(raw_prompt), std::string(), {}});
+    std::vector<KimiK3Segment> segs;
+    if (!RenderKimiK3Conversation(conv, segs)) return false;
+    if (arrow_tokenizer_lookup(tok, "<|open|>", 8) < 0)
+        return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+    return AppendKimiK3Ids(tok, segs, out_ids);
 }
 
 bool KimiK3Model::BuildConversationInputIds(

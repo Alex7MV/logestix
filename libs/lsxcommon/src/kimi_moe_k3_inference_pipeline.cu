@@ -212,7 +212,8 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
         static_cast<size_t>(kv_geo.Elements()) * sizeof(__half);
     const size_t kda_bytes =
         static_cast<size_t>(kda_ord) * KH * KD * VD * sizeof(float);
-    const size_t hist_stride = static_cast<size_t>(3 * KH * KD);
+    // One conv history is (kernel-1) channels; three (q/k/v) per KDA layer.
+    const size_t hist_stride = static_cast<size_t>(3 * (top.conv_kernel - 1) * KH * KD);
     const size_t hist_bytes = static_cast<size_t>(kda_ord) * hist_stride * sizeof(float);
 
     Workspace ws;

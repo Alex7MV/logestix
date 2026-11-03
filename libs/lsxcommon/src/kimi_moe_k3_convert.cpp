@@ -780,8 +780,12 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
         return KimiK3TensorIsPinnedNvfp4(p.kind) ||
                KimiK3TensorIsStreamed(p.kind);
     };
+    // The streamed latent/shared plane is NOT device-resident: it is mmap'd
+    // and copied per layer per step, so it belongs in the streamed class
+    // alongside the routed experts (mirroring the loader's residency split).
     auto mem_class = +[](const std::string &name) {
-        return ClassifyKimiK3Tensor(name).expert >= 0
+        const auto p = ClassifyKimiK3Tensor(name);
+        return (p.expert >= 0 || KimiK3TensorIsStreamed(p.kind))
                    ? VramTensorClass::RoutedExpert
                    : VramTensorClass::Resident;
     };

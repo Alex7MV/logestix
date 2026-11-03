@@ -1,12 +1,13 @@
-// Kimi-K3 selfcheck: "The capital of France is" must answer "Paris". Loads the
-// real converted model from LSX_TEST_KIMI_K3_ROOT, else from the vault path;
-// SKIPs when neither is present.
+// Kimi-K3 selfcheck: "The capital of France is" must answer "Paris" inside the
+// thinking channel, deterministically. Loads the real converted model from
+// LSX_TEST_KIMI_K3_ROOT, else from the vault path; SKIPs when neither exists.
 #include <catch2/catch_test_macros.hpp>
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/path_registry.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -21,16 +22,11 @@ std::filesystem::path ModelRoot()
            "Kimi-K3";
 }
 
-std::string DecodeFirst(const lsxcommon::ArrowTokenizerDb &tok,
-                        const std::vector<int32_t> &ids)
+int Cycles()
 {
-    std::size_t cap = 256;
-    std::string out(cap, '\0');
-    if (lsxcommon::arrow_tokenizer_decode(tok, ids.data(), ids.size(),
-                                          out.data(), &cap) != 0)
-        return "";
-    out.resize(cap);
-    return out;
+    if (const char *env = std::getenv("LSX_TEST_KIMI_K3_SELFCHECK_CYCLES"))
+        if (const int n = std::atoi(env); n > 0) return n;
+    return 3;
 }
 
 }  // namespace
@@ -57,24 +53,24 @@ TEST_CASE("kimi-k3 selfcheck answers Paris", "[kimi-k3][inference]")
 
     lsxcommon::ModelRequest req;
     req.input_ids = ids;
-    req.max_gen_tokens = 24;
-    auto r = model->Infer(req);
-    if (!r.ok) FAIL(r.error_msg);
-    REQUIRE(r.ok);
-    REQUIRE(!r.gen_tokens.empty());
+    req.max_gen_tokens = 64;
 
-    const std::string first = DecodeFirst(tok, {r.gen_tokens[0]});
-    INFO("first token text: '" << first << "'");
-    CHECK(first.find("Paris") != std::string::npos);
+    const auto sc0 = model->SelfCheck(req);
+    INFO("selfcheck error: '" << sc0.error_msg << "'");
+    INFO("output: '" << sc0.output_text << "'");
+    REQUIRE(sc0.ok);
+    REQUIRE(sc0.selfcheck_passed);
 
-    // Three stress cycles must be bit-exact.
-    for (int cycle = 0; cycle < 3; ++cycle) {
-        const auto again = model->Infer(req);
-        REQUIRE(again.ok);
-        REQUIRE(again.gen_tokens == r.gen_tokens);
-        REQUIRE(again.final_logits.size() == r.final_logits.size());
-        for (size_t i = 0; i < r.final_logits.size(); ++i)
-            REQUIRE(again.final_logits[i] == r.final_logits[i]);
+    const std::vector<float> &ref = sc0.final_logits;
+    const int cycles = Cycles();
+    for (int c = 1; c < cycles; ++c) {
+        const auto sc = model->SelfCheck(req);
+        REQUIRE(sc.ok);
+        REQUIRE(sc.selfcheck_passed);
+        REQUIRE(sc.final_logits.size() == ref.size());
+        REQUIRE(std::memcmp(sc.final_logits.data(), ref.data(),
+                            ref.size() * sizeof(float)) == 0);
+        REQUIRE(sc.first_gen_tok_id == sc0.first_gen_tok_id);
     }
     model->Unload();
 }

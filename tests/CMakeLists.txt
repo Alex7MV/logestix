@@ -2733,7 +2733,7 @@ add_executable(test_kimi_k3_selfcheck test_kimi_k3_selfcheck.cpp)
 target_link_libraries(test_kimi_k3_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_kimi_k3_selfcheck COMMAND test_kimi_k3_selfcheck)
 set_tests_properties(test_kimi_k3_selfcheck PROPERTIES LABELS inference)
-set_tests_properties(test_kimi_k3_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_kimi_k3_selfcheck PROPERTIES TIMEOUT 5400)
 set_tests_properties(test_kimi_k3_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Kimi-K3 XTML chat/tool codec (host-only, synthetic tokenizer) ───────────

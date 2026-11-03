@@ -633,6 +633,27 @@ procedure — `perf-tuning-a-model`.
   bit-exact and a per-layer reference oracle (relL2 0.0034 → 0.1226, cos ≥
   0.9925) — `docs/open-tasks/2026-10-26-kimi-audit-verification.md`; FSI/CODE/DET
   are declared golden debt (`docs/OPEN_TASKS.md` §R2).
+  Kimi-K3 (variant `k3` of the `kimi` family, registry `kimi-k3`);
+  2.8T total / ~104B active KimiLinear: 93 layers (dense SiTU MLP on layer 0),
+  **69 KDA + 24 gated NoPE MLA** layers (0-based `{3,7,…,91,92}`), **AttnRes**
+  block 12, **Stable LatentMoE** (hidden→3584 latent + RMSNorm, 896 experts
+  top-16, 2 shared at 6144), SiTU-GLU (β 4 / linear β 25), 7168H, vocab 163840;
+  `kimi_moe_k3_constants.h` (frozen passport), `kimi_moe_k3_convert.{h,cpp}`
+  (`lsxforge --kimi_k3`; MXFP4(E8M0/32) experts repacked **exactly** into the
+  neutral NVFP4 record, vision tower + projector stripped and counted),
+  `kimi_moe_k3_load.{h,cpp}` (pinned attention/dense graph + the latent/shared
+  plane kept as Arrow **mmap views and streamed per layer** because pinning it
+  needs ~34 GiB + the neutral `ExpertStore` for 82 432 routed arrows),
+  `kimi_moe_k3_kernels.{h,cu}` (SiTU, 896-way sigmoid+bias router, AttnRes
+  mixer, KDA conv-4 + channel-wise delta recurrence, absorbed gated NoPE MLA),
+  `kimi_moe_k3_inference_pipeline.{h,cu}` (93-layer driver, token-by-token),
+  `kimi_moe_k3_model.{h,cpp}`, `kimi_moe_k3_tool_format.{h,cpp}` (native XTML
+  `<|open|>/<|close|>/<|sep|>` chat + tool codec; `tokenizer_kind 2`, no BOS,
+  stop `<|end_of_msg|>` 163586); format tag `logestix-kimi-k3-nvfp4`.
+  Real weights: SelfCheck (framed) PASS `The answer is Paris.`,
+  `logits_hash=5c1e227265d6a27b`; tokenizer parity 23/23; FSI/CODE/DET goldens
+  are template-derived and not yet run; perf unseeded — `docs/OPEN_TASKS.md`
+  §R15.
   Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
   560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
   (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited

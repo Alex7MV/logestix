@@ -2,6 +2,7 @@
 
 #include "kimi_moe_k3_constants.h"
 
+#include <absl/strings/str_cat.h>
 #include <simdjson.h>
 
 #include <algorithm>
@@ -274,7 +275,10 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
     if (!fs::exists(pinned)) return false;
 
     auto st = LoadKimiK3Topology(root, pw.top);
-    if (!st.ok()) return false;
+    if (!st.ok()) {
+        log::error(absl::StrCat("[kimi_k3_load] topology: ", st.ToString()));
+        return false;
+    }
 
     auto load_raw_file = [&](const fs::path &p, std::vector<TensorRecord> &out) {
         if (!fs::exists(p)) return true;
@@ -304,15 +308,24 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
     {
         const auto *e = FindNvfp4(g_nv, "language_model.model.embed_tokens.weight");
         const auto *h = FindNvfp4(g_nv, "language_model.lm_head.weight");
-        if (!e || !h || !UploadNvfp4(*e, pw.embed, stream) ||
-            !UploadNvfp4(*h, pw.head, stream))
+        if (!e || !h) {
+            log::error("[kimi_k3_load] global nvfp4 missing embed/head");
             return false;
+        }
+        if (!UploadNvfp4(*e, pw.embed, stream) ||
+            !UploadNvfp4(*h, pw.head, stream)) {
+            log::error("[kimi_k3_load] embed/head upload failed");
+            return false;
+        }
         const auto *fn = FindRaw(g_raw, "language_model.model.norm.weight");
         const auto *op =
             FindRaw(g_raw, "language_model.model.output_attn_res_proj.weight");
         const auto *on =
             FindRaw(g_raw, "language_model.model.output_attn_res_norm.weight");
-        if (!fn || !op || !on) return false;
+        if (!fn || !op || !on) {
+            log::error("[kimi_k3_load] global raw missing norm/out_res");
+            return false;
+        }
         pw.final_norm = UploadHalf(fn->data, stream);
         pw.out_res_proj = UploadHalf(op->data, stream);
         pw.out_res_norm = UploadHalf(on->data, stream);
@@ -339,7 +352,17 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
         lw.mla = pw.top.IsMla(l);
         auto H = [&](std::string_view suffix) -> __half * {
             const auto *r = FindRaw(raw, tag + std::string(suffix));
-            return r ? UploadHalf(r->data, stream) : nullptr;
+            if (!r) {
+                log::error(absl::StrCat("[kimi_k3_load] missing ", tag,
+                                        suffix));
+                return nullptr;
+            }
+            __half *p = UploadHalf(r->data, stream);
+            if (!p)
+                log::error(absl::StrCat("[kimi_k3_load] half upload ", tag,
+                                        suffix, " last_err=",
+                                        cudaGetErrorString(cudaGetLastError())));
+            return p;
         };
         auto F = [&](std::string_view suffix) -> float * {
             const auto *r = FindRaw(raw, tag + std::string(suffix));
@@ -348,7 +371,19 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
         auto W = [&](std::string_view suffix,
                      lsx_nvfp4::LsxNvfp4Weight &w) -> bool {
             const auto *r = FindNvfp4(nv, tag + std::string(suffix));
-            return r && UploadNvfp4(*r, w, stream);
+            if (!r) {
+                log::error(absl::StrCat("[kimi_k3_load] missing ", tag,
+                                        suffix));
+                return false;
+            }
+            if (!UploadNvfp4(*r, w, stream)) {
+                log::error(absl::StrCat(
+                    "[kimi_k3_load] upload ", tag, suffix, " rows=",
+                    r->shape.empty() ? -1 : r->shape[0], " last_err=",
+                    cudaGetErrorString(cudaGetLastError())));
+                return false;
+            }
+            return true;
         };
 
         lw.input_norm = H("input_layernorm.weight");
@@ -391,7 +426,11 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
                  lw.kda_conv_k && lw.kda_conv_v && lw.kda_alog && lw.kda_dt &&
                  lw.kda_onorm;
         }
-        if (!ok) return false;
+        if (!ok) {
+            log::error(absl::StrCat("[kimi_k3_load] layer ", l,
+                                    " attention/proj upload failed"));
+            return false;
+        }
 
         if (l < pw.top.dense_layers) {
             ok = W("mlp.gate_proj.weight", lw.dense_gate) &&
@@ -405,7 +444,11 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
             ok = lw.router_gate && lw.router_bias &&
                  (!pw.top.latent_norm || lw.latent_norm);
         }
-        if (!ok) return false;
+        if (!ok) {
+            log::error(absl::StrCat("[kimi_k3_load] layer ", l,
+                                    " moe/router upload failed"));
+            return false;
+        }
     }
 
     // ── streamed plane ──
@@ -417,7 +460,11 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
             streamed_dir / ("layer_" + std::to_string(l) + ".arrow");
         if (!fs::exists(path)) return false;
         auto views = LoadDenseNvfp4BatchViews(path);
-        if (!views.ok()) return false;
+        if (!views.ok()) {
+            log::error(absl::StrCat("[kimi_k3_load] streamed views ", l, ": ",
+                                    views.status().ToString()));
+            return false;
+        }
         auto &sl = pw.streamed[static_cast<size_t>(l)];
         sl.keepalive = views->keepalive;
         const std::string tag =
@@ -444,7 +491,10 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
                  sl.shared_up) &&
             bind("block_sparse_moe.shared_experts.down_proj.weight",
                  sl.shared_down);
-        if (!sl.loaded) return false;
+        if (!sl.loaded) {
+            log::error(absl::StrCat("[kimi_k3_load] streamed bind ", l));
+            return false;
+        }
     }
 
     // ── streamed staging (or pinned upload) ──
@@ -452,8 +502,11 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
     for (const auto &sl : pw.streamed)
         if (sl.loaded) max_staging = std::max(max_staging, StagingBytesFor(sl));
     if (max_staging > 0) {
-        if (cudaMalloc(&pw.stream_dev.buffer, max_staging) != cudaSuccess)
+        if (cudaMalloc(&pw.stream_dev.buffer, max_staging) != cudaSuccess) {
+            log::error(absl::StrCat("[kimi_k3_load] staging alloc ",
+                                    max_staging));
             return false;
+        }
         pw.stream_dev.bytes = max_staging;
     }
 
