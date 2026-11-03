@@ -580,6 +580,29 @@ target_link_libraries(lsxcommon_ornith_cu
     lsx_dep_includes
 )
 
+# Model-neutral dense-decoder kernels: RMSNorm / RoPE / causal GQA attention /
+# fused split-QKV / fused SwiGLU. Algorithm frozen as the Granite-4.2 runtime
+# always ran it; consumers delegate here.
+add_library(lsxcommon_dense_cu OBJECT
+    src/lsx_dense_inference.cu
+)
+set_target_properties(lsxcommon_dense_cu PROPERTIES
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_dense_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+)
+target_include_directories(lsxcommon_dense_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_dense_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_dense_cu
+    "${CUDA_CUDART_LIBRARY}"
+    lsx_dep_includes
+)
+
 # Granite-4.2-30B dense runtime: family-local RoPE + causal GQA attention,
 # shared lsx_kernels_*.cuh primitives, neutral NVFP4 GEMM. No -fmad=false is
 # required (all shared arithmetic uses explicit *_rn intrinsics).
@@ -696,6 +719,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_gigachat_cu
     lsxcommon_mimo_cu
     lsxcommon_ornith_cu
+    lsxcommon_dense_cu
     lsxcommon_granite_cu
     lsxcommon_phi_cu
     lsxcommon_alice_cu
