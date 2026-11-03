@@ -890,7 +890,11 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"deepseek-v4.1-flash", {"test_deepseek_tool_framing"}},
         {"deepseek-v4-pro-0813", {"test_deepseek_tool_framing"}},
         {"qwen3.5-9b", {"test_qwen_tool_framing"}},
-        {"qwen3.8-27b", {"test_qwen_tool_framing"}},
+        // The 27B adds a real-weight round-trip case to its selfcheck target
+        // (native ChatML/XML render -> generate -> parse on the converted
+        // checkpoint), so the verdict is proven twice.
+        {"qwen3.8-27b",
+         {"test_qwen_tool_framing", "test_qwen_dense_27b_selfcheck"}},
         {"qwen3.5-35b-a3b", {"test_qwen_tool_framing"}},
         {"qwen3.6-35b-a3b", {"test_qwen_tool_framing"}},
         {"qwen3.8-flash-next", {"test_qwen_tool_framing"}},
