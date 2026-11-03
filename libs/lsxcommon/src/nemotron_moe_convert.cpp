@@ -99,12 +99,6 @@ bool check_frozen_geometry(const NemotronTopology &top, std::string &why)
     return true;
 }
 
-bool quantize_slice(const uint8_t *data, int64_t numel, DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, "BF16", nullptr, r.shape,
-                                    {}, r.packed, r.scales, r.global_scale);
-}
-
 } // namespace
 
 ParsedNemotronTensor classify_nemotron_tensor(const std::string &name)
@@ -361,7 +355,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
                 r.name = t.name;
                 r.shape = t.shape;
                 r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 nvfp4_by_layer[p.layer].push_back(std::move(r));
@@ -408,7 +402,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
             r.name = t.name;
             r.shape = t.shape;
             r.dtype = t.dtype;
-            if (!quantize_slice(data.data(), t.numel(), r))
+            if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                 return arrow::Status::IOError("GPU quantization failed for ",
                                               t.name);
             if (p.kind == NemotronTensorKind::ExpertUpProj) {

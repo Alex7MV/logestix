@@ -116,14 +116,6 @@ bool parse_expert_body(const std::string &body, int &expert, std::string &rest)
 
 bool tensor_is_f32(const TensorInfo &t) { return t.dtype == "F32"; }
 
-bool quantize_slice(const uint8_t *data, int64_t numel, const TensorInfo &t,
-                    DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, t.dtype == "F32" ? "F32" : "BF16",
-                                    nullptr, r.shape, {}, r.packed, r.scales,
-                                    r.global_scale);
-}
-
 bool check_frozen_geometry(const KimiK3ConvertTopology &top, std::string &why)
 {
     using namespace frozen;
@@ -587,7 +579,8 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
                 r.name = t.name;
                 r.shape = t.shape;
                 r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), t, r))
+                if (!QuantizeSlice(data.data(), t.numel(),
+                                   tensor_is_f32(t) ? "F32" : "BF16", r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 if (p.layer < 0)
@@ -602,7 +595,8 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
                 r.name = t.name;
                 r.shape = t.shape;
                 r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), t, r))
+                if (!QuantizeSlice(data.data(), t.numel(),
+                                   tensor_is_f32(t) ? "F32" : "BF16", r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 streamed_nvfp4[p.layer].push_back(std::move(r));

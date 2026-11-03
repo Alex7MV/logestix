@@ -124,13 +124,6 @@ bool CheckFrozenGeometry(const FlintTopology &top, std::string &why)
     return true;
 }
 
-bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
-                   DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, dtype, nullptr, r.shape, {},
-                                    r.packed, r.scales, r.global_scale);
-}
-
 void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
                        int &pad)
 {

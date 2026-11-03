@@ -81,13 +81,6 @@ bool check_frozen_geometry(const QwenMoeTopology &top, std::string &why)
 }
 
 // Quantizes a contiguous BF16 slice to NVFP4. Returns false on GPU failure.
-bool quantize_slice(const uint8_t *data, int64_t numel,
-                    DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, "BF16", nullptr, r.shape,
-                                    {}, r.packed, r.scales, r.global_scale);
-}
-
 // Writes one expert's NVFP4 payload triple to experts/layer_<l>/exp_<e>.arrow.
 } // namespace
 
@@ -380,7 +373,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
                 } else {
                     DenseNvfp4Record r;
                     r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                    if (!quantize_slice(data.data(), t.numel(), r))
+                    if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                         return arrow::Status::IOError(
                             "GPU quantization failed for ", t.name);
                     mtp_nvfp4.push_back(std::move(r));
@@ -393,7 +386,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
             case MoeTensorKind::LmHead: {
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 global_nvfp4.push_back(std::move(r));
@@ -430,7 +423,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
             case MoeTensorKind::LinearAttnOut: {
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 nvfp4_by_layer[p.layer].push_back(std::move(r));
@@ -450,7 +443,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
             case MoeTensorKind::SharedExpertDownProj: {
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 shared_nvfp4_by_layer[p.layer].push_back(std::move(r));
@@ -513,11 +506,11 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
                     w1r.shape = {I, H}; w1r.dtype = t.dtype;
                     w3r.name = absl::StrCat(t.name, ".w3.e", e);
                     w3r.shape = {I, H}; w3r.dtype = t.dtype;
-                    if (!quantize_slice(data.data() + g_off,
+                    if (!QuantizeSliceBf16(data.data() + g_off,
                                         static_cast<int64_t>(I) * H, w1r))
                         return arrow::Status::IOError("quantize failed w1 ",
                                                       t.name, " e", e);
-                    if (!quantize_slice(data.data() + g_off + I * row_bytes,
+                    if (!QuantizeSliceBf16(data.data() + g_off + I * row_bytes,
                                         static_cast<int64_t>(I) * H, w3r))
                         return arrow::Status::IOError("quantize failed w3 ",
                                                       t.name, " e", e);
@@ -535,7 +528,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
                     DenseNvfp4Record w2r;
                     w2r.name = absl::StrCat(t.name, ".w2.e", e);
                     w2r.shape = {H, I}; w2r.dtype = t.dtype;
-                    if (!quantize_slice(data.data() + d_off,
+                    if (!QuantizeSliceBf16(data.data() + d_off,
                                         static_cast<int64_t>(H) * I, w2r))
                         return arrow::Status::IOError("quantize failed w2 ",
                                                       t.name, " e", e);

@@ -101,20 +101,6 @@ bool CheckFrozenGeometry(const MinimaxTopology &top, std::string &why)
 // tile (`e8m0` non-null) makes the shared quantizer dequantize the payload
 // with `float * 2^(u-127)` per tile first (MXFP8 -> NVFP4). Returns false on
 // GPU failure.
-bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
-                   const uint8_t *e8m0, const std::vector<int64_t> &shape,
-                   const std::vector<int64_t> &e8m0_shape, DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, dtype, e8m0, shape, e8m0_shape,
-                                    r.packed, r.scales, r.global_scale);
-}
-
-bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
-                   DenseNvfp4Record &r)
-{
-    return QuantizeSlice(data, numel, dtype, nullptr, r.shape, {}, r);
-}
-
 // Reads a light JSON file's "text_config"-less top level for token ids.
 void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
                        int &pad)

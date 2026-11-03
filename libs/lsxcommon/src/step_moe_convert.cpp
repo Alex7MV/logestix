@@ -90,13 +90,6 @@ bool CheckFrozenGeometry(const StepTopology &top, std::string &why)
     return true;
 }
 
-bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
-                   DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, dtype, nullptr, r.shape, {},
-                                    r.packed, r.scales, r.global_scale);
-}
-
 } // namespace
 
 ParsedStepTensor classify_step_tensor(const std::string &name)

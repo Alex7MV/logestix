@@ -110,13 +110,6 @@ HyPassportGeometry HyMemoryPassportGeometry()
 }
 
 // Quantizes a contiguous BF16/FP32 slice to NVFP4. Returns false on GPU failure.
-bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
-                   DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, dtype, nullptr, r.shape, {},
-                                    r.packed, r.scales, r.global_scale);
-}
-
 // Appends one `eos_token_id` value, which the checkpoints encode either as a
 // single int or as an array (Hy-SimulMT: [120025, 120008]).
 void AppendEosIds(simdjson::ondemand::value val, std::vector<int> &out)

@@ -138,3 +138,58 @@ TEST_CASE("PackExpertNVFP4 GPU-quantizes BF16 into nibbles plus per-block scales
     CHECK(pe.w2_global_scale > 0.0f);
     CHECK(pe.w3_shape == raw.w3_shape);
 }
+
+TEST_CASE("QuantizeSlice produces the dense NVFP4 contract", "[nvfp4][converter]")
+{
+    if (!GpuAvailable())
+        std::exit(4);
+
+    constexpr int64_t kNumel = 32;
+    // BF16 1.0 little-endian, 32 elements.
+    std::vector<uint8_t> bf16(static_cast<size_t>(kNumel) * 2);
+    for (int64_t i = 0; i < kNumel; ++i) {
+        bf16[static_cast<size_t>(i) * 2 + 0] = 0x00;
+        bf16[static_cast<size_t>(i) * 2 + 1] = 0x3F;
+    }
+
+    lsxcommon::DenseNvfp4Record rec;
+    rec.shape = {2, 16};
+    REQUIRE(lsxcommon::QuantizeSlice(bf16.data(), kNumel, "BF16", rec));
+    CHECK(rec.packed.size() == 16);   // 32 elements -> 16 nibble bytes
+    CHECK(rec.scales.size() == 2);    // 32 elements / 16 -> 2 E4M3 scales
+    CHECK(std::isfinite(rec.global_scale));
+    CHECK(rec.global_scale > 0.0f);
+
+    lsxcommon::DenseNvfp4Record again;
+    again.shape = {2, 16};
+    REQUIRE(lsxcommon::QuantizeSlice(bf16.data(), kNumel, "BF16", again));
+    CHECK(again.packed == rec.packed);
+    CHECK(again.scales == rec.scales);
+    CHECK(again.global_scale == rec.global_scale);
+}
+
+TEST_CASE("QuantizeSlice full form without E8M0 equals the short form",
+          "[nvfp4][converter]")
+{
+    if (!GpuAvailable())
+        std::exit(4);
+
+    constexpr int64_t kNumel = 32;
+    std::vector<uint8_t> bf16(static_cast<size_t>(kNumel) * 2);
+    for (int64_t i = 0; i < kNumel; ++i) {
+        bf16[static_cast<size_t>(i) * 2 + 0] = 0x00;
+        bf16[static_cast<size_t>(i) * 2 + 1] = 0x3F;
+    }
+
+    lsxcommon::DenseNvfp4Record short_form;
+    short_form.shape = {2, 16};
+    REQUIRE(lsxcommon::QuantizeSlice(bf16.data(), kNumel, "BF16", short_form));
+
+    lsxcommon::DenseNvfp4Record full_form;
+    full_form.shape = {2, 16};
+    REQUIRE(lsxcommon::QuantizeSlice(bf16.data(), kNumel, "BF16", nullptr,
+                                     full_form.shape, {}, full_form));
+    CHECK(full_form.packed == short_form.packed);
+    CHECK(full_form.scales == short_form.scales);
+    CHECK(full_form.global_scale == short_form.global_scale);
+}

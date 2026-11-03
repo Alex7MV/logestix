@@ -742,6 +742,27 @@ arrow::Status WriteExpertArrow(const std::filesystem::path &path,
     return WriteRecordBatchToFile(*batch, path);
 }
 
+bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
+                   const uint8_t *e8m0, const std::vector<int64_t> &shape,
+                   const std::vector<int64_t> &e8m0_shape,
+                   DenseNvfp4Record &out)
+{
+    return gpu::quantize_tensor_gpu(data, numel, dtype, e8m0, shape, e8m0_shape,
+                                    out.packed, out.scales, out.global_scale);
+}
+
+bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
+                   DenseNvfp4Record &out)
+{
+    return QuantizeSlice(data, numel, dtype, nullptr, out.shape, {}, out);
+}
+
+bool QuantizeSliceBf16(const uint8_t *data, int64_t numel,
+                       DenseNvfp4Record &out)
+{
+    return QuantizeSlice(data, numel, "BF16", out);
+}
+
 // ── Save single expert to Arrow IPC file ────────────────────────────────────
 
 arrow::Status SaveExpertToArrow(
