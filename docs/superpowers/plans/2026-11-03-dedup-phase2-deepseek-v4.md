@@ -414,6 +414,27 @@ git commit -m "refactor(deepseek): template the compressed-KV/indexer driver on 
 
 ### Task 6: `inference_pipeline` и `load`
 
+> **Решение оператора (2026-11-03): унифицировать на семантике Pro.** Диф
+> Flash↔Pro по пайплайну — не только тип residual. Полный список различий:
+>
+> | # | Flash | Pro |
+> |---|---|---|
+> | 1 | `d_single` = `__half*`, `half_to_float` перед нормой, `memcpy` в `d_normed` | `d_single` (FP16 эмбеддинг) + `d_single_f32` (FP32 HC-residual), норма сразу по FP32, `float_to_half` в `d_normed` |
+> | 2 | `total_tokens = prompt_len + max_gen` | `= prompt_len + max_gen - 1` (фикс: прежняя граница давала N+1 и ломала контракт стриминга) |
+> | 3 | TTFT пишется каждый шаг | пишется один раз (`ttft_recorded`) |
+> | 4 | неквалифицированные `run_lm_head`/`rmsnorm_float` | `lsxcommon::gpu::…` |
+>
+> Пункты 2 и 3 принимаются в Pro-редакции **для обеих моделей** (это фиксы);
+> изменение длины потоковой генерации на один токен у Flash фиксируется в
+> отчёте фазы. Пункт 1 остаётся параметром паспорта (`T::ResidualT`) через
+> `if constexpr`: `Arena` должен выделять `d_single` размером
+> `sizeof(ResidualT)`, а FP16-путь Flash сохраняет свой
+> `half_to_float → rmsnorm → memcpy` (биты не меняются).
+>
+> Практический порядок: взять Pro-версию файла как базу (она уже с фиксами),
+> нормализовать имена, затем вернуть FP16-ветку через `if constexpr` и
+> темплейтить константы.
+
 **Files:**
 - Modify: `libs/lsxcommon/src/deepseek_moe_inference_pipeline.cu`
 - Modify: `libs/lsxcommon/src/deepseek_moe_load.cu`, `deepseek_moe_load.cuh`
