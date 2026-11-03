@@ -184,9 +184,15 @@ goldens, and the remaining gap is enumerable from test output) without pretendin
 existing debt is smaller than it is. A missing golden stays a SKIP; what changes is
 that it can no longer be invisible.
 
-`granite-4.2-30b:code` is the one entry here that is a single stage rather than a
+`granite-4.2-30b:code` was the one entry here that is a single stage rather than a
 whole family, which is worth noticing: a family can look fully wired across all four
-parity stages and still have a hole in one of them.
+parity stages and still have a hole in one of them. **Resolved 2026-11-03:** the
+code golden has existed since 2026-10-07, and a full real-weight re-verification
+(`docs/model-reports/2026-11-03-granite-4.2-30b.md`) now runs all four gates
+green — SelfCheck, FSI 3/3, CODE 3/3, DET 3/3 — alongside the native tool
+round-trip. The same re-verification found and fixed a real defect: the auto/TC
+NVFP4 path overflows on the long tool prompt, so the family now pins
+`FastMathMode::kOff` in `Infer` (mirroring `granite-switch`).
 
 **A rejected golden set (2026-10-25), kept here as evidence.** Three
 `nemotron-3.5-lightning-30b-a3b-nvfp4` goldens were committed and reverted the

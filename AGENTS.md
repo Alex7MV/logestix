@@ -237,7 +237,15 @@ procedure — `perf-tuning-a-model`.
   over the neutral `lsx_nvfp4` layer and the shared `lsx_kernels_*.cuh`
   primitives), `granite_dense_model.{h,cpp}`; converted in place with
   `lsxforge --granite`; full 2048-token pipeline is correct-first
-  (KV-cache decode, non-incremental prefill)).
+  (KV-cache decode, non-incremental prefill). Re-verified on real weights
+  2026-11-03: SelfCheck Paris ×3 bit-exact
+  (`logits_hash c165e80fde6401cf`, top-1 12366), FSI/CODE/DET 3/3 each, native
+  tool round-trip `get_weather {"city":"Paris"}`, **76.79 t/s (perf) / 76.47
+  (r3)** at 2048 tokens, 15.3 GiB resident. `Infer` pins
+  `FastMathMode::kOff`: the auto/TC NVFP4 path overflows on the long tool
+  prompt (the same class as `granite-switch`), and the strict path reproduces
+  the source tool call token-for-token; report
+  `docs/model-reports/2026-11-03-granite-4.2-30b.md`).
   Granite-Switch-4.1-30B (variant `switch` of `granite`): the Granite 4.1 30B
   dense decoder composed with two embedded aLoRA adapters (`guardian-core`
   rank 16 on q/k/v/o, `decision` rank 64 on q/k/v/o + MLP), control-token
