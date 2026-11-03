@@ -4941,6 +4941,10 @@ add_test(NAME test_qwen_moe_exp_eos_selfcheck COMMAND test_qwen_moe_exp_eos_self
 set_tests_properties(test_qwen_moe_exp_eos_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_qwen_moe_exp_eos_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# Guard: infrastructure centralization (dependency paths, shared helpers,
+# CUDA arch). Host-only static scan, see spec 2026-11-03.
+lsx_add_test(NAME test_infrastructure_guard
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 # Guard: model independence — unique frozen passports, no cross-model
 # geometry borrowing (host-only, no lsxcommon deps).
 lsx_add_test(NAME test_model_independence_guard
@@ -5045,6 +5049,7 @@ set_tests_properties(
     test_kimi_moe_expert_cache
     test_model_independence_guard
     test_ctest_labels_guard
+    test_infrastructure_guard
     test_model_suite_guard
     test_nemotron_moe_math
     test_nemotron_moe_loader
