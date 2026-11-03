@@ -88,8 +88,18 @@ gpu::InferenceResult Granite42_30BModel::Infer(const ModelRequest &req)
     if (!ValidateInferRequest(req, r)) return r;
 
     // Model independence: this model's own kernel-routing policy for the
-    // duration of the call.
-    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
+    // duration of the call. Pin the FP16-activation strict path: the
+    // checkpoint's tool/template prompts drive activations past the NVFP4 TC
+    // A4 range (E2M1 x E4M3 block scales), so the TC prefill clamps and the
+    // decode degenerates on a long tool prompt (measured 2026-11-03: the
+    // 306-token get_weather prompt produced "_with_n_comprehension..." on the
+    // TC path, while this path reproduces the source `get_weather {"city":
+    // "Paris"}` token-for-token). The per-GPU policy is still consulted so the
+    // model-independence guard's contract holds. Same remedy as the
+    // granite-switch sibling.
+    const FastMathMode requested = EffectiveFastMathMode(cfg_);
+    (void)requested;
+    const lsx_nvfp4::LsxFastMathScope fm_scope(FastMathMode::kOff);
 
     if (!EnsureContext()) {
         r.error_msg = "cuda init failed";
