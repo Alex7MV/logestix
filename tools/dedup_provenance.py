@@ -51,6 +51,11 @@ def main():
     ap.add_argument("--from", dest="src", required=True)
     ap.add_argument("--to", dest="dst", required=True)
     ap.add_argument("--rename", action="append", default=[])
+    ap.add_argument(
+        "--allow-extra",
+        action="store_true",
+        help="target may hold unrelated kernels (source is a subset)",
+    )
     args = ap.parse_args()
     renames = [tuple(r.split("=", 1)) for r in args.rename]
 
@@ -68,7 +73,8 @@ def main():
     for sig, body in extra:
         print(f"  EXTRA:   {sig[:100]}")
         print(f"           {body[:160]}")
-    return 0 if not missing and not extra else 1
+    ok = not missing and (args.allow_extra or not extra)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
