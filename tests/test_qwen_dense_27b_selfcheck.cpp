@@ -14,6 +14,8 @@
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
+#include "test_tool_roundtrip.h"
+
 namespace {
 
 constexpr int kStressCycles = 3;
@@ -94,6 +96,33 @@ TEST_CASE("Qwen3.8-27B SelfCheck: 'The capital of France is' -> 'Paris', "
         CHECK(std::memcmp(sc.final_logits.data(), ref_logits.data(),
                           ref_logits.size() * sizeof(float)) == 0);
     }
+
+    m->Unload();
+}
+
+// Model Ingestion Protocol step 4b — the native ChatML/XML conversation bridge
+// on real weights: render a one-tool conversation, generate, then parse the
+// call back out of the generated tokens. The synthetic framing target
+// (test_qwen_tool_framing) pins the codec; this case proves the converted
+// checkpoint actually answers through it.
+TEST_CASE("Qwen3.8-27B end-to-end tool round-trip (real weights)",
+          "[qwen][model][tool][real-model]")
+{
+    const std::filesystem::path model = Qwen27ModelPath();
+    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+        SKIP("Qwen3.8-27B real model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Type() == "qwen3.8-27b");
+    REQUIRE(m->Load());
+
+    const std::vector<lsxcommon::ToolCall> calls = RunToolRoundTrip(*m);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     m->Unload();
 }
