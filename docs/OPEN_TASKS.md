@@ -849,6 +849,34 @@ covers LINK/INCLUDE/DEFINE/LABEL/TIMEOUT/SKIP/ENV and the DLL copy; add a
 property to the helper only when a target genuinely needs one, e.g.
 `RESOURCE_LOCK`).
 
+## W. Warning backlog (2026-11-03)
+
+The build-noise work (branch `audit/2026-11-03-quick-wins`) scoped
+`-Wall -Wextra`/`-Wpedantic` to our own directories (`lsx_warning_policy()`) and
+made the dependency headers SYSTEM. A clean `linux-debug` build went from
+**51 408 warning lines to 484**; 246 of the remainder come from the vendored
+targets' own sources, and **238 are ours — previously buried, now visible**.
+They are real signals, not noise, and no `-Werror` gate can be added until they
+are cleared.
+
+| kind | warnings / sites | note |
+|---|---|---|
+| `-Wunused-result` | 53 / 45 | ignored `absl::SimpleAtoi`, `simdjson .get()`, `arrow::Status` in fixtures; each needs a "why is the failure acceptable" decision, not a cast |
+| `-Wint-in-bool-context` | 42 / 1 | `alice_moe_inference_pipeline.cu` workspace macro: the ternary arms are `cudaError_t` constants, so the `||` chain looks like `0 \|\| 0`; make the macro yield `bool` |
+| `-Wrestrict` | 39 / 39 | **finding:** in-place activation calls (`SwigluKernel(out, up, out, ...)`, `SwigluAlphaKernel(a, a, b)`) alias `__restrict__` parameters — formally UB and a licence for nvcc to reorder; drop `__restrict__` on the aliased operand or split the buffers, then re-run the kernel suites |
+| `-Wunused-parameter` | 26 / 19 | kernel/diagnostic parameters kept for signature symmetry; remove the name or `[[maybe_unused]]` |
+| `-Wmissing-field-initializers` | 24 / 15 | test fixtures constructing `ChatMessage`/`ModelRequest` positionally |
+| `-Wunused-function` | 19 / 19 | dead `static` helpers (several `*_tool_format.cpp`); delete |
+| `-Wunused-variable` | 7 / 7 | delete or use |
+| `-Wclass-memaccess` | 5 / 5 | `memset`/`memcpy` over non-trivial types — check before silencing |
+| `-Wdangling-reference` | 5 / 5 | `const Scan &s = CachedScan(...)` binds a temporary: a real test bug |
+| `-Wsign-compare`, `-Woverflow`, `-Wswitch`, `-Wmaybe-uninitialized`, `-Wunused-but-set-variable`, `-Wunused-value`, `-Wmisleading-indentation` | 16 / 16 | mixed; the two `-Wmaybe-uninitialized` (kimi-k3 tool codec, alice tokenizer test) and the two `-Woverflow` (qwen-exp fixture) are potentially load-bearing |
+
+Fix shape: one supervised pass per kind, `fast`+`convert` (and the owning
+kernel suite for `-Wrestrict`) green after each, then add `-Werror` for C/CXX
+only. The tree-wide `test_infrastructure_guard` already prevents the CMake-side
+regressions this work relied on.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

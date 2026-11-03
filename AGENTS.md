@@ -851,7 +851,16 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
   because Arrow's own target keeps them directory-scoped). Targets link it —
   never `${CMAKE_BINARY_DIR}/_deps/...` (a dependency source swap must not
   break the build). `LSX_CUDA_ARCH` (`120-real;121-real`) is the single source
-  of truth for device codegen.
+  of truth for device codegen. The target's includes are SYSTEM (dependency
+  headers never emit warnings into our TUs), and the project warning flags come
+  from `lsx_warning_policy()` (called by `libs/`, `apps/`, `tests/`, never the
+  root — a global `add_compile_options` also hits Arrow/abseil and adds ~12k
+  warnings to every clean build); `-Wpedantic` is limited to
+  `COMPILE_LANGUAGE:C,CXX` because nvcc forwards it to the host compiler, which
+  then flags nvcc's own `#line` markers. Three machine checks keep this state:
+  `test_infrastructure_guard` (no `${CMAKE_BINARY_DIR}/_deps` paths, one
+  definition per shared converter helper, `CUDA_ARCHITECTURES` only
+  `${LSX_CUDA_ARCH}`/`OFF`).
 - CUDA `.cu` files are split into separate OBJECT libraries (`lsxcommon_cu`,
   `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), linked into `lsxcommon`
   PUBLIC — this isolates NVCC from MSVC flags. `cudart` is found via
