@@ -1,3 +1,5 @@
+lsx_warning_policy()
+
 add_subdirectory(lsxfabric)
 add_subdirectory(lsxforge)
 add_subdirectory(taskmosaic)

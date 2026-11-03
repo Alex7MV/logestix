@@ -99,33 +99,6 @@ bool check_frozen_geometry(const NemotronTopology &top, std::string &why)
     return true;
 }
 
-bool quantize_slice(const uint8_t *data, int64_t numel, DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, "BF16", nullptr, r.shape,
-                                    {}, r.packed, r.scales, r.global_scale);
-}
-
-arrow::Status write_batch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const std::filesystem::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
-
-arrow::Status write_expert_file(const std::filesystem::path &base_dir, int layer,
-                                int expert, PackedExpert &&pe)
-{
-    namespace fs = std::filesystem;
-    fs::path dir = base_dir / "experts" / absl::StrCat("layer_", layer);
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    auto batch = ExpertSchema::MakeBatch(pe);
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(
-        *batch, dir / absl::StrCat("exp_", expert, ".arrow"));
-}
-
 } // namespace
 
 ParsedNemotronTensor classify_nemotron_tensor(const std::string &name)
@@ -382,7 +355,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
                 r.name = t.name;
                 r.shape = t.shape;
                 r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 nvfp4_by_layer[p.layer].push_back(std::move(r));
@@ -429,7 +402,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
             r.name = t.name;
             r.shape = t.shape;
             r.dtype = t.dtype;
-            if (!quantize_slice(data.data(), t.numel(), r))
+            if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                 return arrow::Status::IOError("GPU quantization failed for ",
                                               t.name);
             if (p.kind == NemotronTensorKind::ExpertUpProj) {
@@ -465,7 +438,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
             pe.w2_shape = dn->second.shape;
             pe.w2_global_scale = dn->second.global_scale;
             pe.w1_shape = {0, 0};
-            ARROW_RETURN_NOT_OK(write_expert_file(base, l, e, std::move(pe)));
+            ARROW_RETURN_NOT_OK(WriteExpertArrow(ExpertArrowPath(base, l, e), pe));
         }
     }
     int total_experts = 0;
@@ -473,16 +446,16 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
         if (top.layer_types[l] == "moe") total_experts += E;
 
     if (!global_raw.empty()) {
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
     }
     for (auto &[layer, recs] : nvfp4_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     }
     for (auto &[layer, recs] : raw_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
     }

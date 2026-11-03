@@ -79,6 +79,7 @@ against `lsxcommon`. Dependency include paths live only in `lsx_dep_includes`
 
 | Guard (in `tests/`) | Rule it enforces |
 |---|---|
+| `test_infrastructure_guard` | no `${CMAKE_BINARY_DIR}/_deps` include paths, exactly one definition of the shared converter helpers (`ReadTensorData`, `WriteBatch`, `WriteExpertArrow`, `ExpertArrowPath`, `QuantizeSlice`), `CUDA_ARCHITECTURES` only `${LSX_CUDA_ARCH}`/`OFF` |
 | `test_code_naming_guard.cpp` | model file-naming scheme (`SchemeRegex()` / `AllowedCommon()`) |
 | `test_model_independence_guard.cpp` | unique frozen-geometry passport per model, no cross-family borrowing, `LsxFastMathScope` in `Infer` (`kPassports`, `consumers`) |
 | `test_model_suite_guard.cpp` | the per-model suite is autonomous AND complete (`Suites()`): every lifecycle stage (convert → load → model → kernels → selfcheck → fsi → code → det → **perf**) has a registered ctest target; every family test target is claimed by a row (no orphans) and every row declares the full stage set; `SKIP_RETURN_CODE 4` on the selfcheck/fsi/code/det targets; **loader/model stage tests must run on synthetic fixtures** — no vault path, and no cross-family fixture borrowing (the synthetic primitives live only in `tests/test_synth_checkpoint.h`). One case also pairs every row against `tests/fixtures/{fsi,code,det}`: a parity golden that is missing **and not declared in `kGoldenDebt`** fails, and a `kGoldenDebt` row whose golden now exists fails too |

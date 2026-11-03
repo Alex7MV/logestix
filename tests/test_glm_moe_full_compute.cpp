@@ -100,9 +100,7 @@ inline uint16_t FloatToHalfRne(float v)
 inline __half H(float v)
 {
     const uint16_t bits = FloatToHalfRne(v);
-    __half h;
-    std::memcpy(&h, &bits, sizeof(h));
-    return h;
+    return __ushort_as_half(bits);
 }
 inline float F(__half h) { return __half2float(h); }
 
@@ -333,7 +331,9 @@ std::vector<__half> CpuForwardLayer(const RefRun &ref, RefIdx &R, int l, int tur
         std::vector<__half> swig(static_cast<size_t>(kInter));
         for (int i = 0; i < kInter; ++i) {
             float g = F(gate[static_cast<size_t>(i)]), u = F(up[static_cast<size_t>(i)]);
-            if (g > 10.0f) g = 10.0f; if (u > 10.0f) u = 10.0f; if (u < -10.0f) u = -10.0f;
+            if (g > 10.0f) g = 10.0f;
+            if (u > 10.0f) u = 10.0f;
+            if (u < -10.0f) u = -10.0f;
             const float s = g / (1.0f + std::exp(-g));
             swig[static_cast<size_t>(i)] = H(s * u);
         }

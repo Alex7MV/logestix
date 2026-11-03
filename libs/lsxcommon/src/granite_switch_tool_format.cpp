@@ -36,16 +36,6 @@ constexpr AdapterSpec kAdapters[] = {
     {"decision", "<|decision|>", "### DECISION", 3},
 };
 
-std::string_view Trim(std::string_view s)
-{
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
-                          s.front() == '\r' || s.front() == '\n'))
-        s.remove_prefix(1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
-                          s.back() == '\r' || s.back() == '\n'))
-        s.remove_suffix(1);
-    return s;
-}
 
 std::string ToolJson(const ToolSpec &t)
 {

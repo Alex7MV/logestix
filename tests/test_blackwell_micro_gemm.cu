@@ -34,7 +34,7 @@ TEST_CASE("NVFP4 GEMM micro-benchmark (seq=1 decode shapes)",
                                    cudaDevAttrGlobalMemoryBusWidth, dev) ==
             cudaSuccess);
     {
-        char msg[256];
+        char msg[512];
         snprintf(msg, sizeof(msg),
                  "[MICRO] device=%s sms=%d bw_theory_gb_s=%.0f", prop.name,
                  prop.multiProcessorCount,

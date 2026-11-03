@@ -95,8 +95,8 @@ TEST_CASE("Xing control markers sit at their frozen ids", "[xing][fast]")
 TEST_CASE("Xing render matches the checkpoint transcript shape", "[xing][fast]")
 {
     ChatConversation conv;
-    conv.messages.push_back({"system", "You are helpful."});
-    conv.messages.push_back({"user", "Weather in Paris?"});
+    conv.messages.push_back({"system", "You are helpful.", "", {}});
+    conv.messages.push_back({"user", "Weather in Paris?", "", {}});
     std::string text;
     REQUIRE(RenderText(conv, text, true));
     REQUIRE(text.find("<_system>You are helpful.") == 0);
@@ -120,8 +120,8 @@ TEST_CASE("Xing render injects control markers as their own ids", "[xing][fast]"
 {
     const ArrowTokenizerDb db = BuildDb();
     ChatConversation conv;
-    conv.messages.push_back({"system", "S"});
-    conv.messages.push_back({"user", "U"});
+    conv.messages.push_back({"system", "S", "", {}});
+    conv.messages.push_back({"user", "U", "", {}});
     std::vector<int32_t> ids;
     REQUIRE(Render(db, conv, ids, true));
     REQUIRE_FALSE(ids.empty());
@@ -154,7 +154,7 @@ TEST_CASE("Xing tool-call round trip through decode", "[xing][fast]")
     // built the way the runtime sees it (markers as their own ids), because
     // BPE alone cannot produce them.
     ChatConversation conv;
-    conv.messages.push_back({"user", "Weather?"});
+    conv.messages.push_back({"user", "Weather?", "", {}});
     ChatMessage asst;
     asst.role = "assistant";
     asst.content = "";
@@ -172,7 +172,7 @@ TEST_CASE("Xing tool-call round trip through decode", "[xing][fast]")
 TEST_CASE("Xing assistant turn re-renders its own tool call", "[xing][fast]")
 {
     ChatConversation conv;
-    conv.messages.push_back({"user", "Weather?"});
+    conv.messages.push_back({"user", "Weather?", "", {}});
     ChatMessage asst;
     asst.role = "assistant";
     asst.content = "";
@@ -220,8 +220,8 @@ TEST_CASE("Xing render matches the upstream chat template", "[xing][fast]")
 {
     const ArrowTokenizerDb db = BuildDb();
     ChatConversation conv;
-    conv.messages.push_back({"system", "S"});
-    conv.messages.push_back({"user", "U"});
+    conv.messages.push_back({"system", "S", "", {}});
+    conv.messages.push_back({"user", "U", "", {}});
     {
         ChatMessage a;
         a.role = "assistant";
@@ -231,7 +231,7 @@ TEST_CASE("Xing render matches the upstream chat template", "[xing][fast]")
         a.tool_calls.push_back(tc);
         conv.messages.push_back(a);
     }
-    conv.messages.push_back({"tool", "sunny"});
+    conv.messages.push_back({"tool", "sunny", "", {}});
     conv.tools.push_back(WeatherTool());
 
     std::string ours;

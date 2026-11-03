@@ -74,9 +74,10 @@ std::optional<ParsedName> parse_expert_name(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
-    absl::SimpleAtoi(m[2].str(), &p.expert);
-    absl::SimpleAtoi(m[3].str(), &p.weight_id);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer) ||
+        !absl::SimpleAtoi(m[2].str(), &p.expert) ||
+        !absl::SimpleAtoi(m[3].str(), &p.weight_id))
+        return std::nullopt;
     p.is_scale  = (m[4] == "scale");
     return p;
 }
@@ -89,9 +90,10 @@ std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer) ||
+        !absl::SimpleAtoi(m[2].str(), &p.weight_id))
+        return std::nullopt;
     p.expert    = 0;
-    absl::SimpleAtoi(m[2].str(), &p.weight_id);
     p.is_scale  = (m[3] == "scale");
     return p;
 }
@@ -713,6 +715,56 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
     return pe;
 }
 
+// ── Shared converter write helpers ──────────────────────────────────────────
+
+arrow::Status WriteBatch(
+    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
+    const std::filesystem::path &path)
+{
+    if (!batch.ok()) return batch.status();
+    return WriteRecordBatchToFile(*batch, path);
+}
+
+std::filesystem::path ExpertArrowPath(const std::filesystem::path &model_root,
+                                      int layer, int expert)
+{
+    return model_root / "experts" / absl::StrCat("layer_", layer) /
+           absl::StrCat("exp_", expert, ".arrow");
+}
+
+arrow::Status WriteExpertArrow(const std::filesystem::path &path,
+                               const PackedExpert &expert)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+
+    auto batch = ExpertSchema::MakeBatchView(expert);
+    if (!batch.ok()) return batch.status();
+    diag::ValidateBatchBuffers(**batch, "WriteExpertArrow pre-write");
+    return WriteRecordBatchToFile(*batch, path);
+}
+
+bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
+                   const uint8_t *e8m0, const std::vector<int64_t> &shape,
+                   const std::vector<int64_t> &e8m0_shape,
+                   DenseNvfp4Record &out)
+{
+    return gpu::quantize_tensor_gpu(data, numel, dtype, e8m0, shape, e8m0_shape,
+                                    out.packed, out.scales, out.global_scale);
+}
+
+bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
+                   DenseNvfp4Record &out)
+{
+    return QuantizeSlice(data, numel, dtype, nullptr, out.shape, {}, out);
+}
+
+bool QuantizeSliceBf16(const uint8_t *data, int64_t numel,
+                       DenseNvfp4Record &out)
+{
+    return QuantizeSlice(data, numel, "BF16", out);
+}
+
 // ── Save single expert to Arrow IPC file ────────────────────────────────────
 
 arrow::Status SaveExpertToArrow(
@@ -721,25 +773,10 @@ arrow::Status SaveExpertToArrow(
     int expert_idx,
     const std::filesystem::path &output_root)
 {
-    namespace fs = std::filesystem;
-
-    auto layer_dir = output_root /
-        "experts" / absl::StrCat("layer_", layer_idx);
-    fs::create_directories(layer_dir);
-
-    auto out_path = layer_dir /
-        absl::StrCat("exp_", expert_idx, ".arrow");
-
-    ARROW_ASSIGN_OR_RAISE(auto batch, ExpertSchema::MakeBatchView(expert));
-    diag::ValidateBatchBuffers(*batch, "SaveExpertToArrow pre-write");
-    ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, out_path));
-
-    lsxcommon::log::info(absl::StrFormat(
-        "  wrote layer=%03d expert=%03d  %d -> %s",
-        layer_idx, expert_idx,
-        batch->column(0)->length(),
-        out_path.string()));
-
+    const auto path = ExpertArrowPath(output_root, layer_idx, expert_idx);
+    ARROW_RETURN_NOT_OK(WriteExpertArrow(path, expert));
+    lsxcommon::log::info(absl::StrFormat("  wrote layer=%03d expert=%03d  -> %s",
+                                         layer_idx, expert_idx, path.string()));
     return arrow::Status::OK();
 }
 

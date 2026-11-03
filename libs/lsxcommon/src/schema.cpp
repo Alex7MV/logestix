@@ -135,7 +135,7 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch,
     PackedExpert pe;
 
     auto extract_binary = [&](int idx, std::vector<uint8_t> &out,
-                              std::vector<int64_t> &shape)
+                              std::vector<int64_t> & /*shape*/)
         -> arrow::Status
     {
         auto arr = batch->column(idx);
@@ -735,18 +735,6 @@ std::string SerializeByteToTokenId(const std::array<int32_t, 256> &b)
     return absl::StrJoin(b, ",");
 }
 
-std::array<int32_t, 256> DeserializeByteToTokenId(const std::string &s)
-{
-    std::array<int32_t, 256> out{};
-    size_t i = 0;
-    for (absl::string_view part : absl::StrSplit(s, ',')) {
-        int32_t v = 0;
-        if (!absl::SimpleAtoi(part, &v)) break;
-        if (i >= out.size()) break;
-        out[i++] = v;
-    }
-    return out;
-}
 
 } // namespace
 

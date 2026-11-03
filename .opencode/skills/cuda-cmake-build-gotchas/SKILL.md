@@ -188,6 +188,9 @@ patches fire on only one of them, then run `ctest -L fast` for the guard.
 | Sized-literal redefinition in Boost `literals.hpp` under C++20 | Arrow/Boost patch not applied after fetch |
 | `-Werror` in a third-party build under GCC 15 | missing `BUILD_WARNING_LEVEL=PRODUCTION` |
 | Host-only test TU cannot find CUDA headers | the included header's CUDA surface is not `#if defined(LOGESTIX_HAS_CUDA) || defined(__CUDACC__)`-guarded |
+| ~50k warnings per clean build (absl `__int128`, Arrow `safe_math`) in *our* TUs | dependency include dirs are plain `-I`, so `-Wpedantic` applies — list them as SYSTEM INTERFACE in `lsx_dep_includes` (and in the test helpers for tests that link a dependency directly) |
+| ~12k warnings *from Arrow/abseil's own objects* | the warning flags were global `add_compile_options`; use `lsx_warning_policy()` from `libs/`, `apps/`, `tests/` only |
+| "style of line directive is a GCC extension" repeated once per source line in a `.cu` | `-Wpedantic` reached the NVCC host pass; gate it to `COMPILE_LANGUAGE:C,CXX` |
 
 ## Verification
 

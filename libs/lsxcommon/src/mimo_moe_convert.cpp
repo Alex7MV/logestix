@@ -267,28 +267,6 @@ arrow::Status WriteBatchOr(
 }
 
 // Dequantize one FP8 dense tensor and requantize it to NVFP4.
-arrow::Status QuantizeFp8(const std::string &input_dir, const TensorRef &w,
-                          const TensorRef &s, DenseNvfp4Record &out)
-{
-    auto fp8 = ReadTensorData(input_dir, *w.shard, *w.info);
-    auto sc = ReadTensorData(input_dir, *s.shard, *s.info);
-    if (fp8.empty() ||
-        static_cast<int64_t>(fp8.size()) != w.info->byte_size())
-        return arrow::Status::IOError("failed to read tensor data: ",
-                                      w.info->name);
-    std::vector<uint8_t> bf16;
-    ARROW_RETURN_NOT_OK(DequantFp8Block128ToBf16Gpu(
-        fp8, w.info->shape, sc, s.info->shape, bf16));
-    out.name = w.info->name;
-    out.shape = w.info->shape;
-    out.dtype = "BF16";
-    if (!gpu::quantize_tensor_gpu(bf16.data(), w.info->numel(), "BF16", nullptr,
-                                  w.info->shape, {}, out.packed, out.scales,
-                                  out.global_scale))
-        return arrow::Status::IOError("GPU quantization failed for ",
-                                      w.info->name);
-    return arrow::Status::OK();
-}
 
 // FP8 -> dequantized BF16 raw record (the dense high-precision path: MiMo's
 // FP8 dense weights are too sensitive to an 8-bit -> 4-bit requantization to

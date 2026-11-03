@@ -551,15 +551,6 @@ mla_attn_kernel(
 
 // ── FP32 GEMM: out[m] = W[m,k] @ x[k] (W FP32 row-major, x FP16) ────────────
 // ── FP16 GEMM: out[m] = W[m,k] @ x[k] (W row-major) ──────────────────────────
-static cudaError_t gemm_f16_1d(cudaStream_t stream,
-                               const __half* d_w, int m, int k,
-                               const __half* d_x, __half* d_out)
-{
-    float alpha = 1.0f, beta = 0.0f;
-    return gemv::RunLxGemmVec(stream, d_w, d_x, 1, m, k, gemv::LxDtype::kF16,
-                              gemv::LxDtype::kF16, alpha, d_out,
-                              gemv::LxDtype::kF16, beta);
-}
 
 // Clamp FP32→FP16 kernel: prevents overflow when dequanted weights exceed FP16 range
 static __global__ void clamp_f32_to_f16_kernel(const float* __restrict__ src,
@@ -611,7 +602,7 @@ static cudaError_t f8_gemm_1d(cudaStream_t stream,
 
 static cudaError_t run_rmsnorm_attn(
     cudaStream_t stream, const __half* d_input, const __half* d_weight,
-    __half* d_output, float* d_scratch, float* d_gamma_scratch,
+    __half* d_output, float* /*d_scratch*/, float* /*d_gamma_scratch*/,
     int dim, float eps)
 {
     // Fused single-launch FP16 RMSNorm.

@@ -65,10 +65,6 @@ std::vector<int32_t> RawEncode(const ArrowTokenizerDb &db, std::string_view text
     return ids;
 }
 
-bool Contains(const std::string &hay, std::string_view needle)
-{
-    return hay.find(needle) != std::string::npos;
-}
 
 ChatConversation ToolConversation()
 {

@@ -268,9 +268,10 @@ inline void WriteTokenizerArrows(const std::filesystem::path &pinned)
     meta.vocab_size = kTkVocab;
     for (int b = 0; b < 128; ++b) meta.byte_to_token_id[b] = 3 + b;
     auto vb = lsxcommon::TokenizerVocabSchema::MakeBatch(rows, meta);
-    if (vb.ok())
-        lsxcommon::WriteRecordBatchToFile(*vb,
-                                         pinned / "tokenizer_vocab.arrow");
+    REQUIRE(vb.ok());
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(
+                *vb, pinned / "tokenizer_vocab.arrow")
+                .ok());
     // The loader requires at least one merge row; this one never matches.
     std::vector<lsxcommon::MergeRow> merges(1);
     merges[0].merge_left = 1000000;
@@ -278,9 +279,10 @@ inline void WriteTokenizerArrows(const std::filesystem::path &pinned)
     merges[0].merge_rank = 0;
     merges[0].merge_token_id = 0;
     auto mb = lsxcommon::TokenizerMergesSchema::MakeBatch(merges, 1);
-    if (mb.ok())
-        lsxcommon::WriteRecordBatchToFile(*mb,
-                                          pinned / "tokenizer_merges.arrow");
+    REQUIRE(mb.ok());
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(
+                *mb, pinned / "tokenizer_merges.arrow")
+                .ok());
 }
 
 // Writes a minimal HF `tokenizer.json` (+ `tokenizer_config.json`) next to the

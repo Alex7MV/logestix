@@ -184,10 +184,6 @@ const DenseNvfp4Record *FindNvfp4(const std::vector<DenseNvfp4Record> &v,
     return nullptr;
 }
 
-bool ends_with(std::string_view s, std::string_view suf)
-{
-    return s.size() >= suf.size() && s.substr(s.size() - suf.size()) == suf;
-}
 
 } // namespace
 

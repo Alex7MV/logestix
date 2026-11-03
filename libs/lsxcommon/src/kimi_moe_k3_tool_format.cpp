@@ -403,27 +403,31 @@ bool KimiK3CanonicalJson(std::string_view json, std::string &out)
             }
             case simdjson::dom::element_type::INT64: {
                 int64_t x;
-                v.get_int64().get(x);
+                const auto i64_err = v.get_int64().get(x);
+                (void)i64_err;
                 s += std::to_string(x);
                 return true;
             }
             case simdjson::dom::element_type::UINT64: {
                 uint64_t x;
-                v.get_uint64().get(x);
+                const auto u64_err = v.get_uint64().get(x);
+                (void)u64_err;
                 s += std::to_string(x);
                 return true;
             }
             case simdjson::dom::element_type::DOUBLE: {
                 double x;
-                v.get_double().get(x);
+                const auto f64_err = v.get_double().get(x);
+                (void)f64_err;
                 char buf[64];
                 std::snprintf(buf, sizeof(buf), "%.17g", x);
                 s += buf;
                 return true;
             }
             case simdjson::dom::element_type::BOOL: {
-                bool b;
-                v.get_bool().get(b);
+                bool b = false;
+                const auto bool_err = v.get_bool().get(b);
+                (void)bool_err;
                 s += b ? "true" : "false";
                 return true;
             }

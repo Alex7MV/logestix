@@ -37,13 +37,6 @@ const TensorView *FindTensor(const TensorBatchViews &raw,
     return nullptr;
 }
 
-float Bf16BitsToFloat(uint16_t b)
-{
-    const uint32_t u = static_cast<uint32_t>(b) << 16;
-    float f;
-    std::memcpy(&f, &u, sizeof(f));
-    return f;
-}
 
 // Stream-ordered BF16->FP16 upload (OPEN_TASKS E3).
 //

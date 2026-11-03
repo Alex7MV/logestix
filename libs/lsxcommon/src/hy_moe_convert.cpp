@@ -110,34 +110,6 @@ HyPassportGeometry HyMemoryPassportGeometry()
 }
 
 // Quantizes a contiguous BF16/FP32 slice to NVFP4. Returns false on GPU failure.
-bool QuantizeSlice(const uint8_t *data, int64_t numel, const std::string &dtype,
-                   DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, dtype, nullptr, r.shape, {},
-                                    r.packed, r.scales, r.global_scale);
-}
-
-arrow::Status WriteBatch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const std::filesystem::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
-
-arrow::Status WriteExpertFile(const std::filesystem::path &base_dir, int layer,
-                              int expert, PackedExpert &&pe)
-{
-    namespace fs = std::filesystem;
-    fs::path dir = base_dir / "experts" / absl::StrCat("layer_", layer);
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    auto batch = ExpertSchema::MakeBatch(pe);
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch,
-                                  dir / absl::StrCat("exp_", expert, ".arrow"));
-}
-
 // Appends one `eos_token_id` value, which the checkpoints encode either as a
 // single int or as an array (Hy-SimulMT: [120025, 120008]).
 void AppendEosIds(simdjson::ondemand::value val, std::vector<int> &out)
@@ -727,7 +699,7 @@ arrow::Status ConvertHyMoeModelWithSpec(const std::string &input_dir,
             pe.w3_scales = std::move(recs[2].scales);
             pe.w3_shape = recs[2].shape;
             pe.w3_global_scale = recs[2].global_scale;
-            ARROW_RETURN_NOT_OK(WriteExpertFile(base, l, e, std::move(pe)));
+            ARROW_RETURN_NOT_OK(WriteExpertArrow(ExpertArrowPath(base, l, e), pe));
         }
     }
 

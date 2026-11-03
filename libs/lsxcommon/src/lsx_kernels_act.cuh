@@ -26,8 +26,9 @@ namespace kernels {
 // Division form: out = (g / (1 + e^-g)) * u
 // [qwen_moe, kimi, glm clamp/real]. Multiplication order preserved.
 template <typename T, ExpFlavor F, bool Clamp>
-__global__ void SwigluKernel(const T* __restrict__ g_in,
-                             const T* __restrict__ u_in, T* __restrict__ out,
+// g_in and out are NOT __restrict__: families call this activation in place
+// (out == g_in), which restrict would make UB (and GCC's -Wrestrict flags).
+__global__ void SwigluKernel(const T* g_in, const T* __restrict__ u_in, T* out,
                              int64_t n, float limit)
 {
     const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
@@ -46,9 +47,8 @@ __global__ void SwigluKernel(const T* __restrict__ g_in,
 // Precomputed-sigmoid form: out = (1 / (1 + e^-g)) * g * u
 // [deepseek swiglu_clamp / swiglu_clamp_f32f]. Multiplication order preserved.
 template <typename T, ExpFlavor F, bool Clamp>
-__global__ void SwigluSigKernel(const T* __restrict__ g_in,
-                                const T* __restrict__ u_in,
-                                T* __restrict__ out, int64_t n, float limit)
+__global__ void SwigluSigKernel(const T* g_in, const T* __restrict__ u_in,
+                                T* out, int64_t n, float limit)
 {
     const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
     if (i >= n) return;
@@ -103,8 +103,8 @@ __global__ inline void SwigluF32Kernel(const __half *__restrict__ g,
     }
 }
 
-__global__ inline void SwigluAbsMaxKernel(const float *__restrict__ sw,
-                                          float *__restrict__ absmax, int n)
+__global__ inline void SwigluAbsMaxKernel(const float *sw, float *absmax,
+                                          int n)
 {
     __shared__ float red[256];
     float m = 0.0f;
@@ -122,8 +122,7 @@ __global__ inline void SwigluAbsMaxKernel(const float *__restrict__ sw,
 }
 
 // alpha = smallest power of two with absmax/alpha <= kSwiFp16Headroom.
-__global__ inline void SwigluAlphaKernel(const float *__restrict__ absmax,
-                                         float *__restrict__ alpha,
+__global__ inline void SwigluAlphaKernel(const float *absmax, float *alpha,
                                          float *__restrict__ inv_alpha)
 {
     if (threadIdx.x || blockIdx.x) return;

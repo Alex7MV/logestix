@@ -30,10 +30,6 @@ namespace {
 
 // Accepts either the model root (contains logestix/) or the logestix
 // directory itself — mirrors expert_store.h path resolution.
-fs::path ResolveLogestixRoot(const fs::path &p)
-{
-    return fs::exists(p / "logestix") ? p / "logestix" : p;
-}
 
 // Remap one E8M0 per-32 scale array onto pow2-E4M3 per-16 pairs with a
 // per-tensor shift. @p src and @p dst may alias (in-place update); the

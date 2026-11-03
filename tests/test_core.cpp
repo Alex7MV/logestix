@@ -291,7 +291,6 @@ TEST_CASE("FlatBuffers type traits and manual buffer construction", "[dependenci
     REQUIRE(builder.GetSize() == 0);
 
     auto str_off = builder.CreateString("flatbuffer string");
-    auto vec_off = builder.CreateVector(std::vector<float>{1.0f, 2.0f, 3.0f});
     builder.Finish(str_off);
 
     auto* buf = builder.GetBufferPointer();

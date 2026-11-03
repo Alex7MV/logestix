@@ -51,8 +51,9 @@ std::optional<ParsedTensor> parse_routed(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::RoutedExpert;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
-    absl::SimpleAtoi(m[2].str(), &p.expert);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer) ||
+        !absl::SimpleAtoi(m[2].str(), &p.expert))
+        return std::nullopt;
     p.weight_id = (m[3] == "gate") ? 1 : (m[3] == "down") ? 2 : 3;
     p.base = m[3].str() + "_proj";
     return p;
@@ -67,7 +68,7 @@ std::optional<ParsedTensor> parse_shared(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::SharedExpert;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer)) return std::nullopt;
     p.weight_id = (m[2] == "gate") ? 1 : (m[2] == "down") ? 2 : 3;
     p.base = m[2].str() + "_proj";
     return p;
@@ -82,7 +83,7 @@ std::optional<ParsedTensor> parse_router(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::Router;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer)) return std::nullopt;
     p.base = (m[2] == "e_score_correction_bias") ? "e_score_correction_bias"
                                                  : "gate";
     return p;
@@ -96,7 +97,7 @@ std::optional<ParsedTensor> parse_dense(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     int layer = 0;
-    absl::SimpleAtoi(m[1].str(), &layer);
+    if (!absl::SimpleAtoi(m[1].str(), &layer)) return std::nullopt;
     if (layer > kDenseLayerMax) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::DenseMlp;
@@ -118,7 +119,7 @@ std::optional<ParsedTensor> parse_attention(const std::string &name)
     if (std::regex_match(name, m, re)) {
         ParsedTensor p;
         p.kind = TensorKind::Attention;
-        absl::SimpleAtoi(m[1].str(), &p.layer);
+        if (!absl::SimpleAtoi(m[1].str(), &p.layer)) return std::nullopt;
         p.base = m[2].str();
         return p;
     }
@@ -141,7 +142,7 @@ std::optional<ParsedTensor> parse_indexer(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::Indexer;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer)) return std::nullopt;
     p.base = m[2].str();
     return p;
 }
@@ -158,14 +159,14 @@ std::optional<ParsedTensor> parse_layer_norm(const std::string &name)
     if (std::regex_match(name, m, re)) {
         ParsedTensor p;
         p.kind = TensorKind::LayerNorm;
-        absl::SimpleAtoi(m[1].str(), &p.layer);
+        if (!absl::SimpleAtoi(m[1].str(), &p.layer)) return std::nullopt;
         p.base = m[2].str();
         return p;
     }
     if (std::regex_match(name, m, re_shared_head)) {
         ParsedTensor p;
         p.kind = TensorKind::LayerNorm;
-        absl::SimpleAtoi(m[1].str(), &p.layer);
+        if (!absl::SimpleAtoi(m[1].str(), &p.layer)) return std::nullopt;
         p.base = "shared_head.norm";
         return p;
     }
@@ -238,9 +239,12 @@ Topology load_topology(const std::string &index_json_path)
     }
 
     int64_t nl = 0, epl = 0, te = 0;
-    root["num_layers"].get_int64().get(nl);
-    root["experts_per_layer"].get_int64().get(epl);
-    root["total_experts"].get_int64().get(te);
+    if (root["num_layers"].get_int64().get(nl) != simdjson::SUCCESS ||
+        root["experts_per_layer"].get_int64().get(epl) != simdjson::SUCCESS ||
+        root["total_experts"].get_int64().get(te) != simdjson::SUCCESS) {
+        topo.error_msg = "missing routing counts in " + index_json_path;
+        return topo;
+    }
     topo.num_layers = static_cast<long long>(nl);
     topo.experts_per_layer = static_cast<long long>(epl);
     topo.total_experts = static_cast<long long>(te);

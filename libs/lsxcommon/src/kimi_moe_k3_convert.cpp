@@ -71,11 +71,6 @@ auto get_b = [](simdjson::ondemand::object &o, const char *k, bool dflt) {
     return v;
 };
 
-bool ends_with(const std::string &s, std::string_view suffix)
-{
-    return s.size() >= suffix.size() &&
-           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
 
 // Parses "model.layers.<N>." (after the `language_model.` scope) and returns
 // the body after it.
@@ -115,22 +110,6 @@ bool parse_expert_body(const std::string &body, int &expert, std::string &rest)
 }
 
 bool tensor_is_f32(const TensorInfo &t) { return t.dtype == "F32"; }
-
-bool quantize_slice(const uint8_t *data, int64_t numel, const TensorInfo &t,
-                    DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, t.dtype == "F32" ? "F32" : "BF16",
-                                    nullptr, r.shape, {}, r.packed, r.scales,
-                                    r.global_scale);
-}
-
-arrow::Status write_batch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const fs::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
 
 bool check_frozen_geometry(const KimiK3ConvertTopology &top, std::string &why)
 {
@@ -595,7 +574,8 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
                 r.name = t.name;
                 r.shape = t.shape;
                 r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), t, r))
+                if (!QuantizeSlice(data.data(), t.numel(),
+                                   tensor_is_f32(t) ? "F32" : "BF16", r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 if (p.layer < 0)
@@ -610,7 +590,8 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
                 r.name = t.name;
                 r.shape = t.shape;
                 r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), t, r))
+                if (!QuantizeSlice(data.data(), t.numel(),
+                                   tensor_is_f32(t) ? "F32" : "BF16", r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 streamed_nvfp4[p.layer].push_back(std::move(r));
@@ -704,21 +685,21 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
 
     // ── Write the pinned / streamed / global batches ──
     if (!global_nvfp4.empty())
-        ARROW_RETURN_NOT_OK(write_batch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
+        ARROW_RETURN_NOT_OK(WriteBatch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
                                         pinned_dir / "global_nvfp4.arrow"));
     if (!global_raw.empty())
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
     for (auto &[layer, recs] : pinned_nvfp4)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     for (auto &[layer, recs] : pinned_raw)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
     for (auto &[layer, recs] : streamed_nvfp4)
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             streamed_dir / absl::StrCat("layer_", layer, ".arrow")));
 

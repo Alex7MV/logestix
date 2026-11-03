@@ -77,9 +77,7 @@ inline uint16_t FloatToHalfRne(float v)
 inline __half FloatToHalf(float v)
 {
     const uint16_t bits = FloatToHalfRne(v);
-    __half h;
-    std::memcpy(&h, &bits, sizeof(h));
-    return h;
+    return __ushort_as_half(bits);
 }
 
 // Deterministic hash into an FP16-exact small lattice. Random-walk dot
@@ -376,7 +374,8 @@ TEST_CASE("GLM IndexShare attention: mod-4 refresh vs cached reuse and "
             CHECK(__half2float(hout[p]) == -1.0f);
     };
     auto check_match = [&](const std::vector<__half> &got,
-                           const std::vector<__half> &want, const char *tag) {
+                           const std::vector<__half> &want,
+                           const char * /*tag*/) {
         REQUIRE(got.size() == out_n);
         REQUIRE(want.size() == out_n);
         for (size_t i = 0; i < out_n; ++i) {

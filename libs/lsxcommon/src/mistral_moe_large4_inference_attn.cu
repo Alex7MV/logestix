@@ -260,7 +260,7 @@ cudaError_t AllocateLarge4AttnState(Large4AttnState &s, const Large4Dims &dims,
 cudaError_t Large4AttentionStep(Large4AttnState &s, const Large4Dims &dims,
                                 const Large4LayerWeights &lw, int layer,
                                 const __nv_bfloat16 *normed,
-                                const float *normed32, int pos, float *out,
+                                const float * /*normed32*/, int pos, float *out,
                                 cudaStream_t stream)
 {
     const int H = dims.hidden;

@@ -675,7 +675,7 @@ cudaError_t dequant_fp4_e8m0_half_actscale(
 cudaError_t dequant_shared_f8(
     cudaStream_t stream,
     const uint8_t* d_weights, int64_t n_bytes,
-    const uint8_t* d_scales, int64_t scale_bytes,
+    const uint8_t* d_scales, int64_t /*scale_bytes*/,
     float* d_output, int64_t num_elements, int64_t cols)
 {
     if (!d_weights || !d_scales || !d_output)
@@ -697,7 +697,7 @@ cudaError_t dequant_shared_f8(
 cudaError_t dequant_shared_f8_half(
     cudaStream_t stream,
     const uint8_t* d_weights, int64_t n_bytes,
-    const uint8_t* d_scales, int64_t scale_bytes,
+    const uint8_t* d_scales, int64_t /*scale_bytes*/,
     __half* d_output, int64_t num_elements, int64_t cols)
 {
     if (!d_weights || !d_scales || !d_output)

@@ -132,7 +132,7 @@ TEST_CASE("sp-bpe encode/decode matches sentencepiece goldens", "[alice][fast]")
         REQUIRE(c["text"].get_string().get(text) == simdjson::SUCCESS);
         std::vector<int32_t> want;
         for (auto id : c["ids"].get_array()) {
-            int64_t v;
+            int64_t v = 0;
             REQUIRE(id.get_int64().get(v) == simdjson::SUCCESS);
             want.push_back(static_cast<int32_t>(v));
         }

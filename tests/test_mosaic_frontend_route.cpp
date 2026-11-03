@@ -34,10 +34,6 @@ namespace {
 constexpr std::size_t kCacheLine = 64;
 
 // Normalize a URL path the same way the router does (strip query/fragment).
-std::string_view StripQuery(std::string_view path) {
-    const std::size_t q = path.find_first_of("?#");
-    return q == std::string_view::npos ? path : path.substr(0, q);
-}
 
 }  // namespace
 

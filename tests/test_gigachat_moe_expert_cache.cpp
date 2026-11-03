@@ -16,11 +16,6 @@ using namespace lsxcommon::gigachat;
 using lsxcommon::gpu::ExpertDeviceCache;
 
 namespace {
-void FillBytes(std::vector<uint8_t> &v, uint8_t base)
-{
-    for (size_t i = 0; i < v.size(); ++i)
-        v[i] = static_cast<uint8_t>(base + i);
-}
 } // namespace
 
 TEST_CASE("gigachat expert slot layout: real geometry", "[gigachat][expert-cache]")

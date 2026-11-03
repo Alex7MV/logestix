@@ -374,7 +374,7 @@ inline std::vector<FakeTensor> BuildSyntheticExpTensors()
                     v = ((v ^ (v >> 27)) * M2) & MASK;
                     return (v ^ (v >> 31)) & MASK;
                 };
-                const int64_t max_long = (1ll << 63) - 1;
+                const int64_t max_long = std::numeric_limits<int64_t>::max();
                 const int64_t half = std::max<int64_t>(1, (max_long / V) / 2);
                 const int64_t base = c.seed + 10007 * 0;  // ple_layer_index 0
                 std::vector<int64_t> mult;

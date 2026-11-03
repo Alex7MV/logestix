@@ -103,7 +103,7 @@ inline void AppendXingMtp(std::vector<FakeTensor> &t, int l)
 inline std::vector<FakeTensor> BuildSyntheticXingModel(int num_layers = 3,
                                                        int num_experts = 2,
                                                        int mtp_layer = 40,
-                                                       int hc_mult = 4,
+                                                       int /*hc_mult*/ = 4,
                                                        int hidden = 16)
 {
     std::vector<FakeTensor> t;

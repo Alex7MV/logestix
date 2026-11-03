@@ -958,9 +958,10 @@ static cudaError_t Matmul(const __nv_bfloat16 *w,
 }
 
 // h[t,i] = gelu_tanh(g[t,i]) * u[t,i]
-__global__ void gemma_geglu_kernel(const __nv_bfloat16 *__restrict__ g,
+// g and h may alias (in-place GeGLU).
+__global__ void gemma_geglu_kernel(const __nv_bfloat16 *g,
                                    const __nv_bfloat16 *__restrict__ u,
-                                   __nv_bfloat16 *__restrict__ h, int64_t numel)
+                                   __nv_bfloat16 *h, int64_t numel)
 {
     const int64_t i =
         static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -970,10 +971,10 @@ __global__ void gemma_geglu_kernel(const __nv_bfloat16 *__restrict__ g,
 }
 
 // Batched decode (seq==1): geGLU over all K experts' [K][MI] projections.
-__global__ void gemma_geglu_batched_kernel(const __nv_bfloat16 *__restrict__ g,
+// g and h may alias (in-place GeGLU).
+__global__ void gemma_geglu_batched_kernel(const __nv_bfloat16 *g,
                                            const __nv_bfloat16 *__restrict__ u,
-                                           __nv_bfloat16 *__restrict__ h,
-                                           int64_t numel)
+                                           __nv_bfloat16 *h, int64_t numel)
 {
     const int64_t i =
         static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -1022,10 +1023,11 @@ static cudaError_t MatmulBatched(
 
 // Per-head RMSNorm over packed [seq, heads*dim]; Gemma4 w-form when w
 // non-null, plain (with_scale=False) when w null (v_norm).
-__global__ void gemma_head_norm_kernel(const __nv_bfloat16 *__restrict__ x,
+// x and out may alias (in-place per-head norm).
+__global__ void gemma_head_norm_kernel(const __nv_bfloat16 *x,
                                        const __nv_bfloat16 *__restrict__ w,
-                                       __nv_bfloat16 *__restrict__ out, int seq,
-                                       int heads, int dim, float eps)
+                                       __nv_bfloat16 *out, int seq, int heads,
+                                       int dim, float eps)
 {
     extern __shared__ float squares[];
     const int t = blockIdx.x;
@@ -2781,7 +2783,6 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             if (e != cudaSuccess) break;
         }
         bool failed = false;
-            std::getenv("LSX_TEST_GEMMA_HASH") != nullptr;
         for (size_t l = 0; l < pw.layers.size(); ++l) {
             e = ForwardLayer(stream, pw, pw.layers[l],
                              static_cast<int>(l), ws, /*seq=*/1, pos,

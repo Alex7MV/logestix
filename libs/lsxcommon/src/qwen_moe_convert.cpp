@@ -81,36 +81,7 @@ bool check_frozen_geometry(const QwenMoeTopology &top, std::string &why)
 }
 
 // Quantizes a contiguous BF16 slice to NVFP4. Returns false on GPU failure.
-bool quantize_slice(const uint8_t *data, int64_t numel,
-                    DenseNvfp4Record &r)
-{
-    return gpu::quantize_tensor_gpu(data, numel, "BF16", nullptr, r.shape,
-                                    {}, r.packed, r.scales, r.global_scale);
-}
-
-arrow::Status write_batch(
-    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
-    const std::filesystem::path &path)
-{
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch, path);
-}
-
 // Writes one expert's NVFP4 payload triple to experts/layer_<l>/exp_<e>.arrow.
-arrow::Status write_expert_file(const std::filesystem::path &base_dir,
-                                int layer, int expert, PackedExpert &&pe)
-{
-    namespace fs = std::filesystem;
-    fs::path dir = base_dir / "experts" /
-                   absl::StrCat("layer_", layer);
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    auto batch = ExpertSchema::MakeBatch(pe);
-    if (!batch.ok()) return batch.status();
-    return WriteRecordBatchToFile(*batch,
-                                  dir / absl::StrCat("exp_", expert, ".arrow"));
-}
-
 } // namespace
 
 QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir)
@@ -402,7 +373,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
                 } else {
                     DenseNvfp4Record r;
                     r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                    if (!quantize_slice(data.data(), t.numel(), r))
+                    if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                         return arrow::Status::IOError(
                             "GPU quantization failed for ", t.name);
                     mtp_nvfp4.push_back(std::move(r));
@@ -415,7 +386,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
             case MoeTensorKind::LmHead: {
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 global_nvfp4.push_back(std::move(r));
@@ -452,7 +423,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
             case MoeTensorKind::LinearAttnOut: {
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 nvfp4_by_layer[p.layer].push_back(std::move(r));
@@ -472,7 +443,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
             case MoeTensorKind::SharedExpertDownProj: {
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                if (!quantize_slice(data.data(), t.numel(), r))
+                if (!QuantizeSliceBf16(data.data(), t.numel(), r))
                     return arrow::Status::IOError("GPU quantization failed for ",
                                                   t.name);
                 shared_nvfp4_by_layer[p.layer].push_back(std::move(r));
@@ -535,11 +506,11 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
                     w1r.shape = {I, H}; w1r.dtype = t.dtype;
                     w3r.name = absl::StrCat(t.name, ".w3.e", e);
                     w3r.shape = {I, H}; w3r.dtype = t.dtype;
-                    if (!quantize_slice(data.data() + g_off,
+                    if (!QuantizeSliceBf16(data.data() + g_off,
                                         static_cast<int64_t>(I) * H, w1r))
                         return arrow::Status::IOError("quantize failed w1 ",
                                                       t.name, " e", e);
-                    if (!quantize_slice(data.data() + g_off + I * row_bytes,
+                    if (!QuantizeSliceBf16(data.data() + g_off + I * row_bytes,
                                         static_cast<int64_t>(I) * H, w3r))
                         return arrow::Status::IOError("quantize failed w3 ",
                                                       t.name, " e", e);
@@ -557,7 +528,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
                     DenseNvfp4Record w2r;
                     w2r.name = absl::StrCat(t.name, ".w2.e", e);
                     w2r.shape = {H, I}; w2r.dtype = t.dtype;
-                    if (!quantize_slice(data.data() + d_off,
+                    if (!QuantizeSliceBf16(data.data() + d_off,
                                         static_cast<int64_t>(H) * I, w2r))
                         return arrow::Status::IOError("quantize failed w2 ",
                                                       t.name, " e", e);
@@ -589,52 +560,52 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
             pe.w2_scales = dn->second.scales;
             pe.w2_shape = dn->second.shape;
             pe.w2_global_scale = dn->second.global_scale;
-            ARROW_RETURN_NOT_OK(write_expert_file(base, l, e, std::move(pe)));
+            ARROW_RETURN_NOT_OK(WriteExpertArrow(ExpertArrowPath(base, l, e), pe));
         }
     }
 
     // Globals + dense layers (naming identical to the qwen loader layout).
     if (!global_raw.empty()) {
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
     }
     if (!global_nvfp4.empty()) {
         ARROW_RETURN_NOT_OK(
-            write_batch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
+            WriteBatch(DenseNvfp4Schema::MakeBatch(global_nvfp4),
                         pinned_dir / "global_nvfp4.arrow"));
     }
     for (auto &[layer, recs] : nvfp4_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     }
     for (auto &[layer, recs] : raw_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
     }
     for (auto &[layer, recs] : router_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             router_dir / absl::StrCat("layer_", layer, ".arrow")));
     }
     for (auto &[layer, recs] : shared_nvfp4_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             DenseNvfp4Schema::MakeBatch(recs),
             shared_dir / absl::StrCat("layer_", layer, "_nvfp4.arrow")));
     }
     for (auto &[layer, recs] : shared_gate_by_layer) {
-        ARROW_RETURN_NOT_OK(write_batch(
+        ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             shared_dir / absl::StrCat("layer_", layer, "_gate.arrow")));
     }
     if (!mtp_nvfp4.empty()) {
         ARROW_RETURN_NOT_OK(
-            write_batch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
+            WriteBatch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
                         mtp_dir / "mtp_nvfp4.arrow"));
     }
     if (!mtp_raw.empty()) {
-        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(mtp_raw),
+        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(mtp_raw),
                                         mtp_dir / "mtp_raw.arrow"));
     }
 

@@ -20,14 +20,6 @@ using Catch::Approx;
 
 // ── Test helpers ────────────────────────────────────────────────────────────
 
-static bool cuda_sync_check() {
-    cudaError_t e = cudaDeviceSynchronize();
-    if (e != cudaSuccess) {
-        WARN("CUDA error: " << cudaGetErrorString(e));
-        return false;
-    }
-    return true;
-}
 
 // ── E2M1 decode table test ──────────────────────────────────────────────────
 // E2M1 format: sign(1) + exp(2, bias=1) + mant(1)

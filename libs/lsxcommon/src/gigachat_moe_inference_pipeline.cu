@@ -62,9 +62,9 @@ __global__ void f32_to_bf16_kernel(const float *__restrict__ x,
     if (i < n) y[i] = __float2bfloat16_rn(x[i]);
 }
 
-__global__ void add_f32_kernel(const float *__restrict__ a,
-                               const float *__restrict__ b,
-                               float *__restrict__ out, int n)
+// a and out may alias (in-place residual add).
+__global__ void add_f32_kernel(const float *a, const float *__restrict__ b,
+                               float *out, int n)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = a[i] + b[i];

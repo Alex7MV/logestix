@@ -619,9 +619,9 @@ __global__ void qwen_swiglu_kernel(const __half *a, const __half *b,
 // skips the standalone ActQuant pass. Quantization is byte-identical to
 // ActQuantKernel: values are rounded to half BEFORE encoding (same
 // round-trip), same canonical FloatToE4m3 / tie-up chain.
-__global__ void qwen_swiglu_quant_kernel(const __half *__restrict__ a,
-                                         const __half *__restrict__ b,
-                                         __half *__restrict__ y,
+// a and y may alias (in-place SwiGLU before quantization).
+__global__ void qwen_swiglu_quant_kernel(const __half *a,
+                                         const __half *__restrict__ b, __half *y,
                                          uint8_t *__restrict__ packed,
                                          uint8_t *__restrict__ scales,
                                          int64_t n)

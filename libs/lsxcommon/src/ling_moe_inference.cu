@@ -47,9 +47,9 @@ cudaError_t GemvHalf(cudaStream_t stream, const __half *w, const __half *x,
                               gemv::LxDtype::kF16, 0.0f);
 }
 
-__global__ void add_half_kernel(const __half *__restrict__ a,
-                                const __half *__restrict__ b,
-                                __half *__restrict__ out, int n)
+// a and out may alias (in-place residual add).
+__global__ void add_half_kernel(const __half *a, const __half *__restrict__ b,
+                                __half *out, int n)
 {
     for (int i = threadIdx.x; i < n; i += blockDim.x)
         out[i] = __float2half(__half2float(a[i]) + __half2float(b[i]));

@@ -81,7 +81,7 @@ struct ExpertCache {
            off_w2s = 0;
     size_t len_w1p = 0, len_w1s = 0, len_w2p = 0, len_w2s = 0;
 
-    bool Init(cudaStream_t s, const AliceExpertEntry &ex, int want)
+    bool Init(cudaStream_t /*s*/, const AliceExpertEntry &ex, int want)
     {
         len_w1p = static_cast<size_t>(ex.w1_bytes);
         len_w1s = static_cast<size_t>(ex.w1_scales_bytes);
@@ -238,8 +238,8 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
 #define A(ptr, n)                                                              \
     (cudaMallocAsync(reinterpret_cast<void **>(&(ptr)), (n) * sizeof(*(ptr)),  \
                      stream) == cudaSuccess                                    \
-         ? (ws_free.track(ptr), static_cast<cudaError_t>(cudaSuccess))         \
-         : cudaErrorMemoryAllocation)
+         ? (ws_free.track(ptr), true)                                          \
+         : false)
     __half *x=nullptr,*mixed=nullptr,*partial=nullptr,*src=nullptr,*completed=nullptr;
     __half *qg=nullptr,*attn=nullptr,*attn_out=nullptr,*kcache=nullptr,*vcache=nullptr;
     __half *kq=nullptr,*kk=nullptr,*kv=nullptr,*kfa=nullptr,*kga=nullptr,*kb=nullptr;

@@ -240,7 +240,7 @@ TEST_CASE("Mistral-Large-4 synthetic convert emits the full tree",
     REQUIRE(wq->packed.size() == static_cast<size_t>(numel / 2));
 
     // Source FP8 dequant (same fixture pattern) for the same tensor.
-    const int64_t gsr = (rows + 127) / 128, gsc = (cols + 127) / 128;
+    const int64_t gsc = (cols + 127) / 128;
     auto src_scales = mistrallarge4test::TileScales(rows, cols);
     auto fp8 = mistrallarge4test::Fp8Bytes(numel);
     double num = 0, den = 0;

@@ -240,9 +240,10 @@ KimiTopology kimi_load_topology(const std::string &index_json_path)
         // Not an HF source index — accept the converted "logestix-kimi"
         // summary index (num_layers / experts_per_layer / layer lists).
         int64_t nl = 0, epl = 0;
-        root["num_layers"].get_int64().get(nl);
-        root["experts_per_layer"].get_int64().get(epl);
-        if (nl <= 0) {
+        if (root["num_layers"].get_int64().get(nl) != simdjson::SUCCESS ||
+            root["experts_per_layer"].get_int64().get(epl) !=
+                simdjson::SUCCESS ||
+            nl <= 0) {
             topo.error_msg = "no weight_map/num_layers in " + index_json_path;
             return topo;
         }
@@ -425,10 +426,6 @@ void AssignSharedWeight(ExpertData &ed, int weight_id,
     }
 }
 
-bool SharedComplete(const ExpertData &ed)
-{
-    return !ed.w1_raw.empty() && !ed.w2_raw.empty() && !ed.w3_raw.empty();
-}
 
 // Kimi-specific per-layer pinned saver ("layers\.(\d+)" names do not pass the
 // shared SavePinnedTensors regex; grouping keys off kimi_classify instead).
