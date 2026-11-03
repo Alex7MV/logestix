@@ -392,27 +392,13 @@ struct TensorRef {
     bool valid() const { return shard && info; }
 };
 
-std::vector<uint8_t> ReadTensorData(const std::string &input_dir,
-                                    const TensorRef &r)
-{
-    if (!r.valid()) return {};
-    std::ifstream sf((fs::path(input_dir) / r.shard->filename).string(),
-                     std::ios::binary);
-    if (!sf) return {};
-    uint64_t hdr_len = 0;
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    sf.seekg(data_off + r.info->data_begin, std::ios::beg);
-    std::vector<uint8_t> buf(static_cast<size_t>(r.info->byte_size()));
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 arrow::Status RawRecord(const std::string &input_dir, const TensorRef &r,
                         TensorRecord &out)
 {
-    const auto raw = ReadTensorData(input_dir, r);
+    if (!r.valid())
+        return arrow::Status::Invalid("missing tensor for ", r.info ? r.info->name : "?");
+    const auto raw =
+        lsxcommon::ReadTensorData(input_dir, *r.shard, *r.info);
     if (raw.empty() || static_cast<int64_t>(raw.size()) != r.info->byte_size())
         return arrow::Status::IOError("failed to read tensor data: ",
                                       r.info->name);
@@ -433,8 +419,8 @@ arrow::Status QuantizeFp8Pair(const std::string &input_dir, const TensorRef &w,
     if (w.info->dtype != "F8_E4M3" || s.info->dtype != "F32")
         return arrow::Status::Invalid("unexpected dtype pair for ", name, ": ",
                                       w.info->dtype, "/", s.info->dtype);
-    const auto fp8 = ReadTensorData(input_dir, w);
-    const auto scale = ReadTensorData(input_dir, s);
+    const auto fp8 = lsxcommon::ReadTensorData(input_dir, *w.shard, *w.info);
+    const auto scale = lsxcommon::ReadTensorData(input_dir, *s.shard, *s.info);
     if (fp8.empty() || scale.empty())
         return arrow::Status::IOError("short read for ", name);
     std::vector<uint8_t> bf16;

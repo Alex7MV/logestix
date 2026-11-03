@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <limits>
 #include <regex>
 #include <absl/container/btree_map.h>
 #include <absl/container/btree_set.h>
@@ -30,17 +31,6 @@ namespace lsxcommon {
 namespace {
 
 // ── Safetensors helpers ──────────────────────────────────────────────────────
-
-int64_t dtype_size(const std::string &dtype)
-{
-    if (dtype == "F8_E8M0") return 1;
-    if (dtype == "F8_E4M3") return 1;
-    if (dtype == "I8" || dtype == "U8") return 1;
-    if (dtype == "BF16" || dtype == "F16") return 2;
-    if (dtype == "F32" || dtype == "I32") return 4;
-    if (dtype == "F64" || dtype == "I64") return 8;
-    return 0;
-}
 
 std::string format_size(int64_t bytes)
 {
@@ -250,7 +240,10 @@ SafetensorsModel::Shard read_safetensors_file(const std::string &path)
 
     uint64_t header_len = 0;
     file.read(reinterpret_cast<char*>(&header_len), 8);
-    if (!file || header_len == 0 || header_len > static_cast<uint64_t>(shard.file_size) - 8) {
+    // file_size < 8 must be rejected before the subtraction: casting a small
+    // size to uint64_t and subtracting 8 underflows into "any header fits".
+    if (shard.file_size < 8 || !file || header_len == 0 ||
+        header_len > static_cast<uint64_t>(shard.file_size) - 8) {
         lsxcommon::log::error(absl::StrCat("Invalid safetensors header in ", path));
         return shard;
     }
@@ -262,69 +255,13 @@ SafetensorsModel::Shard read_safetensors_file(const std::string &path)
         return shard;
     }
 
-    simdjson::ondemand::parser parser;
-    simdjson::padded_string padded(json_str.data(), json_str.size());
-    simdjson::ondemand::document doc;
-    auto err = parser.iterate(padded).get(doc);
-    if (err) {
-        lsxcommon::log::error(absl::StrFormat("JSON parse error in %s: %s", path, simdjson::error_message(err)));
-        return shard;
+    auto report = ParseTensorInfos(json_str);
+    if (report.rejected > 0) {
+        lsxcommon::log::warn(absl::StrFormat(
+            "%s: %d malformed tensor description(s) dropped", path,
+            report.rejected));
     }
-
-    simdjson::ondemand::object obj;
-    err = doc.get_object().get(obj);
-    if (err) {
-        lsxcommon::log::error(absl::StrCat("JSON root not an object in ", path));
-        return shard;
-    }
-
-    for (auto json_field : obj) {
-        std::string_view key;
-        if (json_field.unescaped_key().get(key) != simdjson::SUCCESS)
-            continue;
-        if (key == "__metadata__")
-            continue;
-
-        simdjson::ondemand::value val;
-        if (json_field.value().get(val) != simdjson::SUCCESS)
-            continue;
-
-        simdjson::ondemand::object tensor_obj;
-        if (val.get_object().get(tensor_obj) != simdjson::SUCCESS)
-            continue;
-
-        TensorInfo info;
-        info.name = std::string(key);
-
-        std::string_view dtype_sv;
-        if (tensor_obj["dtype"].get_string().get(dtype_sv) == simdjson::SUCCESS)
-            info.dtype = std::string(dtype_sv);
-
-        simdjson::ondemand::array shape_arr;
-        if (tensor_obj["shape"].get_array().get(shape_arr) == simdjson::SUCCESS) {
-            for (auto dim_val : shape_arr) {
-                int64_t d = 0;
-                if (dim_val.get_int64().get(d) == simdjson::SUCCESS)
-                    info.shape.push_back(d);
-            }
-        }
-
-        simdjson::ondemand::array offsets_arr;
-        if (tensor_obj["data_offsets"].get_array().get(offsets_arr) == simdjson::SUCCESS) {
-            int count = 0;
-            for (auto off_val : offsets_arr) {
-                int64_t off = 0;
-                if (off_val.get_int64().get(off) == simdjson::SUCCESS) {
-                    if (count == 0) info.data_begin = off;
-                    else if (count == 1) info.data_end = off;
-                    ++count;
-                }
-            }
-        }
-
-        shard.tensors.push_back(std::move(info));
-    }
-
+    shard.tensors = std::move(report.tensors);
     return shard;
 }
 
@@ -345,7 +282,271 @@ int64_t TensorInfo::numel() const
 
 int64_t TensorInfo::byte_size() const
 {
-    return numel() * dtype_size(dtype);
+    return numel() * TensorDtypeBytes(dtype);
+}
+
+const char *TensorInfoErrorMessage(TensorInfoError err)
+{
+    switch (err) {
+    case TensorInfoError::kOk: return "ok";
+    case TensorInfoError::kEmptyName: return "empty tensor name";
+    case TensorInfoError::kUnknownDtype: return "unknown dtype";
+    case TensorInfoError::kNegativeDimension: return "negative dimension";
+    case TensorInfoError::kNumelOverflow: return "element count overflows int64";
+    case TensorInfoError::kByteSizeOverflow: return "byte size overflows int64";
+    case TensorInfoError::kNegativeOffset: return "negative data offset";
+    case TensorInfoError::kReversedOffsets: return "data_offsets are reversed";
+    case TensorInfoError::kSizeMismatch:
+        return "data_offsets span != numel * dtype width";
+    }
+    return "unknown tensor info error";
+}
+
+int64_t TensorDtypeBytes(std::string_view dtype)
+{
+    if (dtype == "BOOL" || dtype == "U8" || dtype == "I8" ||
+        dtype == "F8_E5M2" || dtype == "F8_E4M3" || dtype == "F8_E8M0")
+        return 1;
+    if (dtype == "I16" || dtype == "U16" || dtype == "F16" || dtype == "BF16")
+        return 2;
+    if (dtype == "I32" || dtype == "U32" || dtype == "F32")
+        return 4;
+    if (dtype == "I64" || dtype == "U64" || dtype == "F64")
+        return 8;
+    return 0;
+}
+
+TensorInfoError ValidateTensorInfo(const TensorInfo &info)
+{
+    if (info.name.empty())
+        return TensorInfoError::kEmptyName;
+
+    const int64_t width = TensorDtypeBytes(info.dtype);
+    if (width == 0)
+        return TensorInfoError::kUnknownDtype;
+
+    // Cheap scalar checks first so the reported reason does not depend on the
+    // shape when both are invalid (documented precedence, pinned by tests).
+    if (info.data_begin < 0 || info.data_end < 0)
+        return TensorInfoError::kNegativeOffset;
+    if (info.data_end < info.data_begin)
+        return TensorInfoError::kReversedOffsets;
+
+    // numel() multiplies without checking; a hostile header (2^62 x 4) would
+    // wrap to a small positive number and the reader would allocate a buffer
+    // far smaller than the tensor it then "reads".
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    int64_t numel = 1;
+    for (int64_t dim : info.shape) {
+        if (dim < 0)
+            return TensorInfoError::kNegativeDimension;
+        if (dim > 0 && numel > kMax / dim)
+            return TensorInfoError::kNumelOverflow;
+        numel *= dim;
+    }
+    if (numel > kMax / width)
+        return TensorInfoError::kByteSizeOverflow;
+
+    const int64_t bytes = numel * width;
+    if (info.data_end - info.data_begin != bytes)
+        return TensorInfoError::kSizeMismatch;
+    return TensorInfoError::kOk;
+}
+
+TensorInfoParseReport ParseTensorInfos(std::string_view header_json)
+{
+    TensorInfoParseReport report;
+
+    // DOM (not ondemand) on purpose: it validates the whole document, so a
+    // header truncated after a complete value is rejected instead of being
+    // half-read. A shard header is parsed once, so the extra pass is free.
+    simdjson::dom::parser parser;
+    simdjson::dom::element root;
+    if (parser.parse(simdjson::padded_string(header_json.data(),
+                                             header_json.size()))
+            .get(root) != simdjson::SUCCESS)
+        return report;
+
+    simdjson::dom::object obj;
+    if (root.get_object().get(obj) != simdjson::SUCCESS)
+        return report;
+
+    for (auto [key, value] : obj) {
+        if (key == "__metadata__")
+            continue;
+
+        simdjson::dom::object tensor_obj;
+        if (value.get_object().get(tensor_obj) != simdjson::SUCCESS) {
+            ++report.rejected;
+            continue;
+        }
+
+        // Field order inside a tensor object is not part of the spec; DOM
+        // lookups are order-independent.
+        TensorInfo info;
+        info.name.assign(key);
+
+        std::string_view dtype;
+        if (tensor_obj["dtype"].get_string().get(dtype) != simdjson::SUCCESS) {
+            ++report.rejected;
+            continue;
+        }
+        info.dtype.assign(dtype);
+
+        simdjson::dom::array shape_arr;
+        if (tensor_obj["shape"].get_array().get(shape_arr) != simdjson::SUCCESS) {
+            ++report.rejected;
+            continue;
+        }
+        bool malformed = false;
+        for (auto dim_val : shape_arr) {
+            int64_t dim = 0;
+            if (dim_val.get_int64().get(dim) != simdjson::SUCCESS) {
+                malformed = true;
+                break;
+            }
+            info.shape.push_back(dim);
+        }
+        if (malformed) {
+            ++report.rejected;
+            continue;
+        }
+
+        simdjson::dom::array offsets_arr;
+        if (tensor_obj["data_offsets"].get_array().get(offsets_arr) !=
+            simdjson::SUCCESS) {
+            ++report.rejected;
+            continue;
+        }
+        int64_t offsets[2] = {0, 0};
+        int64_t offset_count = 0;
+        for (auto off_val : offsets_arr) {
+            int64_t off = 0;
+            if (offset_count >= 2 ||
+                off_val.get_int64().get(off) != simdjson::SUCCESS) {
+                malformed = true;
+                break;
+            }
+            offsets[offset_count++] = off;
+        }
+        if (malformed || offset_count != 2) {
+            ++report.rejected;
+            continue;
+        }
+        info.data_begin = offsets[0];
+        info.data_end = offsets[1];
+
+        if (ValidateTensorInfo(info) != TensorInfoError::kOk) {
+            ++report.rejected;
+            continue;
+        }
+        report.tensors.push_back(std::move(info));
+    }
+    return report;
+}
+
+// ── Validated tensor payload reader ──────────────────────────────────────────
+
+const char *TensorReadErrorMessage(TensorReadError err)
+{
+    switch (err) {
+    case TensorReadError::kOk: return "ok";
+    case TensorReadError::kInvalidDescriptor: return "invalid tensor descriptor";
+    case TensorReadError::kOpenFailed: return "cannot open shard";
+    case TensorReadError::kShortHeader: return "shard shorter than its header";
+    case TensorReadError::kHeaderTooLarge: return "header length exceeds the file";
+    case TensorReadError::kOutOfBounds: return "tensor range exceeds the payload";
+    case TensorReadError::kShortRead: return "short read";
+    }
+    return "unknown tensor read error";
+}
+
+TensorReadResult ReadTensorDataChecked(const std::filesystem::path &input_dir,
+                                       const SafetensorsModel::Shard &shard,
+                                       const TensorInfo &info)
+{
+    TensorReadResult result;
+
+    const TensorInfoError descriptor = ValidateTensorInfo(info);
+    if (descriptor != TensorInfoError::kOk) {
+        result.error = TensorReadError::kInvalidDescriptor;
+        result.detail = absl::StrCat("tensor '", info.name, "': ",
+                                     TensorInfoErrorMessage(descriptor));
+        return result;
+    }
+
+    const std::filesystem::path path = input_dir / shard.filename;
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        result.error = TensorReadError::kOpenFailed;
+        result.detail = absl::StrCat(path.string(), ": cannot open");
+        return result;
+    }
+
+    // The reader is self-contained: it re-derives the file size and the header
+    // length instead of trusting shard.file_size.
+    file.seekg(0, std::ios::end);
+    const std::streamoff end = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (!file || end < 8) {
+        result.error = TensorReadError::kShortHeader;
+        result.detail = absl::StrCat(path.string(), ": shorter than 8 bytes");
+        return result;
+    }
+    const int64_t file_size = static_cast<int64_t>(end);
+
+    uint64_t header_len = 0;
+    file.read(reinterpret_cast<char *>(&header_len), 8);
+    if (!file || file.gcount() != 8) {
+        result.error = TensorReadError::kShortHeader;
+        result.detail = absl::StrCat(path.string(), ": cannot read header length");
+        return result;
+    }
+    if (header_len > static_cast<uint64_t>(file_size) - 8) {
+        result.error = TensorReadError::kHeaderTooLarge;
+        result.detail = absl::StrFormat(
+            "%s: header length %d exceeds file size %d", path.string(),
+            static_cast<int64_t>(header_len), file_size);
+        return result;
+    }
+
+    const int64_t data_off = 8 + static_cast<int64_t>(header_len);
+    const int64_t payload_size = file_size - data_off;
+    if (info.data_end > payload_size) {
+        result.error = TensorReadError::kOutOfBounds;
+        result.detail = absl::StrFormat(
+            "%s: tensor '%s' exceeds the %d-byte payload (ends at %d)",
+            path.string(), info.name, payload_size, info.data_end);
+        return result;
+    }
+
+    std::vector<uint8_t> bytes(static_cast<size_t>(info.byte_size()));
+    if (!bytes.empty()) {
+        file.seekg(data_off + info.data_begin, std::ios::beg);
+        file.read(reinterpret_cast<char *>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        if (file.gcount() != static_cast<std::streamsize>(bytes.size())) {
+            result.error = TensorReadError::kShortRead;
+            result.detail = absl::StrFormat(
+                "%s: tensor '%s': expected %d bytes, got %d", path.string(),
+                info.name, info.byte_size(), static_cast<int64_t>(file.gcount()));
+            return result;
+        }
+    }
+    result.bytes = std::move(bytes);
+    return result;
+}
+
+std::vector<uint8_t> ReadTensorData(const std::filesystem::path &input_dir,
+                                    const SafetensorsModel::Shard &shard,
+                                    const TensorInfo &info)
+{
+    TensorReadResult result = ReadTensorDataChecked(input_dir, shard, info);
+    if (!result.ok()) {
+        lsxcommon::log::error(absl::StrCat("ReadTensorData: ", result.detail));
+        return {};
+    }
+    return std::move(result.bytes);
 }
 
 // ── Safetensors scanning ─────────────────────────────────────────────────────

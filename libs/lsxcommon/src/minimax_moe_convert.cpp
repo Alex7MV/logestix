@@ -97,24 +97,6 @@ bool CheckFrozenGeometry(const MinimaxTopology &top, std::string &why)
     return true;
 }
 
-std::vector<uint8_t> ReadTensorData(const std::filesystem::path &input_path,
-                                    const SafetensorsModel::Shard &shard,
-                                    const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    const int64_t raw_start = data_off + info.data_begin;
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(raw_start, std::ios::beg);
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    if (!sf || static_cast<int64_t>(sf.gcount()) != info.byte_size()) return {};
-    return buf;
-}
-
 // Quantizes a contiguous BF16/FP32/F8_E4M3 slice to NVFP4. An E8M0 scale
 // tile (`e8m0` non-null) makes the shared quantizer dequantize the payload
 // with `float * 2^(u-127)` per tile first (MXFP8 -> NVFP4). Returns false on

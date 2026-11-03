@@ -148,6 +148,22 @@ cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake  # dry-r
 
 `LSX_DIFF` overrides the diff base; `LSX_PRESET` selects the target tree.
 
+## Fuzzing
+
+Fuzz targets are NOT ctests: a fuzzer needs a corpus and a time budget, and
+its exit status is not a pass/fail signal, so it would break the label
+discipline. Two layers instead:
+
+- Always-on: the deterministic mutational fuzz inside the owning unit test
+  (`tests/test_safetensors.cpp`, label `fast`) — fixed seeds, 1000-2000
+  iterations, the same invariants (only validated descriptors escape; a
+  successful read equals an independently computed file slice).
+- Opt-in: a libFuzzer harness under `tests/fuzz/` (outside the `test_*`
+  naming/label guards), enabled with `-DLSX_BUILD_FUZZERS=ON` on Clang. Build
+  it in its own tree with the library instrumented
+  (`-DCMAKE_CXX_FLAGS="-fsanitize=fuzzer-no-link,address"`), e.g.
+  `build/fuzz/tests/fuzz_safetensors -max_total_time=60 -max_len=8192`.
+
 ## Converter tests
 
 Converter tests are `convert`-labelled and MUST have a bounded `TIMEOUT`

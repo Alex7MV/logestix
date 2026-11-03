@@ -101,7 +101,14 @@ procedure — `perf-tuning-a-model`.
 
 - `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`. Core:
   `core.cpp` (logging/init), `schema.cpp` (ExpertSchema/PackedExpert),
-  `converter.cpp` (GPU NVFP4 quantization), `tokenizer.cpp` +
+  `converter.cpp` (GPU NVFP4 quantization; also the safetensors shard/header
+  scan declared in `safetensors.h`: `TensorInfo` defaults +
+  `ValidateTensorInfo` + `ParseTensorInfos`, and the single validated
+  `ReadTensorData`/`ReadTensorDataChecked` every converter must call — bounds
+  come from the real file size, never from `shard.file_size`;
+  `VerifyAllTensorReads` is the adapter over it; fuzz harness
+  `tests/test_safetensors.cpp` (deterministic) + opt-in
+  `tests/fuzz/safetensors_fuzz.cpp`), `tokenizer.cpp` +
   `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
   `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp` (+ the 512 MiB
   DRAM copy probe that is the perf baseline's environment oracle),

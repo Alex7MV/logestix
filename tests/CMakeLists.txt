@@ -25,6 +25,29 @@ target_include_directories(test_fast_load PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_fast_load COMMAND test_fast_load)
 
+# ── Safetensors descriptor layer (TensorInfo validation + reader) ──────
+# Host-only: synthetic shards under the temp dir, no GPU. Owns the validated
+# reader every converter calls.
+lsx_add_test(NAME test_safetensors LINK lsxcommon)
+
+# Opt-in libFuzzer harness for the safetensors header parser (tests/fuzz/ is
+# outside the naming/label guards because it is not a ctest). Off by default:
+# a fuzzer needs a corpus, a time budget and an instrumented library build —
+# the deterministic mutation tests in test_safetensors run on every ctest.
+option(LSX_BUILD_FUZZERS "Build the libFuzzer harnesses (Clang only)" OFF)
+if(LSX_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "LSX_BUILD_FUZZERS requires Clang (-fsanitize=fuzzer); see "
+            "tests/fuzz/safetensors_fuzz.cpp for the full command line")
+    endif()
+    add_executable(fuzz_safetensors fuzz/safetensors_fuzz.cpp)
+    target_link_libraries(fuzz_safetensors PRIVATE lsxcommon)
+    target_compile_options(fuzz_safetensors PRIVATE
+        -fsanitize=fuzzer,address -fno-omit-frame-pointer)
+    target_link_options(fuzz_safetensors PRIVATE -fsanitize=fuzzer,address)
+endif()
+
 # ── AliceAI-Foundation-80B-A3B family (new family; stages land progressively) ──
 add_executable(test_alice_moe_model test_alice_moe_model.cpp)
 target_link_libraries(test_alice_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -4959,6 +4982,7 @@ add_test(NAME test_det_selfcheck COMMAND test_det_selfcheck)
 set_tests_properties(
     test_core
     test_fast_load
+    test_safetensors
     test_geometry_guard
     test_gpu_perf
     test_gpu_power

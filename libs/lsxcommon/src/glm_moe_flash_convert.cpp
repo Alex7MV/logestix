@@ -382,23 +382,6 @@ FlashTopology ParseFlashConfig(const std::string &input_dir)
 
 namespace {
 
-std::vector<uint8_t> read_tensor_data(const std::string &input_dir,
-                                      const SafetensorsModel::Shard &shard,
-                                      const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((fs::path(input_dir) / shard.filename).string(),
-                     std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    sf.seekg(data_off + info.data_begin, std::ios::beg);
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 arrow::Status write_batch(
     const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
     const fs::path &path)
@@ -614,8 +597,8 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
     auto load_raw = [&](const std::string &name) -> std::vector<uint8_t> {
         auto it = by_name.find(name);
         if (it == by_name.end()) return {};
-        return read_tensor_data(input_dir, *it->second.shard,
-                                *it->second.info);
+        return ReadTensorData(input_dir, *it->second.shard,
+                              *it->second.info);
     };
 
     // ── Globals: embed / lm_head / final norm (raw BF16). ──
@@ -632,8 +615,8 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
             r.name = g;
             r.dtype = it->second.info->dtype;
             r.shape = it->second.info->shape;
-            r.data = read_tensor_data(input_dir, *it->second.shard,
-                                      *it->second.info);
+            r.data = ReadTensorData(input_dir, *it->second.shard,
+                                    *it->second.info);
             if (r.data.size() !=
                 static_cast<size_t>(it->second.info->byte_size()))
                 return arrow::Status::IOError("short read: ", g);
@@ -665,7 +648,7 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                 if (t.name.rfind(".weight_scale_inv") != std::string::npos)
                     continue;  // scale payload, not the weight itself
                 auto &ep = experts[p.expert];
-                auto data = read_tensor_data(input_dir, shard, t);
+                auto data = ReadTensorData(input_dir, shard, t);
                 if (data.size() != static_cast<size_t>(t.byte_size()))
                     return arrow::Status::IOError("short read: ", t.name);
                 const std::string scale_name =
@@ -747,7 +730,7 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                     || p.kind == FlashTensorKind::FinalNorm)
                     continue;  // globals pass
 
-                auto data = read_tensor_data(input_dir, shard, t);
+                auto data = ReadTensorData(input_dir, shard, t);
                 if (data.size() != static_cast<size_t>(t.byte_size()))
                     return arrow::Status::IOError("short read: ", t.name);
 

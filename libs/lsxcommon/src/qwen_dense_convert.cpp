@@ -423,28 +423,6 @@ arrow::Status WriteQwenModelIndex(const std::string &output_root, const QwenTopo
 
 // ── Converter ──────────────────────────────────────────────────────────────
 
-namespace {
-
-std::vector<uint8_t> read_tensor_data(
-    const std::filesystem::path &input_path,
-    const SafetensorsModel::Shard &shard,
-    const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char*>(&hdr_len), 8);
-    // ifstream in binary mode: read the 8-byte header length already consumed.
-    int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    int64_t raw_start = data_off + info.data_begin;
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(raw_start, std::ios::beg);
-    sf.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
-} // namespace
-
 arrow::Status ConvertQwenModel(const std::string &input_path, const std::string &output_root)
 {
     namespace fs = std::filesystem;
@@ -621,7 +599,7 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
                 p.kind == TensorKind::Visual)
                 continue;
 
-            auto data = read_tensor_data(input_path, shard, t);
+            auto data = ReadTensorData(input_path, shard, t);
             if (data.empty())
                 return arrow::Status::IOError("failed to read tensor data: ", t.name);
 

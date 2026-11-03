@@ -114,23 +114,6 @@ bool parse_expert_body(const std::string &body, int &expert, std::string &rest)
     return true;
 }
 
-std::vector<uint8_t> read_tensor_data(const fs::path &input_path,
-                                      const SafetensorsModel::Shard &shard,
-                                      const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    const int64_t raw_start = data_off + info.data_begin;
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(raw_start, std::ios::beg);
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 bool tensor_is_f32(const TensorInfo &t) { return t.dtype == "F32"; }
 
 bool quantize_slice(const uint8_t *data, int64_t numel, const TensorInfo &t,
@@ -595,7 +578,7 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
                 continue;
             }
 
-            auto data = read_tensor_data(input_dir, shard, t);
+            auto data = ReadTensorData(input_dir, shard, t);
             if (data.empty() ||
                 static_cast<int64_t>(data.size()) != t.byte_size())
                 return arrow::Status::IOError("failed to read tensor data: ",
@@ -664,9 +647,9 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
                         " weight ", w);
                 const auto &part = it->second;
                 auto packed_bytes =
-                    read_tensor_data(input_dir, *part.shard, *part.packed);
+                    ReadTensorData(input_dir, *part.shard, *part.packed);
                 auto scale_bytes =
-                    read_tensor_data(input_dir, *part.shard, *part.scale);
+                    ReadTensorData(input_dir, *part.shard, *part.scale);
                 if (packed_bytes.empty() || scale_bytes.empty())
                     return arrow::Status::IOError("failed to read expert ",
                                                   part.packed->name);

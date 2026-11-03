@@ -44,24 +44,6 @@ auto get_d = [](simdjson::ondemand::object &o, const char *k, double dflt) {
 // Synthetic fixtures (tests) may use tiny geometry; the real pipeline hard
 // gates against the frozen constants.
 
-std::vector<uint8_t> read_tensor_data(
-    const std::filesystem::path &input_path,
-    const SafetensorsModel::Shard &shard,
-    const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char*>(&hdr_len), 8);
-    int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    int64_t raw_start = data_off + info.data_begin;
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(raw_start, std::ios::beg);
-    sf.read(reinterpret_cast<char*>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 // Converts a plain RMSNorm weight from the MLX absolute form (multiplier `w`)
 // to the Qwen/HF offset form used by the runtime (`out = rmsnorm(x) * (1 + w)`)
 // and stores it as F32 to preserve the small offset. RMSNormGated
@@ -469,7 +451,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             if (p.kind == OrnithMoeTensorKind::Visual)
                 continue;
 
-            auto data = read_tensor_data(input_dir, shard, t);
+            auto data = ReadTensorData(input_dir, shard, t);
             if (data.empty() ||
                 static_cast<int64_t>(data.size()) != t.byte_size())
                 return arrow::Status::IOError("failed to read tensor data: ",
@@ -639,7 +621,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
                 p.kind == OrnithMoeTensorKind::FusedExpertsDown;
             if (!is_w1 && !is_w2 && !is_w3 && !fused_up && !fused_down)
                 continue;
-            auto data = read_tensor_data(input_dir, shard, t);
+            auto data = ReadTensorData(input_dir, shard, t);
             if (data.empty() ||
                 static_cast<int64_t>(data.size()) != t.byte_size())
                 return arrow::Status::IOError("failed to read tensor data: ",

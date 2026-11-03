@@ -306,24 +306,6 @@ GigaChatTopology ParseGigaChatConfig(const std::string &config_json_text)
 
 namespace {
 
-std::vector<uint8_t> ReadTensorData(const std::string &input_dir,
-                                    const SafetensorsModel::Shard &shard,
-                                    const TensorInfo &info)
-{
-    std::ifstream sf(
-        (std::filesystem::path(input_dir) / shard.filename).string(),
-        std::ios::binary);
-    if (!sf) return {};
-    uint64_t hdr_len = 0;
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    sf.seekg(data_off + info.data_begin, std::ios::beg);
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 struct TensorRef {
     const SafetensorsModel::Shard *shard = nullptr;
     const TensorInfo *info = nullptr;

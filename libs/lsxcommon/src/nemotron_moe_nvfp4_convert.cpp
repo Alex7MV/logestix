@@ -213,22 +213,6 @@ bool strip_suffix(std::string_view name, std::string_view sfx,
     return false;
 }
 
-std::vector<uint8_t> read_tensor_data(const std::filesystem::path &input_path,
-                                      const SafetensorsModel::Shard &shard,
-                                      const TensorInfo &info)
-{
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    uint64_t hdr_len = 0;
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(data_off + info.data_begin, std::ios::beg);
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 // A weight plus its resolved ModelOpt scale companions. A scale whose base
 // weight is absent is a hard error (a leftover tensor must fail the
 // conversion, never pass).
@@ -311,9 +295,9 @@ arrow::Status dequant_source(const SourceTensor &src,
                 static_cast<const void *>(src.nvfp4_global));
             return arrow::Status::Invalid(error);
         }
-        auto packed = read_tensor_data(input_dir, *src.shard, *src.info);
-        auto bscale = read_tensor_data(input_dir, *src.shard, *src.nvfp4_block);
-        auto graw = read_tensor_data(input_dir, *src.shard, *src.nvfp4_global);
+        auto packed = ReadTensorData(input_dir, *src.shard, *src.info);
+        auto bscale = ReadTensorData(input_dir, *src.shard, *src.nvfp4_block);
+        auto graw = ReadTensorData(input_dir, *src.shard, *src.nvfp4_global);
         if (packed.size() != static_cast<size_t>((numel + 1) / 2) ||
             bscale.size() != static_cast<size_t>((numel + 15) / 16) ||
             graw.size() < sizeof(float)) {
@@ -334,8 +318,8 @@ arrow::Status dequant_source(const SourceTensor &src,
                 src.info->name);
             return arrow::Status::Invalid(error);
         }
-        auto w = read_tensor_data(input_dir, *src.shard, *src.info);
-        auto sraw = read_tensor_data(input_dir, *src.shard, *src.fp8_weight);
+        auto w = ReadTensorData(input_dir, *src.shard, *src.info);
+        auto sraw = ReadTensorData(input_dir, *src.shard, *src.fp8_weight);
         if (w.size() != static_cast<size_t>(numel) || sraw.size() < sizeof(float)) {
             error = absl::StrFormat(
                 "FP8 source tensor %s has inconsistent companion sizes "
@@ -697,7 +681,7 @@ arrow::Status ConvertNemotronNvfp4Model(const std::string &input_dir,
         if (p.kind == NemotronNvfp4Kind::ExpertUpProj ||
             p.kind == NemotronNvfp4Kind::ExpertDownProj)
             continue;
-        auto data = read_tensor_data(input_dir, *st.shard, *st.info);
+        auto data = ReadTensorData(input_dir, *st.shard, *st.info);
         if (data.empty() ||
             static_cast<int64_t>(data.size()) != st.info->byte_size())
             return arrow::Status::IOError("failed to read tensor data: ", name);
@@ -779,7 +763,7 @@ arrow::Status ConvertNemotronNvfp4Model(const std::string &input_dir,
                 return arrow::Status::Invalid("bad expert down shape: ", name);
         }
         if (layout == SourceLayout::kBf16)
-            stager.host() = read_tensor_data(input_dir, *st.shard, *st.info);
+            stager.host() = ReadTensorData(input_dir, *st.shard, *st.info);
         else
             ARROW_RETURN_NOT_OK(
                 dequant_source(st, input_dir, logical, layout, stager, err));

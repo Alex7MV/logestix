@@ -219,23 +219,6 @@ std::vector<std::string> generate_expected_names(const GemmaDenseTopology &top)
     return expected;
 }
 
-std::vector<uint8_t> read_tensor_data(
-    const std::filesystem::path &input_path,
-    const SafetensorsModel::Shard &shard, const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    const int64_t raw_start = data_off + info.data_begin;
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(raw_start, std::ios::beg);
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 // HF uses generation_config's eos_token_id for stopping; add any ids beyond
 // the config array (the real checkpoint ends a turn on 106 and a tool turn on
 // 50).
@@ -610,7 +593,7 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
             if (p.kind == TensorKind::Unknown || p.kind == TensorKind::Visual)
                 continue;
 
-            auto data = read_tensor_data(input_path, shard, t);
+            auto data = ReadTensorData(input_path, shard, t);
             if (data.empty())
                 return arrow::Status::IOError("failed to read tensor data: ",
                                               t.name);

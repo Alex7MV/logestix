@@ -99,23 +99,6 @@ bool check_frozen_geometry(const NemotronTopology &top, std::string &why)
     return true;
 }
 
-std::vector<uint8_t> read_tensor_data(const std::filesystem::path &input_path,
-                                      const SafetensorsModel::Shard &shard,
-                                      const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    const int64_t raw_start = data_off + info.data_begin;
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(raw_start, std::ios::beg);
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 bool quantize_slice(const uint8_t *data, int64_t numel, DenseNvfp4Record &r)
 {
     return gpu::quantize_tensor_gpu(data, numel, "BF16", nullptr, r.shape,
@@ -388,7 +371,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
                 p.kind == NemotronTensorKind::ExpertDownProj)
                 continue;
 
-            auto data = read_tensor_data(input_dir, shard, t);
+            auto data = ReadTensorData(input_dir, shard, t);
             if (data.empty() ||
                 static_cast<int64_t>(data.size()) != t.byte_size())
                 return arrow::Status::IOError("failed to read tensor data: ",
@@ -437,7 +420,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
             if (p.kind != NemotronTensorKind::ExpertUpProj &&
                 p.kind != NemotronTensorKind::ExpertDownProj)
                 continue;
-            auto data = read_tensor_data(input_dir, shard, t);
+            auto data = ReadTensorData(input_dir, shard, t);
             if (data.empty() ||
                 static_cast<int64_t>(data.size()) != t.byte_size())
                 return arrow::Status::IOError("failed to read tensor data: ",

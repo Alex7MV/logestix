@@ -5,7 +5,6 @@
 #include <absl/strings/str_cat.h>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <string>
 
 namespace lsxcommon::integrity {
@@ -124,35 +123,14 @@ arrow::Status VerifyAllTensorReads(
     const std::filesystem::path &input_path,
     const SafetensorsModel &model)
 {
-    for (auto &shard : model.shards) {
-        auto sf_path = input_path / shard.filename;
-        std::ifstream sf(sf_path.string(), std::ios::binary);
-        if (!sf)
-            return arrow::Status::IOError("cannot open ", sf_path.string());
-
-        uint64_t hdr_len = 0;
-        sf.read(reinterpret_cast<char*>(&hdr_len), 8);
-        if (!sf || sf.gcount() != 8)
-            return arrow::Status::IOError("cannot read header length in ",
-                                          sf_path.string());
-
-        int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-        for (auto &t : shard.tensors) {
-            int64_t raw_start = data_off + t.data_begin;
-            int64_t expected = t.byte_size();
-            if (raw_start + expected > shard.file_size)
-                return arrow::Status::Invalid(
-                    shard.filename, " tensor ", t.name,
-                    " extends beyond file size");
-
-            std::vector<uint8_t> buf(static_cast<size_t>(expected));
-            sf.seekg(raw_start, std::ios::beg);
-            sf.read(reinterpret_cast<char*>(buf.data()),
-                    static_cast<std::streamsize>(expected));
-            if (!sf || static_cast<int64_t>(sf.gcount()) != expected)
-                return arrow::Status::IOError(
-                    "short read on ", shard.filename, " tensor ", t.name,
-                    ": expected ", expected, " bytes, got ", sf.gcount());
+    for (const auto &shard : model.shards) {
+        for (const auto &t : shard.tensors) {
+            const auto read = ReadTensorDataChecked(input_path, shard, t);
+            if (read.ok())
+                continue;
+            if (read.error == TensorReadError::kInvalidDescriptor)
+                return arrow::Status::Invalid(read.detail);
+            return arrow::Status::IOError(read.detail);
         }
     }
     return arrow::Status::OK();

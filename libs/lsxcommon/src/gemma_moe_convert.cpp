@@ -281,24 +281,6 @@ std::vector<std::string> generate_gemma_expected_names(const GemmaTopology &top)
     return expected;
 }
 
-std::vector<uint8_t> read_tensor_data(
-    const std::filesystem::path &input_path,
-    const SafetensorsModel::Shard &shard,
-    const TensorInfo &info)
-{
-    uint64_t hdr_len = 0;
-    std::ifstream sf((input_path / shard.filename).string(), std::ios::binary);
-    if (!sf) return {};
-    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
-    int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
-    int64_t raw_start = data_off + info.data_begin;
-    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
-    sf.seekg(raw_start, std::ios::beg);
-    sf.read(reinterpret_cast<char *>(buf.data()),
-            static_cast<std::streamsize>(buf.size()));
-    return buf;
-}
-
 // HF uses generation_config's eos_token_id for stopping; add any ids beyond
 // the config array (the real checkpoint ends a turn on 106).
 void MergeGenerationConfigEos(const std::string &dir, GemmaTopology &top)
@@ -594,7 +576,7 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
                 p.kind == TensorKind::ExpertsDown)
                 continue;
 
-            auto data = read_tensor_data(input_path, shard, t);
+            auto data = ReadTensorData(input_path, shard, t);
             if (data.empty())
                 return arrow::Status::IOError("failed to read tensor data: ",
                                               t.name);
@@ -700,11 +682,11 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
                 if (p.layer != L) continue;
                 if (p.kind == TensorKind::ExpertsGateUp &&
                     t.shape.size() == 3) {
-                    gu = read_tensor_data(input_path, shard, t);
+                    gu = ReadTensorData(input_path, shard, t);
                     gu_shape = {t.shape[0], t.shape[1], t.shape[2]};
                 }
                 if (p.kind == TensorKind::ExpertsDown && t.shape.size() == 3) {
-                    dn = read_tensor_data(input_path, shard, t);
+                    dn = ReadTensorData(input_path, shard, t);
                     dn_shape = {t.shape[0], t.shape[1], t.shape[2]};
                 }
             }
