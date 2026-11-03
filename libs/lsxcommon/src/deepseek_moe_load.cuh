@@ -17,19 +17,24 @@
 #include "lsxcommon/expert_store.h"
 #include "lsxcommon/vram_estimate.h"
 
+#include "deepseek_moe_constants.h"
+
 namespace lsxcommon {
 namespace gpu {
 
-constexpr int kHiddenDim = 4096;
-constexpr int kNumLayers = 43;
-constexpr int kNumRouted = 256;
-constexpr int kTopK = 6;
-constexpr int kIntermediateDim = 2048;
+// The geometry lives in the frozen passport (deepseek::Passport); these
+// aliases keep the existing call sites readable until the driver files are
+// templated on the passport (the dedup phase 2 plan, tasks 2-7).
+inline constexpr int kHiddenDim = deepseek::Passport::kHidden;
+inline constexpr int kNumLayers = deepseek::Passport::kLayers;
+inline constexpr int kNumRouted = deepseek::Passport::kNumRouted;
+inline constexpr int kTopK = deepseek::Passport::kTopK;
+inline constexpr int kIntermediateDim = deepseek::Passport::kMoeIntermediate;
 
 // Sole supported vault index format since the NVFP4 repack (Task 3-4,
 // docs/superpowers/plans/2026-09-11-deepseek-nvfp4-migration.md): routed
 // experts carry pow2-E4M3 per-16 scales + per-tensor global_scale.
-inline constexpr char kIndexFormatNvfp4[] = "logestix-v1-nvfp4";
+inline constexpr const char *kIndexFormatNvfp4 = deepseek::kIndexFormatNvfp4;
 
 // Routed experts are NVFP4-native (logestix-v1-nvfp4): kernel selection
 // lives in the neutral lsx_nvfp4 layer; DeepSeekV4FlashModel::Infer asserts
@@ -44,19 +49,20 @@ static_assert(kHiddenDim % 256 == 0,
 static_assert(kNumLayers > 0 && kIntermediateDim > 0,
               "bad MLP/layer geometry");
 
-// DeepSeek-V4 MLA / Hyper-Connections geometry (from config.json)
-constexpr int kHcMult = 4;                 // hc_mult: copies of hidden state
-constexpr int kHcMix = (2 + kHcMult) * kHcMult;  // 24
-constexpr int kHcDim = kHcMult * kHiddenDim;     // 16384
-constexpr int kAttnHeads = 64;
-constexpr int kHeadDim = 512;
-constexpr int kRopeHeadDim = 64;
-constexpr int kQloraRank = 1024;
-constexpr int kOloraRank = 1024;
-constexpr int kOGroups = 8;
-constexpr int kAttnWindow = 128;           // sliding window (pure-MLA layers)
-constexpr int kSinkhornIters = 20;
-constexpr float kRmsEps = 1e-6f;
+// DeepSeek-V4 MLA / Hyper-Connections geometry (from config.json), via the
+// passport.
+inline constexpr int kHcMult = deepseek::Passport::kHcMult;
+inline constexpr int kHcMix = deepseek::Passport::kHcMix;
+inline constexpr int kHcDim = deepseek::Passport::kHcDim;
+inline constexpr int kAttnHeads = deepseek::Passport::kHeads;
+inline constexpr int kHeadDim = deepseek::Passport::kHeadDim;
+inline constexpr int kRopeHeadDim = deepseek::Passport::kRopeHeadDim;
+inline constexpr int kQloraRank = deepseek::Passport::kQLoraRank;
+inline constexpr int kOloraRank = deepseek::Passport::kOLoraRank;
+inline constexpr int kOGroups = deepseek::Passport::kOGroups;
+inline constexpr int kAttnWindow = deepseek::Passport::kWindow;
+inline constexpr int kSinkhornIters = deepseek::Passport::kSinkhornIters;
+inline constexpr float kRmsEps = deepseek::Passport::kRmsEps;
 
 struct ExpertEntry {
     const uint8_t *host_w1 = nullptr;
