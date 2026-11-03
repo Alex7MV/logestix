@@ -13,6 +13,24 @@
 # functions are visible in libs/, apps/, tools/ and tests/.
 include_guard(GLOBAL)
 
+# lsx_warning_policy()
+#
+# Applies the project warning flags to the CURRENT directory tree. Called from
+# libs/, apps/ and tests/, never from the root: the dependency subprojects
+# (Arrow, abseil, spdlog, simdjson) must keep their own flags, otherwise their
+# own sources emit ~12 000 warnings into every clean build.
+#
+# -Wpedantic stays OFF for CUDA: nvcc forwards it to the host compiler, which
+# then flags nvcc's own `#line` markers ("style of line directive is a GCC
+# extension") once per generated line (2 024 hits in one test TU).
+function(lsx_warning_policy)
+    if(MSVC)
+        return()  # /W4 comes from CMAKE_CXX_FLAGS
+    endif()
+    add_compile_options(-Wall -Wextra)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-Wpedantic>")
+endfunction()
+
 # lsx_copy_arrow_dlls(<target> [ARROW_ONLY])
 #
 # Windows-only: copy the runtime DLLs a test needs next to its executable.
@@ -64,6 +82,10 @@ function(lsx_add_test)
     endif()
 
     add_executable(${name} ${P_SOURCES})
+    if(_lsx_dep_system_includes)
+        target_include_directories(${name} SYSTEM PRIVATE
+            ${_lsx_dep_system_includes})
+    endif()
     if(P_LINKER_LANGUAGE)
         set_target_properties(${name} PROPERTIES
             LINKER_LANGUAGE ${P_LINKER_LANGUAGE})
@@ -143,6 +165,10 @@ function(lsx_add_cuda_test)
     endif()
 
     add_library(${P_OBJECT} OBJECT ${P_SOURCES})
+    if(_lsx_dep_system_includes)
+        target_include_directories(${P_OBJECT} SYSTEM PRIVATE
+            ${_lsx_dep_system_includes})
+    endif()
     set_target_properties(${P_OBJECT} PROPERTIES
         CUDA_SEPARABLE_COMPILATION OFF
         CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"

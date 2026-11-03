@@ -1,3 +1,5 @@
+lsx_warning_policy()
+
 # GPU-keyed kernel budgets: tests read tests/perf/kernel_budgets.json, and
 # LSX_KERNEL_BUDGET_WRITE=1 turns a sweep into a recalibration. Defined before
 # any target that consumes it (CMake set() is order-dependent).

@@ -114,7 +114,11 @@ if(MSVC)
     # Use CXX standard defines instead to suppress its traditional-preprocessor warning.
     add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
 else()
-    add_compile_options(-Wall -Wextra -Wpedantic)
+    # The warning policy is applied per project directory by
+    # lsx_warning_policy() (libs/, apps/, tests/), NOT globally: a global
+    # add_compile_options() also hits the FetchContent/submodule targets, so
+    # Arrow's and abseil's own sources drown our build log in ~12 000 warnings
+    # we cannot fix. See cmake/LsxTestHelpers.cmake.
 endif()
 
 # ── Linux CPU-tuned build: AMD EPYC 9V74 (Zen 4) ─────────────────────────────
@@ -525,8 +529,26 @@ foreach(_lsx_arrow_candidate
     endif()
 endforeach()
 unset(_lsx_arrow_candidate)
-target_include_directories(lsx_dep_includes INTERFACE
+# Headers of the dependencies built in-tree (add_subdirectory / submodule) are
+# plain `-I`, so our TUs inherit their -Wpedantic noise (absl::int128 alone is
+# ~5 700 warnings). Listing them as SYSTEM INTERFACE turns them into -isystem
+# for every consumer; GCC treats a directory listed in -isystem as system even
+# when another target also passes it as -I.
+set(_lsx_dep_system_includes "")
+foreach(_lsx_system_candidate
+    "${FETCHCONTENT_BASE_DIR}/spdlog-src/include"
+    "${FETCHCONTENT_BASE_DIR}/abseil-cpp-src"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/singleheader")
+    if(EXISTS "${_lsx_system_candidate}")
+        list(APPEND _lsx_dep_system_includes "${_lsx_system_candidate}")
+    endif()
+endforeach()
+unset(_lsx_system_candidate)
+
+target_include_directories(lsx_dep_includes SYSTEM INTERFACE
     ${_lsx_arrow_includes}
+    ${_lsx_dep_system_includes}
     ${CUDAToolkit_INCLUDE_DIRS}
     "${LSX_CCCL_INCLUDE_DIR}")
 target_link_libraries(lsx_dep_includes INTERFACE
