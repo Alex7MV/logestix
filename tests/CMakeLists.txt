@@ -828,6 +828,12 @@ set_tests_properties(test_phi_dense_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_phi_dense_model PROPERTIES LABELS inference)
 
+# ── Neutral dense-decoder kernel parity tests (.cu) ──
+lsx_add_cuda_test(NAME test_dense_kernels
+    SOURCES test_dense_kernels.cu
+    LINK lsxcommon
+    LABEL inference)
+
 # ── Granite kernel parity tests (.cu, stand-alone OBJECT lib) ──
 add_library(test_granite_cu OBJECT
     test_granite_dense_kernels.cu

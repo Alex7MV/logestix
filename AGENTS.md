@@ -132,6 +132,13 @@ procedure — `perf-tuning-a-model`.
   explicit `KvGeometry`) are the neutral session state; the qwen generation driver + KV session stay
   family-named in `qwen_dense_inference_pipeline.{h,cu}`; consumed by Qwen
   dense+MoE, Qwen MoE Exp, Ornith and Alice),
+  `lsx_dense_inference.{h,cu}` (model-neutral **dense-decoder kernel** layer in
+  `lsxcommon::dense` — RMSNorm, full-dim RoPE, causal GQA attention with the
+  split-KV flash-decode path, fused split-QKV, fused SwiGLU; the algorithm is
+  the one Granite-4.2 always ran, moved verbatim — `tools/dedup_provenance.py`
+  proves it; consumed by granite, granite-switch and phi, whose
+  `RunGranite*`/`RunGraniteSwitch*`/`RunPhi*` are inline delegates and whose
+  layer drivers stay family-named),
   `lsx_moe_inference.{h,cu}` (model-neutral **routed-MoE kernel** layer in
   `lsxcommon::moe` — router top-k, routed FFN, expert host store +
   `EnsureMoEExpertResident`; consumed by Qwen MoE, Gemma MoE, GLM MoE Flash and
@@ -241,8 +248,9 @@ procedure — `perf-tuning-a-model`.
   `granite_dense_convert.{h,cpp}` (flat Granite config -> `logestix-granite`),
   `granite_dense_load.{h,cpp}` (NVFP4 pinned weights, fused `gate_up`),
   `granite_dense_inference.{h,cu}` (causal GQA + full RoPE + SwiGLU dense loop
-  over the neutral `lsx_nvfp4` layer and the shared `lsx_kernels_*.cuh`
-  primitives), `granite_dense_model.{h,cpp}`; converted in place with
+  over the neutral `lsx_nvfp4` layer, the neutral `lsxcommon::dense` kernels and
+  the shared `lsx_kernels_*.cuh` primitives), `granite_dense_model.{h,cpp}`;
+  converted in place with
   `lsxforge --granite`; full 2048-token pipeline is correct-first
   (KV-cache decode, non-incremental prefill). Re-verified on real weights
   2026-11-03: SelfCheck Paris ×3 bit-exact
@@ -289,8 +297,9 @@ procedure — `perf-tuning-a-model`.
   (frozen passport), `phi_dense_convert.{h,cpp}` (flat phi3 config ->
   `logestix-phi`), `phi_dense_load.{h,cpp}` (NVFP4 pinned weights, fused
   `qkv`/`gate_up` row-slices), `phi_dense_inference.{h,cu}` (causal GQA + full
-  RoPE + SwiGLU dense loop over the neutral `lsx_nvfp4` layer and the shared
-  `lsx_kernels_*.cuh` primitives), `phi_dense_model.{h,cpp}` (native ChatML
+  RoPE + SwiGLU dense loop over the neutral `lsx_nvfp4` layer, the neutral
+  `lsxcommon::dense` kernels and the shared `lsx_kernels_*.cuh` primitives),
+  `phi_dense_model.{h,cpp}` (native ChatML
   `<|im_start|>role<|im_sep|>content<|im_end|>` framing; generic tool parser);
   converted in place with `lsxforge --phi`). The tree is **4-bit body + a
   residual plane + FP16 edges**: every projection carries a second NVFP4 record

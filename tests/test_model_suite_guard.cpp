@@ -312,7 +312,7 @@ const std::vector<SuiteSpec> &Suites()
           {"load", {"test_granite_dense_loader"}},
           {"model", {"test_granite_dense_model",
                      "test_granite_tool_framing"}},
-          {"kernels", {"test_granite_dense_kernels"}},
+          {"kernels", {"test_granite_dense_kernels", "test_dense_kernels"}},
           {"selfcheck", {"test_granite_dense_selfcheck"}},
           {"fsi", {"test_granite_dense_fsi_selfcheck"}},
           {"code", {"test_granite_dense_code_selfcheck"}}, {"perf", {"test_perf_baseline_granite_4_2_30b"}},
@@ -324,7 +324,8 @@ const std::vector<SuiteSpec> &Suites()
            {"test_granite_switch_model", "test_granite_switch_tool_framing",
             "test_granite_switch_adapter_parity",
             "test_granite_switch_tokenizer_parity"}},
-          {"kernels", {"test_granite_switch_kernels", "test_granite_switch_prepare"}},
+          {"kernels", {"test_granite_switch_kernels", "test_granite_switch_prepare",
+                       "test_dense_kernels"}},
           {"selfcheck", {"test_granite_switch_selfcheck"}},
           {"fsi", {"test_granite_switch_fsi_selfcheck"}},
           {"code", {"test_granite_switch_code_selfcheck"}},
@@ -346,7 +347,7 @@ const std::vector<SuiteSpec> &Suites()
          {{"convert", {"test_phi_dense_convert"}},
           {"load", {"test_phi_dense_loader"}},
           {"model", {"test_phi_dense_model", "test_phi_tool_framing"}},
-          {"kernels", {"test_phi_dense_kernels"}},
+          {"kernels", {"test_phi_dense_kernels", "test_dense_kernels"}},
           {"selfcheck", {"test_phi_dense_selfcheck"}},
           {"fsi", {"test_phi_dense_fsi_selfcheck"}},
           {"code", {"test_phi_dense_code_selfcheck"}},
@@ -515,8 +516,11 @@ std::string ReadFileOrThrow(const fs::path &p)
 std::vector<std::string> RegisteredTestNames(const std::string &text)
 {
     std::vector<std::string> names;
+    // Both the raw add_test form and the sanctioned helper
+    // (lsx_add_test / lsx_add_cuda_test) register a target; the helper is the
+    // documented path for new tests, so the scanner must see it.
     static const std::regex add_re(
-        R"(add_test\s*\(\s*NAME\s+([A-Za-z0-9_]+))");
+        R"((?:lsx_add_(?:cuda_)?test|add_test)\s*\(\s*NAME\s+([A-Za-z0-9_]+))");
     static const std::regex fe_re(
         R"(foreach\s*\(\s*\w+((?:\s+(?!IN\b|LISTS\b|RANGE\b)[A-Za-z0-9_]+)+)\s*\))");
     std::smatch m;
