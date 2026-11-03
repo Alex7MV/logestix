@@ -805,10 +805,10 @@ namespace {
 // Weighted RMSNorm over one n-length row (any n via stride): out =
 // x * rsqrt(mean(x^2)+eps) * w. One block; shared reduction over blockDim,
 // grid-stride accumulation for n > blockDim.
-__global__ void flash_rmsnorm_weighted_kernel(const __half *__restrict__ x,
+// x and out may alias (in-place RMSNorm).
+__global__ void flash_rmsnorm_weighted_kernel(const __half *x,
                                               const __half *__restrict__ w,
-                                              __half *__restrict__ out, int n,
-                                              float eps)
+                                              __half *out, int n, float eps)
 {
     extern __shared__ float red[];
     const int l = threadIdx.x;
@@ -1563,7 +1563,7 @@ cudaError_t RunFlashMlaAttnSelected(cudaStream_t stream, const __half *d_q,
                                     const __half *k_cache,
                                     const __half *v_cache,
                                     const int32_t *d_sel,
-                                    const int32_t *d_count, __half *d_out,
+                                    const int32_t * /*d_count*/, __half *d_out,
                                     int n_sel, int heads, int dim, float scale,
                                     size_t smem)
 {
@@ -1616,7 +1616,7 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
                               const FlashLayerWeights &lw, int hidden,
                               int heads, int qk_dim, int q_lora, int kv_lora,
                               __half *d_x, __half *d_qr, __half *d_q,
-                              __half *d_kvc, __half *d_kvp, __half *d_kvb,
+                              __half *d_kvc, __half * /*d_kvp*/, __half *d_kvb,
                               __half *d_attn, __half *d_out,
                               __half *d_kv_cache_k, __half *d_kv_cache_v,
                               int64_t slot, int64_t cap,
@@ -2026,10 +2026,10 @@ cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
 
 cudaError_t RunFlashRoutedFFN(
     cudaStream_t stream, lsxcommon::moe::MoEExpertStore &store,
-    gpu::ExpertDeviceCache &cache, int layer, int moe_layer,
+    gpu::ExpertDeviceCache &cache, int /*layer*/, int moe_layer,
     const moe::MoERoutedSlot *h_slots, int k_top,
     const __half *d_x, int hidden, int moe_inter, float *d_acc,
-    __half *d_yg, __half *d_yu, __half *d_y2, std::string &error,
+    __half *d_yg, __half * /*d_yu*/, __half *d_y2, std::string &error,
     cudaStream_t h2d_stream, cudaEvent_t *copy_ev, cudaEvent_t *slot_free_ev,
     __half *batch_ygu, __half *batch_hbuf, __half *batch_ypart,
     moe::MoEGvSlotDev *d_gemv_tbl)

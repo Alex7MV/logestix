@@ -248,7 +248,6 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
         std::vector<int32_t> feed = use_cont ? session.gen_input
                                              : req.input_ids;
         int pos = use_cont ? session_->length : 0;
-        float maxv = 0.0f;
         // LSX_XING_CUDA_GRAPH=0 keeps the legacy per-token launch path (what the
         // bit-exact --bench run uses); anything else captures.
         const bool graph_enabled = [](const char *v) {

@@ -394,7 +394,6 @@ bool LoadBeamWeights(const std::string &model_path, BeamPinnedWeights &pw,
     const int NKV = pw.top.num_key_value_heads;
     const int HD = pw.top.head_dim;
     const int E = pw.top.num_experts;
-    const int I = pw.top.moe_intermediate_size;
     const int DI = pw.top.dense_intermediate_size;
 
     pw.layers.assign(static_cast<size_t>(L), BeamLayerWeights{});

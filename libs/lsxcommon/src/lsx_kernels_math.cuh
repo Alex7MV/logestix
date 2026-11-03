@@ -16,8 +16,8 @@ namespace kernels {
 // dst[i] = dst[i] + src[i]   (former qwen_add_kernel / qwen_moe_add_kernel /
 //                             GlmAddResidualKernel)
 template <typename T>
-__global__ void AddInPlaceKernel(const T* __restrict__ src, T* __restrict__ dst,
-                                 int64_t n)
+// In-place by contract: src may equal dst.
+__global__ void AddInPlaceKernel(const T* src, T* dst, int64_t n)
 {
     const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
     if (i >= n) return;
@@ -27,8 +27,9 @@ __global__ void AddInPlaceKernel(const T* __restrict__ src, T* __restrict__ dst,
 
 // out[i] = a[i] + b[i]       (former GlmResidualKernel / kimi_residual_add_kernel)
 template <typename T>
-__global__ void AddOutKernel(const T* __restrict__ a, const T* __restrict__ b,
-                             T* __restrict__ out, int64_t n)
+// a and out may alias (callers accumulate the residual in place).
+__global__ void AddOutKernel(const T* a, const T* __restrict__ b, T* out,
+                             int64_t n)
 {
     const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
     if (i >= n) return;

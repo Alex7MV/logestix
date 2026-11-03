@@ -429,7 +429,7 @@ __host__ __device__ __forceinline__ unsigned long long SplitMix64(unsigned long 
 
 template <typename T>
 cudaError_t SampleImpl(cudaStream_t stream, const void *d_logits, int vocab,
-                       LogitType dtype, int32_t *d_out_token,
+                       LogitType /*dtype*/, int32_t *d_out_token,
                        float *d_out_maxv, const SamplingParams &params,
                        unsigned long long rng) {
     const T *row = static_cast<const T *>(d_logits);

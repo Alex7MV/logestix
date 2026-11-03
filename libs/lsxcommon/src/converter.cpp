@@ -74,9 +74,10 @@ std::optional<ParsedName> parse_expert_name(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
-    absl::SimpleAtoi(m[2].str(), &p.expert);
-    absl::SimpleAtoi(m[3].str(), &p.weight_id);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer) ||
+        !absl::SimpleAtoi(m[2].str(), &p.expert) ||
+        !absl::SimpleAtoi(m[3].str(), &p.weight_id))
+        return std::nullopt;
     p.is_scale  = (m[4] == "scale");
     return p;
 }
@@ -89,9 +90,10 @@ std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer) ||
+        !absl::SimpleAtoi(m[2].str(), &p.weight_id))
+        return std::nullopt;
     p.expert    = 0;
-    absl::SimpleAtoi(m[2].str(), &p.weight_id);
     p.is_scale  = (m[3] == "scale");
     return p;
 }

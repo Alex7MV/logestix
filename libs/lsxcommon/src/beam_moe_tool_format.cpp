@@ -226,8 +226,8 @@ std::string RenderParameters(const ToolCall &call)
         switch (val.type()) {
         case simdjson::dom::element_type::STRING: {
             std::string_view s;
-            val.get_string().get(s);
-            value.assign(s);
+            if (val.get_string().get(s) == simdjson::SUCCESS)
+                value.assign(s);
             break;
         }
         default:

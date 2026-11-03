@@ -71,11 +71,6 @@ auto get_b = [](simdjson::ondemand::object &o, const char *k, bool dflt) {
     return v;
 };
 
-bool ends_with(const std::string &s, std::string_view suffix)
-{
-    return s.size() >= suffix.size() &&
-           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
 
 // Parses "model.layers.<N>." (after the `language_model.` scope) and returns
 // the body after it.

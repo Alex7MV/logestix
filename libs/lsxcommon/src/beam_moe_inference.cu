@@ -79,7 +79,7 @@ void BeamSession::Reset()
 
 cudaError_t BeamSession::EnsureCapacity(const BeamTopology &top,
                                         int64_t capacity_in,
-                                        cudaStream_t stream)
+                                        cudaStream_t /*stream*/)
 {
     if (capacity_in <= capacity && allocated()) return cudaSuccess;
     const int64_t cap = std::max<int64_t>(capacity_in, capacity);

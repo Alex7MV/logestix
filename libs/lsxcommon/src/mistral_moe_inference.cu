@@ -427,7 +427,8 @@ void FreeMistralSession(MistralSession &s)
 }
 
 cudaError_t AllocateMistralSession(MistralSession &s, const MistralDims &dims,
-                                   int capacity, int slots, cudaStream_t stream)
+                                   int capacity, int /*slots*/,
+                                   cudaStream_t stream)
 {
     (void)stream;
     s.capacity = capacity;

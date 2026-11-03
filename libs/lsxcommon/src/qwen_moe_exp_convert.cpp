@@ -401,7 +401,7 @@ void Splitmix64Multipliers(int64_t seed, int ple_layer_index,
         v ^= v >> 31;
         return v;
     };
-    const int64_t max_long = (1ll << 63) - 1;
+    const int64_t max_long = std::numeric_limits<int64_t>::max();
     const int64_t multiplier_max = max_long / (unigram_vocab > 0 ? unigram_vocab : 1);
     const int64_t half_bound = std::max<int64_t>(1, multiplier_max / 2);
     const int64_t base = seed + kPrime1 * ple_layer_index;

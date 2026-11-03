@@ -56,12 +56,12 @@ template <typename WeightT>
 __global__ void hc_gated_residual_f32_kernel(
     const float *__restrict__ x,      // [n]  (seq = 1 for the twin)
     const WeightT *__restrict__ down, // [lowrank * n]
-    const WeightT *__restrict__ up,   // [n * lowrank]
+    const WeightT *up,                // [n * lowrank] (g_up may alias it)
     const WeightT *__restrict__ inject, // [hc * n] or null
     int H, int hc, int lowrank, float eps,
     float *__restrict__ mixed_out,    // [H]
     float *__restrict__ inj_out,      // [hc]
-    float *__restrict__ g_up,         // [n] global scratch for up values
+    float *g_up,                      // [n] global scratch (aliases up)
     const uint8_t *__restrict__ norm_w,  // BF16 (1+w), [n]
     __half *__restrict__ mixed_h)     // [H] half copy of mixed_out
 {

@@ -173,11 +173,8 @@ int main(int argc, char* argv[]) {
     std::string output_path = absl::GetFlag(FLAGS_output);
     bool repack_shared = absl::GetFlag(FLAGS_repack_shared);
     bool repack_experts = absl::GetFlag(FLAGS_repack_experts);
-    bool tokenizer_only = false;
-    if (!absl::GetFlag(FLAGS_tokenizer).empty()) {
-        tokenizer_only = true;
+    if (!absl::GetFlag(FLAGS_tokenizer).empty())
         input_path = absl::GetFlag(FLAGS_tokenizer);
-    }
     bool glm = absl::GetFlag(FLAGS_glm);
     bool kimi = absl::GetFlag(FLAGS_kimi);
     bool qwen = absl::GetFlag(FLAGS_qwen);
@@ -318,6 +315,7 @@ int main(int argc, char* argv[]) {
         return rc;
     }
 
+    lsxcommon::log::info(absl::StrFormat("Converting model: %s -> %s", input_path, output_path));
     switch (resolution.pipeline) {
     case lsxforge::Pipeline::kVramRecompute: {
         // Detect the converted format from the index and dispatch to the
@@ -601,7 +599,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    lsxcommon::log::info(absl::StrFormat("Converting model: %s -> %s", input_path, output_path));
     case lsxforge::Pipeline::kGlmFlash: {
         lsxcommon::log::info("GLM-5.3-Flash pipeline (unified logestix layout)");
         auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(input_path,

@@ -191,9 +191,10 @@ __global__ void f16_to_f32_kernel(const __half *__restrict__ x,
 // thread owns which element - already tolerance class here - changes.
 constexpr int kNormThreads = 512;
 
-__global__ void xing_rmsnorm_kernel(const float *__restrict__ x,
+// x and out may alias (in-place RMSNorm).
+__global__ void xing_rmsnorm_kernel(const float *x,
                                     const __nv_bfloat16 *__restrict__ w,
-                                    float *__restrict__ out,
+                                    float *out,
                                     __half *__restrict__ out16, int hidden,
                                     float eps)
 {
@@ -378,7 +379,7 @@ struct XingRoutedViews {
 // tables live.
 cudaError_t XingUploadExpertTables(const XingPinnedWeights &pw,
                                    const XingDims &dims, XingSession *s,
-                                   cudaStream_t stream)
+                                   cudaStream_t /*stream*/)
 {
     if (s->expert_tables_uploaded) return cudaSuccess;
     const int nlayers = static_cast<int>(pw.expert_packed_ptrs.size());
@@ -887,7 +888,7 @@ bool BuildXingYarnTables(int capacity, std::vector<float> &cos_t,
     return true;
 }
 
-cudaError_t UploadXingYarnTables(cudaStream_t stream, int capacity,
+cudaError_t UploadXingYarnTables(cudaStream_t /*stream*/, int /*capacity*/,
                                  const std::vector<float> &cos_t,
                                  const std::vector<float> &sin_t,
                                  float **dst_rc, float **dst_rs)

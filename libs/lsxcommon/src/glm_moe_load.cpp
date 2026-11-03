@@ -24,23 +24,6 @@ namespace glm {
 
 namespace {
 
-cudaError_t UploadRaw(const std::vector<uint8_t> &data, float **d_out,
-                      cudaStream_t stream, std::uint64_t &bytes_acc)
-{
-    if (data.empty()) return cudaSuccess;
-    float *d = nullptr;
-    cudaError_t e = cudaMalloc(&d, data.size());
-    if (e != cudaSuccess) return e;
-    bytes_acc += data.size();
-    e = cudaMemcpyAsync(d, data.data(), data.size(),
-                        cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) {
-        cudaFree(d);
-        return e;
-    }
-    *d_out = d;
-    return cudaSuccess;
-}
 
 // Uploads one NVFP4-packed expert tensor (packed E2M1 nibbles + per-block E4M3
 // scales) into a GlmExpertDeviceBlock slot. On any failure the slot stays

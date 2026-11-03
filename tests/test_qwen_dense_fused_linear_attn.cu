@@ -17,7 +17,7 @@ using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
 namespace {
 
 __host__ float HostDeq(const std::vector<uint8_t>& packed, const std::vector<uint8_t>& scales,
-                       int K, int N, float gs, int k, int n) {
+                       int K, int /*N*/, float gs, int k, int n) {
     const int64_t e = (int64_t)n * K + k;
     const uint8_t byte = packed[e >> 1];
     const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);

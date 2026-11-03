@@ -188,7 +188,8 @@ TEST_CASE("Kimi INT4->NVFP4 conversion matches source nibble order",
     };
     const size_t sample_stride = 97;
     std::vector<double> nv, src_lo, src_hi;
-    for (size_t i = 0; i < numel && i < e.w1_bytes * 2;
+    for (size_t i = 0; i < numel &&
+         i < static_cast<size_t>(e.w1_bytes) * 2;
          i += sample_stride) {
         const uint8_t byte = e.host_w1[i >> 1];
         const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);

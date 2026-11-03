@@ -229,7 +229,7 @@ std::size_t OracleGenContextBytes(int seq)
     std::size_t float_fixed = 1024;
 
     // 36 linear + 12 full layers (kFullAttnInterval = 4, full at i%4==3).
-    constexpr int kLayers = 48, kFull = 12, kLin = 36;
+    constexpr int kFull = 12, kLin = 36;
     std::size_t kv_bytes =
         2 * (std::size_t)kFull * seq * NKV * HD * sizeof(__half) +
         (std::size_t)kLin * seq * S * sizeof(__half) +

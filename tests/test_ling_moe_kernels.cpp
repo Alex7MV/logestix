@@ -332,7 +332,8 @@ TEST_CASE("Ling group-limited router selects by bias and renormalizes",
         gate_bf[i] = static_cast<uint16_t>(u >> 16);
     }
     std::vector<__half> gate_h(gate_bf.size());
-    std::memcpy(gate_h.data(), gate_bf.data(), gate_bf.size() * 2);
+    for (size_t i = 0; i < gate_bf.size(); ++i)
+        gate_h[i] = __ushort_as_half(gate_bf[i]);
     Dev d;
     auto *dg = d.alloc(gate_h);
     auto *db = d.alloc(bias);

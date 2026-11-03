@@ -103,9 +103,7 @@ inline uint16_t FloatToHalfRne(float v)
 inline __half H(float v)
 {
     const uint16_t bits = FloatToHalfRne(v);
-    __half h;
-    std::memcpy(&h, &bits, sizeof(h));
-    return h;
+    return __ushort_as_half(bits);
 }
 
 inline float F(__half h) { return __half2float(h); }

@@ -66,7 +66,6 @@ FlashNvfp4Blob RequantFp8ToNvfp4Host(const void *fp8_data,
     const int nblocks16 =
         static_cast<int>((numel + 15) / 16);  // per-16 blocks, row-major
     const int scale_cols = (cols + 127) / 128;
-    const int scale_rows = (rows + 127) / 128;
 
     // GPU path (convert_kernel + block_maxabs): dequant to F32, then
     // per-16-element block max over the flattened row-major array.

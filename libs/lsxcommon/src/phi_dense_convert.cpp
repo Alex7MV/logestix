@@ -39,7 +39,7 @@ std::optional<ParsedTensor> match_layer(const std::string &name,
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = kind;
-    absl::SimpleAtoi(m[1].str(), &p.layer);
+    if (!absl::SimpleAtoi(m[1].str(), &p.layer)) return std::nullopt;
     return p;
 }
 

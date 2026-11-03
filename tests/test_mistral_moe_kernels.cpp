@@ -199,7 +199,6 @@ TEST_CASE("Mistral shared expert matches the host NVFP4 reference",
 
     constexpr int H = 256;   // hidden
     constexpr int I = 128;   // expert_hidden (multiple of 16 and 32)
-    constexpr int t256 = 256;
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
 

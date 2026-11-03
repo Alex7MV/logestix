@@ -968,10 +968,13 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
         float *partials = nullptr;
         const int grid_min =
             g_lsx_splitk_grid_min.load(std::memory_order_relaxed);
-        if (seq == 1 && !acc && K >= 2048 && grid.x < 2 * grid_min &&
+        if (seq == 1 && !acc && K >= 2048 &&
+            grid.x < static_cast<unsigned>(2 * grid_min) &&
             (K % 512) == 0) {
             for (int cand : {8, 4, 2}) {
-                if ((K / 64) % cand == 0 && grid.x * cand >= grid_min) {
+                if ((K / 64) % cand == 0 &&
+                    grid.x * static_cast<unsigned>(cand) >=
+                        static_cast<unsigned>(grid_min)) {
                     split_k = cand;
                     break;
                 }

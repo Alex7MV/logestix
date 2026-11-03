@@ -294,7 +294,7 @@ const Scan &CachedScan(const fs::path &root, bool with_legacy_allowlist)
 
 TEST_CASE("expert store guard: scan is not vacuous", "[expert][guard][unit]")
 {
-    const Scan &s = CachedScan(LSX_SOURCE_DIR, true);
+    const Scan s = CachedScan(LSX_SOURCE_DIR, true);
     // The neutral store must be adopted somewhere, and the legacy store must
     // have real consumers, otherwise every rule below passes on an empty set.
     INFO("entry views: " << s.entry_views << ", legacy hits: " << s.legacy_hits);
@@ -306,7 +306,7 @@ TEST_CASE("expert store guard: no owning expert-payload container outside the "
           "neutral schema layer",
           "[expert][guard]")
 {
-    const Scan &s = CachedScan(LSX_SOURCE_DIR, true);
+    const Scan s = CachedScan(LSX_SOURCE_DIR, true);
     INFO("violations:\n" << Join(s.owning_container));
     REQUIRE(s.owning_container.empty());
 }
@@ -314,7 +314,7 @@ TEST_CASE("expert store guard: no owning expert-payload container outside the "
 TEST_CASE("expert store guard: no family-private expert store identifier",
           "[expert][guard]")
 {
-    const Scan &s = CachedScan(LSX_SOURCE_DIR, true);
+    const Scan s = CachedScan(LSX_SOURCE_DIR, true);
     INFO("violations:\n" << Join(s.private_store));
     REQUIRE(s.private_store.empty());
 }
@@ -323,7 +323,7 @@ TEST_CASE("expert store guard: every expert entry view aliases the neutral "
           "ExpertStore",
           "[expert][guard]")
 {
-    const Scan &s = CachedScan(LSX_SOURCE_DIR, true);
+    const Scan s = CachedScan(LSX_SOURCE_DIR, true);
     INFO("violations:\n" << Join(s.missing_alias));
     REQUIRE(s.missing_alias.empty());
 }
@@ -331,7 +331,7 @@ TEST_CASE("expert store guard: every expert entry view aliases the neutral "
 TEST_CASE("expert store guard: the legacy pinned-arena store does not spread",
           "[expert][guard]")
 {
-    const Scan &s = CachedScan(LSX_SOURCE_DIR, true);
+    const Scan s = CachedScan(LSX_SOURCE_DIR, true);
     INFO("violations (new consumer of MoEExpertStore; migrate to ExpertStore "
          "or add to kLegacyConsumers with an entry in docs/open-tasks/2026-10-23-doc-hygiene-and-non-defect-records.md):\n"
          << Join(s.legacy_spread));

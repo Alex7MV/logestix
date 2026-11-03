@@ -71,22 +71,26 @@ std::string CompactJson(const simdjson::dom::element &v)
     }
     case simdjson::dom::element_type::INT64: {
         int64_t x = 0;
-        v.get_int64().get(x);
+        const auto i64_err = v.get_int64().get(x);
+        (void)i64_err;
         return std::to_string(x);
     }
     case simdjson::dom::element_type::UINT64: {
         uint64_t x = 0;
-        v.get_uint64().get(x);
+        const auto u64_err = v.get_uint64().get(x);
+        (void)u64_err;
         return std::to_string(x);
     }
     case simdjson::dom::element_type::DOUBLE: {
         double d = 0.0;
-        v.get_double().get(d);
+        const auto f64_err = v.get_double().get(d);
+        (void)f64_err;
         return std::to_string(d);
     }
     case simdjson::dom::element_type::BOOL: {
         bool b = false;
-        v.get_bool().get(b);
+        const auto bool_err = v.get_bool().get(b);
+        (void)bool_err;
         return b ? "true" : "false";
     }
     default:

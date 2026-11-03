@@ -87,8 +87,11 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
                 std::string_view content;
                 int64_t id = -1;
                 bool special = false;
-                at_obj["id"].get_int64().get(id);
-                at_obj["content"].get_string().get(content);
+                if (at_obj["id"].get_int64().get(id) != simdjson::SUCCESS)
+                    continue;
+                if (at_obj["content"].get_string().get(content) !=
+                    simdjson::SUCCESS)
+                    continue;
                 if (at_obj["special"].get_bool().get(special) != simdjson::SUCCESS) special = false;
                 if (id < 0) continue;
                 auto i = static_cast<int32_t>(id);
@@ -140,9 +143,9 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         std::string_view u;
         if (model_obj["unk_token"].get_string().get(u) == simdjson::SUCCESS)
             model_unk.assign(u);
-        (void)model_obj["byte_fallback"]
-            .get_bool()
-            .get(model_byte_fallback);
+        const auto byte_fallback_err =
+            model_obj["byte_fallback"].get_bool().get(model_byte_fallback);
+        (void)byte_fallback_err;
     }
 
     int32_t model_vocab_count = 0;
@@ -632,7 +635,9 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
                     simdjson::SUCCESS)
                     continue;
                 bool special = false;
-                (void)obj["special"].get_bool().get(special);
+                const auto special_err =
+                    obj["special"].get_bool().get(special);
+                (void)special_err;
                 auto i = static_cast<int32_t>(id);
                 key_to_id[std::string(content)] = i;
                 id_to_key[i] = std::string(content);

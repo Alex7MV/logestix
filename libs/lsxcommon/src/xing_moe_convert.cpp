@@ -39,11 +39,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-bool ParseIntAfter(const std::string &s, const std::string &prefix, int &out)
-{
-    if (!absl::StartsWith(s, prefix)) return false;
-    return absl::SimpleAtoi(s.substr(prefix.size()), &out);
-}
 
 int WeightIdFor(const std::string &proj)
 {

@@ -365,7 +365,6 @@ bool LoadStepDenseWeights(const std::string &model_path, StepPinnedWeights &pw,
     const int NH = top.num_attention_heads;
     const int NKV = top.num_key_value_heads;
     const int HD = top.head_dim;
-    const int V = top.vocab_size;
     const fs::path base = fs::path(model_path) / "logestix";
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";

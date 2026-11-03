@@ -85,9 +85,7 @@ inline uint16_t FloatToHalfRne(float v)
 
 inline float HalfToFloat(uint16_t bits)
 {
-    __half h;
-    std::memcpy(&h, &bits, sizeof(h));
-    return __half2float(h);
+    return __half2float(__ushort_as_half(bits));
 }
 
 // Deterministic per-expert NVFP4 nibble pattern (experts differ by id).

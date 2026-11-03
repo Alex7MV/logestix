@@ -113,21 +113,6 @@ std::string XmlToJson(std::string_view body);
 
 // Extracts the text of the first `<tag ...>...</tag>` in [p, end); returns
 // false when absent. `content_begin`/`content_end` delimit the inner body.
-bool FindElement(std::string_view text, size_t from, std::string_view tag,
-                 size_t &open_end, size_t &close_begin)
-{
-    const std::string open = std::string(kNs) + "<" + std::string(tag);
-    const size_t at = text.find(open, from);
-    if (at == std::string_view::npos) return false;
-    const size_t gt = text.find('>', at);
-    if (gt == std::string_view::npos) return false;
-    const std::string close = std::string(kNs) + "</" + std::string(tag) + ">";
-    const size_t c = text.find(close, gt + 1);
-    if (c == std::string_view::npos) return false;
-    open_end = gt + 1;
-    close_begin = c;
-    return true;
-}
 
 std::string XmlLeaf(std::string_view v)
 {

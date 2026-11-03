@@ -193,7 +193,9 @@ TEST_CASE("model_runtime: RunParisSelfCheck matches a 1/2-token Paris prefix", "
     m.scripted_.gen_tokens = paris;
     m.scripted_.first_gen_tok_id = paris.front();
 
-    lsxcommon::ModelRequest req{std::vector<int32_t>{1, 2}, 1};
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 2};
+    req.max_gen_tokens = 1;
     auto r = lsxcommon::runtime::RunParisSelfCheck(m, req);
     REQUIRE(r.ok);
     REQUIRE(r.selfcheck_passed);
@@ -612,7 +614,9 @@ TEST_CASE("RunParisSelfCheck options: substring window match", "[selfcheck]")
     REQUIRE(np > 0);
     paris.resize(static_cast<size_t>(np));
 
-    lsxcommon::ModelRequest req{{1}, 4};
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1};
+    req.max_gen_tokens = 4;
     lsxcommon::runtime::ParisSelfCheckOptions opts;
     opts.min_tokens = 8;
     opts.answer_window = 12;
@@ -659,7 +663,9 @@ TEST_CASE("RunParisSelfCheck default options preserve legacy behavior",
     m.scripted_.gen_tokens = paris;
     m.scripted_.first_gen_tok_id = paris.front();
 
-    lsxcommon::ModelRequest req{{1, 2}, 1};
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 2};
+    req.max_gen_tokens = 1;
     // Explicit defaults must behave exactly like the old 2-arg call.
     lsxcommon::runtime::ParisSelfCheckOptions defaults;
     auto r = lsxcommon::runtime::RunParisSelfCheck(m, req, defaults);
@@ -696,7 +702,9 @@ TEST_CASE("RunParisSelfCheck decodes an answer window larger than 4 KiB",
     m.scripted_.gen_tokens = ids;
     m.scripted_.first_gen_tok_id = ids.front();
 
-    lsxcommon::ModelRequest req{{1, 2}, 1};
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 2};
+    req.max_gen_tokens = 1;
     lsxcommon::runtime::ParisSelfCheckOptions opts;
     opts.substring_match = true;
     opts.answer_window = 1000000;

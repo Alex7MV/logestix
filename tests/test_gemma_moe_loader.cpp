@@ -226,7 +226,8 @@ TEST_CASE("gemma loader uploads the attn + dense-MLP residual planes",
         INFO("LoadGemmaPinnedWeights rc=" << cudaGetErrorString(rc));
         REQUIRE(rc == cudaSuccess);
     }
-    REQUIRE(pw.layers.size() == gemmatest::TestCfg().num_layers);
+    REQUIRE(pw.layers.size() ==
+            static_cast<size_t>(gemmatest::TestCfg().num_layers));
     const auto &lw = pw.layers[0];
     REQUIRE(lw.attn_nvfp4);
     REQUIRE(lw.mlp_nvfp4);

@@ -177,6 +177,9 @@ void PyJsonValue(const simdjson::dom::element &v, std::string &out)
         out += b ? "true" : "false";
         break;
     }
+    case simdjson::dom::element_type::BIGINT:
+        out += simdjson::to_string(v);
+        break;
     case simdjson::dom::element_type::NULL_VALUE:
         out += "null";
         break;

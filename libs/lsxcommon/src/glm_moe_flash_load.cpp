@@ -605,7 +605,8 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
                 // every indexer dot product. Under the synthetic gate the
                 // fixture writes its own (small) geometry, as everywhere else
                 // in this loader.
-                if (!SyntheticGeometryAllowed() && t->bytes != it.want_bytes) {
+                if (!SyntheticGeometryAllowed() &&
+                    t->bytes != static_cast<std::size_t>(it.want_bytes)) {
                     error = absl::StrCat(l3, " indexer ", it.suffix,
                                          " has ", t->bytes, " bytes, want ",
                                          it.want_bytes);

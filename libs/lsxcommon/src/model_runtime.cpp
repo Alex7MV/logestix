@@ -241,7 +241,9 @@ int RunCliGeneration(const GenerationCliArgs &args)
         m.model->Unload();
         return 1;
     }
-    lsxcommon::ModelRequest req{std::move(input_ids), args.max_gen_tokens};
+    lsxcommon::ModelRequest req;
+    req.input_ids = std::move(input_ids);
+    req.max_gen_tokens = args.max_gen_tokens;
     gpu::InferenceResult result = m.model->Infer(req);
     m.model->Unload();
     if (!result.ok) {
@@ -266,7 +268,9 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
         m.model->Unload();
         return 1;
     }
-    lsxcommon::ModelRequest req{std::move(input_ids), args.max_gen_tokens};
+    lsxcommon::ModelRequest req;
+    req.input_ids = std::move(input_ids);
+    req.max_gen_tokens = args.max_gen_tokens;
     gpu::InferenceResult result = m.model->SelfCheck(req);
     m.model->Unload();
     if (!result.ok) {

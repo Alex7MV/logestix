@@ -36,13 +36,6 @@ __half ReadHalf(const __half *d, cudaStream_t stream, int idx = 0)
     return h;
 }
 
-float ReadFloat(const float *d, cudaStream_t stream, int idx = 0)
-{
-    float v;
-    cudaMemcpyAsync(&v, d + idx, sizeof(float), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
-    return v;
-}
 
 } // namespace
 

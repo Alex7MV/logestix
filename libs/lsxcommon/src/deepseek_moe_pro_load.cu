@@ -227,9 +227,12 @@ ModelTopology load_topology(const std::string &model_path)
     if (root["format"].get_string().get(fmt) == simdjson::SUCCESS)
         topo.format.assign(fmt);
     int64_t nl = 0, epl = 0, te = 0;
-    root["num_layers"].get_int64().get(nl);
-    root["experts_per_layer"].get_int64().get(epl);
-    root["total_experts"].get_int64().get(te);
+    if (root["num_layers"].get_int64().get(nl) != simdjson::SUCCESS ||
+        root["experts_per_layer"].get_int64().get(epl) != simdjson::SUCCESS ||
+        root["total_experts"].get_int64().get(te) != simdjson::SUCCESS) {
+        topo.error_msg = "missing routing counts in " + ipath.string();
+        return topo;
+    }
     topo.num_layers = static_cast<int>(nl);
     topo.experts_per_layer = static_cast<int>(epl);
     topo.total_experts = te;
