@@ -921,7 +921,7 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
 
 | gate | verdict |
 |---|---|
-| SelfCheck (XTML-framed) | PASS: `The answer is Paris.`, `logits_hash=5c1e227265d6a27b`, top-1 1008 |
+| SelfCheck (XTML-framed) | PASS x3 cycles bit-exact: `The answer is Paris.`, `logits_hash=5c1e227265d6a27b` on all three, top-1 1008 |
 | tokenizer parity | 23/23 against the checkpoint's `tiktoken.model` (`tokenizer_kind 2`) |
 | tool codec | byte-exact against `encoding_k3.py` frames (synthetic tokenizer) |
 | FSI / CODE / DET | goldens committed (template-derived); **not yet run** on real weights |

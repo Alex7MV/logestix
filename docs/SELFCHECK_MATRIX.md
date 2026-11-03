@@ -47,7 +47,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
-| **kimi-k3** | PASS (`5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
+| **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 
 - SelfCheck **18/18**, FSI **26/29**, CODE **29/29**, DET **28/29**.
 - **GigaChat3.5-432B-A28B-Reasoning** landed green on all four gates in its
