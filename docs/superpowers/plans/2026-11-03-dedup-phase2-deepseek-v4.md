@@ -184,7 +184,16 @@ git commit -m "refactor(deepseek): give V4-Flash a passport shaped like V4-Pro's
 
 ---
 
-### Task 2: Механизм шаблона на smallest-файлах (`norm_kernels`, `inference_head`)
+### Task 2: `norm_kernels` и `inference_head` — это чистые копии, шаблон не нужен
+
+Измерено при исполнении: `deepseek_moe_pro_norm_kernels.cu` отличается от
+flash-версии **только** строкой `#include` и лишним `namespace deepseek {`
+(файлы проверены `diff` с нормализацией `deepseek_pro` → `deepseek`); то же у
+`inference_head.cu`. Обе функции (`rmsnorm_float`, `run_lm_head`) принимают
+геометрию аргументами и не читают ни одной константы паспорта, поэтому их не
+надо темплейтить — достаточно удалить pro-копии и перевести вызовы на
+`lsxcommon::gpu::*`. Это сильнее шаблона: расхождение исключено
+конструкцией. Задача ниже заменяет первоначальный «доказать механизм».
 
 **Files:**
 - Modify: `libs/lsxcommon/src/deepseek_moe_norm_kernels.cu`
@@ -195,42 +204,38 @@ git commit -m "refactor(deepseek): give V4-Flash a passport shaped like V4-Pro's
 **Interfaces:**
 - Produces: правило, по которому переделываются остальные файлы: `template <class T> cudaError_t rmsnorm_float(...)`, `template <class T> cudaError_t run_lm_head(...)` + явные инстанцирования для `deepseek::Passport` и `deepseek_pro::Passport`.
 
-- [ ] **Step 1: Доказать, что pro-копии идентичны**
+- [ ] **Step 1: Доказать, что pro-копии идентичны (побайтово, не только телами)**
 
 ```bash
-python3 tools/dedup_provenance.py \
-    --from libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu \
-    --to   libs/lsxcommon/src/deepseek_moe_norm_kernels.cu \
-    --rename deepseek_pro=deepseek
-python3 tools/dedup_provenance.py \
-    --from libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu \
-    --to   libs/lsxcommon/src/deepseek_moe_inference_head.cu \
-    --rename deepseek_pro=deepseek
+diff <(sed 's/deepseek_pro/deepseek/g' libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu) \
+     libs/lsxcommon/src/deepseek_moe_norm_kernels.cu
+diff <(sed 's/deepseek_pro/deepseek/g' libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu) \
+     libs/lsxcommon/src/deepseek_moe_inference_head.cu
 ```
 
-Expected: `missing in target: 0  unexpected in target: 0` в обоих случаях. Если есть расхождения — зафиксировать их списком, они должны быть только в местах, перечисленных в Task 4 (residual type).
+Expected: в каждом — только строка `#include` и строка `namespace deepseek {`
+(`} // namespace deepseek`). Любое иное расхождение останавливает задачу.
 
-- [ ] **Step 2: Сделать `norm_kernels` шаблоном**
+- [ ] **Step 2: Удалить pro-копии и перевести вызовы**
 
-В `deepseek_moe_norm_kernels.cu`: заменить файловые `using kX = deepseek_pro::kX` (или прямые ссылки) на `T::kX`, обернуть определения:
-
-```cpp
-template <class T>
-cudaError_t rmsnorm_float(cudaStream_t stream, const float *x, const float *w,
-                          float *out, int n, float eps)
-{ /* тело дословно, kRmsEps -> T::kRmsEps */ }
-
-template cudaError_t rmsnorm_float<deepseek::Passport>(cudaStream_t, const float *, const float *, float *, int, float);
-template cudaError_t rmsnorm_float<deepseek_pro::Passport>(cudaStream_t, const float *, const float *, float *, int, float);
+```bash
+git rm libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu \
+       libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu \
+       libs/lsxcommon/include/lsxcommon/deepseek_moe_pro_norm_kernels.h
 ```
 
-Заголовок `deepseek_moe_norm_kernels.h` получает те же шаблонные объявления и `extern template`-объявления (по желанию — не обязательно).
+В `deepseek_moe_pro_inference_{attn,moe,pipeline}.cu` заменить вызовы
+`rmsnorm_float(...)` / `run_lm_head(...)` (они резолвились в
+`deepseek_pro::gpu`) на `lsxcommon::gpu::rmsnorm_float(...)` /
+`lsxcommon::gpu::run_lm_head(...)`. Поиск незакрытых ссылок:
 
-- [ ] **Step 3: Сделать `inference_head` шаблоном**
+```bash
+rg -n "deepseek_pro::gpu::(rmsnorm_float|run_lm_head)" libs/lsxcommon tests
+```
 
-То же для `run_lm_head` и его ядер (`argmax_kernel` и т.д.): `template <class T>`, константы → `T::`, внизу два явных инстанцирования.
+Expected: пусто после правки.
 
-- [ ] **Step 4: Проверить**
+- [ ] **Step 3: Проверить**
 
 ```bash
 cmake --build --preset linux-debug 2>&1 | rg "error:|warning:" | rg -v "_deps|third_party" | head -20
@@ -239,13 +244,16 @@ ctest --preset linux-debug-inference -R "test_deepseek_moe_(norm_kernels|inferen
 
 Expected: сборка без ошибок и предупреждений в наших файлах, оба теста PASS **на обеих моделях** (тест-файлы уже инстанцируют pro-вариант через `deepseek_moe_pro_*` символы — до удаления копий они должны оставаться рабочими; если тест ссылается на namespace `deepseek_pro::gpu`, добавить переадресацию на шаблон в Task 7).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add libs/lsxcommon/src/deepseek_moe_norm_kernels.cu \
-        libs/lsxcommon/src/deepseek_moe_inference_head.cu \
-        libs/lsxcommon/include/lsxcommon/deepseek_moe_norm_kernels.h
-git commit -m "refactor(deepseek): template the norm and head kernels on the passport"
+git rm libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu \
+       libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu \
+       libs/lsxcommon/include/lsxcommon/deepseek_moe_pro_norm_kernels.h
+git add libs/lsxcommon/src/deepseek_moe_pro_inference_attn.cu \
+        libs/lsxcommon/src/deepseek_moe_pro_inference_moe.cu \
+        libs/lsxcommon/src/deepseek_moe_pro_inference_pipeline.cu
+git commit -m "refactor(deepseek): drop the norm/head copies and call the shared kernels"
 ```
 
 ---
