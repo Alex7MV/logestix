@@ -820,7 +820,9 @@ cudaError_t load_pinned_weights(
                     cudaError_t ue = cudaMalloc(
                         &d_buf, static_cast<size_t>(desc.packed_bytes));
                     if (ue != cudaSuccess) return ue;
-                    rb += static_cast<std::uint64_t>(desc.packed_bytes);
+                    // ring.UploadRaw accounts the bytes in `rb`; adding them
+                    // here too inflated resident_bytes by ~2x the shared set
+                    // (4 GiB on V4-Pro) and made the governor refuse the lease.
                     ue = ring.UploadRaw(desc.host_ptr, d_buf,
                                         static_cast<size_t>(desc.packed_bytes),
                                         stream, rb);
@@ -829,7 +831,6 @@ cudaError_t load_pinned_weights(
                         ue = cudaMalloc(&d_scales,
                                         static_cast<size_t>(desc.scale_bytes));
                         if (ue != cudaSuccess) return ue;
-                        rb += static_cast<std::uint64_t>(desc.scale_bytes);
                         ue = ring.UploadRaw(desc.scale_host_ptr, d_scales,
                                             static_cast<size_t>(desc.scale_bytes),
                                             stream, rb);
