@@ -389,33 +389,47 @@ double MeasureMemoryBandwidthGbs(int mib)
 {
     if (mib <= 0) mib = 512;
     const size_t bytes = static_cast<size_t>(mib) << 20;
-    static thread_local void *src = nullptr;
-    static thread_local void *dst = nullptr;
-    static thread_local size_t cap = 0;
-    if (cap < bytes) {
+    // The probe buffers are per-call. They used to be cached in thread-local
+    // statics and kept for the process lifetime, which made the "environment
+    // oracle" perturb the quantity it then measured: test_perf_baseline runs
+    // the probe BEFORE loading the model, so the model saw 1024 MiB less free
+    // VRAM than the same binary launched as an app. For a streamed-expert
+    // family the expert-slot count is derived from that number -- measured on
+    // qwen3.8-flash-next (RTX 5090): 24985 MiB free -> 4962 slots -> 41.39
+    // t/s against 26009 MiB -> 5350 slots -> 42.90 t/s for the identical
+    // binary, prompt and 2048-token protocol. A ~3.5% bias on every measured
+    // family, and it pointed the blame at the model's code. Allocate, measure,
+    // release: the alloc cost is outside the timed region.
+    void *src = nullptr;
+    void *dst = nullptr;
+    cudaStream_t s = nullptr;
+    cudaEvent_t start = nullptr, stop = nullptr;
+    double best_gbs = 0.0;
+    const auto release = [&] {
+        if (start != nullptr) cudaEventDestroy(start);
+        if (stop != nullptr) cudaEventDestroy(stop);
+        if (s != nullptr) cudaStreamDestroy(s);
         if (src != nullptr) cudaFree(src);
         if (dst != nullptr) cudaFree(dst);
-        src = nullptr;
-        dst = nullptr;
-        cap = 0;
-        if (cudaMalloc(&src, bytes) != cudaSuccess) return 0.0;
-        if (cudaMalloc(&dst, bytes) != cudaSuccess) {
-            cudaFree(src);
-            src = nullptr;
-            return 0.0;
-        }
-        cap = bytes;
+    };
+    if (cudaMalloc(&src, bytes) != cudaSuccess) {
+        release();
+        return 0.0;
     }
-    cudaStream_t s = nullptr;
-    if (cudaStreamCreate(&s) != cudaSuccess) return 0.0;
-    double best_gbs = 0.0;
+    if (cudaMalloc(&dst, bytes) != cudaSuccess) {
+        release();
+        return 0.0;
+    }
+    if (cudaStreamCreate(&s) != cudaSuccess) {
+        release();
+        return 0.0;
+    }
     bool ok = cudaMemsetAsync(src, 0, bytes, s) == cudaSuccess;
     if (ok) {
         // Warm the copy engine / TLB once before timing.
         ok = cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, s) ==
              cudaSuccess;
     }
-    cudaEvent_t start = nullptr, stop = nullptr;
     if (ok) {
         ok = cudaEventCreate(&start) == cudaSuccess &&
              cudaEventCreate(&stop) == cudaSuccess;
@@ -439,9 +453,10 @@ double MeasureMemoryBandwidthGbs(int mib)
                            (static_cast<double>(ms) * 1e6);
         if (gbs > best_gbs) best_gbs = gbs;
     }
-    if (start != nullptr) cudaEventDestroy(start);
-    if (stop != nullptr) cudaEventDestroy(stop);
-    cudaStreamDestroy(s);
+    // Drain before freeing: cudaFree synchronizes, and a pending async copy
+    // must not outlive its source.
+    if (s != nullptr) cudaStreamSynchronize(s);
+    release();
     return ok ? best_gbs : 0.0;
 }
 

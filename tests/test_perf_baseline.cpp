@@ -247,6 +247,8 @@ struct MeasureResult {
     double avg_power_w = 0.0;
     double peak_power_w = 0.0;
     int power_samples = 0;
+    // Expert-cache capacity the run decoded with (0 = no streamed cache).
+    int expert_cache_slots = 0;
 };
 
 // ctest pins the vault subdir via env (one model per process); a direct binary
@@ -317,7 +319,8 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m,
                          r.ttft_ms,
                          ps.valid ? ps.avg_w : 0.0,
                          ps.valid ? ps.peak_w : 0.0,
-                         ps.samples};
+                         ps.samples,
+                         r.expert_cache_slots};
 }
 
 void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
@@ -334,26 +337,45 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
         pb::FindEntry(table, m.model_type, gpu_key, kThisOs, mode);
     std::optional<double> baseline;
     int baseline_len = 0;
+    int baseline_slots = 0;
     if (entry != nullptr && entry->max_gen == m.max_gen &&
         entry->prompt == m.prompt) {
         baseline = entry->tokens_per_sec;
         baseline_len = entry->gen_tokens;
+        baseline_slots = entry->expert_cache_slots;
     }
     const pb::PerfVerdict verdict =
         pb::JudgePerfLen(baseline, actual, mr.gen_tokens, baseline_len);
 
     switch (verdict) {
     case pb::PerfVerdict::kDegrade: {
-        // The model cannot certify its own environment. Ask the independent
-        // copy-bandwidth probe first: if it is down at least as much as the
-        // model, this is a thermal/power state, not a code regression.
+        // The model cannot certify its own environment. Ask the two
+        // model-independent facts first: the expert-cache capacity this run
+        // got versus the reference's (a streamed-expert family's decode rate is
+        // capacity-coupled, and the capacity is derived from ambient free
+        // VRAM), then the copy-bandwidth probe for the thermal/power state.
         const double model_ratio = actual / *baseline;
         const double probe_ratio =
             (probe_ref.has_value() && *probe_ref > 0.0 && probe_gbs > 0.0)
                 ? probe_gbs / *probe_ref
                 : 0.0;
-        if (pb::AttributeDegrade(model_ratio, probe_ratio) ==
-            pb::PerfCause::kEnvironment) {
+        const pb::PerfCause cause = pb::AttributeDegrade(
+            model_ratio, probe_ratio, mr.expert_cache_slots, baseline_slots);
+        if (cause == pb::PerfCause::kCapacity) {
+            WARN(m.model_type
+                 << " [" << gpu_key << "/" << kThisOs << "/" << mode
+                 << "]: CAPACITY (not a regression) baseline=" << *baseline
+                 << " t/s at " << baseline_slots << " expert-cache slots, "
+                 << "actual=" << actual << " t/s (" << (100.0 * model_ratio)
+                 << "%) at " << mr.expert_cache_slots
+                 << " slots. This family's decode rate is a measured function "
+                    "of the resident expert cache, and the cache is sized from "
+                    "the free VRAM at load, so ambient VRAM (not code) is the "
+                    "difference. Re-run with the reference's capacity free, or "
+                    "re-seed the row at this capacity.");
+            break;
+        }
+        if (cause == pb::PerfCause::kEnvironment) {
             WARN(m.model_type
                  << " [" << gpu_key << "/" << kThisOs << "/" << mode
                  << "]: ENVIRONMENT (not a regression) baseline=" << *baseline
@@ -392,6 +414,7 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
         upsert.avg_power_w = mr.avg_power_w;
         upsert.peak_power_w = mr.peak_power_w;
         upsert.power_samples = mr.power_samples;
+        upsert.expert_cache_slots = mr.expert_cache_slots;
         bool replaced = false;
         for (auto &e : table.entries) {
             if (e.model_type == upsert.model_type && e.gpu_key == gpu_key &&

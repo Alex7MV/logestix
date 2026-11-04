@@ -71,6 +71,10 @@ struct GenResultView {
     int kv_slots_used;                       // -1 => caller computes fallback
     float first_maxv;                        // 0 when the family lacks it
     std::uint64_t resident_bytes;
+    // Resident routed-expert cache capacity the run decoded with (0 = the
+    // family has no streamed expert cache). Part of the measurement protocol
+    // for a streamed-expert family: its decode rate is capacity-coupled.
+    int expert_cache_slots = 0;
 };
 
 // Maps a family generation result into InferenceResult (ok, num_tokens,

@@ -80,6 +80,34 @@ TEST_CASE("JudgePerf: generation-length mismatch re-seeds, not degrades",
     REQUIRE(JudgePerfLen(base, 125.0, 2048, 0) == PerfVerdict::kDegrade);
 }
 
+TEST_CASE("expert-cache capacity is recorded with the measurement",
+          "[perf_baseline]")
+{
+    using lsxcommon::perf_baseline::AttributeDegrade;
+    using lsxcommon::perf_baseline::PerfCause;
+    // A streamed-expert family's decode t/s is a measured function of the
+    // resident expert-cache capacity: on qwen3.8-flash-next the same binary
+    // decodes 41.40 / 43.02 / 44.15 t/s at 4962 / 5350 / 5750 slots. The
+    // capacity itself comes from the free VRAM at load time
+    // (lifecycle::ExpertCacheSlots), so an ambient 2.4 GiB of desktop VRAM is
+    // worth ~4% of throughput with no code change at all. A run at a smaller
+    // capacity is therefore not comparable to a reference recorded with more,
+    // and must not be judged as a regression.
+    //
+    // The verdict is capacity-only when the reference recorded a capacity and
+    // this run had less. Everything else keeps the probe rule.
+    CHECK(AttributeDegrade(0.96, 0.995, 5350, 5960) == PerfCause::kCapacity);
+    CHECK(AttributeDegrade(0.96, 0.995, 5350, 5350) == PerfCause::kCode);
+    // More capacity than the reference is an improvement, not an excuse.
+    CHECK(AttributeDegrade(0.96, 0.995, 6000, 5350) == PerfCause::kCode);
+    // A family without a streamed cache (or a legacy entry) is unaffected.
+    CHECK(AttributeDegrade(0.96, 0.995, 0, 0) == PerfCause::kCode);
+    CHECK(AttributeDegrade(0.96, 0.995, 5350, 0) == PerfCause::kCode);
+    // The probe still decides when the capacity explains nothing.
+    CHECK(AttributeDegrade(0.96, 0.95, 5350, 5350) == PerfCause::kEnvironment);
+    CHECK(AttributeDegrade(0.96, 0.95, 5350, 5960) == PerfCause::kCapacity);
+}
+
 TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
 {
     PerfBaselineTable t;
@@ -98,6 +126,7 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     e.avg_power_w = 412.5;
     e.peak_power_w = 601.0;
     e.power_samples = 137;
+    e.expert_cache_slots = 5350;
     t.entries.push_back(e);
     e.model_type = "glm-5.3-flash";
     e.os = "windows";
@@ -107,6 +136,7 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     e.avg_power_w = 0.0;
     e.peak_power_w = 0.0;
     e.power_samples = 0;
+    e.expert_cache_slots = 0;  // no streamed cache
     t.entries.push_back(e);
 
     const auto parsed = ParsePerfBaselines(SerializePerfBaselines(t));
@@ -126,6 +156,7 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     REQUIRE(parsed->entries[0].avg_power_w == 412.5);
     REQUIRE(parsed->entries[0].peak_power_w == 601.0);
     REQUIRE(parsed->entries[0].power_samples == 137);
+    REQUIRE(parsed->entries[0].expert_cache_slots == 5350);
     REQUIRE(parsed->entries[1].os == "windows");
     REQUIRE(parsed->entries[1].tokens_per_sec == 32.1);
     REQUIRE(parsed->entries[1].gen_tokens == 0);
@@ -134,6 +165,9 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     REQUIRE(parsed->entries[1].avg_power_w == 0.0);
     REQUIRE(parsed->entries[1].peak_power_w == 0.0);
     REQUIRE(parsed->entries[1].power_samples == 0);
+    // An entry without the field (every pre-existing row, and every family
+    // with no streamed expert cache) reads back as "no capacity recorded".
+    REQUIRE(parsed->entries[1].expert_cache_slots == 0);
 }
 
 TEST_CASE("Perf baselines: serializer escapes strings so output stays valid "
@@ -353,6 +387,39 @@ std::set<std::string> PerfCaseModels(const std::string &test_src)
 }
 
 } // namespace
+
+TEST_CASE("perf baseline file is exactly what the harness writes",
+          "[perf_baseline][guard]")
+{
+    // The perf-labelled test rewrites this tracked file whenever it measures an
+    // improvement, so its formatting IS the serializer's. A hand edit (or a
+    // serializer change without a regeneration) makes the next measurement
+    // rewrite unrelated rows, which buries the actual measurement in a diff --
+    // and a row that was never measured by the instrument cannot honestly carry
+    // ttft/power evidence. Pin the two together.
+    const std::string path = std::string(LSX_SOURCE_DIR) +
+                             "/tests/perf/perf_baselines.json";
+    const std::string tracked = ReadAll(path);
+    REQUIRE_FALSE(tracked.empty());
+    const auto parsed = ParsePerfBaselines(tracked);
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->format_version == kPerfBaselineFormatVersion);
+    const std::string rewritten = SerializePerfBaselines(*parsed);
+    if (rewritten != tracked) {
+        // Point at the first divergence: a whole-file mismatch is useless on its
+        // own when the file is ~1000 lines.
+        std::size_t i = 0;
+        while (i < rewritten.size() && i < tracked.size() &&
+               rewritten[i] == tracked[i])
+            ++i;
+        const std::size_t from = i > 120 ? i - 120 : 0;
+        FAIL("tests/perf/perf_baselines.json is not in the harness's own format "
+             "(first difference at byte "
+             << i << ").\n--- tracked ---\n"
+             << tracked.substr(from, 240) << "\n--- rewritten ---\n"
+             << rewritten.substr(from, 240));
+    }
+}
 
 TEST_CASE("perf registry: every baseline entry has a measuring TEST_CASE",
           "[perf_baseline][guard]")

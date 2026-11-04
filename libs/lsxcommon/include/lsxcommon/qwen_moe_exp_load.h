@@ -196,7 +196,23 @@ std::size_t GenContextBytes(int max_seq);
 // Model-aware LRU slot sizing: lifecycle::ExpertCacheSlots with a reserve of
 // GenContextBytes(max_seq) + kPostCacheFloorBytes (embed dequant + TC fused
 // builds + driver margin — the max_seq-independent post-cache floor).
+//
+// `already_resident_bytes` is the part of that footprint the process already
+// holds: this family keeps the generation arena and the fp16 embed table in
+// process-lifetime statics (RunExpGeneration's "single session per process"
+// etalon), so after the first decode they are inside `free_bytes`'s
+// complement. Charging them again through the reserve double-counts the
+// context and starves the cache on every subsequent Load in the same process
+// (measured: the second load of one perf target sized 5350 -> 2202 slots).
+// Pass the resident bytes to refund them; 0 (the default) is a cold load.
 int SizeExpertCacheSlots(std::size_t free_bytes, std::size_t per_expert_bytes,
-                         int total_experts, int max_seq, int slots_pct);
+                         int total_experts, int max_seq, int slots_pct,
+                         std::size_t already_resident_bytes = 0);
+
+// Bytes of the generation-context footprint (arena + fp16 embed table) that are
+// CURRENTLY allocated by this process. 0 before the first decode. Feeds
+// SizeExpertCacheSlots' refund argument; defined in the inference TU, which owns
+// the buffers.
+std::size_t GenContextResidentBytes();
 
 } // namespace lsxcommon::qwen_moe_exp

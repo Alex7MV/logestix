@@ -78,6 +78,10 @@ std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
             e.peak_power_w = d;
         if (o["power_samples"].get_int64().get(v) == simdjson::SUCCESS)
             e.power_samples = static_cast<int>(v);
+        // Expert-cache capacity is optional (v3 entries predating it, and every
+        // family with no streamed cache, read back as 0 = not applicable).
+        if (o["expert_cache_slots"].get_int64().get(v) == simdjson::SUCCESS)
+            e.expert_cache_slots = static_cast<int>(v);
         t.entries.push_back(std::move(e));
     }
     return t;
@@ -111,7 +115,15 @@ std::string SerializePerfBaselines(const PerfBaselineTable &t)
                               e.avg_power_w);
         absl::StrAppendFormat(&s, "      \"peak_power_w\": %.2f,\n",
                               e.peak_power_w);
-        absl::StrAppend(&s, "      \"power_samples\": ", e.power_samples, "\n");
+        absl::StrAppend(&s, "      \"power_samples\": ", e.power_samples);
+        // Emitted only when the family actually has a streamed expert cache, so
+        // the document stays small and an absent field unambiguously means
+        // "not applicable / not recorded" (the parser defaults it to 0, and the
+        // verdict then falls back to the environment probe).
+        if (e.expert_cache_slots != 0)
+            absl::StrAppend(&s, ",\n      \"expert_cache_slots\": ",
+                            e.expert_cache_slots);
+        absl::StrAppend(&s, "\n");
         absl::StrAppend(&s, "    }");
     }
     absl::StrAppend(&s, t.entries.empty() ? "]\n" : "\n  ]\n");
@@ -173,8 +185,14 @@ PerfVerdict JudgePerfLen(const std::optional<double> &baseline,
     return JudgePerf(baseline, actual, tolerance_pct);
 }
 
-PerfCause AttributeDegrade(double model_ratio, double probe_ratio)
+PerfCause AttributeDegrade(double model_ratio, double probe_ratio,
+                           int actual_slots, int baseline_slots)
 {
+    // Capacity first: it is a deterministic, measured contributor whenever the
+    // reference was recorded with a larger expert cache than this run has, and
+    // it is invisible to the bandwidth probe (which only sees DRAM speed).
+    if (actual_slots > 0 && baseline_slots > actual_slots)
+        return PerfCause::kCapacity;
     // No probe (0/absent) => no oracle => keep the code-regression verdict.
     if (!(probe_ratio > 0.0)) return PerfCause::kCode;
     if (probe_ratio < kProbeDegradeRatio && probe_ratio <= model_ratio + 0.01)
