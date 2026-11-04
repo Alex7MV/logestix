@@ -316,7 +316,14 @@ bool Qwen38FlashNextModel::BuildConversationInputIds(
     std::vector<int32_t> &out_ids) const
 {
     std::string text;
-    if (!RenderQwenConversation(conv, text)) return false;
+    // The checkpoint's own chat_template.jinja differs from the Qwen3.5/3.6 one
+    // in three byte-level ways (verified against the template rendered by
+    // transformers 5.15.1): every assistant history turn carries the closed
+    // think block, the tool definitions are serialised like jinja's `tojson`,
+    // and message bodies are trimmed. Framing a 3.8 model with the 3.5 wire is
+    // a distribution shift it never saw in training, so the deltas are carried
+    // explicitly by the named policy (see kQwen38RenderPolicy).
+    if (!RenderQwenConversation(conv, text, kQwen38RenderPolicy)) return false;
     if (!AppendQwenChatIds(tok, text, out_ids))
         return BuildPromptInputIds(tok, text, out_ids);
     return true;
