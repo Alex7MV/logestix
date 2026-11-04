@@ -186,7 +186,7 @@ cudaError_t RunKimiK3MlaAttention(cudaStream_t, const __half *latent, int n_pos,
 ```
 Calling `RunKimiK3MlaAttention` with `sel == nullptr, n_sel == 0` reproduces today's behaviour exactly.
 
-- [ ] **Step 1: Write the failing test** — in `tests/test_kimi_pro_indexer.cu`:
+- [x] **Step 1: Write the failing test** — in `tests/test_kimi_pro_indexer.cu` (6 cases / 4177 assertions):
   1. `TEST_CASE("kimi-k3.1-pro indexer: key LayerNorm matches the host reference")` — 4 positions of 128 dims, `wk` a deterministic pseudo-random BF16 matrix, assert `max |dev - host| <= 1e-2` after FP16 rounding.
   2. `TEST_CASE("kimi-k3.1-pro indexer: query and head weights match the host reference")` — asserts the `128^-0.5` and `32^-0.5` scales are applied (`CHECK(rel_err < 2e-2)` against a host double reference with the same scales).
   3. `TEST_CASE("kimi-k3.1-pro indexer: scores are the head-weighted relu sum")` — compares against a host double reference; also asserts a negative pre-activation contributes exactly `0`.
@@ -194,13 +194,15 @@ Calling `RunKimiK3MlaAttention` with `sel == nullptr, n_sel == 0` reproduces tod
   5. `TEST_CASE("kimi-k3.1-pro indexer: identity selection is bit-identical to dense attention")` — `sel = {0..n-1}`, `n = 37`: the output equals the `sel == nullptr` output bit for bit.
   6. `TEST_CASE("kimi-k3.1-pro indexer: masked attention matches the host reference")` — an arbitrary ascending subset of positions, compared against a host attention over the same subset.
 
-- [ ] **Step 2: Run to verify it fails** (unresolved symbols).
+- [x] **Step 2: Run to verify it fails** (unresolved symbols).
 
-- [ ] **Step 3: Implement** — key: one block of 128 threads, `dot → mean/var → normalise → *w + b`; query: two GEMVs through the existing dequant-dot helpers; scores: one block per position, `kBlock` threads reducing `w[h]*max(0, q[h]·k[s])` in FP32 with `block_sum`, no atomics; top-k: monotone-uint32 radix select (4 × 8-bit histogram passes over one block, then emit `> threshold` in ascending order and fill the remainder from `== threshold` in ascending order); attention: `t = sel ? sel[i] : i` inside the existing position loop.
+- [x] **Step 3: Implement** — key: one block of 128 threads, `dot → mean/var → normalise → *w + b`; query: two GEMVs through the existing dequant-dot helpers; scores: one block per position, `kBlock` threads reducing `w[h]*max(0, q[h]·k[s])` in FP32 with `block_sum`, no atomics; top-k: monotone-uint32 radix select, then emit `> threshold` in ascending order and fill the remainder from `== threshold` in ascending order; attention: `t = sel ? sel[i] : i` inside the existing position loop.
 
-- [ ] **Step 4: Run to verify it passes** — `ctest -R test_kimi_pro_indexer --preset linux-debug-inference`.
+  Deviations (recorded): (a) the top-k select is a **32-bit bitwise radix refinement over one warp** (per-bit exact integer count of keys `>= cand`, butterfly `__shfl_xor_sync` reduction, no atomics), not the 4×8-bit histogram the plan sketched — the histogram form was written first and was wrong, because each lane only counted its own 8 bins, so the per-bin population was divided by the lane count and the threshold landed in the wrong bin. The bitwise form is exact by construction and needs no histogram staging; (b) the emission contract is **not** a globally value-sorted list: positions strictly above the threshold are emitted first in ascending position order, then the boundary tie group is filled from the lowest position up (classic radix-select emission). This is what makes "ties resolve by ascending position" both true and deterministic; it is documented on `RunKimiK3IndexerTopK` in the header; (c) the target is registered with the explicit `add_executable`/`set_tests_properties(LABELS …)` form (as in Task 2) and declared in `test_model_suite_guard`'s `kPendingSuiteTargets`, because the labels guard's static scan cannot resolve `lsx_add_test(... LABEL ...)` variables and a partial `kimi-k3.1-pro` suite row would violate the full-stage-set guard; (d) the test decodes NVFP4 through the shared `nvfp4_codec.h` (`E2M1Value`/`E4M3ScaleToFloat`) instead of a local copy, because `test_nvfp4_scale` enforces a single source for the codec.
 
-- [ ] **Step 5: Commit** — `feat(kimi-k31-pro): Lightning-Indexer kernels and selectable MLA attention`.
+- [x] **Step 4: Run to verify it passes** — `ctest -R test_kimi_pro_indexer --preset linux-debug-inference`: 6/6 green (4177 assertions); `test_kimi_k3_kernels`, `test_kimi_k3_loader`, `test_kimi_pro_loader` green on the same preset; `test_nvfp4_scale`, `test_ctest_labels_guard`, `test_model_suite_guard` green; full `ctest --preset linux-debug` 134/134 (one pre-existing SKIP, `test_ling_tokenizer_parity`).
+
+- [x] **Step 5: Commit** — `feat(kimi-k31-pro): Lightning-Indexer kernels and selectable MLA attention`.
 
 ---
 

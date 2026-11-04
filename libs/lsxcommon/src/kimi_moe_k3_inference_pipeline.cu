@@ -363,7 +363,7 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
                         lw.mla_kvb.d_scales, lw.mla_kvb.global_scale,
                         ws.attn_raw, top.mla_heads, top.kv_lora, top.qk_rope,
                         top.v_head, rows_per_head, top.qk_nope, QH, mla_scale,
-                        kvb_row_packed, kvb_row_scales);
+                        kvb_row_packed, kvb_row_scales, nullptr, 0);
                     if (e) return e;
                 }
                 stage = "mla_gate";

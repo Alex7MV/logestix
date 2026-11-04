@@ -293,7 +293,6 @@ __global__ void mla_absorb_q_kernel(const __half *__restrict__ q_nope,
                                     int row_scales)
 {
     const int h = blockIdx.x;
-    float acc = 0.0f;
     const __half *xn = q_nope + (size_t)h * q_head_stride;
     for (int k = threadIdx.x; k < latent; k += blockDim.x) {
         float sum = 0.0f;
@@ -319,7 +318,8 @@ __global__ void mla_attn_kernel(const __half *__restrict__ latent, int n_pos,
                                 int heads, int L, int rope, int V,
                                 int rows_per_head, int row_offset,
                                 int q_rot_stride, float scale, int row_packed,
-                                int row_scales)
+                                int row_scales, const int32_t *__restrict__ sel,
+                                int n_sel)
 {
     extern __shared__ float sh[];
     float *ctx = sh;              // [L]
@@ -333,9 +333,11 @@ __global__ void mla_attn_kernel(const __half *__restrict__ latent, int n_pos,
     __syncthreads();
 
     const int rot_off = L;  // k_rot lives after the latent in the cache row
+    const int steps = (sel != nullptr && n_sel > 0) ? n_sel : n_pos;
     float m = -INFINITY;
     float l = 0.0f;
-    for (int t = 0; t < n_pos; ++t) {
+    for (int i = 0; i < steps; ++i) {
+        const int t = (sel != nullptr) ? sel[i] : i;
         const __half *row = latent + (size_t)t * (L + rope);
         float dot = 0.0f;
         for (int k = threadIdx.x; k < L; k += blockDim.x)
@@ -374,6 +376,147 @@ __global__ void mla_attn_kernel(const __half *__restrict__ latent, int n_pos,
         }
         out[(size_t)h * V + vd] = __float2half(acc * wv_gs);
     }
+}
+
+// ── Lightning Indexer (Gated DSA) ───────────────────────────────────────────
+// k = LayerNorm(wk @ x): one block, index_dim rows of GEMV into shared FP32,
+// then a two-pass FP32 mean/variance, normalise, apply weight + bias.
+__global__ void indexer_key_kernel(const __half *__restrict__ x,
+                                   const __half *__restrict__ wk,
+                                   const __half *__restrict__ knorm_w,
+                                   const __half *__restrict__ knorm_b,
+                                   __half *__restrict__ k_out, int kv_len,
+                                   int index_dim, float eps)
+{
+    extern __shared__ float sh[];
+    float *raw = sh;              // [index_dim]
+    float *red = sh + index_dim;  // [blockDim.x]
+    for (int d = 0; d < index_dim; ++d) {
+        const __half *wr = wk + static_cast<size_t>(d) * kv_len;
+        float acc = 0.0f;
+        for (int i = threadIdx.x; i < kv_len; i += blockDim.x)
+            acc += __half2float(wr[i]) * __half2float(x[i]);
+        const float total = block_sum(acc, red);
+        if (threadIdx.x == 0) raw[d] = total;
+    }
+    __syncthreads();
+    float sum = 0.0f;
+    for (int d = threadIdx.x; d < index_dim; d += blockDim.x) sum += raw[d];
+    const float mean = block_sum(sum, red) / static_cast<float>(index_dim);
+    float sq = 0.0f;
+    for (int d = threadIdx.x; d < index_dim; d += blockDim.x) {
+        const float dv = raw[d] - mean;
+        sq += dv * dv;
+    }
+    const float var = block_sum(sq, red) / static_cast<float>(index_dim);
+    const float rstd = rsqrtf(var + eps);
+    for (int d = threadIdx.x; d < index_dim; d += blockDim.x)
+        k_out[d] = __float2half((raw[d] - mean) * rstd *
+                                    __half2float(knorm_w[d]) +
+                                __half2float(knorm_b[d]));
+}
+
+// q[h][:] = (wq_b @ qa) * q_scale, w[h] = (weights_proj @ x) * w_scale.
+// Blocks 0..index_heads-1 own one head's rows; the extra block owns the head
+// weights. Both run the same fixed-geometry reduction as the key kernel.
+__global__ void indexer_query_kernel(const __half *__restrict__ qa,
+                                     const __half *__restrict__ x,
+                                     const __half *__restrict__ wq_b,
+                                     const __half *__restrict__ wproj,
+                                     __half *__restrict__ q_out,
+                                     __half *__restrict__ w_out, int q_lora,
+                                     int kv_len, int index_heads,
+                                     int index_dim, float q_scale,
+                                     float w_scale)
+{
+    __shared__ float red[kBlock];
+    if (blockIdx.x < index_heads) {
+        const int h = blockIdx.x;
+        for (int d = 0; d < index_dim; ++d) {
+            const size_t row = static_cast<size_t>(h) * index_dim + d;
+            const __half *wr = wq_b + row * q_lora;
+            float acc = 0.0f;
+            for (int j = threadIdx.x; j < q_lora; j += blockDim.x)
+                acc += __half2float(wr[j]) * __half2float(qa[j]);
+            const float total = block_sum(acc, red);
+            if (threadIdx.x == 0)
+                q_out[row] = __float2half(total * q_scale);
+        }
+    } else {
+        for (int h = 0; h < index_heads; ++h) {
+            const __half *wr = wproj + static_cast<size_t>(h) * kv_len;
+            float acc = 0.0f;
+            for (int i = threadIdx.x; i < kv_len; i += blockDim.x)
+                acc += __half2float(wr[i]) * __half2float(x[i]);
+            const float total = block_sum(acc, red);
+            if (threadIdx.x == 0) w_out[h] = __float2half(total * w_scale);
+        }
+    }
+}
+
+// score[s] = sum_h w[h] * max(0, q[h] . k[s]): one block per cached position,
+// FP32 fixed-geometry reductions, no atomics.
+__global__ void indexer_scores_kernel(const __half *__restrict__ q,
+                                      const __half *__restrict__ w,
+                                      const __half *__restrict__ k_cache,
+                                      int n_pos, int index_heads, int index_dim,
+                                      float *__restrict__ score)
+{
+    __shared__ float scratch[kBlock];
+    const int s = blockIdx.x;
+    if (s >= n_pos) return;
+    const __half *kr = k_cache + static_cast<size_t>(s) * index_dim;
+    float acc = 0.0f;
+    for (int h = 0; h < index_heads; ++h) {
+        const __half *qr = q + static_cast<size_t>(h) * index_dim;
+        float dot = 0.0f;
+        for (int d = threadIdx.x; d < index_dim; d += blockDim.x)
+            dot += __half2float(qr[d]) * __half2float(kr[d]);
+        const float total = block_sum(dot, scratch);
+        acc += __half2float(w[h]) * fmaxf(total, 0.0f);
+    }
+    if (threadIdx.x == 0) score[s] = acc;
+}
+
+// Order-preserving float -> uint32 mapping (the radix key).
+__device__ __forceinline__ unsigned int monotone_key(float f)
+{
+    const unsigned int u = __float_as_uint(f);
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+// Exact top-k by bitwise radix refinement over one warp: the monotone-uint32
+// key keeps float order, and each of the 32 bits is resolved by an exact
+// integer count of the keys >= the tentative prefix (strided, then a fixed
+// butterfly reduction — integer sums are associative, so the result is
+// order-independent). The surviving prefix is the k-th largest key, exactly.
+// The emission walk (thread 0) then reproduces "the top-k set, boundary ties to
+// the lowest positions" by construction: strictly greater first, then the tie
+// group from the lowest position up, both in ascending position order.
+__global__ void indexer_topk_kernel(const float *__restrict__ score, int n_pos,
+                                    int k, int32_t *__restrict__ out_idx,
+                                    int *__restrict__ out_n)
+{
+    const int lane = threadIdx.x & 31;
+    const int want = (k < n_pos) ? k : n_pos;
+    unsigned int prefix = 0u;
+    for (int bit = 31; bit >= 0; --bit) {
+        const unsigned int cand = prefix | (1u << bit);
+        int cnt = 0;
+        for (int i = lane; i < n_pos; i += 32)
+            if (monotone_key(score[i]) >= cand) ++cnt;
+        for (int off = 16; off > 0; off >>= 1)
+            cnt += __shfl_xor_sync(0xFFFFFFFFu, cnt, off);
+        if (cnt >= want) prefix = cand;
+    }
+    if (threadIdx.x != 0) return;
+    const unsigned int thr = prefix;
+    int n = 0;
+    for (int i = 0; i < n_pos && n < want; ++i)
+        if (monotone_key(score[i]) > thr) out_idx[n++] = i;
+    for (int i = 0; i < n_pos && n < want; ++i)
+        if (monotone_key(score[i]) == thr) out_idx[n++] = i;
+    *out_n = n;
 }
 
 // ── elementwise glue ────────────────────────────────────────────────────────
@@ -515,9 +658,12 @@ cudaError_t RunKimiK3MlaAttention(cudaStream_t stream, const __half *latent,
                                   __half *out, int heads, int latent_dim,
                                   int rope, int v_head, int rows_per_head,
                                   int row_offset, int q_rot_stride, float scale,
-                                  int row_packed, int row_scales)
+                                  int row_packed, int row_scales,
+                                  const int32_t *sel, int n_sel)
 {
     if (n_pos <= 0) return cudaSuccess;
+    if (sel != nullptr && (n_sel <= 0 || n_sel > n_pos))
+        return cudaErrorInvalidValue;
     const size_t smem =
         static_cast<size_t>(2 * latent_dim + kBlock) * sizeof(float);
     cudaFuncSetAttribute(mla_attn_kernel,
@@ -526,7 +672,57 @@ cudaError_t RunKimiK3MlaAttention(cudaStream_t stream, const __half *latent,
     mla_attn_kernel<<<heads, kBlock, smem, stream>>>(
         latent, n_pos, q_abs, q_rot, wv_packed, wv_scales, wv_gs, out, heads,
         latent_dim, rope, v_head, rows_per_head, row_offset, q_rot_stride,
-        scale, row_packed, row_scales);
+        scale, row_packed, row_scales, sel, n_sel);
+    return cudaGetLastError();
+}
+
+cudaError_t RunKimiK3IndexerKey(cudaStream_t stream, const __half *x,
+                                const __half *wk, const __half *knorm_w,
+                                const __half *knorm_b, __half *k_out,
+                                int kv_len, int index_dim, float eps)
+{
+    if (kv_len <= 0 || index_dim <= 0) return cudaErrorInvalidValue;
+    const size_t smem =
+        static_cast<size_t>(index_dim + kBlock) * sizeof(float);
+    indexer_key_kernel<<<1, kBlock, smem, stream>>>(x, wk, knorm_w, knorm_b,
+                                                    k_out, kv_len, index_dim,
+                                                    eps);
+    return cudaGetLastError();
+}
+
+cudaError_t RunKimiK3IndexerQuery(cudaStream_t stream, const __half *qa,
+                                  const __half *x, const __half *wq_b,
+                                  const __half *wproj, __half *q_out,
+                                  __half *w_out, int q_lora, int kv_len,
+                                  int index_heads, int index_dim,
+                                  float q_scale, float w_scale)
+{
+    if (q_lora <= 0 || kv_len <= 0 || index_heads <= 0 || index_dim <= 0)
+        return cudaErrorInvalidValue;
+    indexer_query_kernel<<<index_heads + 1, kBlock, 0, stream>>>(
+        qa, x, wq_b, wproj, q_out, w_out, q_lora, kv_len, index_heads,
+        index_dim, q_scale, w_scale);
+    return cudaGetLastError();
+}
+
+cudaError_t RunKimiK3IndexerScores(cudaStream_t stream, const __half *q,
+                                   const __half *w, const __half *k_cache,
+                                   int n_pos, int index_heads, int index_dim,
+                                   float *score)
+{
+    if (n_pos <= 0) return cudaSuccess;
+    if (index_heads <= 0 || index_dim <= 0) return cudaErrorInvalidValue;
+    indexer_scores_kernel<<<n_pos, kBlock, 0, stream>>>(
+        q, w, k_cache, n_pos, index_heads, index_dim, score);
+    return cudaGetLastError();
+}
+
+cudaError_t RunKimiK3IndexerTopK(cudaStream_t stream, const float *score,
+                                 int n_pos, int k, int32_t *out_idx,
+                                 int *out_n)
+{
+    if (n_pos <= 0 || k <= 0) return cudaErrorInvalidValue;
+    indexer_topk_kernel<<<1, 32, 0, stream>>>(score, n_pos, k, out_idx, out_n);
     return cudaGetLastError();
 }
 

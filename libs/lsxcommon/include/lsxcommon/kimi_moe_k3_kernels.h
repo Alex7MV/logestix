@@ -2,7 +2,8 @@
 
 // Kimi-K3 device kernels: SiTU-GLU, the sigmoid+bias 896-way router, the
 // AttnRes depth mixer, KDA (per-channel decay, lower-bound gate, conv-4),
-// absorbed gated NoPE MLA decode, and the small elementwise glue.
+// absorbed gated NoPE MLA decode, the Gated-DSA Lightning Indexer (key /
+// query / score / exact top-k) and the small elementwise glue.
 // Projections go through the neutral NVFP4 layer, not here.
 //
 // Deterministic: fixed reduction geometry, thread-0 only RMW behind barriers,
@@ -71,6 +72,11 @@ cudaError_t RunKimiK3MlaAbsorbQ(cudaStream_t stream, const __half *q_nope,
 // Latent-cache decode attention + absorbed value: writes out[h][v_head] then
 // the caller applies the output gate and o_proj.
 //   latent[t] = [norm_latent(kv_lora) | k_rot(rope)] contiguous, stride 576.
+// `sel`/`n_sel` is the optional Gated-DSA key selection: non-null restricts the
+// softmax to those cached positions, in the given order. `sel == nullptr`
+// (and `n_sel == 0`) is the dense ascending-0..n_pos loop, verbatim, and
+// `sel = {0..n_pos-1}` is bit-identical to it (pinned by
+// tests/test_kimi_pro_indexer.cu).
 cudaError_t RunKimiK3MlaAttention(cudaStream_t stream, const __half *latent,
                                   int n_pos, const __half *q_abs,
                                   const __half *q_rot,
@@ -80,7 +86,42 @@ cudaError_t RunKimiK3MlaAttention(cudaStream_t stream, const __half *latent,
                                   int rope, int v_head, int rows_per_head,
                                   int row_offset, int q_rot_stride, float scale,
                                   int wv_row_stride_packed,
-                                  int wv_row_stride_scales);
+                                  int wv_row_stride_scales,
+                                  const int32_t *sel, int n_sel);
+
+// ── Lightning Indexer (Gated DSA) ──────────────────────────────────────────
+// One position per call (the current token): `x` is the layer's attention
+// input of width `kv_len` (the hidden size), `index_dim` one indexer head.
+//   k = LayerNorm(wk @ x)                    (weight + bias, eps)
+cudaError_t RunKimiK3IndexerKey(cudaStream_t stream, const __half *x,
+                                const __half *wk, const __half *knorm_w,
+                                const __half *knorm_b, __half *k_out,
+                                int kv_len, int index_dim, float eps);
+
+// q[h] = (wq_b @ qa)[h * index_dim ...] * q_scale   (qa: the normalised q-lora)
+// w[h] = (weights_proj @ x)[h] * w_scale
+cudaError_t RunKimiK3IndexerQuery(cudaStream_t stream, const __half *qa,
+                                  const __half *x, const __half *wq_b,
+                                  const __half *wproj, __half *q_out,
+                                  __half *w_out, int q_lora, int kv_len,
+                                  int index_heads, int index_dim,
+                                  float q_scale, float w_scale);
+
+// score[s] = sum_h w[h] * max(0, q[h] . k_cache[s])   (causality is the caller's)
+cudaError_t RunKimiK3IndexerScores(cudaStream_t stream, const __half *q,
+                                   const __half *w, const __half *k_cache,
+                                   int n_pos, int index_heads, int index_dim,
+                                   float *score);
+
+// Exact selection over score[0..n_pos): the top `k` (value desc), boundary ties
+// resolved to the lowest positions. The emission order is every selected
+// position strictly above the boundary score in ascending order, then the
+// boundary tie group from the lowest position up (the classic radix-select
+// emission). Monotone-uint32 bitwise radix refinement, one warp, no atomics;
+// the emission walk is serial so the order is by construction.
+cudaError_t RunKimiK3IndexerTopK(cudaStream_t stream, const float *score,
+                                 int n_pos, int k, int32_t *out_idx,
+                                 int *out_n);
 
 // out[i] = x[i] * sigmoid(gate[i]).
 cudaError_t RunKimiK3SigmoidMul(cudaStream_t stream, __half *x,

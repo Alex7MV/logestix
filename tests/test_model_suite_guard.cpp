@@ -876,6 +876,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
         // docs/superpowers/plans/2026-11-05-kimi-k31-pro-ingestion.md.
         "test_kimi_pro_convert",
         "test_kimi_pro_loader",
+        "test_kimi_pro_indexer",
     };
 
     std::set<std::string> claimed;

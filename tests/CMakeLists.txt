@@ -1994,6 +1994,29 @@ set_tests_properties(test_kimi_pro_loader PROPERTIES TIMEOUT 300)
 set_tests_properties(test_kimi_pro_loader PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_kimi_pro_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Kimi-K3.1-Pro Lightning-Indexer kernel parity (CUDA OBJECT lib + exe) ──
+add_library(test_kimi_pro_indexer_cu OBJECT test_kimi_pro_indexer.cu)
+set_target_properties(test_kimi_pro_indexer_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+)
+target_compile_options(test_kimi_pro_indexer_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_kimi_pro_indexer_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_kimi_pro_indexer_cu PRIVATE Catch2::Catch2WithMain
+    lsx_dep_includes)
+
+add_executable(test_kimi_pro_indexer)
+set_target_properties(test_kimi_pro_indexer PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_pro_indexer PRIVATE test_kimi_pro_indexer_cu
+    lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_pro_indexer COMMAND test_kimi_pro_indexer)
+set_tests_properties(test_kimi_pro_indexer PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_pro_indexer PROPERTIES TIMEOUT 300)
+set_tests_properties(test_kimi_pro_indexer PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Kimi-K3 model + lifecycle (synthetic converted tree) ───────────────────
 add_executable(test_kimi_k3_model test_kimi_k3_model.cpp)
 target_include_directories(test_kimi_k3_model PRIVATE
