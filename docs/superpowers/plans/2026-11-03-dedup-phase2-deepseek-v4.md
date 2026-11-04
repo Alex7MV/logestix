@@ -474,7 +474,34 @@ git commit -m "refactor(deepseek): template the generation pipeline and the load
 
 ---
 
-### Task 7: Удалить 12 pro-копий, перевести Pro-модель на шаблон
+### Task 7: удаление копий — проверенное состояние и открытый блокер
+
+Попытка выполнена и откатана (копии на месте, ветка зелёная). Что уже
+доказано и лежит в общем коде:
+
+- общий `load_pinned_weights<T>` / `DeepSeekInferArena::Allocate<T>` /
+  `load_expert_index<T>` собираются и дают Flash тот же `logits_hash`;
+- политика памяти — **третий параметр паспорта**, не геометрия: пиннинг
+  expert-store (Flash: по умолчанию включён, `LSX_EXPERT_PIN=0` выключает;
+  Pro: только `LSX_DEEPSEEK_PRO_PIN=1` и cap 64 GiB), кэш shared-expert в FP16
+  (Flash 4 MB/слой, Pro 176 MB/слой → opt-in), `pending_drain`-хук стора,
+  форма `idx_wq_b` (читается из тензора, а не хардкод 8192×1024).
+
+Открытый блокер: с общим загрузчиком Pro падает на `shared expert upload
+failed (layer 34): out of memory` — **и после** отключения shared-cache
+(10.7 GiB) и после исправления пиннинга. Значит остаётся ещё одна
+per-family разница в загрузчике/арене; для поиска нужен диагностический
+вывод `cudaMemGetInfo` на каждом слое (у старого pro-загрузчика он был:
+`layer arena alloc failed (total=…, rb=…, free=…, total=…)`), а в общем
+остался только `cudaGetErrorString`. Следующий шаг: вернуть этот лог в
+`UploadLayerJobs`/shared-expert upload и сравнить `rb`/`free` построчно
+со старым pro-загрузчиком (он в истории: `git show <до-удаления>:
+libs/lsxcommon/src/deepseek_moe_pro_load.cu`).
+
+Порядок безопасного продолжения: сначала довести общий загрузчик до
+успешной загрузки Pro (при живых копиях, сверяя `rb`/`free`), затем
+удалять копии и переключать модель/тесты.
+
 
 **Files:**
 - Delete: `libs/lsxcommon/src/deepseek_moe_pro_inference_{attn,csa,head,moe,pipeline}.cu`, `deepseek_moe_pro_load.{cuh,cu}`, `deepseek_moe_pro_norm_kernels.cu`, `libs/lsxcommon/include/lsxcommon/deepseek_moe_pro_inference_csa.h`, `deepseek_moe_pro_norm_kernels.h`
