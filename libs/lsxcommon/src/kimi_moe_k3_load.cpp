@@ -257,6 +257,7 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
         get_i(root, "index_num_heads", out.index_heads);
         get_i(root, "index_topk", out.index_topk);
         get_i(root, "index_rope_dim", out.index_rope_dim);
+        get_d(root, "index_norm_eps", out.index_norm_eps);
         if (auto arr = root["dsa_layers"].get_array();
             arr.error() == simdjson::SUCCESS)
             for (auto e : arr.value()) {
@@ -265,7 +266,8 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
                     out.dsa_layers.push_back(static_cast<int>(v));
             }
         if (out.index_heads <= 0 || out.index_head_dim <= 0 ||
-            out.index_topk <= 0 || out.index_rope_dim < 0) {
+            out.index_topk <= 0 || out.index_rope_dim < 0 ||
+            !(out.index_norm_eps > 0.0)) {
             out.error_msg = "index: the DSA block is incomplete";
             return arrow::Status::Invalid("kimi-k3 index: ", out.error_msg);
         }
@@ -287,7 +289,7 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
             }
     } else if (!out.dsa_layers.empty() || out.index_heads != 0 ||
                out.index_head_dim != 0 || out.index_topk != 0 ||
-               out.index_rope_dim != 0) {
+               out.index_rope_dim != 0 || out.index_norm_eps != 0.0) {
         out.error_msg = "index: a Kimi-K3 tree carries DSA fields";
         return arrow::Status::Invalid("kimi-k3 index: ", out.error_msg);
     }
@@ -337,6 +339,10 @@ bool KimiK3TopologyMatchesFrozen(const KimiK3Topology &top, bool expect_dsa,
         namespace prof = kimi_pro::frozen;
         if (top.index_topk != expect_topk) return false;
         if (top.index_rope_dim != prof::kIndexRopeDim) return false;
+        // The key LayerNorm's eps is part of the indexer's arithmetic, not a
+        // free knob: a tree that writes a different one was built by a
+        // different recipe.
+        if (top.index_norm_eps != prof::kIndexNormEps) return false;
         // Every full-attention layer is indexed, and nothing else is. The
         // per-tensor indexer geometry (heads / head dim) is the caller's
         // passport check: this function only owns the structural table.

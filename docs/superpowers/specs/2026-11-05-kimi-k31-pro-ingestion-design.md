@@ -114,8 +114,13 @@ which the loader cross-checks against the passport.
 
 ### 3.2 Indexer arithmetic (the reconstructed part)
 
-With `h` = the layer's attention input (the AttnRes mixture), `qr` = the
-normalised q-lora vector the MLA layer already computes:
+With `h` = the layer's attention input — the **post-`input_norm` hidden**, i.e.
+the vector the gated-MLA projections themselves consume (the same input the
+DeepSeek DSA contour feeds its indexer; ruling recorded in the SDD ledger:
+`dsa_config` names the indexer's tensors but not its input, and the attention
+projections' input is the only reading consistent with `qr` being the normalised
+q-lora output) — and `qr` = that same normalised q-lora vector the MLA layer
+already computes:
 
 ```
 q[h,:] = (wq_b @ qr)[h*128 : (h+1)*128] * 128^-0.5      h = 0..31
@@ -129,6 +134,24 @@ topk       = the kIndexTopK largest scores; ties broken by ascending position
 25 MB at 4096) because the attention input of an earlier position is not
 retained. `q` and `w` are per query token. Selection is skipped when
 `n_pos <= kIndexTopK`, which is the exact identity.
+
+Open points of the reconstruction (all recorded as debt, none of them reachable
+at the canonical 2048-token protocol, where selection is dormant):
+
+* `index_skip_topk_offset = 1` and `index_topk_freq = 1` are not implemented as
+  knobs: freq 1 is "select on every DSA layer", and with the offset's value of 1
+  the only reading that changes nothing at `n_pos > topk` is "the selection
+  starts at the second position", which the `n_pos <= topk` bypass already
+  covers for every prompt up to 2049 tokens. A different value would need the
+  source to define it.
+* The selection does **not** force the current position into the top-k. DeepSeek
+  DSA guarantees causality by construction (the scores are causal), and forcing
+  a position would be an invented rule; at `n_pos > topk` the current position's
+  own score is normally the largest, and the pipeline pins the exact set the
+  scores imply.
+* The `dsa_layers` table is required to be exactly the MLA table: the source
+  never indexes a KDA layer (there is no `indexer` module under `self_attn` of a
+  KDA layer) and no full-attention layer lacks one.
 
 ### 3.3 Kernels
 
@@ -174,7 +197,7 @@ Naming needs no change (`pro` is already a variant token).
    protocol (`perf` + `r3`), or recorded as unseeded with the measured reason
    (~2 s/token, host-store bound).
 6. Report `docs/model-reports/2026-11-05-Kimi-K3.1-Pro.md`, `AGENTS.md`
-   structure entry, `SELFCHECK_MATRIX.md` row, `OPEN_TASKS.md` §R16 (indexer
+   structure entry, `SELFCHECK_MATRIX.md` row, `OPEN_TASKS.md` §R17 (indexer
    semantics inferred; >2048 unvalidated).
 
 ## 4. Non-goals

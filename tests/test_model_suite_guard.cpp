@@ -877,6 +877,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
         "test_kimi_pro_convert",
         "test_kimi_pro_loader",
         "test_kimi_pro_indexer",
+        "test_kimi_pro_model",
     };
 
     std::set<std::string> claimed;

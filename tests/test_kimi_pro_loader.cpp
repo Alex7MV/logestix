@@ -143,6 +143,7 @@ void FillDsaBlock(kimi_k3::KimiK3Topology &t)
     t.index_head_dim = kIndexHeadDim;
     t.index_topk = kIndexTopK;
     t.index_rope_dim = kIndexRopeDim;
+    t.index_norm_eps = kIndexNormEps;
 }
 
 // Writes a copy of the tree's index JSON with one textual substitution, so a
@@ -184,6 +185,9 @@ TEST_CASE("kimi-k3.1-pro loader reads the DSA topology", "[kimi-pro][loader]")
     CHECK(top.index_head_dim == kimiprotest::kIndexHeadDim);
     CHECK(top.index_topk == kimiprotest::kIndexTopK);
     CHECK(top.index_rope_dim == kimiprotest::kIndexRopeDim);
+    // The indexer key LayerNorm's eps travels with the tree: it is the
+    // arithmetic, not a runtime knob.
+    CHECK(top.index_norm_eps == kimi_pro::frozen::kIndexNormEps);
     CHECK(top.IsDsa(2));
     CHECK(top.IsDsa(3));
     CHECK_FALSE(top.IsDsa(0));
@@ -357,6 +361,16 @@ TEST_CASE("kimi-k3.1-pro frozen cross-check distinguishes the variant",
     auto partial = pro;
     partial.dsa_layers.pop_back();
     CHECK_FALSE(kimi_k3::KimiK3TopologyMatchesFrozen(partial, true, kIndexTopK));
+    // The indexer key LayerNorm eps is arithmetic, not a knob: a tree that
+    // writes a different one was built by a different recipe.
+    auto eps = pro;
+    eps.index_norm_eps = 1e-6;
+    CHECK_FALSE(kimi_k3::KimiK3TopologyMatchesFrozen(eps, true, kIndexTopK));
+    // A DSA tree must state its eps at all (a missing field parses as 0).
+    auto no_eps = pro;
+    no_eps.index_norm_eps = 0.0;
+    CHECK_FALSE(
+        kimi_k3::KimiK3TopologyMatchesFrozen(no_eps, true, kIndexTopK));
     // Kimi-K3 geometry is shared: breaking it fails both forms.
     auto broken = pro;
     broken.hidden = kHidden - 1;

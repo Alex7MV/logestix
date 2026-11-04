@@ -92,6 +92,7 @@ struct KimiK3Topology {
     int index_head_dim = 0;
     int index_topk = 0;
     int index_rope_dim = 0;
+    double index_norm_eps = 0.0;  // the indexer key LayerNorm eps (1e-5)
     std::string error_msg;
 
     bool IsMla(int layer) const

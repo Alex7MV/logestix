@@ -1027,6 +1027,44 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
   The model needs a card that can hold the pinned set plus ~2 GiB headroom; a
   clean "not enough VRAM" pre-check is a follow-up.
 
+## R17. Kimi-K3.1-Pro (2.8T / ~104B active) — Gated DSA variant, ingestion in progress (2026-11-05)
+
+Branch `feat/kimi-k31-pro`. Sibling variant of Kimi-K3 (`kimi-k3.1-pro`, files
+`kimi_moe_pro_*`, format tag `logestix-kimi-k31-pro-nvfp4`): the same KimiLinear
+tower (93 layers, 69 KDA + 24 gated NoPE MLA, AttnRes 12, Stable LatentMoE, SiTU)
+with the 24 full-attention layers replaced by **Gated DSA** — a Lightning
+Indexer per full-attention layer selecting `index_topk = 2048` keys per query.
+Landed so far: frozen passport, converter (`lsxforge --kimi_k31_pro`), loader
+(five BF16 indexer tensors per DSA layer pinned as FP16, never quantized), the
+four indexer kernels + selectable MLA attention, and the pipeline's indexer key
+cache with the DSA branch. Stages 6–9 (IModel/registry, parity goldens, perf,
+real weights) are pending; see the plan and the SDD ledger.
+
+**Open, explicitly.**
+
+- P1. The indexer's arithmetic is **reconstructed**, not verified. The
+  checkpoint ships no modeling code (`configuration_kimi_k3.py` only), so the
+  semantics come from the tensor shapes, `dsa_config` and the repository's prior
+  art (`deepseek_moe_pro` CSA, `mistral_moe_large4` DSA). The three open points
+  are enumerated in the design (§3.2): the indexer's input is taken to be the
+  post-`input_norm` hidden (the DeepSeek contour; the alternative reading is the
+  raw AttnRes mixture and would be a one-line change), `index_skip_topk_offset`/
+  `index_topk_freq` are not implemented as knobs, and the top-k does **not**
+  force the current position in. None of them is reachable at the canonical
+  2048-token protocol, where selection is dormant — which is also why no gate
+  covers them: **do not read the variant's green gates as DSA verification.**
+- P2. The **kimi-k3 synthetic fixture is input-invariant**: two different
+  prompts produce bit-equal logits from the converted 4-layer tree (measured on
+  the plain Kimi-K3 tree as well, so this predates the variant). Every
+  model-stage assertion in the family is therefore a smoke assertion — finite,
+  deterministic, lifecycle-correct — and cannot observe a wrong attention key
+  set. The DSA branch is instead pinned by exact step/key counts plus a
+  score-vector/selection comparison against an independent top-k, and by the
+  kernel-level host references. Making the fixture input-sensitive (e.g. a
+  scale that keeps the residual from being dominated by a constant block) is the
+  instrument this family is missing — `docs/OPEN_ENDEDNESS.md` §"which
+  instrument is missing".
+
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 
 **Landed.** Family `flint` (`logestix-flint-nvfp4`) is registered and runs on the

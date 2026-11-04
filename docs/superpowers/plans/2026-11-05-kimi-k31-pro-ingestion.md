@@ -216,15 +216,17 @@ Calling `RunKimiK3MlaAttention` with `sel == nullptr, n_sel == 0` reproduces tod
 - Consumes: Task 4's kernels, Task 3's weights.
 - Produces: no API change (`RunKimiK3Generation` keeps its signature).
 
-- [ ] **Step 1: Write the failing test** — extend `tests/test_kimi_pro_model.cpp` (Task 6) with `TEST_CASE("kimi-k3.1-pro pipeline: the DSA branch engages above the top-k")`: a synthetic tree with `index_topk = 4` and a prompt of 8 tokens must (a) run `Infer` successfully, (b) produce, for the same weights, exactly the same logits as an otherwise identical tree with `index_topk = 8` (all keys selected — the identity), because with 4 selected keys the *most recent* keys dominate; assert equality only for the identity direction: `index_topk >= n_pos` must equal the dense reference bit for bit. The kernel-level >topk equivalence is Task 4's test.
+- [x] **Step 1: Write the failing test** — `tests/test_kimi_pro_model.cpp` (the file Task 6 extends) with `TEST_CASE("kimi-k3.1-pro pipeline: the DSA branch is dormant at n_pos <= topk")` and `TEST_CASE("kimi-k3.1-pro pipeline: the DSA branch selects above the top-k")`. The first drives the same prompt through a Kimi-K3.1-Pro tree and a Kimi-K3 tree built from the same base tensors and requires the counters to be zero and the logits to match bit for bit; the second runs an 8-token prompt (9 forwards) and requires exactly `(forwards - topk) * dsa_layers` selections of `topk` keys, then checks the pipeline's own returned score vector and selection against an independent top-k over those scores.
 
-- [ ] **Step 2: Run to verify it fails** (no DSA branch → different code path missing).
+  Deviations (recorded): (a) the test drives `RunKimiK3Generation` directly instead of `IModel::Infer` — the plan pointed Task 5 at Task 6's model test, but the model does not exist until Task 6 and the branch had to be verifiable first; the same file and target carry the model cases from Task 6 on; (b) `KimiK3GenerationResult` gained `dsa_steps`, `dsa_keys_selected`, `dsa_last_n_pos`, `dsa_last_score` and `dsa_last_selection` — without them "the branch engaged" is unobservable, and the last two are copied once at the end of the run from the still-live device buffers, so a step costs nothing; (c) the planned "the sparse answer differs from the dense answer" assertion was **dropped as unsound**: the kimi-k3 fixture's synthetic weights make the converted model's logits input-invariant (two different prompts produce bit-equal logits on the plain Kimi-K3 tree too — a pre-existing fixture property, not something this variant introduced), so a selection difference cannot show up in the logits. The test pins the exact selection instead, and the fixture weakness is recorded as an open task; (d) the loader gained `index_norm_eps` (topology field, parse, validation, frozen cross-check) so the key LayerNorm's eps travels with the tree instead of being a second source of truth in the pipeline; (e) the key and the head weights are computed from the post-`input_norm` hidden, the vector the MLA projections consume (design §3.2 amended, ruling in the ledger); (f) the target is labelled `inference` and carries the synthetic-geometry ENVIRONMENT property, like the loader target.
 
-- [ ] **Step 3: Implement** — allocate `index_k` (`dsa_layers.size() * max_context * index_dim` FP16) and `index_sel` (`index_topk` int32) + `index_score` (`max_context` FP32) in `Workspace`; in the MLA block, when `lw.idx_wk != nullptr`: compute the current position's indexer key into `index_k[slot][pos]`, then if `n_pos > top.index_topk` compute query/weights/scores/top-k and pass `(sel, n)` to the attention, else pass `(nullptr, 0)`. Nothing else changes on the dense path.
+- [x] **Step 2: Run to verify it fails** — the RED state was a compile error on the missing `dsa_steps` member, then (with the trace in place) `2 == 0` and `10 == 8` on the counters, which is what located the forward-count arithmetic.
 
-- [ ] **Step 4: Run to verify it passes.**
+- [x] **Step 3: Implement** — allocate `index_k` (`dsa_layers.size() * max_context * index_dim` FP16), `index_q`, `index_w`, `index_score`, `index_sel` and a device count in `RunKimiK3Generation` (nothing is allocated for a Kimi-K3 tree); in the MLA block, when `lw.idx_wk != nullptr`, compute the current position's indexer key into `index_k[slot][pos]` right after `input_norm` and the query/head weights right after the q-lora norm; then, when `pos + 1 > top.index_topk`, score every causal position, run the exact top-k and pass `(sel, n)` to the attention, else pass `(nullptr, 0)`. `n_sel = min(index_topk, pos + 1)` is known on the host because the select always emits exactly that many positions, so no device-to-host read is on the critical path. Nothing else changes on the dense path.
 
-- [ ] **Step 5: Commit** — `feat(kimi-k31-pro): pipeline indexer cache and dormant-at-tp<=topk DSA branch`.
+- [x] **Step 4: Run to verify it passes** — `test_kimi_pro_model` 2 cases / 136 assertions; the whole `kimi_pro|kimi_k3` inference group 10/10 (the four SelfCheck targets SKIP on the missing vault tree); full `ctest --preset linux-debug` 134/134.
+
+- [x] **Step 5: Commit** — `feat(kimi-k31-pro): pipeline indexer cache and dormant-at-tp<=topk DSA branch`.
 
 ---
 
@@ -273,9 +275,9 @@ Calling `RunKimiK3MlaAttention` with `sel == nullptr, n_sel == 0` reproduces tod
 
 ### Task 8: Docs and guard hygiene
 
-**Files:** `AGENTS.md` (Structure), `docs/SELFCHECK_MATRIX.md`, `docs/OPEN_TASKS.md` §R16, `docs/model-reports/README.md`.
+**Files:** `AGENTS.md` (Structure), `docs/SELFCHECK_MATRIX.md`, `docs/OPEN_TASKS.md` §R17, `docs/model-reports/README.md`.
 
-- [ ] **Step 1** Write the AGENTS structure entry, the matrix row (all gates `not run` until Task 9), §R16 with the inferred-indexer debt, and the report index row.
+- [ ] **Step 1** Write the AGENTS structure entry, the matrix row (all gates `not run` until Task 9), §R17 with the inferred-indexer debt, and the report index row.
 - [ ] **Step 2** `ctest --preset linux-debug` green (fast suite).
 - [ ] **Step 3 Commit** — `docs(kimi-k31-pro): structure, matrix row and the inferred-indexer debt`.
 
