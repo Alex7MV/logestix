@@ -138,7 +138,13 @@ cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
     if (total > 0) {
         cudaError_t e = cudaMalloc(&arena, total);
         if (e != cudaSuccess) {
-            log::error(std::string("[load_pinned] layer arena alloc failed: ")
+            size_t fb = 0, tb = 0;
+            cudaMemGetInfo(&fb, &tb);
+            log::error(std::string("[load_pinned] layer arena alloc failed (")
+                       + std::to_string(total >> 20) + " MiB, rb="
+                       + std::to_string(bytes_acc >> 20) + " MiB, free="
+                       + std::to_string(fb >> 20) + " MiB, total="
+                       + std::to_string(tb >> 20) + " MiB): "
                        + cudaGetErrorString(e));
             return e;
         }
@@ -854,8 +860,13 @@ cudaError_t load_pinned_weights(
                                 lw.shared_w3_global_scale,
                                 lw.shared_w3_bytes);
                 if (ue != cudaSuccess) {
+                    size_t fb = 0, tb = 0;
+                    cudaMemGetInfo(&fb, &tb);
                     log::error("[load_pinned] shared expert upload failed "
-                               "(layer " + std::to_string(l) + "): "
+                               "(layer " + std::to_string(l) + ", rb="
+                               + std::to_string(rb >> 20) + " MiB, free="
+                               + std::to_string(fb >> 20) + " MiB, total="
+                               + std::to_string(tb >> 20) + " MiB): "
                                + cudaGetErrorString(ue));
                     pw.Free();
                     return ue;
@@ -864,7 +875,11 @@ cudaError_t load_pinned_weights(
                 // same kernels the per-call path uses, executed ONCE at
                 // load; bit-exact by construction, works with fast_math
                 // either way. ~67 MB per layer across 43 layers.
-                if (lw.shared_w1_bytes > 0 && lw.shared_w3_bytes > 0 &&
+                // Resident FP16 cache: cheap on V4-Flash (4 MB/layer) and
+                // 176 MB/layer on V4-Pro (10.7 GiB total, over a 32 GB card),
+                // so the passport decides.
+                if (T::kSharedExpertCache && lw.shared_w1_bytes > 0 &&
+                    lw.shared_w3_bytes > 0 &&
                     lw.shared_w2_bytes > 0) {
                     const int64_t w1el = lw.shared_w1_bytes;
                     const int64_t w2el = lw.shared_w2_bytes;
