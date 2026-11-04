@@ -17,19 +17,24 @@
 #include "lsxcommon/expert_store.h"
 #include "lsxcommon/vram_estimate.h"
 
+#include "lsxcommon/deepseek_moe_constants.h"
+
 namespace lsxcommon {
 namespace gpu {
 
-constexpr int kHiddenDim = 4096;
-constexpr int kNumLayers = 43;
-constexpr int kNumRouted = 256;
-constexpr int kTopK = 6;
-constexpr int kIntermediateDim = 2048;
+// The geometry lives in the frozen passport (deepseek::Passport); these
+// aliases keep the existing call sites readable until the driver files are
+// templated on the passport (the dedup phase 2 plan, tasks 2-7).
+inline constexpr int kHiddenDim = deepseek::Passport::kHidden;
+inline constexpr int kNumLayers = deepseek::Passport::kLayers;
+inline constexpr int kNumRouted = deepseek::Passport::kNumRouted;
+inline constexpr int kTopK = deepseek::Passport::kTopK;
+inline constexpr int kIntermediateDim = deepseek::Passport::kMoeIntermediate;
 
 // Sole supported vault index format since the NVFP4 repack (Task 3-4,
 // docs/superpowers/plans/2026-09-11-deepseek-nvfp4-migration.md): routed
 // experts carry pow2-E4M3 per-16 scales + per-tensor global_scale.
-inline constexpr char kIndexFormatNvfp4[] = "logestix-v1-nvfp4";
+inline constexpr const char *kIndexFormatNvfp4 = deepseek::kIndexFormatNvfp4;
 
 // Routed experts are NVFP4-native (logestix-v1-nvfp4): kernel selection
 // lives in the neutral lsx_nvfp4 layer; DeepSeekV4FlashModel::Infer asserts
@@ -44,19 +49,20 @@ static_assert(kHiddenDim % 256 == 0,
 static_assert(kNumLayers > 0 && kIntermediateDim > 0,
               "bad MLP/layer geometry");
 
-// DeepSeek-V4 MLA / Hyper-Connections geometry (from config.json)
-constexpr int kHcMult = 4;                 // hc_mult: copies of hidden state
-constexpr int kHcMix = (2 + kHcMult) * kHcMult;  // 24
-constexpr int kHcDim = kHcMult * kHiddenDim;     // 16384
-constexpr int kAttnHeads = 64;
-constexpr int kHeadDim = 512;
-constexpr int kRopeHeadDim = 64;
-constexpr int kQloraRank = 1024;
-constexpr int kOloraRank = 1024;
-constexpr int kOGroups = 8;
-constexpr int kAttnWindow = 128;           // sliding window (pure-MLA layers)
-constexpr int kSinkhornIters = 20;
-constexpr float kRmsEps = 1e-6f;
+// DeepSeek-V4 MLA / Hyper-Connections geometry (from config.json), via the
+// passport.
+inline constexpr int kHcMult = deepseek::Passport::kHcMult;
+inline constexpr int kHcMix = deepseek::Passport::kHcMix;
+inline constexpr int kHcDim = deepseek::Passport::kHcDim;
+inline constexpr int kAttnHeads = deepseek::Passport::kHeads;
+inline constexpr int kHeadDim = deepseek::Passport::kHeadDim;
+inline constexpr int kRopeHeadDim = deepseek::Passport::kRopeHeadDim;
+inline constexpr int kQloraRank = deepseek::Passport::kQLoraRank;
+inline constexpr int kOloraRank = deepseek::Passport::kOLoraRank;
+inline constexpr int kOGroups = deepseek::Passport::kOGroups;
+inline constexpr int kAttnWindow = deepseek::Passport::kWindow;
+inline constexpr int kSinkhornIters = deepseek::Passport::kSinkhornIters;
+inline constexpr float kRmsEps = deepseek::Passport::kRmsEps;
 
 struct ExpertEntry {
     const uint8_t *host_w1 = nullptr;
@@ -109,6 +115,7 @@ std::string detect_model_type(const std::string &model_path);
 // without any synchronization.
 using ExpertDb = lsxcommon::gpu::expert_store::ExpertStore<ExpertEntry>;
 
+template <class T = deepseek::Passport>
 ExpertDb load_expert_index(const std::string &model_path,
                             int num_layers, int experts_per_layer);
 
@@ -334,6 +341,7 @@ struct PinnedWeights {
 // Routes one token: gate GEMM → sqrt(softplus) scores → top-k → weights.
 // `d_logits_scratch` / `h_logits_scratch` are caller-owned (arena carve) — the
 // function performs ZERO CUDA allocations (spec item 12, malloc-per-layer kill).
+template <class T = deepseek::Passport>
 cudaError_t route_token(
     cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -350,6 +358,7 @@ cudaError_t route_token(
 // @p ev only (the caller is free to enqueue independent GPU work in between,
 // e.g. the shared-expert FFN) and then runs the identical host-side scoring.
 // Fused route_token == begin + finish, bit-exact.
+template <class T = deepseek::Passport>
 cudaError_t route_token_begin(
     cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -358,6 +367,7 @@ cudaError_t route_token_begin(
     float *h_logits_scratch,    // caller-owned [num_routed] float (pinned)
     cudaEvent_t ev);
 
+template <class T = deepseek::Passport>
 cudaError_t route_token_finish(
     int num_routed, int token_id,
     const int64_t *h_tid2eid, int tid2eid_stride,
@@ -385,7 +395,8 @@ inline std::atomic<std::uint64_t>& InferenceAllocCount()
 struct DeepSeekInferArena {
     // device block
     uint8_t* d_base = nullptr;
-    __half* d_single = nullptr;      // [kHiddenDim]
+    __half* d_single = nullptr;      // [kHiddenDim] embedding row (FP16)
+    float*  d_single_f32 = nullptr;  // [kHiddenDim] hc_pre/head combine (FP32)
     __half* d_normed = nullptr;      // [kHiddenDim]
     __half* d_ffn_out = nullptr;     // [kHiddenDim]
     float*  d_hidden = nullptr;      // [kHcDim]
@@ -433,11 +444,13 @@ struct DeepSeekInferArena {
     // slots + KV cache; `vocab` sizes the logits buffer. Increments
     // InferenceAllocCount() by 2. Buffers are laid out 16-byte aligned so every
     // element pointer stays properly aligned inside the single block.
+    template <class T = deepseek::Passport>
     cudaError_t Allocate(cudaStream_t stream, int num_layers, int max_seq_len,
                          const int* compress_ratios, int vocab);
     void Free();
 };
 
+template <class T = deepseek::Passport>
 cudaError_t load_pinned_weights(const std::string &model_path,
                                  PinnedWeights &pw,
                                  cudaStream_t stream);
@@ -448,27 +461,32 @@ cudaError_t load_pinned_weights(const std::string &model_path,
 // need a small FP32 scratch of ≥ (kHcMix + 2) * 32 floats; the caller's
 // d_norm_scratch is safe to pass (stream ordering: rmsnorm runs strictly
 // after hc_pre completes).
+template <class T = deepseek::Passport>
 cudaError_t run_hc_pre(cudaStream_t stream,
                        const float *d_state, const float *d_fn,
                        const float *d_scale, const float *d_base,
-                       __half *d_single, float *d_post, float *d_comb,
+                       typename T::ResidualT *d_single, float *d_post, float *d_comb,
                        float *d_pre, float *d_scratch,
                        float rms_eps = 1e-6f);
 
+template <class T = deepseek::Passport>
 cudaError_t run_hc_post(cudaStream_t stream,
                          const float *d_x, const float *d_residual,
                          const float *d_post, const float *d_comb,
                          float *d_y);
 
+template <class T = deepseek::Passport>
 cudaError_t run_hc_head(cudaStream_t stream,
                         const float *d_state, const float *d_fn,
                         const float *d_scale, const float *d_base,
-                        __half *d_single, float *d_scratch);
+                        typename T::ResidualT *d_single, float *d_scratch);
 
+template <class T = deepseek::Passport>
 cudaError_t run_expand_hc(cudaStream_t stream,
                           const __half *d_single, float *d_state);
 
 // MLA forward (one token)
+template <class T = deepseek::Passport>
 cudaError_t run_mla_attention(
     cudaStream_t stream,
     const LayerWeights &lw,

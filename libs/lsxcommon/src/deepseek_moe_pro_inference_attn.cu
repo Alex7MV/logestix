@@ -8,7 +8,7 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/deepseek_moe_pro_inference_csa.h"
-#include "lsxcommon/deepseek_moe_pro_norm_kernels.h"
+#include "lsxcommon/deepseek_moe_norm_kernels.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsx_kernels_quant.cuh"
 #include "lsxcommon/log.h"

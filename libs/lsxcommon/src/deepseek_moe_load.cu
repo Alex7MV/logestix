@@ -4,6 +4,9 @@
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/fast_load.h"
 #include "fast_load_internal.h"
+#include "deepseek_moe_pro_constants.h"
+
+void lsx_pending_copy_drain(const void *host_ptr);
 #include "deepseek_moe_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -135,7 +138,13 @@ cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
     if (total > 0) {
         cudaError_t e = cudaMalloc(&arena, total);
         if (e != cudaSuccess) {
-            log::error(std::string("[load_pinned] layer arena alloc failed: ")
+            size_t fb = 0, tb = 0;
+            cudaMemGetInfo(&fb, &tb);
+            log::error(std::string("[load_pinned] layer arena alloc failed (")
+                       + std::to_string(total >> 20) + " MiB, rb="
+                       + std::to_string(bytes_acc >> 20) + " MiB, free="
+                       + std::to_string(fb >> 20) + " MiB, total="
+                       + std::to_string(tb >> 20) + " MiB): "
                        + cudaGetErrorString(e));
             return e;
         }
@@ -262,6 +271,7 @@ std::string detect_model_type(const std::string &model_path)
 // No per-model parser needed: the shared ExpertStore<TEntry>::DecodeEntry()
 // extracts the six ExpertSchema bins + three global scales into TEntry.
 
+template <class T>
 ExpertDb load_expert_index(const std::string &model_path,
                             int num_layers, int experts_per_layer)
 {
@@ -270,7 +280,12 @@ ExpertDb load_expert_index(const std::string &model_path,
     db.experts_per_layer = experts_per_layer;
     // Full-resident mmap table: the 7000 cap (Windows CRT limit) forced
     // constant churn past layer 27 and munmaps under in-flight prefetch DMA.
-    db.max_open = 65536;
+    db.max_open = T::ExpertMaxOpen();
+    // The prefetch-copy registry is TU-local (deepseek_moe_inference_moe.cu):
+    // the store must drain it before it munmaps a source an async H2D copy is
+    // still reading. V4-Pro's 811 GB streamed set evicts constantly, so this
+    // hook is load-bearing there; V4-Flash pins by default and rarely evicts.
+    db.pending_drain = &lsx_pending_copy_drain;
     db.log_prefix = "[load_expert_index] ";
     db.mmap_fail_verb = "mmap fail ";
     db.emit_diag = true;             // DeepSeek diag block
@@ -283,8 +298,7 @@ ExpertDb load_expert_index(const std::string &model_path,
     // pool, laid out per expert as packed [w1|w3|w2] then scales [s1|s3|s2]
     // — the exact order the GEMV phase streams. Disable with
     // LSX_EXPERT_PIN=0 (falls back to mmap views).
-    if (std::getenv("LSX_EXPERT_PIN") == nullptr
-        || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
+    if (T::WantExpertPin()) {
         int64_t pool_bytes = 0;
         bool sizes_ok = true;
         for (const auto &en : db.entries) {
@@ -303,7 +317,9 @@ ExpertDb load_expert_index(const std::string &model_path,
                             + en.w2_scales_bytes + 255) / 256) * 256;
         }
         void *pool = nullptr;
-        if (sizes_ok && pool_bytes > 0
+        const bool under_cap = T::kExpertPinCapBytes == 0
+            || pool_bytes <= T::kExpertPinCapBytes;
+        if (sizes_ok && pool_bytes > 0 && under_cap
             && cudaHostAlloc(&pool, static_cast<size_t>(pool_bytes),
                              cudaHostAllocDefault) == cudaSuccess) {
             db.pinned_pool = pool;
@@ -445,6 +461,7 @@ void PinnedWeights::Free()
     resident_bytes = 0;
 }
 
+template <class T>
 cudaError_t load_pinned_weights(
     const std::string &model_path,
     PinnedWeights &pw,
@@ -477,23 +494,20 @@ cudaError_t load_pinned_weights(
         return cudaErrorInvalidValue;
     }
 
-    // Per-layer compress_ratio table (decoder grid of DeepSeek-V4-Flash:
-    // pure MLA=0, CSA>0; ratio==4 uses coff=2 overlap).
-    static const int compress_ratios[] = {
-        0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
-        4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
-        4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4
-    };
-    constexpr int kRatioTableSize =
-        static_cast<int>(sizeof(compress_ratios) / sizeof(compress_ratios[0]));
+    // Per-layer compress_ratio table comes from the passport's decoder grid
+    // (pure MLA=0 on V4-Flash, 128 on V4-Pro; CSA>0 elsewhere, ratio==4 uses
+    // coff=2 overlap).
     const int num_layers = topo.num_layers;
-    if (num_layers > kRatioTableSize) {
+    if (num_layers > T::kLayers) {
         log::error("[load_pinned] topology num_layers="
                    + std::to_string(num_layers)
                    + " exceeds supported decoder grid (" +
-                   std::to_string(kRatioTableSize) + ")");
+                   std::to_string(T::kLayers) + ")");
         return cudaErrorInvalidValue;
     }
+    std::vector<int> compress_ratios(static_cast<size_t>(num_layers));
+    for (int i = 0; i < num_layers; ++i)
+        compress_ratios[static_cast<size_t>(i)] = T::CompressRatio(i);
     pw.layers.resize(static_cast<size_t>(num_layers));
 
     std::uint64_t rb = 0;   // device-resident byte total (weights only)
@@ -662,8 +676,10 @@ cudaError_t load_pinned_weights(
                         pw.Free();
                         return cudaErrorInvalidValue;
                     }
-                    lw.idx_wq_b_rows = 8192;   // canonical geometry
-                    lw.idx_wq_b_cols = 1024;
+                    // wq_b is [index_n_heads*index_head_dim, q_lora_rank];
+                    // read the real shape instead of a per-family constant.
+                    lw.idx_wq_b_rows = static_cast<int>(idx_w->shape[0]);
+                    lw.idx_wq_b_cols = static_cast<int>(idx_w->shape[1]);
                     jobs.push_back({idx_w, &lw.d_idx_wq_b,
                                     nullptr, &lw.idx_wq_b_rows,
                                     &lw.idx_wq_b_cols});
@@ -810,7 +826,9 @@ cudaError_t load_pinned_weights(
                     cudaError_t ue = cudaMalloc(
                         &d_buf, static_cast<size_t>(desc.packed_bytes));
                     if (ue != cudaSuccess) return ue;
-                    rb += static_cast<std::uint64_t>(desc.packed_bytes);
+                    // ring.UploadRaw accounts the bytes in `rb`; adding them
+                    // here too inflated resident_bytes by ~2x the shared set
+                    // (4 GiB on V4-Pro) and made the governor refuse the lease.
                     ue = ring.UploadRaw(desc.host_ptr, d_buf,
                                         static_cast<size_t>(desc.packed_bytes),
                                         stream, rb);
@@ -819,7 +837,6 @@ cudaError_t load_pinned_weights(
                         ue = cudaMalloc(&d_scales,
                                         static_cast<size_t>(desc.scale_bytes));
                         if (ue != cudaSuccess) return ue;
-                        rb += static_cast<std::uint64_t>(desc.scale_bytes);
                         ue = ring.UploadRaw(desc.scale_host_ptr, d_scales,
                                             static_cast<size_t>(desc.scale_bytes),
                                             stream, rb);
@@ -843,8 +860,13 @@ cudaError_t load_pinned_weights(
                                 lw.shared_w3_global_scale,
                                 lw.shared_w3_bytes);
                 if (ue != cudaSuccess) {
+                    size_t fb = 0, tb = 0;
+                    cudaMemGetInfo(&fb, &tb);
                     log::error("[load_pinned] shared expert upload failed "
-                               "(layer " + std::to_string(l) + "): "
+                               "(layer " + std::to_string(l) + ", rb="
+                               + std::to_string(rb >> 20) + " MiB, free="
+                               + std::to_string(fb >> 20) + " MiB, total="
+                               + std::to_string(tb >> 20) + " MiB): "
                                + cudaGetErrorString(ue));
                     pw.Free();
                     return ue;
@@ -853,7 +875,11 @@ cudaError_t load_pinned_weights(
                 // same kernels the per-call path uses, executed ONCE at
                 // load; bit-exact by construction, works with fast_math
                 // either way. ~67 MB per layer across 43 layers.
-                if (lw.shared_w1_bytes > 0 && lw.shared_w3_bytes > 0 &&
+                // Resident FP16 cache: cheap on V4-Flash (4 MB/layer) and
+                // 176 MB/layer on V4-Pro (10.7 GiB total, over a 32 GB card),
+                // so the passport decides.
+                if (T::kSharedExpertCache && lw.shared_w1_bytes > 0 &&
+                    lw.shared_w3_bytes > 0 &&
                     lw.shared_w2_bytes > 0) {
                     const int64_t w1el = lw.shared_w1_bytes;
                     const int64_t w2el = lw.shared_w2_bytes;
@@ -869,17 +895,17 @@ cudaError_t load_pinned_weights(
                         ue = dequant_shared_f8_half(
                             stream, lw.d_shared_w1, lw.shared_w1_bytes,
                             lw.d_shared_w1_scales, 0, lw.d_shared_w1_h,
-                            w1el, kHiddenDim);
+                            w1el, T::kHidden);
                     if (ue == cudaSuccess)
                         ue = dequant_shared_f8_half(
                             stream, lw.d_shared_w3, lw.shared_w3_bytes,
                             lw.d_shared_w3_scales, 0, lw.d_shared_w3_h,
-                            w1el, kHiddenDim);
+                            w1el, T::kHidden);
                     if (ue == cudaSuccess)
                         ue = dequant_shared_f8(
                             stream, lw.d_shared_w2, lw.shared_w2_bytes,
                             lw.d_shared_w2_scales, 0, lw.d_shared_w2_f32,
-                            w2el, kIntermediateDim);
+                            w2el, T::kMoeIntermediate);
                     if (ue == cudaSuccess) {
                         rb += (static_cast<std::uint64_t>(w1el) * 2 +
                                static_cast<std::uint64_t>(w2el) * 4);
@@ -932,6 +958,7 @@ __global__ void ds_fill_neg_inf_kernel(float* p, int n)
 
 } // namespace
 
+template <class T>
 cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
                                          int max_seq_len,
                                          const int* compress_ratios, int vocab)
@@ -941,33 +968,33 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
 
     // Sizing replicated verbatim from the old pipeline (lines 252-268) and
     // alloc_csa_state so the arena is a pure allocation refactor.
-    const int64_t dequant_sz = static_cast<int64_t>(kHiddenDim) * kHiddenDim
+    const int64_t dequant_sz = static_cast<int64_t>(T::kHidden) * T::kHidden
                              * sizeof(float);
-    const int64_t shared_int_sz = static_cast<int64_t>(kHiddenDim)
+    const int64_t shared_int_sz = static_cast<int64_t>(T::kHidden)
                                 * sizeof(__half);
-    const int64_t max_attn_elems = static_cast<int64_t>(kAttnHeads) * kHeadDim
-                                 * kQloraRank;
+    const int64_t max_attn_elems = static_cast<int64_t>(T::kHeads) * T::kHeadDim
+                                 * T::kQLoraRank;
     const int64_t max_attn_elems_wo = 8192LL * 4096;
     const int64_t attn_dequant_max = std::max(max_attn_elems, max_attn_elems_wo);
     // Extra FP32 scratch past the dequant block for the largest single attention
     // GEMM: f8_gemm_1d needs cols for the FP32 activation copy plus rows for the
     // FP32 output (clamped to FP16 afterwards). wq_b [32768,1024] needs
-    // kQloraRank + kAttnHeads*kHeadDim; wo_b [4096,8192] needs 8192 + 4096. The
+    // T::kQLoraRank + T::kHeads*T::kHeadDim; wo_b [4096,8192] needs 8192 + 4096. The
     // wq_b case (33,792) dominates. An undersized scratch here overflows into
     // the adjacent kv cache (corrupting layer-0 window slots on the first step).
-    const int64_t act_plus_out = static_cast<int64_t>(kQloraRank)
-                               + static_cast<int64_t>(kAttnHeads) * kHeadDim;
+    const int64_t act_plus_out = static_cast<int64_t>(T::kQLoraRank)
+                               + static_cast<int64_t>(T::kHeads) * T::kHeadDim;
     const int64_t attn_dequant_sz = (attn_dequant_max + act_plus_out)
                                   * sizeof(float);
     const int64_t max_compressed = max_seq_len / 4 + 1;
-    const int64_t kv_cache_sz = static_cast<int64_t>(kNumLayers)
-                              * (kAttnWindow + max_compressed) * kHeadDim
+    const int64_t kv_cache_sz = static_cast<int64_t>(T::kLayers)
+                              * (T::kWindow + max_compressed) * T::kHeadDim
                               * sizeof(__half);
-    const int64_t pack_total = 3 * (static_cast<int64_t>(kIntermediateDim)
-                                    * kHiddenDim / 2);
+    const int64_t pack_total = 3 * (static_cast<int64_t>(T::kMoeIntermediate)
+                                    * T::kHidden / 2);
     // v1-nvfp4: per-16 scale arrays (2x the legacy per-32 size).
-    const int64_t scale_total = 3 * (static_cast<int64_t>(kIntermediateDim)
-                                     * kHiddenDim / 16);
+    const int64_t scale_total = 3 * (static_cast<int64_t>(T::kMoeIntermediate)
+                                     * T::kHidden / 16);
 
     int64_t off = 0;
     auto page = [&](int64_t bytes_, int64_t align) -> int64_t {
@@ -976,44 +1003,45 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
         off += bytes_;
         return at;
     };
-    const int64_t o_single       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
-    const int64_t o_normed       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
-    const int64_t o_ffn_out      = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
-    const int64_t o_hidden       = page(static_cast<int64_t>(kHcDim) * sizeof(float), 16);
-    const int64_t o_hidden_next  = page(static_cast<int64_t>(kHcDim) * sizeof(float), 16);
+    const int64_t o_single       = page(static_cast<int64_t>(T::kHidden) * sizeof(__half), 16);
+    const int64_t o_single_f32   = page(static_cast<int64_t>(T::kHidden) * sizeof(float), 16);
+    const int64_t o_normed       = page(static_cast<int64_t>(T::kHidden) * sizeof(__half), 16);
+    const int64_t o_ffn_out      = page(static_cast<int64_t>(T::kHidden) * sizeof(__half), 16);
+    const int64_t o_hidden       = page(static_cast<int64_t>(T::kHcDim) * sizeof(float), 16);
+    const int64_t o_hidden_next  = page(static_cast<int64_t>(T::kHcDim) * sizeof(float), 16);
     const int64_t o_shared_int   = page(shared_int_sz, 16);
     const int64_t o_shared_gate  = page(shared_int_sz, 16);
     const int64_t o_routed_buf   = page(shared_int_sz, 16);
     const int64_t o_dequant      = page(dequant_sz, 16);
-    const int64_t o_act_quant    = page(std::max(kHiddenDim, kIntermediateDim) * sizeof(float), 16);
-    const int64_t o_ffn_accum    = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
-    const int64_t o_swiglu       = page(static_cast<int64_t>(kIntermediateDim) * sizeof(float), 16);
-    const int64_t o_act_scales   = page(((std::max(kHiddenDim, kIntermediateDim) + 127) / 128) * sizeof(float), 16);
-    const int64_t o_gate_f32     = page(static_cast<int64_t>(kIntermediateDim) * sizeof(float), 16);
-    const int64_t o_up_f32       = page(static_cast<int64_t>(kIntermediateDim) * sizeof(float), 16);
+    const int64_t o_act_quant    = page(std::max(T::kHidden, T::kMoeIntermediate) * sizeof(float), 16);
+    const int64_t o_ffn_accum    = page(static_cast<int64_t>(T::kHidden) * sizeof(float), 16);
+    const int64_t o_swiglu       = page(static_cast<int64_t>(T::kMoeIntermediate) * sizeof(float), 16);
+    const int64_t o_act_scales   = page(((std::max(T::kHidden, T::kMoeIntermediate) + 127) / 128) * sizeof(float), 16);
+    const int64_t o_gate_f32     = page(static_cast<int64_t>(T::kMoeIntermediate) * sizeof(float), 16);
+    const int64_t o_up_f32       = page(static_cast<int64_t>(T::kMoeIntermediate) * sizeof(float), 16);
     const int64_t o_attn_dequant = page(attn_dequant_sz, 16);
     const int64_t o_kv_cache     = page(kv_cache_sz, 16);
-    const int64_t o_q            = page(static_cast<int64_t>(kAttnHeads) * kHeadDim * sizeof(__half), 16);
-    const int64_t o_qr           = page(static_cast<int64_t>(kQloraRank) * sizeof(__half), 16);
-    const int64_t o_qr2          = page(static_cast<int64_t>(kQloraRank) * sizeof(__half), 16);
-    const int64_t o_kv           = page(static_cast<int64_t>(kHeadDim) * sizeof(__half), 16);
-    const int64_t o_kv2          = page(static_cast<int64_t>(kHeadDim) * sizeof(__half), 16);
-    const int64_t o_o            = page(static_cast<int64_t>(kAttnHeads) * kHeadDim * sizeof(__half), 16);
-    const int64_t o_olora        = page(static_cast<int64_t>(kOGroups) * kOloraRank * sizeof(__half), 16);
-    const int64_t o_attn_out_h   = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
-    const int64_t o_attn_out     = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
-    const int64_t o_hc_post      = page(static_cast<int64_t>(kHcMult) * sizeof(float), 16);
-    const int64_t o_hc_comb      = page(static_cast<int64_t>(kHcMult) * kHcMult * sizeof(float), 16);
-    const int64_t o_hc_pre       = page(static_cast<int64_t>(kHcMult) * sizeof(float), 16);
+    const int64_t o_q            = page(static_cast<int64_t>(T::kHeads) * T::kHeadDim * sizeof(__half), 16);
+    const int64_t o_qr           = page(static_cast<int64_t>(T::kQLoraRank) * sizeof(__half), 16);
+    const int64_t o_qr2          = page(static_cast<int64_t>(T::kQLoraRank) * sizeof(__half), 16);
+    const int64_t o_kv           = page(static_cast<int64_t>(T::kHeadDim) * sizeof(__half), 16);
+    const int64_t o_kv2          = page(static_cast<int64_t>(T::kHeadDim) * sizeof(__half), 16);
+    const int64_t o_o            = page(static_cast<int64_t>(T::kHeads) * T::kHeadDim * sizeof(__half), 16);
+    const int64_t o_olora        = page(static_cast<int64_t>(T::kOGroups) * T::kOLoraRank * sizeof(__half), 16);
+    const int64_t o_attn_out_h   = page(static_cast<int64_t>(T::kHidden) * sizeof(__half), 16);
+    const int64_t o_attn_out     = page(static_cast<int64_t>(T::kHidden) * sizeof(float), 16);
+    const int64_t o_hc_post      = page(static_cast<int64_t>(T::kHcMult) * sizeof(float), 16);
+    const int64_t o_hc_comb      = page(static_cast<int64_t>(T::kHcMult) * T::kHcMult * sizeof(float), 16);
+    const int64_t o_hc_pre       = page(static_cast<int64_t>(T::kHcMult) * sizeof(float), 16);
     const int64_t o_logits       = page(static_cast<int64_t>(vocab) * sizeof(float), 16);
-    const int64_t o_norm_scratch = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
-    const int64_t o_norm_gamma   = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
+    const int64_t o_norm_scratch = page(static_cast<int64_t>(T::kHidden) * sizeof(float), 16);
+    const int64_t o_norm_gamma   = page(static_cast<int64_t>(T::kHidden) * sizeof(float), 16);
     const int64_t o_next_token   = page(sizeof(int32_t), 16);
     const int64_t o_next_maxv    = page(sizeof(float), 16);
     const int64_t o_pack_stage   = page(pack_total, 16);
     const int64_t o_scale_stage  = page(scale_total, 16);
     const int64_t o_scale_stage_tc = page(scale_total, 16);
-    const int64_t o_routing      = page(static_cast<int64_t>(kNumRouted) * sizeof(__half), 16);
+    const int64_t o_routing      = page(static_cast<int64_t>(T::kNumRouted) * sizeof(__half), 16);
 
     // Per-layer CSA region (exact alloc_csa_state sizes; ratio<=0 skipped).
     const int64_t o_csa = off;
@@ -1026,7 +1054,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
         const int ratio = compress_ratios ? compress_ratios[l] : 0;
         if (ratio <= 0) continue;
         const int coff = (ratio == 4) ? 2 : 1;
-        const int state_sz = coff * ratio * coff * kHeadDim;
+        const int state_sz = coff * ratio * coff * T::kHeadDim;
         const int max_comp = max_seq_len / ratio + 1;
         const int idx_state_sz = 2 * 4 * 2 * static_cast<int>(kIdxHeadDim);
         csa_off[static_cast<size_t>(l)].kv_state =
@@ -1034,7 +1062,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
         csa_off[static_cast<size_t>(l)].score_state =
             page(static_cast<int64_t>(state_sz) * sizeof(float), 16);
         csa_off[static_cast<size_t>(l)].compressed_kv =
-            page(static_cast<int64_t>(max_comp) * kHeadDim * sizeof(__half), 16);
+            page(static_cast<int64_t>(max_comp) * T::kHeadDim * sizeof(__half), 16);
         csa_off[static_cast<size_t>(l)].idx_kv_state =
             page(static_cast<int64_t>(idx_state_sz) * sizeof(float), 16);
         csa_off[static_cast<size_t>(l)].idx_score_state =
@@ -1055,9 +1083,9 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
         hoff += bytes_;
         return at;
     };
-    const int64_t ho_topk    = hpage(static_cast<int64_t>(kTopK) * sizeof(int), 16);
-    const int64_t ho_topw    = hpage(static_cast<int64_t>(kTopK) * sizeof(float), 16);
-    const int64_t ho_routing = hpage(static_cast<int64_t>(kNumRouted) * sizeof(float), 16);
+    const int64_t ho_topk    = hpage(static_cast<int64_t>(T::kTopK) * sizeof(int), 16);
+    const int64_t ho_topw    = hpage(static_cast<int64_t>(T::kTopK) * sizeof(float), 16);
+    const int64_t ho_routing = hpage(static_cast<int64_t>(T::kNumRouted) * sizeof(float), 16);
     host_bytes = static_cast<size_t>(hoff);
 
     e = cudaMallocHost(reinterpret_cast<void**>(&h_base), host_bytes);
@@ -1067,6 +1095,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
 
     // Bind device slices.
     d_single       = reinterpret_cast<__half*>(d_base + o_single);
+    d_single_f32   = reinterpret_cast<float*>(d_base + o_single_f32);
     d_normed       = reinterpret_cast<__half*>(d_base + o_normed);
     d_ffn_out      = reinterpret_cast<__half*>(d_base + o_ffn_out);
     d_hidden       = reinterpret_cast<float*>(d_base + o_hidden);
@@ -1131,7 +1160,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
         if (ratio <= 0) continue;
         CSAState& s = csa_states[l];
         const int coff = (ratio == 4) ? 2 : 1;
-        const int state_sz = coff * ratio * coff * kHeadDim;
+        const int state_sz = coff * ratio * coff * T::kHeadDim;
         const int max_comp = max_seq_len / ratio + 1;
         const int idx_state_sz = 2 * 4 * 2 * static_cast<int>(kIdxHeadDim);
 
@@ -1141,7 +1170,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
             s.d_comp_score_state, state_sz);
         if ((e = cudaGetLastError()) != cudaSuccess) goto fail;
         if ((e = cudaMemsetAsync(s.d_compressed_kv, 0,
-                 static_cast<size_t>(max_comp) * kHeadDim * sizeof(__half), stream)) != cudaSuccess) goto fail;
+                 static_cast<size_t>(max_comp) * T::kHeadDim * sizeof(__half), stream)) != cudaSuccess) goto fail;
         if ((e = cudaMemsetAsync(s.d_idx_kv_state, 0,
                  static_cast<size_t>(idx_state_sz) * sizeof(float), stream)) != cudaSuccess) goto fail;
         ds_fill_neg_inf_kernel<<<(idx_state_sz + 255) / 256, 256, 0, stream>>>(
@@ -1164,6 +1193,7 @@ void DeepSeekInferArena::Free()
     delete[] csa_states;
     d_base = nullptr; h_base = nullptr; csa_states = nullptr;
     d_single = d_normed = d_ffn_out = nullptr;
+    d_single_f32 = nullptr;
     d_hidden = d_hidden_next = nullptr;
     d_shared_int = d_shared_gate = d_routed_buf = nullptr;
     d_dequant_scratch = d_act_quant = d_ffn_accum = d_swiglu_out = nullptr;
@@ -1182,6 +1212,22 @@ void DeepSeekInferArena::Free()
     h_routing_scratch = nullptr;
     bytes = 0; host_bytes = 0;
 }
+
+// ── Explicit instantiations: V4-Flash and V4-Pro-0813 ───────────────────────
+template cudaError_t load_pinned_weights<lsxcommon::deepseek::Passport>(
+    const std::string &model_path, PinnedWeights &pw, cudaStream_t stream);
+template cudaError_t DeepSeekInferArena::Allocate<lsxcommon::deepseek::Passport>(
+    cudaStream_t stream, int num_layers, int max_seq_len,
+    const int *compress_ratios, int vocab);
+template cudaError_t DeepSeekInferArena::Allocate<lsxcommon::deepseek_pro::Passport>(
+    cudaStream_t stream, int num_layers, int max_seq_len,
+    const int *compress_ratios, int vocab);
+template cudaError_t load_pinned_weights<lsxcommon::deepseek_pro::Passport>(
+    const std::string &model_path, PinnedWeights &pw, cudaStream_t stream);
+template ExpertDb load_expert_index<lsxcommon::deepseek::Passport>(
+    const std::string &model_path, int num_layers, int experts_per_layer);
+template ExpertDb load_expert_index<lsxcommon::deepseek_pro::Passport>(
+    const std::string &model_path, int num_layers, int experts_per_layer);
 
 } // namespace gpu
 } // namespace lsxcommon

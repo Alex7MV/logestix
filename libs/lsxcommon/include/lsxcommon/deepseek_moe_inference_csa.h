@@ -3,6 +3,8 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 
+#include "lsxcommon/deepseek_moe_constants.h"
+
 namespace lsxcommon {
 namespace gpu {
 
@@ -24,6 +26,7 @@ struct CSAState {
     int prefill_len = 0;  // prompt token count (bulk-prefill region)
 };
 
+template <class T = lsxcommon::deepseek::Passport>
 cudaError_t run_csa_attention(
     cudaStream_t stream,
     const LayerWeights &lw,

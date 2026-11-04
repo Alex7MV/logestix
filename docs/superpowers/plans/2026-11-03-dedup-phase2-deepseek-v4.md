@@ -184,7 +184,16 @@ git commit -m "refactor(deepseek): give V4-Flash a passport shaped like V4-Pro's
 
 ---
 
-### Task 2: Механизм шаблона на smallest-файлах (`norm_kernels`, `inference_head`)
+### Task 2: `norm_kernels` и `inference_head` — это чистые копии, шаблон не нужен
+
+Измерено при исполнении: `deepseek_moe_pro_norm_kernels.cu` отличается от
+flash-версии **только** строкой `#include` и лишним `namespace deepseek {`
+(файлы проверены `diff` с нормализацией `deepseek_pro` → `deepseek`); то же у
+`inference_head.cu`. Обе функции (`rmsnorm_float`, `run_lm_head`) принимают
+геометрию аргументами и не читают ни одной константы паспорта, поэтому их не
+надо темплейтить — достаточно удалить pro-копии и перевести вызовы на
+`lsxcommon::gpu::*`. Это сильнее шаблона: расхождение исключено
+конструкцией. Задача ниже заменяет первоначальный «доказать механизм».
 
 **Files:**
 - Modify: `libs/lsxcommon/src/deepseek_moe_norm_kernels.cu`
@@ -195,42 +204,38 @@ git commit -m "refactor(deepseek): give V4-Flash a passport shaped like V4-Pro's
 **Interfaces:**
 - Produces: правило, по которому переделываются остальные файлы: `template <class T> cudaError_t rmsnorm_float(...)`, `template <class T> cudaError_t run_lm_head(...)` + явные инстанцирования для `deepseek::Passport` и `deepseek_pro::Passport`.
 
-- [ ] **Step 1: Доказать, что pro-копии идентичны**
+- [ ] **Step 1: Доказать, что pro-копии идентичны (побайтово, не только телами)**
 
 ```bash
-python3 tools/dedup_provenance.py \
-    --from libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu \
-    --to   libs/lsxcommon/src/deepseek_moe_norm_kernels.cu \
-    --rename deepseek_pro=deepseek
-python3 tools/dedup_provenance.py \
-    --from libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu \
-    --to   libs/lsxcommon/src/deepseek_moe_inference_head.cu \
-    --rename deepseek_pro=deepseek
+diff <(sed 's/deepseek_pro/deepseek/g' libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu) \
+     libs/lsxcommon/src/deepseek_moe_norm_kernels.cu
+diff <(sed 's/deepseek_pro/deepseek/g' libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu) \
+     libs/lsxcommon/src/deepseek_moe_inference_head.cu
 ```
 
-Expected: `missing in target: 0  unexpected in target: 0` в обоих случаях. Если есть расхождения — зафиксировать их списком, они должны быть только в местах, перечисленных в Task 4 (residual type).
+Expected: в каждом — только строка `#include` и строка `namespace deepseek {`
+(`} // namespace deepseek`). Любое иное расхождение останавливает задачу.
 
-- [ ] **Step 2: Сделать `norm_kernels` шаблоном**
+- [ ] **Step 2: Удалить pro-копии и перевести вызовы**
 
-В `deepseek_moe_norm_kernels.cu`: заменить файловые `using kX = deepseek_pro::kX` (или прямые ссылки) на `T::kX`, обернуть определения:
-
-```cpp
-template <class T>
-cudaError_t rmsnorm_float(cudaStream_t stream, const float *x, const float *w,
-                          float *out, int n, float eps)
-{ /* тело дословно, kRmsEps -> T::kRmsEps */ }
-
-template cudaError_t rmsnorm_float<deepseek::Passport>(cudaStream_t, const float *, const float *, float *, int, float);
-template cudaError_t rmsnorm_float<deepseek_pro::Passport>(cudaStream_t, const float *, const float *, float *, int, float);
+```bash
+git rm libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu \
+       libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu \
+       libs/lsxcommon/include/lsxcommon/deepseek_moe_pro_norm_kernels.h
 ```
 
-Заголовок `deepseek_moe_norm_kernels.h` получает те же шаблонные объявления и `extern template`-объявления (по желанию — не обязательно).
+В `deepseek_moe_pro_inference_{attn,moe,pipeline}.cu` заменить вызовы
+`rmsnorm_float(...)` / `run_lm_head(...)` (они резолвились в
+`deepseek_pro::gpu`) на `lsxcommon::gpu::rmsnorm_float(...)` /
+`lsxcommon::gpu::run_lm_head(...)`. Поиск незакрытых ссылок:
 
-- [ ] **Step 3: Сделать `inference_head` шаблоном**
+```bash
+rg -n "deepseek_pro::gpu::(rmsnorm_float|run_lm_head)" libs/lsxcommon tests
+```
 
-То же для `run_lm_head` и его ядер (`argmax_kernel` и т.д.): `template <class T>`, константы → `T::`, внизу два явных инстанцирования.
+Expected: пусто после правки.
 
-- [ ] **Step 4: Проверить**
+- [ ] **Step 3: Проверить**
 
 ```bash
 cmake --build --preset linux-debug 2>&1 | rg "error:|warning:" | rg -v "_deps|third_party" | head -20
@@ -239,13 +244,16 @@ ctest --preset linux-debug-inference -R "test_deepseek_moe_(norm_kernels|inferen
 
 Expected: сборка без ошибок и предупреждений в наших файлах, оба теста PASS **на обеих моделях** (тест-файлы уже инстанцируют pro-вариант через `deepseek_moe_pro_*` символы — до удаления копий они должны оставаться рабочими; если тест ссылается на namespace `deepseek_pro::gpu`, добавить переадресацию на шаблон в Task 7).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add libs/lsxcommon/src/deepseek_moe_norm_kernels.cu \
-        libs/lsxcommon/src/deepseek_moe_inference_head.cu \
-        libs/lsxcommon/include/lsxcommon/deepseek_moe_norm_kernels.h
-git commit -m "refactor(deepseek): template the norm and head kernels on the passport"
+git rm libs/lsxcommon/src/deepseek_moe_pro_norm_kernels.cu \
+       libs/lsxcommon/src/deepseek_moe_pro_inference_head.cu \
+       libs/lsxcommon/include/lsxcommon/deepseek_moe_pro_norm_kernels.h
+git add libs/lsxcommon/src/deepseek_moe_pro_inference_attn.cu \
+        libs/lsxcommon/src/deepseek_moe_pro_inference_moe.cu \
+        libs/lsxcommon/src/deepseek_moe_pro_inference_pipeline.cu
+git commit -m "refactor(deepseek): drop the norm/head copies and call the shared kernels"
 ```
 
 ---
@@ -406,6 +414,27 @@ git commit -m "refactor(deepseek): template the compressed-KV/indexer driver on 
 
 ### Task 6: `inference_pipeline` и `load`
 
+> **Решение оператора (2026-11-03): унифицировать на семантике Pro.** Диф
+> Flash↔Pro по пайплайну — не только тип residual. Полный список различий:
+>
+> | # | Flash | Pro |
+> |---|---|---|
+> | 1 | `d_single` = `__half*`, `half_to_float` перед нормой, `memcpy` в `d_normed` | `d_single` (FP16 эмбеддинг) + `d_single_f32` (FP32 HC-residual), норма сразу по FP32, `float_to_half` в `d_normed` |
+> | 2 | `total_tokens = prompt_len + max_gen` | `= prompt_len + max_gen - 1` (фикс: прежняя граница давала N+1 и ломала контракт стриминга) |
+> | 3 | TTFT пишется каждый шаг | пишется один раз (`ttft_recorded`) |
+> | 4 | неквалифицированные `run_lm_head`/`rmsnorm_float` | `lsxcommon::gpu::…` |
+>
+> Пункты 2 и 3 принимаются в Pro-редакции **для обеих моделей** (это фиксы);
+> изменение длины потоковой генерации на один токен у Flash фиксируется в
+> отчёте фазы. Пункт 1 остаётся параметром паспорта (`T::ResidualT`) через
+> `if constexpr`: `Arena` должен выделять `d_single` размером
+> `sizeof(ResidualT)`, а FP16-путь Flash сохраняет свой
+> `half_to_float → rmsnorm → memcpy` (биты не меняются).
+>
+> Практический порядок: взять Pro-версию файла как базу (она уже с фиксами),
+> нормализовать имена, затем вернуть FP16-ветку через `if constexpr` и
+> темплейтить константы.
+
 **Files:**
 - Modify: `libs/lsxcommon/src/deepseek_moe_inference_pipeline.cu`
 - Modify: `libs/lsxcommon/src/deepseek_moe_load.cu`, `deepseek_moe_load.cuh`
@@ -445,7 +474,54 @@ git commit -m "refactor(deepseek): template the generation pipeline and the load
 
 ---
 
-### Task 7: Удалить 12 pro-копий, перевести Pro-модель на шаблон
+### Task 7: удаление копий — проверенное состояние и открытый блокер
+
+Попытка выполнена и откатана (копии на месте, ветка зелёная). Что уже
+доказано и лежит в общем коде:
+
+- общий `load_pinned_weights<T>` / `DeepSeekInferArena::Allocate<T>` /
+  `load_expert_index<T>` собираются и дают Flash тот же `logits_hash`;
+- политика памяти — **третий параметр паспорта**, не геометрия: пиннинг
+  expert-store (Flash: по умолчанию включён, `LSX_EXPERT_PIN=0` выключает;
+  Pro: только `LSX_DEEPSEEK_PRO_PIN=1` и cap 64 GiB), кэш shared-expert в FP16
+  (Flash 4 MB/слой, Pro 176 MB/слой → opt-in), `pending_drain`-хук стора,
+  форма `idx_wq_b` (читается из тензора, а не хардкод 8192×1024).
+
+Найдено и исправлено два реальных дефекта общего загрузчика (коммиты
+`835e9d6a`, `ea948cbe`):
+
+1. `resident_bytes` дважды учитывал shared-expert набор (`UploadRaw` уже
+   считает байты; лишний `rb +=` раздувал цифру на ~2x набора, 4 GiB у Pro) —
+   губернатор отказывал в лизинге;
+2. FP16-кэш shared-экспертов выделялся безусловно: 176 MB/слой у Pro
+   (10.7 GiB) против 4 MB/слой у Flash. Теперь решает паспорт
+   (`kSharedExpertCache`), плюс в лог отказа добавлены `rb/free/total`
+   из `cudaMemGetInfo`.
+
+Эффект измерен: Pro с общим загрузчиком дошёл с слоя 34 до **слоя 59**
+(`rb=30798 MiB, free=17 MiB` при 32110 MiB на карте).
+
+Остаток: **~2.2 GiB** сверх старого pro-загрузчика; не хватает ровно на
+последние два слоя (`rb=30798 MiB`, `free=17 MiB`).
+
+Измерено на этом шаге (для калибровки): список `jobs.push_back` в общем и в
+старом pro-загрузчике **идентичен** (15 записей, тот же порядок), тела
+`UploadLayerJobs` и `ValidateArenaJob` — тоже; формулы `DeepSeekInferArena::
+Allocate` совпадают построчно. Контрольный замер Flash на общем загрузчике:
+`pinned weights: 12502 MiB` (совпадает с прежним поведением), т.е. учёт
+рабочий и расхождение — pro-специфичное.
+
+Следующий шаг — разделить `rb` по категориям на **одном** слое Pro
+(эмбеддинг/голова отдельно, затем `d_arena` слоя, затем shared-expert
+packed/scales) и сравнить с ожиданием: `embed = head = 129280*7168*2 B
+= 1.77 GiB`, остальное — 61 слой. Кандидаты, которые ещё не исключены:
+лишняя FP16-копия BF16-тензора в `UploadLayerJobs` у Pro и разница в
+`pw.d_embed`/`d_head` (tied=false, обе матрицы обязаны быть).
+
+Порядок безопасного продолжения: сначала довести общий загрузчик до
+успешной загрузки Pro (при живых копиях, сверяя `rb`/`free`), затем
+удалять копии и переключать модель/тесты.
+
 
 **Files:**
 - Delete: `libs/lsxcommon/src/deepseek_moe_pro_inference_{attn,csa,head,moe,pipeline}.cu`, `deepseek_moe_pro_load.{cuh,cu}`, `deepseek_moe_pro_norm_kernels.cu`, `libs/lsxcommon/include/lsxcommon/deepseek_moe_pro_inference_csa.h`, `deepseek_moe_pro_norm_kernels.h`

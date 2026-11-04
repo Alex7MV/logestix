@@ -29,6 +29,7 @@ namespace lsxcommon::gpu {
 // Production entry points (deepseek_moe_inference_moe.cu), forward-declared like the
 // existing kernel test does for run_routed_expert_ffn. route_token comes from
 // deepseek_moe_load.cuh (included above).
+template <class T = lsxcommon::deepseek::Passport>
 cudaError_t run_shared_experts_ffn(
     cudaStream_t stream,
     const __half *d_hidden,
@@ -42,6 +43,7 @@ cudaError_t run_shared_experts_ffn(
     const __half *d_w3_h_cache = nullptr,
     const float *d_w2_f32_cache = nullptr);
 
+template <class T = lsxcommon::deepseek::Passport>
 cudaError_t run_routed_experts(
     cudaStream_t stream,
     const __half *d_normed,

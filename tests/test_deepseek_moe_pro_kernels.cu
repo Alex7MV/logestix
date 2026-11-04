@@ -1,4 +1,5 @@
-// test_deepseek_moe_pro_kernels.cu — deepseek_pro::gpu::rmsnorm_float (DeepSeek-V4-Pro-0813).
+// test_deepseek_moe_pro_kernels.cu — shared gpu::rmsnorm_float plus the
+// V4-Pro CSA entry points (DeepSeek-V4-Pro-0813).
 //
 // The kernel runs in deepseek_moe_inference_pipeline.cu and
 // deepseek_moe_inference_attn.cu, i.e. on every decode token of the model, and
@@ -21,7 +22,7 @@
 #include <vector>
 
 #include "lsxcommon/deepseek_moe_pro_inference_csa.h"
-#include "lsxcommon/deepseek_moe_pro_norm_kernels.h"
+#include "lsxcommon/deepseek_moe_norm_kernels.h"
 
 #include "deepseek_moe_pro_load.cuh"  // LayerWeights
 
@@ -92,7 +93,7 @@ std::vector<float> Run(int batch, int hidden, const std::vector<float> &x,
     DeviceBuffers d = Upload(x, g);
     cudaMemset(d.out, 0xff, x.size() * sizeof(float));
     const cudaError_t rc =
-        lsxcommon::deepseek_pro::gpu::rmsnorm_float(nullptr, batch, hidden, d.in, d.gamma,
+        lsxcommon::gpu::rmsnorm_float(nullptr, batch, hidden, d.in, d.gamma,
                                       eps, d.out);
     if (rc != cudaSuccess) {
         cudaGetLastError();
@@ -202,19 +203,19 @@ TEST_CASE("deepseek norm kernels: rmsnorm_float rejects invalid arguments",
     DeviceBuffers d = Upload(x, std::vector<float>(hidden, 1.0f));
 
     // Null pointers.
-    CHECK(lsxcommon::deepseek_pro::gpu::rmsnorm_float(nullptr, batch, hidden, nullptr,
+    CHECK(lsxcommon::gpu::rmsnorm_float(nullptr, batch, hidden, nullptr,
                                         d.gamma, 1e-6f, d.out) ==
           cudaErrorInvalidValue);
-    CHECK(lsxcommon::deepseek_pro::gpu::rmsnorm_float(nullptr, batch, hidden, d.in, nullptr,
+    CHECK(lsxcommon::gpu::rmsnorm_float(nullptr, batch, hidden, d.in, nullptr,
                                         1e-6f, d.out) == cudaErrorInvalidValue);
-    CHECK(lsxcommon::deepseek_pro::gpu::rmsnorm_float(nullptr, batch, hidden, d.in, d.gamma,
+    CHECK(lsxcommon::gpu::rmsnorm_float(nullptr, batch, hidden, d.in, d.gamma,
                                         1e-6f, nullptr) == cudaErrorInvalidValue);
     // Non-positive extents.
-    CHECK(lsxcommon::deepseek_pro::gpu::rmsnorm_float(nullptr, 0, hidden, d.in, d.gamma,
+    CHECK(lsxcommon::gpu::rmsnorm_float(nullptr, 0, hidden, d.in, d.gamma,
                                         1e-6f, d.out) == cudaErrorInvalidValue);
-    CHECK(lsxcommon::deepseek_pro::gpu::rmsnorm_float(nullptr, batch, 0, d.in, d.gamma,
+    CHECK(lsxcommon::gpu::rmsnorm_float(nullptr, batch, 0, d.in, d.gamma,
                                         1e-6f, d.out) == cudaErrorInvalidValue);
-    CHECK(lsxcommon::deepseek_pro::gpu::rmsnorm_float(nullptr, -1, hidden, d.in, d.gamma,
+    CHECK(lsxcommon::gpu::rmsnorm_float(nullptr, -1, hidden, d.in, d.gamma,
                                         1e-6f, d.out) == cudaErrorInvalidValue);
 }
 // ── run_csa_attention: reachable contract checks ──────────────────────────

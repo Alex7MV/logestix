@@ -1,5 +1,6 @@
 #include "lsxcommon/inference_gpu.h"
-#include "lsxcommon/deepseek_moe_pro_norm_kernels.h"
+#include "lsxcommon/deepseek_moe_inference_head.h"
+#include "lsxcommon/deepseek_moe_norm_kernels.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
@@ -66,7 +67,7 @@ static __host__ cudaError_t run_rmsnorm(
     // combine stage must not round-trip through half before the norm.
     half_to_float_kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, n);
 
-    cudaError_t err = rmsnorm_float(stream, 1, dim, d_input,
+    cudaError_t err = lsxcommon::gpu::rmsnorm_float(stream, 1, dim, d_input,
                                      d_gamma_scratch, eps, d_scratch);
     if (err != cudaSuccess) return err;
 
@@ -127,16 +128,6 @@ cudaError_t run_csa_attention(
     float* d_dequant,
     float* d_norm_scratch, float* d_norm_gamma_scratch);
 
-// From deepseek_moe_inference_head.cu
-cudaError_t run_lm_head(
-    cudaStream_t stream,
-    const __half *d_head_weight,
-    const __half *d_hidden,
-    int vocab_size,
-    int hidden_dim,
-    float *d_logits,
-    int32_t *d_next_token,
-    float *d_next_maxv);
 
 // Sanity ceiling for a model-reported vocab_size. d_logits is now allocated
 // dynamically to the actual vocab_size (see RunInferenceModel), but any
@@ -805,7 +796,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         // twice per token).
         INFER_CHECK(cudaMemsetAsync(d_logits, 0,
             static_cast<size_t>(pw.vocab_size) * sizeof(float), stream));
-        INFER_CHECK(run_lm_head(stream,
+        INFER_CHECK(lsxcommon::gpu::run_lm_head(stream,
                                  pw.d_head, d_normed,
                                  pw.vocab_size, kHiddenDim,
                                  d_logits, nullptr, nullptr));

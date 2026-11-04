@@ -22,6 +22,7 @@
 //   ballast         : mtp.0..2 (DSpark speculative stage) stored+counted,
 //                     never applied
 #include <cstdint>
+#include <cstdlib>
 
 namespace lsxcommon {
 namespace deepseek_pro {
@@ -30,43 +31,136 @@ namespace deepseek_pro {
 inline constexpr char kType[] = "deepseek-v4-pro-0813";
 
 // ── Frozen backbone geometry ────────────────────────────────────────────────
-inline constexpr int kHidden = 7168;
-inline constexpr int kLayers = 61;
-inline constexpr int kHeads = 128;
-inline constexpr int kHeadDim = 512;
-inline constexpr int kRopeHeadDim = 64;
-inline constexpr int kQLoraRank = 1536;
-inline constexpr int kOLoraRank = 1024;
-inline constexpr int kOGroups = 16;
-inline constexpr int kMoeIntermediate = 3072;
-inline constexpr int kSharedIntermediate = 3072;
-inline constexpr int kNumRouted = 384;
-inline constexpr int kTopK = 6;
-inline constexpr int kIndexNHeads = 64;
-inline constexpr int kIndexHeadDim = 128;
-inline constexpr int kIndexTopk = 1024;
-inline constexpr int kWindow = 128;      // sliding-window ring size
-inline constexpr int kVocab = 129280;
-inline constexpr int kHashLayers = 3;    // tid2eid router layers 0..2
+struct Passport {
+    // V4-Pro keeps the Hyper-Connections residual in FP32: the HC sum exceeds
+    // FP16's 65504 range (the source runs BF16/FP8 with a 3e38 range) and is
+    // stored in FP32 so it does not become inf before the scale-invariant norm.
+    using ResidualT = float;
 
-// Hyper-Connections (hc_mult copies of the residual stream).
-inline constexpr int kHcMult = 4;
-inline constexpr int kHcMix = (2 + kHcMult) * kHcMult;  // 24
-inline constexpr int kHcDim = kHcMult * kHidden;        // 28672
-inline constexpr int kSinkhornIters = 20;
+    static constexpr int kHidden = 7168;
+    static constexpr int kLayers = 61;
+    static constexpr int kHeads = 128;
+    static constexpr int kHeadDim = 512;
+    static constexpr int kRopeHeadDim = 64;
+    static constexpr int kQLoraRank = 1536;
+    static constexpr int kOLoraRank = 1024;
+    static constexpr int kOGroups = 16;
+    static constexpr int kMoeIntermediate = 3072;
+    static constexpr int kSharedIntermediate = 3072;
+    static constexpr int kNumRouted = 384;
+    static constexpr int kTopK = 6;
+    static constexpr int kIndexNHeads = 64;
+    static constexpr int kIndexHeadDim = 128;
+    static constexpr int kIndexTopk = 1024;
+    static constexpr int kWindow = 128;      // sliding-window ring size
+    static constexpr int kVocab = 129280;
+    static constexpr int kHashLayers = 3;    // tid2eid router layers 0..2
 
-// Numeric constants.
-inline constexpr float kRmsEps = 1e-6f;
-inline constexpr float kHcEps = 1e-6f;
-inline constexpr float kRouteScale = 2.5f;
-inline constexpr float kGateTemp = 1.0f;
-inline constexpr float kSwigluLimit = 10.0f;
-inline constexpr float kCompressRopeTheta = 160000.0f;
-inline constexpr float kRopeTheta = 10000.0f;
-inline constexpr int kRopeFactor = 16;
-inline constexpr int kOriginalSeqLen = 65536;
-inline constexpr int kBetaFast = 32;
-inline constexpr int kBetaSlow = 1;
+    // Hyper-Connections (hc_mult copies of the residual stream).
+    static constexpr int kHcMult = 4;
+    static constexpr int kHcMix = (2 + kHcMult) * kHcMult;  // 24
+    static constexpr int kHcDim = kHcMult * kHidden;        // 28672
+    static constexpr int kSinkhornIters = 20;
+
+    // Numeric constants.
+    static constexpr float kRmsEps = 1e-6f;
+    static constexpr float kHcEps = 1e-6f;
+    static constexpr float kRouteScale = 2.5f;
+    static constexpr float kGateTemp = 1.0f;
+    static constexpr float kSwigluLimit = 10.0f;
+    static constexpr float kCompressRopeTheta = 160000.0f;
+    static constexpr float kRopeTheta = 10000.0f;
+    static constexpr int kRopeFactor = 16;
+    static constexpr int kOriginalSeqLen = 65536;
+    static constexpr int kBetaFast = 32;
+    static constexpr int kBetaSlow = 1;
+
+    // ── Expert-store memory policy ────────────────────────────────────────
+    // The 811 GB routed set is never pinned by default: the store streams it
+    // through mmap views and LSX_DEEPSEEK_PRO_PIN=1 opts into pinning under a
+    // 64 GiB cap.
+    static bool WantExpertPin()
+    {
+        const char *e = std::getenv("LSX_DEEPSEEK_PRO_PIN");
+        return e != nullptr && e[0] == '1';
+    }
+
+    static constexpr int64_t kExpertPinCapBytes = int64_t{64} << 30;
+
+    // ~176 MB/layer x 61 layers = 10.7 GiB on top of the 26.7 GiB resident
+    // set: opt-in only (LSX_DEEPSEEK_PRO_SHARED_CACHE in the old loader).
+    static constexpr bool kSharedExpertCache = false;
+
+    static std::size_t ExpertMaxOpen()
+    {
+        std::size_t max_open = 4096;
+        if (const char *mo = std::getenv("LSX_DEEPSEEK_PRO_MAX_OPEN")) {
+            const long v = std::strtol(mo, nullptr, 10);
+            if (v > 0) max_open = static_cast<std::size_t>(v);
+        }
+        return max_open;
+    }
+
+    // Per-layer decoder grid (config.json compress_ratios[0..60]).
+    static constexpr int CompressRatio(int layer)
+    {
+        if (layer < 0 || layer >= kLayers) return 0;
+        if (layer < 2) return 128;
+        return (layer % 2 == 0) ? 4 : 128;
+    }
+
+    static constexpr bool HasIndexer(int layer)
+    {
+        return CompressRatio(layer) == 4;
+    }
+
+    static constexpr bool IsHashLayer(int layer)
+    {
+        return layer >= 0 && layer < kHashLayers;
+    }
+
+    static constexpr int CompressorCoff(int layer)
+    {
+        return CompressRatio(layer) == 4 ? 2 : 1;
+    }
+};  // struct Passport
+
+// Legacy aliases: the templated driver refers to T::k*, the existing call
+// sites keep the bare names until the pro copies are deleted (task 7).
+inline constexpr int kHidden = Passport::kHidden;
+inline constexpr int kLayers = Passport::kLayers;
+inline constexpr int kHeads = Passport::kHeads;
+inline constexpr int kHeadDim = Passport::kHeadDim;
+inline constexpr int kRopeHeadDim = Passport::kRopeHeadDim;
+inline constexpr int kQLoraRank = Passport::kQLoraRank;
+inline constexpr int kOLoraRank = Passport::kOLoraRank;
+inline constexpr int kOGroups = Passport::kOGroups;
+inline constexpr int kMoeIntermediate = Passport::kMoeIntermediate;
+inline constexpr int kSharedIntermediate = Passport::kSharedIntermediate;
+inline constexpr int kNumRouted = Passport::kNumRouted;
+inline constexpr int kTopK = Passport::kTopK;
+inline constexpr int kIndexNHeads = Passport::kIndexNHeads;
+inline constexpr int kIndexHeadDim = Passport::kIndexHeadDim;
+inline constexpr int kIndexTopk = Passport::kIndexTopk;
+inline constexpr int kWindow = Passport::kWindow;
+inline constexpr int kVocab = Passport::kVocab;
+inline constexpr int kHashLayers = Passport::kHashLayers;
+inline constexpr int kHcMult = Passport::kHcMult;
+inline constexpr int kHcMix = Passport::kHcMix;
+inline constexpr int kHcDim = Passport::kHcDim;
+inline constexpr int kSinkhornIters = Passport::kSinkhornIters;
+inline constexpr float kRmsEps = Passport::kRmsEps;
+inline constexpr float kHcEps = Passport::kHcEps;
+inline constexpr float kRouteScale = Passport::kRouteScale;
+inline constexpr float kGateTemp = Passport::kGateTemp;
+inline constexpr float kSwigluLimit = Passport::kSwigluLimit;
+inline constexpr float kCompressRopeTheta = Passport::kCompressRopeTheta;
+inline constexpr float kRopeTheta = Passport::kRopeTheta;
+inline constexpr int kRopeFactor = Passport::kRopeFactor;
+inline constexpr int kOriginalSeqLen = Passport::kOriginalSeqLen;
+inline constexpr int kBetaFast = Passport::kBetaFast;
+inline constexpr int kBetaSlow = Passport::kBetaSlow;
+
 
 // DSpark / MTP speculative stage: stored, counted, never applied.
 inline constexpr int kMtpLayers = 3;
@@ -77,29 +171,27 @@ inline constexpr int kDsparkMarkovRank = 512;
 // ── Per-layer compression grid (config.json compress_ratios[0..60]) ─────────
 // 0-1: ratio 128 (non-overlapping), 2..60: even ratio 4 (overlap/coff=2),
 // odd ratio 128. Entries 61..63 are the MTP layers (ratio 0, not run).
-constexpr int CompressRatio(int layer)
+inline constexpr int CompressRatio(int layer)
 {
-    if (layer < 0 || layer >= kLayers) return 0;
-    if (layer < 2) return 128;
-    return (layer % 2 == 0) ? 4 : 128;
+    return Passport::CompressRatio(layer);
 }
 
 // Only ratio-4 layers instantiate the indexer (model.py: Indexer created
 // when compress_ratio == 4).
-constexpr bool HasIndexer(int layer)
+inline constexpr bool HasIndexer(int layer)
 {
-    return CompressRatio(layer) == 4;
+    return Passport::HasIndexer(layer);
 }
 
-constexpr bool IsHashLayer(int layer)
+inline constexpr bool IsHashLayer(int layer)
 {
-    return layer >= 0 && layer < kHashLayers;
+    return Passport::IsHashLayer(layer);
 }
 
 // CSA overlap: ratio 4 pools two consecutive blocks (coff = 1 + overlap).
-constexpr int CompressorCoff(int layer)
+inline constexpr int CompressorCoff(int layer)
 {
-    return CompressRatio(layer) == 4 ? 2 : 1;
+    return Passport::CompressorCoff(layer);
 }
 
 // ── Compile-time relations (MODEL INGEST INVARIANT step 3) ──────────────────

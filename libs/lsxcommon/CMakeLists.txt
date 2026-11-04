@@ -862,11 +862,9 @@ target_link_libraries(lsxcommon_deepseek_v41_cu
 add_library(lsxcommon_deepseek_pro_cu OBJECT
     src/deepseek_moe_pro_load.cu
     src/deepseek_moe_pro_inference_moe.cu
-    src/deepseek_moe_pro_inference_head.cu
     src/deepseek_moe_pro_inference_attn.cu
     src/deepseek_moe_pro_inference_csa.cu
     src/deepseek_moe_pro_inference_pipeline.cu
-    src/deepseek_moe_pro_norm_kernels.cu
 )
 set_target_properties(lsxcommon_deepseek_pro_cu PROPERTIES
     CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
