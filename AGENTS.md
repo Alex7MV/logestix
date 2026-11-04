@@ -198,6 +198,38 @@ procedure — `perf-tuning-a-model`.
   `logestix-nemotron-nvfp4`). Source oracle for both siblings:
   `tools/nemotron_nvfp4_oracle.py` (ModelOpt -> BF16 CPU reference; the tokenizer
   gate is `test_nemotron_moe_tokenizer_parity` + `tools/nemotron_tokenizer_capture.py`).
+  Qwen3.8-Flash-Next (member of the `qwen` family, registry
+  `qwen3.8-flash-next`, `Qwen38FlashNextModel` / namespace
+  `lsxcommon::qwen_moe_exp`: the `Qwen4ExpForConditionalGeneration` checkpoint,
+  text `qwen4_exp_text` — 48 layers as 12 x [3 GatedDeltaNet + 1 QSA full
+  attention], 2560H, 24Q / 2KV / 256HD with 64 rotary dims (theta 1e7), QSA
+  indexer 4 heads x 128 at block 4 / top-512 over a 2048-token budget,
+  hyper-connections (4 streams, lowrank 320), 512 routed experts top-10 at
+  I=640 + one shared I=640, a PLE n-gram embedding on layer 2 (128 shards),
+  vocab 248320 (eos 248046 / 248044) and one MTP layer stored+counted;
+  `qwen_moe_exp_constants.h` (frozen passport), `qwen_moe_exp_convert.{h,cpp}`
+  (BF16 -> NVFP4 in place, `lsxforge --qwen38flashnext`, format tag
+  `logestix-qwen38flashnext`), `qwen_moe_exp_load.{h,cpp}` (pinned host arena +
+  `gpu::ExpertDeviceCache` slot-LRU, knob `LSX_QWEN38_EXPERT_CACHE_SLOTS`; the
+  arena is REQUIRED for this family — the decode working set is the whole
+  expert set, see `docs/open-tasks/2026-10-14-qwen38-arena-required-negative.md`),
+  `qwen_moe_exp_inference.{h,cu}` (the token-by-token driver: GDN/QSA attention,
+  hyper-connection residual, PLE injection, router readback + residency
+  staging, batched TC routed FFN, shared expert, head),
+  `qwen_moe_exp_model.{h,cpp}`, `qwen_moe_exp_device_math.h`. Real weights
+  (336 GB BF16 -> 164 GB tree, 63.6 GB expert arena): SelfCheck Paris x3
+  bit-exact (`logits_hash 2e3bcd090441ad65`, top-1 11751), FSI/CODE/DET 3/3 each
+  plus the family's EOS + cross-instance determinism gate,
+  native tool round-trip `get_weather {"city":"Paris"}`, **42.98 t/s (perf) /
+  33.88 (r3)** at 2048 tokens, 3615 MiB pinned + 5350 / 4319 expert slots; its
+  throughput is expert-cache **capacity** bound (hit rate 0.86, ~340 MB of
+  experts streamed per token), so a delta is only a regression if the slot
+  count holds. Its chat template differs from Qwen3.5/3.6 in three byte-level
+  ways (a closed think block on every assistant history turn, jinja
+  `tojson` tool serialisation and `render_content|trim`), carried by
+  `QwenRenderPolicy` in `qwen_tool_format.h` so the older members keep their
+  exact wire; the model renders with the exported `kQwen38RenderPolicy`, which a
+  test pins flag by flag).
   GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE,
   ~432B / ~28B active: 40L / 7168H / 64 MLA heads (qk 128+64, v 128,
   q_lora 1536, kv_lora 512, output gate) at layers 3,7,...,39 and GDN

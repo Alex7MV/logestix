@@ -1348,14 +1348,33 @@ std::size_t GenContextBytes(int max_seq)
 }
 
 int SizeExpertCacheSlots(std::size_t free_bytes, std::size_t per_expert_bytes,
-                         int total_experts, int max_seq, int slots_pct)
+                         int total_experts, int max_seq, int slots_pct,
+                         std::size_t already_resident_bytes)
 {
     // max_seq-independent post-cache floor: persistent fp16 embed table
     // (V x H x 2B ~ 1.2 GiB), per-layer TC fused builds (~1.6 GiB), driver
     // margin. Conservative: under-reserving repeats the max-gen-2048 OOM.
     constexpr std::size_t kPostCacheFloorBytes = 4ull << 30;
-    const std::size_t reserve =
+    // The reserve is net of what this process already holds for the same
+    // purpose. The arena and the embed table are shared, process-lifetime
+    // buffers (RunExpGeneration's "single session per process" etalon), so a
+    // second Load must not pay for them twice: once because they are no longer
+    // inside `free_bytes`, and once through this reserve.
+    //
+    // The refund is sound for both buffers because a re-load reuses them
+    // instead of re-allocating: the embed table is exact for the frozen
+    // geometry, and the arena only grows (it is freed before a larger
+    // cudaMalloc), so the additional bytes it can still need are exactly
+    // `arena_need - arena_cap` -- which is what leaving the context part of the
+    // reserve in place holds back. The floor (per-load TC fused builds, driver
+    // margin) is refunded only for the part the embed table occupies, and the
+    // cap below keeps the arithmetic from going negative.
+    const std::size_t total_reserve =
         GenContextBytes(max_seq) + kPostCacheFloorBytes;
+    const std::size_t refund = already_resident_bytes < total_reserve
+                                   ? already_resident_bytes
+                                   : total_reserve;
+    const std::size_t reserve = total_reserve - refund;
     return lifecycle::ExpertCacheSlots(free_bytes, per_expert_bytes,
                                        total_experts, slots_pct, reserve);
 }

@@ -357,3 +357,166 @@ TEST_CASE("qwen-codec consumers without their own target: ornith and "
     f.db = ArrowTokenizerDb{};
     fs::remove_all(f.pinned);
 }
+
+// Stage 4b fidelity for the qwen4_exp (Qwen3.8-Flash-Next) checkpoint.
+//
+// The shared qwen codec was written for the Qwen3.5/3.6 templates. The 3.8
+// template differs in two byte-level ways that the engine used to miss, so a
+// multi-turn request was framed in a shape the checkpoint never saw in
+// training:
+//   1. every assistant history turn carries the closed think block
+//      (`assistant\n<think>\n{reasoning}\n</think>\n\n{content}`), even when
+//      thinking is disabled and the reasoning is empty;
+//   2. the tool definitions are serialised with jinja's `tojson`
+//      (json.dumps(obj, ensure_ascii=False) separators: ", " and ": "), not the
+//      compact form the codec emitted for 3.5/3.6.
+// Expected text below is the checkpoint's own `chat_template.jinja` rendered by
+// transformers 5.15.1 `apply_chat_template(..., enable_thinking=False)` for the
+// same conversation; it is the oracle for this test, not our renderer.
+TEST_CASE("qwen4_exp template fidelity: assistant history keeps the closed "
+          "think block and tools serialise like jinja tojson",
+          "[qwen][tool_framing]")
+{
+    ChatConversation conv = ToolConversation();
+    ChatMessage asst;
+    asst.role = "assistant";
+    asst.content = "Sure.";
+    ToolCall call;
+    call.name = "get_weather";
+    call.arguments_json = R"({"city":"Paris","days":3})";
+    asst.tool_calls.push_back(call);
+    conv.messages.push_back(asst);
+    conv.messages.push_back({"tool", "sunny, 20C", "call_0", {}});
+
+    std::string out;
+    REQUIRE(lsxcommon::RenderQwenConversation(
+        conv, out,
+        lsxcommon::QwenRenderPolicy{.history_think_block = true,
+                                    .jinja_tool_json = true}));
+
+    const std::string expected =
+        "<|im_start|>system\n"
+        "# Tools\n"
+        "\n"
+        "You have access to the following functions:\n"
+        "\n"
+        "<tools>\n"
+        "{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}}}}\n"
+        "</tools>\n"
+        "\n"
+        "If you choose to call a function ONLY reply in the following format with NO suffix:\n"
+        "\n"
+        "<tool_call>\n"
+        "<function=example_function_name>\n"
+        "<parameter=example_parameter_1>\n"
+        "value_1\n"
+        "</parameter>\n"
+        "<parameter=example_parameter_2>\n"
+        "This is the value for the second parameter\n"
+        "that can span\n"
+        "multiple lines\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "\n"
+        "<IMPORTANT>\n"
+        "Reminder:\n"
+        "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n"
+        "- Required parameters MUST be specified\n"
+        "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n"
+        "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n"
+        "</IMPORTANT>\n"
+        "\n"
+        "You are a helper.<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Weather in Paris?<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"
+        "\n"
+        "</think>\n"
+        "\n"
+        "Sure.\n"
+        "\n"
+        "<tool_call>\n"
+        "<function=get_weather>\n"
+        "<parameter=city>\n"
+        "Paris\n"
+        "</parameter>\n"
+        "<parameter=days>\n"
+        "3\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call><|im_end|>\n"
+        "<|im_start|>user\n"
+        "<tool_response>\n"
+        "sunny, 20C\n"
+        "</tool_response><|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"
+        "\n"
+        "</think>\n"
+        "\n"
+        "";
+
+    CHECK(out == expected);
+}
+
+// The 3.8 template renders message content through `render_content(...)|trim`,
+// so surrounding whitespace in a client's message body never reaches the model.
+// A multi-tool history is also pinned here: consecutive tool results share ONE
+// `<|im_start|>user` turn (a run of `<tool_response>` blocks), which is the
+// shape the checkpoint was trained on.
+TEST_CASE("qwen4_exp template fidelity: content is trimmed and a tool-result "
+          "run shares one user turn", "[qwen][tool_framing]")
+{
+    ChatConversation conv;
+    conv.messages.push_back({"system", "  You are a helper.  \n", "", {}});
+    conv.messages.push_back({"user", "\n  Weather in Paris?\n ", "", {}});
+    ChatMessage asst;
+    asst.role = "assistant";
+    asst.content = "  Sure.  ";
+    conv.messages.push_back(asst);
+    conv.messages.push_back({"user", "Thanks", "", {}});
+
+    std::string out;
+    REQUIRE(lsxcommon::RenderQwenConversation(
+        conv, out,
+        lsxcommon::QwenRenderPolicy{.history_think_block = true,
+                                    .jinja_tool_json = true,
+                                    .trim_content = true}));
+    const std::string expected =
+        "<|im_start|>system\n"
+        "You are a helper.<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Weather in Paris?<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"
+        "\n"
+        "</think>\n"
+        "\n"
+        "Sure.<|im_end|>\n"
+        "<|im_start|>user\n"
+        "Thanks<|im_end|>\n"
+        "<|im_start|>assistant\n"
+        "<think>\n"
+        "\n"
+        "</think>\n"
+        "\n"
+        "";
+    CHECK(out == expected);
+
+    // Two tool results in a row are one user turn with two response blocks.
+    ChatConversation two = conv;
+    two.messages.push_back({"tool", "sunny", "call_0", {}});
+    two.messages.push_back({"tool", "12:00", "call_1", {}});
+    two.messages.push_back({"user", "Thanks", "", {}});
+    std::string out2;
+    REQUIRE(lsxcommon::RenderQwenConversation(
+        two, out2,
+        lsxcommon::QwenRenderPolicy{.history_think_block = true,
+                                    .jinja_tool_json = true,
+                                    .trim_content = true}));
+    CHECK(out2.find("<|im_start|>user\n<tool_response>\nsunny\n</tool_response>"
+                    "\n<tool_response>\n12:00\n</tool_response><|im_end|>\n") !=
+          std::string::npos);
+}

@@ -856,6 +856,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-11-04 | qwen3.8-flash-next full lifecycle re-verified; two perf-harness instrument defects fixed (this session's §R16 keeps the one open perf residual) | Every stage re-run on the real 336 GB checkpoint (164 GB tree): SelfCheck Paris ×3 bit-exact (`2e3bcd090441ad65`), FSI/CODE/DET 3/3, EOS + cross-instance gate, native tool round-trip; `ctest -L fast` 134/134. Stage 4b found the 3.8 `chat_template.jinja` differs from 3.5/3.6 in byte-level ways (closed think block on every assistant history turn; jinja `tojson` tool serialisation; `render_content|trim`) — carried by a new `QwenRenderPolicy` so the older members keep their exact wire, pinned against the template rendered by transformers **and** against the exact policy the model renders with (the `trim` delta was first wired into the renderer and left off for the model). The `|trim` delta is shared with 3.5/3.6 — latent for every qwen member, invisible to the gates because the capture prompts carry no surrounding whitespace — and those members keep the untrimmed wire until their goldens are re-verified (§R16). Two **instrument** defects were under-reporting the whole perf suite and were fixed test-first: `MeasureMemoryBandwidthGbs` held two 512 MiB buffers in `thread_local` statics for the process lifetime (the probe runs before the model in `test_perf_baseline`, so every capacity-bound family from 2026-10-23 measured with 1 GiB less VRAM — 4962 → 5350 slots here; the 49 affected rows self-heal on their next run because an increase is upserted), and the generation arena/embed statics were charged twice on the harness's second `Load()` (`SizeExpertCacheSlots` + `GenContextResidentBytes`). Rows re-seeded through the harness: **42.98** perf / **33.88** r3 t/s (old 44.85 / 26.47 removed first); the residual is capacity, measured by a forced-slot sweep (4962 → 41.40, 5350 → 43.00, 5750 → 44.15, 6000 → OOM) and now expressible as `PerfCause::kCapacity` with `expert_cache_slots` on every row — [`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md) |
 | 2026-11-03 | granite-4.2-30b full lifecycle re-verification: §K `code` debt cleared, TC-overflow defect fixed | Re-converted the real 54.5 GiB checkpoint to a 15.3 GiB `logestix-granite` tree and ran every stage. Real defect found TDD: the default auto/TC NVFP4 path degenerates on the 306-token tool prompt (`_with_n_comprehension…`). External oracle: the BF16 checkpoint on CPU emits `get_weather {"city":"Paris"}` for the exact reference ids, and the converted model under `FastMathMode::kOff` reproduces it token-for-token — the TC activation range is exceeded (same class as granite-switch). `Infer` now pins `kOff`. Gates green: SelfCheck Paris x3 bit-exact (`c165e80fde6401cf`), FSI/CODE/DET 3/3, tool round-trip; perf re-seeded 76.79/76.47 t/s at 2048 (old 2026-09-22 rows removed first; the perf row is ~1.4% below its old 77.86 because it now takes the strict path). §K `granite-4.2-30b:code` was the last single-stage golden-debt entry — resolved (golden since 2026-10-07) — [`open-tasks/2026-11-03-granite-4.2-30b-lifecycle.md`](open-tasks/2026-11-03-granite-4.2-30b-lifecycle.md) |
 | 2026-11-01 | Arrow IPC audit closed; glm-5.3-flash arena re-tried and rejected on measurement | Full audit of every converted model's Arrow path: owning `UnpackBatch`/`DecodeEntry` validation (SIGSEGV on a foreign shared-scale list), view payload/size checks, atomic artifact writes, zero-copy write path (`MakeBatchView`, reserved builders), gemma views, shared verifier + `lsxforge --verify`. Exhaustive `LSX_ARROW_AUDIT_FULL=1`: 29 trees / 310 158 files / 0 problems / 783 s — the full run caught that DeepSeek shared experts are raw F8_E4M3 with E8M0 128x128 tiles, not NVFP4/16 (per-16 kept for routed only). Converted the three missing trees (Qwen3.5-35B-A3B 217 s/19 GB, DeepSeek-V4.1-Flash 228 s/294 GB, DeepSeek-V4-Flash 124 s/157 GB), all verified. glm-5.3-flash neutral-store trial on real weights: SelfCheck/FSI/CODE/DET green, but 4.10 t/s at 4096 slots (57 GB) and 7.23 t/s with all 12 096 mapped (156 GB) against the arena's 12.79 t/s (171 GB) — pageable-mmap H2D; reverted, arena retained. Residuals moved to S1-S6 — [`open-tasks/2026-11-01-arrow-audit-and-arena-decision.md`](open-tasks/2026-11-01-arrow-audit-and-arena-decision.md) |
 | 2026-10-31 | MiniMax-M3.1-Flash (428B/23B active) ingested as a **sibling** of minimax-m3 | New passport `minimax_moe_flash_constants.h` (theta 1e7, MSA on every layer, no MTP), shared converter with an MXFP8-dense + ModelOpt-NVFP4-expert source path (experts verbatim, divisor global scale inverted; dense E8M0 tile fed to the neutral quantizer), `lsxforge --minimax_flash`, model class `minimax-m3.1-flash`, and a `MinimaxRenderPolicy` for the M3.1 template (adaptive thinking, `<model_id>8bb8149fe</model_id>`, developer blocks, batched tool results). The parent loader/kernels/pipeline are reused; the loader now derives the dispatch boundaries and every member cross-checks them + the RoPE theta against its passport. Real conversion 236 GB -> 227 GB in ~6 min; 10.5 GiB pinned + 607 expert slots. All gates green on real weights, serial: SelfCheck PASS x3 bit-exact, FSI 3/3, CODE 3/3, DET 3/3 (template-derived goldens: the 428B QAT source has no 32 GB execution path), tool round-trip green. Perf re-seeded by the harness: **6.23/6.18 t/s** (perf/r3) at 2048 tokens, TTFT 48.8/49.2 s — [`open-tasks/2026-10-31-minimax-m31-flash-ingest.md`](open-tasks/2026-10-31-minimax-m31-flash-ingest.md) |
@@ -984,6 +985,51 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
   24.5 GB pinned graph fails mid-graph (`layer N ... upload failed`, logged).
   The model needs a card that can hold the pinned set plus ~2 GiB headroom; a
   clean "not enough VRAM" pre-check is a follow-up.
+
+## R16. qwen3.8-flash-next — lifecycle re-verified; one measured perf residual left: serialized expert staging (2026-11-04)
+
+Branch `feat/qwen38-flash-next-lifecycle`. Every Model Ingestion Protocol stage
+was re-run on the real 336 GB checkpoint (164 GB tree) and all four parity gates
+are green: SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`, top-1
+11751), FSI 3/3, CODE 3/3, DET 3/3, the EOS + cross-instance gate, and a native
+tool round-trip. Perf rows re-seeded by the harness: **42.98 t/s** (`perf`,
+5350 slots) / **33.88 t/s** (`r3`, 4319 slots) at 2048 tokens. Two **instrument**
+defects that had been under-reporting the whole perf suite were found and fixed
+test-first (the bandwidth probe leaked 1 GiB of VRAM for the process lifetime;
+the generation scratch was charged twice on the second `Load()`), and the
+verdict logic now distinguishes capacity from regression. Full trail:
+[`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md).
+
+**Open (perf, measured).** nsys over 64 decode steps: step window 25.23 ms,
+kernels 17.78 ms, **H2D 5.58 ms/token (302 MB, 17 267 copies) essentially
+unoverlapped** — kernels + copies are 23.36 ms of the 25.23 ms window. All of
+it rides the compute stream; the driver's `copy_stream` carries 0.2 MB over the
+whole trace, because the family stages residency for all K = 10 experts **before**
+any FFN compute (`EnsureQwen4ExpExpertResident(..., stream, ...)` without an
+`h2d_stream`) and only then calls `moe::RunMoERoutedFFN` with
+`copy_stream`/`ev_uploads`/`ev_front`, which finds every expert already resident.
+Closing it means issuing expert *k+1*'s staging while expert *k* computes (the
+neutral `moe::EnsureMoERoutedFFN` shape) — an ordering change to the router
+handshake that the numeric gates depend on, so it needs its own TDD cycle and a
+`logits_hash` re-check, not a flag. Kernel attribution of the same window:
+`hc_epilogue_kernel` 2.66 ms, `hc_down_gemv` 2.16, `hc_norm` 1.57,
+`ple_inject` 1.39, `TcGemmKernel` variants ~2.9 combined, `moe_router_dots` 0.83,
+`exp_head_gemv` 0.75 — the hyper-connection block, not attention, is the largest
+serial host.
+
+**Open (framing, latent for the whole qwen family).** The shared codec did not
+apply the templates' `render_content(...)|trim` (3.8 lines 70/78/92/103; 3.5/3.6
+carry the same filter), so a client message with leading/trailing whitespace
+frames bytes the reference never produces. `qwen3.8-flash-next` now renders with
+`kQwen38RenderPolicy`, which trims (plus the two 3.8-only deltas: the closed think
+block on assistant history turns and jinja `tojson` tool definitions). The other
+qwen members (`qwen3.5-9b`, `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b`,
+`qwen3.8-27b`, `ornith`) keep the untrimmed wire **deliberately**: enabling it
+moves their wire, so it needs each family's FSI/CODE/DET goldens re-captured and
+re-verified in the same change, not a default flip. Note the gates could not have
+caught this — every capture prompt is whitespace-free
+(`tools/{fsi,code,det}_prompts.json`, 3 + 3 + 3 prompts, none carrying
+surrounding whitespace), which is the instrument gap, not a passing verdict.
 
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 

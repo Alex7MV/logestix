@@ -183,6 +183,7 @@ void FillInferenceResult(gpu::InferenceResult &r, const GenResultView &g,
     r.eos_terminated = g.eos_terminated;
     r.kv_slots_used = g.kv_slots_used;  // -1 => caller computes its own fallback
     r.weight_resident_bytes = g.resident_bytes;
+    r.expert_cache_slots = g.expert_cache_slots;
 }
 
 namespace {

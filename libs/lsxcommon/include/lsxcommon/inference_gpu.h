@@ -22,6 +22,12 @@ struct InferenceResult {
     // Residency + occupancy (Item 10b).
     std::uint64_t weight_resident_bytes = 0;  // peak resident weight set over the run
     int32_t kv_slots_used = 0;       // KV occupancy at run end
+    // Resident routed-expert cache capacity the run decoded with (0 = the
+    // family has no streamed expert cache). For a streamed-expert family the
+    // decode rate is a measured function of this number, so a harness that
+    // records throughput has to record it too -- otherwise a run made with less
+    // VRAM headroom (hence fewer slots) reads as a code regression.
+    int32_t expert_cache_slots = 0;
     // EOS routing (Item 10c): true when the run stopped on the tokenizer EOS.
     bool eos_terminated = false;
     int num_tokens = 0;

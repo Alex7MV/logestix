@@ -34,22 +34,6 @@
       "power_samples": 19858
     },
     {
-      "model_type": "qwen3.8-flash-next",
-      "gpu_key": "rtx 5090",
-      "os": "linux",
-      "mode": "perf",
-      "tokens_per_sec": 44.85,
-      "max_gen": 2048,
-      "prompt": "The capital of France is",
-      "date": "2026-10-14",
-      "commit": "-",
-      "gen_tokens": 2048,
-      "ttft_ms": 196.88,
-      "avg_power_w": 220.52,
-      "peak_power_w": 235.75,
-      "power_samples": 2275
-    },
-    {
       "model_type": "qwen3.8-27b",
       "gpu_key": "rtx 5090",
       "os": "linux",
@@ -176,22 +160,6 @@
       "avg_power_w": 366.02,
       "peak_power_w": 393.82,
       "power_samples": 808
-    },
-    {
-      "model_type": "qwen3.8-flash-next",
-      "gpu_key": "rtx 5090",
-      "os": "linux",
-      "mode": "r3",
-      "tokens_per_sec": 26.47,
-      "max_gen": 2048,
-      "prompt": "The capital of France is",
-      "date": "2026-10-23",
-      "commit": "-",
-      "gen_tokens": 2048,
-      "ttft_ms": 204.36,
-      "avg_power_w": 196.79,
-      "peak_power_w": 210.71,
-      "power_samples": 3857
     },
     {
       "model_type": "deepseek-v4-flash",
@@ -976,6 +944,40 @@
       "avg_power_w": 583.69,
       "peak_power_w": 608.87,
       "power_samples": 1335
+    },
+    {
+      "model_type": "qwen3.8-flash-next",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "perf",
+      "tokens_per_sec": 42.98,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-11-04",
+      "commit": "-",
+      "gen_tokens": 2048,
+      "ttft_ms": 193.11,
+      "avg_power_w": 217.32,
+      "peak_power_w": 227.06,
+      "power_samples": 2375,
+      "expert_cache_slots": 5350
+    },
+    {
+      "model_type": "qwen3.8-flash-next",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "r3",
+      "tokens_per_sec": 33.88,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-11-04",
+      "commit": "-",
+      "gen_tokens": 2048,
+      "ttft_ms": 198.00,
+      "avg_power_w": 211.39,
+      "peak_power_w": 223.69,
+      "power_samples": 3013,
+      "expert_cache_slots": 4319
     }
   ]
 }

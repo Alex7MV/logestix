@@ -3,6 +3,7 @@
 
 #include <simdjson.h>
 
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -101,12 +102,114 @@ std::string QwenSerialize(simdjson::dom::element e)
     }
 }
 
+// jinja `tojson` is json.dumps(obj, ensure_ascii=False): ", " / ": " separators,
+// the short escapes for the C0 control characters, UTF-8 passed through
+// unescaped. Numbers keep the source spelling (Python re-renders a parsed
+// float, which differs only for non-canonical literals like 1E5).
+void AppendJinjaString(std::string &out, std::string_view s)
+{
+    out.push_back('"');
+    for (char ch : s) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (c < 0x20) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+            } else {
+                out.push_back(ch);
+            }
+        }
+    }
+    out.push_back('"');
+}
+
+void AppendJinjaJson(std::string &out, simdjson::dom::element e)
+{
+    using simdjson::dom::element_type;
+    switch (e.type()) {
+    case element_type::OBJECT: {
+        out += "{";
+        bool first = true;
+        for (auto [k, v] : e.get_object()) {
+            if (!first) out += ", ";
+            first = false;
+            AppendJinjaString(out, k);
+            out += ": ";
+            AppendJinjaJson(out, v);
+        }
+        out += "}";
+        return;
+    }
+    case element_type::ARRAY: {
+        out += "[";
+        bool first = true;
+        for (auto v : e.get_array()) {
+            if (!first) out += ", ";
+            first = false;
+            AppendJinjaJson(out, v);
+        }
+        out += "]";
+        return;
+    }
+    case element_type::STRING:
+        AppendJinjaString(out, e.get_string().value_unsafe());
+        return;
+    case element_type::BOOL:
+        out += e.get_bool().value_unsafe() ? "true" : "false";
+        return;
+    case element_type::NULL_VALUE:
+        out += "null";
+        return;
+    case element_type::INT64:
+        out += std::to_string(e.get_int64().value_unsafe());
+        return;
+    case element_type::UINT64:
+        out += std::to_string(e.get_uint64().value_unsafe());
+        return;
+    case element_type::DOUBLE: {
+        // Python repr: the shortest round-trip spelling, with ".0" kept on an
+        // integral value (json.dumps(1e5) is "100000.0", not "100000").
+        const double v = e.get_double().value_unsafe();
+        char buf[40];
+        const auto res =
+            std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general);
+        std::string_view text(buf, static_cast<size_t>(res.ptr - buf));
+        if (res.ec != std::errc() || text.find_first_of(".eEn") !=
+                                         std::string_view::npos)
+            out += text;
+        else
+            out += std::string(text) + ".0";
+        return;
+    }
+    default:
+        out += "null";
+        return;
+    }
+}
+
 } // namespace
 
 bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
                             bool enable_thinking)
 {
+    return RenderQwenConversation(
+        conv, out, QwenRenderPolicy{.enable_thinking = enable_thinking});
+}
+
+bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
+                            const QwenRenderPolicy &policy)
+{
     out.clear();
+    const bool enable_thinking = policy.enable_thinking;
     const bool has_tools = !conv.tools.empty();
     const bool first_system =
         !conv.messages.empty() && conv.messages[0].role == "system";
@@ -117,8 +220,10 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
         for (const char *s : kQwenSentinels) m.emplace_back(s);
         return m;
     }();
-    const auto esc = [](std::string_view s) {
-        return tools::NeutralizeControlMarkers(s, kMarkers);
+    const auto esc = [&policy](std::string_view s) {
+        const std::string_view body =
+            policy.trim_content ? TrimAscii(s) : std::string_view(s);
+        return tools::NeutralizeControlMarkers(body, kMarkers);
     };
 
     if (has_tools) {
@@ -126,14 +231,33 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
         out +=
             "# Tools\n\nYou have access to the following functions:\n\n"
             "<tools>";
+        simdjson::dom::parser tool_json_parser;
         for (const ToolSpec &t : conv.tools) {
-            out += "\n{\"type\":\"function\",\"function\":{\"name\":\"";
-            out += JsonEscape(esc(t.name));
-            out += "\",\"description\":\"";
-            out += JsonEscape(esc(t.description));
-            out += "\",\"parameters\":";
-            out += t.parameters_json.empty() ? std::string("{}")
-                                             : esc(t.parameters_json);
+            out += "\n";
+            if (!policy.jinja_tool_json) {
+                out += "{\"type\":\"function\",\"function\":{\"name\":\"";
+                out += JsonEscape(esc(t.name));
+                out += "\",\"description\":";
+                out += JsonEscape(esc(t.description));
+                out += "\",\"parameters\":";
+                out += t.parameters_json.empty() ? std::string("{}")
+                                                 : esc(t.parameters_json);
+                out += "}}";
+                continue;
+            }
+            out += "{\"type\": \"function\", \"function\": {\"name\": ";
+            AppendJinjaString(out, esc(t.name));
+            out += ", \"description\": ";
+            AppendJinjaString(out, esc(t.description));
+            out += ", \"parameters\": ";
+            simdjson::dom::element params;
+            const simdjson::padded_string padded(esc(t.parameters_json));
+            if (t.parameters_json.empty() ||
+                tool_json_parser.parse(padded).get(params) !=
+                    simdjson::SUCCESS)
+                out += "{}";
+            else
+                AppendJinjaJson(out, params);
             out += "}}";
         }
         out +=
@@ -177,7 +301,15 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
             out += "<|im_start|>user\n" + esc(m.content) + "<|im_end|>\n";
         } else if (m.role == "assistant") {
             in_tool_turn = false;
-            out += "<|im_start|>assistant\n" + esc(m.content);
+            if (policy.history_think_block) {
+                // 3.8 template: `assistant\n<think>\n{reasoning}\n</think>\n\n
+                // {content}`. The engine never receives a history turn's
+                // reasoning trace, so the empty form is the one rendered.
+                out += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+                out += esc(m.content);
+            } else {
+                out += "<|im_start|>assistant\n" + esc(m.content);
+            }
             bool first = true;
             for (const ToolCall &c : m.tool_calls) {
                 if (first) {
@@ -202,6 +334,8 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
                             if (v.type() ==
                                 simdjson::dom::element_type::STRING)
                                 out += esc(v.get_string().value_unsafe());
+                            else if (policy.jinja_tool_json)
+                                AppendJinjaJson(out, v);
                             else
                                 out += QwenSerialize(v);
                             out += "\n</parameter>\n";

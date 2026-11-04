@@ -1,7 +1,8 @@
 # SelfCheck matrix — model x parity gate, as measured
 
 Snapshot of **2026-10-24/25**, updated **2026-10-31** (GigaChat3.5-432B-A28B),
-re-verified **2026-11-03** (AliceAI-Foundation-80B-A3B re-ingestion),
+re-verified **2026-11-03** (AliceAI-Foundation-80B-A3B re-ingestion), re-verified
+**2026-11-04** (Qwen3.8-Flash-Next full lifecycle),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`.
@@ -51,6 +52,18 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 
 - SelfCheck **18/18**, FSI **26/29**, CODE **29/29**, DET **28/29**.
+- **Qwen3.8-Flash-Next** was re-verified end to end on 2026-11-04 (every stage,
+  real weights): SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`,
+  top-1 11751) plus the family's EOS and cross-instance gate, FSI/CODE/DET 3/3
+  each, native tool round-trip green. The three byte-level template deltas over
+  3.5/3.6 (closed think block on assistant history turns, jinja `tojson` tool
+  serialisation, `render_content|trim` — the last one is shared with 3.5/3.6 and
+  was latent for every qwen member) are pinned against the checkpoint's own
+  `chat_template.jinja` in `test_qwen_tool_framing`, and the exact policy the
+  model renders with is pinned flag by flag in `test_qwen_moe_exp_model`.
+  Throughput is expert-cache **capacity** bound
+  (42.98 perf / 33.88 r3 t/s at 5350/4319 slots; hit rate 0.86),
+  `docs/OPEN_TASKS.md` §R16.
 - **GigaChat3.5-432B-A28B-Reasoning** landed green on all four gates in its
   2026-10-31 session (241 GB tree, 219 GB of routed experts pinned, 26.2 GiB
   resident). Its goldens are **template-derived** — the 432B FP8-block-128

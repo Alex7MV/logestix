@@ -13,6 +13,8 @@
 
 #include <cstdlib>
 
+#include <cuda_runtime.h>
+
 // The knob-resolution tests below drive LSX_* through the same environment the
 // runtime reads, and must restore it afterwards so test order cannot leak a
 // knob into a later case. POSIX setenv/unsetenv have no MSVC equivalent: the
@@ -359,4 +361,35 @@ TEST_CASE("EnsurePerfPolicyApplied: applies policy, call-once, "
     EnsurePerfPolicyApplied();
     REQUIRE(CurrentKnobs().gemv_max_mib == 7);
     REQUIRE(CurrentKnobsSource() == PerfSource::kEnvOverride);
+}
+
+// ── The environment oracle must not perturb what it measures ───────────────
+//
+// MeasureMemoryBandwidthGbs() allocates two 512 MiB device buffers for its
+// DRAM-bound D2D copy and kept them for the process lifetime (thread-local
+// statics, never released). test_perf_baseline runs the probe BEFORE the model,
+// so every measured model loaded with 1024 MiB less free VRAM than the same
+// binary launched as an app -- and for a streamed-expert family the expert-slot
+// count is derived from exactly that number. Measured on qwen3.8-flash-next
+// (RTX 5090): harness 24985 MiB free -> 4962 slots -> 41.39 t/s; the same
+// binary, same prompt, no probe: 26009 MiB -> 5350 slots -> 42.90 t/s. A 3.5%
+// bias in the quantity under test, on every family, invisible in the report.
+TEST_CASE("memory-bandwidth probe releases its device buffers", "[gpu_perf]")
+{
+    int device = 0;
+    if (cudaGetDevice(&device) != cudaSuccess) SKIP("no CUDA device");
+    size_t free_before = 0, total = 0;
+    REQUIRE(cudaMemGetInfo(&free_before, &total) == cudaSuccess);
+    const double gbs = lsxcommon::perf::MeasureMemoryBandwidthGbs();
+    REQUIRE(gbs > 0.0);
+    size_t free_after = 0;
+    REQUIRE(cudaMemGetInfo(&free_after, &total) == cudaSuccess);
+
+    // The probe's own working set is 2 x 512 MiB; allow allocator slack but
+    // nothing on that scale may survive the call.
+    const size_t kSlack = size_t{64} << 20;
+    INFO("free before " << (free_before >> 20) << " MiB, after "
+                         << (free_after >> 20) << " MiB");
+    REQUIRE(free_before >= free_after);
+    REQUIRE(free_before - free_after <= kSlack);
 }

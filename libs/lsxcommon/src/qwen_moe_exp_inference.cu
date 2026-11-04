@@ -10,6 +10,7 @@
 #include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/cuda_event_wait.h"
 #include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/qwen_moe_exp_load.h"  // GenContextResidentBytes declaration
 #include "lsxcommon/shared_experts.h"
 
 #include <vector>
@@ -1548,7 +1549,37 @@ __global__ void exp_mean_streams_kernel(const __half *__restrict__ hyper,
     out[i] = __float2half(acc / hc);
 }
 
+// Process-lifetime device scratch owned by the generation driver: the fp16
+// embed table and the max_seq-scaled arena (fp32 logits dominate it). Both are
+// deliberately shared across model instances ("single session per process",
+// etalon simplification), which is why they are namespace-scope rather than
+// per-instance state — but that also means they survive a model Unload, so the
+// expert-cache sizing has to know they exist: it sizes from free VRAM, and a
+// second Load in one process would otherwise reserve the same context twice and
+// starve the cache (measured: 5350 -> 2202 slots in the perf harness's r3 leg).
+struct ExpGenScratch {
+    __half *d_embed_h = nullptr;
+    int64_t embed_elems = 0;
+    void *arena = nullptr;
+    size_t arena_cap = 0;
+};
+
+ExpGenScratch &ExpGenScratchInstance()
+{
+    static ExpGenScratch s;
+    return s;
+}
+
 } // namespace
+
+std::size_t GenContextResidentBytes()
+{
+    const ExpGenScratch &s = ExpGenScratchInstance();
+    // The arena is held at its grown capacity and only ever grows by the delta
+    // (it is freed before the larger cudaMalloc), and the embed table is exact
+    // for the frozen geometry, so both are fully reusable.
+    return s.arena_cap + static_cast<std::size_t>(s.embed_elems) * sizeof(__half);
+}
 
 cudaError_t RunExpGeneration(
     cudaStream_t stream, const qwen_moe_exp::ExpPinnedWeights &pw,
@@ -1602,8 +1633,9 @@ cudaError_t RunExpGeneration(
     }
 
     // Persistent fp16 embed table (dequant once per process).
-    static __half *d_embed_h = nullptr;
-    static int64_t embed_elems = 0;
+    ExpGenScratch &scratch = ExpGenScratchInstance();
+    __half *&d_embed_h = scratch.d_embed_h;
+    int64_t &embed_elems = scratch.embed_elems;
     if (!d_embed_h || embed_elems < static_cast<int64_t>(V) * H) {
         if (d_embed_h) cudaFree(d_embed_h);
         const int64_t bytes = static_cast<int64_t>(V) * H * sizeof(__half);
@@ -1621,9 +1653,10 @@ cudaError_t RunExpGeneration(
             return cudaGetLastError();
     }
 
-    // Arena (static — single session per process, etalon simplification).
-    static void *arena = nullptr;
-    static size_t arena_cap = 0;
+    // Arena (process-lifetime — single session per process, etalon
+    // simplification; see ExpGenScratch for the sizing consequence).
+    void *&arena = scratch.arena;
+    size_t &arena_cap = scratch.arena_cap;
     size_t half_elems = 0;
     half_elems += (size_t)max_seq * H;             // d_act (fp16 stream)
     half_elems += (size_t)max_seq * HCH;           // d_hyper
@@ -2385,6 +2418,29 @@ cudaError_t RunExpGeneration(
     if (e != cudaSuccess) {
         if (result.error_msg.empty()) result.error_msg = "generation failed";
         return e;
+    }
+    // Residency diagnostics. Decode wall time for this family is dominated by
+    // staging evicted experts from the pinned host arena (each miss is a
+    // ~2.6 MiB H2D inside the per-layer router handshake), so the hit rate IS
+    // the throughput explanation: a delta in t/s with no hit-rate record cannot
+    // be attributed to a code change or to a different continuation. Printed
+    // for every completed request, like the `[v41-cache]` line in the DeepSeek
+    // driver. Precedent: the GLM audit measured 46.6% hit -> 13.0 t/s against
+    // 57.4% -> 14.6 t/s on one binary, same protocol.
+    {
+        const std::int64_t routes = cache.hits + cache.misses;
+        if (routes > 0 && generated > 0) {
+            const double hit_rate =
+                static_cast<double>(cache.hits) / static_cast<double>(routes);
+            log::info(
+                "[qwen38-cache] hits=" + std::to_string(cache.hits) +
+                " misses=" + std::to_string(cache.misses) + " hit_rate=" +
+                std::to_string(hit_rate) + " misses_per_token=" +
+                std::to_string(static_cast<double>(cache.misses) /
+                               static_cast<double>(generated)) +
+                " slots=" + std::to_string(cache.slots) + " experts=" +
+                std::to_string(cache.total_experts));
+        }
     }
     result.resident_bytes = pw.resident_bytes;
     result.ok = true;

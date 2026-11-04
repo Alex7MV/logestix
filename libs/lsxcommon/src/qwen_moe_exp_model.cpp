@@ -170,13 +170,21 @@ bool Qwen38FlashNextModel::Load()
     if (!explicit_slots) {
         size_t free_bytes = 0, total_bytes = 0;
         if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
+            // The generation arena and the fp16 embed table are process-lifetime
+            // buffers (see ExpGenScratch), so a second Load in the same process
+            // finds them already inside the free-VRAM complement. Pass them so
+            // the context reserve is not charged twice — the harness runs the
+            // "perf" and "r3" legs as two Loads in one target.
+            const std::size_t resident =
+                qwen_moe_exp::GenContextResidentBytes();
             slots = qwen_moe_exp::SizeExpertCacheSlots(
                 free_bytes, per_expert, total_experts, kSizingMaxSeq,
-                perf::CurrentKnobs().expert_slots_pct);
+                perf::CurrentKnobs().expert_slots_pct, resident);
             if (slots > 0 && slots < total_experts)
                 log::info(absl::StrCat(
-                    "[qwen38-model] free=", free_bytes >> 20, "MiB, ", slots,
-                    "/", total_experts,
+                    "[qwen38-model] free=", free_bytes >> 20, "MiB, resident ",
+                    resident >> 20, "MiB of gen context, ", slots, "/",
+                    total_experts,
                     " experts resident; LRU covers the rest"));
         }
     }
@@ -299,7 +307,8 @@ gpu::InferenceResult Qwen38FlashNextModel::Infer(const ModelRequest &req)
             .eos_terminated = gen.eos_terminated,
             .kv_slots_used = kv_slots,
             .first_maxv = 0.f,
-            .resident_bytes = gen.resident_bytes},
+            .resident_bytes = gen.resident_bytes,
+            .expert_cache_slots = cache_.slots},
         pw_.top.num_layers);
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
@@ -316,7 +325,14 @@ bool Qwen38FlashNextModel::BuildConversationInputIds(
     std::vector<int32_t> &out_ids) const
 {
     std::string text;
-    if (!RenderQwenConversation(conv, text)) return false;
+    // The checkpoint's own chat_template.jinja differs from the Qwen3.5/3.6 one
+    // in three byte-level ways (verified against the template rendered by
+    // transformers 5.15.1): every assistant history turn carries the closed
+    // think block, the tool definitions are serialised like jinja's `tojson`,
+    // and message bodies are trimmed. Framing a 3.8 model with the 3.5 wire is
+    // a distribution shift it never saw in training, so the deltas are carried
+    // explicitly by the named policy (see kQwen38RenderPolicy).
+    if (!RenderQwenConversation(conv, text, kQwen38RenderPolicy)) return false;
     if (!AppendQwenChatIds(tok, text, out_ids))
         return BuildPromptInputIds(tok, text, out_ids);
     return true;

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "test_qwen_moe_exp_fixture.h"
 #include "lsxcommon/qwen_moe_exp_load.h"
+#include "lsxcommon/resource_governor.h"
 #include "qwen_moe_exp_constants.h"
 
 #include <cstddef>
@@ -272,5 +273,57 @@ TEST_CASE("cache slots sizing leaves room for the gen context",
     // Shorter contexts allow at least as many slots.
     REQUIRE(SizeExpertCacheSlots(free_bytes, per_expert, total, 261, 100) >=
             slots);
+}
+
+TEST_CASE("cache slots sizing does not charge resident scratch twice",
+          "[qwen-exp-loader]")
+{
+    // The generation arena (fp32 logits + KV) and the fp16 embed table are
+    // process-lifetime buffers in this family: RunExpGeneration keeps them in
+    // file-scope statics that are never released, because the arena is the
+    // "single session per process" etalon simplification. They are therefore
+    // allocated lazily on the first decode and are STILL resident when a second
+    // model instance is loaded in the same process — which is exactly what the
+    // perf harness does (a "perf" leg then an "r3" leg in one target).
+    //
+    // GenContextBytes() is charged as a reserve on every Load, so the second
+    // load pays for the context a second time: once because the free VRAM no
+    // longer contains it, and once through the reserve. Measured consequence on
+    // the real model: the r3 leg sized 5350 -> 2202 slots and decoded 29.64 t/s
+    // where the same binary at 5350 slots decodes 35.2 t/s. The reserve must be
+    // net of what the process already holds.
+    const std::size_t per_expert = 2611200;
+    const std::size_t free_bytes = 26009ull << 20;
+    const int total = 48 * 512;
+    const int seq = 2053;
+    const std::size_t ctx = GenContextBytes(seq);
+    const std::size_t embed = 1271398400ull;  // V*H*2, the fp16 embed table
+    const int cold = SizeExpertCacheSlots(free_bytes, per_expert, total, seq, 100);
+    const int warm = SizeExpertCacheSlots(free_bytes, per_expert, total, seq, 100,
+                                          ctx + embed);
+    REQUIRE(warm > cold);
+    // A warm load must size exactly like a cold load that still had those bytes
+    // free -- that is the whole point: the reservation is a function of the
+    // bytes that still have to be allocated, not of a fixed protocol.
+    REQUIRE(warm == SizeExpertCacheSlots(free_bytes + ctx + embed, per_expert,
+                                         total, seq, 100));
+    REQUIRE(warm == SizeExpertCacheSlots(free_bytes + ctx + embed, per_expert,
+                                         total, seq, 100, 0));
+    // A partial refund only returns what is really resident.
+    const int half = SizeExpertCacheSlots(free_bytes, per_expert, total, seq,
+                                          100, (ctx + embed) / 2);
+    REQUIRE(half > cold);
+    REQUIRE(half < warm);
+    // Refunding is capped at the reserve, so over-claiming cannot conjure
+    // memory: a claim past every reservation sizes as if nothing were reserved.
+    const int saturated = SizeExpertCacheSlots(free_bytes, per_expert, total,
+                                               seq, 100, 1ull << 40);
+    REQUIRE(saturated ==
+            lsxcommon::lifecycle::ExpertCacheSlots(free_bytes, per_expert,
+                                                   total, 100, 0));
+    REQUIRE(saturated >= warm);
+    // The OOM invariant still holds: the cache plus whatever still has to be
+    // allocated for the context fits the measured free VRAM.
+    REQUIRE(static_cast<std::size_t>(warm) * per_expert <= free_bytes);
 }
 
