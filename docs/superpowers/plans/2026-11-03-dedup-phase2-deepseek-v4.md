@@ -487,16 +487,27 @@ git commit -m "refactor(deepseek): template the generation pipeline and the load
   (Flash 4 MB/слой, Pro 176 MB/слой → opt-in), `pending_drain`-хук стора,
   форма `idx_wq_b` (читается из тензора, а не хардкод 8192×1024).
 
-Открытый блокер: с общим загрузчиком Pro падает на `shared expert upload
-failed (layer 34): out of memory` — **и после** отключения shared-cache
-(10.7 GiB) и после исправления пиннинга. Значит остаётся ещё одна
-per-family разница в загрузчике/арене; для поиска нужен диагностический
-вывод `cudaMemGetInfo` на каждом слое (у старого pro-загрузчика он был:
-`layer arena alloc failed (total=…, rb=…, free=…, total=…)`), а в общем
-остался только `cudaGetErrorString`. Следующий шаг: вернуть этот лог в
-`UploadLayerJobs`/shared-expert upload и сравнить `rb`/`free` построчно
-со старым pro-загрузчиком (он в истории: `git show <до-удаления>:
-libs/lsxcommon/src/deepseek_moe_pro_load.cu`).
+Найдено и исправлено два реальных дефекта общего загрузчика (коммиты
+`835e9d6a`, `ea948cbe`):
+
+1. `resident_bytes` дважды учитывал shared-expert набор (`UploadRaw` уже
+   считает байты; лишний `rb +=` раздувал цифру на ~2x набора, 4 GiB у Pro) —
+   губернатор отказывал в лизинге;
+2. FP16-кэш shared-экспертов выделялся безусловно: 176 MB/слой у Pro
+   (10.7 GiB) против 4 MB/слой у Flash. Теперь решает паспорт
+   (`kSharedExpertCache`), плюс в лог отказа добавлены `rb/free/total`
+   из `cudaMemGetInfo`.
+
+Эффект измерен: Pro с общим загрузчиком дошёл с слоя 34 до **слоя 59**
+(`rb=30798 MiB, free=17 MiB` при 32110 MiB на карте).
+
+Остаток: ~2.2 GiB (≈36 MiB/слой) сверх старого pro-загрузчика (28.0 GiB);
+не хватает ровно на последние два слоя. Следующий шаг — построчный учёт
+`rb` по категориям (dense-арена слоя, shared-expert packed/scales, эмбеддинг/
+голова) и сравнение с `git show <до-удаления>:libs/lsxcommon/src/
+deepseek_moe_pro_load.cu`; вероятный кандидат — лишняя FP16-копия BF16-тензора
+в `UploadLayerJobs` у Pro (конвертация вместо загрузки только сконвертированного
+буфера).
 
 Порядок безопасного продолжения: сначала довести общий загрузчик до
 успешной загрузки Pro (при живых копиях, сверяя `rb`/`free`), затем
