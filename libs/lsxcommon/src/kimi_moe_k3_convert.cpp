@@ -23,6 +23,7 @@
 #include "lsxcommon/kimi_moe_k3_convert.h"
 
 #include "kimi_moe_k3_constants.h"
+#include "kimi_moe_pro_constants.h"
 
 #include "lsxcommon/converter.h"
 #include "lsxcommon/log.h"
@@ -110,6 +111,89 @@ bool parse_expert_body(const std::string &body, int &expert, std::string &rest)
 }
 
 bool tensor_is_f32(const TensorInfo &t) { return t.dtype == "F32"; }
+
+// A Kimi-K3.1-Pro indexer tensor: pinned, BF16, never quantized (it decides
+// WHICH keys are visible, so a 4-bit rounding error there is a different model).
+bool tensor_is_indexer(KimiK3TensorKind k)
+{
+    switch (k) {
+    case KimiK3TensorKind::IndexerWqB:
+    case KimiK3TensorKind::IndexerWk:
+    case KimiK3TensorKind::IndexerKNormW:
+    case KimiK3TensorKind::IndexerKNormB:
+    case KimiK3TensorKind::IndexerWeightsProj:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool check_frozen_indexer(const KimiK3ConvertTopology &top, std::string &why)
+{
+    using namespace lsxcommon::kimi_pro::frozen;
+    auto bad = [&why](const char *field, int got, int want) {
+        why = absl::StrFormat("%s: got %d, want %d", field, got, want);
+        return false;
+    };
+    if (top.index_heads != kIndexHeads)
+        return bad("dsa_config.index_num_heads", top.index_heads, kIndexHeads);
+    if (top.index_head_dim != kIndexHeadDim)
+        return bad("dsa_config.index_head_dim", top.index_head_dim,
+                   kIndexHeadDim);
+    if (top.index_topk != kIndexTopK)
+        return bad("dsa_config.index_topk", top.index_topk, kIndexTopK);
+    if (top.index_rope_dim != kIndexRopeDim)
+        return bad("dsa_config.index_rope_dim", top.index_rope_dim,
+                   kIndexRopeDim);
+    const int dsa = static_cast<int>(top.dsa_layers.size());
+    if (dsa != kDsaLayerCount)
+        return bad("dsa layer count", dsa, kDsaLayerCount);
+    for (int l : kDsaLayers)
+        if (std::find(top.dsa_layers.begin(), top.dsa_layers.end(), l) ==
+            top.dsa_layers.end())
+            return bad("dsa layer index", l, l);
+    return true;
+}
+
+// The indexer shapes are derived from the checkpoint's own dsa_config (so the
+// same check works under LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY, where the tiny
+// fixture geometry is legal).
+bool check_indexer_shape(KimiK3TensorKind kind, const TensorInfo &t,
+                         const KimiK3ConvertTopology &top, std::string &why)
+{
+    std::vector<int64_t> want;
+    switch (kind) {
+    case KimiK3TensorKind::IndexerWqB:
+        want = {static_cast<int64_t>(top.index_heads) * top.index_head_dim,
+                top.q_lora};
+        break;
+    case KimiK3TensorKind::IndexerWk:
+        want = {top.index_head_dim, top.hidden_size};
+        break;
+    case KimiK3TensorKind::IndexerKNormW:
+    case KimiK3TensorKind::IndexerKNormB:
+        want = {top.index_head_dim};
+        break;
+    case KimiK3TensorKind::IndexerWeightsProj:
+        want = {top.index_heads, top.hidden_size};
+        break;
+    default:
+        return true;
+    }
+    if (t.shape != want) {
+        why = absl::StrFormat("%s: shape [", t.name);
+        for (size_t i = 0; i < t.shape.size(); ++i)
+            absl::StrAppendFormat(&why, "%s%lld", i ? "," : "",
+                                  static_cast<long long>(t.shape[i]));
+        absl::StrAppendFormat(&why, "], expected [");
+        for (size_t i = 0; i < want.size(); ++i)
+            absl::StrAppendFormat(&why, "%s%lld", i ? "," : "",
+                                  static_cast<long long>(want[i]));
+        absl::StrAppendFormat(&why, "]");
+        return false;
+    }
+    return true;
+}
 
 bool check_frozen_geometry(const KimiK3ConvertTopology &top, std::string &why)
 {
@@ -251,6 +335,11 @@ ParsedKimiK3Tensor ClassifyKimiK3Tensor(const std::string &full_name)
         {"self_attn.kv_b_proj.weight", K::MlaKvB},
         {"self_attn.o_proj.weight", K::MlaO},
         {"self_attn.g_proj.weight", K::MlaG},
+        {"self_attn.indexer.wq_b.weight", K::IndexerWqB},
+        {"self_attn.indexer.wk.weight", K::IndexerWk},
+        {"self_attn.indexer.k_norm.weight", K::IndexerKNormW},
+        {"self_attn.indexer.k_norm.bias", K::IndexerKNormB},
+        {"self_attn.indexer.weights_proj.weight", K::IndexerWeightsProj},
         {"self_attn.q_proj.weight", K::KdaQ},
         {"self_attn.k_proj.weight", K::KdaK},
         {"self_attn.v_proj.weight", K::KdaV},
@@ -437,7 +526,8 @@ KimiK3ConvertTopology ParseKimiK3Config(const std::string &input_dir)
     if (top.shared_intermediate == 0)
         top.shared_intermediate = top.moe_intermediate * top.shared_experts;
 
-    // Second pass for the wrapper-level ids (forward-only ondemand cursor).
+    // Second pass for the wrapper-level fields (forward-only ondemand cursor):
+    // the special ids and the variant discriminator + dsa_config.
     {
         simdjson::ondemand::parser p2;
         simdjson::padded_string pp(json.data(), json.size());
@@ -451,24 +541,94 @@ KimiK3ConvertTopology ParseKimiK3Config(const std::string &input_dir)
                 top.bos_id = outer_bos;
                 top.eos_id = outer_eos;
                 top.pad_id = outer_pad;
+                std::string_view mt;
+                if (r2["model_type"].get_string().get(mt) ==
+                    simdjson::SUCCESS)
+                    top.model_type = std::string(mt);
+
+                simdjson::ondemand::object tc2;
+                if (r2["text_config"].get_object().get(tc2) ==
+                    simdjson::SUCCESS) {
+                    simdjson::ondemand::object dsa;
+                    // Absent on a Kimi-K3 checkpoint: that absence is the
+                    // second half of the variant discriminator.
+                    if (tc2["dsa_config"].get_object().get(dsa) ==
+                        simdjson::SUCCESS) {
+                        top.index_heads = get_i(dsa, "index_num_heads", 0);
+                        top.index_head_dim = get_i(dsa, "index_head_dim", 0);
+                        top.index_topk = get_i(dsa, "index_topk", 0);
+                        top.index_rope_dim = get_i(dsa, "index_rope_dim", 0);
+                        // 1-based list in the checkpoint -> 0-based table.
+                        for (auto v : dsa["dsa_layers"].get_array()) {
+                            int64_t x = 0;
+                            if (v.get_int64().get(x) != simdjson::SUCCESS)
+                                continue;
+                            if (x >= 1 && x <= top.num_layers)
+                                top.dsa_layers.push_back(
+                                    static_cast<int>(x) - 1);
+                        }
+                    }
+                }
             }
         }
     }
     return top;
 }
 
-arrow::Status ConvertKimiK3Model(const std::string &input_dir,
-                                 const std::string &output_root)
+arrow::Status ConvertKimiK3Variant(const std::string &input_dir,
+                                   const std::string &output_root,
+                                   KimiVariant variant)
 {
+    const bool pro = variant == KimiVariant::k31_pro;
+    const char *label = pro ? "Kimi-K3.1-Pro" : "Kimi-K3";
     KimiK3ConvertTopology top = ParseKimiK3Config(input_dir);
     if (!top.error_msg.empty())
-        return arrow::Status::Invalid("Kimi-K3 config error: ", top.error_msg);
+        return arrow::Status::Invalid(label, " config error: ", top.error_msg);
 
-    if (!SyntheticGeometryAllowed()) {
-        std::string why;
-        if (!check_frozen_geometry(top, why))
-            return arrow::Status::Invalid("Kimi-K3 frozen geometry mismatch: ",
-                                          why);
+    // ── Variant discriminator, both ways ─────────────────────────────────
+    // The text tower reports `model_type = kimi_linear` for BOTH checkpoints,
+    // so only the wrapper field and the presence of `dsa_config` distinguish
+    // them. A K3 tree converted as Pro (or the reverse) is a hard error: the
+    // two decode differently on any prompt longer than the top-k budget.
+    if (pro) {
+        using namespace lsxcommon::kimi_pro::frozen;
+        if (top.model_type != kSourceModelType)
+            return arrow::Status::Invalid(
+                "Kimi-K3.1-Pro conversion needs a checkpoint whose "
+                "config.json model_type is \"",
+                kSourceModelType, "\", got \"", top.model_type,
+                "\" (a Kimi-K3 checkpoint converts with --kimi_k3)");
+        if (top.dsa_layers.empty())
+            return arrow::Status::Invalid(
+                "Kimi-K3.1-Pro conversion needs dsa_config.dsa_layers: "
+                "without the table the indexer tensors cannot be attributed "
+                "to their DSA layers");
+        if (top.dsa_layers != top.mla_layers)
+            return arrow::Status::Invalid(
+                "Kimi-K3.1-Pro: dsa_config.dsa_layers must be exactly the "
+                "full-attention layer table (every DSA layer is a gated-MLA "
+                "layer)");
+        if (!SyntheticGeometryAllowed()) {
+            std::string why;
+            if (!check_frozen_geometry(top, why))
+                return arrow::Status::Invalid(
+                    "Kimi-K3.1-Pro frozen geometry mismatch: ", why);
+            if (!check_frozen_indexer(top, why))
+                return arrow::Status::Invalid(
+                    "Kimi-K3.1-Pro frozen indexer mismatch: ", why);
+        }
+    } else {
+        if (top.model_type == lsxcommon::kimi_pro::frozen::kSourceModelType)
+            return arrow::Status::Invalid(
+                "this is a Kimi-K3.1-Pro checkpoint (config.json model_type \"",
+                lsxcommon::kimi_pro::frozen::kSourceModelType,
+                "\"); convert it with --kimi_k31_pro");
+        if (!SyntheticGeometryAllowed()) {
+            std::string why;
+            if (!check_frozen_geometry(top, why))
+                return arrow::Status::Invalid(
+                    "Kimi-K3 frozen geometry mismatch: ", why);
+        }
     }
 
     auto model = lsxcommon::scan_directory(input_dir);
@@ -479,13 +639,56 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
     // Classify everything first: a leftover tensor is a hard error inside the
     // main pass (an unknown name must never be skipped silently). The vision
     // tower / projector are the only intentional omissions and are counted.
+    //
+    // The indexer pass also runs here, where the TensorInfo shapes are at hand:
+    // an indexer on a KDA layer, an indexer in a Kimi-K3 tree, or an indexer
+    // whose shape disagrees with dsa_config is a hard error, never a silent
+    // drop or a silently quantized tensor.
+    absl::btree_map<int, std::vector<KimiK3TensorKind>> indexer_kinds;
     for (const auto &shard : model.shards)
         for (const auto &t : shard.tensors) {
             auto p = ClassifyKimiK3Tensor(t.name);
             if (p.kind == KimiK3TensorKind::Unknown)
+                return arrow::Status::Invalid("unrecognized tensor in ", label,
+                                              " checkpoint: ", t.name);
+            if (!tensor_is_indexer(p.kind)) continue;
+            if (!pro)
                 return arrow::Status::Invalid(
-                    "unrecognized tensor in Kimi-K3 checkpoint: ", t.name);
+                    "indexer tensor in a Kimi-K3 checkpoint: ", t.name,
+                    " (this is a Kimi-K3.1-Pro tree)");
+            if (std::find(top.dsa_layers.begin(), top.dsa_layers.end(),
+                          p.layer) == top.dsa_layers.end())
+                return arrow::Status::Invalid(
+                    "indexer tensor on a KDA layer: ", t.name,
+                    " (layer ", p.layer, " is not in dsa_layers)");
+            std::string why;
+            if (!check_indexer_shape(p.kind, t, top, why))
+                return arrow::Status::Invalid(
+                    "Kimi-K3.1-Pro indexer shape mismatch: ", why);
+            indexer_kinds[p.layer].push_back(p.kind);
         }
+    if (pro) {
+        // Exactly the five indexer tensors on every DSA layer, and none on any
+        // other layer (checked above).
+        for (int l : top.dsa_layers) {
+            auto &kinds = indexer_kinds[l];
+            std::sort(kinds.begin(), kinds.end());
+            const std::vector<KimiK3TensorKind> want = {
+                KimiK3TensorKind::IndexerWqB,
+                KimiK3TensorKind::IndexerWk,
+                KimiK3TensorKind::IndexerKNormW,
+                KimiK3TensorKind::IndexerKNormB,
+                KimiK3TensorKind::IndexerWeightsProj,
+            };
+            std::vector<KimiK3TensorKind> want_sorted = want;
+            std::sort(want_sorted.begin(), want_sorted.end());
+            if (kinds != want_sorted)
+                return arrow::Status::Invalid(
+                    "Kimi-K3.1-Pro layer ", l, " carries ", kinds.size(),
+                    " indexer tensors; want exactly 5 (wq_b, wk, "
+                    "k_norm.weight, k_norm.bias, weights_proj)");
+        }
+    }
 
     // NOTE: integrity::VerifyAllTensorReads is deliberately not used here — it
     // would read the whole 1.5 TB tree a second time. Every read below is
@@ -762,10 +965,31 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"" << frozen::kFormatTag << "\",\n"
-          << "  \"model\": \"Kimi-K3\",\n"
-          << "  \"model_type\": \"" << frozen::kModelType << "\",\n"
-          << "  \"num_layers\": " << top.num_layers << ",\n"
+          << "  \"format\": \""
+          << (pro ? lsxcommon::kimi_pro::frozen::kFormatTag
+                  : frozen::kFormatTag)
+          << "\",\n"
+          << "  \"model\": \"" << (pro ? "Kimi-K3.1-Pro" : "Kimi-K3")
+          << "\",\n"
+          << "  \"model_type\": \""
+          << (pro ? lsxcommon::kimi_pro::frozen::kModelType
+                  : frozen::kModelType)
+          << "\",\n"
+          << "  \"indexer\": " << (pro ? "true" : "false") << ",\n";
+        if (pro) {
+            using namespace lsxcommon::kimi_pro::frozen;
+            j << "  \"dsa_layers\": [";
+            for (size_t i = 0; i < top.dsa_layers.size(); ++i)
+                j << (i ? "," : "") << top.dsa_layers[i];
+            j << "],\n"
+              << "  \"index_head_dim\": " << top.index_head_dim << ",\n"
+              << "  \"index_num_heads\": " << top.index_heads << ",\n"
+              << "  \"index_topk\": " << top.index_topk << ",\n"
+              << "  \"index_rope_dim\": " << top.index_rope_dim << ",\n"
+              << "  \"index_norm\": \"layernorm\",\n"
+              << "  \"index_norm_eps\": " << kIndexNormEps << ",\n";
+        }
+        j << "  \"num_layers\": " << top.num_layers << ",\n"
           << "  \"num_dense_layers\": " << top.dense_layers << ",\n"
           << "  \"hidden_size\": " << top.hidden_size << ",\n"
           << "  \"intermediate_size\": " << top.dense_intermediate << ",\n"
@@ -836,15 +1060,27 @@ arrow::Status ConvertKimiK3Model(const std::string &input_dir,
     }
 
     lsxcommon::log::info(absl::StrFormat(
-        "Kimi-K3 conversion: %d layers (%zu MLA / %zu KDA), %d experts x %d "
+        "%s conversion: %d layers (%zu MLA / %zu KDA), %d experts x %d "
         "layers, %lld pinned, %lld streamed, stripped %d vision + %d "
         "projector tensors",
-        top.num_layers, top.mla_layers.size(), top.kda_layers.size(),
+        label, top.num_layers, top.mla_layers.size(), top.kda_layers.size(),
         top.num_experts, top.num_layers - top.dense_layers,
         static_cast<long long>(pinned_count),
         static_cast<long long>(streamed_count), top.skipped_visual_tensors,
         top.skipped_projector_tensors));
+    if (pro)
+        lsxcommon::log::info(absl::StrFormat(
+            "Kimi-K3.1-Pro Gated DSA: %zu indexer layers x %d heads x %d dim, "
+            "index_topk %d, %zu indexer tensors pinned BF16",
+            top.dsa_layers.size(), top.index_heads, top.index_head_dim,
+            top.index_topk, indexer_kinds.size() * 5));
     return arrow::Status::OK();
+}
+
+arrow::Status ConvertKimiK3Model(const std::string &input_dir,
+                                 const std::string &output_root)
+{
+    return ConvertKimiK3Variant(input_dir, output_root, KimiVariant::k3);
 }
 
 }  // namespace lsxcommon::kimi_k3

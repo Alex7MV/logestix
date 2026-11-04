@@ -60,6 +60,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         {"glm", Pipeline::kGlm},
         {"kimi", Pipeline::kKimi},
         {"kimi_k3", Pipeline::kKimiK3},
+        {"kimi_k31_pro", Pipeline::kKimiK31Pro},
         {"qwen", Pipeline::kQwenDense},
         {"qwen35moe", Pipeline::kQwen35Moe},
         {"qwen36moe", Pipeline::kQwen36Moe},
@@ -87,6 +88,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         if (std::string(name) == "glm") f.glm = true;
         else if (std::string(name) == "kimi") f.kimi = true;
         else if (std::string(name) == "kimi_k3") f.kimi_k3 = true;
+        else if (std::string(name) == "kimi_k31_pro") f.kimi_k31_pro = true;
         else if (std::string(name) == "qwen") f.qwen = true;
         else if (std::string(name) == "qwen35moe") f.qwen35moe = true;
         else if (std::string(name) == "qwen36moe") f.qwen36moe = true;
@@ -155,6 +157,7 @@ TEST_CASE("forge cli: two family flags are rejected as ambiguous",
     // usage error (exit 2).
     for (const auto &[a, b] : {std::pair{"glm", "alice"},
                                 std::pair{"kimi", "granite"},
+                                {"kimi_k3", "kimi_k31_pro"},
                                 {"phi", "glm"}, {"gemma4", "mimo"}}) {
         CAPTURE(a);
         CAPTURE(b);
@@ -163,6 +166,8 @@ TEST_CASE("forge cli: two family flags are rejected as ambiguous",
         if (first == "glm") f.glm = true;
         else if (first == "alice") f.alice = true;
         else if (first == "kimi") f.kimi = true;
+        else if (first == "kimi_k3") f.kimi_k3 = true;
+        else if (first == "kimi_k31_pro") f.kimi_k31_pro = true;
         else if (first == "granite") f.granite = true;
         else if (first == "phi") f.phi = true;
         else if (first == "gemma4") f.gemma4 = true;
@@ -170,6 +175,8 @@ TEST_CASE("forge cli: two family flags are rejected as ambiguous",
         if (second == "glm") f.glm = true;
         else if (second == "alice") f.alice = true;
         else if (second == "kimi") f.kimi = true;
+        else if (second == "kimi_k3") f.kimi_k3 = true;
+        else if (second == "kimi_k31_pro") f.kimi_k31_pro = true;
         else if (second == "granite") f.granite = true;
         else if (second == "phi") f.phi = true;
         else if (second == "gemma4") f.gemma4 = true;

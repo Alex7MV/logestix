@@ -73,6 +73,17 @@ set_tests_properties(test_kimi_k3_convert PROPERTIES LABELS convert)
 set_tests_properties(test_kimi_k3_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_kimi_k3_convert PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Kimi-K3.1-Pro synthetic converter (Gated DSA indexer, variant gate) ─────
+# Same synthetic-checkpoint discipline as the K3 converter above; the gate is
+# the wrapper-level model_type + dsa_config/indexer-tensor agreement.
+add_executable(test_kimi_pro_convert test_kimi_pro_convert.cpp)
+target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_kimi_pro_convert COMMAND test_kimi_pro_convert)
+set_tests_properties(test_kimi_pro_convert PROPERTIES LABELS convert)
+set_tests_properties(test_kimi_pro_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_kimi_pro_convert PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)

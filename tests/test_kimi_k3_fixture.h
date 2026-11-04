@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -116,7 +117,15 @@ inline std::vector<uint8_t> MakeE8m0Scales(int64_t rows, int64_t groups)
     return out;
 }
 
-inline void WriteShard(const fs::path &dir, bool with_ballast = true)
+// Appended to the tensor list of every layer (before that layer's own
+// tensors). A sibling variant (Kimi-K3.1-Pro's DSA indexer) injects its extra
+// tensors through this hook instead of duplicating the whole shard writer; the
+// K3 fixture itself never mentions them.
+using LayerExtraFn =
+    std::function<void(int layer, std::vector<synthtest::FakeTensor> &ts)>;
+
+inline void WriteShard(const fs::path &dir, bool with_ballast = true,
+                       const LayerExtraFn &extra_layer = {})
 {
     using synthtest::FakeTensor;
     std::vector<FakeTensor> ts;
@@ -145,6 +154,7 @@ inline void WriteShard(const fs::path &dir, bool with_ballast = true)
 
     for (int l = 0; l < kLayers; ++l) {
         const std::string L = P + "model.layers." + std::to_string(l) + ".";
+        if (extra_layer) extra_layer(l, ts);
         ts.push_back(synthtest::FakeTensor{L + "input_layernorm.weight", "BF16",
                                            {kHidden},
                                            synthtest::MakeBf16Values(kHidden,
