@@ -1983,6 +1983,17 @@ set_tests_properties(test_kimi_k3_loader PROPERTIES TIMEOUT 300)
 set_tests_properties(test_kimi_k3_loader PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_kimi_k3_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Kimi-K3.1-Pro loader: DSA topology + pinned indexer plane ──────────────
+add_executable(test_kimi_pro_loader test_kimi_pro_loader.cpp)
+target_include_directories(test_kimi_pro_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_kimi_pro_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_pro_loader COMMAND test_kimi_pro_loader)
+set_tests_properties(test_kimi_pro_loader PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_pro_loader PROPERTIES TIMEOUT 300)
+set_tests_properties(test_kimi_pro_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_kimi_pro_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Kimi-K3 model + lifecycle (synthetic converted tree) ───────────────────
 add_executable(test_kimi_k3_model test_kimi_k3_model.cpp)
 target_include_directories(test_kimi_k3_model PRIVATE

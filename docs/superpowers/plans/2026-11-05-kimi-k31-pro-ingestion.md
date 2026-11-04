@@ -129,15 +129,21 @@
 **Interfaces:**
 - Produces: `KimiK3Topology` gains `bool dsa = false; std::vector<int> dsa_layers; int index_heads = 0, index_head_dim = 0, index_topk = 0, index_rope_dim = 0;` and `bool IsDsa(int layer) const`. `KimiK3LayerWeights` gains `__half *idx_wqb = nullptr, *idx_wk = nullptr, *idx_knorm_w = nullptr, *idx_knorm_b = nullptr, *idx_wproj = nullptr;`. `KimiK3TopologyMatchesFrozen` keeps its signature; the pro model passes its own expected values through a new `bool KimiK3TopologyMatchesFrozen(const KimiK3Topology&, bool expect_dsa, int expect_topk)` overload (the existing one-argument form delegates with `expect_dsa = false`, preserving K3).
 
-- [ ] **Step 1: Write the failing test** — a synthetic converted tree (the Task 2 fixture with indexers) loaded through `LoadKimiK3Topology` reports `dsa == true`, `dsa_layers == mla_layers`, `index_topk == 2048`, `index_heads == 32`, `index_head_dim == 128`; `KimiK3TopologyMatchesFrozen(top, true, 2048)` is true and `(top, false, 2048)` is false; a K3 tree (no indexers) reports `dsa == false` and has null `idx_wqb` after `LoadKimiK3PinnedWeights`; the Pro tree uploads `idx_wqb` with `rows == 4096, cols == 1536` and `idx_wk` with `rows == 128, cols == 7168`; `FreeKimiK3PinnedWeights` leaves every indexer pointer null (checked twice to catch a double free).
+- [x] **Step 1: Write the failing test** — a synthetic converted tree (the Task 2 fixture with indexers) loaded through `LoadKimiK3Topology` reports `dsa == true`, `dsa_layers == mla_layers`, `index_topk == 2048`, `index_heads == 32`, `index_head_dim == 128`; `KimiK3TopologyMatchesFrozen(top, true, 2048)` is true and `(top, false, 2048)` is false; a K3 tree (no indexers) reports `dsa == false` and has null `idx_wqb` after `LoadKimiK3PinnedWeights`; the Pro tree uploads `idx_wqb` with `rows == 4096, cols == 1536` and `idx_wk` with `rows == 128, cols == 7168`; `FreeKimiK3PinnedWeights` leaves every indexer pointer null (checked twice to catch a double free).
 
-- [ ] **Step 2: Run to verify it fails.**
+  Executed: 6 cases / 168 assertions (topology, broken `dsa_layers` table rejected, pinned plane on the synthetic geometry, exact indexer byte accounting, Kimi-K3 tree stays null, frozen cross-check in both directions).
 
-- [ ] **Step 3: Implement** — parse the new index fields (`decoded` in `LoadKimiK3Topology`), tolerate their absence (`dsa = false`) so a K3 tree still loads; in the pinned-weight pass, look up the five tensors per DSA layer and upload through the existing BF16→FP16 raw helper; `Free` releases them; extend the resident-byte accounting by exactly the bytes allocated (counted at the allocation site).
+- [x] **Step 2: Run to verify it fails.** — observed: `KimiK3Topology has no member named 'dsa'` (the new interface does not exist yet).
 
-- [ ] **Step 4: Run to verify it passes.**
+- [x] **Step 3: Implement** — parse the new index fields (`decoded` in `LoadKimiK3Topology`), tolerate their absence (`dsa = false`) so a K3 tree still loads; in the pinned-weight pass, look up the five tensors per DSA layer and upload through the existing BF16→FP16 raw helper; `Free` releases them; extend the resident-byte accounting by exactly the bytes allocated (counted at the allocation site).
 
-- [ ] **Step 5: Commit** — `feat(kimi-k31-pro): loader pins the indexer weights and cross-checks the variant`.
+  Deviations (recorded): (a) the loader now accepts BOTH format tags and gates on `"indexer"`, which may be ABSENT on Kimi-K3 trees converted before the variant existed (the Pro tag requires `true`, the K3 tag may omit it, a `true` on the K3 tag is an error); (b) the indexer shapes are checked against the topology at the upload site (`wq_b [heads*head_dim, q_lora]`, `wk [head_dim, hidden]`, `k_norm [head_dim]`, `weights_proj [heads, hidden]`) and a mismatch is a hard load failure; (c) the DSA half of `KimiK3TopologyMatchesFrozen` also checks the frozen `kDsaLayers` table and `kIndexRopeDim` from the pro passport, leaving the per-tensor head/head-dim check to the model's passport (Task 6).
+
+- [x] **Step 4: Run to verify it passes.** — `test_kimi_pro_loader` 6 cases / 168 assertions, `test_kimi_k3_loader` 3 cases / 47 assertions, `test_kimi_k3_model` unchanged, full `ctest --preset linux-debug` 134/134.
+
+  Deviation (recorded): the target is labelled `inference` (not `fast` as written) because it allocates and reads back device memory — the sibling `test_kimi_k3_loader` is labelled the same way, and `fast` is the host-only category.
+
+- [x] **Step 5: Commit** — `feat(kimi-k31-pro): loader pins the indexer weights and cross-checks the variant`.
 
 ---
 

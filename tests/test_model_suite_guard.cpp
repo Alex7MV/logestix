@@ -871,10 +871,11 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     // name a registered, UNCLAIMED target, and it fails as soon as the owning
     // row appears - so it cannot outlive the problem or hide an orphan.
     static const std::set<std::string> kPendingSuiteTargets = {
-        // Kimi-K3.1-Pro (variant row "kimi-k3.1-pro"): the DSA converter is
-        // stage 1 of 9; its row lands with Task 7 of
+        // Kimi-K3.1-Pro (variant row "kimi-k3.1-pro"): convert + load are
+        // stages 1-2 of 9; the row lands with Task 7 of
         // docs/superpowers/plans/2026-11-05-kimi-k31-pro-ingestion.md.
         "test_kimi_pro_convert",
+        "test_kimi_pro_loader",
     };
 
     std::set<std::string> claimed;

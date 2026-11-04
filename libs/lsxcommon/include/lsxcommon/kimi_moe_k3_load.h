@@ -82,11 +82,29 @@ struct KimiK3Topology {
     int skipped_projector = 0;
     std::vector<int> mla_layers;
     std::vector<int> kda_layers;
+    // Gated DSA (Kimi-K3.1-Pro only): every full-attention layer carries a
+    // Lightning Indexer. `dsa == false` is the Kimi-K3 tree, which has no
+    // indexer tensors at all; the two cannot be confused, because the flags are
+    // cross-checked against the format tag in the index.
+    bool dsa = false;
+    std::vector<int> dsa_layers;
+    int index_heads = 0;
+    int index_head_dim = 0;
+    int index_topk = 0;
+    int index_rope_dim = 0;
     std::string error_msg;
 
     bool IsMla(int layer) const
     {
         for (int l : mla_layers)
+            if (l == layer) return true;
+        return false;
+    }
+
+    bool IsDsa(int layer) const
+    {
+        if (!dsa) return false;
+        for (int l : dsa_layers)
             if (l == layer) return true;
         return false;
     }
@@ -144,6 +162,16 @@ struct KimiK3LayerWeights {
     lsx_nvfp4::LsxNvfp4Weight mla_g;    // [heads*v, hidden]
     __half *mla_qanorm = nullptr;
     __half *mla_kvanorm = nullptr;
+
+    // Gated DSA indexer (Kimi-K3.1-Pro): BF16 in the checkpoint, FP16 on
+    // device, NEVER quantized -- these weights decide which keys are visible,
+    // so a 4-bit rounding error would swap the selected set rather than blur an
+    // output. Null on every layer of a Kimi-K3 tree.
+    __half *idx_wqb = nullptr;      // [index_heads*index_head_dim, q_lora]
+    __half *idx_wk = nullptr;       // [index_head_dim, hidden]
+    __half *idx_knorm_w = nullptr;  // [index_head_dim] (LayerNorm, not RMSNorm)
+    __half *idx_knorm_b = nullptr;  // [index_head_dim]
+    __half *idx_wproj = nullptr;    // [index_heads, hidden]
 
     // KDA
     lsx_nvfp4::LsxNvfp4Weight kda_q, kda_k, kda_v, kda_o, kda_g;
@@ -211,8 +239,17 @@ using KimiK3ExpertDb = gpu::expert_store::ExpertStore<KimiK3ExpertEntry>;
 arrow::Status LoadKimiK3Topology(const std::string &model_path,
                                  KimiK3Topology &out);
 
-// Cross-checks the loaded index against the frozen passport.
+// Cross-checks the loaded index against the frozen Kimi-K3 passport.
 bool KimiK3TopologyMatchesFrozen(const KimiK3Topology &top);
+
+// Variant-aware cross-check. `expect_dsa` selects the tree the caller is
+// loading (Kimi-K3 passes false; Kimi-K3.1-Pro passes true) and `expect_topk`
+// is the caller's passport `index_topk` (ignored when `expect_dsa` is false).
+// The DSA form additionally requires the DSA table to be exactly the MLA table
+// and the indexer rope width to be the frozen one. The one-argument overload is
+// the `(false, 0)` delegate, so Kimi-K3 behaviour is unchanged.
+bool KimiK3TopologyMatchesFrozen(const KimiK3Topology &top, bool expect_dsa,
+                                 int expect_topk);
 
 // Loads the pinned graph and the streamed-plane views. Returns false on any
 // missing/short tensor (a partially loaded model is never left behind).
