@@ -443,11 +443,13 @@ struct DeepSeekInferArena {
     // slots + KV cache; `vocab` sizes the logits buffer. Increments
     // InferenceAllocCount() by 2. Buffers are laid out 16-byte aligned so every
     // element pointer stays properly aligned inside the single block.
+    template <class T = deepseek::Passport>
     cudaError_t Allocate(cudaStream_t stream, int num_layers, int max_seq_len,
                          const int* compress_ratios, int vocab);
     void Free();
 };
 
+template <class T = deepseek::Passport>
 cudaError_t load_pinned_weights(const std::string &model_path,
                                  PinnedWeights &pw,
                                  cudaStream_t stream);
