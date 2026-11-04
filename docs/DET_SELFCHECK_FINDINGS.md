@@ -135,7 +135,7 @@ known fragility.
 | deepseek-v4.1-flash | **wired** | `encoding/encoding.py` (thinking) | `deterministic=true` | **PASS 3/3**; golden committed |
 | qwen3.5-9b | **wired** | source (`qwen3_5` loader) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
 | qwen3.8-27b | **wired** | source (`qwen3_5` loader, GPU+CPU) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
-| qwen3.5-35b-a3b | pending | — | — | source not in vault; test SKIPs |
+| qwen3.5-35b-a3b | **wired** | source (transformers 5.15.1, captured 2026-10-04) | `deterministic=true` | **PASS 3/3**; golden committed; the converted tree was verified on 2026-11-04 — this replaces the stale "source not in vault; test SKIPs" row (source and the 19 GB tree have both been in the vault since 2026-10-01) |
 | qwen3.6-35b-a3b | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |
 | ornith-1.5-35b-a3b | **wired** | source (leading system turn, thinking off) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-07, transformers release) |
 | qwen3.8-flash-next | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |

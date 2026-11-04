@@ -230,3 +230,59 @@ Affected families whose reference is a streamed-expert design: glm-5.3-flash
 minimax-m3 (2.98/2.98), minimax-m3.1-flash (6.23/6.18), ling (2.77/2.41),
 beam (1.61/1.60), step-5-preview (1.82/1.83), mistral-large-4-1t (1.04/1.03),
 gigachat3.5 (11.32/11.10).
+
+## 6. §R16 moved out of the live list (2026-11-04)
+
+The last qwen item still in `docs/OPEN_TASKS.md` was §R16 itself: both of its
+residuals (framing, serialized expert H2D) were closed, so the section was
+carrying closed work in a file that only holds open work. Its text is kept here
+verbatim; the live file keeps only §A1, the Windows/5060 Ti kernel fault that no
+measurement on this host can chase.
+
+## R16 (moved out of the live file). qwen3.8-flash-next — lifecycle re-verified; both measured residuals closed (2026-11-04)
+
+Branch `feat/qwen38-flash-next-lifecycle` + `fix/qwen-template-fidelity`. Every
+Model Ingestion Protocol stage
+was re-run on the real 336 GB checkpoint (164 GB tree) and all four parity gates
+are green: SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`, top-1
+11751), FSI 3/3, CODE 3/3, DET 3/3, the EOS + cross-instance gate, and a native
+tool round-trip. Perf rows re-seeded by the harness: **43.39 t/s** (`perf`,
+5350 slots) / **33.91 t/s** (`r3`, 4319 slots) at 2048 tokens (were 42.98 /
+33.88). Two **instrument** defects that had been under-reporting the whole perf
+suite were found and fixed test-first (the bandwidth probe leaked 1 GiB of VRAM
+for the process lifetime; the generation scratch was charged twice on the second
+`Load()`), and the verdict logic now distinguishes capacity from regression.
+Full trail:
+[`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md).
+
+**Closed (perf): the serialized expert H2D.** Residency staging now rides the
+copy engine (`copy_stream` + per-expert `ev_uploads` + an `ev_front` slot-reuse
+fence) and the routed TC chain runs in ascending chunks that wait only on their
+own uploads (`moe::RunMoERoutedTcBatchStreamed`), with the depth chosen from the
+layer's miss count — a chunk's compute can only hide another chunk's copy, so
+`chunks = (n_miss >= 2) ? 2 : 1`. Bit-identical by construction (unchanged
+accumulate order), `logits_hash` unchanged. Measured against HEAD on the same
+machine and the same slots/hit rate: **−1.55%** on `perf`, **−1.47%** at a
+forced 4319-slot capacity oracle; `r3` −0.07%, because `kOff` takes the fused
+per-slot path where no batched chain exists to chunk. The first attribution pass
+over-counted the serialization (an overlap scan that could not see a kernel
+starting inside a copy reported 0.8%; the honest intersection is 17.7%). What
+remains is structural: the router host readback leaves the compute stream empty
+when the copies are issued, and those copies already run at the PCIe roofline
+(55.6 GB/s). The largest serial host in the step is now the hyper-connection
+block — `hc_epilogue` 2.65 + `hc_down_gemv` 2.16 + `hc_norm` 1.57 +
+`hc_up_gemv` 0.59 = 6.97 ms/step of an 18.5 ms/step kernel budget — which is
+arithmetic work, not staging. Full trail:
+[`open-tasks/2026-11-04-qwen38-expert-staging.md`](open-tasks/2026-11-04-qwen38-expert-staging.md).
+
+**Closed (framing).** The shared codec had been emitting the compact tool JSON
+and the untrimmed message content for **every** qwen member, because the two
+lines they came from (`render_content(...)|trim` and `{{- tool | tojson }}`) were
+misread as qwen3.8-only deltas when they are in all six templates; 3.8 in turn
+trimmed tool names/descriptions that its template renders verbatim. Trim and
+tojson are now unconditional in the codec (the flags are deleted), trim is scoped
+to message content, and `suppress_empty_system` is the third genuine per-family
+delta. All six members' real-weight tool round-trips are green on the new wire —
+including `qwen3.5-9b` and `qwen3.5-35b-a3b`, which had none — and every
+`logits_hash` is unchanged. Full trail:
+[`open-tasks/2026-11-04-qwen-template-fidelity.md`](open-tasks/2026-11-04-qwen-template-fidelity.md).

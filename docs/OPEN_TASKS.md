@@ -34,16 +34,52 @@ code that produced it.
   (`libs/lsxcommon/src/lsx_tc_gemm.cu:891`) already rejects non-CC-12, and this
   GPU *is* CC 12, so the `major != 12` guard is not what is firing here.
 
-## J. gemma-4-26b-a4b-it FSI/CODE — RESOLVED 2026-10-24 (archive)
+### A2. `deepseek-v4.1-flash`: a cancelled request poisons the **next** request
 
-All four parity gates are green on the MoE member (SelfCheck, FSI 3/3, CODE
-3/3, DET 3/3) after two fixes: the NVFP4 logits kernel was dropping the tied
-table's per-tensor global scale (logits 7.01x hot, fixed in `76a13afc`, pinned
-by a `gs != 1` case in `test_gemma_moe_moe`), and the body needed a second
-NVFP4 plane on the attention projections + dense MLP (routed experts stay
-4-bit). Measured root cause, the recipe ablation, the implementation and the
-re-seeded throughput (128.25 t/s perf / 128.34 r3, was ~157) --
-[`open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md`](open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md).
+- **Status: open, root-caused, fix not applied.** Measured 2026-11-04 on real
+  weights (294 GB tree in the vault):
+  `LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash`
+  `./tests/test_deepseek_moe_v41_selfcheck` — the Paris case passes (3 cycles
+  bit-exact, `logits_hash 0ab7077b529eaa3b`, top-1 11111), then the
+  cooperative-cancel case fails: `mid-generation abort: compressor state reset
+  failed` (27 assertions, 26 passed).
+- The case had **never run**: `ModelRoot()` in
+  `tests/test_deepseek_moe_v41_selfcheck.cpp` defaults to the retired vault
+  `/mnt/llm_models/models/DeepSeek-V4.1-Flash`, so both cases SKIP silently on
+  this host. Same class as a golden that was never captured — the target is
+  green in CI because it never starts.
+- **Root cause (measured**, with a temporary probe logging the entry
+  last-error and the two `cudaEventElapsedTime` results in
+  `libs/lsxcommon/src/deepseek_moe_v41_inference_pipeline.cu`**)**:
+  1. A pre-set abort breaks on the first emitted token, and the
+     `if (gs->Aborted()) break;` sits **above** the
+     `if (!first_gen_captured && step == prompt_len - 1)` block, so `ev.ttft`
+     is never recorded for that request.
+  2. `cudaEventElapsedTime(ev.start, ev.ttft)` then returns
+     `cudaErrorInvalidResourceHandle`. The result is unchecked, so the request
+     still reports `ok=true` (which is why the cancel case passes and the
+     failure appears elsewhere).
+  3. CUDA's last-error state is **per thread** and is only cleared by a read,
+     so the next request's first `cudaGetLastError()` returns it — and the
+     first thing the pipeline does is `LaunchFillF32` on the compressor state,
+     which then reports `compressor state reset failed`. The context is
+     healthy: the very next launch in the same loop returns `cudaSuccess`, so
+     this is a stale-error leak, not a fault (`cudaErrorInvalidResourceHandle`,
+     not `700`).
+- **Fix (small, but it needs its own verification run):** record `ev.ttft` and
+  the `first_gen_*` fields before the abort break, check both
+  `cudaEventElapsedTime` results, and point `ModelRoot()` at the vault
+  convention (`lsx_model_models_dir()`, as the qwen tests do) so the case
+  cannot skip silently again. Then re-run the cancel case plus the tool
+  round-trip.
+- **Why the class matters beyond this family:** any driver that runs two
+  requests in one process and leaves an unchecked API error behind fails the
+  second request at an unrelated site — and the shared abort gate
+  (`tests/test_streaming_assert.h`) only protects the families that actually
+  reach it.
+- The FSI/CODE goldens for this model stay RED for the reasons already recorded
+  in §Q (1/3 and 2/3 on the E4M3FN conversion); they are not affected by this
+  item.
 
 ## R. gemma-4-31b-it (dense): FSI-01 RED (the TC partial-M bug it was found by is closed, 2026-10-10)
 
@@ -204,7 +240,8 @@ immediate turn close), and the commit also left `test_model_suite_guard` red
 checkpoint is `modelopt 0.44.0rc5` `MIXED_PRECISION` with `W4A16_NVFP4` experts
 plus an FP8 KV cache, and the installed transformers ships **no** modelopt
 quantizer, so the source cannot be executed for an oracle; the bf16 passport is
-not in the vault. The debt rows stay. The lesson matches §J: a golden that is
+not in the vault. The debt rows stay. The lesson matches the gemma-4-26b-a4b-it
+case (archived 2026-10-24): a golden that is
 not the source's own generation is not a parity oracle, and a golden with the
 wrong tokenizer cannot even be a framing test.
 
@@ -856,9 +893,11 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-11-04 | qwen3.5-35b-a3b verified on real weights; two benchmark rows had been stale in opposite directions | The member was sitting in `SELFCHECK_MATRIX.md` §3 ("golden present, **no converted tree** — SKIP") although its 19 GB tree had been in the vault since 2026-10-01 and `kGoldenDebt` never exempted it — so all four gates were *required* to be green and none had ever been run. Measured serially on the real weights: SelfCheck Paris ×3 bit-exact (`logits_hash f4c91be5f2206d56`, top-1 11751), FSI/CODE/DET 3/3 each, DET `deterministic=true`. Both of its benchmark rows were dated 2026-10-06, i.e. before the neutral routed-MoE migration, the overflow-proof batched SwiGLU (`8e34314`) and the 2026-10-23 strict-mode fix — its siblings were re-seeded at each of those moments and this one was skipped twice. `perf` was **DEGRADED** at 96.14% with a clean probe (1528.54 vs 1531.68 GB/s, so not the environment): three runs measured 163.54 / 159.59 / 159.81 t/s and the row now carries the harness's own write, 170.10 → **159.81**, on the same band as its two 35B-A3B siblings on identical code (qwen3.6 161.97, ornith 160.25) — the accepted cost `8e34314` itself records as "Qwen3.6 166.7 → 161.3". No parent-commit bisect was run: the residual is inside the 2.4% run-to-run spread, and the sibling triple plus the change's own A/B carry the attribution. `r3` was 13.78, a **superseded** value — 5.6× below what the same binary does (77.3 t/s by `lsxbenchmark --bench --bit-exact`, TTFT 64.16 ms), i.e. a five-fold regression would have passed unseen; re-seeded through the harness 13.78 → **77.56**. Also recorded the missing `qwen_moe.router.decode` budget for `rtx 5090` (11.7931/11.7947/11.7955 µs over three observations, max 11.7955, budget 15.924 = 1.35× pad), so the Release case now judges (260 assertions) instead of `SKIP`ping — the instrument that keeps the ~30 µs deep-unrolled variant out — [`open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md`](open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md) |
+| 2026-11-04 | §R16 and §J moved out of the live list; two gate documents corrected | The live file was carrying two fully-resolved sections, which its own rule forbids: **§J** (gemma-4-26b-a4b-it FSI/CODE), resolved 2026-10-24 and already archived, and **§R16** (qwen3.8-flash-next), whose last residual closed in this branch — its text moved verbatim into the lifecycle trail (§6). With §R16 gone, §A1 is the only qwen item left (the Windows/5060 Ti kernel fault no measurement on this host can chase) and its latency-budget half is now separated from the fault on this GPU. The same audit found `deepseek-v4.1-flash` also misfiled as "no converted tree" (294 GB tree present) and corrected the matrix summary counts to a stated counting rule (SelfCheck 22/22 rows, FSI 58/63, CODE 62/63, DET 62/63 over §1) plus the `Reproduce` block, and both `{DET,CODE}_SELFCHECK_FINDINGS.md` claims that the qwen3.5-35b-a3b source is absent from the vault — [`open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md`](open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md) |
 | 2026-11-04 | qwen3.8-flash-next §R16 item A closed: expert staging moved onto the copy engine, chunk depth follows the layer's miss count | The last §R16 residual is closed. Residency staging no longer runs on the compute stream: it rides `copy_stream` with a per-expert `ev_uploads[k]` and an `ev_front` slot-reuse fence, and the routed TC chain gained a neutral entry point (`moe::RunMoERoutedTcBatchStreamed`) that runs the K slots in ascending chunks, each waiting **only** on its own uploads, so the next chunk's H2D overlaps this chunk's TC work. Depth is chosen from the miss count (`chunks = (n_miss >= 2) ? 2 : 1`) because a chunk's compute can only hide another chunk's copy — with fewer than two misses the second batch launch (K=5 tiles per launch instead of 10) is pure cost. Bit-exact by construction (the fp32 accumulate order into `d_acc` is unchanged; `LsxTcBatchSplitK` scratch is slot-disjoint), `logits_hash 2e3bcd090441ad65` unchanged. Measured against HEAD at identical slots/hit rate: **−1.55%** on `perf` (47 679 → 46 938 ms) and **−1.47%** at a forced 4319-slot capacity oracle (hit 0.862 → 0.745), `r3` −0.07% because under `kOff` the batched chain is not used at all — the honest reason one row does not move. The **instrument** was corrected first: the previous attribution reported 0.8% overlap from a scan that only matched the kernel starting before each copy; an interval intersection gives 17.7%. What is left is structural — the router host readback leaves the compute stream empty when the copies are issued, and the copies already run at 54.5-55.6 GB/s (the PCIe Gen5 ceiling) — so the largest serial host in the step is now the hyper-connection block, 6.97 of 18.5 ms/step of kernel time. Also fixed in passing: an early `chunks <= 1` path skipped the upload waits entirely, a race for any caller passing a `copy_stream`; one chunk now means "serialize", the test covers 1/2/3, SelfCheck ×3 + tool round-trip are green and `ctest -L fast` is 134/134. Rows re-seeded through the harness 43.39 / 33.91 t/s — [`open-tasks/2026-11-04-qwen38-expert-staging.md`](open-tasks/2026-11-04-qwen38-expert-staging.md) |
 | 2026-11-04 | qwen family framing: the two "3.8 deltas" were family-wide | The previous session classified `render_content\|trim` and `{{- tool \| tojson }}` as qwen3.8-only and carried them behind policy flags. Diffing the six checkpoints' `chat_template.jinja` shows both lines are **identical in every qwen member** (4 trim sites + 1 tojson site each); 3.8's real deltas are `reasoning_effort`, the `preserve_thinking` default and an empty-system-turn guard. So the shared codec emitted the compact tool JSON and untrimmed content for every member, and 3.8 trimmed tool names/descriptions that the template renders verbatim (`"  Get the weather  \n"` byte for byte in the oracle). Fix: trim and tojson are unconditional (the flags are deleted — no template makes them configurable), trim is scoped to message content via `esc_content` vs `esc_verbatim`, and `suppress_empty_system` joins `QwenRenderPolicy` as the third genuine per-family delta. Four new oracle-pinned cases + two missing real-weight tool round-trips (qwen3.5-9b, qwen3.5-35b-a3b — neither had one, the instrument gap that let this ship); all six members' round-trips green on the new wire and every SelfCheck `logits_hash` unchanged, `ctest -L fast` 134/134. The gates could never have seen it: FSI/CODE/DET consume pre-tokenised `input_ids`, so the renderer is not in their path — [`open-tasks/2026-11-04-qwen-template-fidelity.md`](open-tasks/2026-11-04-qwen-template-fidelity.md) |
-| 2026-11-04 | qwen3.8-flash-next full lifecycle re-verified; two perf-harness instrument defects fixed (this session's §R16 keeps the one open perf residual) | Every stage re-run on the real 336 GB checkpoint (164 GB tree): SelfCheck Paris ×3 bit-exact (`2e3bcd090441ad65`), FSI/CODE/DET 3/3, EOS + cross-instance gate, native tool round-trip; `ctest -L fast` 134/134. Stage 4b found the 3.8 `chat_template.jinja` differs from 3.5/3.6 in byte-level ways (closed think block on every assistant history turn; jinja `tojson` tool serialisation; `render_content|trim`) — carried by a new `QwenRenderPolicy` so the older members keep their exact wire, pinned against the template rendered by transformers **and** against the exact policy the model renders with (the `trim` delta was first wired into the renderer and left off for the model). The `|trim` delta is shared with 3.5/3.6 — latent for every qwen member, invisible to the gates because the capture prompts carry no surrounding whitespace — and those members keep the untrimmed wire until their goldens are re-verified (§R16). Two **instrument** defects were under-reporting the whole perf suite and were fixed test-first: `MeasureMemoryBandwidthGbs` held two 512 MiB buffers in `thread_local` statics for the process lifetime (the probe runs before the model in `test_perf_baseline`, so every capacity-bound family from 2026-10-23 measured with 1 GiB less VRAM — 4962 → 5350 slots here; the 49 affected rows self-heal on their next run because an increase is upserted), and the generation arena/embed statics were charged twice on the harness's second `Load()` (`SizeExpertCacheSlots` + `GenContextResidentBytes`). Rows re-seeded through the harness: **42.98** perf / **33.88** r3 t/s (old 44.85 / 26.47 removed first); the residual is capacity, measured by a forced-slot sweep (4962 → 41.40, 5350 → 43.00, 5750 → 44.15, 6000 → OOM) and now expressible as `PerfCause::kCapacity` with `expert_cache_slots` on every row — [`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md) |
+| 2026-11-04 | qwen3.8-flash-next full lifecycle re-verified; two perf-harness instrument defects fixed (§R16 then closed the one perf residual; the section moved out of the live file) | Every stage re-run on the real 336 GB checkpoint (164 GB tree): SelfCheck Paris ×3 bit-exact (`2e3bcd090441ad65`), FSI/CODE/DET 3/3, EOS + cross-instance gate, native tool round-trip; `ctest -L fast` 134/134. Stage 4b found the 3.8 `chat_template.jinja` differs from 3.5/3.6 in byte-level ways (closed think block on every assistant history turn; jinja `tojson` tool serialisation; `render_content|trim`) — carried by a new `QwenRenderPolicy` so the older members keep their exact wire, pinned against the template rendered by transformers **and** against the exact policy the model renders with (the `trim` delta was first wired into the renderer and left off for the model). The `|trim` delta is shared with 3.5/3.6 — latent for every qwen member, invisible to the gates because the capture prompts carry no surrounding whitespace — and those members keep the untrimmed wire until their goldens are re-verified (§R16). Two **instrument** defects were under-reporting the whole perf suite and were fixed test-first: `MeasureMemoryBandwidthGbs` held two 512 MiB buffers in `thread_local` statics for the process lifetime (the probe runs before the model in `test_perf_baseline`, so every capacity-bound family from 2026-10-23 measured with 1 GiB less VRAM — 4962 → 5350 slots here; the 49 affected rows self-heal on their next run because an increase is upserted), and the generation arena/embed statics were charged twice on the harness's second `Load()` (`SizeExpertCacheSlots` + `GenContextResidentBytes`). Rows re-seeded through the harness: **42.98** perf / **33.88** r3 t/s (old 44.85 / 26.47 removed first); the residual is capacity, measured by a forced-slot sweep (4962 → 41.40, 5350 → 43.00, 5750 → 44.15, 6000 → OOM) and now expressible as `PerfCause::kCapacity` with `expert_cache_slots` on every row — [`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md) |
 | 2026-11-03 | granite-4.2-30b full lifecycle re-verification: §K `code` debt cleared, TC-overflow defect fixed | Re-converted the real 54.5 GiB checkpoint to a 15.3 GiB `logestix-granite` tree and ran every stage. Real defect found TDD: the default auto/TC NVFP4 path degenerates on the 306-token tool prompt (`_with_n_comprehension…`). External oracle: the BF16 checkpoint on CPU emits `get_weather {"city":"Paris"}` for the exact reference ids, and the converted model under `FastMathMode::kOff` reproduces it token-for-token — the TC activation range is exceeded (same class as granite-switch). `Infer` now pins `kOff`. Gates green: SelfCheck Paris x3 bit-exact (`c165e80fde6401cf`), FSI/CODE/DET 3/3, tool round-trip; perf re-seeded 76.79/76.47 t/s at 2048 (old 2026-09-22 rows removed first; the perf row is ~1.4% below its old 77.86 because it now takes the strict path). §K `granite-4.2-30b:code` was the last single-stage golden-debt entry — resolved (golden since 2026-10-07) — [`open-tasks/2026-11-03-granite-4.2-30b-lifecycle.md`](open-tasks/2026-11-03-granite-4.2-30b-lifecycle.md) |
 | 2026-11-01 | Arrow IPC audit closed; glm-5.3-flash arena re-tried and rejected on measurement | Full audit of every converted model's Arrow path: owning `UnpackBatch`/`DecodeEntry` validation (SIGSEGV on a foreign shared-scale list), view payload/size checks, atomic artifact writes, zero-copy write path (`MakeBatchView`, reserved builders), gemma views, shared verifier + `lsxforge --verify`. Exhaustive `LSX_ARROW_AUDIT_FULL=1`: 29 trees / 310 158 files / 0 problems / 783 s — the full run caught that DeepSeek shared experts are raw F8_E4M3 with E8M0 128x128 tiles, not NVFP4/16 (per-16 kept for routed only). Converted the three missing trees (Qwen3.5-35B-A3B 217 s/19 GB, DeepSeek-V4.1-Flash 228 s/294 GB, DeepSeek-V4-Flash 124 s/157 GB), all verified. glm-5.3-flash neutral-store trial on real weights: SelfCheck/FSI/CODE/DET green, but 4.10 t/s at 4096 slots (57 GB) and 7.23 t/s with all 12 096 mapped (156 GB) against the arena's 12.79 t/s (171 GB) — pageable-mmap H2D; reverted, arena retained. Residuals moved to S1-S6 — [`open-tasks/2026-11-01-arrow-audit-and-arena-decision.md`](open-tasks/2026-11-01-arrow-audit-and-arena-decision.md) |
 | 2026-10-31 | MiniMax-M3.1-Flash (428B/23B active) ingested as a **sibling** of minimax-m3 | New passport `minimax_moe_flash_constants.h` (theta 1e7, MSA on every layer, no MTP), shared converter with an MXFP8-dense + ModelOpt-NVFP4-expert source path (experts verbatim, divisor global scale inverted; dense E8M0 tile fed to the neutral quantizer), `lsxforge --minimax_flash`, model class `minimax-m3.1-flash`, and a `MinimaxRenderPolicy` for the M3.1 template (adaptive thinking, `<model_id>8bb8149fe</model_id>`, developer blocks, batched tool results). The parent loader/kernels/pipeline are reused; the loader now derives the dispatch boundaries and every member cross-checks them + the RoPE theta against its passport. Real conversion 236 GB -> 227 GB in ~6 min; 10.5 GiB pinned + 607 expert slots. All gates green on real weights, serial: SelfCheck PASS x3 bit-exact, FSI 3/3, CODE 3/3, DET 3/3 (template-derived goldens: the 428B QAT source has no 32 GB execution path), tool round-trip green. Perf re-seeded by the harness: **6.23/6.18 t/s** (perf/r3) at 2048 tokens, TTFT 48.8/49.2 s — [`open-tasks/2026-10-31-minimax-m31-flash-ingest.md`](open-tasks/2026-10-31-minimax-m31-flash-ingest.md) |
@@ -987,54 +1026,6 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
   24.5 GB pinned graph fails mid-graph (`layer N ... upload failed`, logged).
   The model needs a card that can hold the pinned set plus ~2 GiB headroom; a
   clean "not enough VRAM" pre-check is a follow-up.
-
-## R16. qwen3.8-flash-next — lifecycle re-verified; both measured residuals closed (2026-11-04)
-
-Branch `feat/qwen38-flash-next-lifecycle` + `fix/qwen-template-fidelity`. Every
-Model Ingestion Protocol stage
-was re-run on the real 336 GB checkpoint (164 GB tree) and all four parity gates
-are green: SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`, top-1
-11751), FSI 3/3, CODE 3/3, DET 3/3, the EOS + cross-instance gate, and a native
-tool round-trip. Perf rows re-seeded by the harness: **43.39 t/s** (`perf`,
-5350 slots) / **33.91 t/s** (`r3`, 4319 slots) at 2048 tokens (were 42.98 /
-33.88). Two **instrument** defects that had been under-reporting the whole perf
-suite were found and fixed test-first (the bandwidth probe leaked 1 GiB of VRAM
-for the process lifetime; the generation scratch was charged twice on the second
-`Load()`), and the verdict logic now distinguishes capacity from regression.
-Full trail:
-[`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md).
-
-**Closed (perf): the serialized expert H2D.** Residency staging now rides the
-copy engine (`copy_stream` + per-expert `ev_uploads` + an `ev_front` slot-reuse
-fence) and the routed TC chain runs in ascending chunks that wait only on their
-own uploads (`moe::RunMoERoutedTcBatchStreamed`), with the depth chosen from the
-layer's miss count — a chunk's compute can only hide another chunk's copy, so
-`chunks = (n_miss >= 2) ? 2 : 1`. Bit-identical by construction (unchanged
-accumulate order), `logits_hash` unchanged. Measured against HEAD on the same
-machine and the same slots/hit rate: **−1.55%** on `perf`, **−1.47%** at a
-forced 4319-slot capacity oracle; `r3` −0.07%, because `kOff` takes the fused
-per-slot path where no batched chain exists to chunk. The first attribution pass
-over-counted the serialization (an overlap scan that could not see a kernel
-starting inside a copy reported 0.8%; the honest intersection is 17.7%). What
-remains is structural: the router host readback leaves the compute stream empty
-when the copies are issued, and those copies already run at the PCIe roofline
-(55.6 GB/s). The largest serial host in the step is now the hyper-connection
-block — `hc_epilogue` 2.65 + `hc_down_gemv` 2.16 + `hc_norm` 1.57 +
-`hc_up_gemv` 0.59 = 6.97 ms/step of an 18.5 ms/step kernel budget — which is
-arithmetic work, not staging. Full trail:
-[`open-tasks/2026-11-04-qwen38-expert-staging.md`](open-tasks/2026-11-04-qwen38-expert-staging.md).
-
-**Closed (framing).** The shared codec had been emitting the compact tool JSON
-and the untrimmed message content for **every** qwen member, because the two
-lines they came from (`render_content(...)|trim` and `{{- tool | tojson }}`) were
-misread as qwen3.8-only deltas when they are in all six templates; 3.8 in turn
-trimmed tool names/descriptions that its template renders verbatim. Trim and
-tojson are now unconditional in the codec (the flags are deleted), trim is scoped
-to message content, and `suppress_empty_system` is the third genuine per-family
-delta. All six members' real-weight tool round-trips are green on the new wire —
-including `qwen3.5-9b` and `qwen3.5-35b-a3b`, which had none — and every
-`logits_hash` is unchanged. Full trail:
-[`open-tasks/2026-11-04-qwen-template-fidelity.md`](open-tasks/2026-11-04-qwen-template-fidelity.md).
 
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 

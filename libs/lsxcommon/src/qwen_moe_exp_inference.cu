@@ -2264,7 +2264,8 @@ cudaError_t RunExpGeneration(
                         // Depth follows this layer's miss count: a chunk's
                         // compute can only hide another chunk's copy, so with
                         // fewer than two misses there is nothing to hide and
-                        // the extra batch launch is pure cost (§R16).
+                        // the extra batch launch is pure cost (lifecycle trail
+                        // 2026-11-04-qwen38-flash-next-lifecycle.md, §6).
                         n_miss >= 2 ? kMoeStageChunks : 1);
                     if (e != cudaSuccess) {
                         result.error_msg =
