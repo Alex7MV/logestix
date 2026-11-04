@@ -220,10 +220,15 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
         for (const char *s : kQwenSentinels) m.emplace_back(s);
         return m;
     }();
-    const auto esc = [&policy](std::string_view s) {
-        const std::string_view body =
-            policy.trim_content ? TrimAscii(s) : std::string_view(s);
-        return tools::NeutralizeControlMarkers(body, kMarkers);
+    const auto esc_content = [](std::string_view s) {
+        // `render_content(message.content)|trim` -- message content only.
+        return tools::NeutralizeControlMarkers(TrimAscii(s), kMarkers);
+    };
+    // Tool definitions (`{{- tool | tojson }}`), parameter names and argument
+    // values are rendered verbatim by every qwen template -- they are never
+    // passed through render_content, so no trimming applies to them.
+    const auto esc_verbatim = [](std::string_view s) {
+        return tools::NeutralizeControlMarkers(s, kMarkers);
     };
 
     if (has_tools) {
@@ -233,25 +238,15 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
             "<tools>";
         simdjson::dom::parser tool_json_parser;
         for (const ToolSpec &t : conv.tools) {
-            out += "\n";
-            if (!policy.jinja_tool_json) {
-                out += "{\"type\":\"function\",\"function\":{\"name\":\"";
-                out += JsonEscape(esc(t.name));
-                out += "\",\"description\":";
-                out += JsonEscape(esc(t.description));
-                out += "\",\"parameters\":";
-                out += t.parameters_json.empty() ? std::string("{}")
-                                                 : esc(t.parameters_json);
-                out += "}}";
-                continue;
-            }
-            out += "{\"type\": \"function\", \"function\": {\"name\": ";
-            AppendJinjaString(out, esc(t.name));
+            // `{{- tool | tojson }}`: json.dumps(obj, ensure_ascii=False), i.e.
+            // ", " / ": " separators, rendered verbatim (no content trimming).
+            out += "\n{\"type\": \"function\", \"function\": {\"name\": ";
+            AppendJinjaString(out, esc_verbatim(t.name));
             out += ", \"description\": ";
-            AppendJinjaString(out, esc(t.description));
+            AppendJinjaString(out, esc_verbatim(t.description));
             out += ", \"parameters\": ";
             simdjson::dom::element params;
-            const simdjson::padded_string padded(esc(t.parameters_json));
+            const simdjson::padded_string padded(esc_verbatim(t.parameters_json));
             if (t.parameters_json.empty() ||
                 tool_json_parser.parse(padded).get(params) !=
                     simdjson::SUCCESS)
@@ -278,13 +273,15 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
             "- If there is no function call available, answer the question "
             "like normal with your current knowledge and do not tell the user "
             "about function calls\n</IMPORTANT>";
-        if (first_system && !conv.messages[0].content.empty())
-            out += "\n\n" + esc(conv.messages[0].content);
+        if (first_system && !esc_content(conv.messages[0].content).empty())
+            out += "\n\n" + esc_content(conv.messages[0].content);
         out += "<|im_end|>\n";
     } else if (first_system) {
-        out +=
-            "<|im_start|>system\n" + esc(conv.messages[0].content) +
-            "<|im_end|>\n";
+        const std::string content = esc_content(conv.messages[0].content);
+        // 3.8 wraps its (tool-less) system turn in `{%- if content %}`; 3.5/3.6
+        // emit the empty turn.
+        if (!content.empty() || !policy.suppress_empty_system)
+            out += "<|im_start|>system\n" + content + "<|im_end|>\n";
     }
 
     simdjson::dom::parser parser;
@@ -298,29 +295,34 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
         }
         if (m.role == "user") {
             in_tool_turn = false;
-            out += "<|im_start|>user\n" + esc(m.content) + "<|im_end|>\n";
+            out += "<|im_start|>user\n" + esc_content(m.content) +
+                   "<|im_end|>\n";
         } else if (m.role == "assistant") {
             in_tool_turn = false;
+            // `content|trim` decides both the rendered body and the separator
+            // before the first <tool_call>: whitespace-only content is empty to
+            // the template, so it must be empty here too.
+            const std::string content = esc_content(m.content);
             if (policy.history_think_block) {
                 // 3.8 template: `assistant\n<think>\n{reasoning}\n</think>\n\n
                 // {content}`. The engine never receives a history turn's
                 // reasoning trace, so the empty form is the one rendered.
                 out += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
-                out += esc(m.content);
+                out += content;
             } else {
-                out += "<|im_start|>assistant\n" + esc(m.content);
+                out += "<|im_start|>assistant\n" + content;
             }
             bool first = true;
             for (const ToolCall &c : m.tool_calls) {
                 if (first) {
-                    out += m.content.empty()
+                    out += content.empty()
                                ? "<tool_call>\n<function="
                                : "\n\n<tool_call>\n<function=";
                     first = false;
                 } else {
                     out += "\n<tool_call>\n<function=";
                 }
-                out += esc(c.name) + ">\n";
+                out += esc_verbatim(c.name) + ">\n";
                 if (!c.arguments_json.empty()) {
                     simdjson::dom::element args;
                     simdjson::padded_string padded(c.arguments_json);
@@ -329,15 +331,14 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
                             simdjson::dom::element_type::OBJECT) {
                         for (auto [k, v] : args.get_object()) {
                             out += "<parameter=";
-                            out += esc(k);
+                            out += esc_verbatim(k);
                             out += ">\n";
                             if (v.type() ==
                                 simdjson::dom::element_type::STRING)
-                                out += esc(v.get_string().value_unsafe());
-                            else if (policy.jinja_tool_json)
-                                AppendJinjaJson(out, v);
+                                out += esc_verbatim(
+                                    v.get_string().value_unsafe());
                             else
-                                out += QwenSerialize(v);
+                                AppendJinjaJson(out, v);
                             out += "\n</parameter>\n";
                         }
                     }
@@ -352,7 +353,7 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
                 out += "<|im_start|>user";
                 in_tool_turn = true;
             }
-            out += "\n<tool_response>\n" + esc(m.content) +
+            out += "\n<tool_response>\n" + esc_content(m.content) +
                    "\n</tool_response>";
             const bool next_is_tool =
                 mi + 1 < conv.messages.size() &&

@@ -3,6 +3,7 @@
 // SKIP_RETURN_CODE 4).
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +15,8 @@
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
+
+#include <spdlog/spdlog.h>
 
 #include "qwen_moe_model.h"
 
@@ -147,6 +150,69 @@ TEST_CASE("Qwen3.5-35B-A3B generation scratch persists across SelfCheck cycles",
     REQUIRE(sc1.final_logits.size() == sc0.final_logits.size());
     CHECK(std::memcmp(sc1.final_logits.data(), sc0.final_logits.data(),
                       sc0.final_logits.size() * sizeof(float)) == 0);
+
+    m->Unload();
+}
+
+// Stage 4b on real weights (see the same case in test_qwen_dense_selfcheck.cpp):
+// the shared qwen wire moved to what every member's template renders
+// (`render_content|trim` + `tool|tojson`), and this member had no real-weight
+// tool round-trip to catch a framing regression at all.
+TEST_CASE("Qwen3.5-35B-A3B end-to-end tool round-trip (real weights)",
+          "[qwen-moe][model][tool][real-model]")
+{
+    const std::filesystem::path model_dir = QwenMoeConvertedPath();
+    if (!std::filesystem::exists(model_dir / "logestix" / "pinned"))
+        SKIP("Qwen3.5-35B-A3B converted model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model_dir.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    lsxcommon::ChatConversation conv;
+    conv.messages.push_back(
+        {"system",
+         "You are a helpful assistant. Use the provided tools when needed.",
+         "", {}});
+    conv.messages.push_back(
+        {"user",
+         "What is the current weather in Paris? Use the get_weather tool.", "",
+         {}});
+    lsxcommon::ToolSpec t;
+    t.name = "get_weather";
+    t.description = "Get the current weather for a city";
+    t.parameters_json =
+        R"({"type":"object","properties":{"city":{"type":"string","description":"City name"}},"required":["city"]})";
+    conv.tools.push_back(t);
+
+    std::vector<int32_t> ids;
+    REQUIRE(m->BuildConversationInputIds(m->Tokenizer(), conv, ids));
+    REQUIRE(!ids.empty());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = 256;
+    auto r = m->Infer(req);
+    spdlog::info("[qwen35-moe-tool] output='{}' gen_tokens={}", r.output_text,
+                 r.gen_tokens.size());
+    REQUIRE(r.ok);
+
+    std::vector<lsxcommon::ToolCall> calls;
+    REQUIRE(m->ParseToolCalls(m->Tokenizer(), r.gen_tokens, calls));
+    for (const auto &c : calls)
+        spdlog::info("[qwen35-moe-tool] call name='{}' args={}", c.name,
+                     c.arguments_json);
+
+    const int32_t tc_open = lsxcommon::arrow_tokenizer_lookup(
+        m->Tokenizer(), "<tool_call>", std::strlen("<tool_call>"));
+    CHECK(std::find(r.gen_tokens.begin(), r.gen_tokens.end(), tc_open) !=
+          r.gen_tokens.end());
+
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     m->Unload();
 }

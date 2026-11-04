@@ -129,7 +129,8 @@ CODE/DET у alice прогнаны 2026-10-23 после включения stre
   не изменился; `test_granite_dense_selfcheck` снова зелёный.
 - **gemma-4-26b (MoE)**: FSI-TEST-01/02 — голдены требуют символьную
   формулу, модель выдаёт численную; CODE — тот же класс расхождения —
-  OPEN_TASKS §J.
+  OPEN_TASKS §J (закрыто 2026-10-24, все четыре гейта зелёные:
+  `open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md`).
 - **phi-4**: DET-TEST-02 ожидает `CATASTROPHIC`, модель выдаёт `CRITICAL`
   (детерминированно, 3/3) — OPEN_TASKS §O.
 - **gemma-4-31b (dense)**: FSI-TEST-01 — арифметическая формула не

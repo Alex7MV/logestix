@@ -2,7 +2,9 @@
 
 Snapshot of **2026-10-24/25**, updated **2026-10-31** (GigaChat3.5-432B-A28B),
 re-verified **2026-11-03** (AliceAI-Foundation-80B-A3B re-ingestion), re-verified
-**2026-11-04** (Qwen3.8-Flash-Next full lifecycle),
+**2026-11-04** (Qwen3.8-Flash-Next full lifecycle; Qwen3.5-35B-A3B and
+DeepSeek-V4.1-Flash audited — both had been filed as "no converted tree" while
+their trees were in the vault),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`.
@@ -38,12 +40,14 @@ one in a ctest summary, which is why the debt rows are called out below.
 | ornith-1.5-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
 | phi-4 | PASS | 3/3 | 3/3 | 3/3 |
 | qwen3.5-9b | PASS | 3/3 | 3/3 | 3/3 |
+| **qwen3.5-35b-a3b** | PASS (x3, `f4c91be5f2206d56`) | 3/3 | 3/3 | 3/3 |
 | qwen3.6-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
 | qwen3.8-27b | PASS | 3/3 | 3/3 | 3/3 |
 | qwen3.8-flash-next | PASS (+ eos) | 3/3 | 3/3 | 3/3 |
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
 | **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
+| **deepseek-v4.1-flash** | PASS (x3, `0ab7077b529eaa3b`) ‡ | **1/3** | **2/3** | 3/3 |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
@@ -51,19 +55,48 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 
-- SelfCheck **18/18**, FSI **26/29**, CODE **29/29**, DET **28/29**.
+- SelfCheck **22/22 rows** (every row above), FSI **58/63**, CODE **62/63**,
+  DET **62/63**. Counting rule: one case per prompt, three prompts per measured
+  row, so the denominators are 3 × the rows that carry a measured cell (21 —
+  `kimi-k3` has no parity verdict yet); a `not run` cell is excluded rather than
+  counted as a pass. The five FSI reds are gemma-4-31b FSI-01, deepseek-v4-pro
+  FSI-02, minimax-m3 FSI-01 and deepseek-v4.1-flash FSI-01/02; the CODE red is
+  deepseek-v4.1-flash CODE-01; the DET red is granite-switch DET-02.
+- **Qwen3.5-35B-A3B** was audited on 2026-11-04 (it had been listed under §3 as
+  "no converted tree" while its 19 GB tree had been in the vault since
+  2026-10-01): SelfCheck Paris ×3 bit-exact (`logits_hash f4c91be5f2206d56`,
+  top-1 11751), FSI/CODE/DET 3/3 each with DET `deterministic=true`. Its two
+  benchmark rows were stale in opposite directions and were re-seeded — `perf`
+  170.10 → 159.81 (the accepted overflow-proof SwiGLU cost its two 35B-A3B
+  siblings already carry) and `r3` 13.78 → 77.56 (a superseded strict-mode value,
+  5.6× below what the same binary does) — and the missing
+  `qwen_moe.router.decode` budget for `rtx 5090` is now recorded —
+  [`open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md`](open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md).
+- ‡ **deepseek-v4.1-flash**: the Paris SelfCheck case passes, but the *same
+  binary's* cooperative-cancel case fails (`mid-generation abort: compressor
+  state reset failed`) — a cancelled request never records its TTFT event and
+  leaves `cudaErrorInvalidResourceHandle` in the thread's last-error state, which
+  the **next** request then reports at an unrelated site. Root cause and fix
+  sketch: `docs/OPEN_TASKS.md` §A2. Its FSI/CODE reds are the 2026-10-07
+  measurements recorded in §Q of that file.
 - **Qwen3.8-Flash-Next** was re-verified end to end on 2026-11-04 (every stage,
   real weights): SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`,
   top-1 11751) plus the family's EOS and cross-instance gate, FSI/CODE/DET 3/3
-  each, native tool round-trip green. The three byte-level template deltas over
-  3.5/3.6 (closed think block on assistant history turns, jinja `tojson` tool
-  serialisation, `render_content|trim` — the last one is shared with 3.5/3.6 and
-  was latent for every qwen member) are pinned against the checkpoint's own
-  `chat_template.jinja` in `test_qwen_tool_framing`, and the exact policy the
-  model renders with is pinned flag by flag in `test_qwen_moe_exp_model`.
+  each, native tool round-trip green. Framing is now template-exact for **every**
+  qwen member, not just this one: `render_content|trim` (message content only —
+  never tool definitions, parameter names or argument values) and jinja `tojson`
+  tool serialisation are unconditional in the shared codec, and only the three
+  genuinely per-family fields live in `QwenRenderPolicy` (`enable_thinking`, the
+  3.8 `preserve_thinking` default `history_think_block`, and its
+  `suppress_empty_system` guard). Pinned against each checkpoint's own
+  `chat_template.jinja` in `test_qwen_tool_framing` and, for the model's actual
+  policy, in `test_qwen_moe_exp_model`; all six members' real-weight tool
+  round-trips are green on that wire — [`open-tasks/2026-11-04-qwen-template-fidelity.md`](open-tasks/2026-11-04-qwen-template-fidelity.md).
   Throughput is expert-cache **capacity** bound
-  (42.98 perf / 33.88 r3 t/s at 5350/4319 slots; hit rate 0.86),
-  `docs/OPEN_TASKS.md` §R16.
+  (43.39 perf / 33.91 r3 t/s at 5350/4319 slots; hit rate 0.86), and the
+  section that tracked it left the live list when it closed —
+  [`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md)
+  §6.
 - **GigaChat3.5-432B-A28B-Reasoning** landed green on all four gates in its
   2026-10-31 session (241 GB tree, 219 GB of routed experts pinned, 26.2 GiB
   resident). Its goldens are **template-derived** — the 432B FP8-block-128
@@ -76,12 +109,12 @@ one in a ctest summary, which is why the debt rows are called out below.
   golden; the previous kind-0 split mis-split mixed-case identifiers. Perf by
   the harness: **11.32 t/s (perf) / 11.10 (r3)** at 2048 —
   `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md`.
-- **Granite-Switch DET-TEST-02 is the third red.** The source CPU-BF16 oracle
+- **Granite-Switch DET-TEST-02 is the DET red.** The source CPU-BF16 oracle
   itself answers `CRITICAL` where the prompt's Expected Template is
   `CATASTROPHIC` (capture logged the disagreement); source and converted agree
   3/3 deterministically, so this is a source/prompt mismatch, not a 4-bit flip.
   See `docs/OPEN_TASKS.md` §R10.
-- Two reds. The Pro FSI-02 red is an instruction-following deviation, not a
+- The Pro FSI-02 red is an instruction-following deviation, not a
   numeric one: the prompt requires the symbolic form
   `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`,
   and the model inlines the constants instead
@@ -120,7 +153,7 @@ one in a ctest summary, which is why the debt rows are called out below.
   HF class expects; the 60 GB bf16 source runs on CPU). FSI-02 answers the
   numeric form, which is exactly what the source answered, so the golden is
   source parity rather than a template match. See `docs/OPEN_TASKS.md` §R5.
-- The other red is the dense Gemma-4 member, and it is understood rather than
+- The dense Gemma-4 member is the last red, and it is understood rather than
   mysterious: FSI-01 is a template near-tie where the dense body needs ~8 bits
   on *every* linear (33.7 GiB resident, over this card). Every partial
   placement that fits was measured and moves *away* from the source —
@@ -183,8 +216,13 @@ Release harness; now seeded at **1.61 t/s (perf) / 1.60 t/s (r3)**, TTFT ≈27 s
 
 ## 3. Golden present, **no converted tree** — SKIP (needs the vault, not a code fix)
 
-`deepseek-v4.1-flash`, `qwen3.5-35b-a3b`. Their FSI/CODE/DET targets run only
-when the converted tree exists; SelfCheck skips with them.
+**Empty as of 2026-11-04.** Both former members were audited and moved into §1:
+`qwen3.5-35b-a3b` (19 GB tree in the vault since 2026-10-01, all four gates green)
+and `deepseek-v4.1-flash` (294 GB tree; SelfCheck green, FSI/CODE red as recorded
+in `docs/OPEN_TASKS.md` §Q, and its cooperative-cancel case is RED — §A2 there).
+The section is kept as the place where a model lands when its golden exists but
+its converted tree does not: such a row SKIPs (ctest exit 4) and must never be
+read as a pass. Nothing sits here today.
 
 ## 4. Neither — SKIP
 
@@ -210,20 +248,28 @@ never from the engine. Verification record:
 ## Reproduce
 
 ```bash
-# 1. the real verdicts (12 models with a tree + goldens), one at a time
+# 1. the real verdicts (the §1 rows: a tree AND goldens), one at a time
 ctest --test-dir build/linux-release-znver4-aocc --timeout 1500 -R \
   "alice.*selfcheck|gemma_(moe|dense).*selfcheck|glm_moe_flash.*selfcheck|\
 granite_dense.*selfcheck|nemotron_moe_nvfp4.*selfcheck|ornith_moe.*selfcheck|\
-phi_dense.*selfcheck|qwen_dense.*selfcheck|qwen_moe_36.*selfcheck|\
-qwen_moe_exp.*selfcheck|xing_moe.*selfcheck|gigachat_moe.*selfcheck"
+phi_dense.*selfcheck|qwen_dense.*selfcheck|qwen_moe.*selfcheck|\
+xing_moe.*selfcheck|gigachat_moe.*selfcheck"
 
 # 2. the debt rows (SelfCheck only; the three parity stages SKIP by design)
 ctest --test-dir build/linux-release-znver4-aocc -R "mistral.*selfcheck"
 
-# 3. the absent-vault families (all SKIP; proves the SKIP is the vault, not code)
+# 3. the families with neither tree nor golden (§4) — all SKIP, which proves the
+#    SKIP is the vault and not the code
 ctest --test-dir build/linux-release-znver4-aocc -R \
-  "deepseek_moe(_v41)?_selfcheck|glm_moe_selfcheck|kimi_moe_selfcheck|\
-mimo_moe_selfcheck|nemotron_moe_selfcheck|qwen_moe_selfcheck"
+  "glm_moe_selfcheck|mimo_moe_selfcheck|nemotron_moe_selfcheck"
+
+# 3b. tree present, golden absent (§2 shape): kimi-k2.7-code runs SelfCheck and
+#     SKIPs the three parity stages. deepseek-v4.1-flash runs only when its root
+#     is pointed at the vault — its default path is the retired
+#     /mnt/llm_models/models one, which is how its cancel defect stayed invisible
+LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash \
+  ctest --test-dir build/linux-release-znver4-aocc -R \
+  "kimi_moe_selfcheck|deepseek_moe_v41_selfcheck"
 
 # 4. the harness' own self-tests (no model): formula extraction/canonicalisation
 ctest --test-dir build/linux-release-znver4-aocc -R \

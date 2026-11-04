@@ -340,6 +340,30 @@ cudaError_t RunMoERoutedTcBatchTbl(
     float *d_acc, __half *ygu_batch, __half *h_batch, __half *yp_batch,
     uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13);
 
+// Streaming variant of RunMoERoutedTcBatchTbl: closes the gap between "stage
+// every routed slot" and "run the whole chain", so cache-miss H2D staging can
+// overlap TC work. The caller stages the misses on `copy_stream` (i.e.
+// EnsureMoEExpertResident with its `h2d_stream` argument), reports them in
+// `missed[k]` and records `ev_uploads[k]` on `copy_stream` after each upload.
+// The chain then computes the K slots in `chunks` ascending groups; before
+// group c it waits only on the uploads of the slots in that group, so group
+// c+1's staging runs on the copy stream while group c computes. The fp32
+// accumulate order is unchanged (ascending slot order into the same
+// caller-seeded `d_acc`), so the result is bit-identical to the single-chunk
+// call -- a scheduling change, not a numeric one.
+// `chunks <= 1` means one group: every reported upload is fenced before the
+// chain starts (serialized, still correct). Passing `copy_stream == nullptr`
+// (or a null `ev_uploads`/`missed`) degenerates to RunMoERoutedTcBatchTbl and
+// assumes the caller already ordered its own staging on `stream`.
+cudaError_t RunMoERoutedTcBatchStreamed(
+    cudaStream_t stream, cudaStream_t copy_stream,
+    const cudaEvent_t *ev_uploads, const bool *missed,
+    const gpu::ExpertDeviceCache &cache, const MoEGvSlotDev *d_tbl,
+    const uint8_t *xq, const uint8_t *xqs, int K, int H, int I,
+    int64_t w13_bytes, int64_t s13_bytes, float *d_acc, __half *ygu_batch,
+    __half *h_batch, __half *yp_batch, uint8_t *qpack_batch,
+    uint8_t *qscales_batch, float *splitk13, int chunks = 2);
+
 // Host-side EOS truncation (decode loop runs to max_new without per-step
 // EOS readback). Keeps the EOS token (legacy break semantics), returns
 // true when a cut happened. eos_id < 0 disables.

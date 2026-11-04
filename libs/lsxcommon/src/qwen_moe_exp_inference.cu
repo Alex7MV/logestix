@@ -1835,6 +1835,7 @@ cudaError_t RunExpGeneration(
     cudaEvent_t ev_uploads[16] = {};
     cudaEvent_t ev_front = nullptr;
     bool have_copy =
+        lsxcommon::lsx_nvfp4::LsxDualStreamStaging() &&
         cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) ==
             cudaSuccess &&
         cudaEventCreateWithFlags(&ev_front, cudaEventDisableTiming) ==
@@ -1857,6 +1858,15 @@ cudaError_t RunExpGeneration(
             ev_uploads[k] = nullptr;
         }
     }
+
+    // Staged-overlap depth ceiling for the routed TC chain: the K slots run in
+    // up to this many ascending groups, so group c+1's cache-miss H2D staging
+    // runs on the copy stream while group c's TC work executes. The depth is
+    // per layer, from its miss count (see the chain call): a chunk's compute can
+    // only hide another chunk's copy, so a layer with fewer than two misses
+    // gains nothing and pays the extra launch. Fixed, not a knob — the numbers
+    // are in docs/open-tasks/2026-11-04-qwen38-expert-staging.md.
+    constexpr int kMoeStageChunks = 2;
 
     int full_idx = 0, lin_idx = 0, qsa_idx = 0;
     // GPU-timeline timing (etalon: qwen_moe driver t_start/t_stop events).
@@ -2124,6 +2134,7 @@ cudaError_t RunExpGeneration(
             // fused-store fast path (2 contiguous blobs per miss).
             moe::MoERoutedSlot h_slots[16];
             int dev_slots[16] = {0};
+            bool missed[16] = {};
             cudaMemcpyAsync(h_slots, d_slots, sizeof(moe::MoERoutedSlot) * K,
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready_ev, stream);
@@ -2135,6 +2146,26 @@ cudaError_t RunExpGeneration(
                     return q;
                 }
             }
+            // Cache-miss staging rides the copy engine: nsys over the
+            // 2048-token protocol showed the H2D uploads fully serialized in
+            // front of the layer's kernels, because residency for all K slots
+            // was staged on the compute stream before any FFN compute.
+            // ev_front fences slot reuse (a recycled slot may still have a
+            // reader queued on `stream`); ev_uploads[k] fences the individual
+            // upload so the consumer — the chunked TC chain, or the fused
+            // fallback below — waits only for the slots it is about to read.
+            const bool stage_on_copy = copy_stream != nullptr;
+            if (stage_on_copy) {
+                cudaError_t fe = cudaEventRecord(ev_front, stream);
+                if (fe == cudaSuccess)
+                    fe = cudaStreamWaitEvent(copy_stream, ev_front, 0);
+                if (fe != cudaSuccess) {
+                    result.error_msg = "expert stage fence";
+                    e = fe;
+                    break;
+                }
+            }
+            int n_miss = 0;  // this layer's cache misses, drives the stage depth
             for (int k = 0; k < K && k < 16; ++k) {
                 if (h_slots[k].eid < 0 || h_slots[k].eid >= E) {
                     result.error_msg = "router returned out-of-range expert";
@@ -2142,8 +2173,11 @@ cudaError_t RunExpGeneration(
                     break;
                 }
                 std::string ensure_err;
+                missed[k] = false;
                 const int slot = EnsureQwen4ExpExpertResident(
-                    store, l, h_slots[k].eid, cache, stream, ensure_err);
+                    store, l, h_slots[k].eid, cache, stream, ensure_err,
+                    stage_on_copy ? copy_stream : nullptr,
+                    stage_on_copy ? &missed[k] : nullptr);
                 if (slot < 0) {
                     result.error_msg = "ensure l" + std::to_string(l) +
                                        " k" + std::to_string(k) + " slot" +
@@ -2154,8 +2188,32 @@ cudaError_t RunExpGeneration(
                     break;
                 }
                 dev_slots[k] = slot;
+                if (stage_on_copy && missed[k]) {
+                    ++n_miss;
+                    const cudaError_t ce =
+                        cudaEventRecord(ev_uploads[k], copy_stream);
+                    if (ce != cudaSuccess) {
+                        result.error_msg = "expert upload event l" +
+                                           std::to_string(l) + " k" +
+                                           std::to_string(k);
+                        e = ce;
+                        break;
+                    }
+                }
             }
             if (e != cudaSuccess) break;
+            // Non-chunked consumers (the fused per-slot fallback) need every
+            // upload resident before their first read.
+            auto fence_uploads = [&]() -> cudaError_t {
+                if (!stage_on_copy) return cudaSuccess;
+                for (int k = 0; k < K && k < 16; ++k) {
+                    if (!missed[k]) continue;
+                    const cudaError_t w =
+                        cudaStreamWaitEvent(stream, ev_uploads[k], 0);
+                    if (w != cudaSuccess) return w;
+                }
+                return cudaSuccess;
+            };
             std::string ffn_err;
             // Routed accumulation runs acc += coeff * y2 per expert; the fp32
             // accumulator must be zeroed per layer (the arena is persistent).
@@ -2196,23 +2254,33 @@ cudaError_t RunExpGeneration(
                 if (e == cudaSuccess) {
                     shared_xq = d_xq;
                     shared_xqs = d_xqs;
-                    e = moe::RunMoERoutedTcBatchTbl(
-                        stream, cache, d_gemv_tbl, d_xq, d_xqs, K, H, I, w13_b,
-                        s13_b, d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
-                        d_qpack_b, d_qscales_b,
-                        tc_splitk > 1 ? d_tc_splitk : nullptr);
+                    e = moe::RunMoERoutedTcBatchStreamed(
+                        stream, stage_on_copy ? copy_stream : nullptr,
+                        stage_on_copy ? ev_uploads : nullptr,
+                        stage_on_copy ? missed : nullptr, cache, d_gemv_tbl,
+                        d_xq, d_xqs, K, H, I, w13_b, s13_b, d_moe_acc,
+                        d_ygu_batch, d_h_batch, d_yp_batch, d_qpack_b,
+                        d_qscales_b, tc_splitk > 1 ? d_tc_splitk : nullptr,
+                        // Depth follows this layer's miss count: a chunk's
+                        // compute can only hide another chunk's copy, so with
+                        // fewer than two misses there is nothing to hide and
+                        // the extra batch launch is pure cost (lifecycle trail
+                        // 2026-11-04-qwen38-flash-next-lifecycle.md, §6).
+                        n_miss >= 2 ? kMoeStageChunks : 1);
                     if (e != cudaSuccess) {
                         result.error_msg =
                             "tc-batch experts l" + std::to_string(l);
                         break;
                     }
                 } else {
-                    e = moe::RunMoERoutedFFN(
-                        stream, store, cache, l, h_slots, K, d_mixed, H, I,
-                        d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
-                        copy_stream ? ev_uploads : nullptr, ev_front, nullptr,
-                        nullptr, nullptr, nullptr, d_ygu_batch, d_h_batch,
-                        d_yp_batch, d_gemv_tbl, nullptr, &tc_scratch);
+                    e = fence_uploads();
+                    if (e == cudaSuccess)
+                        e = moe::RunMoERoutedFFN(
+                            stream, store, cache, l, h_slots, K, d_mixed, H, I,
+                            d_moe_acc, d_yg, d_yu, d_y2, ffn_err, nullptr,
+                            nullptr, nullptr, nullptr, nullptr, nullptr,
+                            nullptr, d_ygu_batch, d_h_batch, d_yp_batch,
+                            d_gemv_tbl, nullptr, &tc_scratch);
                     if (e != cudaSuccess) {
                         result.error_msg =
                             "experts l" + std::to_string(l) + ": " + ffn_err;
@@ -2220,12 +2288,17 @@ cudaError_t RunExpGeneration(
                     }
                 }
             } else {
+                e = fence_uploads();
+                if (e != cudaSuccess) {
+                    result.error_msg = "expert upload fence l" +
+                                       std::to_string(l);
+                    break;
+                }
                 e = moe::RunMoERoutedFFN(
                     stream, store, cache, l, h_slots, K, d_mixed, H, I,
-                    d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
-                    copy_stream ? ev_uploads : nullptr, ev_front, nullptr,
-                    nullptr, nullptr, nullptr, d_ygu_batch, d_h_batch,
-                    d_yp_batch, d_gemv_tbl, nullptr, &tc_scratch);
+                    d_moe_acc, d_yg, d_yu, d_y2, ffn_err, nullptr, nullptr,
+                    nullptr, nullptr, nullptr, nullptr, nullptr, d_ygu_batch,
+                    d_h_batch, d_yp_batch, d_gemv_tbl, nullptr, &tc_scratch);
                 if (e != cudaSuccess) {
                     result.error_msg = "experts l" + std::to_string(l) +
                                        " kb" + std::to_string(kv_base) + " mt" +

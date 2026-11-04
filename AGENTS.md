@@ -224,12 +224,15 @@ procedure — `perf-tuning-a-model`.
   33.88 (r3)** at 2048 tokens, 3615 MiB pinned + 5350 / 4319 expert slots; its
   throughput is expert-cache **capacity** bound (hit rate 0.86, ~340 MB of
   experts streamed per token), so a delta is only a regression if the slot
-  count holds. Its chat template differs from Qwen3.5/3.6 in three byte-level
-  ways (a closed think block on every assistant history turn, jinja
-  `tojson` tool serialisation and `render_content|trim`), carried by
-  `QwenRenderPolicy` in `qwen_tool_format.h` so the older members keep their
-  exact wire; the model renders with the exported `kQwen38RenderPolicy`, which a
-  test pins flag by flag).
+  count holds. Framing is shared with the rest of the family and is template
+  exact for every member since 2026-11-04: `render_content|trim` on message
+  content (never on tool definitions, parameter names or argument values) and
+  jinja `tojson` tool serialisation are unconditional in `qwen_tool_format.h`
+  because no qwen template makes them configurable; only what genuinely differs
+  per family is a `QwenRenderPolicy` field -- `enable_thinking`, the 3.8
+  `preserve_thinking` default (`history_think_block`, the closed think block on
+  every assistant history turn) and its empty-system-turn guard
+  (`suppress_empty_system`, pinned by `kQwen38RenderPolicy` and a test).
   GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE,
   ~432B / ~28B active: 40L / 7168H / 64 MLA heads (qk 128+64, v 128,
   q_lora 1536, kv_lora 512, output gate) at layers 3,7,...,39 and GDN

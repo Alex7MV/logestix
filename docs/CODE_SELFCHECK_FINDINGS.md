@@ -76,7 +76,8 @@ python tools/code_capture.py --model /mnt/llm_models/models/GLM-5.3-Flash \
 | DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
 | DeepSeek-V4.1-Flash | not capturable — ships its own inference stack (`deepseek_v41` unknown) |
 | GigaChat3.5-432B | template-derived golden committed 2026-10-31 (FP8 416 G, multi-GPU vendor stack; BF16 body > host RAM); converted **PASS 3/3** |
-| GLM-5.2, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
+| GLM-5.2, Kimi-K2.7-Code | source absent from the vault |
+| Qwen3.5-35B-A3B | captured from the source (transformers 5.15.1, 2026-10-04); converted **PASS 3/3** — verified 2026-11-04, replacing the stale "source absent from the vault" note (the source and its 19 GB converted tree have been in the vault since 2026-10-01) |
 
 Qwen3.8-27B capture recipe: the checkpoint is a `Qwen3_5ForConditionalGeneration`
 VLM; the `qwen3_5` loader builds a text-only `Qwen3_5ForCausalLM` from
