@@ -34,14 +34,10 @@ TEST_CASE("frozen geometry differs from synthetic fixture", "[qwen-exp-model]")
 
 // Stage 4b: the model must frame with its own template, not the 3.5/3.6 one.
 //
-// The codec carries the deltas behind QwenRenderPolicy, and each flag is
-// exercised individually in test_qwen_tool_framing against the checkpoint's
-// `chat_template.jinja` rendered by transformers 5.15.1 -- but a codepath can
-// still forget to switch a flag on, and that is exactly what happened first
-// here: `render_content(...)|trim` (template lines 70/78/92/103) was covered by
-// a test and not enabled for the model, so a client message with leading or
-// trailing whitespace framed with bytes the reference never produces.
-// Pin the whole policy the model renders with, so a default flip or a new flag
+// Only the deltas that genuinely vary per family live in QwenRenderPolicy; the
+// shared rules (`render_content|trim` and `tool|tojson`) are unconditional in
+// the codec and are pinned by test_qwen_tool_framing against the template
+// rendered by transformers. Pin what the model does choose, so a default flip
 // added without a decision fails here instead of silently changing the wire.
 TEST_CASE("qwen4_exp model frames with the checkpoint's own template deltas",
           "[qwen-exp-model]")
@@ -51,11 +47,10 @@ TEST_CASE("qwen4_exp model frames with the checkpoint's own template deltas",
     // thinking disabled: the generation prompt closes the empty think block.
     REQUIRE(p.enable_thinking == false);
     // Every assistant *history* turn keeps the closed think block:
-    // `assistant\n<think>\n{reasoning}\n</think>\n\n{content}`.
+    // `assistant\n<think>\n{reasoning}\n</think>\n\n{content}`. This is the 3.8
+    // template's preserve_thinking default; 3.5/3.6 do not have it.
     REQUIRE(p.history_think_block);
-    // Tool definitions serialise like jinja's `tojson`
-    // (json.dumps(obj, ensure_ascii=False): ", " / ": " separators).
-    REQUIRE(p.jinja_tool_json);
-    // Message bodies go through `render_content(...)|trim`.
-    REQUIRE(p.trim_content);
+    // A leading system turn with empty (trimmed) content is dropped -- the 3.8
+    // template wraps that turn in `{%- if content %}`.
+    REQUIRE(p.suppress_empty_system);
 }

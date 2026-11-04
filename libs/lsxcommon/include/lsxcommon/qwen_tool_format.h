@@ -31,36 +31,38 @@
 
 namespace lsxcommon {
 
-/// Per-family switch for the deltas between the Qwen3.5/3.6 template and the
-/// Qwen3.8 (`qwen4_exp`) one. The defaults reproduce the 3.5/3.6 wire exactly.
+/// Per-family switch for the deltas that actually vary between the qwen chat
+/// templates. The rendering rules every member shares -- `render_content|trim`
+/// on message content and `{{- tool | tojson }}` for tool definitions -- are not
+/// switches: every qwen template has them, so the codec always applies them.
 struct QwenRenderPolicy {
     /// Leave the generation prompt inside an OPEN <think> block. False (the
     /// default, and what the qwen3.8-flash-next goldens were captured with)
     /// closes it: `<|im_start|>assistant\n<think>\n\n</think>\n\n`.
     bool enable_thinking = false;
     /// Prefix every assistant history turn with the closed think block
-    /// (`<think>\n\n</think>\n\n`) the 3.8 template always renders.
+    /// (`<think>\n\n</think>\n\n`). This is the 3.8 (`qwen4_exp`) template's
+    /// `preserve_thinking` default (`is undefined or is true`); the 3.5/3.6
+    /// templates require it to be passed explicitly, so they keep the bare
+    /// `assistant\n{content}` wire.
     bool history_think_block = false;
-    /// Serialise tool definitions like jinja `tojson`
-    /// (json.dumps(..., ensure_ascii=False) separators) instead of compact.
-    bool jinja_tool_json = false;
-    /// Strip leading/trailing ASCII whitespace from message content, matching
-    /// the template's `render_content(...)|trim`.
-    bool trim_content = false;
+    /// Drop a leading system turn whose (trimmed) content is empty. The 3.8
+    /// template wraps its system turn in `{%- if content %}`; 3.5/3.6 emit
+    /// `<|im_start|>system\n<|im_end|>\n` unconditionally. A tool preamble is
+    /// always emitted either way -- only the bare system turn is affected.
+    bool suppress_empty_system = false;
 };
 
-/// The policy the qwen4_exp (Qwen3.8-Flash-Next) model frames with: the 3.5/3.6
-/// wire plus the three deltas its own `chat_template.jinja` carries (each one is
-/// exercised in test_qwen_tool_framing against the template rendered by
-/// transformers 5.15.1). Named and exported rather than file-local so the
-/// choice is pinnable by a test -- a flag that is covered by a renderer test but
-/// never switched on for the model frames bytes the reference never produces.
+/// The policy the qwen4_exp (Qwen3.8-Flash-Next) model frames with: thinking
+/// closed for generation, and the preserve_thinking default its template
+/// carries (each delta is exercised in test_qwen_tool_framing against the
+/// template rendered by transformers 5.15.1). Named and exported rather than
+/// file-local so the choice is pinnable by a test.
 inline constexpr QwenRenderPolicy kQwen38RenderPolicy{
     .enable_thinking = false,  // the state the FSI/CODE/DET goldens and the
                                // native tool round-trip are captured in
     .history_think_block = true,
-    .jinja_tool_json = true,
-    .trim_content = true,
+    .suppress_empty_system = true,
 };
 
 // Renders a conversation as the Qwen ChatML/XML transcript text. The

@@ -116,7 +116,9 @@ TEST_CASE("qwen tool framing: render places tools, calls and responses",
     // System preamble carries the "# Tools" block before the user turn.
     REQUIRE(out.rfind("<|im_start|>system\n# Tools\n", 0) == 0);
     CHECK(Contains(out, "<tools>"));
-    CHECK(Contains(out, R"("name":"get_weather")"));
+    // Tool definitions use jinja `tojson` separators (json.dumps default), the
+    // wire every qwen template renders -- see the fidelity cases below.
+    CHECK(Contains(out, R"("name": "get_weather")"));
     CHECK(Contains(out, "</tools>"));
     CHECK(Contains(out, "<IMPORTANT>"));
     CHECK(Contains(out, "You are a helper."));
@@ -391,8 +393,7 @@ TEST_CASE("qwen4_exp template fidelity: assistant history keeps the closed "
     std::string out;
     REQUIRE(lsxcommon::RenderQwenConversation(
         conv, out,
-        lsxcommon::QwenRenderPolicy{.history_think_block = true,
-                                    .jinja_tool_json = true}));
+        lsxcommon::QwenRenderPolicy{.history_think_block = true}));
 
     const std::string expected =
         "<|im_start|>system\n"
@@ -481,9 +482,7 @@ TEST_CASE("qwen4_exp template fidelity: content is trimmed and a tool-result "
     std::string out;
     REQUIRE(lsxcommon::RenderQwenConversation(
         conv, out,
-        lsxcommon::QwenRenderPolicy{.history_think_block = true,
-                                    .jinja_tool_json = true,
-                                    .trim_content = true}));
+        lsxcommon::QwenRenderPolicy{.history_think_block = true}));
     const std::string expected =
         "<|im_start|>system\n"
         "You are a helper.<|im_end|>\n"
@@ -513,10 +512,108 @@ TEST_CASE("qwen4_exp template fidelity: content is trimmed and a tool-result "
     std::string out2;
     REQUIRE(lsxcommon::RenderQwenConversation(
         two, out2,
-        lsxcommon::QwenRenderPolicy{.history_think_block = true,
-                                    .jinja_tool_json = true,
-                                    .trim_content = true}));
+        lsxcommon::QwenRenderPolicy{.history_think_block = true}));
     CHECK(out2.find("<|im_start|>user\n<tool_response>\nsunny\n</tool_response>"
                     "\n<tool_response>\n12:00\n</tool_response><|im_end|>\n") !=
           std::string::npos);
+}
+
+// ── The two wire deltas that are NOT 3.8-only ──────────────────────────────
+//
+// `render_content(...)|trim` and `{{- tool | tojson }}` are in the Qwen3.5/3.6
+// templates too (diff Qwen3.6-35B-A3B/chat_template.jinja against
+// Qwen3.8-Flash-Next/chat_template.jinja: both lines are identical; the 3.8
+// deltas are reasoning_effort, the preserve_thinking default and the empty
+// system turn). So the compact tool JSON and the untrimmed content the shared
+// codec emitted were wrong for EVERY qwen member, not just the 3.8 one -- and
+// the gates could never show it, because every capture prompt is
+// whitespace-free and carries no tools.
+//
+// Oracle for both cases below: the checkpoint's own chat_template.jinja rendered
+// by transformers 5.15.1 `apply_chat_template(..., enable_thinking=False)`.
+TEST_CASE("qwen tool framing: message content is trimmed by default",
+          "[qwen][tool_framing]")
+{
+    // Reference (Qwen3.6-35B-A3B, transformers 5.15.1):
+    //   system "  You are a helper.  \n" -> "You are a helper.<|im_end|>"
+    //   user   "\n  Weather in Paris?\n " -> "Weather in Paris?<|im_end|>"
+    ChatConversation conv;
+    conv.messages.push_back({"system", "  You are a helper.  \n", "", {}});
+    conv.messages.push_back({"user", "\n  Weather in Paris?\n ", "", {}});
+
+    std::string out;
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out));
+    CHECK(Contains(out, "<|im_start|>system\nYou are a helper.<|im_end|>\n"));
+    CHECK(Contains(out, "<|im_start|>user\nWeather in Paris?<|im_end|>\n"));
+    // Whitespace that the client put inside the body is still preserved.
+    conv.messages[1].content = "keep  inner  spacing";
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out));
+    CHECK(Contains(out, "<|im_start|>user\nkeep  inner  spacing<|im_end|>\n"));
+}
+
+TEST_CASE("qwen tool framing: tool definitions serialise like jinja tojson",
+          "[qwen][tool_framing]")
+{
+    // Reference (Qwen3.6-35B-A3B, transformers 5.15.1):
+    //   <tools>\n{"type": "function", "function": {"name": "get_weather",
+    //   "description": "Get the weather", "parameters": {"type": "object",
+    //   "properties": {"city": {"type": "string"}}}}}\n</tools>
+    ChatConversation conv = ToolConversation();
+    std::string out;
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out));
+    CHECK(Contains(
+        out,
+        "\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", "
+        "\"description\": \"Get the weather\", \"parameters\": "
+        "{\"type\": \"object\", \"properties\": {\"city\": "
+        "{\"type\": \"string\"}}}}}\n</tools>"));
+}
+
+TEST_CASE("qwen tool framing: a tool description is never trimmed",
+          "[qwen][tool_framing]")
+{
+    // The template trims `render_content(message.content)` only; the tool dict
+    // goes through `tool | tojson` verbatim. Reference (Qwen3.8-Flash-Next,
+    // transformers 5.15.1) for a description of "  Get the weather  \n" --
+    // spaces and the newline escape survive:
+    //   "description": "  Get the weather  \n"
+    // Trimming it (the first cut of the 3.8 policy applied `trim_content` to
+    // every esc() call site) is a byte-level divergence from the reference.
+    ChatConversation conv = ToolConversation();
+    conv.tools[0].description = "  Get the weather  \n";
+    conv.messages[0].content = "  You are a helper.  \n";
+
+    std::string out;
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out,
+                                              lsxcommon::kQwen38RenderPolicy));
+    // Content still trims...
+    CHECK(Contains(out, "You are a helper.<|im_end|>\n"));
+    // ...the tool description does not.
+    CHECK(Contains(out, "\"description\": \"  Get the weather  \\n\""));
+    CHECK_FALSE(Contains(out, "\"description\": \"Get the weather\""));
+}
+
+TEST_CASE("qwen tool framing: an empty system turn is template-dependent",
+          "[qwen][tool_framing]")
+{
+    // Reference (transformers 5.15.1) for a first message of
+    // {"role":"system","content":""} with no tools:
+    //   3.8-flash-next -> "<|im_start|>user\nhi<|im_end|>\n..." (NO system turn)
+    //   3.6-35B-A3B    -> "<|im_start|>system\n<|im_end|>\n<|im_start|>user..."
+    // The 3.8 template wraps its system turn in `{%- if content %}`; 3.5/3.6
+    // emit it unconditionally. Whitespace-only content counts as empty (the
+    // test is on the trimmed body).
+    ChatConversation conv;
+    conv.messages.push_back({"system", "  \n ", "", {}});
+    conv.messages.push_back({"user", "hi", "", {}});
+
+    std::string out36;
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out36));
+    CHECK(out36.rfind("<|im_start|>system\n<|im_end|>\n", 0) == 0);
+
+    std::string out38;
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out38,
+                                              lsxcommon::kQwen38RenderPolicy));
+    CHECK(out38.rfind("<|im_start|>user\nhi<|im_end|>\n", 0) == 0);
+    CHECK_FALSE(Contains(out38, "<|im_start|>system"));
 }
