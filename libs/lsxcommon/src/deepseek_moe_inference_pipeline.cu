@@ -327,7 +327,7 @@ InferenceResult RunInferenceModel(
     // 6. Expert index: mmap all routed-expert arrows for zero-copy access.
     {
         auto t0 = std::chrono::steady_clock::now();
-        expert_db = load_expert_index(mp, topo.num_layers, topo.experts_per_layer);
+        expert_db = load_expert_index<T>(mp, topo.num_layers, topo.experts_per_layer);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
         int loaded = 0;

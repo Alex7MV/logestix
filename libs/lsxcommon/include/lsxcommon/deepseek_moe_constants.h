@@ -15,6 +15,7 @@
 #include <cuda_fp16.h>
 
 #include <cstdint>
+#include <cstdlib>
 
 namespace lsxcommon {
 namespace deepseek {
@@ -62,6 +63,24 @@ struct Passport {
     static constexpr int kOriginalSeqLen = 65536;
     static constexpr int kBetaFast = 32;
     static constexpr int kBetaSlow = 1;
+
+    // ── Expert-store memory policy ────────────────────────────────────────
+    // V4-Flash pins the routed-expert store by default (the tree fits the host
+    // arena); LSX_EXPERT_PIN=0 falls back to mmap views.
+    static bool WantExpertPin()
+    {
+        const char *e = std::getenv("LSX_EXPERT_PIN");
+        return e == nullptr || e[0] != '0';
+    }
+
+    static constexpr int64_t kExpertPinCapBytes = 0;  // 0 = uncapped
+
+    // Resident FP16 cache of the shared-expert weights. Costs ~4 MB/layer on
+    // V4-Flash (fits comfortably) and ~176 MB/layer on V4-Pro (10.7 GiB),
+    // which is why Pro keeps it opt-in and takes the per-call dequant path.
+    static constexpr bool kSharedExpertCache = true;
+
+    static constexpr std::size_t ExpertMaxOpen() { return 65536; }
 
     // ── Per-layer compression grid (config.json compress_ratios[0..42]) ─────
     // Flash: layers 0-1 are pure MLA (ratio 0), 2..42 alternate 4/128 with

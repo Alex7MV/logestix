@@ -5,6 +5,8 @@
 #include "lsxcommon/fast_load.h"
 #include "fast_load_internal.h"
 #include "deepseek_moe_pro_constants.h"
+
+void lsx_pending_copy_drain(const void *host_ptr);
 #include "deepseek_moe_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -263,6 +265,7 @@ std::string detect_model_type(const std::string &model_path)
 // No per-model parser needed: the shared ExpertStore<TEntry>::DecodeEntry()
 // extracts the six ExpertSchema bins + three global scales into TEntry.
 
+template <class T>
 ExpertDb load_expert_index(const std::string &model_path,
                             int num_layers, int experts_per_layer)
 {
@@ -271,7 +274,12 @@ ExpertDb load_expert_index(const std::string &model_path,
     db.experts_per_layer = experts_per_layer;
     // Full-resident mmap table: the 7000 cap (Windows CRT limit) forced
     // constant churn past layer 27 and munmaps under in-flight prefetch DMA.
-    db.max_open = 65536;
+    db.max_open = T::ExpertMaxOpen();
+    // The prefetch-copy registry is TU-local (deepseek_moe_inference_moe.cu):
+    // the store must drain it before it munmaps a source an async H2D copy is
+    // still reading. V4-Pro's 811 GB streamed set evicts constantly, so this
+    // hook is load-bearing there; V4-Flash pins by default and rarely evicts.
+    db.pending_drain = &lsx_pending_copy_drain;
     db.log_prefix = "[load_expert_index] ";
     db.mmap_fail_verb = "mmap fail ";
     db.emit_diag = true;             // DeepSeek diag block
@@ -284,8 +292,7 @@ ExpertDb load_expert_index(const std::string &model_path,
     // pool, laid out per expert as packed [w1|w3|w2] then scales [s1|s3|s2]
     // — the exact order the GEMV phase streams. Disable with
     // LSX_EXPERT_PIN=0 (falls back to mmap views).
-    if (std::getenv("LSX_EXPERT_PIN") == nullptr
-        || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
+    if (T::WantExpertPin()) {
         int64_t pool_bytes = 0;
         bool sizes_ok = true;
         for (const auto &en : db.entries) {
@@ -304,7 +311,9 @@ ExpertDb load_expert_index(const std::string &model_path,
                             + en.w2_scales_bytes + 255) / 256) * 256;
         }
         void *pool = nullptr;
-        if (sizes_ok && pool_bytes > 0
+        const bool under_cap = T::kExpertPinCapBytes == 0
+            || pool_bytes <= T::kExpertPinCapBytes;
+        if (sizes_ok && pool_bytes > 0 && under_cap
             && cudaHostAlloc(&pool, static_cast<size_t>(pool_bytes),
                              cudaHostAllocDefault) == cudaSuccess) {
             db.pinned_pool = pool;
@@ -479,23 +488,20 @@ cudaError_t load_pinned_weights(
         return cudaErrorInvalidValue;
     }
 
-    // Per-layer compress_ratio table (decoder grid of DeepSeek-V4-Flash:
-    // pure MLA=0, CSA>0; ratio==4 uses coff=2 overlap).
-    static const int compress_ratios[] = {
-        0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
-        4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
-        4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4
-    };
-    constexpr int kRatioTableSize =
-        static_cast<int>(sizeof(compress_ratios) / sizeof(compress_ratios[0]));
+    // Per-layer compress_ratio table comes from the passport's decoder grid
+    // (pure MLA=0 on V4-Flash, 128 on V4-Pro; CSA>0 elsewhere, ratio==4 uses
+    // coff=2 overlap).
     const int num_layers = topo.num_layers;
-    if (num_layers > kRatioTableSize) {
+    if (num_layers > T::kLayers) {
         log::error("[load_pinned] topology num_layers="
                    + std::to_string(num_layers)
                    + " exceeds supported decoder grid (" +
-                   std::to_string(kRatioTableSize) + ")");
+                   std::to_string(T::kLayers) + ")");
         return cudaErrorInvalidValue;
     }
+    std::vector<int> compress_ratios(static_cast<size_t>(num_layers));
+    for (int i = 0; i < num_layers; ++i)
+        compress_ratios[static_cast<size_t>(i)] = T::CompressRatio(i);
     pw.layers.resize(static_cast<size_t>(num_layers));
 
     std::uint64_t rb = 0;   // device-resident byte total (weights only)
@@ -664,8 +670,10 @@ cudaError_t load_pinned_weights(
                         pw.Free();
                         return cudaErrorInvalidValue;
                     }
-                    lw.idx_wq_b_rows = 8192;   // canonical geometry
-                    lw.idx_wq_b_cols = 1024;
+                    // wq_b is [index_n_heads*index_head_dim, q_lora_rank];
+                    // read the real shape instead of a per-family constant.
+                    lw.idx_wq_b_rows = static_cast<int>(idx_w->shape[0]);
+                    lw.idx_wq_b_cols = static_cast<int>(idx_w->shape[1]);
                     jobs.push_back({idx_w, &lw.d_idx_wq_b,
                                     nullptr, &lw.idx_wq_b_rows,
                                     &lw.idx_wq_b_cols});
@@ -1200,6 +1208,10 @@ template cudaError_t DeepSeekInferArena::Allocate<lsxcommon::deepseek_pro::Passp
     const int *compress_ratios, int vocab);
 template cudaError_t load_pinned_weights<lsxcommon::deepseek_pro::Passport>(
     const std::string &model_path, PinnedWeights &pw, cudaStream_t stream);
+template ExpertDb load_expert_index<lsxcommon::deepseek::Passport>(
+    const std::string &model_path, int num_layers, int experts_per_layer);
+template ExpertDb load_expert_index<lsxcommon::deepseek_pro::Passport>(
+    const std::string &model_path, int num_layers, int experts_per_layer);
 
 } // namespace gpu
 } // namespace lsxcommon

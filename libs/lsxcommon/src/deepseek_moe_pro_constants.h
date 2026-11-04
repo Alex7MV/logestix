@@ -22,6 +22,7 @@
 //   ballast         : mtp.0..2 (DSpark speculative stage) stored+counted,
 //                     never applied
 #include <cstdint>
+#include <cstdlib>
 
 namespace lsxcommon {
 namespace deepseek_pro {
@@ -73,6 +74,55 @@ struct Passport {
     static constexpr int kOriginalSeqLen = 65536;
     static constexpr int kBetaFast = 32;
     static constexpr int kBetaSlow = 1;
+
+    // ── Expert-store memory policy ────────────────────────────────────────
+    // The 811 GB routed set is never pinned by default: the store streams it
+    // through mmap views and LSX_DEEPSEEK_PRO_PIN=1 opts into pinning under a
+    // 64 GiB cap.
+    static bool WantExpertPin()
+    {
+        const char *e = std::getenv("LSX_DEEPSEEK_PRO_PIN");
+        return e != nullptr && e[0] == '1';
+    }
+
+    static constexpr int64_t kExpertPinCapBytes = int64_t{64} << 30;
+
+    // ~176 MB/layer x 61 layers = 10.7 GiB on top of the 26.7 GiB resident
+    // set: opt-in only (LSX_DEEPSEEK_PRO_SHARED_CACHE in the old loader).
+    static constexpr bool kSharedExpertCache = false;
+
+    static std::size_t ExpertMaxOpen()
+    {
+        std::size_t max_open = 4096;
+        if (const char *mo = std::getenv("LSX_DEEPSEEK_PRO_MAX_OPEN")) {
+            const long v = std::strtol(mo, nullptr, 10);
+            if (v > 0) max_open = static_cast<std::size_t>(v);
+        }
+        return max_open;
+    }
+
+    // Per-layer decoder grid (config.json compress_ratios[0..60]).
+    static constexpr int CompressRatio(int layer)
+    {
+        if (layer < 0 || layer >= kLayers) return 0;
+        if (layer < 2) return 128;
+        return (layer % 2 == 0) ? 4 : 128;
+    }
+
+    static constexpr bool HasIndexer(int layer)
+    {
+        return CompressRatio(layer) == 4;
+    }
+
+    static constexpr bool IsHashLayer(int layer)
+    {
+        return layer >= 0 && layer < kHashLayers;
+    }
+
+    static constexpr int CompressorCoff(int layer)
+    {
+        return CompressRatio(layer) == 4 ? 2 : 1;
+    }
 };  // struct Passport
 
 // Legacy aliases: the templated driver refers to T::k*, the existing call
@@ -121,29 +171,27 @@ inline constexpr int kDsparkMarkovRank = 512;
 // ── Per-layer compression grid (config.json compress_ratios[0..60]) ─────────
 // 0-1: ratio 128 (non-overlapping), 2..60: even ratio 4 (overlap/coff=2),
 // odd ratio 128. Entries 61..63 are the MTP layers (ratio 0, not run).
-constexpr int CompressRatio(int layer)
+inline constexpr int CompressRatio(int layer)
 {
-    if (layer < 0 || layer >= kLayers) return 0;
-    if (layer < 2) return 128;
-    return (layer % 2 == 0) ? 4 : 128;
+    return Passport::CompressRatio(layer);
 }
 
 // Only ratio-4 layers instantiate the indexer (model.py: Indexer created
 // when compress_ratio == 4).
-constexpr bool HasIndexer(int layer)
+inline constexpr bool HasIndexer(int layer)
 {
-    return CompressRatio(layer) == 4;
+    return Passport::HasIndexer(layer);
 }
 
-constexpr bool IsHashLayer(int layer)
+inline constexpr bool IsHashLayer(int layer)
 {
-    return layer >= 0 && layer < kHashLayers;
+    return Passport::IsHashLayer(layer);
 }
 
 // CSA overlap: ratio 4 pools two consecutive blocks (coff = 1 + overlap).
-constexpr int CompressorCoff(int layer)
+inline constexpr int CompressorCoff(int layer)
 {
-    return CompressRatio(layer) == 4 ? 2 : 1;
+    return Passport::CompressorCoff(layer);
 }
 
 // ── Compile-time relations (MODEL INGEST INVARIANT step 3) ──────────────────

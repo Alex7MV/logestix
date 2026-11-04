@@ -115,6 +115,7 @@ std::string detect_model_type(const std::string &model_path);
 // without any synchronization.
 using ExpertDb = lsxcommon::gpu::expert_store::ExpertStore<ExpertEntry>;
 
+template <class T = deepseek::Passport>
 ExpertDb load_expert_index(const std::string &model_path,
                             int num_layers, int experts_per_layer);
 
