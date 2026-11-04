@@ -55,12 +55,16 @@ one in a ctest summary, which is why the debt rows are called out below.
 - **Qwen3.8-Flash-Next** was re-verified end to end on 2026-11-04 (every stage,
   real weights): SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`,
   top-1 11751) plus the family's EOS and cross-instance gate, FSI/CODE/DET 3/3
-  each, native tool round-trip green. The three byte-level template deltas over
-  3.5/3.6 (closed think block on assistant history turns, jinja `tojson` tool
-  serialisation, `render_content|trim` — the last one is shared with 3.5/3.6 and
-  was latent for every qwen member) are pinned against the checkpoint's own
-  `chat_template.jinja` in `test_qwen_tool_framing`, and the exact policy the
-  model renders with is pinned flag by flag in `test_qwen_moe_exp_model`.
+  each, native tool round-trip green. Framing is now template-exact for **every**
+  qwen member, not just this one: `render_content|trim` (message content only —
+  never tool definitions, parameter names or argument values) and jinja `tojson`
+  tool serialisation are unconditional in the shared codec, and only the three
+  genuinely per-family fields live in `QwenRenderPolicy` (`enable_thinking`, the
+  3.8 `preserve_thinking` default `history_think_block`, and its
+  `suppress_empty_system` guard). Pinned against each checkpoint's own
+  `chat_template.jinja` in `test_qwen_tool_framing` and, for the model's actual
+  policy, in `test_qwen_moe_exp_model`; all six members' real-weight tool
+  round-trips are green on that wire — [`open-tasks/2026-11-04-qwen-template-fidelity.md`](open-tasks/2026-11-04-qwen-template-fidelity.md).
   Throughput is expert-cache **capacity** bound
   (42.98 perf / 33.88 r3 t/s at 5350/4319 slots; hit rate 0.86),
   `docs/OPEN_TASKS.md` §R16.

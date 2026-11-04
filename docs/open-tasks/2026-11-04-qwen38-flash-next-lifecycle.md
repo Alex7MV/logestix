@@ -23,12 +23,12 @@ Checked and recorded as *not* applicable to the text path: the config carries
 that is the multimodal M-RoPE branch. Folding it into the text path would
 corrupt positions; the text decoder uses plain 64-dim partial rotary.
 
-## 1. Stage 4b — the 3.8 chat template differs from 3.5/3.6 in three byte-level ways
+## 1. Stage 4b — the 3.8 chat template differs from 3.5/3.6 (corrected below)
 
 The shared `qwen_tool_format.{h,cpp}` codec was written against the Qwen3.5/3.6
 `chat_template.jinja`. Rendering the **3.8** template (transformers 5.15.1,
 `apply_chat_template(..., enable_thinking=False)`) for the same conversation
-showed three deltas that the engine did not reproduce:
+showed three deltas from what the engine emitted:
 
 1. **Every assistant history turn carries the closed think block**
    (`assistant\n<think>\n{reasoning}\n</think>\n\n{content}`), including when
@@ -38,26 +38,47 @@ showed three deltas that the engine did not reproduce:
    (`json.dumps(obj, ensure_ascii=False)`: `", "` / `": "` separators), not the
    compact form.
 3. **Message bodies are trimmed** — the template renders every message through
-   `render_content(...)|trim` (lines 70/78/92/103). Unlike (1) and (2) this is
-   **not** a 3.8-only delta: 3.5/3.6 carry the same `|trim`, so the gap was
-   latent for every qwen member and invisible to the gates, whose prompts carry
-   no surrounding whitespace. The 3.8 member opts in; the older members keep the
-   untrimmed wire until their own goldens are re-verified (§R16).
+   `render_content(...)|trim` (lines 70/78/92/103).
 
-Fix: a `QwenRenderPolicy` struct (`enable_thinking`, `history_think_block`,
-`jinja_tool_json`, `trim_content`) with the 3.5/3.6-reproducing defaults, so the
-older members keep their exact wire; `Qwen38FlashNextModel` renders with the
-exported `kQwen38RenderPolicy`, which switches on all three. Pinned TDD-first by
-two new cases in `tests/test_qwen_tool_framing.cpp`
-("qwen4_exp template fidelity: …"), whose expected text **is** the template
-output rendered by transformers, not our renderer (86 assertions / 11 cases), plus
-a case in `tests/test_qwen_moe_exp_model.cpp` that pins the whole policy the
-model renders with (10 assertions / 3 cases) — the `trim_content` flag was
-covered by a renderer test yet left off for the model, which is exactly the class
-of defect a per-flag test cannot catch. Re-run after the change: SelfCheck
+Fix as shipped here: a `QwenRenderPolicy` struct (`enable_thinking`,
+`history_think_block`, `jinja_tool_json`, `trim_content`) with the
+3.5/3.6-reproducing defaults, so the older members keep their exact wire;
+`Qwen38FlashNextModel` renders with the exported `kQwen38RenderPolicy`, which
+switches on all three. Pinned TDD-first by two new cases in
+`tests/test_qwen_tool_framing.cpp` ("qwen4_exp template fidelity: …"), whose
+expected text **is** the template output rendered by transformers, not our
+renderer (86 assertions / 11 cases), plus a case in
+`tests/test_qwen_moe_exp_model.cpp` that pins the whole policy the model renders
+with (10 assertions / 3 cases) — the `trim_content` flag was covered by a
+renderer test yet left off for the model, which is exactly the class of defect a
+per-flag test cannot catch. Re-run after the change: SelfCheck
 `logits_hash 2e3bcd090441ad65` unchanged and the tool round-trip green, i.e. the
 9 gate prompts (3 + 3 + 3, none with surrounding whitespace) frame
 byte-identically.
+
+### Correction (2026-11-04, later the same day)
+
+Deltas (2) and (3) are **not** 3.8-only, and this session's handling of them was
+wrong. `diff` of `Qwen3.6-35B-A3B/chat_template.jinja` against
+`Qwen3.8-Flash-Next/chat_template.jinja` shows the `|trim` sites and the
+`{{- tool | tojson }}` line **identical**; a sweep of all six checkpoints finds 4
+trim sites and 1 tojson site in each. 3.8's real deltas are `reasoning_effort`,
+the `preserve_thinking` default and an empty-system-turn guard. Consequences:
+
+- the shared codec had been emitting the compact tool JSON and the untrimmed
+  content for **every** qwen member — the "older members keep their exact wire"
+  plan would have frozen that deviation, not preserved fidelity;
+- 3.8 applied `trim_content` at every `esc()` call site, so tool names and
+  descriptions were trimmed too, while the oracle keeps
+  `"  Get the weather  \n"` byte for byte (`tool | tojson`, no trim).
+
+Resolved the same day on branch `fix/qwen-template-fidelity` (commit
+`b3eaa066`): trim and tojson became unconditional (both flags deleted), trim was
+scoped to message content, `suppress_empty_system` became the third genuine
+per-family delta, four new oracle-pinned cases were added, and the two members
+that had **no** real-weight tool round-trip (qwen3.5-9b, qwen3.5-35b-a3b) got
+one. All six round-trips green on the new wire, every `logits_hash` unchanged,
+`ctest -L fast` 134/134 — [`2026-11-04-qwen-template-fidelity.md`](2026-11-04-qwen-template-fidelity.md).
 
 ## 2. Stage 8 — parity gates on real weights (all green)
 
