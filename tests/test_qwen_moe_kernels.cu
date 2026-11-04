@@ -12,6 +12,8 @@
 
 #include "lsxcommon/qwen_moe_expert_cache.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_moe_inference.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 
 using lsxcommon::qwen_moe::QwenMoeExpertDeviceCache;
 
@@ -664,6 +666,200 @@ TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
 
     cudaFree(d_x); cudaFree(d_yg); cudaFree(d_yu); cudaFree(d_y2);
     cudaFree(d_acc);
+    cudaStreamDestroy(stream);
+    cudaStreamDestroy(copy_stream);
+    lsxcommon::moe::FreeMoEExpertCache(cache);
+    store.Free();
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}
+
+// Streamed staging for the batched TC routed chain. The chain partitions the K
+// slots into ascending chunks and, before each chunk, waits only for the
+// copy-stream uploads of the slots *in that chunk* — so chunk c+1's H2D staging
+// runs while chunk c's TC work executes. The qwen3.8 decode step spent 5.6
+// ms/token on staging that was fully serialized with the kernels (nsys); this
+// is the ordering that overlaps it. The fp32 accumulation order stays
+// ascending into the same d_acc, so the result must be bit-identical to the
+// single-chunk call — that invariant is why the change cannot move
+// `logits_hash`, and it is what this case pins.
+TEST_CASE("routed TC batch chain: streamed staging chunks match one launch",
+          "[qwen-moe-experts]")
+{
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, 0) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_moe_tcs_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_tcs_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::moe::MoEExpertStore store;
+    std::string err;
+    REQUIRE(lsxcommon::moe::LoadMoEExpertStore(out.string(), store, err));
+
+    constexpr int H = 64, I = 16, K = 8, layer = 0;
+    REQUIRE(store.num_experts >= K);
+    lsxcommon::gpu::ExpertDeviceCache cache;
+    // One slot per routed expert: the real driver never evicts inside a layer
+    // (5345 slots vs top-10), so neither does this case.
+    auto alloc_cache = [&] {
+        lsxcommon::moe::FreeMoEExpertCache(cache);
+        REQUIRE(lsxcommon::moe::AllocateMoEExpertCache(store, K + 1, cache, err));
+    };
+    alloc_cache();
+
+    cudaStream_t stream, copy_stream;
+    REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+    REQUIRE(cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess);
+
+    std::vector<__half> hx(static_cast<size_t>(H));
+    for (int i = 0; i < H; ++i)
+        hx[static_cast<size_t>(i)] = __float2half(sinf((float)i * 0.37f) * 0.5f);
+
+    const int splitk = lsxcommon::lsx_tc::LsxTcBatchSplitK(H, 2 * I);
+    const size_t xq_bytes = ((static_cast<size_t>(H) / 2 + 63) / 64) * 64;
+    const size_t xqs_bytes =
+        (((static_cast<size_t>(H) + 15) / 16) + 63) / 64 * 64;
+    const size_t qpack_bytes = ((static_cast<size_t>(K) * I / 2) + 63) / 64 * 64;
+    const size_t qscales_bytes =
+        ((static_cast<size_t>(K) * ((I + 15) / 16)) + 63) / 64 * 64;
+    const size_t ygu_bytes = static_cast<size_t>(K) * 2 * I * 2;
+    const size_t h_bytes = static_cast<size_t>(K) * I * 2;
+    const size_t yp_bytes = static_cast<size_t>(K) * H * 2;
+    const size_t splitk_bytes =
+        splitk > 1 ? static_cast<size_t>(splitk) * K * 2 * I * 4 + 64 : 64;
+
+    __half *d_x = nullptr, *d_ygu = nullptr, *d_h = nullptr, *d_yp = nullptr;
+    float *d_acc = nullptr, *d_splitk = nullptr;
+    uint8_t *d_xq = nullptr, *d_xqs = nullptr, *d_qpack = nullptr,
+            *d_qscales = nullptr;
+    lsxcommon::moe::MoEGvSlotDev *d_tbl = nullptr;
+    REQUIRE(cudaMalloc(&d_x, static_cast<size_t>(H) * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_acc, static_cast<size_t>(H) * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_xq, xq_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_xqs, xqs_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_qpack, qpack_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_qscales, qscales_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ygu, ygu_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_h, h_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_yp, yp_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_splitk, splitk_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(reinterpret_cast<void **>(&d_tbl),
+                       sizeof(lsxcommon::moe::MoEGvSlotDev) * K) == cudaSuccess);
+    REQUIRE(cudaMemcpyAsync(d_x, hx.data(), static_cast<size_t>(H) * 2,
+                            cudaMemcpyHostToDevice, stream) == cudaSuccess);
+
+    const auto &rec0 = store.records[static_cast<size_t>(layer)][0];
+    const int64_t w13_bytes =
+        static_cast<int64_t>(rec0.w1_bytes + rec0.w3_bytes);
+    const int64_t s13_bytes =
+        static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
+
+    std::vector<int> dev_slots(static_cast<size_t>(K), -1);
+    bool missed[16] = {};
+    cudaEvent_t ev_uploads[16] = {};
+    cudaEvent_t ev_front = nullptr;
+    for (int k = 0; k < K; ++k)
+        REQUIRE(cudaEventCreateWithFlags(&ev_uploads[k],
+                                         cudaEventDisableTiming) == cudaSuccess);
+    REQUIRE(cudaEventCreateWithFlags(&ev_front, cudaEventDisableTiming) ==
+            cudaSuccess);
+
+    // Stage every routed expert, on the copy stream when `cs` is non-null.
+    auto stage = [&](cudaStream_t cs) {
+        if (cs) {
+            // Slot reuse fence: the copies may overwrite a slot whose reader is
+            // still queued on the compute stream.
+            REQUIRE(cudaEventRecord(ev_front, stream) == cudaSuccess);
+            REQUIRE(cudaStreamWaitEvent(cs, ev_front, 0) == cudaSuccess);
+        }
+        for (int k = 0; k < K; ++k) {
+            missed[k] = false;
+            const int slot = lsxcommon::moe::EnsureMoEExpertResident(
+                store, layer, k, cache, stream, err, cs, &missed[k]);
+            REQUIRE(slot >= 0);
+            dev_slots[static_cast<size_t>(k)] = slot;
+            if (cs && missed[k])
+                REQUIRE(cudaEventRecord(ev_uploads[k], cs) == cudaSuccess);
+        }
+        std::vector<lsxcommon::moe::MoEGvSlotDev> tbl(static_cast<size_t>(K));
+        for (int k = 0; k < K; ++k) {
+            const auto &rec = store.records[static_cast<size_t>(layer)]
+                                         [static_cast<size_t>(k)];
+            // Distinct coefficients: a chunk-order regression changes the sum.
+            tbl[static_cast<size_t>(k)] = {dev_slots[static_cast<size_t>(k)],
+                                           rec.gs1, rec.gs3, rec.gs2,
+                                           0.5f + 0.05f * static_cast<float>(k)};
+        }
+        REQUIRE(cudaMemcpyAsync(d_tbl, tbl.data(), sizeof(tbl[0]) * K,
+                                cudaMemcpyHostToDevice, stream) == cudaSuccess);
+    };
+
+    auto run = [&](int chunks, cudaStream_t cs, std::vector<float> &dst) {
+        REQUIRE(cudaMemsetAsync(d_acc, 0, static_cast<size_t>(H) * 4, stream) ==
+                cudaSuccess);
+        REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
+                    stream, d_x, 1, H, d_xq, d_xqs) == cudaSuccess);
+        REQUIRE(lsxcommon::moe::RunMoERoutedTcBatchStreamed(
+                    stream, cs, cs ? ev_uploads : nullptr, cs ? missed : nullptr,
+                    cache, d_tbl, d_xq, d_xqs, K, H, I, w13_bytes, s13_bytes,
+                    d_acc, d_ygu, d_h, d_yp, d_qpack, d_qscales, d_splitk,
+                    chunks) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        dst.resize(static_cast<size_t>(H));
+        REQUIRE(cudaMemcpy(dst.data(), d_acc, static_cast<size_t>(H) * 4,
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+    };
+
+    // Reference: cold cache, staging and compute both on the compute stream.
+    std::vector<float> ref;
+    stage(nullptr);
+    run(/*chunks=*/1, nullptr, ref);
+    float ref_energy = 0.f;
+    for (float v : ref) ref_energy += v * v;
+    CHECK(ref_energy > 0.f);
+
+    // Overlapped: cold cache, every expert staged on copy_stream, K slots in
+    // 1, 2 and 3 chunks. Only the chunk's own uploads may gate its compute.
+    // `chunks == 1` matters on its own: degenerate chunking must still fence
+    // the uploads it was handed, otherwise the compute reads a half-written
+    // slot (the chain would race the copy engine instead of waiting on it).
+    for (int chunks : {1, 2, 3}) {
+        alloc_cache();
+        stage(copy_stream);
+        int n_miss = 0;
+        for (int k = 0; k < K; ++k) n_miss += missed[k] ? 1 : 0;
+        CHECK(n_miss == K);
+        std::vector<float> got;
+        run(chunks, copy_stream, got);
+        INFO("chunks=" << chunks);
+        CHECK(std::memcmp(ref.data(), got.data(),
+                          static_cast<size_t>(H) * sizeof(float)) == 0);
+    }
+
+    // Warm cache: every expert resident, so no wait is ever enqueued and the
+    // chunk loop must still produce the reference sum.
+    {
+        std::vector<float> got;
+        stage(copy_stream);
+        int n_miss = 0;
+        for (int k = 0; k < K; ++k) n_miss += missed[k] ? 1 : 0;
+        CHECK(n_miss == 0);
+        run(/*chunks=*/2, copy_stream, got);
+        CHECK(std::memcmp(ref.data(), got.data(),
+                          static_cast<size_t>(H) * sizeof(float)) == 0);
+    }
+
+    for (int k = 0; k < K; ++k) cudaEventDestroy(ev_uploads[k]);
+    cudaEventDestroy(ev_front);
+    cudaFree(d_x); cudaFree(d_acc); cudaFree(d_xq); cudaFree(d_xqs);
+    cudaFree(d_qpack); cudaFree(d_qscales); cudaFree(d_ygu); cudaFree(d_h);
+    cudaFree(d_yp); cudaFree(d_splitk); cudaFree(d_tbl);
     cudaStreamDestroy(stream);
     cudaStreamDestroy(copy_stream);
     lsxcommon::moe::FreeMoEExpertCache(cache);

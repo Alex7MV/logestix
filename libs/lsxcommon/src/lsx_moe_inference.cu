@@ -1278,6 +1278,58 @@ cudaError_t RunMoERoutedTcBatchTbl(
                                    nullptr, nullptr);
 }
 
+cudaError_t RunMoERoutedTcBatchStreamed(
+    cudaStream_t stream, cudaStream_t copy_stream,
+    const cudaEvent_t *ev_uploads, const bool *missed,
+    const gpu::ExpertDeviceCache &cache, const MoEGvSlotDev *d_tbl,
+    const uint8_t *xq, const uint8_t *xqs, int K, int H, int I,
+    int64_t w13_bytes, int64_t s13_bytes, float *d_acc, __half *ygu_batch,
+    __half *h_batch, __half *yp_batch, uint8_t *qpack_batch,
+    uint8_t *qscales_batch, float *splitk13, int chunks)
+{
+    const bool streamed = copy_stream != nullptr && ev_uploads != nullptr &&
+                          missed != nullptr;
+    if (!streamed)
+        return RunMoERoutedTcBatchTbl(stream, cache, d_tbl, xq, xqs, K, H, I,
+                                      w13_bytes, s13_bytes, d_acc, ygu_batch,
+                                      h_batch, yp_batch, qpack_batch,
+                                      qscales_batch, splitk13);
+    if (!d_tbl || !xq || !xqs || !d_acc || !ygu_batch || !h_batch ||
+        !yp_batch || !qpack_batch || !qscales_batch || K > kMaxTopK || H <= 0 ||
+        I <= 0 || (I & 15) != 0 || w13_bytes <= 0 || s13_bytes <= 0)
+        return cudaErrorInvalidValue;
+    // A single chunk still fences every upload it was handed: the caller put the
+    // copies on another stream, so only this function can order them before the
+    // reads. "One chunk" means "serialize", never "skip the wait".
+    const int nch = (chunks > 1 && K > 1) ? (chunks > K ? K : chunks) : 1;
+    for (int c = 0; c < nch; ++c) {
+        // Ascending, contiguous, complete partition of [0,K): the reduce reads
+        // d_acc back in slot order, so the accumulate order over the whole
+        // layer is identical to one unchunked launch.
+        const int start = (c * K) / nch;
+        const int end = ((c + 1) * K) / nch;
+        if (end <= start) continue;
+        // Only this group's uploads gate this group's compute. Group c+1's
+        // copies are already queued on copy_stream and keep running while
+        // this group's TC work executes.
+        for (int k = start; k < end; ++k) {
+            if (!missed[k]) continue;
+            const cudaError_t w = cudaStreamWaitEvent(stream, ev_uploads[k], 0);
+            if (w != cudaSuccess) return w;
+        }
+        // Chunk-local K: the swiglu prescale scratch and the batch tables are
+        // slot-disjoint, so each group's math is the same as it would be
+        // inside the single launch.
+        const cudaError_t e = RunMoERoutedTcChain(
+            stream, cache, d_tbl + start, xq, xqs, end - start, H, I,
+            w13_bytes, s13_bytes, d_acc, ygu_batch, h_batch, yp_batch,
+            qpack_batch, qscales_batch, splitk13, nullptr, nullptr, nullptr,
+            nullptr);
+        if (e != cudaSuccess) return e;
+    }
+    return cudaGetLastError();
+}
+
 // Device-table variant consumed by the no-handshake decode path. Requires
 // the table to already live in device memory (built by the host in the
 // handshake flow or by moe_gemv_gather_table_kernel otherwise).
