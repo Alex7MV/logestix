@@ -856,6 +856,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-11-04 | qwen3.8-flash-next §R16 item A closed: expert staging moved onto the copy engine, chunk depth follows the layer's miss count | The last §R16 residual is closed. Residency staging no longer runs on the compute stream: it rides `copy_stream` with a per-expert `ev_uploads[k]` and an `ev_front` slot-reuse fence, and the routed TC chain gained a neutral entry point (`moe::RunMoERoutedTcBatchStreamed`) that runs the K slots in ascending chunks, each waiting **only** on its own uploads, so the next chunk's H2D overlaps this chunk's TC work. Depth is chosen from the miss count (`chunks = (n_miss >= 2) ? 2 : 1`) because a chunk's compute can only hide another chunk's copy — with fewer than two misses the second batch launch (K=5 tiles per launch instead of 10) is pure cost. Bit-exact by construction (the fp32 accumulate order into `d_acc` is unchanged; `LsxTcBatchSplitK` scratch is slot-disjoint), `logits_hash 2e3bcd090441ad65` unchanged. Measured against HEAD at identical slots/hit rate: **−1.55%** on `perf` (47 679 → 46 938 ms) and **−1.47%** at a forced 4319-slot capacity oracle (hit 0.862 → 0.745), `r3` −0.07% because under `kOff` the batched chain is not used at all — the honest reason one row does not move. The **instrument** was corrected first: the previous attribution reported 0.8% overlap from a scan that only matched the kernel starting before each copy; an interval intersection gives 17.7%. What is left is structural — the router host readback leaves the compute stream empty when the copies are issued, and the copies already run at 54.5-55.6 GB/s (the PCIe Gen5 ceiling) — so the largest serial host in the step is now the hyper-connection block, 6.97 of 18.5 ms/step of kernel time. Also fixed in passing: an early `chunks <= 1` path skipped the upload waits entirely, a race for any caller passing a `copy_stream`; one chunk now means "serialize", the test covers 1/2/3, SelfCheck ×3 + tool round-trip are green and `ctest -L fast` is 134/134. Rows re-seeded through the harness 43.39 / 33.91 t/s — [`open-tasks/2026-11-04-qwen38-expert-staging.md`](open-tasks/2026-11-04-qwen38-expert-staging.md) |
 | 2026-11-04 | qwen family framing: the two "3.8 deltas" were family-wide | The previous session classified `render_content\|trim` and `{{- tool \| tojson }}` as qwen3.8-only and carried them behind policy flags. Diffing the six checkpoints' `chat_template.jinja` shows both lines are **identical in every qwen member** (4 trim sites + 1 tojson site each); 3.8's real deltas are `reasoning_effort`, the `preserve_thinking` default and an empty-system-turn guard. So the shared codec emitted the compact tool JSON and untrimmed content for every member, and 3.8 trimmed tool names/descriptions that the template renders verbatim (`"  Get the weather  \n"` byte for byte in the oracle). Fix: trim and tojson are unconditional (the flags are deleted — no template makes them configurable), trim is scoped to message content via `esc_content` vs `esc_verbatim`, and `suppress_empty_system` joins `QwenRenderPolicy` as the third genuine per-family delta. Four new oracle-pinned cases + two missing real-weight tool round-trips (qwen3.5-9b, qwen3.5-35b-a3b — neither had one, the instrument gap that let this ship); all six members' round-trips green on the new wire and every SelfCheck `logits_hash` unchanged, `ctest -L fast` 134/134. The gates could never have seen it: FSI/CODE/DET consume pre-tokenised `input_ids`, so the renderer is not in their path — [`open-tasks/2026-11-04-qwen-template-fidelity.md`](open-tasks/2026-11-04-qwen-template-fidelity.md) |
 | 2026-11-04 | qwen3.8-flash-next full lifecycle re-verified; two perf-harness instrument defects fixed (this session's §R16 keeps the one open perf residual) | Every stage re-run on the real 336 GB checkpoint (164 GB tree): SelfCheck Paris ×3 bit-exact (`2e3bcd090441ad65`), FSI/CODE/DET 3/3, EOS + cross-instance gate, native tool round-trip; `ctest -L fast` 134/134. Stage 4b found the 3.8 `chat_template.jinja` differs from 3.5/3.6 in byte-level ways (closed think block on every assistant history turn; jinja `tojson` tool serialisation; `render_content|trim`) — carried by a new `QwenRenderPolicy` so the older members keep their exact wire, pinned against the template rendered by transformers **and** against the exact policy the model renders with (the `trim` delta was first wired into the renderer and left off for the model). The `|trim` delta is shared with 3.5/3.6 — latent for every qwen member, invisible to the gates because the capture prompts carry no surrounding whitespace — and those members keep the untrimmed wire until their goldens are re-verified (§R16). Two **instrument** defects were under-reporting the whole perf suite and were fixed test-first: `MeasureMemoryBandwidthGbs` held two 512 MiB buffers in `thread_local` statics for the process lifetime (the probe runs before the model in `test_perf_baseline`, so every capacity-bound family from 2026-10-23 measured with 1 GiB less VRAM — 4962 → 5350 slots here; the 49 affected rows self-heal on their next run because an increase is upserted), and the generation arena/embed statics were charged twice on the harness's second `Load()` (`SizeExpertCacheSlots` + `GenContextResidentBytes`). Rows re-seeded through the harness: **42.98** perf / **33.88** r3 t/s (old 44.85 / 26.47 removed first); the residual is capacity, measured by a forced-slot sweep (4962 → 41.40, 5350 → 43.00, 5750 → 44.15, 6000 → OOM) and now expressible as `PerfCause::kCapacity` with `expert_cache_slots` on every row — [`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md) |
 | 2026-11-03 | granite-4.2-30b full lifecycle re-verification: §K `code` debt cleared, TC-overflow defect fixed | Re-converted the real 54.5 GiB checkpoint to a 15.3 GiB `logestix-granite` tree and ran every stage. Real defect found TDD: the default auto/TC NVFP4 path degenerates on the 306-token tool prompt (`_with_n_comprehension…`). External oracle: the BF16 checkpoint on CPU emits `get_weather {"city":"Paris"}` for the exact reference ids, and the converted model under `FastMathMode::kOff` reproduces it token-for-token — the TC activation range is exceeded (same class as granite-switch). `Infer` now pins `kOff`. Gates green: SelfCheck Paris x3 bit-exact (`c165e80fde6401cf`), FSI/CODE/DET 3/3, tool round-trip; perf re-seeded 76.79/76.47 t/s at 2048 (old 2026-09-22 rows removed first; the perf row is ~1.4% below its old 77.86 because it now takes the strict path). §K `granite-4.2-30b:code` was the last single-stage golden-debt entry — resolved (golden since 2026-10-07) — [`open-tasks/2026-11-03-granite-4.2-30b-lifecycle.md`](open-tasks/2026-11-03-granite-4.2-30b-lifecycle.md) |
@@ -987,36 +988,41 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
   The model needs a card that can hold the pinned set plus ~2 GiB headroom; a
   clean "not enough VRAM" pre-check is a follow-up.
 
-## R16. qwen3.8-flash-next — lifecycle re-verified; one measured perf residual left: serialized expert staging (2026-11-04)
+## R16. qwen3.8-flash-next — lifecycle re-verified; both measured residuals closed (2026-11-04)
 
-Branch `feat/qwen38-flash-next-lifecycle`. Every Model Ingestion Protocol stage
+Branch `feat/qwen38-flash-next-lifecycle` + `fix/qwen-template-fidelity`. Every
+Model Ingestion Protocol stage
 was re-run on the real 336 GB checkpoint (164 GB tree) and all four parity gates
 are green: SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`, top-1
 11751), FSI 3/3, CODE 3/3, DET 3/3, the EOS + cross-instance gate, and a native
-tool round-trip. Perf rows re-seeded by the harness: **42.98 t/s** (`perf`,
-5350 slots) / **33.88 t/s** (`r3`, 4319 slots) at 2048 tokens. Two **instrument**
-defects that had been under-reporting the whole perf suite were found and fixed
-test-first (the bandwidth probe leaked 1 GiB of VRAM for the process lifetime;
-the generation scratch was charged twice on the second `Load()`), and the
-verdict logic now distinguishes capacity from regression. Full trail:
+tool round-trip. Perf rows re-seeded by the harness: **43.39 t/s** (`perf`,
+5350 slots) / **33.91 t/s** (`r3`, 4319 slots) at 2048 tokens (were 42.98 /
+33.88). Two **instrument** defects that had been under-reporting the whole perf
+suite were found and fixed test-first (the bandwidth probe leaked 1 GiB of VRAM
+for the process lifetime; the generation scratch was charged twice on the second
+`Load()`), and the verdict logic now distinguishes capacity from regression.
+Full trail:
 [`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md).
 
-**Open (perf, measured).** nsys over 64 decode steps: step window 25.23 ms,
-kernels 17.78 ms, **H2D 5.58 ms/token (302 MB, 17 267 copies) essentially
-unoverlapped** — kernels + copies are 23.36 ms of the 25.23 ms window. All of
-it rides the compute stream; the driver's `copy_stream` carries 0.2 MB over the
-whole trace, because the family stages residency for all K = 10 experts **before**
-any FFN compute (`EnsureQwen4ExpExpertResident(..., stream, ...)` without an
-`h2d_stream`) and only then calls `moe::RunMoERoutedFFN` with
-`copy_stream`/`ev_uploads`/`ev_front`, which finds every expert already resident.
-Closing it means issuing expert *k+1*'s staging while expert *k* computes (the
-neutral `moe::EnsureMoERoutedFFN` shape) — an ordering change to the router
-handshake that the numeric gates depend on, so it needs its own TDD cycle and a
-`logits_hash` re-check, not a flag. Kernel attribution of the same window:
-`hc_epilogue_kernel` 2.66 ms, `hc_down_gemv` 2.16, `hc_norm` 1.57,
-`ple_inject` 1.39, `TcGemmKernel` variants ~2.9 combined, `moe_router_dots` 0.83,
-`exp_head_gemv` 0.75 — the hyper-connection block, not attention, is the largest
-serial host.
+**Closed (perf): the serialized expert H2D.** Residency staging now rides the
+copy engine (`copy_stream` + per-expert `ev_uploads` + an `ev_front` slot-reuse
+fence) and the routed TC chain runs in ascending chunks that wait only on their
+own uploads (`moe::RunMoERoutedTcBatchStreamed`), with the depth chosen from the
+layer's miss count — a chunk's compute can only hide another chunk's copy, so
+`chunks = (n_miss >= 2) ? 2 : 1`. Bit-identical by construction (unchanged
+accumulate order), `logits_hash` unchanged. Measured against HEAD on the same
+machine and the same slots/hit rate: **−1.55%** on `perf`, **−1.47%** at a
+forced 4319-slot capacity oracle; `r3` −0.07%, because `kOff` takes the fused
+per-slot path where no batched chain exists to chunk. The first attribution pass
+over-counted the serialization (an overlap scan that could not see a kernel
+starting inside a copy reported 0.8%; the honest intersection is 17.7%). What
+remains is structural: the router host readback leaves the compute stream empty
+when the copies are issued, and those copies already run at the PCIe roofline
+(55.6 GB/s). The largest serial host in the step is now the hyper-connection
+block — `hc_epilogue` 2.65 + `hc_down_gemv` 2.16 + `hc_norm` 1.57 +
+`hc_up_gemv` 0.59 = 6.97 ms/step of an 18.5 ms/step kernel budget — which is
+arithmetic work, not staging. Full trail:
+[`open-tasks/2026-11-04-qwen38-expert-staging.md`](open-tasks/2026-11-04-qwen38-expert-staging.md).
 
 **Closed (framing).** The shared codec had been emitting the compact tool JSON
 and the untrimmed message content for **every** qwen member, because the two
