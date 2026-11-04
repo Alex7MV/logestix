@@ -2039,7 +2039,12 @@ set_tests_properties(test_kimi_k3_tokenizer_parity PROPERTIES SKIP_RETURN_CODE 4
 set_tests_properties(test_kimi_k3_tokenizer_parity PROPERTIES LABELS fast)
 
 # ── Kimi-K3 frozen passport (host-only, no CUDA) ─────────────────────────────
-add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp)
+# The Kimi-K3.1-Pro passport (kimi_moe_pro_constants.h) is pinned by the same
+# constants gate: the sibling variant's geometry is a strict restatement of the
+# K3 tower plus the DSA/indexer block, so one family constants target owns both
+# passports (the Suites() rows for kimi-k3 and kimi-k3.1-pro both name it).
+add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp
+                                      test_kimi_pro_constants.cpp)
 target_link_libraries(test_kimi_k3_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_kimi_k3_constants COMMAND test_kimi_k3_constants)
 set_tests_properties(test_kimi_k3_constants PROPERTIES LABELS fast)
