@@ -188,6 +188,8 @@ struct ExpertStore {
     std::vector<int> stage_slot_of;
     std::unique_ptr<io::PreadPool> stage_pool;
     size_t stage_cursor = 0;
+    int64_t max_stage_bytes_ = 0;   // one slot's size, for PrefetchStage's bound
+    std::vector<int> open_fds_;     // fds held across one PrefetchStage batch
 
     // Model toggles (see top-of-file).
     std::string log_prefix = "";
@@ -771,11 +773,30 @@ struct ExpertStore {
         if (stage_ring.pread_threads <= 0) stage_ring.pread_threads = 4;
         if (stage_ring.chunk_experts == 0) stage_ring.chunk_experts = 1;
 
+        // Plane geometry comes from a parsed expert, and a store with
+        // warm_on_load = false has none at this point — that is the KimiLinear
+        // case, where the eager pre-parse cost 156 s for nothing (§R17 P5) and
+        // was disabled. Parse ONE expert here instead: the tree is uniform, so
+        // one file gives the geometry, and it costs ~2.4 ms rather than a load
+        // pass. Found on the real model: without this the ring logged "no plane
+        // geometry" and every expert silently took the legacy path.
         int64_t max_bytes = 0;
         for (int k = 0; k < 6; ++k) max_bytes += plane_bytes[k];
         if (max_bytes <= 0) {
+            for (size_t idx = 0; idx < paths.size(); ++idx) {
+                if (paths[idx].empty()) continue;  // dense-prefix slot
+                if (!ParseFile(idx)) continue;
+                lru.insert(lru.begin(), idx);
+                break;
+            }
+            FillStoreGeometry();
+            max_bytes = 0;
+            for (int k = 0; k < 6; ++k) max_bytes += plane_bytes[k];
+        }
+        if (max_bytes <= 0) {
             log::error(log_prefix +
-                       "staging ring: no plane geometry (no expert parsed yet)");
+                       "staging ring: no plane geometry (no expert could be "
+                       "parsed)");
             return false;
         }
         stage_slot_of.assign(entries.size(), -1);
@@ -811,6 +832,7 @@ struct ExpertStore {
             (void)cudaEventSynchronize(slot.ev);
             stage_slots.push_back(slot);
         }
+        max_stage_bytes_ = max_bytes;
         stage_pool = std::make_unique<io::PreadPool>(stage_ring.pread_threads);
         stage_cursor = 0;
         return true;
@@ -940,6 +962,105 @@ struct ExpertStore {
         ++stage_stats.staged_experts;
         stage_stats.staged_bytes += staged;
         return true;
+    }
+
+    // Fills pinned slots for a whole layer's expert set in ONE pool pass.
+    //
+    // Why a batch and not N calls to EnqueueStage: the measured lever is
+    // parallelism across the layer's planes, not per-expert. The probe staged
+    // one layer (16 experts x 6 planes = 96 preads over 4 threads) at
+    // 26.9 ms cold against 54.8 ms for the pageable path, while a per-expert
+    // refill can only ever offer 6 jobs per barrier — measured on the real
+    // model at 32 tokens, the per-expert form was neutral-to-worse.
+    //
+    // Pure host work: no CUDA call, so the caller can prefetch a whole layer
+    // while the device is still busy with the previous one. Returns the number
+    // of experts whose six planes are ready in a slot.
+    size_t PrefetchStage(const size_t *idx, size_t count)
+    {
+        if (stage_ring.slots == 0 || stage_slots.empty() || !stage_pool)
+            return 0;
+        if (count > stage_slots.size()) count = stage_slots.size();
+        std::vector<io::PreadJob> jobs;
+        std::vector<std::pair<size_t, size_t>> owners;  // (idx, slot)
+        jobs.reserve(count * 6);
+        owners.reserve(count);
+        for (size_t n = 0; n < count; ++n) {
+            const size_t flat = idx[n];
+            if (flat >= entries.size() || flat >= planes.size() ||
+                !entries[flat].host_w1 ||
+                paths.empty() || paths[flat].empty())
+                continue;
+            const size_t slot_i = n;  // one slot per expert of the batch
+            StageSlot &slot = stage_slots[slot_i];
+            const cudaError_t q = cudaEventQuery(slot.ev);
+            if (q != cudaSuccess) {
+                if (q != cudaErrorNotReady) (void)cudaGetLastError();
+                (void)cudaEventSynchronize(slot.ev);
+                ++stage_stats.ring_waits;
+            }
+            const int fd = ::open(paths[flat].c_str(), O_RDONLY);
+            if (fd < 0) continue;
+            int64_t cursor = 0;
+            bool ok = true;
+            for (int k = 0; k < 6; ++k) {
+                const auto &pl = planes[flat][static_cast<size_t>(k)];
+                io::PreadJob job;
+                job.fd = fd;
+                job.offset = pl.offset;
+                job.dst = static_cast<void *>(slot.host + cursor);
+                job.len = static_cast<size_t>(pl.bytes);
+                jobs.push_back(job);
+                cursor += pl.bytes;
+                if (cursor > max_stage_bytes_) ok = false;
+            }
+            if (!ok) continue;
+            // The fd must stay open until the pool has read from it; closing
+            // here is safe because Run() below is synchronous per batch and the
+            // pool copies under its own lock. Recorded so the batch keeps it.
+            open_fds_.push_back(fd);
+            slot.last_idx = static_cast<int64_t>(flat);
+            owners.push_back({flat, slot_i});
+        }
+        if (jobs.empty()) return 0;
+        const size_t done = stage_pool->Run(jobs);
+        for (int fd : open_fds_) ::close(fd);
+        open_fds_.clear();
+        if (done != jobs.size()) {
+            stage_stats.short_reads += static_cast<int64_t>(jobs.size() - done);
+            return 0;  // never DMA a partially filled batch
+        }
+        for (const auto &o : owners) {
+            if (o.first < stage_slot_of.size())
+                stage_slot_of[o.first] = static_cast<int>(o.second);
+            ++stage_stats.staged_experts;
+        }
+        return owners.size();
+    }
+
+    // DMAs one expert's six planes out of the slot PrefetchStage filled.
+    bool StageFromSlot(size_t idx, uint8_t *dst_dev,
+                       const int64_t (&dst_off)[6], cudaStream_t stream)
+    {
+        if (idx >= stage_slot_of.size()) return false;
+        const int slot_i = stage_slot_of[idx];
+        if (slot_i < 0 || static_cast<size_t>(slot_i) >= stage_slots.size())
+            return false;
+        StageSlot &slot = stage_slots[static_cast<size_t>(slot_i)];
+        int64_t slot_off = 0;
+        for (int k = 0; k < 6; ++k) {
+            const auto &pl = planes[idx][static_cast<size_t>(k)];
+            const cudaError_t cp = cudaMemcpyAsync(
+                dst_dev + dst_off[k], slot.host + slot_off,
+                static_cast<size_t>(pl.bytes), cudaMemcpyHostToDevice, stream);
+            slot_off += pl.bytes;
+            if (cp != cudaSuccess) {
+                (void)cudaGetLastError();
+                return false;
+            }
+        }
+        stage_stats.staged_bytes += slot_off;
+        return cudaEventRecord(slot.ev, stream) == cudaSuccess;
     }
 
     // Makes @p stream wait for the DMA queued for @p idx. No host sync.

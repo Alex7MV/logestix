@@ -435,3 +435,52 @@ TEST_CASE("ExpertStore stage-ring stays off when the flag is 0",
     ::unsetenv("LSX_EXPERT_STAGE_RING");
     ::unsetenv("LSX_EXPERT_STAGE_SLOTS");
 }
+
+TEST_CASE("ExpertStore staging ring bootstraps geometry without a warm load",
+          "[expert_store][stage]")
+{
+    // warm_on_load = false is what the KimiLinear store does: its eager
+    // pre-parse walked experts in path order at ~2.4 ms each and cost 156 s of
+    // load for capacity the LRU fills on its own within two tokens (§R17 P5).
+    // Consequence for the ring: at InitStageRing time NO expert has been parsed,
+    // so the plane geometry it sizes its slots from does not exist yet. Found on
+    // the real model — the ring logged "no plane geometry" and every expert
+    // silently took the legacy path, which looks like a change that simply did
+    // not help.
+    Store s;
+    s.num_layers = 2;
+    s.experts_per_layer = 2;
+    s.max_open = 4;
+    s.warm_on_load = false;
+    REQUIRE(s.Load(MakeExpertDir().string(), false));
+    REQUIRE(s.lru.empty());                 // nothing resident, as in production
+    s.stage_ring.slots = 2;
+    REQUIRE(s.InitStageRing());             // must bootstrap its own geometry
+    CHECK(s.plane_bytes[0] > 0);
+    CHECK(s.file_bytes > 0);
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    const int64_t packed = s.plane_bytes[0];
+    const int64_t scaled = s.plane_bytes[3];
+    const int64_t one = packed + scaled;
+    const int64_t off[6] = {0, 2 * one, one, packed, 2 * one + packed,
+                            one + packed};
+    const size_t total = static_cast<size_t>(3 * one);
+    uint8_t *dev = nullptr;
+    REQUIRE(cudaMalloc(reinterpret_cast<void **>(&dev), total) == cudaSuccess);
+
+    // Stage a non-resident expert: the ring needs it resident, so the caller's
+    // EnsureResident comes first — exactly what the family loop does.
+    s.EnsureResident(0, 1, stream);
+    REQUIRE(s.EnqueueStage(1, dev, off, stream));
+    s.AwaitStage(1, stream);
+    std::vector<uint8_t> got(total, 0xEE);
+    REQUIRE(cudaMemcpy(got.data(), dev, total, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    CHECK(got[static_cast<size_t>(off[0])] == 0x01);   // w1
+    CHECK(got[static_cast<size_t>(off[3])] == 0x80);   // w1_scales
+
+    cudaFree(dev);
+    cudaStreamDestroy(stream);
+}

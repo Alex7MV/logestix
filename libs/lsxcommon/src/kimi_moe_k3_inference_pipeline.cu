@@ -635,6 +635,44 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
                 uint8_t *s2 = p2 + packed_w;
                 uint8_t *p3 = ws.expert_stage + 2 * one;
                 uint8_t *s3 = p3 + packed_w;
+                // Staging-ring destination offsets, in ExpertSchema order
+                // (w1, w2, w3, w1_scales, w2_scales, w3_scales). This family's
+                // device layout is [w1|w1s|w3|w3s|w2|w2s] with one = packed +
+                // scales, i.e. NOT schema order — the ring honours these and
+                // never assumes a layout of its own.
+                const int64_t stage_off[6] = {
+                    0,                    // w1  -> p1
+                    2 * one,              // w2  -> p3
+                    one,                  // w3  -> p2
+                    packed_w,             // w1s -> s1
+                    2 * one + packed_w,   // w2s -> s3
+                    one + packed_w};      // w3s -> s2
+                // Residency for the whole layer first, then ONE parallel
+                // prefetch pass over its 16 x 6 planes. The measured lever is
+                // parallelism across the layer's planes: a per-expert refill can
+                // only offer 6 jobs per barrier and measured neutral-to-worse on
+                // the real model, while a layer pass is what the cold-cache
+                // probe timed at 26.9 ms against 54.8 ms for pageable copies.
+                std::vector<size_t> pe_ids(static_cast<size_t>(top.top_k));
+                bool ring_batch = experts.stage_ring.slots > 0;
+                for (int k = 0; ring_batch && k < top.top_k; ++k) {
+                    const int eid = hidx[static_cast<size_t>(k)];
+                    EnsureKimiK3ExpertResident(experts, l, eid, stream);
+                    const size_t pe_idx =
+                        static_cast<size_t>(l) * top.num_experts +
+                        static_cast<size_t>(eid);
+                    if (pe_idx >= experts.entries.size())
+                        return fail("expert index out of range");
+                    const KimiK3ExpertEntry &pe = experts.entries[pe_idx];
+                    if (!pe.host_w1 || !pe.host_w2 || !pe.host_w3)
+                        return fail("routed expert view is not resident");
+                    pe_ids[static_cast<size_t>(k)] = pe_idx;
+                }
+                if (ring_batch) {
+                    ring_batch = experts.PrefetchStage(pe_ids.data(),
+                                                       pe_ids.size()) ==
+                                 pe_ids.size();
+                }
                 for (int k = 0; k < top.top_k; ++k) {
                     const int eid = hidx[static_cast<size_t>(k)];
                     EnsureKimiK3ExpertResident(experts, l, eid, stream);
@@ -647,24 +685,36 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
                     if (!pe.host_w1 || !pe.host_w2 || !pe.host_w3)
                         return fail("routed expert view is not resident");
                     stage = "moe_h2d";
-                    cudaMemcpyAsync(p1, pe.host_w1,
-                                    static_cast<size_t>(pe.w1_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                    cudaMemcpyAsync(s1, pe.host_w1_scales,
-                                    static_cast<size_t>(pe.w1_scales_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                    cudaMemcpyAsync(p2, pe.host_w3,
-                                    static_cast<size_t>(pe.w3_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                    cudaMemcpyAsync(s2, pe.host_w3_scales,
-                                    static_cast<size_t>(pe.w3_scales_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                    cudaMemcpyAsync(p3, pe.host_w2,
-                                    static_cast<size_t>(pe.w2_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                    cudaMemcpyAsync(s3, pe.host_w2_scales,
-                                    static_cast<size_t>(pe.w2_scales_bytes),
-                                    cudaMemcpyHostToDevice, stream);
+                    // Pinned ring when enabled (measured 10.5 GB/s against 5.2
+                    // for the pageable copies below, which are NOT asynchronous:
+                    // the driver stages the pageable source through an internal
+                    // pinned buffer inside the call). Any refusal — ring off,
+                    // slot unreadable — falls through to the legacy path for
+                    // THIS expert, so a partially engaged ring stays correct.
+                    if (!ring_batch ||
+                        !experts.StageFromSlot(pe_idx, ws.expert_stage,
+                                               stage_off, stream)) {
+                        cudaMemcpyAsync(p1, pe.host_w1,
+                                        static_cast<size_t>(pe.w1_bytes),
+                                        cudaMemcpyHostToDevice, stream);
+                        cudaMemcpyAsync(s1, pe.host_w1_scales,
+                                        static_cast<size_t>(pe.w1_scales_bytes),
+                                        cudaMemcpyHostToDevice, stream);
+                        cudaMemcpyAsync(p2, pe.host_w3,
+                                        static_cast<size_t>(pe.w3_bytes),
+                                        cudaMemcpyHostToDevice, stream);
+                        cudaMemcpyAsync(s2, pe.host_w3_scales,
+                                        static_cast<size_t>(pe.w3_scales_bytes),
+                                        cudaMemcpyHostToDevice, stream);
+                        cudaMemcpyAsync(p3, pe.host_w2,
+                                        static_cast<size_t>(pe.w2_bytes),
+                                        cudaMemcpyHostToDevice, stream);
+                        cudaMemcpyAsync(s3, pe.host_w2_scales,
+                                        static_cast<size_t>(pe.w2_scales_bytes),
+                                        cudaMemcpyHostToDevice, stream);
+                    } else {
+                        experts.AwaitStage(pe_idx, stream);
+                    }
                     stage = "moe_expert";
                     e = lsx_nvfp4::RunLsxNvfp4Gemm(
                         stream, ws.lat, p1, s1, pe.w1_global_scale, ws.egate, 1,

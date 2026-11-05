@@ -809,6 +809,16 @@ KimiK3ExpertDb LoadKimiK3ExpertIndex(const std::string &model_path,
     // when a caller passes 0.
     db.max_open = max_open ? max_open : 65536;
     db.Load(model_path, /*fallback=*/true);
+    // Pinned staging ring (opt-in). Resolution is done HERE and not inside
+    // InitStageRing so an explicit programmatic configuration is never
+    // overridden by ambient environment; a failure (slots = 0, or pinned memory
+    // unavailable) leaves every expert on the legacy copy path, which is what
+    // the pipeline's per-expert fallback expects.
+    db.ResolveStageRingFromEnv();
+    if (db.stage_ring.slots > 0 && !db.InitStageRing()) {
+        log::warn("[kimi_k3_load] staging ring requested but unavailable; "
+                  "routed experts use the legacy copy path");
+    }
     return db;
 }
 
@@ -818,6 +828,12 @@ void EnsureKimiK3ExpertResident(KimiK3ExpertDb &db, int layer, int expert,
     db.EnsureResident(layer, expert, stream);
 }
 
-void FreeKimiK3ExpertIndex(KimiK3ExpertDb &db) { db.Free(); }
+void FreeKimiK3ExpertIndex(KimiK3ExpertDb &db)
+{
+    // One line per session, and only if the ring staged anything: the counters
+    // are the evidence that the ring engaged rather than silently falling back.
+    db.LogStageStats();
+    db.Free();
+}
 
 }  // namespace lsxcommon::kimi_k3
