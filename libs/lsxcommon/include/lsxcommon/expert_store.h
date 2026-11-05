@@ -32,6 +32,7 @@
 
 #include "lsxcommon/arrow_validate.h"
 #include "lsxcommon/log.h"
+#include "lsxcommon/pread_pool.h"
 #include "lsxcommon/schema.h"
 
 namespace lsxcommon {
@@ -144,6 +145,48 @@ struct ExpertStore {
     // the matching release primitive per chunk.
     std::vector<bool> pinned_registered;
     std::vector<size_t> pinned_chunk_sizes;
+
+    // ── Pinned staging ring ───────────────────────────────────────────────
+    // Fills pinned buffers from the expert files with a parallel pread pool and
+    // DMAs them to the caller's device layout, so the streaming path stops
+    // paying the pageable-copy cost (measured 5.2 GB/s pageable vs 10.5 GB/s
+    // through this ring, 39.8 GB/s array ceiling).
+    //
+    // Off by default: `slots = 0` makes EnqueueStage refuse, and every family
+    // keeps its own copy loop until it opts in. That is what makes this a
+    // change with no blast radius on the 15 store aliases.
+    struct StageRingConfig {
+        size_t slots = 0;          // 0 = disabled
+        int pread_threads = 4;     // <= 0 => 4
+        size_t chunk_experts = 1;  // staging granularity (see InitStageRing)
+    };
+    StageRingConfig stage_ring;
+
+    // Engagement counters. Without these, "the ring is engaged for this family"
+    // is an assumption; a family silently falling back would look like a change
+    // that simply did not help.
+    struct StageStats {
+        int64_t staged_experts = 0;
+        int64_t staged_bytes = 0;
+        int64_t legacy_fallbacks = 0;
+        int64_t ring_waits = 0;
+        int64_t short_reads = 0;
+    };
+    StageStats stage_stats;
+
+    // One pinned buffer plus the event that says its DMA has executed. The
+    // event is the whole point: a slot may not be refilled while a copy reading
+    // it is still in flight.
+    struct StageSlot {
+        uint8_t *host = nullptr;
+        cudaEvent_t ev = nullptr;
+        int64_t last_idx = -1;
+    };
+    std::vector<StageSlot> stage_slots;
+    // flat index -> slot currently holding it (or -1).
+    std::vector<int> stage_slot_of;
+    std::unique_ptr<io::PreadPool> stage_pool;
+    size_t stage_cursor = 0;
 
     // Model toggles (see top-of-file).
     std::string log_prefix = "";
@@ -674,8 +717,204 @@ struct ExpertStore {
             lru.insert(lru.begin(), idx);
     }
 
+    // ── Staging ring ─────────────────────────────────────────────────────
+    // Allocates the pinned slots, their events and the pread pool.
+    // False (with a log line) when slots == 0 or pinned memory is unavailable.
+    bool InitStageRing()
+    {
+        FreeStageRing();
+        if (stage_ring.slots == 0) return false;
+        if (stage_ring.pread_threads <= 0) stage_ring.pread_threads = 4;
+        if (stage_ring.chunk_experts == 0) stage_ring.chunk_experts = 1;
+
+        int64_t max_bytes = 0;
+        for (int k = 0; k < 6; ++k) max_bytes += plane_bytes[k];
+        if (max_bytes <= 0) {
+            log::error(log_prefix +
+                       "staging ring: no plane geometry (no expert parsed yet)");
+            return false;
+        }
+        stage_slot_of.assign(entries.size(), -1);
+        stage_slots.reserve(stage_ring.slots);
+        for (size_t i = 0; i < stage_ring.slots; ++i) {
+            StageSlot slot;
+            // The locked-memory limit is the failure that presents as "every
+            // later CUDA call fails", so name it here.
+            const cudaError_t alloc = cudaHostAlloc(
+                reinterpret_cast<void **>(&slot.host),
+                static_cast<size_t>(max_bytes), cudaHostAllocDefault);
+            if (alloc != cudaSuccess) {
+                (void)cudaGetLastError();
+                log::error(log_prefix + "staging ring: cudaHostAlloc of " +
+                           std::to_string(max_bytes) + " B failed (" +
+                           cudaGetErrorString(alloc) +
+                           "); raise `ulimit -l` or lower "
+                           "LSX_EXPERT_STAGE_SLOTS — pinned staging is off");
+                FreeStageRing();
+                return false;
+            }
+            if (cudaEventCreateWithFlags(&slot.ev, cudaEventDisableTiming) !=
+                cudaSuccess) {
+                (void)cudaGetLastError();
+                cudaFreeHost(slot.host);
+                FreeStageRing();
+                log::error(log_prefix + "staging ring: event creation failed");
+                return false;
+            }
+            // Nothing has been recorded on this event yet; mark it completed so
+            // the first recycle attempt does not wait on it.
+            (void)cudaEventRecord(slot.ev, nullptr);
+            (void)cudaEventSynchronize(slot.ev);
+            stage_slots.push_back(slot);
+        }
+        stage_pool = std::make_unique<io::PreadPool>(stage_ring.pread_threads);
+        stage_cursor = 0;
+        return true;
+    }
+
+    // Stages one resident expert into @p dst_dev.
+    //
+    // @p dst_off is indexed in ExpertSchema order (w1, w2, w3, w1_scales,
+    // w2_scales, w3_scales), so a family keeps whatever device layout it
+    // already has. Returns false when the ring is disabled, the entry is not
+    // resident, or no slot can be recycled without stalling — the caller then
+    // uses its legacy copy for that expert.
+    bool EnqueueStage(size_t idx, uint8_t *dst_dev, const int64_t (&dst_off)[6],
+                      cudaStream_t stream)
+    {
+        if (stage_ring.slots == 0 || stage_slots.empty() || !stage_pool) {
+            ++stage_stats.legacy_fallbacks;
+            return false;
+        }
+        if (idx >= entries.size() || idx >= planes.size() || !entries[idx].host_w1) {
+            ++stage_stats.legacy_fallbacks;
+            return false;
+        }
+        if (dst_dev == nullptr) {
+            ++stage_stats.legacy_fallbacks;
+            return false;
+        }
+
+        // Recycle: prefer a slot whose DMA has EXECUTED, else wait for the
+        // oldest one to have executed.
+        //
+        // This wait MUST be host-side (cudaEventSynchronize), and the reason is
+        // easy to get wrong: the refill below writes the pinned buffer from the
+        // host with pread, so ordering the stream is not enough — a stream-side
+        // wait orders device work, while the host is already writing the buffer
+        // that the not-yet-executed DMA is about to read. (First implementation
+        // used cudaStreamWaitEvent here and its hazard test passed against the
+        // broken code; the doctored-slot experiment is what exposed it.)
+        //
+        // The wait is rare by construction: with slots >= one layer's top-k
+        // every expert of a layer owns a slot, so recycling happens a layer
+        // later, long after that layer's DMAs retired, and the query succeeds
+        // without blocking. slots < top-k turns this into a per-expert stall,
+        // which is why LSX_EXPERT_STAGE_SLOTS must be at least top-k.
+        size_t pick = stage_slots.size();
+        for (size_t i = 0; i < stage_slots.size(); ++i) {
+            const size_t cand = (stage_cursor + i) % stage_slots.size();
+            const cudaError_t q = cudaEventQuery(stage_slots[cand].ev);
+            if (q == cudaSuccess) { pick = cand; break; }
+            if (q != cudaErrorNotReady) (void)cudaGetLastError();
+        }
+        if (pick == stage_slots.size()) {
+            pick = stage_cursor % stage_slots.size();
+            const cudaError_t w = cudaEventSynchronize(stage_slots[pick].ev);
+            if (w != cudaSuccess) (void)cudaGetLastError();
+            ++stage_stats.ring_waits;
+        }
+        // The previous occupant is gone from this slot.
+        if (stage_slots[pick].last_idx >= 0 &&
+            static_cast<size_t>(stage_slots[pick].last_idx) < stage_slot_of.size())
+            stage_slot_of[static_cast<size_t>(stage_slots[pick].last_idx)] = -1;
+
+        StageSlot &slot = stage_slots[pick];
+        std::vector<io::PreadJob> jobs;
+        jobs.reserve(6);
+        int64_t staged = 0;
+        const auto &path = paths[idx];
+        // Open per staging call: the tree is 1.4 TB against 65 536 descriptors in
+        // this store, so holding one fd per expert is the churn the window was
+        // raised to avoid. The pool then reads the six planes in parallel.
+        const int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            log::error(log_prefix + "staging ring: cannot open " + path);
+            ++stage_stats.legacy_fallbacks;
+            return false;
+        }
+        int64_t cursor = 0;
+        for (int k = 0; k < 6; ++k) {
+            const auto &p = planes[idx][static_cast<size_t>(k)];
+            jobs.push_back({fd, p.offset, slot.host + cursor, p.bytes});
+            cursor += p.bytes;
+            staged += p.bytes;
+        }
+        const size_t ok_jobs = stage_pool->Run(jobs);
+        ::close(fd);
+        if (ok_jobs != jobs.size()) {
+            // Never DMA a half-filled slot.
+            ++stage_stats.short_reads;
+            ++stage_stats.legacy_fallbacks;
+            return false;
+        }
+
+        // The pread jobs packed the six planes back to back in the slot, so the
+        // DMA source for plane k is the running sum of the planes before it.
+        int64_t slot_off = 0;
+        for (int k = 0; k < 6; ++k) {
+            const auto &p = planes[idx][static_cast<size_t>(k)];
+            void *dst = dst_dev + dst_off[k];
+            const cudaError_t cp = cudaMemcpyAsync(
+                dst, slot.host + slot_off, static_cast<size_t>(p.bytes),
+                cudaMemcpyHostToDevice, stream);
+            slot_off += p.bytes;
+            if (cp != cudaSuccess) {
+                (void)cudaGetLastError();
+                log::error(log_prefix + "staging ring: DMA failed for " + path);
+                ++stage_stats.legacy_fallbacks;
+                return false;
+            }
+        }
+        if (cudaEventRecord(slot.ev, stream) != cudaSuccess) {
+            (void)cudaGetLastError();
+            log::error(log_prefix + "staging ring: event record failed");
+            ++stage_stats.legacy_fallbacks;
+            return false;
+        }
+        slot.last_idx = static_cast<int64_t>(idx);
+        stage_slot_of[idx] = static_cast<int>(pick);
+        stage_cursor = (pick + 1) % stage_slots.size();
+        ++stage_stats.staged_experts;
+        stage_stats.staged_bytes += staged;
+        return true;
+    }
+
+    // Makes @p stream wait for the DMA queued for @p idx. No host sync.
+    void AwaitStage(size_t idx, cudaStream_t stream)
+    {
+        if (idx >= stage_slot_of.size()) return;
+        const int slot = stage_slot_of[idx];
+        if (slot < 0 || static_cast<size_t>(slot) >= stage_slots.size()) return;
+        (void)cudaStreamWaitEvent(stream, stage_slots[static_cast<size_t>(slot)].ev,
+                                  0);
+    }
+
+    void FreeStageRing()
+    {
+        for (auto &slot : stage_slots) {
+            if (slot.host) (void)cudaFreeHost(slot.host);
+            if (slot.ev) (void)cudaEventDestroy(slot.ev);
+            slot = StageSlot{};
+        }
+        stage_slots.clear();
+        stage_slot_of.clear();
+        stage_pool.reset();
+    }
+
     void Free()
     {
+        FreeStageRing();
         // Retired mappings first: an evicted expert's mmap may still have a
         // copy reading it, so wait for its event before releasing anything.
         for (auto &r : retired)
