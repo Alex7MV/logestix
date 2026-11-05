@@ -86,8 +86,12 @@ std::string StripComments(const std::string& s)
 std::vector<std::string> RegisteredTestNames(const std::string& text)
 {
     std::vector<std::string> names;
+    // Both registration helpers register a test, and both must be visible or a
+    // whole class of targets escapes label discipline. `add_test(` matches
+    // plain CMake and also the tail of `lsx_add_test(`; `lsx_add_cuda_test(`
+    // does NOT contain `add_test(` and needs its own alternative.
     static const std::regex add_re(
-        R"(add_test\s*\(\s*NAME\s+([A-Za-z0-9_]+))");
+        R"((?:add_test|lsx_add_cuda_test)\s*\(\s*NAME\s+([A-Za-z0-9_]+))");
     // foreach(<var> <items...>): every item is a registered test name.
     // Skip foreach(... IN LISTS <var>) / RANGE forms — variable-driven,
     // not statically resolvable.
@@ -123,6 +127,31 @@ struct LabelCall
 std::vector<LabelCall> ParseLabelCalls(const std::string& text)
 {
     std::vector<LabelCall> calls;
+    // Two spellings set a label: the literal properties call, and the LABEL
+    // argument of the registration helpers. The helpers were invisible until
+    // 2026-11-05 (see the registration-helper case below), and a label nobody
+    // reads is the same as no label.
+    {
+        static const std::regex helper_open(R"(lsx_add_(?:cuda_)?test\s*\()");
+        static const std::regex helper_name(R"(NAME\s+([A-Za-z0-9_]+))");
+        static const std::regex helper_label(R"(LABEL\s+(\w+)\s*$)");
+        std::smatch hm;
+        auto hb = text.cbegin();
+        while (std::regex_search(hb, text.cend(), hm, helper_open)) {
+            const auto body_begin = hm.suffix().first;
+            const auto body_end = std::find(body_begin, text.cend(), ')');
+            const std::string body(body_begin, body_end);
+            std::smatch nm, lm;
+            if (std::regex_search(body, lm, helper_label) &&
+                std::regex_search(body, nm, helper_name)) {
+                LabelCall c;
+                c.label = lm[1];
+                c.names.push_back(nm[1]);
+                calls.push_back(std::move(c));
+            }
+            hb = (body_end == text.cend()) ? body_end : body_end + 1;
+        }
+    }
     static const std::regex open_re(R"(set_tests_properties\s*\()");
     static const std::regex label_re(R"(PROPERTIES\s+LABELS\s+(\w+)\s*$)");
     static const std::regex props_re(R"(PROPERTIES\s+LABELS)");
@@ -520,6 +549,47 @@ set_tests_properties(t3 PROPERTIES SKIP_RETURN_CODE 4
         CHECK(CheckLabelCoverage({"t1", "t2", "t3"}, calls).empty());
         CHECK(CheckPerfSkip(calls, cm).empty());
     }
+}
+
+TEST_CASE("ctest labels guard: both registration helpers are visible",
+          "[labels][guard]")
+{
+    // The guard resolves registered names by scanning CMake text. `lsx_add_test`
+    // was visible by accident — the substring `add_test(` sits inside it — and
+    // `lsx_add_cuda_test` was NOT, so every CUDA target registered through the
+    // helper was invisible to label discipline: it could ship with no label, or
+    // carry a label for a name the guard did not know, and the guard said
+    // nothing either way. Found while registering the staging-ring budget test.
+    const std::string cm = R"(lsx_add_test(NAME t_host LINK lsxcommon)
+lsx_add_cuda_test(NAME t_device)
+set_tests_properties(t_host PROPERTIES LABELS fast)
+set_tests_properties(t_device PROPERTIES LABELS fast))";
+    const auto names = RegisteredTestNames(cm);
+    INFO("names seen: " << names.size());
+    CHECK(std::find(names.begin(), names.end(), "t_host") != names.end());
+    CHECK(std::find(names.begin(), names.end(), "t_device") != names.end());
+    // With both visible, the coverage check is a real assertion rather than a
+    // check over an empty set.
+    CHECK(CheckLabelCoverage(names, ParseLabelCalls(cm)).empty());
+
+    // The helper's LABEL argument is a label too. test_dense_kernels carries
+    // `LABEL inference` inside lsx_add_cuda_test and the guard called it
+    // unlabeled once it could see the name — the label was there, the reader
+    // was not.
+    const std::string helper = R"(lsx_add_cuda_test(NAME t_dev2
+    SOURCES t.cu
+    LINK lsxcommon
+    LABEL inference))";
+    const auto names2 = RegisteredTestNames(helper);
+    REQUIRE(names2.size() == 1);
+    const auto calls2 = ParseLabelCalls(helper);
+    INFO("label calls: " << calls2.size());
+    CHECK(calls2.size() == 1);
+    if (calls2.size() == 1) {
+        CHECK(calls2[0].label == "inference");
+        CHECK(calls2[0].names == std::vector<std::string>{"t_dev2"});
+    }
+    CHECK(CheckLabelCoverage(names2, calls2).empty());
 }
 
 TEST_CASE("ctest labels guard: every test labeled exactly once",
