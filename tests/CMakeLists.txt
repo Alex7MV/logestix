@@ -1028,6 +1028,11 @@ set_target_properties(test_cuda_toolkit_guard_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
 )
+# The stamp Task 1 writes at configure time. The case that reads it proves the
+# OBJECTS were built with the headers this TU sees — the one thing configure
+# cannot check after the fact.
+target_compile_definitions(test_cuda_toolkit_guard_cu PRIVATE
+    LSX_CUDA_TOOLKIT_STAMP="${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt")
 target_compile_options(test_cuda_toolkit_guard_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -1041,6 +1046,12 @@ foreach(qt test_cuda_toolkit_guard)
     lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
     set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
+    # `fast`, not `inference`: this is the ONLY test that can observe a build tree
+    # whose objects came from a different toolkit (a stale `CUDART_VERSION` in one
+    # TU against the linked runtime), so it must run in the default suite. It
+    # allocates no device memory — it reads versions and device properties, and
+    # its device case SKIPs (4) where no GPU exists.
+    set_tests_properties(${qt} PROPERTIES LABELS fast)
 endforeach()
 
 # One OBJECT lib + executable per .cu test file. The previous shared
@@ -5380,7 +5391,6 @@ set_tests_properties(
     test_nemotron_moe_nvfp4_code_selfcheck
     test_nemotron_moe_nvfp4_det_selfcheck
     test_nemotron_moe_tokenizer_parity
-    test_cuda_toolkit_guard
     PROPERTIES LABELS inference)
 
 set_tests_properties(

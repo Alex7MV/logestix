@@ -38,6 +38,86 @@ if(DEFINED CUDAToolkit_VERSION AND DEFINED CMAKE_CUDA_COMPILER_VERSION)
     endif()
 endif()
 
+# ── Build-toolkit stamp ──────────────────────────────────────────────────────
+# The consistency guard above compares what find_package() resolved against what
+# nvcc reports — but BOTH values come from the cache, so after a toolkit upgrade
+# they still agree on the OLD version and the guard passes. What the tree is
+# actually compiled against is the header on disk and the compiler on disk.
+#
+# The failure it must catch (measured 2026-11-05): a tree configured for 13.4.92
+# rebuilt 210 of 1460 objects after the 13.5 swap — the rest were 13.4 headers
+# linked against a 13.5 runtime — because CUDA's headers carry *package* mtimes
+# (13.5's are dated 13 Oct), so they are older than the objects already built and
+# no build rule considers them changed. `test_cuda_toolkit_guard` reported
+# `CUDART_VERSION=13040 runtime=13050` while every build step kept succeeding.
+function(lsx_stamp_cuda_toolkit)
+    # What the compiler will actually include and link, read from disk — never
+    # from the cache, which is exactly the thing that goes stale.
+    list(GET CUDAToolkit_INCLUDE_DIRS 0 _lsx_stamp_inc)
+    set(_lsx_hdr "${_lsx_stamp_inc}/cuda_runtime_api.h")
+    if(NOT EXISTS "${_lsx_hdr}")
+        message(FATAL_ERROR "CUDA header not found at ${_lsx_hdr}")
+    endif()
+    file(STRINGS "${_lsx_hdr}" _lsx_cudart_line REGEX "^#define CUDART_VERSION")
+    string(REGEX MATCH "[0-9]+" header_cudart "${_lsx_cudart_line}")
+
+    execute_process(
+        COMMAND "${CMAKE_CUDA_COMPILER}" --version
+        OUTPUT_VARIABLE _lsx_nvcc_out ERROR_QUIET)
+    string(REGEX MATCH "release ([0-9]+\\.[0-9]+)" _ "${_lsx_nvcc_out}")
+    set(nvcc_release "${CMAKE_MATCH_1}")
+
+    # 13050 -> 13.5 : the header and the compiler must be one toolkit.
+    math(EXPR _lsx_major "${header_cudart} / 1000")
+    math(EXPR _lsx_minor "(${header_cudart} % 1000) / 10")
+    set(header_release "${_lsx_major}.${_lsx_minor}")
+    if(NOT header_release STREQUAL nvcc_release)
+        message(FATAL_ERROR
+            "Mixed CUDA installation: the headers under ${_lsx_stamp_inc} are "
+            "${header_release} (CUDART_VERSION=${header_cudart}) but "
+            "${CMAKE_CUDA_COMPILER} reports ${nvcc_release}. Point both at one "
+            "toolkit before configuring.")
+    endif()
+
+    # A cached CUDAToolkit_VERSION from the previous toolkit is the other half of
+    # the same problem: find_package() keeps it because the search path did not
+    # change, so every downstream version check reads the old value.
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" cached_release "${CUDAToolkit_VERSION}")
+    if(DEFINED CUDAToolkit_VERSION
+       AND NOT cached_release STREQUAL header_release)
+        message(FATAL_ERROR
+            "Stale build cache: CUDAToolkit_VERSION=${cached_release} is "
+            "cached but the toolkit on disk is ${header_release}. Re-run "
+            "configure with `-U CUDAToolkit_*` or wipe the build directory:\n"
+            "  rm -rf ${CMAKE_BINARY_DIR} && cmake --preset <preset>")
+    endif()
+
+    set(stamp_file "${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt")
+    # string(CONCAT): set() with several arguments builds a LIST, which writes
+    # the entries semicolon-separated and would make the stamp unparseable.
+    string(CONCAT stamp
+        "toolkit=${header_release} cudart=${header_cudart} "
+        "nvcc=${nvcc_release}")
+    if(EXISTS "${stamp_file}")
+        file(READ "${stamp_file}" previous)
+        string(STRIP "${previous}" previous)
+        if(NOT previous STREQUAL stamp)
+            message(FATAL_ERROR
+                "build/ was configured with a different CUDA toolkit.\n"
+                "  this tree: ${previous}\n"
+                "  installed: ${stamp}\n"
+                "CMake cannot detect the swap on its own — the toolkit headers "
+                "carry package mtimes older than the objects already built — so "
+                "reusing this directory mixes two toolkits in one link. Wipe it "
+                "and reconfigure:\n"
+                "  rm -rf ${CMAKE_BINARY_DIR} && cmake --preset <preset>\n"
+                "The stamp lives at ${stamp_file}.")
+        endif()
+    endif()
+    file(WRITE "${stamp_file}" "${stamp}\n")
+endfunction()
+lsx_stamp_cuda_toolkit()
+
 # ── CCCL provenance + band guard ──────────────────────────────────────────────
 # CCCL is not vendored: it comes from the CUDA toolkit bundle at
 # <toolkit-include>/cccl (cub/cuda/nv/thrust). A submodule used to shadow it via

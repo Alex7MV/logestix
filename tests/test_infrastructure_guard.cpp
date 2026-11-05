@@ -157,6 +157,43 @@ std::vector<int> FindArchLiterals(const std::string &text)
     return hits;
 }
 
+// Rule 8: a build tree records the toolkit it was configured with, so the next
+// configure after a toolkit upgrade stops instead of silently reusing objects
+// compiled against the previous headers. CUDA's own headers carry *package*
+// mtimes, so after an upgrade they are OLDER than the objects built before it
+// and no build-system rule considers them changed — this is the only rule that
+// can see the swap.
+//
+// The rule reads the BODY of `lsx_stamp_cuda_toolkit()`, not the file: the root
+// CMakeLists already contains file(READ/file(WRITE/STREQUAL for unrelated
+// reasons (dependency patches), so a whole-file scan would be satisfied by code
+// that has nothing to do with the stamp.
+std::vector<std::string> StampRuleProblems(const std::string &text)
+{
+    std::vector<std::string> problems;
+    const std::string fn = "function(lsx_stamp_cuda_toolkit";
+    const auto begin = text.find(fn);
+    if (begin == std::string::npos) {
+        problems.push_back("no function(lsx_stamp_cuda_toolkit ...)");
+        return problems;
+    }
+    const auto finish = text.find("endfunction()", begin);
+    if (finish == std::string::npos) {
+        problems.push_back("lsx_stamp_cuda_toolkit() has no endfunction()");
+        return problems;
+    }
+    const std::string body = text.substr(begin, finish - begin);
+    const auto need = [&](const char *marker, const char *what) {
+        if (body.find(marker) == std::string::npos) problems.push_back(what);
+    };
+    need("lsx_cuda_toolkit_stamp.txt", "the body does not name the stamp file");
+    need("file(WRITE", "the body never writes the stamp");
+    need("file(READ", "the body never reads the stamp back");
+    need("STREQUAL", "the body never compares the stamp");
+    need("FATAL_ERROR", "a changed stamp cannot stop the configure");
+    return problems;
+}
+
 std::vector<fs::path> CmakeFiles(const fs::path &root)
 {
     std::vector<fs::path> out{root / "CMakeLists.txt"};
@@ -307,4 +344,60 @@ TEST_CASE("infra guard: device codegen arch is centralized", "[guard][infra]")
             bad.push_back(Rel(root, p) + ":" + std::to_string(line));
     INFO("arch literal hits (" << bad.size() << "):\n" << JoinHits(bad));
     REQUIRE(bad.empty());
+}
+
+TEST_CASE("infra guard: build-toolkit stamp scanner", "[guard][infra]")
+{
+    const std::string body =
+        "function(lsx_stamp_cuda_toolkit)\n"
+        "  set(f \"${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt\")\n"
+        "  if(EXISTS \"${f}\")\n"
+        "    file(READ \"${f}\" old)\n"
+        "    if(NOT old STREQUAL new)\n"
+        "      message(FATAL_ERROR \"wipe the build directory\")\n"
+        "    endif()\n"
+        "  endif()\n"
+        "  file(WRITE \"${f}\" \"${new}\")\n"
+        "endfunction()\n";
+    CHECK(StampRuleProblems(body).empty());
+    // Negative controls: each half is caught on its own, so the rule cannot be
+    // satisfied by a comment or by write-only "decoration".
+    CHECK(StampRuleProblems("").size() == 1);
+    CHECK(StampRuleProblems("function(lsx_stamp_cuda_toolkit)").size() == 1);
+    CHECK(StampRuleProblems(
+              "function(lsx_stamp_cuda_toolkit)\n"
+              "  file(WRITE \"${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt\" x)\n"
+              "endfunction()\n")
+              .size() == 3);
+    CHECK(StampRuleProblems(
+              "function(lsx_stamp_cuda_toolkit)\n"
+              "  file(WRITE \"${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt\" x)\n"
+              "  file(READ \"${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt\" y)\n"
+              "endfunction()\n")
+              .size() == 2);
+    CHECK(StampRuleProblems(
+              "function(lsx_stamp_cuda_toolkit)\n"
+              "  file(WRITE \"${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt\" x)\n"
+              "  file(READ \"${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt\" y)\n"
+              "  if(NOT y STREQUAL x)\n  endif()\n"
+              "endfunction()\n")
+              .size() == 1);
+    // The body is what counts: the same markers OUTSIDE the function are not
+    // the rule (this is the whole-file-scan false pass the rule exists to avoid).
+    CHECK(StampRuleProblems(
+              "file(WRITE ${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt x)\n"
+              "file(READ ${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt y)\n"
+              "if(y STREQUAL x)\nendif()\nmessage(FATAL_ERROR \"x\")\n"
+              "function(lsx_stamp_cuda_toolkit)\nendfunction()\n")
+              .size() == 5);
+}
+
+TEST_CASE("infra guard: the root CMakeLists stamps the build toolkit",
+          "[guard][infra]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    const auto problems = StampRuleProblems(ReadFile(root / "CMakeLists.txt"));
+    INFO("stamp rule problems (" << problems.size() << "):\n"
+                                 << JoinHits(problems));
+    REQUIRE(problems.empty());
 }
