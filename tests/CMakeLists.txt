@@ -2067,6 +2067,34 @@ set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES TIMEOUT 7200)
 set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Kimi-K3.1-Pro FSI / CODE / DET parity gates (template-derived goldens) ──
+add_executable(test_kimi_pro_fsi_selfcheck test_kimi_pro_fsi_selfcheck.cpp)
+target_compile_definitions(test_kimi_pro_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi")
+target_link_libraries(test_kimi_pro_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_pro_fsi_selfcheck COMMAND test_kimi_pro_fsi_selfcheck)
+set_tests_properties(test_kimi_pro_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_pro_fsi_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_kimi_pro_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_kimi_pro_code_selfcheck test_kimi_pro_code_selfcheck.cpp)
+target_compile_definitions(test_kimi_pro_code_selfcheck PRIVATE
+    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code")
+target_link_libraries(test_kimi_pro_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_pro_code_selfcheck COMMAND test_kimi_pro_code_selfcheck)
+set_tests_properties(test_kimi_pro_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_pro_code_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_kimi_pro_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_kimi_pro_det_selfcheck test_kimi_pro_det_selfcheck.cpp)
+target_compile_definitions(test_kimi_pro_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det")
+target_link_libraries(test_kimi_pro_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_pro_det_selfcheck COMMAND test_kimi_pro_det_selfcheck)
+set_tests_properties(test_kimi_pro_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_pro_det_selfcheck PROPERTIES TIMEOUT 7200)
+set_tests_properties(test_kimi_pro_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Kimi-K3 SelfCheck (real weights; SKIP without a model) ─────────────────
 add_executable(test_kimi_k3_selfcheck test_kimi_k3_selfcheck.cpp)
 target_link_libraries(test_kimi_k3_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -2074,6 +2102,14 @@ add_test(NAME test_kimi_k3_selfcheck COMMAND test_kimi_k3_selfcheck)
 set_tests_properties(test_kimi_k3_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_kimi_k3_selfcheck PROPERTIES TIMEOUT 5400)
 set_tests_properties(test_kimi_k3_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Kimi-K3.1-Pro SelfCheck (real weights; SKIP without a model) ───────────
+add_executable(test_kimi_pro_selfcheck test_kimi_pro_selfcheck.cpp)
+target_link_libraries(test_kimi_pro_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kimi_pro_selfcheck COMMAND test_kimi_pro_selfcheck)
+set_tests_properties(test_kimi_pro_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_kimi_pro_selfcheck PROPERTIES TIMEOUT 5400)
+set_tests_properties(test_kimi_pro_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Kimi-K3 XTML chat/tool codec (host-only, synthetic tokenizer) ───────────
 add_executable(test_kimi_k3_tool_framing test_kimi_k3_tool_framing.cpp)
@@ -2602,6 +2638,16 @@ set_tests_properties(test_perf_baseline_kimi_k3 PROPERTIES
     TIMEOUT 21600
     SKIP_RETURN_CODE 4)
 set_tests_properties(test_perf_baseline_kimi_k3 PROPERTIES LABELS perf)
+
+add_test(NAME test_perf_baseline_kimi_k31_pro
+         COMMAND test_perf_baseline "perf baseline: kimi-k3.1-pro")
+# Same host-store bound as kimi-k3 (the 2.8T tree and its expert arrows are
+# shared; the Pro adds the tiny indexer set, which is resident): the two
+# 2048-token modes plus the probe need a long budget.
+set_tests_properties(test_perf_baseline_kimi_k31_pro PROPERTIES
+    TIMEOUT 21600
+    SKIP_RETURN_CODE 4)
+set_tests_properties(test_perf_baseline_kimi_k31_pro PROPERTIES LABELS perf)
 
 add_test(NAME test_perf_baseline_mistral_small_4
          COMMAND test_perf_baseline "perf baseline: mistral-small-4-119b")

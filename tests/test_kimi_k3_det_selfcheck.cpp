@@ -40,14 +40,14 @@ std::filesystem::path GoldenPath()
 
 } // namespace
 
-TEST_CASE("xing fsi selfcheck: golden answers match", "[det][real-model]")
+TEST_CASE("kimi-k3 det selfcheck: golden answers match", "[det][real-model]")
 {
     const std::filesystem::path root = ModelRoot();
     if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
-        SKIP("Mistral-Large-4 converted model not present");
+        SKIP("kimi-k3 converted model not present");
     const std::filesystem::path golden_path = GoldenPath();
     if (!std::filesystem::exists(golden_path))
-        SKIP("DET golden not captured for xing4.0-29b-a4b");
+        SKIP("DET golden not captured for kimi-k3");
 
     lsxcommon::det::DetGolden golden;
     std::string err;

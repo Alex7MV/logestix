@@ -488,15 +488,24 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_kimi_k3_code_selfcheck"}},
           {"det", {"test_kimi_k3_det_selfcheck"}},
           {"perf", {"test_perf_baseline_kimi_k3"}}}},
-        // Kimi-K3.1-Pro (kimi-k3.1-pro) is a SIBLING of kimi-k3: it owns its
-        // passport, convert entry and model and SHARES the K3 loader/kernels/
-        // pipeline, the XTML tool codec, the tokenizer-parity stage and the
-        // family constants gate. Its Suites() row lands with Task 7 of
-        // docs/superpowers/plans/2026-11-05-kimi-k31-pro-ingestion.md — the
-        // "every suite row declares the full stage set" guard forbids a partial
-        // row, so the row appears in the same commit as its last stage target
-        // and `test_kimi_pro_convert` is declared in kPendingSuiteTargets
-        // (orphan guard) until then.
+        // Kimi-K3.1-Pro is a SIBLING of kimi-k3: it owns its frozen passport,
+        // convert entry, loader variant gate and model, and SHARES the K3
+        // converter body, kernels, generation pipeline, XTML tool codec, the
+        // tokenizer-parity stage (its `tiktoken.model` is byte-identical to
+        // K3's, so that target stays claimed by the kimi-k3 row) and the
+        // family constants gate. The new machinery is exactly the Gated DSA
+        // Lightning Indexer on the 24 full-attention layers.
+        {"kimi-k3.1-pro",
+         {{"convert", {"test_kimi_pro_convert"}},
+          {"load", {"test_kimi_pro_loader"}},
+          {"model", {"test_kimi_pro_model", "test_kimi_k3_tool_framing",
+                     "test_kimi_k3_constants"}},
+          {"kernels", {"test_kimi_pro_indexer", "test_kimi_k3_kernels"}},
+          {"selfcheck", {"test_kimi_pro_selfcheck"}},
+          {"fsi", {"test_kimi_pro_fsi_selfcheck"}},
+          {"code", {"test_kimi_pro_code_selfcheck"}},
+          {"det", {"test_kimi_pro_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_kimi_k31_pro"}}}},
         {"ling",
          {{"convert", {"test_ling_moe_convert"}},
           {"load", {"test_ling_moe_loader", "test_ling_tokenizer_parity"}},
@@ -870,15 +879,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     // declared here. The declaration is checked in both directions - it must
     // name a registered, UNCLAIMED target, and it fails as soon as the owning
     // row appears - so it cannot outlive the problem or hide an orphan.
-    static const std::set<std::string> kPendingSuiteTargets = {
-        // Kimi-K3.1-Pro (variant row "kimi-k3.1-pro"): convert + load are
-        // stages 1-2 of 9; the row lands with Task 7 of
-        // docs/superpowers/plans/2026-11-05-kimi-k31-pro-ingestion.md.
-        "test_kimi_pro_convert",
-        "test_kimi_pro_loader",
-        "test_kimi_pro_indexer",
-        "test_kimi_pro_model",
-    };
+    static const std::set<std::string> kPendingSuiteTargets = {};
 
     std::set<std::string> claimed;
     for (const auto &s : Suites())
@@ -986,7 +987,8 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"step-5-preview", {"test_step_moe_tool_framing"}},
         {"kimi-k3", {"test_kimi_k3_tool_framing"}},
         // kimi-k3.1-pro reuses this XTML codec verbatim (identical tokenizer and
-        // chat_template); its row is added with the rest of its Suites() row.
+        // chat_template), so the same target proves its render+parse round-trip.
+        {"kimi-k3.1-pro", {"test_kimi_k3_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

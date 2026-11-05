@@ -275,11 +275,22 @@ Calling `RunKimiK3MlaAttention` with `sel == nullptr, n_sel == 0` reproduces tod
 **Interfaces:**
 - Produces: ctest targets `test_kimi_pro_selfcheck`, `test_kimi_pro_fsi_selfcheck`, `test_kimi_pro_code_selfcheck`, `test_kimi_pro_det_selfcheck`, `test_perf_baseline_kimi_k31_pro` — all `inference`/`perf` with `SKIP_RETURN_CODE 4`; `test_kimi_pro_selfcheck` runs ≥3 cycles, overridable by `LSX_TEST_KIMI_PRO_SELFCHECK_CYCLES`.
 
-- [ ] **Step 1: Write the failing tests** — the four targets mirroring `test_kimi_k3_*_selfcheck.cpp` with `kModelType = "kimi-k3.1-pro"`; the perf test is `TEST_CASE("perf baseline: kimi-k3.1-pro")` reading the `perf_baselines.json` entry.
-- [ ] **Step 2: Run to verify they fail** (missing goldens/targets).
-- [ ] **Step 3: Implement** — generate the three template goldens, add the suite row (declaring that the tokenizer-parity and tool-framing stages are shared with `kimi-k3`), add the perf `add_test`.
-- [ ] **Step 4: Run to verify** — `ctest -R "test_kimi_pro_.*_selfcheck" --preset linux-debug-inference` (SKIP 4 without the vault is a pass; the vault run is Task 9).
-- [ ] **Step 5: Commit** — `test(kimi-k31-pro): selfcheck, template parity goldens and the perf row wiring`.
+- [x] **Step 1: Write the failing tests** — the four targets mirroring `test_kimi_k3_*_selfcheck.cpp` with `kModelType = "kimi-k3.1-pro"`; the perf test is `TEST_CASE("perf baseline: kimi-k3.1-pro")` reading the `perf_baselines.json` entry.
+- [x] **Step 2: Run to verify they fail** — the targets did not exist (`ctest -N` listed no `test_kimi_pro_*selfcheck`), so the first build after adding them failed at link; the goldens were absent too (`tests/fixtures/{fsi,code,det}/kimi-k3.1-pro.json`).
+- [x] **Step 3: Implement** — generated the three template goldens with `tools/kimi_k3_template_goldens.py --model kimi-k3.1-pro` (identical payloads to K3: same XTML framing and the same prompt-set Expected Template values, different `model_type` key), added the four targets + the perf `add_test`, and wrote the `kimi-k3.1-pro` `Suites()` row (it declares that the tokenizer-parity stage stays claimed by the `kimi-k3` row — the `tiktoken.model` is byte-identical — and that `test_kimi_k3_tool_framing` / `test_kimi_k3_constants` prove the shared codec and passport), the tool verdict row and the removal of the four `kPendingSuiteTargets` entries.
+- [x] **Step 4: Run to verify** — `test_model_suite_guard` 174 assertions / 14 cases green; each of the four Pro selfcheck targets exits 4 (SKIP: converted model not present); `ctest --preset linux-debug` 134/134. The vault run is Task 9.
+- [x] **Step 5: Commit** — `test(kimi-k31-pro): selfcheck, template parity goldens and the perf row wiring`.
+
+Deviations recorded:
+- The Pro perf row (`tests/perf/perf_baselines.json`) is NOT written here: the harness
+  writes it (`lsxbenchmark --bench`), so the entry lands in Task 9 with the real
+  measurements rather than being hand-edited.
+- The suite guard needed no separate "golden case": the existing
+  `suite guard: every parity golden is present or declared as debt` case discovers the
+  three new fixtures by `model:stage` key, so committing them is the registration.
+- Four `tools/`-correctness fixes rode along: `tests/test_kimi_k3_{fsi,code,det}_selfcheck.cpp`
+  had `TEST_CASE` names and SKIP strings saying "xing" / "Mistral-Large-4" (copy-paste
+  from the families they were cloned from); they now name Kimi-K3.
 
 ---
 

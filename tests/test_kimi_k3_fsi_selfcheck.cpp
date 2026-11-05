@@ -44,7 +44,7 @@ TEST_CASE("kimi-k3 fsi selfcheck: golden answers match", "[fsi][real-model]")
 {
     const std::filesystem::path root = ModelRoot();
     if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
-        SKIP("Mistral-Large-4 converted model not present");
+        SKIP("kimi-k3 converted model not present");
     const std::filesystem::path golden_path = GoldenPath();
     if (!std::filesystem::exists(golden_path))
         SKIP("FSI golden not captured for kimi-k3");

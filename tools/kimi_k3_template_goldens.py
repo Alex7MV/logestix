@@ -19,14 +19,21 @@ Frame (encoding_k3.py, thinking on):
 `answer_start_token_id` is <|sep|> (163589): the decoder's answer starts in the
 response channel, after <|open|>response<|sep|>.
 
+Kimi-K3.1-Pro is the same tower with Gated DSA on the full-attention layers:
+identical tokenizer (byte-identical `tiktoken.model`), identical XTML wire, so
+its goldens are the same frames keyed to its own model type (`--model`).
+
 Usage:
     python3 tools/kimi_k3_template_goldens.py /mnt/fast_storage/huggingface/Kimi-K3
+    python3 tools/kimi_k3_template_goldens.py --model kimi-k3.1-pro \
+        /mnt/fast_storage/huggingface/Kimi-K3.1-Pro
 """
 import json
 import sys
 from pathlib import Path
 
 MODEL_TYPE = "kimi-k3"
+KNOWN_MODELS = ("kimi-k3", "kimi-k3.1-pro")
 SOURCE = (
     "prompt-template (source not runnable locally: 1.5 TB MXFP4 KimiLinear "
     "checkpoint needing fla-core and a multi-GPU runner; the expected value is "
@@ -100,10 +107,19 @@ def frame(enc, specials, body):
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    global MODEL_TYPE
+    args = [a for a in sys.argv[1:]]
+    if len(args) == 3 and args[0] == "--model":
+        MODEL_TYPE = args[1]
+        if MODEL_TYPE not in KNOWN_MODELS:
+            print(f"unknown --model {MODEL_TYPE}; expected one of "
+                  f"{', '.join(KNOWN_MODELS)}")
+            return 2
+        args = args[2:]
+    if len(args) != 1:
         print(__doc__)
         return 2
-    model_dir = Path(sys.argv[1])
+    model_dir = Path(args[0])
     enc, specials = load_encoding(model_dir)
     repo = Path(__file__).resolve().parent.parent
     sep_id = specials[SEP]

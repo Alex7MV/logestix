@@ -129,6 +129,8 @@ const PerfModel kMistralLarge4 = {
     "The capital of France is", 2048};
 const PerfModel kKimiK3 = {
     "kimi-k3", "Kimi-K3", "The capital of France is", 2048};
+const PerfModel kKimiPro = {
+    "kimi-k3.1-pro", "Kimi-K3.1-Pro", "The capital of France is", 2048};
 const PerfModel kMinimax = {
     "minimax-m3", "MiniMax-M3", "The capital of France is", 2048};
 const PerfModel kMinimaxFlash = {
@@ -647,6 +649,11 @@ TEST_CASE("perf baseline: mistral-large-4-1t", "[perf]")
 TEST_CASE("perf baseline: kimi-k3", "[perf]")
 {
     RunPerfModel(kKimiK3);
+}
+
+TEST_CASE("perf baseline: kimi-k3.1-pro", "[perf]")
+{
+    RunPerfModel(kKimiPro);
 }
 
 TEST_CASE("perf baseline: minimax-m3", "[perf]")
