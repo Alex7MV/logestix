@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "test_tool_roundtrip.h"
+
 namespace {
 
 std::filesystem::path ModelRoot()
@@ -79,5 +81,37 @@ TEST_CASE("kimi-k3.1-pro selfcheck answers Paris", "[kimi-pro][inference]")
                             ref.size() * sizeof(float)) == 0);
         REQUIRE(sc.first_gen_tok_id == sc0.first_gen_tok_id);
     }
+    model->Unload();
+}
+
+// Model Ingestion Protocol step 4b on real weights: the inherited XTML bridge
+// (render a one-tool conversation -> generate -> parse the call back out of the
+// generated ids). test_kimi_k3_tool_framing pins the codec synthetically; this
+// case proves the converted checkpoint answers through it, which is the only
+// place the DSA decode path and the tool wire are exercised together on real
+// weights. MAX_GEN is the helper's 256-token budget: the model emits its
+// thinking channel first, and the call follows the channel close.
+TEST_CASE("kimi-k3.1-pro end-to-end tool round-trip (real weights)",
+          "[kimi-pro][model][tool][real-model]")
+{
+    const std::filesystem::path root = ModelRoot();
+    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+        SKIP("kimi-k3.1-pro converted model directory not present");
+
+    lsxcommon::EnsureModelRegistry();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = root.string();
+    cfg.model_type = "kimi-k3.1-pro";
+    cfg.fast_math_mode = lsxcommon::FastMathMode::kAuto;
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    if (!model->Load()) FAIL("kimi-k3.1-pro Load failed");
+
+    std::vector<int32_t> gen_tokens;
+    const std::vector<lsxcommon::ToolCall> calls =
+        RunToolRoundTrip(*model, 256, &gen_tokens);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
     model->Unload();
 }

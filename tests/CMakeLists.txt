@@ -2068,13 +2068,21 @@ set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES TIMEOUT 7200)
 set_tests_properties(test_kimi_k3_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Kimi-K3.1-Pro FSI / CODE / DET parity gates (template-derived goldens) ──
+# The budgets are MEASURED, not guessed: this variant decodes at ~0.125 t/s on
+# the reference host (92 MoE layers x top-16 experts streamed from a 1.4 TB
+# host arrow set; the pinned graph alone is 23 GB and takes ~10 min to load).
+# One 2048-token generation is therefore ~4.5 h, which is why the three gates
+# below are seeded but not yet measured — `docs/OPEN_TASKS.md` §R17 records the
+# debt. A budget that cannot fit a real completion would turn the entry into a
+# guaranteed timeout-kill, i.e. a failure that is not a defect.
 add_executable(test_kimi_pro_fsi_selfcheck test_kimi_pro_fsi_selfcheck.cpp)
 target_compile_definitions(test_kimi_pro_fsi_selfcheck PRIVATE
     LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi")
 target_link_libraries(test_kimi_pro_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_kimi_pro_fsi_selfcheck COMMAND test_kimi_pro_fsi_selfcheck)
 set_tests_properties(test_kimi_pro_fsi_selfcheck PROPERTIES LABELS inference)
-set_tests_properties(test_kimi_pro_fsi_selfcheck PROPERTIES TIMEOUT 7200)
+# 3 prompts x 2048 tokens ~= 13.7 h + load = ~14.2 h.
+set_tests_properties(test_kimi_pro_fsi_selfcheck PROPERTIES TIMEOUT 54000)
 set_tests_properties(test_kimi_pro_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_kimi_pro_code_selfcheck test_kimi_pro_code_selfcheck.cpp)
@@ -2083,7 +2091,8 @@ target_compile_definitions(test_kimi_pro_code_selfcheck PRIVATE
 target_link_libraries(test_kimi_pro_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_kimi_pro_code_selfcheck COMMAND test_kimi_pro_code_selfcheck)
 set_tests_properties(test_kimi_pro_code_selfcheck PROPERTIES LABELS inference)
-set_tests_properties(test_kimi_pro_code_selfcheck PROPERTIES TIMEOUT 7200)
+# 3 prompts x 512 tokens ~= 3.4 h + load = ~3.6 h.
+set_tests_properties(test_kimi_pro_code_selfcheck PROPERTIES TIMEOUT 18000)
 set_tests_properties(test_kimi_pro_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_kimi_pro_det_selfcheck test_kimi_pro_det_selfcheck.cpp)
@@ -2092,7 +2101,8 @@ target_compile_definitions(test_kimi_pro_det_selfcheck PRIVATE
 target_link_libraries(test_kimi_pro_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_kimi_pro_det_selfcheck COMMAND test_kimi_pro_det_selfcheck)
 set_tests_properties(test_kimi_pro_det_selfcheck PROPERTIES LABELS inference)
-set_tests_properties(test_kimi_pro_det_selfcheck PROPERTIES TIMEOUT 7200)
+# 3 prompts x 3 stress runs x 512 tokens ~= 10.2 h + load = ~10.4 h.
+set_tests_properties(test_kimi_pro_det_selfcheck PROPERTIES TIMEOUT 43200)
 set_tests_properties(test_kimi_pro_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Kimi-K3 SelfCheck (real weights; SKIP without a model) ─────────────────
@@ -2104,11 +2114,14 @@ set_tests_properties(test_kimi_k3_selfcheck PROPERTIES TIMEOUT 5400)
 set_tests_properties(test_kimi_k3_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Kimi-K3.1-Pro SelfCheck (real weights; SKIP without a model) ───────────
+# Two cases: Paris x3 cycles and the real-weight XTML tool round-trip. The
+# round-trip generates up to 256 tokens through the thinking channel, so the
+# budget covers both on a host-store-bound 2.8T model.
 add_executable(test_kimi_pro_selfcheck test_kimi_pro_selfcheck.cpp)
 target_link_libraries(test_kimi_pro_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_kimi_pro_selfcheck COMMAND test_kimi_pro_selfcheck)
 set_tests_properties(test_kimi_pro_selfcheck PROPERTIES LABELS inference)
-set_tests_properties(test_kimi_pro_selfcheck PROPERTIES TIMEOUT 5400)
+set_tests_properties(test_kimi_pro_selfcheck PROPERTIES TIMEOUT 7200)
 set_tests_properties(test_kimi_pro_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Kimi-K3 XTML chat/tool codec (host-only, synthetic tokenizer) ───────────
@@ -2643,9 +2656,11 @@ add_test(NAME test_perf_baseline_kimi_k31_pro
          COMMAND test_perf_baseline "perf baseline: kimi-k3.1-pro")
 # Same host-store bound as kimi-k3 (the 2.8T tree and its expert arrows are
 # shared; the Pro adds the tiny indexer set, which is resident): the two
-# 2048-token modes plus the probe need a long budget.
+# 2048-token modes plus the probe need a long budget. Measured basis: ~0.125
+# t/s decode here, so 2 x 2048 tokens ~= 9.1 h, plus two 23 GB loads, the
+# cooldown and the DRAM probe ~= 9.6 h.
 set_tests_properties(test_perf_baseline_kimi_k31_pro PROPERTIES
-    TIMEOUT 21600
+    TIMEOUT 43200
     SKIP_RETURN_CODE 4)
 set_tests_properties(test_perf_baseline_kimi_k31_pro PROPERTIES LABELS perf)
 
