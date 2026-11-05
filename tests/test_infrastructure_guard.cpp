@@ -401,3 +401,120 @@ TEST_CASE("infra guard: the root CMakeLists stamps the build toolkit",
                                  << JoinHits(problems));
     REQUIRE(problems.empty());
 }
+
+// Rule 9: the family-specific arch suffix must never reach CUDA_ARCHITECTURES.
+// CMake 4.x does not know `f` (measured on CMake 4.2.3): given "120f" — or even
+// "120-real;121f-real" — it silently emits `compute_75`, which still runs through
+// PTX JIT and is SLOWER than the plain sm_120 code it replaced. The expansion
+// into nvcc's own --generate-code flags is the only spelling CMake passes
+// through unharmed, so the value must stay OUT of set_target_properties.
+std::vector<int> FindFamilySuffixInArch(const std::string &text)
+{
+    static const std::regex call(R"(CUDA_ARCHITECTURES\s+([^\s\)]+))");
+    std::vector<int> hits;
+    int line_no = 0;
+    for (const auto &line : Lines(StripHashComments(text))) {
+        ++line_no;
+        std::smatch m;
+        auto begin = line.cbegin();
+        while (std::regex_search(begin, line.cend(), m, call)) {
+            std::string arg = m[1].str();
+            if (arg.size() >= 2 && arg.front() == '"' && arg.back() == '"')
+                arg = arg.substr(1, arg.size() - 2);
+            // Any family spelling (120f / 121f / 120f-real) reaching this
+            // property is the silent-downgrade bug.
+            if (arg == "OFF") { begin = m.suffix().first; continue; }
+            static const std::regex fam(R"((^|[^0-9])(12[01][af]?f)([^0-9]|$))");
+            if (std::regex_search(arg, fam)) hits.push_back(line_no);
+            begin = m.suffix().first;
+        }
+    }
+    return hits;
+}
+
+// The same silent downgrade hides in a literal --generate-code line: a target
+// that spells `compute_120,code=sm_120` by hand bypasses LSX_CUDA_ARCH entirely
+// and keeps emitting non-family SASS (measured 2026-11-05: 30 test targets did
+// exactly that while the rest of the tree moved to `f`). Two spellings are
+// legitimate and stay literal: `compute_12xa` (architecture-specific, required
+// by tcgen05 in lsx_tc_gemm.cu) and `compute_12xf` (the family form itself).
+std::vector<int> FindNonFamilyGencodeLiterals(const std::string &text)
+{
+    static const std::regex lit(
+        R"(--generate-code=arch=compute_(12[0-9])([af]?),code=)");
+    std::vector<int> hits;
+    int line_no = 0;
+    for (const auto &line : Lines(StripHashComments(text))) {
+        ++line_no;
+        std::smatch m;
+        auto begin = line.cbegin();
+        while (std::regex_search(begin, line.cend(), m, lit)) {
+            // Only `a` (tcgen05) and `f` (the family spelling) are sanctioned.
+            if (m[2].str() != "a" && m[2].str() != "f")
+                hits.push_back(line_no);
+            begin = m.suffix().first;
+        }
+    }
+    return hits;
+}
+
+TEST_CASE("infra guard: family arch suffix scanner", "[guard][infra]")
+{
+    CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES \"120f\"").size() == 1);
+    CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES \"120f;121f\"").size() == 1);
+    CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES 120f-real").size() == 1);
+    CHECK(FindFamilySuffixInArch(
+              "CUDA_ARCHITECTURES \"120-real;121f-real\"")
+              .size() == 1);
+    CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES OFF").empty());
+    CHECK(FindFamilySuffixInArch(
+              "CUDA_ARCHITECTURES \"120-real;121-real\"")
+              .empty());
+    CHECK(FindFamilySuffixInArch(
+              "--generate-code=arch=compute_120f,code=[compute_120f,sm_120f]")
+              .empty());
+}
+
+TEST_CASE("infra guard: family arches reach nvcc, never CUDA_ARCHITECTURES",
+          "[guard][infra]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    std::vector<std::string> bad;
+    for (const auto &p : CmakeFiles(root))
+        for (int line : FindFamilySuffixInArch(ReadFile(p)))
+            bad.push_back(Rel(root, p) + ":" + std::to_string(line));
+    INFO("family-suffix hits (" << bad.size() << "):\n" << JoinHits(bad));
+    REQUIRE(bad.empty());
+
+    // And the mechanism must exist: a single cache value plus the expansion.
+    const std::string root_cmake = ReadFile(root / "CMakeLists.txt");
+    REQUIRE(root_cmake.find("LSX_CUDA_GENCODE_FLAGS") != std::string::npos);
+    REQUIRE(root_cmake.find("lsx_cuda_gencode_flags") != std::string::npos);
+
+    // Literal --generate-code lines are the same downgrade in disguise.
+    std::vector<std::string> literal;
+    for (const auto &p : CmakeFiles(root))
+        for (int line : FindNonFamilyGencodeLiterals(ReadFile(p)))
+            literal.push_back(Rel(root, p) + ":" + std::to_string(line));
+    INFO("literal gencode hits (" << literal.size() << "):\n"
+                                  << JoinHits(literal));
+    REQUIRE(literal.empty());
+}
+
+TEST_CASE("infra guard: gencode-literal scanner", "[guard][infra]")
+{
+    CHECK(FindNonFamilyGencodeLiterals(
+              "--generate-code=arch=compute_120,code=sm_120")
+              .size() == 1);
+    CHECK(FindNonFamilyGencodeLiterals(
+              "--generate-code=arch=compute_121,code=sm_121")
+              .size() == 1);
+    // Sanctioned spellings.
+    CHECK(FindNonFamilyGencodeLiterals(
+              "--generate-code=arch=compute_120a,code=sm_120a")
+              .empty());
+    CHECK(FindNonFamilyGencodeLiterals(
+              "--generate-code=arch=compute_120f,code=[compute_120f,sm_120f]")
+              .empty());
+    CHECK(FindNonFamilyGencodeLiterals("${LSX_CUDA_GENCODE_FLAGS}").empty());
+}

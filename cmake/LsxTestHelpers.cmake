@@ -171,10 +171,14 @@ function(lsx_add_cuda_test)
     endif()
     set_target_properties(${P_OBJECT} PROPERTIES
         CUDA_SEPARABLE_COMPILATION OFF
-        CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+        # OFF + explicit --generate-code below: CMake 4.x drops the family
+        # suffix (`120f`) and replaces the whole list with `compute_75`, which
+        # still runs through PTX JIT and is slower. See the root CMakeLists.
+        CUDA_ARCHITECTURES OFF
         CUDA_STANDARD 20
         CUDA_STANDARD_REQUIRED ON)
     target_compile_options(${P_OBJECT} PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>
         $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
         $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>)
     if(P_FMAD_OFF)

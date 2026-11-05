@@ -13,8 +13,39 @@ find_package(CUDAToolkit REQUIRED)
 # emits device code (library OBJECT libs, apps, tests, helpers); pre-Blackwell
 # arches are deliberately unsupported (AGENTS.md). Override the cache entry only
 # for a local experiment, never in a shipped preset.
-set(LSX_CUDA_ARCH "120-real;121-real" CACHE STRING
-    "CUDA architectures (Blackwell CC 12.0/12.1 only)")
+#
+# FAMILY-SPECIFIC arches (`120f`/`121f`): the `f` suffix admits instructions
+# added within one compute capability, and one of them is on our hot path —
+# `cvt.rn.bf16x2.e2m1x2` (SASS `F2FP.BF16.E2M1.UNPACK_B`) decodes an NVFP4 nibble
+# to BF16 in a single op. Verified 2026-11-05: the same source compiles to only
+# `F2FP.BF16.F32` (FP32 emulation) under `-arch=sm_120`.
+#
+# The value is expanded by lsx_cuda_gencode_flags() below and therefore must NOT
+# be handed to CUDA_ARCHITECTURES: CMake 4.x does not understand the suffix,
+# silently drops it, and (measured on CMake 4.2.3) falls back to `compute_75` —
+# a binary that still runs through PTX JIT, is slower than plain sm_120, and
+# warns about nothing. `test_infrastructure_guard` rejects that spelling.
+set(LSX_CUDA_ARCH "120f;121f" CACHE STRING
+    "CUDA architectures, family-specific (Blackwell CC 12.0f/12.1f only)")
+
+# Expands LSX_CUDA_ARCH into nvcc's own spelling. Device targets set
+# `CUDA_ARCHITECTURES OFF` and compile with these flags.
+function(lsx_cuda_gencode_flags out_var)
+    set(flags "")
+    foreach(arch IN LISTS LSX_CUDA_ARCH)
+        if(NOT arch MATCHES "^12[01]f$")
+            message(FATAL_ERROR
+                "LSX_CUDA_ARCH entry '${arch}' is not a family-specific "
+                "Blackwell target (expected 120f or 121f): this repository "
+                "targets consumer Blackwell only, and a non-family entry would "
+                "silently miss the family-specific instructions.")
+        endif()
+        list(APPEND flags
+            "--generate-code=arch=compute_${arch},code=[compute_${arch},sm_${arch}]")
+    endforeach()
+    set(${out_var} "${flags}" PARENT_SCOPE)
+endfunction()
+lsx_cuda_gencode_flags(LSX_CUDA_GENCODE_FLAGS)
 
 # ── Toolkit consistency guard (docs/open-tasks/2026-09-30-..., item G1) ──────────
 # Upgrading CUDA leaves an existing build/ pinned to the previous toolkit: the

@@ -21,11 +21,47 @@
 
 #include <cstdint>
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 #include "nvfp4_scale.h"
 
 namespace lsxcommon {
 namespace gpu {
 namespace nvfp4 {
+
+// Defined below; E2M1PairValue's non-family fallback uses it.
+__host__ __device__ __forceinline__ float E2M1Value(int nib);
+
+// E2M1 PAIR decode: both nibbles of one packed byte in a single instruction.
+// `cvt.rn.bf16x2.e2m1x2` (SASS `F2FP.BF16.E2M1.UNPACK_B`) exists only on
+// family-specific targets, so the branch is compiled against
+// __CUDA_ARCH_FAMILY_SPECIFIC__ (sm_120f/sm_121f, CUDA 13.5). The nibble->float
+// table above stays the reference AND the fallback: every E2M1 level is exactly
+// representable in BF16, so the two are bit-identical, never "close" — pinned
+// exhaustively over all 256 bytes by tests/test_lsx_kernels.cu
+// "E2M1PairValue: both nibbles of every byte match the table".
+// Returned in (low nibble, high nibble) order, matching E2M1Value(b & 0xF) /
+// E2M1Value(b >> 4) as the GEMV consumes them.
+__host__ __device__ __forceinline__ float2 E2M1PairValue(uint8_t packed)
+{
+#if defined(__CUDA_ARCH_FAMILY_SPECIFIC__) && __CUDA_ARCH_FAMILY_SPECIFIC__ >= 1200
+    // The instruction consumes a b8 holding one e2m1x2 operand; the low nibble
+    // of the byte is element 0 (the packing order pinned by the exhaustive
+    // table case below), and it produces bf16x2 with element 0 in the low half.
+    unsigned out = 0;
+    const unsigned short src = static_cast<unsigned short>(packed);
+    asm("{ .reg .b8 v, z;                        \n"
+        "  mov.b16 {v, z}, %1;                    \n"
+        "  cvt.rn.bf16x2.e2m1x2 %0, v; }          \n"
+        : "=r"(out)
+        : "h"(src));
+    const unsigned short lo = static_cast<unsigned short>(out & 0xFFFFu);
+    const unsigned short hi = static_cast<unsigned short>(out >> 16);
+    return make_float2(__bfloat162float(*reinterpret_cast<const __nv_bfloat16 *>(&lo)),
+                       __bfloat162float(*reinterpret_cast<const __nv_bfloat16 *>(&hi)));
+#else
+    return make_float2(E2M1Value(packed & 0xF), E2M1Value(packed >> 4));
+#endif
+}
 
 // E2M1 decode (indexed by 4-bit nibble, sign bit 3):
 //   magnitude 0..7 -> {0, 0.5, 1, 1.5, 2, 3, 4, 6}, sign bit negates.

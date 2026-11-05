@@ -159,10 +159,12 @@ add_library(lsxcommon STATIC
     src/vram_estimate.cpp
 )
 set_target_properties(lsxcommon PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 
 enable_language(CUDA)
 
@@ -213,10 +215,12 @@ add_library(lsxcommon_cu OBJECT
     src/sampling.cu
 )
 set_target_properties(lsxcommon_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -235,10 +239,12 @@ add_library(lsxcommon_glm_cu OBJECT
     src/glm_moe_flash_inference.cu
 )
 set_target_properties(lsxcommon_glm_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_glm_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_glm_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -269,10 +275,12 @@ add_library(lsxcommon_qwen_cu OBJECT
     src/qwen_dense_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_qwen_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_qwen_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_qwen_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -289,10 +297,12 @@ add_library(lsxcommon_moe_cu OBJECT
     src/qwen_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_moe_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_moe_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 # -fmad=false: bit-exact router/expert math (protocol invariant).
 target_compile_options(lsxcommon_moe_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
@@ -313,10 +323,12 @@ add_library(lsxcommon_xing_cu OBJECT
     src/xing_moe_inference.cu
 )
 set_target_properties(lsxcommon_xing_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_xing_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_xing_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -337,10 +349,12 @@ add_library(lsxcommon_minimax_cu OBJECT
     src/minimax_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_minimax_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_minimax_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_minimax_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -362,10 +376,12 @@ add_library(lsxcommon_hy_cu OBJECT
     src/hy_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_hy_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_hy_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_hy_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -386,10 +402,12 @@ add_library(lsxcommon_flint_cu OBJECT
     src/flint_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_flint_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_flint_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_flint_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -408,10 +426,12 @@ add_library(lsxcommon_beam_cu OBJECT
     src/beam_moe_inference.cu
 )
 set_target_properties(lsxcommon_beam_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_beam_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_beam_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -430,10 +450,12 @@ add_library(lsxcommon_ling_cu OBJECT
     src/ling_moe_inference.cu
 )
 set_target_properties(lsxcommon_ling_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_ling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_ling_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -456,10 +478,12 @@ add_library(lsxcommon_step_cu OBJECT
     src/step_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_step_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_step_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_step_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -479,10 +503,12 @@ add_library(lsxcommon_mistral_cu OBJECT
     src/mistral_moe_large4_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_mistral_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_mistral_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_mistral_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -527,10 +553,12 @@ add_library(lsxcommon_kimi_cu OBJECT
     src/kimi_moe_expert_cache.cu
 )
 set_target_properties(lsxcommon_kimi_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_kimi_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_kimi_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -547,10 +575,12 @@ add_library(lsxcommon_gemma_cu OBJECT
     src/gemma_dense_inference.cu
 )
 set_target_properties(lsxcommon_gemma_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_gemma_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_gemma_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -567,10 +597,12 @@ add_library(lsxcommon_ornith_cu OBJECT
     src/ornith_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_ornith_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_ornith_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_ornith_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -589,10 +621,12 @@ add_library(lsxcommon_dense_cu OBJECT
     src/lsx_dense_inference.cu
 )
 set_target_properties(lsxcommon_dense_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_dense_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_dense_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -613,10 +647,12 @@ add_library(lsxcommon_granite_cu OBJECT
     src/granite_dense_switch_inference.cu
 )
 set_target_properties(lsxcommon_granite_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_granite_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_granite_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -636,10 +672,12 @@ add_library(lsxcommon_phi_cu OBJECT
     src/phi_dense_inference.cu
 )
 set_target_properties(lsxcommon_phi_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_phi_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_phi_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -659,10 +697,12 @@ add_library(lsxcommon_kimi_k3_cu OBJECT
     src/kimi_moe_k3_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_kimi_k3_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_kimi_k3_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_kimi_k3_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -683,10 +723,12 @@ add_library(lsxcommon_alice_cu OBJECT
     src/alice_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_alice_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_alice_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_alice_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -745,10 +787,12 @@ add_library(lsxcommon_nemotron_cu OBJECT
     src/nemotron_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_nemotron_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_nemotron_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_nemotron_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -770,10 +814,12 @@ add_library(lsxcommon_gigachat_cu OBJECT
     src/gigachat_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_gigachat_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_gigachat_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_gigachat_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -793,10 +839,12 @@ add_library(lsxcommon_mimo_cu OBJECT
     src/mimo_moe_inference_attn.cu
 )
 set_target_properties(lsxcommon_mimo_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_mimo_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_mimo_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -814,10 +862,12 @@ add_library(lsxcommon_qwen_moe_exp_cu OBJECT
     src/qwen_moe_exp_inference.cu
 )
 set_target_properties(lsxcommon_qwen_moe_exp_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_qwen_moe_exp_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_qwen_moe_exp_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -843,10 +893,12 @@ add_library(lsxcommon_deepseek_v41_cu OBJECT
     src/deepseek_moe_v41_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_deepseek_v41_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_deepseek_v41_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_deepseek_v41_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -869,10 +921,12 @@ add_library(lsxcommon_deepseek_pro_cu OBJECT
     src/deepseek_moe_pro_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_deepseek_pro_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(lsxcommon_deepseek_pro_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(lsxcommon_deepseek_pro_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>

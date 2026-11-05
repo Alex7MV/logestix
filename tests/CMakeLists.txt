@@ -107,8 +107,10 @@ add_library(test_minimax_cu OBJECT
 )
 set_target_properties(test_minimax_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_minimax_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_minimax_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 # Arrow headers are reachable from lsx_moe_inference.h (expert_store.h), so
@@ -136,8 +138,10 @@ add_library(test_xing_cu OBJECT
 )
 set_target_properties(test_xing_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_xing_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_xing_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_xing_cu PRIVATE
@@ -161,8 +165,10 @@ add_library(test_alice_cu OBJECT
 )
 set_target_properties(test_alice_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_alice_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_alice_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_alice_cu PRIVATE
@@ -391,8 +397,7 @@ set_target_properties(test_deepseek_moe_pro_load_fast_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_pro_load_fast_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_pro_load_fast_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -496,8 +501,7 @@ set_target_properties(test_deepseek_moe_v41_dequant_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_v41_dequant_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_dequant_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
@@ -529,8 +533,7 @@ set_target_properties(test_deepseek_moe_v41_load_fast_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_v41_load_fast_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_load_fast_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -563,8 +566,7 @@ set_target_properties(test_deepseek_moe_v41_kernels_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_v41_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_kernels_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -597,8 +599,7 @@ set_target_properties(test_deepseek_moe_v41_pipeline_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_v41_pipeline_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_pipeline_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -633,8 +634,7 @@ set_target_properties(test_deepseek_moe_v41_actquant_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_v41_actquant_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_actquant_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
@@ -851,8 +851,10 @@ add_library(test_granite_cu OBJECT
 )
 set_target_properties(test_granite_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_granite_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_granite_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -876,8 +878,10 @@ add_library(test_granite_switch_cu OBJECT
 )
 set_target_properties(test_granite_switch_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_granite_switch_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_granite_switch_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -898,8 +902,10 @@ add_library(test_phi_cu OBJECT
 )
 set_target_properties(test_phi_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_phi_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_phi_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -1003,8 +1009,10 @@ add_library(test_lsx_kernels_cu OBJECT
 )
 set_target_properties(test_lsx_kernels_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_lsx_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_lsx_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -1026,8 +1034,10 @@ add_library(test_cuda_toolkit_guard_cu OBJECT
 )
 set_target_properties(test_cuda_toolkit_guard_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_cuda_toolkit_guard_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 # The stamp Task 1 writes at configure time. The case that reads it proves the
 # OBJECTS were built with the headers this TU sees — the one thing configure
 # cannot check after the fact.
@@ -1046,13 +1056,15 @@ foreach(qt test_cuda_toolkit_guard)
     lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
     set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
-    # `fast`, not `inference`: this is the ONLY test that can observe a build tree
-    # whose objects came from a different toolkit (a stale `CUDART_VERSION` in one
-    # TU against the linked runtime), so it must run in the default suite. It
-    # allocates no device memory — it reads versions and device properties, and
-    # its device case SKIPs (4) where no GPU exists.
-    set_tests_properties(${qt} PROPERTIES LABELS fast)
 endforeach()
+
+# `fast`, not `inference`: this is the ONLY test that can observe a build tree
+# whose objects came from a different toolkit (a stale `CUDART_VERSION` in one TU
+# against the linked runtime), so it must run in the default suite. It allocates
+# no device memory — it reads versions and device properties, and its device case
+# SKIPs (4) where no GPU exists. Spelled literally: the label guard resolves
+# static names only, not the loop variable.
+set_tests_properties(test_cuda_toolkit_guard PROPERTIES LABELS fast)
 
 # One OBJECT lib + executable per .cu test file. The previous shared
 # `test_qwen_cu` object library linked ALL 14 files into EVERY executable:
@@ -2009,8 +2021,10 @@ set_tests_properties(test_kimi_pro_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW
 add_library(test_kimi_pro_indexer_cu OBJECT test_kimi_pro_indexer.cu)
 set_target_properties(test_kimi_pro_indexer_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_kimi_pro_indexer_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_kimi_pro_indexer_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_kimi_pro_indexer_cu PRIVATE
@@ -2760,8 +2774,7 @@ set_target_properties(test_kv_cache_layout_cu PROPERTIES
 )
 target_compile_options(test_kv_cache_layout_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kv_cache_layout_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -2970,8 +2983,7 @@ set_target_properties(test_stream_read_ceiling_cu PROPERTIES
 )
 target_compile_options(test_stream_read_ceiling_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_stream_read_ceiling_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -3012,8 +3024,7 @@ set_target_properties(test_deepseek_moe_inference_kernels_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_inference_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_inference_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3046,8 +3057,7 @@ set_target_properties(test_deepseek_moe_moe_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_moe_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_moe_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3125,8 +3135,7 @@ set_target_properties(test_deepseek_moe_arena_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_arena_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_arena_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3160,8 +3169,7 @@ set_target_properties(test_sampling_cu PROPERTIES
 )
 target_compile_options(test_sampling_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_sampling_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3191,8 +3199,7 @@ set_target_properties(test_glm_moe_load_fast_cu PROPERTIES
 )
 target_compile_options(test_glm_moe_load_fast_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_glm_moe_load_fast_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3222,8 +3229,7 @@ set_target_properties(test_glm_moe_model_lifecycle_cu PROPERTIES
 )
 target_compile_options(test_glm_moe_model_lifecycle_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_glm_moe_model_lifecycle_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -3256,8 +3262,7 @@ set_target_properties(test_deepseek_moe_load_fast_cu PROPERTIES
 )
 target_compile_options(test_deepseek_moe_load_fast_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_load_fast_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3331,8 +3336,7 @@ set_target_properties(test_kimi_moe_int4_dequant_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_int4_dequant_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_int4_dequant_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3384,8 +3388,7 @@ set_target_properties(test_kimi_moe_router_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_router_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_router_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3413,8 +3416,7 @@ set_target_properties(test_kimi_moe_attention_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_attention_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_attention_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3469,8 +3471,7 @@ set_target_properties(test_kimi_moe_mla_proj_real_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_mla_proj_real_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_mla_proj_real_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3497,8 +3498,7 @@ set_target_properties(test_kimi_moe_experts_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_experts_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_experts_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3530,8 +3530,7 @@ set_target_properties(test_kimi_moe_tc_batch_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_tc_batch_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_tc_batch_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3561,8 +3560,7 @@ set_target_properties(test_kimi_moe_tc_diag_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_tc_diag_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_tc_diag_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3647,8 +3645,7 @@ set_target_properties(test_kimi_moe_int4_real_cu PROPERTIES
 )
 target_compile_options(test_kimi_moe_int4_real_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_int4_real_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3760,8 +3757,7 @@ set_target_properties(test_qwen_moe_kernels_cu PROPERTIES
 )
 target_compile_options(test_qwen_moe_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_qwen_moe_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -3802,8 +3798,7 @@ set_target_properties(test_ornith_moe_kernels_cu PROPERTIES
 )
 target_compile_options(test_ornith_moe_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_ornith_moe_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
@@ -4357,8 +4352,10 @@ add_library(test_mimo_cu OBJECT
 )
 set_target_properties(test_mimo_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_mimo_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_mimo_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_mimo_cu PRIVATE
@@ -4589,8 +4586,7 @@ set_target_properties(test_gigachat_moe_devkernels_cu PROPERTIES
 )
 target_compile_options(test_gigachat_moe_devkernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_gigachat_moe_devkernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
@@ -4639,8 +4635,7 @@ set_target_properties(test_gigachat_moe_attn_cu PROPERTIES
 )
 target_compile_options(test_gigachat_moe_attn_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     -fmad=false;-Xcompiler=-ffp-contract=off;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_gigachat_moe_attn_cu PRIVATE
@@ -4681,8 +4676,7 @@ set_target_properties(test_gigachat_moe_parity_cu PROPERTIES
 )
 target_compile_options(test_gigachat_moe_parity_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     -fmad=false;-Xcompiler=-ffp-contract=off;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_gigachat_moe_parity_cu PRIVATE
@@ -4879,8 +4873,7 @@ set_target_properties(test_nemotron_moe_kernels_cu PROPERTIES
 )
 target_compile_options(test_nemotron_moe_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
+    ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_nemotron_moe_kernels_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
@@ -4957,10 +4950,12 @@ set_tests_properties(test_qwen_moe_exp_loader PROPERTIES
 # indexer, PLE inject) against host-replica oracles.
 add_library(test_qwen_moe_exp_kernels_cu OBJECT test_qwen_moe_exp_kernels.cu)
 set_target_properties(test_qwen_moe_exp_kernels_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(test_qwen_moe_exp_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_qwen_moe_exp_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -4987,10 +4982,12 @@ add_test(NAME test_qwen_moe_exp_kernels COMMAND test_qwen_moe_exp_kernels)
 # per-channel-decay gated delta, router) against host references.
 add_library(test_glm_moe_flash_kernels_cu OBJECT test_glm_moe_flash_kernels.cu)
 set_target_properties(test_glm_moe_flash_kernels_cu PROPERTIES
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
+target_compile_options(test_glm_moe_flash_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_glm_moe_flash_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
@@ -5561,8 +5558,10 @@ add_library(test_hy_cu OBJECT
 )
 set_target_properties(test_hy_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_hy_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_hy_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_hy_cu PRIVATE
@@ -5778,8 +5777,10 @@ set(test_beam_cu_src
 add_library(test_beam_cu OBJECT ${test_beam_cu_src})
 set_target_properties(test_beam_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_beam_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_beam_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_beam_cu PRIVATE
@@ -5847,8 +5848,10 @@ add_library(test_flint_cu OBJECT
 )
 set_target_properties(test_flint_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_flint_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_flint_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_flint_cu PRIVATE
@@ -6232,8 +6235,10 @@ add_library(test_step_cu OBJECT
 )
 set_target_properties(test_step_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "${LSX_CUDA_ARCH}"
+    CUDA_ARCHITECTURES OFF
 )
+target_compile_options(test_step_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
 target_compile_options(test_step_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_include_directories(test_step_cu PRIVATE
