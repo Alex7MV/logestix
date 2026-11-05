@@ -1042,7 +1042,7 @@ attention, the pipeline's indexer key cache with the dormant-at-`n_pos <= 2048`
 DSA branch, `KimiK31ProModel` + registry + the lifecycle contract, and the four
 real-weight targets with their template-derived goldens and the perf row.
 Stage 9 landed too, in place at `/mnt/fast_storage/huggingface/Kimi-K3.1-Pro/logestix`
-(892 GB source → **1.5 TB tree** in 17 min: 1.4 TB routed-expert arrows, 23 GB
+(1.5 TB source → **1.5 TB tree** in 17 min: 1.4 TB routed-expert arrows, 23 GB
 pinned graph, 8.9 GB streamed latent/shared plane, `total_experts 82432`, 2120
 pinned + 460 streamed tensors, 165 vision + 3 projector tensors stripped and
 counted). On the real weights: **SelfCheck Paris ×3 bit-exact**
@@ -1077,17 +1077,18 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   instrument is missing".
 - P3. **The real-weight FSI / CODE / DET and perf sweep was not run** (operator
   ruling, 2026-11-05: record it as debt rather than spend the GPU time). The cost
-  is measured, not guessed: this variant decodes at **~0.125 t/s** on the
-  reference host (a 64-token SelfCheck cycle is 8–9 min, a 256-token tool call
-  18 min, and a load of the 23 GB pinned graph is ~10 min), so one 2048-token
-  generation is ~4.5 h and the sweep is ~36 h of exclusive GPU:
+  is measured, not guessed: this variant decodes at **7.0–8.6 s per token
+  (0.12–0.14 t/s)** on the reference host, read off the `test_kimi_pro_selfcheck`
+  run log (three 64-token cycles took 9.2, 7.7 and 7.5 min; the first is cold),
+  and a load of the 23 GB pinned graph is ~10 min. So one 2048-token generation
+  is ~4 h and the sweep is ~32 h of exclusive GPU (39 h at the cold rate):
 
-  | target | generations × tokens | wall clock |
+  | target | generations × tokens | wall clock at 0.14 t/s |
   |---|---|---|
-  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~13.7 h (+load) |
-  | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~3.4 h (+load) |
-  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~10.2 h (+load) |
-  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~9.1 h (+2 loads) |
+  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~12.1 h (+load) |
+  | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~3.0 h (+load) |
+  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~9.1 h (+load) |
+  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~8.1 h (+2 loads) |
 
   FSI was actually started (release tree) and stopped 97 min in, still inside
   FSI-TEST-01; the interruption made the harness emit three empty generations,
@@ -1106,6 +1107,23 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   source needs `fla-core` and a multi-GPU runner, so no source oracle can be
   captured on this card. A green row pins the converted path against the
   template, never source parity.
+- P5. **A 4x throughput gap against the plain Kimi-K3 measurement is
+  unexplained.** `docs/model-reports/2026-11-03-Kimi-K3.md` records "the measured
+  ~2 s/token" (≈0.5 t/s) for the parent on this same host; `kimi-k3.1-pro`
+  measures 7.0–8.6 s/token on **identical geometry, identical tree layout and
+  the same expert count**. The indexer is *not* the cause: at `n_pos <= 2048`
+  the pipeline takes the `sel == nullptr` branch and neither the score pass nor
+  the top-k runs
+  (`kimi_moe_k3_inference_pipeline.cu`, the `pos + 1 > index_topk` guard), so the
+  sparse machinery costs exactly zero at the protocol both numbers were taken
+  at. The plausible causes are a difference in the measurement itself (the K3
+  figure is prose, not a harness row — no `perf`/`r3` entry exists for either
+  tree, so neither number has been through `test_perf_baseline`) or the two runs
+  landing on different expert-cache capacities, which this family's decode rate
+  is coupled to. Until someone seeds both rows through the harness at equal
+  capacity, the honest reading is that the two figures are not comparable —
+  do not quote the delta as a regression, and do not quote 0.14 t/s as a
+  property of the architecture.
 
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 

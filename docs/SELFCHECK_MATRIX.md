@@ -67,21 +67,22 @@ one in a ctest summary, which is why the debt rows are called out below.
   FSI-01, deepseek-v4-pro FSI-02, minimax-m3 FSI-01 and deepseek-v4.1-flash
   FSI-01/02; the CODE red is deepseek-v4.1-flash CODE-01; the DET red is
   granite-switch DET-02.
-- **kimi-k3.1-pro** added 2026-11-05 (branch `feat/kimi-k31-pro`): the 892 GB
+- **kimi-k3.1-pro** added 2026-11-05 (branch `feat/kimi-k31-pro`): the 1.5 TB
   source converted in place to a **1.5 TB** tree (1.4 TB routed-expert arrows,
   23 GB pinned graph, 8.9 GB streamed latent/shared plane) and SelfCheck is green
   on the real weights — Paris ×3 bit-exact, plus the native XTML tool round-trip
   `get_weather {"city":"Paris"}` — so it earned its move out of §3. The three
   parity cells are **not run, and that is a measurement, not a formality**: this
-  variant decodes at ~0.125 t/s here (host-store bound: 92 MoE layers × top-16
-  experts streamed per token from 1.4 TB), so one 2048-token FSI case is ~4.5 h
-  and the FSI+CODE+DET+perf sweep is ~36 h of exclusive GPU. An FSI run was
-  started and stopped 97 min in — the kill is not a verdict, hence `not run`
+  variant decodes at **7.0–8.6 s per token (0.12–0.14 t/s)** here (host-store
+  bound: 92 MoE layers × top-16 experts streamed per token from 1.4 TB), read
+  off the three 64-token self-check cycles in the run log, so one 2048-token FSI
+  case is ~4 h and the FSI+CODE+DET+perf sweep is ~32 h of exclusive GPU. An FSI
+  run was started and stopped 97 min in — the kill is not a verdict, hence `not run`
   rather than a red. Its goldens are **template-derived** and payload-identical
   to `kimi-k3`'s, so a future green row pins the converted path against the
   template, **not** source parity; and no gate at all observes the DSA indexer,
   whose selection is dormant at the canonical 2048-token protocol. Debt,
-  budgets and how to close: `docs/OPEN_TASKS.md` §R17 (P1/P2/P3/P4).
+  budgets and how to close: `docs/OPEN_TASKS.md` §R17 (P1–P5).
 - **Qwen3.5-35B-A3B** was audited on 2026-11-04 (it had been listed under §3 as
   "no converted tree" while its 19 GB tree had been in the vault since
   2026-10-01): SelfCheck Paris ×3 bit-exact (`logits_hash f4c91be5f2206d56`,
