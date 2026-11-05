@@ -298,9 +298,14 @@ Deviations recorded:
 
 **Files:** `AGENTS.md` (Structure), `docs/SELFCHECK_MATRIX.md`, `docs/OPEN_TASKS.md` §R17, `docs/model-reports/README.md`.
 
-- [ ] **Step 1** Write the AGENTS structure entry, the matrix row (all gates `not run` until Task 9), §R17 with the inferred-indexer debt, and the report index row.
-- [ ] **Step 2** `ctest --preset linux-debug` green (fast suite).
-- [ ] **Step 3 Commit** — `docs(kimi-k31-pro): structure, matrix row and the inferred-indexer debt`.
+- [x] **Step 1** Write the AGENTS structure entry, the matrix row (all gates `SKIP` until Task 9 — §3 there, since the goldens are committed and the tree is not), §R17 with the inferred-indexer debt, and the report index row.
+- [x] **Step 2** `ctest --preset linux-debug` green (fast suite) — 134/134.
+- [x] **Step 3 Commit** — `docs(kimi-k31-pro): structure, matrix row and the inferred-indexer debt`.
+
+Deviation recorded: the `docs/model-reports/README.md` index row is written in
+Task 9 together with the report file it links to — an index entry pointing at a
+`.md` that does not exist yet is a broken link, and the report cannot exist
+before the real-weight numbers do.
 
 ---
 

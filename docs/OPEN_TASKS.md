@@ -1034,11 +1034,15 @@ Branch `feat/kimi-k31-pro`. Sibling variant of Kimi-K3 (`kimi-k3.1-pro`, files
 tower (93 layers, 69 KDA + 24 gated NoPE MLA, AttnRes 12, Stable LatentMoE, SiTU)
 with the 24 full-attention layers replaced by **Gated DSA** — a Lightning
 Indexer per full-attention layer selecting `index_topk = 2048` keys per query.
-Landed so far: frozen passport, converter (`lsxforge --kimi_k31_pro`), loader
-(five BF16 indexer tensors per DSA layer pinned as FP16, never quantized), the
-four indexer kernels + selectable MLA attention, and the pipeline's indexer key
-cache with the DSA branch. Stages 6–9 (IModel/registry, parity goldens, perf,
-real weights) are pending; see the plan and the SDD ledger.
+Landed so far (stages 1–8 of the Model Ingestion Protocol): frozen passport,
+converter (`lsxforge --kimi_k31_pro`, wrapper-level variant gate both ways),
+loader (five BF16 indexer tensors per DSA layer pinned as FP16, never quantized,
+plus the `index_norm_eps` cross-check), the four indexer kernels + selectable MLA
+attention, the pipeline's indexer key cache with the dormant-at-`n_pos <= 2048`
+DSA branch, `KimiK31ProModel` + registry + the lifecycle contract, and the four
+real-weight targets with their template-derived goldens and the perf row.
+Stage 9 (real weights, perf seeding, model report) is pending; see the plan and
+the SDD ledger.
 
 **Open, explicitly.**
 

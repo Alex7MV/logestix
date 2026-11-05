@@ -7,7 +7,9 @@ DeepSeek-V4.1-Flash audited — both had been filed as "no converted tree" while
 their trees were in the vault),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
-GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`.
+GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;
+`kimi-k3.1-pro` row added 2026-11-05 on `feat/kimi-k31-pro` (its conversion was
+still in flight — §3).
 
 This is a **measurement**, not a policy. The machine-checked registry is the
 source of truth for which target covers which model and stage:
@@ -216,13 +218,17 @@ Release harness; now seeded at **1.61 t/s (perf) / 1.60 t/s (r3)**, TTFT ≈27 s
 
 ## 3. Golden present, **no converted tree** — SKIP (needs the vault, not a code fix)
 
-**Empty as of 2026-11-04.** Both former members were audited and moved into §1:
-`qwen3.5-35b-a3b` (19 GB tree in the vault since 2026-10-01, all four gates green)
-and `deepseek-v4.1-flash` (294 GB tree; SelfCheck green, FSI/CODE red as recorded
-in `docs/OPEN_TASKS.md` §Q, and its cooperative-cancel case is RED — §A2 there).
-The section is kept as the place where a model lands when its golden exists but
-its converted tree does not: such a row SKIPs (ctest exit 4) and must never be
-read as a pass. Nothing sits here today.
+**2026-11-04:** empty; both former members were audited and moved into §1
+(`qwen3.5-35b-a3b`, 19 GB tree in the vault since 2026-10-01, all four gates
+green; and `deepseek-v4.1-flash`, 294 GB tree, SelfCheck green, FSI/CODE red as
+recorded in `docs/OPEN_TASKS.md` §Q, and its cooperative-cancel case RED — §A2
+there). A row in this section SKIPs (ctest exit 4) and must never be read as a
+pass.
+
+| model | SelfCheck | FSI | CODE | DET | why |
+|---|---|---|---|---|---|
+| kimi-k3.1-pro | SKIP | SKIP | SKIP | SKIP | the three goldens are committed (`tools/kimi_k3_template_goldens.py --model kimi-k3.1-pro`) but the 1.56 TB conversion had not run at the time of this snapshot — ingestion Task 9, `docs/OPEN_TASKS.md` §R17. The goldens are **template-derived** and payload-identical to `kimi-k3`'s (same XTML framing, same prompt-set Expected Template): the 1.5 TB MXFP4 source needs `fla-core` and a multi-GPU runner, so no source oracle exists on this card. A green FSI/CODE/DET row here would pin the converted path against the template, **not** source parity — and no gate at all observes the DSA indexer, whose selection is dormant at the canonical 2048-token protocol (§R17 P1/P2) |
+
 
 ## 4. Neither — SKIP
 

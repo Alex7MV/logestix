@@ -718,6 +718,34 @@ procedure — `perf-tuning-a-model`.
   `logits_hash=5c1e227265d6a27b`; tokenizer parity 23/23; FSI/CODE/DET goldens
   are template-derived and not yet run; perf unseeded — `docs/OPEN_TASKS.md`
   §R15.
+  Kimi-K3.1-Pro (variant `k31_pro` of the `kimi` family, registry
+  `kimi-k3.1-pro`): the same KimiLinear contour as `kimi-k3` with **Gated DSA**
+  on the 24 gated-NoPE-MLA layers — a Lightning Indexer per full-attention layer
+  (`wq_b [4096,1536]` off the q-lora, `wk [128,7168]` + a 128-wide LayerNorm,
+  `weights_proj [32,7168]`, 32 heads x 128 dims) scoring `relu(q·k)` with
+  `score[t,s] = Σ_h w[h]·relu(q[h]·k[s])`, then an EXACT top-`index_topk = 2048`
+  selection that the MLA decode attends over; crossing the tie boundary emits
+  positions strictly above the threshold in ascending order, then the boundary
+  group from the lowest position up (not a value-sorted list). Selection is
+  **dormant at `n_pos <= 2048`**, which is the canonical protocol: the sparse
+  path is bit-identical to the dense K3 path there. Files: the frozen passport
+  `kimi_moe_pro_constants.h` (`lsxcommon::kimi_pro::frozen`; `kIndexTopK`,
+  `kIndexHeads`/`kIndexHeadDim`, `kIndexNormEps`, the DSA layer table),
+  `kimi_moe_pro_convert.{h,cpp}` (`lsxforge --kimi_k31_pro`,
+  `logestix-kimi-k31-pro-nvfp4`; wraps the shared converter with the
+  wrapper-level `config.json.model_type == "kimi_k31"` + `dsa_config` + indexer
+  tensor gate, both directions — `text_config.model_type` is `kimi_linear` for
+  both trees and cannot discriminate), `kimi_moe_pro_load.{cuh,cu}` (pins the 120
+  indexer tensors as FP16, never quantized, and cross-checks the variant), and
+  `kimi_moe_pro_model.{h,cpp}` (Load's unconditional `dsa` structural check,
+  Infer, SelfCheck, the inherited XTML bridge). The converter/loader/kernels/
+  pipeline/model of `kimi-k3` learn exactly one optional component (the
+  `indexer` index flag + the `kimi_moe_k3_kernels` indexer entry points + the
+  pipeline's indexer key cache and DSA branch), precedent `minimax-m3.1-flash`.
+  Open, and load-bearing for how the gates may be read — `docs/OPEN_TASKS.md`
+  §R17 (P1: the indexer arithmetic is reconstructed, no modeling code ships;
+  P2: the family's synthetic fixture is input-invariant, so no model-stage test
+  can observe a wrong key set).
   Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
   560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
   (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited
