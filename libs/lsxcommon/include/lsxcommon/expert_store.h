@@ -413,29 +413,30 @@ struct ExpertStore {
     // unpin must use the SAME helper or the bookkeeping drifts.
     // Releases every retired mapping whose copies have completed. Called after
     // each eviction (bounded per call) and at teardown.
+    //
+    // Every retiree's event is recorded on the SAME stream, so they complete in
+    // FIFO order: once the oldest is not ready, none of the younger ones can be.
+    // Checking only the front makes this O(completed) — amortized one
+    // cudaEventQuery per eviction — instead of O(retired), which was up to 64
+    // driver calls per eviction and cost 6.6% of a 2048-token mistral-small-4
+    // run (42.06 vs 45.04 t/s) before it was fixed.
     void ReapRetired()
     {
-        for (size_t i = 0; i < retired.size();) {
-            RetiredMapping &r = retired[i];
-            bool done = true;
+        while (!retired.empty()) {
+            RetiredMapping &r = retired.front();
             if (r.ev) {
                 const cudaError_t q = cudaEventQuery(r.ev);
-                if (q == cudaErrorNotReady) {
-                    done = false;
-                } else if (q != cudaSuccess) {
+                if (q == cudaErrorNotReady) return;
+                if (q != cudaSuccess) {
                     // The stream or context is gone: no copy can still be
                     // reading this mapping. Clear the sticky error.
                     (void)cudaGetLastError();
                 }
+                retired_event_pool.push_back(r.ev);
             }
-            if (!done) {
-                ++i;
-                continue;
-            }
-            if (r.ev) retired_event_pool.push_back(r.ev);
             r.mmap.reset();
             r.batch.reset();
-            retired.erase(retired.begin() + static_cast<std::ptrdiff_t>(i));
+            retired.erase(retired.begin());
         }
     }
 

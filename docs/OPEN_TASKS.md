@@ -1204,8 +1204,20 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   beam, step, and any Kimi tree run with a small `MAX_OPEN`) keep this path hot.
   Verified on mistral-small-4 real weights: bit-exact
   (`logits_hash cdfd7309bb141772`, "Paris") plus the native tool round-trip, and
-  all 21 store-consuming test targets pass. What remains open is the other half —
-  overlapping the copy with compute — which still needs the queue.
+  all 21 store-consuming test targets pass.
+
+  The first version of this fix **regressed mistral-small-4 by 6.6%** (perf row
+  45.04 → 42.06 t/s, caught by `test_perf_baseline`, probe confirming the card
+  was not the cause) because `ReapRetired` walked the whole retired list and
+  issued up to 64 `cudaEventQuery` calls per eviction. The events all sit on one
+  stream and therefore complete in FIFO order, so only the front can be
+  not-ready: checking just the front makes it amortized O(1) and the row passes
+  again. That is the value of running the perf harness rather than reasoning
+  about the mechanism — the retention idea was right and the bookkeeping around
+  it was expensive.
+
+  What remains open is the other half — overlapping the copy with compute —
+  which still needs the queue.
 
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 
