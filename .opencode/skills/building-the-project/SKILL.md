@@ -98,11 +98,21 @@ Both are load-bearing, and dropping either fails differently:
   Note AOCC clang 17 warns `Unsupported lto mode -flto=thin, falling back to
   -flto=full`; that is expected.
 
-Also: `-DCMAKE_C_COMPILER` must be **omitted** for this tree. Passing a bad path
-poisons the cache with `CMAKE_C_COMPILER:UNINITIALIZED` and CMake then loses the ELF
-platform detection that the Arrow RPATH check depends on, which surfaces as the same
-confusing RPATH error one step later. Point only `CMAKE_CXX_COMPILER` and
-`CMAKE_CUDA_HOST_COMPILER` at AOCC; `AOCC` lives in `~/projects/amd/`, **not** in
+Also: **pin `CMAKE_C_COMPILER` too** (the preset does). Leaving it unset only
+appears to work when the tree is configured incrementally: a fresh configure
+sends every C source of a dependency (uriparser, zstd, Arrow) to `/usr/bin/cc`
+while that sub-build inherits clang-only host flags, and it dies with
+`cc: error: unrecognized command-line option '-Qunused-arguments'` — no release
+tree can be configured from scratch without it. Use AOCC's own `clang`:
+
+```
+-DCMAKE_C_COMPILER=$HOME/projects/amd/aocc-compiler-5.2.0/bin/clang
+```
+
+What must stay true is that the path is **valid**: a bad path poisons the cache
+with `CMAKE_C_COMPILER:UNINITIALIZED` and CMake then loses the ELF platform
+detection the Arrow RPATH check depends on, which surfaces as the same confusing
+RPATH error one step later. `AOCC` lives in `~/projects/amd/`, **not** in
 `$HOME` — a `$HOME/aocc-compiler-5.2.0` path does not exist.
 
 This tree (`build/linux-release-znver4-aocc`) is the perf reference. AOCC/Clang
@@ -164,10 +174,21 @@ it makes CMake fail with a bare "Error: generator platform: x64".
 ## Toolchain minimums
 
 Tested versions; newer also work: CMake 3.25+ (tree used 4.2.3), GCC 15.2
-(Ubuntu 26.04), NVCC 13.4.92 (Linux, `/usr/local/cuda`) / 13.4.92 (Windows), CUDA
-Toolkit ≥13.2 (guard `test_cuda_toolkit_guard`, which pins only the 13.2 floor
-and the 13.x major -- patch levels pass through it). The project is deliberately
-pinned to C++20 (NVCC also ships full C++23).
+(Ubuntu 26.04), NVCC **13.5.37** on Linux (`/usr/local/cuda` → `cuda-13.5`, CCCL
+3.5.0 from the bundle; the installed *driver* is 13.2, so driver-gated 13.5
+features are unavailable — that is why the family-specific arch targets must be
+verified on SASS, not assumed) / 13.4.92 on Windows. CUDA Toolkit ≥13.2 (guard
+`test_cuda_toolkit_guard`, which pins the 13.2 floor and the 13.x major -- patch
+levels pass through it, plus the build-toolkit stamp below). The project is
+deliberately pinned to C++20 (NVCC also ships full C++23).
+
+**After a toolkit upgrade, wipe the build directory.** CUDA's headers carry
+package mtimes, so the new ones can be older than the objects already built and
+no build rule invalidates them; the root `CMakeLists.txt` now records the
+toolkit in `${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt` and refuses a
+re-configure whose stamp disagrees (`rm -rf build/<preset>` is the fix), and
+`test_cuda_toolkit_guard` — label `fast`, so it actually runs — catches a tree
+that was already mixed.
 
 ## Output
 

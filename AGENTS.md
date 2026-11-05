@@ -7,7 +7,11 @@ Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Te
 Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
 Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
 No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is rejected.
-CUDA Toolkit 13.4 (nvcc V13.4.92; minimum 13.2+), full native C++23 support in NVCC.
+CUDA Toolkit 13.5 (nvcc V13.5.37; minimum 13.2+), full native C++23 support in NVCC.
+The Linux driver here is 13.2 (`595.99.02`), so every 13.5 feature that needs a
+newer driver is unavailable and verified absent (oversized SMEM, locality
+domains, TMA large-allocation class, memcpy-batch graph nodes): the attributes
+return `CUDA_ERROR_INVALID_VALUE` and the symbols are missing from `libcuda.so`.
 
 Open, triaged follow-up work (real defects, Windows platform gaps,
 hardware-dependent budgets, missing coverage) — `docs/OPEN_TASKS.md`. It keeps
@@ -937,8 +941,16 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
   CCCL dirs, plus Arrow's build-tree headers (`${FETCHCONTENT_BASE_DIR}/...`,
   because Arrow's own target keeps them directory-scoped). Targets link it —
   never `${CMAKE_BINARY_DIR}/_deps/...` (a dependency source swap must not
-  break the build). `LSX_CUDA_ARCH` (`120-real;121-real`) is the single source
-  of truth for device codegen. The target's includes are SYSTEM (dependency
+  break the build). `LSX_CUDA_ARCH` (`120;121`) is the single source of truth for
+  device codegen — it is expanded by `lsx_cuda_gencode_flags()` into nvcc's own
+  `--generate-code` spelling, and every device target sets
+  `CUDA_ARCHITECTURES OFF`. It must NOT be handed to `CUDA_ARCHITECTURES`:
+  CMake 4.x does not know CUDA's family suffix and, measured on 4.2.3, silently
+  replaces the whole list with `compute_75` (a binary that still runs through
+  PTX JIT, slower than plain sm_120, with no warning). `-DLSX_CUDA_ARCH=120f;121f`
+  selects family-specific codegen — measured **neutral** on 2026-11-05 because
+  every NVFP4 decode path is weight-streaming bound, so it is a one-variable
+  experiment for a compute-bound case, not a default. The target's includes are SYSTEM (dependency
   headers never emit warnings into our TUs), and the project warning flags come
   from `lsx_warning_policy()` (called by `libs/`, `apps/`, `tests/`, never the
   root — a global `add_compile_options` also hits Arrow/abseil and adds ~12k
@@ -946,8 +958,9 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
   `COMPILE_LANGUAGE:C,CXX` because nvcc forwards it to the host compiler, which
   then flags nvcc's own `#line` markers. Three machine checks keep this state:
   `test_infrastructure_guard` (no `${CMAKE_BINARY_DIR}/_deps` paths, one
-  definition per shared converter helper, `CUDA_ARCHITECTURES` only
-  `${LSX_CUDA_ARCH}`/`OFF`). Our own sources build with **zero** warnings (a
+  definition per shared converter helper, `CUDA_ARCHITECTURES` only `OFF`, no
+  family suffix in it, no literal `--generate-code` outside the expansion
+  function, and the build-toolkit stamp rule). Our own sources build with **zero** warnings (a
   clean Linux build is 246 lines, all from the vendored targets' own builds);
   `-Werror` is still gated on validating the MSVC/AOCC presets.
 - CUDA `.cu` files are split into separate OBJECT libraries (`lsxcommon_cu`,

@@ -93,9 +93,21 @@ Abseil-specific build patches (crc32 SIMD, format checker) live in the
 
 ## CUDA codegen
 
-- Architectures: `${LSX_CUDA_ARCH}` = `120-real;121-real` (Blackwell only; one
-  definition in the root `CMakeLists.txt`). Hopper/Ada/Ampere are deliberately
-  unsupported — there is no backward compatibility.
+- Architectures: `${LSX_CUDA_ARCH}` = `120;121` (Blackwell only; one definition
+  in the root `CMakeLists.txt`). Hopper/Ada/Ampere are deliberately unsupported —
+  there is no backward compatibility. The value is EXPANDED by
+  `lsx_cuda_gencode_flags()` into `--generate-code=arch=compute_N,code=[compute_N,sm_N]`
+  and every device target sets `CUDA_ARCHITECTURES OFF`; never hand the variable
+  to that property (below). `-DLSX_CUDA_ARCH=120f;121f` switches to CUDA's
+  family-specific targets — available since 13.5 and measured **neutral** on this
+  hardware (every NVFP4 decode path is weight-streaming bound), kept as a
+  one-variable experiment, not a default.
+- A toolkit upgrade does not invalidate the build directory on its own: CUDA's
+  headers carry *package* mtimes, so the new ones can be OLDER than the existing
+  objects. The root `CMakeLists.txt` records the toolkit in
+  `${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt` and refuses a re-configure
+  whose stamp disagrees, and `test_cuda_toolkit_guard` (label `fast`) catches a
+  tree that was already mixed. After a toolkit swap: `rm -rf build/<preset>`.
 - `--extended-lambda` is required for `__host__ __device__` thrust lambdas.
 - `cub::BlockReduce` / `cub::DeviceReduce` need CUDA 13.3+ on Linux; on MSVC
   use thrust as the fallback (thrust uses CUB internally).
@@ -191,6 +203,10 @@ patches fire on only one of them, then run `ctest -L fast` for the guard.
 | ~50k warnings per clean build (absl `__int128`, Arrow `safe_math`) in *our* TUs | dependency include dirs are plain `-I`, so `-Wpedantic` applies — list them as SYSTEM INTERFACE in `lsx_dep_includes` (and in the test helpers for tests that link a dependency directly) |
 | ~12k warnings *from Arrow/abseil's own objects* | the warning flags were global `add_compile_options`; use `lsx_warning_policy()` from `libs/`, `apps/`, `tests/` only |
 | "style of line directive is a GCC extension" repeated once per source line in a `.cu` | `-Wpedantic` reached the NVCC host pass; gate it to `COMPILE_LANGUAGE:C,CXX` |
+| `cuda_toolkit_guard` reports `CUDART_VERSION=13040 runtime=13050` while every build step succeeds | the tree was configured for the previous toolkit and its objects were never invalidated (package mtimes are older than the objects) — wipe the build directory; the stamp now refuses the re-configure |
+| Every device target suddenly compiles for `compute_75` (a `sm_75` note in `cuobjdump`, no warning anywhere) | the arch list was handed to `CUDA_ARCHITECTURES` with a CUDA family suffix (`120f`) or as a spec CMake does not parse; CMake 4.2.3 silently replaces the whole list. Keep the value in `LSX_CUDA_ARCH` + `lsx_cuda_gencode_flags()` |
+| `cc: error: unrecognized command-line option '-Qunused-arguments'` inside uriparser/zstd/Arrow | the host preset pinned `CMAKE_CXX_COMPILER` (clang) but not `CMAKE_C_COMPILER`, so C sources of dependencies went to gcc with clang flags — pin both |
+| `-flto=thin` unsupported under AOCC clang, falling back to `-flto=full` | harmless; AOCC's clang does not implement thin LTO. `LSX_LTO=ON` therefore costs build time only |
 
 ## Verification
 
