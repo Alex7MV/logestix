@@ -14,32 +14,38 @@ find_package(CUDAToolkit REQUIRED)
 # arches are deliberately unsupported (AGENTS.md). Override the cache entry only
 # for a local experiment, never in a shipped preset.
 #
-# FAMILY-SPECIFIC arches (`120f`/`121f`): the `f` suffix admits instructions
-# added within one compute capability, and one of them is on our hot path —
-# `cvt.rn.bf16x2.e2m1x2` (SASS `F2FP.BF16.E2M1.UNPACK_B`) decodes an NVFP4 nibble
-# to BF16 in a single op. Verified 2026-11-05: the same source compiles to only
-# `F2FP.BF16.F32` (FP32 emulation) under `-arch=sm_120`.
+# One source of truth for device codegen, expanded into nvcc's own spelling.
 #
-# The value is expanded by lsx_cuda_gencode_flags() below and therefore must NOT
-# be handed to CUDA_ARCHITECTURES: CMake 4.x does not understand the suffix,
-# silently drops it, and (measured on CMake 4.2.3) falls back to `compute_75` —
-# a binary that still runs through PTX JIT, is slower than plain sm_120, and
-# warns about nothing. `test_infrastructure_guard` rejects that spelling.
-set(LSX_CUDA_ARCH "120f;121f" CACHE STRING
-    "CUDA architectures, family-specific (Blackwell CC 12.0f/12.1f only)")
+# Why not simply `set_target_properties(... CUDA_ARCHITECTURES ${LSX_CUDA_ARCH})`:
+# 30 test targets used to spell `--generate-code=arch=compute_120,code=sm_120` by
+# hand, bypassing this variable entirely, so the arch was in 31 places. Expanding
+# here keeps it in one, and the expansion is also the only way to express CUDA's
+# family-specific targets (`120f`/`121f`): CMake 4.x does not know the suffix and,
+# measured on 4.2.3, silently replaces the whole list with `compute_75` — a binary
+# that still runs through PTX JIT and is slower than the plain sm_120 it replaced,
+# warning about nothing. `test_infrastructure_guard` rejects the suffix in
+# CUDA_ARCHITECTURES and any literal --generate-code outside this function.
+#
+# The default is the PLAIN spelling because the family-specific targets were
+# measured to be neutral here (2026-11-05, see
+# docs/superpowers/specs/2026-11-05-cuda-13.5-adoption-design.md): every NVFP4
+# decode path in this repository is weight-streaming bound, so a cheaper E2M1
+# instruction buys nothing. `-DLSX_CUDA_ARCH=120f;121f` is a one-variable
+# experiment for a compute-bound case (a long prefill, say).
+set(LSX_CUDA_ARCH "120;121" CACHE STRING
+    "CUDA architectures (Blackwell CC 12.0/12.1; `120f;121f` for family-specific)")
 
-# Expands LSX_CUDA_ARCH into nvcc's own spelling. Device targets set
-# `CUDA_ARCHITECTURES OFF` and compile with these flags.
 function(lsx_cuda_gencode_flags out_var)
     set(flags "")
     foreach(arch IN LISTS LSX_CUDA_ARCH)
-        if(NOT arch MATCHES "^12[01]f$")
+        if(NOT arch MATCHES "^12[01][af]?$")
             message(FATAL_ERROR
-                "LSX_CUDA_ARCH entry '${arch}' is not a family-specific "
-                "Blackwell target (expected 120f or 121f): this repository "
-                "targets consumer Blackwell only, and a non-family entry would "
-                "silently miss the family-specific instructions.")
+                "LSX_CUDA_ARCH entry '${arch}' is not a Blackwell consumer "
+                "target (expected 120, 121, 120f or 121f): pre-Blackwell "
+                "arches are deliberately unsupported (AGENTS.md).")
         endif()
+        # Same shape CMake emits for `<N>-real`: PTX for the virtual arch plus
+        # the SASS for the real one.
         list(APPEND flags
             "--generate-code=arch=compute_${arch},code=[compute_${arch},sm_${arch}]")
     endforeach()

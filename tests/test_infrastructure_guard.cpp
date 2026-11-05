@@ -491,6 +491,11 @@ TEST_CASE("infra guard: family arches reach nvcc, never CUDA_ARCHITECTURES",
     REQUIRE(root_cmake.find("LSX_CUDA_GENCODE_FLAGS") != std::string::npos);
     REQUIRE(root_cmake.find("lsx_cuda_gencode_flags") != std::string::npos);
 
+    // The default spelling is the measured one: family targets were neutral, so
+    // the shipped value must not silently become `f` (see the design doc).
+    REQUIRE(root_cmake.find("set(LSX_CUDA_ARCH \"120;121\"") !=
+            std::string::npos);
+
     // Literal --generate-code lines are the same downgrade in disguise.
     std::vector<std::string> literal;
     for (const auto &p : CmakeFiles(root))

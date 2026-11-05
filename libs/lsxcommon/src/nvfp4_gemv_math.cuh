@@ -47,12 +47,8 @@ __device__ __forceinline__ float GemvDotRow(
                 xv0 = __half2float(x[xb + 2 * b]);
                 xv1 = __half2float(x[xb + 2 * b + 1]);
             }
-            // Paired decode: one `cvt.rn.bf16x2.e2m1x2` on family-specific
-            // builds (`sm_120f`), the nibble table elsewhere — bit-identical,
-            // pinned exhaustively over all 256 bytes in test_lsx_kernels.
-            const float2 wv = gpu::nvfp4::E2M1PairValue(pb[b]);
-            acc += xv0 * wv.x * scl;
-            acc += xv1 * wv.y * scl;
+            acc += xv0 * gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
+            acc += xv1 * gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
         }
     }
 #pragma unroll
