@@ -15,6 +15,7 @@
 #include <arrow/record_batch.h>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cuda_runtime.h>
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
@@ -718,6 +719,49 @@ struct ExpertStore {
     }
 
     // ── Staging ring ─────────────────────────────────────────────────────
+    // Reads the four knobs into stage_ring. Defaults matter more than parsing
+    // here: `slots = 0` (off) is what every family gets until it opts in, and a
+    // threads value of 0 means the measured default (4), never a zero-worker
+    // pool that would complete nothing while looking configured.
+    //
+    // LSX_EXPERT_STAGE_RING gates the rest: a SLOTS left in someone's shell is
+    // not consent, so a ring flag of 0 keeps slots at 0.
+    void ResolveStageRingFromEnv()
+    {
+        auto env_int = [](const char *name, long dflt) -> long {
+            const char *v = std::getenv(name);
+            if (v == nullptr || v[0] == '\0') return dflt;
+            char *end = nullptr;
+            const long parsed = std::strtol(v, &end, 10);
+            return (end == v) ? dflt : parsed;
+        };
+        const long on = env_int("LSX_EXPERT_STAGE_RING", 0);
+        if (on == 0) {
+            stage_ring.slots = 0;
+            return;
+        }
+        const long slots = env_int("LSX_EXPERT_STAGE_SLOTS", 64);
+        stage_ring.slots = slots > 0 ? static_cast<size_t>(slots) : 64;
+        const long threads = env_int("LSX_EXPERT_STAGE_THREADS", 0);
+        stage_ring.pread_threads = threads > 0 ? static_cast<int>(threads) : 4;
+        const long chunk = env_int("LSX_EXPERT_STAGE_CHUNK", 0);
+        stage_ring.chunk_experts = chunk > 0 ? static_cast<size_t>(chunk) : 1;
+    }
+
+    // One line, and only when the ring actually staged something: a family that
+    // fell back must not print a line that looks like engagement.
+    void LogStageStats() const
+    {
+        if (stage_stats.staged_experts == 0) return;
+        log::info(log_prefix + "staging ring: " +
+                  std::to_string(stage_stats.staged_experts) +
+                  " experts, " + std::to_string(stage_stats.staged_bytes) +
+                  " B staged, " + std::to_string(stage_stats.legacy_fallbacks) +
+                  " legacy fallbacks, " +
+                  std::to_string(stage_stats.ring_waits) + " slot waits, " +
+                  std::to_string(stage_stats.short_reads) + " short reads");
+    }
+
     // Allocates the pinned slots, their events and the pread pool.
     // False (with a log line) when slots == 0 or pinned memory is unavailable.
     bool InitStageRing()

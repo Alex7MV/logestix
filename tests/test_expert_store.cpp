@@ -392,3 +392,46 @@ TEST_CASE("ExpertStore staging ring refuses a non-resident expert",
     CHECK(s.stage_stats.legacy_fallbacks == 1);
     cudaStreamDestroy(stream);
 }
+
+// ── Stage-ring knobs (task 5) ─────────────────────────────────────────
+//
+// Resolution, not parsing: the tests below pin the DEFAULTS, because a wrong
+// default is what a family ships with. `slots = 0` (off) is the default for
+// every one of the 15 store aliases until it opts in, and a threads value of 0
+// must mean "the measured default", never "no worker threads" — a zero-worker
+// pool would complete nothing and stage nothing while looking configured.
+TEST_CASE("ExpertStore stage-ring knobs resolve from the environment",
+          "[expert_store][stage]")
+{
+    Store s;
+    ::setenv("LSX_EXPERT_STAGE_RING", "1", 1);
+    ::setenv("LSX_EXPERT_STAGE_SLOTS", "3", 1);
+    ::setenv("LSX_EXPERT_STAGE_THREADS", "0", 1);   // 0 => default, not 0 threads
+    ::setenv("LSX_EXPERT_STAGE_CHUNK", "0", 1);
+    s.ResolveStageRingFromEnv();
+    CHECK(s.stage_ring.slots == 3);
+    CHECK(s.stage_ring.pread_threads == 4);
+    CHECK(s.stage_ring.chunk_experts == 1);
+
+    ::unsetenv("LSX_EXPERT_STAGE_RING");
+    ::unsetenv("LSX_EXPERT_STAGE_SLOTS");
+    ::unsetenv("LSX_EXPERT_STAGE_THREADS");
+    ::unsetenv("LSX_EXPERT_STAGE_CHUNK");
+    s.stage_ring = Store::StageRingConfig{};
+    s.ResolveStageRingFromEnv();
+    CHECK(s.stage_ring.slots == 0);   // the default is OFF
+}
+
+TEST_CASE("ExpertStore stage-ring stays off when the flag is 0",
+          "[expert_store][stage]")
+{
+    // LSX_EXPERT_STAGE_RING=0 with slots set must not enable the ring: a stale
+    // SLOTS in someone's shell is not consent.
+    Store s;
+    ::setenv("LSX_EXPERT_STAGE_RING", "0", 1);
+    ::setenv("LSX_EXPERT_STAGE_SLOTS", "64", 1);
+    s.ResolveStageRingFromEnv();
+    CHECK(s.stage_ring.slots == 0);
+    ::unsetenv("LSX_EXPERT_STAGE_RING");
+    ::unsetenv("LSX_EXPERT_STAGE_SLOTS");
+}
