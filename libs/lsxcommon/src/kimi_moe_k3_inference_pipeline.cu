@@ -185,6 +185,8 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
     const int kvb_row_scales = top.kv_lora / 16;
 
     result.ok = false;
+    result.dsa_steps = 0;
+    result.dsa_keys_selected = 0;
     if (max_context <= 0) max_context = kDefaultMaxContext;
     if (static_cast<int>(prompt.size()) + max_new + 1 > max_context) {
         result.error_msg =
@@ -208,8 +210,31 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
     __half *latent_cache = nullptr;
     float *kda_state = nullptr;
     float *conv_hist = nullptr;
+    // Gated-DSA indexer state (Kimi-K3.1-Pro only; every pointer stays null on
+    // a Kimi-K3 tree). The key cache is per DSA layer because the key is
+    // LayerNorm(wk @ h) of THAT layer's attention input, not the shared latent.
+    __half *index_k = nullptr;      // [dsa layers][max_context][index_dim]
+    __half *index_q = nullptr;      // [index_heads * index_dim]
+    __half *index_w = nullptr;      // [index_heads]
+    float *index_score = nullptr;   // [max_context]
+    int32_t *index_sel = nullptr;   // [index_topk]
+    int *index_n = nullptr;         // device: the selected count
+    const int dsa_count =
+        top.dsa ? static_cast<int>(top.dsa_layers.size()) : 0;
+    const int index_dim = top.index_head_dim;
+    const int index_heads = top.index_heads;
+    const int index_topk = top.index_topk;
+    // v_beta^-0.5 and num_heads^-0.5: derived from the index geometry, so the
+    // shared driver needs no include of the variant's passport. The passport's
+    // kIndexQScale / kIndexWeightScale are the same two numbers.
+    const float index_q_scale = 1.0f / std::sqrt(static_cast<float>(index_dim));
+    const float index_w_scale =
+        1.0f / std::sqrt(static_cast<float>(index_heads));
+    const size_t index_stride = static_cast<size_t>(max_context) * index_dim;
     const size_t kv_bytes =
         static_cast<size_t>(kv_geo.Elements()) * sizeof(__half);
+    const size_t index_bytes =
+        static_cast<size_t>(dsa_count) * index_stride * sizeof(__half);
     const size_t kda_bytes =
         static_cast<size_t>(kda_ord) * KH * KD * VD * sizeof(float);
     // One conv history is (kernel-1) channels; three (q/k/v) per KDA layer.
@@ -221,15 +246,42 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
     const bool cuda_ok =
         alloc_ok && cudaMalloc(&latent_cache, kv_bytes) == cudaSuccess &&
         cudaMalloc(&kda_state, kda_bytes) == cudaSuccess &&
-        cudaMalloc(&conv_hist, hist_bytes) == cudaSuccess;
+        cudaMalloc(&conv_hist, hist_bytes) == cudaSuccess &&
+        (!top.dsa ||
+         (cudaMalloc(&index_k, index_bytes) == cudaSuccess &&
+          cudaMalloc(&index_q,
+                     static_cast<size_t>(index_heads) * index_dim *
+                         sizeof(__half)) == cudaSuccess &&
+          cudaMalloc(&index_w,
+                     static_cast<size_t>(index_heads) * sizeof(__half)) ==
+              cudaSuccess &&
+          cudaMalloc(&index_score,
+                     static_cast<size_t>(max_context) * sizeof(float)) ==
+              cudaSuccess &&
+          cudaMalloc(&index_sel,
+                     static_cast<size_t>(index_topk) * sizeof(int32_t)) ==
+              cudaSuccess &&
+          cudaMalloc(&index_n, sizeof(int)) == cudaSuccess));
     auto cleanup = [&]() {
         ws.Free();
         if (latent_cache) cudaFree(latent_cache);
         if (kda_state) cudaFree(kda_state);
         if (conv_hist) cudaFree(conv_hist);
+        if (index_k) cudaFree(index_k);
+        if (index_q) cudaFree(index_q);
+        if (index_w) cudaFree(index_w);
+        if (index_score) cudaFree(index_score);
+        if (index_sel) cudaFree(index_sel);
+        if (index_n) cudaFree(index_n);
         latent_cache = nullptr;
         kda_state = nullptr;
         conv_hist = nullptr;
+        index_k = nullptr;
+        index_q = nullptr;
+        index_w = nullptr;
+        index_score = nullptr;
+        index_sel = nullptr;
+        index_n = nullptr;
     };
     if (!cuda_ok) {
         result.error_msg = "kimi-k3: workspace allocation failed";
@@ -239,8 +291,10 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
     cudaMemsetAsync(latent_cache, 0, kv_bytes, stream);
     cudaMemsetAsync(kda_state, 0, kda_bytes, stream);
     cudaMemsetAsync(conv_hist, 0, hist_bytes, stream);
+    if (index_k) cudaMemsetAsync(index_k, 0, index_bytes, stream);
 
     const float eps = static_cast<float>(top.rms_eps);
+    const float index_eps = static_cast<float>(top.index_norm_eps);
     const float situ_beta = static_cast<float>(top.situ_beta);
     const float situ_lb = static_cast<float>(top.situ_linear_beta);
     const float mla_scale = 1.0f / std::sqrt(static_cast<float>(QH));
@@ -249,6 +303,9 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
 
     std::vector<__half> hlog(static_cast<size_t>(top.vocab));
     std::string stage = "start";
+    // The last step that selected keys, for the end-of-run trace.
+    int dsa_last_n_pos = 0;
+    int dsa_last_n_sel = 0;
 
     int32_t *d_tok = nullptr;
     float *d_maxv = nullptr;
@@ -316,12 +373,38 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
             if (e) return e;
 
             if (lw.mla) {
+                const int dsa_slot = mla_slot[static_cast<size_t>(l)];
+                // Gated DSA: the key of THIS position is
+                // LayerNorm(wk @ h) over the vector the MLA projections
+                // consume, cached per position because a later position's
+                // selection needs it and the attention input is not retained.
+                if (lw.idx_wk) {
+                    stage = "mla_indexer_key";
+                    e = RunKimiK3IndexerKey(
+                        stream, ws.mixed, lw.idx_wk, lw.idx_knorm_w,
+                        lw.idx_knorm_b,
+                        index_k + static_cast<size_t>(dsa_slot) * index_stride +
+                            static_cast<size_t>(pos) * index_dim,
+                        H, index_dim, index_eps);
+                    if (e) return e;
+                }
                 stage = "mla_qa";
                 e = Proj(stream, lw.mla_qa, ws.mixed, ws.qa);
                 if (e) return e;
                 e = RunKimiK3RmsNorm(stream, ws.qa, lw.mla_qanorm, ws.qa, 1,
                                      top.q_lora, eps);
                 if (e) return e;
+                // The indexer query reads the normalised q-lora (`qr`) and its
+                // head weights read the same attention input, so both are
+                // computed here, once per token per DSA layer.
+                if (lw.idx_wk) {
+                    stage = "mla_indexer_query";
+                    e = RunKimiK3IndexerQuery(
+                        stream, ws.qa, ws.mixed, lw.idx_wqb, lw.idx_wproj,
+                        index_q, index_w, top.q_lora, H, index_heads,
+                        index_dim, index_q_scale, index_w_scale);
+                    if (e) return e;
+                }
                 stage = "mla_qb";
                 e = Proj(stream, lw.mla_qb, ws.qa, ws.q);
                 if (e) return e;
@@ -357,14 +440,48 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
                         kvb_row_packed, kvb_row_scales);
                     if (e) return e;
                     stage = "mla_attn";
+                    // Above index_topk the visible keys are selected first:
+                    // score[s] over every causal position, then the exact
+                    // top-k, then the attention walks only those positions.
+                    // At or below it the selection is the identity and is
+                    // bypassed (sel == nullptr reproduces the dense loop
+                    // verbatim).
+                    const int32_t *sel = nullptr;
+                    int n_sel = 0;
+                    if (lw.idx_wk && pos + 1 > index_topk) {
+                        stage = "mla_indexer_scores";
+                        e = RunKimiK3IndexerScores(
+                            stream, index_q, index_w,
+                            index_k + static_cast<size_t>(dsa_slot) *
+                                          index_stride,
+                            pos + 1, index_heads, index_dim, index_score);
+                        if (e) return e;
+                        stage = "mla_indexer_topk";
+                        e = RunKimiK3IndexerTopK(stream, index_score, pos + 1,
+                                                 index_topk, index_sel,
+                                                 index_n);
+                        if (e) return e;
+                        // RunKimiK3IndexerTopK always emits exactly
+                        // min(k, n_pos) positions, so the count is known on
+                        // the host and no device-to-host read is needed.
+                        n_sel = std::min(index_topk, pos + 1);
+                        sel = index_sel;
+                    }
+                    stage = "mla_attn";
                     e = RunKimiK3MlaAttention(
                         stream, layer_cache, pos + 1, ws.qabs,
                         ws.q + top.qk_nope, lw.mla_kvb.d_packed,
                         lw.mla_kvb.d_scales, lw.mla_kvb.global_scale,
                         ws.attn_raw, top.mla_heads, top.kv_lora, top.qk_rope,
                         top.v_head, rows_per_head, top.qk_nope, QH, mla_scale,
-                        kvb_row_packed, kvb_row_scales);
+                        kvb_row_packed, kvb_row_scales, sel, n_sel);
                     if (e) return e;
+                    if (sel) {
+                        ++result.dsa_steps;
+                        result.dsa_keys_selected += n_sel;
+                        dsa_last_n_pos = pos + 1;
+                        dsa_last_n_sel = n_sel;
+                    }
                 }
                 stage = "mla_gate";
                 e = Proj(stream, lw.mla_g, ws.mixed, ws.gate);
@@ -673,6 +790,20 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
     result.total_ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - t_start)
                           .count();
+    // The device buffers of the last engaged step are still live, so the trace
+    // is one copy at the end of the run rather than one per step.
+    if (result.dsa_steps > 0) {
+        result.dsa_last_n_pos = dsa_last_n_pos;
+        result.dsa_last_score.resize(static_cast<size_t>(dsa_last_n_pos));
+        result.dsa_last_selection.resize(static_cast<size_t>(dsa_last_n_sel));
+        cudaMemcpyAsync(result.dsa_last_score.data(), index_score,
+                        static_cast<size_t>(dsa_last_n_pos) * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(result.dsa_last_selection.data(), index_sel,
+                        static_cast<size_t>(dsa_last_n_sel) * sizeof(int32_t),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
+    }
     result.ok = true;
     return release(cudaSuccess);
 }

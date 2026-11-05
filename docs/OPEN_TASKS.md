@@ -1027,6 +1027,86 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
   The model needs a card that can hold the pinned set plus ~2 GiB headroom; a
   clean "not enough VRAM" pre-check is a follow-up.
 
+## R17. Kimi-K3.1-Pro (2.8T / ~104B active) — Gated DSA variant landed, parity sweep is debt (2026-11-05)
+
+Branch `feat/kimi-k31-pro`. Sibling variant of Kimi-K3 (`kimi-k3.1-pro`, files
+`kimi_moe_pro_*`, format tag `logestix-kimi-k31-pro-nvfp4`): the same KimiLinear
+tower (93 layers, 69 KDA + 24 gated NoPE MLA, AttnRes 12, Stable LatentMoE, SiTU)
+with the 24 full-attention layers replaced by **Gated DSA** — a Lightning
+Indexer per full-attention layer selecting `index_topk = 2048` keys per query.
+Landed (stages 1–8 of the Model Ingestion Protocol): frozen passport,
+converter (`lsxforge --kimi_k31_pro`, wrapper-level variant gate both ways),
+loader (five BF16 indexer tensors per DSA layer pinned as FP16, never quantized,
+plus the `index_norm_eps` cross-check), the four indexer kernels + selectable MLA
+attention, the pipeline's indexer key cache with the dormant-at-`n_pos <= 2048`
+DSA branch, `KimiK31ProModel` + registry + the lifecycle contract, and the four
+real-weight targets with their template-derived goldens and the perf row.
+Stage 9 landed too, in place at `/mnt/fast_storage/huggingface/Kimi-K3.1-Pro/logestix`
+(892 GB source → **1.5 TB tree** in 17 min: 1.4 TB routed-expert arrows, 23 GB
+pinned graph, 8.9 GB streamed latent/shared plane, `total_experts 82432`, 2120
+pinned + 460 streamed tensors, 165 vision + 3 projector tensors stripped and
+counted). On the real weights: **SelfCheck Paris ×3 bit-exact**
+(`logits_hash 98ec1bbb372c9181`, top-1 40) and the **native XTML tool
+round-trip** `get_weather {"city":"Paris"}` — both green in
+`test_kimi_pro_selfcheck`. Model report:
+`docs/model-reports/2026-11-05-Kimi-K3.1-Pro.md`.
+
+**Open, explicitly.**
+
+- P1. The indexer's arithmetic is **reconstructed**, not verified. The
+  checkpoint ships no modeling code (`configuration_kimi_k3.py` only), so the
+  semantics come from the tensor shapes, `dsa_config` and the repository's prior
+  art (`deepseek_moe_pro` CSA, `mistral_moe_large4` DSA). The three open points
+  are enumerated in the design (§3.2): the indexer's input is taken to be the
+  post-`input_norm` hidden (the DeepSeek contour; the alternative reading is the
+  raw AttnRes mixture and would be a one-line change), `index_skip_topk_offset`/
+  `index_topk_freq` are not implemented as knobs, and the top-k does **not**
+  force the current position in. None of them is reachable at the canonical
+  2048-token protocol, where selection is dormant — which is also why no gate
+  covers them: **do not read the variant's green gates as DSA verification.**
+- P2. The **kimi-k3 synthetic fixture is input-invariant**: two different
+  prompts produce bit-equal logits from the converted 4-layer tree (measured on
+  the plain Kimi-K3 tree as well, so this predates the variant). Every
+  model-stage assertion in the family is therefore a smoke assertion — finite,
+  deterministic, lifecycle-correct — and cannot observe a wrong attention key
+  set. The DSA branch is instead pinned by exact step/key counts plus a
+  score-vector/selection comparison against an independent top-k, and by the
+  kernel-level host references. Making the fixture input-sensitive (e.g. a
+  scale that keeps the residual from being dominated by a constant block) is the
+  instrument this family is missing — `docs/OPEN_ENDEDNESS.md` §"which
+  instrument is missing".
+- P3. **The real-weight FSI / CODE / DET and perf sweep was not run** (operator
+  ruling, 2026-11-05: record it as debt rather than spend the GPU time). The cost
+  is measured, not guessed: this variant decodes at **~0.125 t/s** on the
+  reference host (a 64-token SelfCheck cycle is 8–9 min, a 256-token tool call
+  18 min, and a load of the 23 GB pinned graph is ~10 min), so one 2048-token
+  generation is ~4.5 h and the sweep is ~36 h of exclusive GPU:
+
+  | target | generations × tokens | wall clock |
+  |---|---|---|
+  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~13.7 h (+load) |
+  | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~3.4 h (+load) |
+  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~10.2 h (+load) |
+  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~9.1 h (+2 loads) |
+
+  FSI was actually started (release tree) and stopped 97 min in, still inside
+  FSI-TEST-01; the interruption made the harness emit three empty generations,
+  and **an in-flight kill is not a verdict** — the cells stay `not run`. The
+  ctest budgets were raised to what a real completion needs (FSI 54 000 s,
+  CODE 18 000 s, DET 43 200 s, perf 43 200 s) so no entry can be killed by a
+  budget that could never fit it. To close this item, run each target alone
+  (GPU exclusivity) with `LSX_FSI_GOLDEN_DIR`/`LSX_CODE_GOLDEN_DIR`/
+  `LSX_DET_GOLDEN_DIR` pointing at `tests/fixtures/<stage>`, then let the
+  harness seed `tests/perf/perf_baselines.json` — never by hand. Note what a
+  green row would and would not mean: the goldens are **template-derived**
+  (P4), and no gate observes the indexer (P1/P2).
+- P4. **The FSI/CODE/DET goldens are template-derived**, payload-identical to
+  `kimi-k3`'s (same XTML frames, same prompt-set Expected Template values,
+  `tools/kimi_k3_template_goldens.py --model kimi-k3.1-pro`): the 1.5 TB MXFP4
+  source needs `fla-core` and a multi-GPU runner, so no source oracle can be
+  captured on this card. A green row pins the converted path against the
+  template, never source parity.
+
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 
 **Landed.** Family `flint` (`logestix-flint-nvfp4`) is registered and runs on the

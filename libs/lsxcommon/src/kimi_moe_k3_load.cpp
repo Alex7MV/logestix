@@ -1,6 +1,7 @@
 #include "lsxcommon/kimi_moe_k3_load.h"
 
 #include "kimi_moe_k3_constants.h"
+#include "kimi_moe_pro_constants.h"
 
 #include <absl/strings/str_cat.h>
 #include <simdjson.h>
@@ -171,10 +172,16 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
     std::string_view s;
     if (root["format"].get_string().get(s) == simdjson::SUCCESS)
         out.format.assign(s.data(), s.size());
-    if (out.format != frozen::kFormatTag) {
+    // Two trees, one loader: the K3 tag is the plain KimiLinear tower, the Pro
+    // tag adds the indexer plane. Anything else is not this family.
+    const bool is_k3 = out.format == frozen::kFormatTag;
+    const bool is_pro = out.format == kimi_pro::frozen::kFormatTag;
+    if (!is_k3 && !is_pro) {
         out.error_msg = "unexpected format: " + out.format;
         return arrow::Status::Invalid("kimi-k3 loader: expected format ",
-                                      frozen::kFormatTag, ", got ", out.format);
+                                      frozen::kFormatTag, " or ",
+                                      kimi_pro::frozen::kFormatTag, ", got ",
+                                      out.format);
     }
     if (root["model"].get_string().get(s) == simdjson::SUCCESS)
         out.model.assign(s.data(), s.size());
@@ -231,6 +238,62 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
                 out.kda_layers.push_back(static_cast<int>(v));
         }
 
+    // ── Gated DSA block (Kimi-K3.1-Pro) ──
+    // The Pro tag REQUIRES the flag and the flag must be true; the K3 tag may
+    // omit it (trees converted before the variant existed) but may never carry
+    // a true one.
+    bool indexer_flag = false;
+    const bool has_indexer_flag = get_b(root, "indexer", indexer_flag);
+    if (is_pro ? (!has_indexer_flag || !indexer_flag)
+               : (has_indexer_flag && indexer_flag)) {
+        out.error_msg = "index: the indexer flag disagrees with the format "
+                        "(format says " +
+                        std::string(is_pro ? "kimi-k3.1-pro" : "kimi-k3") + ")";
+        return arrow::Status::Invalid("kimi-k3 index: ", out.error_msg);
+    }
+    out.dsa = is_pro;
+    if (out.dsa) {
+        get_i(root, "index_head_dim", out.index_head_dim);
+        get_i(root, "index_num_heads", out.index_heads);
+        get_i(root, "index_topk", out.index_topk);
+        get_i(root, "index_rope_dim", out.index_rope_dim);
+        get_d(root, "index_norm_eps", out.index_norm_eps);
+        if (auto arr = root["dsa_layers"].get_array();
+            arr.error() == simdjson::SUCCESS)
+            for (auto e : arr.value()) {
+                int64_t v = 0;
+                if (e.get_int64().get(v) == simdjson::SUCCESS)
+                    out.dsa_layers.push_back(static_cast<int>(v));
+            }
+        if (out.index_heads <= 0 || out.index_head_dim <= 0 ||
+            out.index_topk <= 0 || out.index_rope_dim < 0 ||
+            !(out.index_norm_eps > 0.0)) {
+            out.error_msg = "index: the DSA block is incomplete";
+            return arrow::Status::Invalid("kimi-k3 index: ", out.error_msg);
+        }
+        // The indexer runs on every full-attention layer or not at all: a
+        // partial table means the tree was written by something that did not
+        // understand the variant, and a per-layer selection would silently
+        // differ from the source.
+        if (out.dsa_layers.size() != out.mla_layers.size()) {
+            out.error_msg =
+                "index: dsa_layers is not the mla table (count mismatch)";
+            return arrow::Status::Invalid("kimi-k3 index: ", out.error_msg);
+        }
+        for (int l : out.dsa_layers)
+            if (!out.IsMla(l)) {
+                out.error_msg = "index: dsa_layers contains a non-MLA layer " +
+                                std::to_string(l);
+                return arrow::Status::Invalid("kimi-k3 index: ",
+                                              out.error_msg);
+            }
+    } else if (!out.dsa_layers.empty() || out.index_heads != 0 ||
+               out.index_head_dim != 0 || out.index_topk != 0 ||
+               out.index_rope_dim != 0 || out.index_norm_eps != 0.0) {
+        out.error_msg = "index: a Kimi-K3 tree carries DSA fields";
+        return arrow::Status::Invalid("kimi-k3 index: ", out.error_msg);
+    }
+
     if (out.num_layers <= 0 || out.hidden <= 0 ||
         static_cast<int>(out.mla_layers.size() + out.kda_layers.size()) !=
             out.num_layers) {
@@ -241,6 +304,13 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
 }
 
 bool KimiK3TopologyMatchesFrozen(const KimiK3Topology &top)
+{
+    return KimiK3TopologyMatchesFrozen(top, /*expect_dsa=*/false,
+                                       /*expect_topk=*/0);
+}
+
+bool KimiK3TopologyMatchesFrozen(const KimiK3Topology &top, bool expect_dsa,
+                                 int expect_topk)
 {
     using namespace frozen;
     if (top.num_layers != kLayers || top.hidden != kHidden ||
@@ -262,6 +332,28 @@ bool KimiK3TopologyMatchesFrozen(const KimiK3Topology &top)
         for (int x : top.mla_layers)
             if (x == l) found = true;
         if (!found) return false;
+    }
+    // ── variant half ──
+    if (top.dsa != expect_dsa) return false;
+    if (expect_dsa) {
+        namespace prof = kimi_pro::frozen;
+        if (top.index_topk != expect_topk) return false;
+        if (top.index_rope_dim != prof::kIndexRopeDim) return false;
+        // The key LayerNorm's eps is part of the indexer's arithmetic, not a
+        // free knob: a tree that writes a different one was built by a
+        // different recipe.
+        if (top.index_norm_eps != prof::kIndexNormEps) return false;
+        // Every full-attention layer is indexed, and nothing else is. The
+        // per-tensor indexer geometry (heads / head dim) is the caller's
+        // passport check: this function only owns the structural table.
+        if (static_cast<int>(top.dsa_layers.size()) != prof::kDsaLayerCount)
+            return false;
+        for (int l : prof::kDsaLayers) {
+            bool found = false;
+            for (int x : top.dsa_layers)
+                if (x == l) found = true;
+            if (!found) return false;
+        }
     }
     return true;
 }
@@ -336,6 +428,9 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
     pw.layers.assign(static_cast<size_t>(L), KimiK3LayerWeights{});
     pw.streamed.assign(static_cast<size_t>(L), KimiK3StreamedLayer{});
 
+    // Bytes of indexer plane actually allocated (Kimi-K3.1-Pro only).
+    std::uint64_t indexer_bytes = 0;
+
     for (int l = 0; l < L; ++l) {
         std::vector<TensorRecord> raw;
         std::vector<DenseNvfp4Record> nv;
@@ -385,6 +480,36 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
             }
             return true;
         };
+        // Shape-checked BF16 -> FP16 upload (the Gated-DSA indexer plane). The
+        // bytes are counted where they are allocated, so `resident_bytes` stays
+        // exact for the plane that only the variant has.
+        auto HS = [&](std::string_view suffix, int64_t rows, int64_t cols,
+                      __half *&dst) -> bool {
+            const auto *r = FindRaw(raw, tag + std::string(suffix));
+            if (!r) {
+                log::error(absl::StrCat("[kimi_k3_load] missing ", tag,
+                                        suffix));
+                return false;
+            }
+            const int64_t got_rows = r->shape.empty() ? 0 : r->shape[0];
+            const int64_t got_cols =
+                r->shape.size() < 2 ? int64_t{1} : r->shape[1];
+            if (got_rows != rows || got_cols != cols) {
+                log::error(absl::StrCat("[kimi_k3_load] indexer shape ", tag,
+                                        suffix, " got ", got_rows, "x",
+                                        got_cols, " want ", rows, "x", cols));
+                return false;
+            }
+            dst = UploadHalf(r->data, stream);
+            if (!dst) {
+                log::error(absl::StrCat("[kimi_k3_load] indexer upload ", tag,
+                                        suffix, " last_err=",
+                                        cudaGetErrorString(cudaGetLastError())));
+                return false;
+            }
+            indexer_bytes += static_cast<std::uint64_t>(r->data.size());
+            return true;
+        };
 
         lw.input_norm = H("input_layernorm.weight");
         lw.post_norm = H("post_attention_layernorm.weight");
@@ -407,6 +532,26 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
             lw.mla_qanorm = H("self_attn.q_a_layernorm.weight");
             lw.mla_kvanorm = H("self_attn.kv_a_layernorm.weight");
             ok = ok && lw.mla_qanorm && lw.mla_kvanorm;
+            // Gated DSA (Kimi-K3.1-Pro): five FP16 indexer tensors per
+            // full-attention layer, uploaded at the frozen geometry the index
+            // declared. Any shape disagreement is a hard load failure -- a
+            // mis-shaped indexer would select the wrong keys, not merely
+            // produce a slightly wrong score.
+            if (ok && pw.top.IsDsa(l)) {
+                const auto &t = pw.top;
+                const int64_t q_dim =
+                    static_cast<int64_t>(t.index_heads) * t.index_head_dim;
+                ok = HS("self_attn.indexer.wq_b.weight", q_dim, t.q_lora,
+                        lw.idx_wqb) &&
+                     HS("self_attn.indexer.wk.weight", t.index_head_dim,
+                        t.hidden, lw.idx_wk) &&
+                     HS("self_attn.indexer.k_norm.weight", t.index_head_dim, 1,
+                        lw.idx_knorm_w) &&
+                     HS("self_attn.indexer.k_norm.bias", t.index_head_dim, 1,
+                        lw.idx_knorm_b) &&
+                     HS("self_attn.indexer.weights_proj.weight", t.index_heads,
+                        t.hidden, lw.idx_wproj);
+            }
         } else {
             ok = W("self_attn.q_proj.weight", lw.kda_q) &&
                  W("self_attn.k_proj.weight", lw.kda_k) &&
@@ -539,6 +684,9 @@ bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
         }
     }
     bytes += static_cast<std::uint64_t>(pw.stream_dev.bytes);
+    // The indexer plane is counted at its allocation sites (above), not
+    // estimated: it exists only in the variant tree and must not be guessed.
+    bytes += indexer_bytes;
     pw.resident_bytes = bytes;
     return true;
 }
@@ -556,6 +704,8 @@ void FreeKimiK3PinnedWeights(KimiK3PinnedWeights &pw)
         fh(lw.input_norm); fh(lw.post_norm); fh(lw.attn_res_proj);
         fh(lw.attn_res_norm); fh(lw.mlp_res_proj); fh(lw.mlp_res_norm);
         fh(lw.mla_qanorm); fh(lw.mla_kvanorm);
+        fh(lw.idx_wqb); fh(lw.idx_wk); fh(lw.idx_knorm_w); fh(lw.idx_knorm_b);
+        fh(lw.idx_wproj);
         fh(lw.kda_fa); fh(lw.kda_fb); fh(lw.kda_b);
         ff(lw.kda_conv_q); ff(lw.kda_conv_k); ff(lw.kda_conv_v);
         ff(lw.kda_alog); ff(lw.kda_dt); ff(lw.kda_onorm);

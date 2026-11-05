@@ -37,6 +37,12 @@ enum class KimiK3TensorKind {
     MlaKvB,              // self_attn.kv_b_proj.weight
     MlaO,                // self_attn.o_proj.weight
     MlaG,                // self_attn.g_proj.weight (output gate)
+    // Gated DSA Lightning Indexer (Kimi-K3.1-Pro only; every DSA layer)
+    IndexerWqB,          // self_attn.indexer.wq_b.weight      [heads*dim, q_lora]
+    IndexerWk,           // self_attn.indexer.wk.weight        [dim, hidden]
+    IndexerKNormW,       // self_attn.indexer.k_norm.weight    [dim] (LayerNorm)
+    IndexerKNormB,       // self_attn.indexer.k_norm.bias      [dim]
+    IndexerWeightsProj,  // self_attn.indexer.weights_proj.weight [heads, hidden]
     // KDA (all other layers)
     KdaQ,                // self_attn.q_proj.weight
     KdaK,                // self_attn.k_proj.weight
@@ -85,6 +91,10 @@ struct ParsedKimiK3Tensor {
 // Parses config.json (KimiK3 wrapper -> text_config) into the topology.
 // Fills `error_msg` and leaves fields at defaults on failure.
 struct KimiK3ConvertTopology {
+    // Wrapper-level `model_type`: "kimi_k3" for Kimi-K3, "kimi_k31" for
+    // Kimi-K3.1-Pro (the text tower reports "kimi_linear" for BOTH, so the
+    // discriminator can only be the root field).
+    std::string model_type;
     int hidden_size = 0;
     int num_layers = 0;
     int vocab_size = 0;
@@ -130,6 +140,13 @@ struct KimiK3ConvertTopology {
     // layer split (0-based)
     std::vector<int> mla_layers;
     std::vector<int> kda_layers;
+    // Gated DSA (Kimi-K3.1-Pro). `dsa_config` is absent on a Kimi-K3
+    // checkpoint, which is what makes the variant discriminator two-way.
+    std::vector<int> dsa_layers;  // 0-based, from the 1-based config list
+    int index_heads = 0;
+    int index_head_dim = 0;
+    int index_topk = 0;
+    int index_rope_dim = 0;
     // counters
     int skipped_visual_tensors = 0;
     int skipped_projector_tensors = 0;
@@ -144,6 +161,19 @@ ParsedKimiK3Tensor ClassifyKimiK3Tensor(const std::string &name);
 bool KimiK3TensorIsPinnedNvfp4(KimiK3TensorKind kind);
 // True when the tensor lives in the mmap-streamed latent/shared MoE plane.
 bool KimiK3TensorIsStreamed(KimiK3TensorKind kind);
+
+// Which checkpoint flavour the shared converter is building. The variant
+// decides the accepted `model_type`, whether the DSA indexer must be present on
+// every full-attention layer, and the emitted format tag / index fields.
+enum class KimiVariant { k3, k31_pro };
+
+// Converts either flavour. `k31_pro` additionally requires
+// `model_type == "kimi_k31"`, a `dsa_config` whose `dsa_layers` equals the
+// full-attention table, and exactly five indexer tensors on every DSA layer and
+// none elsewhere; `k3` rejects any indexer tensor.
+arrow::Status ConvertKimiK3Variant(const std::string &input_dir,
+                                   const std::string &output_root,
+                                   KimiVariant variant);
 
 // Converts the checkpoint into the logestix-kimi-k3-nvfp4 layout under
 // <output_root>/logestix. Routed experts are repacked exactly (MXFP4 E2M1

@@ -488,6 +488,24 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_kimi_k3_code_selfcheck"}},
           {"det", {"test_kimi_k3_det_selfcheck"}},
           {"perf", {"test_perf_baseline_kimi_k3"}}}},
+        // Kimi-K3.1-Pro is a SIBLING of kimi-k3: it owns its frozen passport,
+        // convert entry, loader variant gate and model, and SHARES the K3
+        // converter body, kernels, generation pipeline, XTML tool codec, the
+        // tokenizer-parity stage (its `tiktoken.model` is byte-identical to
+        // K3's, so that target stays claimed by the kimi-k3 row) and the
+        // family constants gate. The new machinery is exactly the Gated DSA
+        // Lightning Indexer on the 24 full-attention layers.
+        {"kimi-k3.1-pro",
+         {{"convert", {"test_kimi_pro_convert"}},
+          {"load", {"test_kimi_pro_loader"}},
+          {"model", {"test_kimi_pro_model", "test_kimi_k3_tool_framing",
+                     "test_kimi_k3_constants"}},
+          {"kernels", {"test_kimi_pro_indexer", "test_kimi_k3_kernels"}},
+          {"selfcheck", {"test_kimi_pro_selfcheck"}},
+          {"fsi", {"test_kimi_pro_fsi_selfcheck"}},
+          {"code", {"test_kimi_pro_code_selfcheck"}},
+          {"det", {"test_kimi_pro_det_selfcheck"}},
+          {"perf", {"test_perf_baseline_kimi_k31_pro"}}}},
         {"ling",
          {{"convert", {"test_ling_moe_convert"}},
           {"load", {"test_ling_moe_loader", "test_ling_tokenizer_parity"}},
@@ -853,6 +871,16 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
         return s;
     }();
 
+    // Declared in-progress ingestions. A family target is normally claimed by a
+    // COMPLETE Suites() row in the same commit that registers it, and the
+    // full-stage-set guard below forbids writing that row before every stage
+    // target exists. A multi-stage ingestion therefore has exactly one honest
+    // intermediate state: the convert stage lands first, and the target is
+    // declared here. The declaration is checked in both directions - it must
+    // name a registered, UNCLAIMED target, and it fails as soon as the owning
+    // row appears - so it cannot outlive the problem or hide an orphan.
+    static const std::set<std::string> kPendingSuiteTargets = {};
+
     std::set<std::string> claimed;
     for (const auto &s : Suites())
         for (const auto &st : s.stages)
@@ -864,6 +892,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     {
         if (!FamilyStem(name)) continue;
         if (claimed.count(name)) continue;
+        if (kPendingSuiteTargets.count(name)) continue;
         orphans.push_back(name);
     }
     std::sort(orphans.begin(), orphans.end());
@@ -871,6 +900,22 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     for (const auto &s : orphans) joined += s + "\n";
     INFO("family test targets absent from Suites():\n" << joined);
     CHECK(orphans.empty());
+
+    std::vector<std::string> bad_pending;
+    for (const auto &p : kPendingSuiteTargets)
+    {
+        if (!registered.count(p))
+            bad_pending.push_back(p +
+                                  ": pending target is not registered");
+        else if (claimed.count(p))
+            bad_pending.push_back(p +
+                                  ": pending target is now claimed - delete it "
+                                  "from kPendingSuiteTargets");
+    }
+    std::string joined_pending;
+    for (const auto &s : bad_pending) joined_pending += s + "\n";
+    INFO("pending suite-target violations:\n" << joined_pending);
+    CHECK(bad_pending.empty());
 }
 
 TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
@@ -941,6 +986,9 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"beam", {"test_beam_tool_framing"}},
         {"step-5-preview", {"test_step_moe_tool_framing"}},
         {"kimi-k3", {"test_kimi_k3_tool_framing"}},
+        // kimi-k3.1-pro reuses this XTML codec verbatim (identical tokenizer and
+        // chat_template), so the same target proves its render+parse round-trip.
+        {"kimi-k3.1-pro", {"test_kimi_k3_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

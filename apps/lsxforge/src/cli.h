@@ -27,6 +27,7 @@ enum class Pipeline {
     kGlm,
     kKimi,
     kKimiK3,
+    kKimiK31Pro,
     kQwenDense,
     kQwen35Moe,
     kQwen36Moe,
@@ -74,6 +75,7 @@ struct Flags {
     bool glm = false;
     bool kimi = false;
     bool kimi_k3 = false;
+    bool kimi_k31_pro = false;
     bool qwen = false;
     bool qwen35moe = false;
     bool qwen36moe = false;

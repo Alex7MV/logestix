@@ -430,7 +430,7 @@ TEST_CASE("kimi-k3 absorbed NoPE MLA matches the reference attention",
     REQUIRE(RunKimiK3MlaAttention(0, d_lat, n_pos, d_qabs, d_qr, d_packed,
                                   d_scales, 1.0f, d_out, heads, L, rope, V,
                                   rows_per_head, nope, rope, scale, row_packed,
-                                  row_scales) == cudaSuccess);
+                                  row_scales, nullptr, 0) == cudaSuccess);
     std::vector<__half> out(static_cast<size_t>(heads) * V), qabs(
         static_cast<size_t>(heads) * L);
     cudaMemcpy(out.data(), d_out, out.size() * sizeof(__half),

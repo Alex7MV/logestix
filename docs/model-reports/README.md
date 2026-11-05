@@ -45,3 +45,4 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | Qwen3.8-27B | `2026-11-03-Qwen3.8-27B.md` |
 | AliceAI-Foundation-80B-A3B-Base | `2026-11-03-AliceAI-Foundation-80B-A3B-Base.md` |
 | Qwen3.8-Flash-Next | `2026-11-04-Qwen3.8-Flash-Next.md` |
+| Kimi-K3.1-Pro | `2026-11-05-Kimi-K3.1-Pro.md` |

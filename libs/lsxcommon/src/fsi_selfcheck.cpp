@@ -514,8 +514,18 @@ FsiResult RunFsiSelfCheck(IModel &model, const FsiGolden &golden,
                           const FsiDecodeFn &decode)
 {
     FsiResult res;
-    for (const FsiGoldenCase &c : golden.cases)
+    // Progress line per case: a reasoning model can spend hours inside one
+    // case at its long budget, and the result lines are only emitted after the
+    // LAST case. Without this a slow run is indistinguishable from a hang.
+    for (std::size_t i = 0; i < golden.cases.size(); ++i) {
+        const FsiGoldenCase &c = golden.cases[i];
+        lsxcommon::log::info(absl::StrFormat(
+            "[fsi] %s start (%u/%u) max_new_tokens=%d ignore_eos=%s",
+            c.id.c_str(), static_cast<unsigned>(i + 1),
+            static_cast<unsigned>(golden.cases.size()), c.max_new_tokens,
+            c.ignore_eos ? "true" : "false"));
         res.cases.push_back(RunFsiCase(model, c, decode));
+    }
     res.all_passed = !res.cases.empty();
     for (const FsiCaseResult &c : res.cases) {
         lsxcommon::log::info(absl::StrFormat(

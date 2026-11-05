@@ -121,6 +121,8 @@ const std::vector<PassportRow> kPassports = {
     {"beam", "beam_moe_constants.h", "lsxcommon::beam::frozen"},
     {"step-5-preview", "step_moe_constants.h", "lsxcommon::step::frozen"},
     {"kimi-k3", "kimi_moe_k3_constants.h", "lsxcommon::kimi_k3::frozen"},
+    {"kimi-k3.1-pro", "kimi_moe_pro_constants.h",
+     "lsxcommon::kimi_pro::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -220,6 +222,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"ling_moe_constants.h", "namespace frozen {"},
         {"beam_moe_constants.h", "namespace frozen {"},
         {"kimi_moe_k3_constants.h", "namespace frozen {"},
+        {"kimi_moe_pro_constants.h", "namespace frozen {"},
     };
     for (const auto &kv : owner) {
         const std::string text = ReadFile(PassportPath(kv.first.c_str()));
@@ -349,6 +352,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "beam_moe_model.cpp",          // beam (gated GQA SWA/NoPE + 256-expert MoE)
         "step_moe_model.cpp",          // step-5-preview (GQA + DSA + 352-expert MoE)
         "kimi_moe_k3_model.cpp",       // kimi-k3 (KDA + gated NoPE MLA + LatentMoE)
+        "kimi_moe_pro_model.cpp",      // kimi-k3.1-pro (the same tower + Gated DSA)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
@@ -491,6 +495,8 @@ TEST_CASE("every family model wires the shared lifecycle contract",
          {"step_moe_model.cpp", "step_moe_inference_pipeline.cu"}},
         {"kimi-k3",
          {"kimi_moe_k3_model.cpp", "kimi_moe_k3_inference_pipeline.cu"}},
+        {"kimi-k3.1-pro",
+         {"kimi_moe_pro_model.cpp", "kimi_moe_k3_inference_pipeline.cu"}},
     };
     // marker group -> what it guarantees. EVERY spelling in a group must be
     // absent for the contract to be considered unwired (any-of semantics:
