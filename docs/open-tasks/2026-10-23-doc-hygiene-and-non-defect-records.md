@@ -275,19 +275,19 @@ product or numerics decision, not a patch.
 
 §E1a (cooperative cancel), §E1b (the residency lock) and §E1c (qwen3.8's bulk
 drain) were closed on 2026-10-17 and moved to
-[`open-tasks/2026-10-17-lifecycle-abort-contract-closed.md`](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md).
+[`open-tasks/2026-10-17-lifecycle-abort-contract-closed.md`](2026-10-17-lifecycle-abort-contract-closed.md).
 §E3, the last purely technical item in this cluster (mimo's host-side BF16→FP16
 upload), was fixed the same day and moved to
-[`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md).
+[`open-tasks/2026-10-17-mimo-host-bf16-upload-closed.md`](2026-10-17-mimo-host-bf16-upload-closed.md).
 §E1 (sequential-dispatch guard) and §E2 (alice logits row) were closed on
 2026-10-17 and moved to
-[`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](open-tasks/2026-10-17-lifecycle-e1-e2-closed.md).
+[`open-tasks/2026-10-17-lifecycle-e1-e2-closed.md`](2026-10-17-lifecycle-e1-e2-closed.md).
 §E4 (opt-in sampling) was implemented on 2026-10-23 and moved to
-[`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md).
+[`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](2026-10-23-sampling-neutral-session-and-environment-oracle.md).
 §E1d, found while closing §E1c, was fixed the same day and moved to
-[`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](open-tasks/2026-10-17-qwen38-instance-state-closed.md).
+[`open-tasks/2026-10-17-qwen38-instance-state-closed.md`](2026-10-17-qwen38-instance-state-closed.md).
 §E1e, found while closing §E1a, was fixed the same day and moved to
-[`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md).
+[`open-tasks/2026-10-17-gemma-moe-swallowed-decode-error-closed.md`](2026-10-17-gemma-moe-swallowed-decode-error-closed.md).
 
 ---
 
@@ -295,11 +295,11 @@ upload), was fixed the same day and moved to
 
 **The migration itself is closed** — the arena is gone for qwen MoE / Ornith /
 Mistral, with measurements, gates and the guard test in
-[`open-tasks/2026-10-14-expert-store-arena-retired.md`](open-tasks/2026-10-14-expert-store-arena-retired.md).
+[`open-tasks/2026-10-14-expert-store-arena-retired.md`](2026-10-14-expert-store-arena-retired.md).
 Headline: qwen3.6 17.5 → **7.0 GB** at unchanged 141 t/s. qwen3.8-flash-next
 was **tried and reverted** to its 63.6 GB pinned arena: its decode working set
 is the whole expert set, and the views path loses 3.5x (V1, negative) —
-[`open-tasks/2026-10-14-qwen38-arena-required-negative.md`](open-tasks/2026-10-14-qwen38-arena-required-negative.md).
+[`open-tasks/2026-10-14-qwen38-arena-required-negative.md`](2026-10-14-qwen38-arena-required-negative.md).
 One consequence the change exposed stays open:
 
 #### V2. Not reproduced — `max_open` does bound RSS, and the geometry pass does not fault payloads

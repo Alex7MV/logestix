@@ -54,7 +54,7 @@ that should have noticed could not see it.
   re-running the DET/FSI/CODE goldens of the families that use it. Until then,
   the §E1c EOS gate lives in its own binary, which is a workaround for the
   test, not a fix. The measurement trail is in the
-  [2026-10-17 snapshot](open-tasks/2026-10-17-lifecycle-abort-contract-closed.md).
+  [2026-10-17 snapshot](2026-10-17-lifecycle-abort-contract-closed.md).
 
 
 ---

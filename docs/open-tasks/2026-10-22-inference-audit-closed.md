@@ -7,7 +7,7 @@ Branch `fix/inference-audit-2026-10-22`.
 
 ## X. Inference audit 2026-10-22 — findings to close
 
-Full evidence: [`INFERENCE_AUDIT_2026-10-22.md`](INFERENCE_AUDIT_2026-10-22.md).
+Full evidence: [`INFERENCE_AUDIT_2026-10-22.md`](../INFERENCE_AUDIT_2026-10-22.md).
 Branch `fix/inference-audit-2026-10-22`; each item gets a failing test first
 (TDD) and moves to the archive when green.
 

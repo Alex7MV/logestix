@@ -76,9 +76,10 @@ one in a ctest summary, which is why the debt rows are called out below.
   variant decodes at **3.23–3.35 s per token (0.30–0.31 t/s)** at the shipped
   configuration (expert window 65 536, no eager warm), down from 6.95 s/token
   when it first landed — the window was 512 against a 1472-expert working set, a
-  cyclic scan with a zero hit rate (`docs/OPEN_TASKS.md` §R17 P5 has the sweep and
-  the two prefetch designs that were measured and rejected), and the eviction path
-  in the same loop no longer stalls the host (P5a). Its parent measures 2.96 in
+  cyclic scan with a zero hit rate (`docs/open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`
+  has the sweep and the two prefetch designs that were measured and rejected), and the eviction path
+  in the same loop no longer stalls the host (P5a; both archived as
+  `open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`). Its parent measures 2.96 in
   the same build, so the DSA indexer costs ~9–13 %. Even at the fixed rate one
   2048-token FSI case is ~1.8–1.9 h and the FSI+CODE+DET+perf sweep is ~14.7–15.3 h
   of exclusive GPU. An FSI

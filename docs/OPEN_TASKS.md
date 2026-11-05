@@ -107,12 +107,11 @@ DET 3/3, FSI 2/3. Open items:
   Getting this gate green needs ~8 bits on every linear (~33.7 GiB resident),
   i.e. a 48 GiB card or a different block format. Full trail:
   `open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md` §5.
-- **Shared TC defect: RESOLVED 2026-10-10** - `TcGemmKernel` wrote only
-  rows `[0,16)` of its 64-row tile (`wm` was computed and never used); all
-  four row computations fixed, TC shape sweep extended to seq 17/18/33/64.
-  gemma keeps its scalar prefill **by choice** now, because running it
-  through TC moves the first token and breaks the tool round-trip. Full
-  trail: [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md).
+- **Scalar prefill is a choice, not a workaround.** The shared TC M-tile
+  defect this gate was originally found by is fixed (2026-10-10, archived);
+  gemma keeps the scalar path because running it through TC moves the first
+  token and breaks the tool round-trip —
+  [`open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md`](open-tasks/2026-10-10-neutral-moe-and-tc-mtile-closed.md).
 - **Perf: 47.3 t/s (perf) / 41.0 t/s (r3)** at 2048 tokens on
   `linux-release-znver4-aocc` (16.5 GiB resident; TTFT 337 ms, scalar prefill).
   Profile-guided decode work took it 40.6 -> 47.5: shuffle RMSNorm
@@ -182,16 +181,12 @@ Open items for this family:
   (`LSX_KIMI_ASYNC_STEP=1` compares 6 cycles, identical hashes), and the
   diagnostic path itself is still host-serialized (`cudaStreamSynchronize`).
   Pipelining the readback one step behind is a throughput item, not correctness.
-- **K3 — perf rows seeded 2026-10-26 (resolved).** The 2026-09-14 `perf` row
-  (5.1 t/s) carried no evidence (`ttft_ms 0`, `power_samples 0`) and had never
-  been re-measured after the conversion. It was removed and re-recorded through
-  the harness (Release/AOCC tree, 2048-token protocol, pinned 542 GB store):
-  **`perf` 4.86 t/s** (ttft 1043.8 ms, avg 296.5 W, peak 396.4 W, 20979
-  samples) and **`r3` 5.04 t/s** (ttft 1069.9 ms, avg 304.0 W, peak 395.7 W).
-  The -5% against the stale reference is the numeric fixes changing the routed
-  expert sets (different per-token cache working sets), and the old row had no
-  protocol evidence to compare against. Re-seed is deliberate; the numbers are
-  the harness's, not hand-edited.
+- **K3 — perf rows seeded 2026-10-26 (resolved, archived).** The 2026-09-14
+  `perf` row (5.1 t/s) carried no evidence and predated the conversion; it was
+  replaced through the harness with **`perf` 4.86 / `r3` 5.04 t/s**. The -5% is
+  the numeric fixes changing the routed expert sets, not a regression (the old
+  row had no protocol evidence to compare against). Numbers, power and TTFT:
+  [`open-tasks/2026-10-26-kimi-audit-verification.md`](open-tasks/2026-10-26-kimi-audit-verification.md).
 - **K4 — KV capacity.** `kKimiMaxSlots = 1024` against a 262 144 window; a
   long-context gate is out of reach on one 5090 (the KV cache is 512+64 bf16 per
   token per layer). Unchanged, documented.
@@ -220,11 +215,10 @@ goldens, and the remaining gap is enumerable from test output) without pretendin
 existing debt is smaller than it is. A missing golden stays a SKIP; what changes is
 that it can no longer be invisible.
 
-The last single-stage entry here, `granite-4.2-30b:code`, was resolved
-2026-11-03: the code golden had existed since 2026-10-07 and the real-weight
-gate is green (archived below with the inference defect found alongside it).
-The mechanism remains: a family can look fully wired across all four parity
-stages and still have a hole in one of them.
+The last single-stage entry here, `granite-4.2-30b:code`, closed 2026-11-03
+(its golden had existed since 2026-10-07; archived with the inference defect
+found alongside it). The mechanism remains: a family can look fully wired across
+all four parity stages and still have a hole in one of them.
 
 **A rejected golden set (2026-10-25), kept here as evidence.** Three
 `nemotron-3.5-lightning-30b-a3b-nvfp4` goldens were committed and reverted the
@@ -522,156 +516,30 @@ Open work, explicitly:
   were fixed on the way:
   1. `weight_global_scale` is a **divisor** (`w = nibble*scale/gs`), not the
      repo's multiply — the converter now stores `1/weight_global_scale`.
-  2. The neutral `RunMoERouterTopK` seq==1 dots path produced a NaN logit on
-     finite real inputs (host f64 of the same data is finite, max 7.97), which
-     fed a NaN through the MoE. The family now routes on the **host**
-     (`gemv::RunLxGemmVec` BF16 + softmax/top-K in `mistral_moe_inference.cu`).
-     This may be a real defect in the neutral seq==1 router path — worth a
-     separate look (it is not exercised here by any other family at E=128).
-- **Real-weight decode: fixed (2026-10-12).** `test_mistral_moe_selfcheck`
-  passes (Paris + tool round-trip + 3 bit-exact stress cycles); `--bench`
-  completes 2048 tokens at **14.68 t/s** (Release, `r3` and `perf` both;
-  the `linux-debug` preset is 45 t/s but a Debug binary is not a valid perf
-  record — `test_perf_baseline` SKIPs outside `NDEBUG`); SelfCheck passes in **both** the auto
-  and `--bit-exact` (`FastMathMode::kOff`) modes. The layer-4 "outlier" that
-  this entry previously reported was a **measurement artefact** — the expert is
-  a genuine massive-activation expert (host reference at layer 4 confirms
-  routed max 411.9 vs the 403.8 the GPU produced). Five real defects, each
-  isolated against a host NVFP4 reference built from the source safetensors:
-  1. **Shared expert through the BF16 GEMV.** `attn::RunAttnMLP` reinterpreted
-     the shared expert's E2M1 nibbles as BF16: shared rms 0.0080 vs the host
-     reference 0.3495 (**44x** under-contribution). Fixed by running the
-     neutral NVFP4 seq==1 GEMV (`MistralSharedExpert`, the Xing pattern —
-     `RunMoESharedCombine` is gated and does not apply, this model's shared
-     expert is ungated). Regression test
-     `test_mistral_moe_kernels` "matches the host NVFP4 reference" (mutation
-     checked: reverting the scale makes it fail).
-  2. **Autodetect name mismatch.** The converter wrote
-     `"model": "Mistral-Small-4-119B-2603"`, which `detect_model_type`
-     normalizes to `mistral-small-4-119b-2603` — not the registered kType, so
-     `lsxbenchmark`/`lsxfabric` could not resolve the model by path at all.
-  3. **Expert-cache VRAM over-commit.** A hand-rolled budget with a 2 GiB
-     reserve resolved 1838 slots (~25 GiB) and the 2048-token bench OOMed on
-     the KV arena. Now the shared `lifecycle::ExpertCacheSlots` (8 GiB
-     calibrated reserve + the `expert_slots_pct` knob) → 1382 slots.
-  4. **FP16 SwiGLU overflow (the actual NaN).** This model carries massive
-     activations: layer 32 expert 67 reaches `|silu(g)*u| = 2.5e5` against the
-     FP16 ceiling of 65504 — exactly 4 values overflow, and the inf propagated
-     through the down projection into the residual. The scalar (non-TC) MoE
-     path stores that product in FP16. `RunMoERoutedFFN` and
-     `MistralSharedExpert` now evaluate the product in FP32 and store it under
-     a power-of-two prescale, folded back in the FP32 accumulator
-     (`SwigluF32Kernel`/`SwigluAbsMaxKernel`/`SwigluAlphaKernel`/
-     `SwigluStoreScaledKernel` in `lsx_kernels_act.cuh`, plus
-     `moe_coeff_add_scaled_kernel` / `acc_add_half_scaled_kernel`). It is a
-     **provable no-op for every existing model** (alpha == 1 whenever the
-     product fits FP16, and the value expression is the same F32 silu). The TC
-     path was already immune — it quantizes from FP32 — which is why only
-     `--bit-exact` diverged. Regression test: "survives an FP16-overflowing
-     SwiGLU" (mutation checked).
-  5. **FP16 residual + session leak.** The residual itself reaches ~2.4e5 at
-     layer 32 (host reference), past FP16 range, so `d_h` is now FP32 (the
-     norms and the `d_post` hand-off are unchanged). And `~MistralSession` now
-     frees — without it every `Infer` leaked the dense graph + expert cache and
-     the *second* request OOMed. (`FreeMistralSession` resets the pointers in
-     place; `s = MistralSession{}` recursed infinitely once the destructor
-     owned teardown.)
-- **CLOSED — the "neutral router NaN" was a mis-attribution, not a defect
-  (2026-10-12).** This entry previously recorded
-  `RunMoERouterTopK`'s seq==1 path as returning a NaN logit on finite real
-  inputs. It does not. The NaN was the shared-expert FP16 overflow propagating
-  into the *next* layer's `d_post`, which is the router's input — i.e. a
-  downstream symptom of defect 1, measured before that defect was found. With
-  the shared expert fixed, the neutral device router runs this family on real
-  weights at its real geometry (E=128, H=4096, top-4) in **both** numeric
-  modes; the host-side router workaround has been removed.
-  The investigation did surface a **real coverage gap**: the only router
-  reference test covered `seq=5`, i.e. the *prefill* kernel. The seq==1 decode
-  entry (`moe_router_dots_kernel` + `moe_router_select_kernel`) had no
-  reference comparison at all, which is why a wrong answer there would have
-  been invisible. Now pinned by "router decode-split (seq==1) matches host
-  replica" (`test_qwen_moe_kernels`), sweeping E=128/H=4096, E=128/H=2048,
-  E=60 (grid not a multiple of the 128-thread block), E=16, E=8 and H=132
-  (H not a multiple of 8, the scalar dot path). That test passes unmodified on
-  the current neutral code, which is the evidence that the kernel was never
-  the problem.
-- **FOUND AND FIXED — the bit-exact MoE path multiplied every layer by alpha
-  (2026-10-12).** Chasing the golden gates turned up a real defect in the
-  overflow-proof SwiGLU above: it divides the activation by `alpha` once, so the
-  down projection returns `out / alpha`, but the FP32 accumulator folded back
-  `alpha**2`. Every layer's MoE output was therefore `alpha`=16x too large at
-  Mistral's layer 32, compounding down the stack.
-  **Why nothing caught it:** the Paris SelfCheck still passed in both modes (a
-  memorised completion survives large numeric error), the bench still ran, and
-  the new shared-expert regression test asserted `cos > 0.99` — **cosine is
-  invariant under a uniform scale, so it returned exactly 1.0 for a 16x-wrong
-  answer.** Mutation testing had verified that the *prescale* was present, not
-  that its factor was right.
-  The tell was end-to-end, not numeric: on "Repeat exactly this text: ABCDEFG"
-  bit-exact mode returned `The output output output` while the auto (TC) mode
-  returned `HIJKLMNOPQRSTUVWXYZ`. Host-oracle confirmation at layer 32: the GPU
-  accumulator was 16.0x the reference with `corr = 0.999997`, i.e. right shape,
-  wrong scale. After the one-line fix (`coeff * alpha`, not `coeff * alpha*alpha`)
-  both modes agree, and the regression test now pins `|got|max / |ref|max` to
-  within 5% so a scale error cannot pass again.
-- **FIXED — the tensor-core routed FFN overflowed its SwiGLU activation to
-  FP16 inf, costing layer 32 ~52x. Root cause, fix and instrument below.**
-  The tensor-core branch of `RunMoERoutedFFN` fused SwiGLU into the NVFP4
-  activation quantizer (`RunAttnSwigluPreciseQuantInternal`). That kernel does
-  `const __half hv = __float2half(sig * g * u);` — it rounds the product to
-  **FP16 before quantizing**, and FP16 tops out at 65504. Mistral-Small-4 layer
-  32 expert 67 reaches `|silu(g)*u| = 2.5e5` from entirely ordinary FP16
-  projections (max 444 and 568), so the store overflowed to `+inf`, the block
-  `absmax` became `inf`, `FloatToE4m3(inf)` saturated the block scale, and every
-  nibble in the tile quantized from an infinite value. The scalar path was
-  immune because it keeps the product in FP32 under a power-of-two prescale.
-  Measured on real weights (Paris, layer 32, routed accumulator vs a host
-  oracle over the source safetensors):
-
-  | mode | before | after |
-  |---|---|---|
-  | `kOff` | ratio 0.9998, corr 1.000000 | unchanged (ratio 0.9998) |
-  | `kAuto` (TC) | **ratio 0.0192**, corr 0.975 | **ratio 0.9932, corr 1.000000** |
-
-  Fix: `RunAttnSwigluPreScaledQuantInternal` keeps the product in FP32, reduces a
-  global `absmax` with an atomic, prescales by the smallest power of two that
-  brings it inside both the FP16 and the E4M3-block-scale span, and publishes
-  `alpha` in a second slot so `moe_coeff_add_scaled_kernel` folds one reciprocal
-  factor into the FP32 accumulator. Two launches instead of one, no host
-  synchronization (`alpha` is device-only while `RunLsxTcGemmPreQuant` takes a
-  host float). `alpha == 1` is a bit-exact no-op, so every other family is
-  unchanged — pinned by a dedicated bit-identity test, and re-verified on real
-  weights for Qwen3.6-35B-A3B, Gemma-4-26B-A4B, Xing4.0-29B-A4B and
-  Ornith-1.5-35B-A3B, each in both numeric classes. (GLM-5.3-Flash is present
-  only as an unconverted HF checkpoint, so it could not be run here.)
-  **Why it survived a green suite:** Paris passes in both modes and the bench
-  runs, so the suite was green over a layer whose accumulator was off by 52x.
-  Nothing compared a *layer accumulator* against an oracle — only final text.
-  That gap is now covered by `test_qwen_nvfp4_gemv`: one case forces a
-  Mistral-shaped massive activation and asserts the recovered magnitude, one
-  asserts bit-identity in the normal range, one asserts a seq==1 projection is
-  invariant to a power-of-two activation prescale. Both of the first two fail
-  against the old kernel.
-
-  **Cost of the fix: reduced on 2026-10-23.** The extra prequant launches
-  are hoisted (three per layer for all K slots, bit-identical), removing
-  the standing cost: Mistral 41.3 -> 42.2 t/s at 2048. The scratch and the
-  measurement are in
-  [`open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`](open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md).
-  The rest of §T (the three golden gates) is still open.
-
-  Two earlier diagnoses of this entry were wrong and are retracted here, since
-  the record is the point: (1) "the E4M3 block scale saturates, attenuating the
-  expert 94x" — the scale does saturate, but only *because* the FP16 store
-  already went to inf; and (2) "Mistral never takes the `tc_fused` branch, so
-  the default path is unaffected" — false, because `qwen::SetQwenTcFastMath` is
-  an inline alias for `lsx_nvfp4::SetLsxTcFastMath`, the very global the
-  engine-init perf policy sets (`gpu_perf.cpp`), so `kAuto` leaves it `true` and
-  `kOff` forces it `false`. Checking whether the *model class* calls the setter
-  says nothing about the value in force. `LSX_PERF_AUTO=0` (which pins the
-  legacy bit-exact policy, `tc=false`) is the cheap one-flag bisect for "is this
-  the fast-math path?", and it puts layer 32 back at ratio 0.9998.
-
+  2. A NaN logit on finite real inputs first looked like the neutral
+     `RunMoERouterTopK` seq==1 dots path. It was not: the NaN was that FP16 SwiGLU overflow
+     arriving in the *next* layer's `d_post`, which is the router's input. With that fixed the neutral device router runs this family
+     at its real geometry (E=128/H=4096/top-4) in both numeric modes and the
+     host workaround is gone. The investigation did surface a genuine coverage
+     gap — the seq==1 decode router had no reference test at all — now pinned
+     across six geometries in `test_qwen_moe_kernels`. Details:
+     [`open-tasks/2026-10-12-mistral-small-4-decode-defects.md`](open-tasks/2026-10-12-mistral-small-4-decode-defects.md).
+- **The decode defects found on real weights, five of them plus three
+  follow-ups (2026-10-12) — archived.** Each was isolated against a host NVFP4
+  reference built from the source safetensors, and each is pinned by a
+  mutation-checked regression case. The headline: the shared expert was run
+  through the BF16 GEMV (44x under-contribution, `rms 0.0080` vs `0.3495`), the
+  real NaN was an FP16 SwiGLU overflow at layer 32 (`|silu(g)*u| = 2.5e5`
+  against the 65504 ceiling), the residual itself reaches ~2.4e5 so `d_h` is
+  FP32, `~MistralSession` leaked the whole dense graph per request, and the
+  converter's `"model"` field normalised to a name the registry could not
+  resolve by path. Two attributions were wrong before they were right: the
+  "neutral router NaN" was that FP16 overflow downstream, not the router (the
+  investigation did expose a real coverage gap — the seq==1 decode router had no
+  reference test at all — now pinned across six geometries), and the layer-4
+  "outlier" was a genuine massive-activation expert, confirmed against the host.
+  Full trail:
+  [`open-tasks/2026-10-12-mistral-small-4-decode-defects.md`](open-tasks/2026-10-12-mistral-small-4-decode-defects.md).
 - **Still open — the three FSI/CODE/DET golden gates, with the capture now
   understood.** (The old heading said "the four S* golden gates"; there is no
   S1..S4 scheme anywhere in this file, the body and
@@ -909,6 +777,11 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-11-03 | Dense-trio consolidation, phase 1: granite / granite-switch / phi now run one neutral `lsxcommon::dense` kernel layer | The three dense families had drifted into three near-copies of the same decode kernels. Phase 1 moved RMSNorm, full-dim RoPE, causal GQA attention (with the split-KV flash-decode path), fused split-QKV and fused SwiGLU into `lsx_dense_inference.{h,cu}`; the algorithm is the one Granite-4.2 always ran, moved verbatim (`tools/dedup_provenance.py` proves it), and every family's layer driver stays family-named. No golden moved. — [`open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md`](open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md) |
+| 2026-11-03 | Warning backlog closed: a clean build is 246 lines, none of them ours | Scoping `-Wall -Wextra`/`-Wpedantic` to our own directories dropped a clean build from 51 408 warning lines to 484; this session cleared the remaining 238 across 170 sites / 83 files **without silencers**. The load-bearing find: 39 in-place activation/norm calls aliased `__restrict__` parameters, i.e. formal UB, fixed by dropping the qualifier. Plus fail-closed `SimpleAtoi`/simdjson config reads, a dangling test reference, `memcpy` into `__half`, 19 dead functions. — [`open-tasks/2026-11-03-warning-backlog-closed.md`](open-tasks/2026-11-03-warning-backlog-closed.md) |
+| 2026-11-03 | AliceAI-Foundation-80B-A3B re-ingested: two accounting defects closed | The converted tree had not survived on this host, so the whole lifecycle was re-run — which exposed two defects no consumer had exercised: the emitted VRAM profile counted the routed experts as BF16 **and** device-resident (`min_bytes` 162 GB, `max_bytes == optimal_bytes`), and `resident_bytes` under-reported the uploaded dense graph 8x (1 187 vs 4 231 MiB) — the number that drives the governor lease. Both fixed test-first. SelfCheck Paris ×3 bit-exact (`f900547d25be7914`), FSI/CODE/DET 3/3, tool round-trip, perf re-seeded 45.70/45.88 t/s. — [`open-tasks/2026-11-03-alice-reingest-closed.md`](open-tasks/2026-11-03-alice-reingest-closed.md) |
+| 2026-10-28 | MiniMax-M3 (428B/23B) ingested end to end | First 400B-class ingestion on this box: 796 GB BF16 → 229 GB NVFP4 in 1 h 45 m, all eight protocol stages with real-weight verification. SelfCheck ×3 bit-exact, CODE 3/3, DET 3/3, FSI 2/3 (FSI-01 template-form red). Three engine defects (1-block residual add, sticky TTFT event, a pre-set abort emitting a token) and a two-part tokenizer defect (added tokens never literal-matched; GPT-2 pre-tokenizer instead of Llama-3/o200k) were found and pinned; embed/head must stay FP16 because 4-bit head noise (~3 logits) against a 0.4 first-token margin flips the answer. — [`open-tasks/2026-10-28-minimax-m3-ingest.md`](open-tasks/2026-10-28-minimax-m3-ingest.md) |
+| 2026-11-05 | Kimi decode rate: the "4x gap" was prose, the real defect was the expert window; eviction no longer drains the stream | The reported 4x slowdown of `kimi-k3.1-pro` against `kimi-k3` never existed: K3's "~2 s/token" was committed at 04:16:28, i.e. **before** that same log's first cycle at 04:24:38 (K3's own cycles are 434.6/426.3 s per 64 tokens = 6.66-6.79 s/token), and at identical binary, geometry, window and 1472-expert working set the two models measured **6.95 vs 6.98 s/token — ratio 1.00**. What the prose was hiding was a shared-`ExpertStore` defect: `max_open` 512 against 1472 experts (92 MoE layers x top-16, each layer visited once per token in ascending order) is a cyclic scan with a provably **zero** hit rate, so every expert was re-opened, re-mapped, re-parsed and evicted. Fixed Kimi-locally: window clamped up to the working-set floor with a 65 536 default, and `warm_on_load=false` (the eager pre-parse walks experts in path order, cost 156 s and bought nothing) — **6.95 -> 2.96 (K3) / 3.23-3.35 (Pro) s/token** at a 5 s load, bit-exact throughout. Then the eviction half of the same loop: `EnsureResident` called `cudaStreamSynchronize` on every eviction (20.3 ms per eviction against 20.2 ms of unrelated queued work); an evicted mapping is now **retired with a CUDA event** and released once the copies ahead of it have executed — **0.07 ms** (282x), 6.95 -> 6.26 s/token at a 512-slot window. Two negative results are recorded: page-cache prefetch of each layer's top-k cost 7.16 s/token (18% worse) and `fadvise(WILLNEED)` was a wash, both removed rather than shipped as knobs; and the first version of the eviction fix **regressed mistral-small-4 by 6.6%** (45.04 -> 42.06 t/s, caught by `test_perf_baseline` with a clean probe, counterfactual-passing build proving the regression was ours) because it queried every retired event - the events complete FIFO on one stream, so the front check alone is O(1). What remains is filed as §R17 **P6**: overlap the next layer's staging with this layer's compute — [`open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`](open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md) |
 | 2026-11-04 | qwen3.5-35b-a3b verified on real weights; two benchmark rows had been stale in opposite directions | The member was sitting in `SELFCHECK_MATRIX.md` §3 ("golden present, **no converted tree** — SKIP") although its 19 GB tree had been in the vault since 2026-10-01 and `kGoldenDebt` never exempted it — so all four gates were *required* to be green and none had ever been run. Measured serially on the real weights: SelfCheck Paris ×3 bit-exact (`logits_hash f4c91be5f2206d56`, top-1 11751), FSI/CODE/DET 3/3 each, DET `deterministic=true`. Both of its benchmark rows were dated 2026-10-06, i.e. before the neutral routed-MoE migration, the overflow-proof batched SwiGLU (`8e34314`) and the 2026-10-23 strict-mode fix — its siblings were re-seeded at each of those moments and this one was skipped twice. `perf` was **DEGRADED** at 96.14% with a clean probe (1528.54 vs 1531.68 GB/s, so not the environment): three runs measured 163.54 / 159.59 / 159.81 t/s and the row now carries the harness's own write, 170.10 → **159.81**, on the same band as its two 35B-A3B siblings on identical code (qwen3.6 161.97, ornith 160.25) — the accepted cost `8e34314` itself records as "Qwen3.6 166.7 → 161.3". No parent-commit bisect was run: the residual is inside the 2.4% run-to-run spread, and the sibling triple plus the change's own A/B carry the attribution. `r3` was 13.78, a **superseded** value — 5.6× below what the same binary does (77.3 t/s by `lsxbenchmark --bench --bit-exact`, TTFT 64.16 ms), i.e. a five-fold regression would have passed unseen; re-seeded through the harness 13.78 → **77.56**. Also recorded the missing `qwen_moe.router.decode` budget for `rtx 5090` (11.7931/11.7947/11.7955 µs over three observations, max 11.7955, budget 15.924 = 1.35× pad), so the Release case now judges (260 assertions) instead of `SKIP`ping — the instrument that keeps the ~30 µs deep-unrolled variant out — [`open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md`](open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md) |
 | 2026-11-04 | §R16 and §J moved out of the live list; two gate documents corrected | The live file was carrying two fully-resolved sections, which its own rule forbids: **§J** (gemma-4-26b-a4b-it FSI/CODE), resolved 2026-10-24 and already archived, and **§R16** (qwen3.8-flash-next), whose last residual closed in this branch — its text moved verbatim into the lifecycle trail (§6). With §R16 gone, §A1 is the only qwen item left (the Windows/5060 Ti kernel fault no measurement on this host can chase) and its latency-budget half is now separated from the fault on this GPU. The same audit found `deepseek-v4.1-flash` also misfiled as "no converted tree" (294 GB tree present) and corrected the matrix summary counts to a stated counting rule (SelfCheck 22/22 rows, FSI 58/63, CODE 62/63, DET 62/63 over §1) plus the `Reproduce` block, and both `{DET,CODE}_SELFCHECK_FINDINGS.md` claims that the qwen3.5-35b-a3b source is absent from the vault — [`open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md`](open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md) |
 | 2026-11-04 | qwen3.8-flash-next §R16 item A closed: expert staging moved onto the copy engine, chunk depth follows the layer's miss count | The last §R16 residual is closed. Residency staging no longer runs on the compute stream: it rides `copy_stream` with a per-expert `ev_uploads[k]` and an `ev_front` slot-reuse fence, and the routed TC chain gained a neutral entry point (`moe::RunMoERoutedTcBatchStreamed`) that runs the K slots in ascending chunks, each waiting **only** on its own uploads, so the next chunk's H2D overlaps this chunk's TC work. Depth is chosen from the miss count (`chunks = (n_miss >= 2) ? 2 : 1`) because a chunk's compute can only hide another chunk's copy — with fewer than two misses the second batch launch (K=5 tiles per launch instead of 10) is pure cost. Bit-exact by construction (the fp32 accumulate order into `d_acc` is unchanged; `LsxTcBatchSplitK` scratch is slot-disjoint), `logits_hash 2e3bcd090441ad65` unchanged. Measured against HEAD at identical slots/hit rate: **−1.55%** on `perf` (47 679 → 46 938 ms) and **−1.47%** at a forced 4319-slot capacity oracle (hit 0.862 → 0.745), `r3` −0.07% because under `kOff` the batched chain is not used at all — the honest reason one row does not move. The **instrument** was corrected first: the previous attribution reported 0.8% overlap from a scan that only matched the kernel starting before each copy; an interval intersection gives 17.7%. What is left is structural — the router host readback leaves the compute stream empty when the copies are issued, and the copies already run at 54.5-55.6 GB/s (the PCIe Gen5 ceiling) — so the largest serial host in the step is now the hyper-connection block, 6.97 of 18.5 ms/step of kernel time. Also fixed in passing: an early `chunks <= 1` path skipped the upload waits entirely, a race for any caller passing a `copy_stream`; one chunk now means "serialize", the test covers 1/2/3, SelfCheck ×3 + tool round-trip are green and `ctest -L fast` is 134/134. Rows re-seeded through the harness 43.39 / 33.91 t/s — [`open-tasks/2026-11-04-qwen38-expert-staging.md`](open-tasks/2026-11-04-qwen38-expert-staging.md) |
@@ -1008,7 +881,7 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
 | tokenizer parity | 23/23 against the checkpoint's `tiktoken.model` (`tokenizer_kind 2`) |
 | tool codec | byte-exact against `encoding_k3.py` frames (synthetic tokenizer) |
 | FSI / CODE / DET | goldens committed (template-derived); **not yet run** on real weights |
-| decode rate | **2.96–2.97 s/token** (0.34 t/s) measured 2026-11-05 at the shipped configuration (expert window 65 536, no eager warm), 64-token cycles, bit-exact throughout. It was 6.95 s/token at the old 512-slot window against a 1472-expert working set — see §R17 P5, which also records that the `~2 s/token` this report first quoted was prose committed before the run it described |
+| decode rate | **2.96–2.97 s/token** (0.34 t/s) measured 2026-11-05 at the shipped configuration (expert window 65 536, no eager warm), 64-token cycles, bit-exact throughout. It was 6.95 s/token at the old 512-slot window against a 1472-expert working set — see §R17 P5 and its archive entry `open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`, which also record that the `~2 s/token` this report first quoted was prose committed before the run it described |
 | perf row | **not seeded** — no `perf`/`r3` entry in `perf_baselines.json` for this tree |
 
 **Open, explicitly.**
@@ -1124,120 +997,31 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   source needs `fla-core` and a multi-GPU runner, so no source oracle can be
   captured on this card. A green row pins the converted path against the
   template, never source parity.
-- P5. **RESOLVED (2026-11-05) — the 4x gap was never real, and the real defect it
-  hid was the expert window.** Two separate errors were conflated:
-
-  1. *The baseline was prose, not a measurement.* `2026-11-03-Kimi-K3.md`
-     recorded "the measured ~2 s/token" at commit `3bc13da7` (04:16:28), i.e.
-     **before** K3's first real measurement landed in that same run log at
-     04:24:38. K3's own cycles are 434.6 s and 426.3 s per 64 tokens =
-     **6.66–6.79 s/token**, and Pro's are 461.3 / 446.6 s = **6.98–7.21**. At
-     identical binary (both rebuilt from `main`), identical geometry, identical
-     tree layout, the same 1472-expert working set and the same window, the two
-     models measured **6.95 vs 6.98 s/token — a ratio of 1.00**. The indexer is
-     not a factor: below `index_topk` the pipeline takes the `sel == nullptr`
-     branch and runs neither the score pass nor the top-k, and at the protocol
-     both numbers were taken at that branch is always the one taken.
-     `perf_baselines.json` still has no row for either tree.
-  2. *The real defect:* `max_open` was **512** against a **1472**-expert
-     working set (92 MoE layers × top-16, each layer visited once per token in
-     ascending order). A cyclic scan over 1472 items with 512 slots has a
-     **provably zero hit rate**, so every expert was re-opened, re-mmap'd,
-     re-parsed and re-evicted — with a full `cudaStreamSynchronize` on each
-     eviction, because the Kimi call site passes no `evict_done`. Kimi was the
-     only family at 512 (DeepSeek-Pro uses 4096; the rest inherit the store's
-     65 536), and the K3 plan's `LSX_KIMI_K3_EXPERT_CACHE_SLOTS` /
-     `LSX_KIMI_K3_PIN_DENSE` knobs were never implemented — that plan step is
-     still unticked.
-
-  **Fixed** (Kimi-local, bit-exact: `logits_hash 5c1e227265d6a27b` on every run):
-  the window is clamped up to the working-set floor (`KimiK3ExpertWindowFloor` /
-  `KimiK3ResolveExpertWindow`), default 65 536; and `Load()`'s eager pre-parse is
-  switched off for these trees (`warm_on_load=false`) because it walks experts in
-  *path* order, not decode order — it cost **156 s** of load at a 65 536 window
-  and bought nothing.
-
-  Measured on real weights, 64-token cycles, same binary, GPU-exclusive:
-
-  | window | eager warm | load | warm s/token | vs shipped |
-  |---|---|---|---|---|
-  | 512 (shipped before this fix) | on | 6 s | 6.95 | 1.00× |
-  | 1472 (floor) | on | 18 s | 6.05 | 1.15× |
-  | 2048 | on | 10 s | 5.57 | 1.25× |
-  | 65 536 | on | **156 s** | 3.01 | 2.31× |
-  | **65 536 (shipped now)** | **off** | **5 s** | **2.98** (K3) / **3.23–3.35** (Pro) | **2.33×** / **2.16–2.21×** |
-
-  **Rejected after measurement:** a per-layer page-cache prefetch of the
-  router's top-k (the 22× serial-vs-parallel cold-read gap, 1.82 GB/s at one
-  request in flight vs 39.8 GB/s at 32, made it look promising). Both forms lost
-  or drew: reading each file into a discard buffer measured **7.16 s/token**
-  (18% *worse* — the sink read is pure waste once the page is cached, and this
-  working set is re-visited 3.5× per expert), and `posix_fadvise(WILLNEED)`
-  measured 6.11 vs 6.15 (noise). Removed rather than shipped as an unmeasured
-  knob. The mechanism that actually pays is **retention**: with a wide window
-  experts are never `munmap`'d, so a re-read becomes a page-cache hit.
-
-  At equal binary and window the variant's own cost is now measurable for the
-  first time: **Pro decodes 3.23–3.35 s/token against the parent's 2.96, so the
-  DSA indexer costs ~9–13 %**, not the 4× that the prose baseline implied (3.23
-  before the store's eviction path changed, 3.35 on the verification run after
-  it — the same mechanism, two runs, so the range is the honest figure).
-
-  **Still open, and honestly bounded.** The shipped 3.2–3.35 s/token is
-  ~7.6–8 GB/s of effective host-store traffic against 39.8 GB/s available, so a
-  deeper fix (overlapping the next layer's expert staging with the current
-  layer's GEMMs) could still pay — it needs the pipeline restructured around a
-  queue instead of one synchronous `EnsureResident` + six `cudaMemcpyAsync` +
-  three GEMVs per expert, and that is the shared `ExpertStore` contract, not a
-  Kimi-local edit. The *drain* half of that loop is already gone (P5a): what
-  remains is the overlap, not the stall.
-  The *scale* is also now a floor, not a property: the debt sweep recomputes
-  from 2.98 s/token (~13.6 h, see P3), and both perf rows remain unseeded — a
-  harness row is what would make these numbers quotable.
-
-  **P5a — DONE (2026-11-05): eviction no longer drains the stream.** The half of
-  the synchronous loop that lived in the *store* is fixed. `EnsureResident` used
-  to call `cudaStreamSynchronize` whenever the window was full (the Kimi call
-  site passes no `evict_done`), so every evicted expert stalled the host until
-  **unrelated** queued work finished — measured in `test_kimi_k3_loader` as a
-  20.32 ms eviction against 20.20 ms of queued memset traffic, i.e. a full drain.
-  An evicted slot's mapping is now **retired with a `cudaEventDisableTiming`
-  event** recorded on the stream that issued the copies and released once
-  `cudaEventQuery` reports completion (`RetireSlot`/`ReapRetired`), so nothing
-  is unmapped under an in-flight DMA and the host never blocks. Memory stays
-  bounded by `max_retired` (64), past which only the *oldest* retiree is waited
-  on. Same test after the fix: **0.072 ms** per eviction (282x), and a copy
-  issued from an expert's mmap is still byte-exact after that expert was evicted
-  out from under it (both halves asserted).
-
-  Real-weight effect is in the eviction-heavy regime and neutral everywhere else,
-  which is what the mechanism predicts (K3, same binary, 64-token cycles):
-
-  | window | evictions/token | before | after |
-  |---|---|---|---|
-  | 512 | 1472 (~100 %) | 6.95 | **6.26** (≈0.47 ms of stall removed per eviction) |
-  | 2048 | 0 after warm-up | 5.57 | 5.80 (noise) |
-  | 65 536 (shipped) | ~80 (~5 %) | 2.96 | 3.05 (noise) |
-
-  So the shipped configuration gains little — it evicts rarely by design — but
-  the families that *stream* through a small window (mistral-small-4, ling,
-  beam, step, and any Kimi tree run with a small `MAX_OPEN`) keep this path hot.
-  Verified on mistral-small-4 real weights: bit-exact
-  (`logits_hash cdfd7309bb141772`, "Paris") plus the native tool round-trip, and
-  all 21 store-consuming test targets pass.
-
-  The first version of this fix **regressed mistral-small-4 by 6.6%** (perf row
-  45.04 → 42.06 t/s, caught by `test_perf_baseline`, probe confirming the card
-  was not the cause) because `ReapRetired` walked the whole retired list and
-  issued up to 64 `cudaEventQuery` calls per eviction. The events all sit on one
-  stream and therefore complete in FIFO order, so only the front can be
-  not-ready: checking just the front makes it amortized O(1) and the row passes
-  again. That is the value of running the perf harness rather than reasoning
-  about the mechanism — the retention idea was right and the bookkeeping around
-  it was expensive.
-
-  What remains open is the other half — overlapping the copy with compute —
-  which still needs the queue.
+- P5. **RESOLVED (2026-11-05) — archived.** The "4x slower than Kimi-K3" was
+  never a regression: that baseline was prose committed before the run it
+  described (K3's own log says 6.66–6.79 s/token, and at identical binary,
+  geometry and window the two models measured 6.95 vs 6.98 — ratio 1.00). The
+  defect it hid was the shared `ExpertStore`'s window: `max_open` 512 against a
+  1472-expert working set (92 MoE layers × top-16, each visited once per token),
+  i.e. a cyclic scan with a provably **zero** hit rate. Fixed Kimi-locally —
+  clamp up to the working-set floor plus a default of 65 536, and
+  `warm_on_load = false` because the eager pre-parse walks experts in path order
+  and cost 156 s for nothing — which is **6.95 → 2.96 (K3) / 3.23–3.35 (Pro)
+  s/token** at ~5 s load, bit-exact. P5a closed with it: an evicted slot is now
+  retired with a CUDA event instead of `cudaStreamSynchronize` (**20.3 → 0.07 ms**
+  per eviction; 6.95 → 6.26 at a 512-slot window). Full trail — the sweep table,
+  the two prefetch designs measured and rejected, and the 6.6% mistral-small-4
+  regression this fix itself introduced and how it was found:
+  [`open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`](open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md).
+- P6. **Open — overlap the expert staging with the compute.** The measured rate
+  is still only ~7.6–8 GB/s of effective expert traffic against the 39.8 GB/s
+  this array delivers at 32 concurrent cold reads, so the remaining lever is
+  structural: replace the synchronous per-expert
+  `EnsureResident` + six `cudaMemcpyAsync` + three GEMVs with a queue that
+  stages layer N+1 while layer N computes. That is the shared `ExpertStore`
+  contract, not a Kimi-local edit, and it is the only reason these families are
+  at 0.30 t/s rather than the roofline. Owner: whoever next touches
+  `expert_store.h`.
 
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 

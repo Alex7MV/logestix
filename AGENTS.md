@@ -760,7 +760,7 @@ procedure — `perf-tuning-a-model`.
   template-derived; P5: RESOLVED — the reported 4x gap was a prose baseline, and
   the defect it hid was the 512-slot expert window against a 1472-expert working
   set, 6.95 → 2.98 (K3) / 3.23–3.35 (Pro) s/token; the eviction half of the
-  same loop is closed too — P5a).
+  same loop is closed too — P5a, both archived).
   Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
   560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
   (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited

@@ -253,7 +253,7 @@ suite were found and fixed test-first (the bandwidth probe leaked 1 GiB of VRAM
 for the process lifetime; the generation scratch was charged twice on the second
 `Load()`), and the verdict logic now distinguishes capacity from regression.
 Full trail:
-[`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md).
+[`open-tasks/2026-11-04-qwen38-flash-next-lifecycle.md`](2026-11-04-qwen38-flash-next-lifecycle.md).
 
 **Closed (perf): the serialized expert H2D.** Residency staging now rides the
 copy engine (`copy_stream` + per-expert `ev_uploads` + an `ev_front` slot-reuse
@@ -273,7 +273,7 @@ when the copies are issued, and those copies already run at the PCIe roofline
 block — `hc_epilogue` 2.65 + `hc_down_gemv` 2.16 + `hc_norm` 1.57 +
 `hc_up_gemv` 0.59 = 6.97 ms/step of an 18.5 ms/step kernel budget — which is
 arithmetic work, not staging. Full trail:
-[`open-tasks/2026-11-04-qwen38-expert-staging.md`](open-tasks/2026-11-04-qwen38-expert-staging.md).
+[`open-tasks/2026-11-04-qwen38-expert-staging.md`](2026-11-04-qwen38-expert-staging.md).
 
 **Closed (framing).** The shared codec had been emitting the compact tool JSON
 and the untrimmed message content for **every** qwen member, because the two
@@ -285,4 +285,4 @@ to message content, and `suppress_empty_system` is the third genuine per-family
 delta. All six members' real-weight tool round-trips are green on the new wire —
 including `qwen3.5-9b` and `qwen3.5-35b-a3b`, which had none — and every
 `logits_hash` is unchanged. Full trail:
-[`open-tasks/2026-11-04-qwen-template-fidelity.md`](open-tasks/2026-11-04-qwen-template-fidelity.md).
+[`open-tasks/2026-11-04-qwen-template-fidelity.md`](2026-11-04-qwen-template-fidelity.md).
