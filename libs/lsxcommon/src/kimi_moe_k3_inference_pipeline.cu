@@ -675,7 +675,13 @@ cudaError_t RunKimiK3Generation(cudaStream_t stream, KimiK3PinnedWeights &pw,
                 }
                 for (int k = 0; k < top.top_k; ++k) {
                     const int eid = hidx[static_cast<size_t>(k)];
-                    EnsureKimiK3ExpertResident(experts, l, eid, stream);
+                    // The ring path already made every expert of this layer
+                    // resident in the batch loop above, and EnsureResident is an
+                    // O(lru) linear scan — with a 65 536-slot window that is
+                    // tens of millions of comparisons per token if repeated
+                    // here for nothing.
+                    if (!ring_batch)
+                        EnsureKimiK3ExpertResident(experts, l, eid, stream);
                     const size_t pe_idx =
                         static_cast<size_t>(l) * top.num_experts +
                         static_cast<size_t>(eid);

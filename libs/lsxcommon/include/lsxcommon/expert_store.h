@@ -999,10 +999,27 @@ struct ExpertStore {
                 (void)cudaEventSynchronize(slot.ev);
                 ++stage_stats.ring_waits;
             }
+            // Size check BEFORE anything is queued or opened. A tree whose
+            // experts are not uniform (a repack, a mixed variant) would
+            // otherwise overflow the slot sized from the first parsed expert,
+            // and the first implementation leaked the descriptor while doing it:
+            // it pushed the jobs, noticed the overflow and continued without
+            // recording the fd for closing.
+            int64_t need = 0;
+            for (int k = 0; k < 6; ++k)
+                need += planes[flat][static_cast<size_t>(k)].bytes;
+            if (need > max_stage_bytes_) {
+                log::error(log_prefix + "staging ring: " + paths[flat] + " needs " +
+                           std::to_string(need) + " B but a slot holds " +
+                           std::to_string(max_stage_bytes_) +
+                           " B (geometry from the first parsed expert); this "
+                           "tree is not uniform — the ring declines");
+                ++stage_stats.short_reads;
+                continue;
+            }
             const int fd = ::open(paths[flat].c_str(), O_RDONLY);
             if (fd < 0) continue;
             int64_t cursor = 0;
-            bool ok = true;
             for (int k = 0; k < 6; ++k) {
                 const auto &pl = planes[flat][static_cast<size_t>(k)];
                 io::PreadJob job;
@@ -1012,12 +1029,9 @@ struct ExpertStore {
                 job.len = static_cast<size_t>(pl.bytes);
                 jobs.push_back(job);
                 cursor += pl.bytes;
-                if (cursor > max_stage_bytes_) ok = false;
             }
-            if (!ok) continue;
-            // The fd must stay open until the pool has read from it; closing
-            // here is safe because Run() below is synchronous per batch and the
-            // pool copies under its own lock. Recorded so the batch keeps it.
+            // The fd must stay open until the pool has read from it; Run() below
+            // is synchronous per batch, so closing after it is safe.
             open_fds_.push_back(fd);
             slot.last_idx = static_cast<int64_t>(flat);
             owners.push_back({flat, slot_i});

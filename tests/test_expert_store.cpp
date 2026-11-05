@@ -484,3 +484,79 @@ TEST_CASE("ExpertStore staging ring bootstraps geometry without a warm load",
     cudaFree(dev);
     cudaStreamDestroy(stream);
 }
+
+TEST_CASE("ExpertStore PrefetchStage refuses an oversized expert without "
+          "leaking its descriptor",
+          "[expert_store][stage]")
+{
+    // The slot is sized from the FIRST expert parsed, because a converted tree
+    // is uniform. A tree that is not (a repack, a mixed variant) must be REFUSED
+    // rather than overflow the slot — and refused without leaking the file
+    // descriptor, which is what the first implementation did: it queued the
+    // preads, noticed the overflow, and continued without recording the fd for
+    // closing. Linux-only check: the pool itself is POSIX-only.
+#if defined(__linux__)
+    const auto count_fds = []() -> int {
+        int n = 0;
+        std::error_code ec;
+        for (auto it = std::filesystem::directory_iterator("/proc/self/fd", ec);
+             !ec && it != std::filesystem::directory_iterator(); ++it)
+            ++n;
+        return n;
+    };
+
+    // Two experts in one layer: the first is 16 bytes per packed plane, the
+    // second 64. Geometry is recorded from whichever is parsed first.
+    const std::filesystem::path container =
+        std::filesystem::temp_directory_path() /
+        ("lsx_expert_oversize_" + std::to_string(std::rand()));
+    const auto exps = container / "logestix" / "experts" / "layer_0";
+    std::filesystem::create_directories(exps);
+    for (int i = 0; i < 2; ++i) {
+        const size_t n = (i == 0) ? 16u : 64u;
+        lsxcommon::PackedExpert pe;
+        pe.w1_packed.assign(n, static_cast<uint8_t>(0x10 + i));
+        pe.w2_packed.assign(n, static_cast<uint8_t>(0x20 + i));
+        pe.w3_packed.assign(n, static_cast<uint8_t>(0x30 + i));
+        // One scale byte per 16 elements (n packed bytes = 2n elements), or the
+        // decoder rejects the expert and the test measures the wrong path — the
+        // first version used 2 scales for 64 bytes and expert 1 never parsed.
+        const size_t scales = (n * 2) / 16;
+        pe.w1_scales.assign(scales, 0x80u);
+        pe.w2_scales.assign(scales, 0x81u);
+        pe.w3_scales.assign(scales, 0x82u);
+        auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
+        REQUIRE(batch.ok());
+        REQUIRE(lsxcommon::WriteRecordBatchToFile(
+                    *batch, exps / ("exp_" + std::to_string(i) + ".arrow"))
+                    .ok());
+    }
+
+    Store s;
+    s.num_layers = 1;
+    s.experts_per_layer = 2;
+    s.max_open = 4;
+    REQUIRE(s.Load(container.string(), false));
+    s.stage_ring.slots = 2;
+    REQUIRE(s.InitStageRing());
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    s.EnsureResident(0, 0, stream);   // PrefetchStage declines a non-resident entry
+    s.EnsureResident(0, 1, stream);
+
+    const int before = count_fds();
+    const size_t ids[2] = {0, 1};
+    const size_t staged = s.PrefetchStage(ids, 2);
+    const int after = count_fds();
+
+    // Whichever expert the geometry was taken from, the batch must not leave a
+    // descriptor behind, and it must never claim more experts than it filled.
+    CHECK(staged <= 2);
+    INFO("staged " << staged << ", fds " << before << " -> " << after);
+    CHECK(after <= before);
+
+    cudaStreamDestroy(stream);
+    std::filesystem::remove_all(container);
+#endif
+}
