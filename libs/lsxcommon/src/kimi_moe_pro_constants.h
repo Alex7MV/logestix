@@ -17,7 +17,7 @@
 // the indexer arithmetic is reconstructed from the tensor shapes, `dsa_config`
 // and the Lightning-Indexer prior art already in this repository
 // (`deepseek_moe_pro` CSA, `mistral_moe_large4` DSA). That residual risk is
-// recorded in `docs/OPEN_TASKS.md` §R16, not claimed as a parity result.
+// recorded in `docs/OPEN_TASKS.md` §R17, not claimed as a parity result.
 //
 // Measured delta against Kimi-K3/model.safetensors.index.json: 497 220 of
 // 497 340 tensor names are identical; +120 = 24 DSA layers x 5 indexer tensors

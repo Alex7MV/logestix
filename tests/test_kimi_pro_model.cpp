@@ -28,17 +28,24 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "kimi_moe_k3_constants.h"
 #include "kimi_moe_pro_constants.h"
+#include "kimi_moe_k3_model.h"
+#include "kimi_moe_pro_model.h"
 #include "lsxcommon/kimi_moe_k3_convert.h"
 #include "lsxcommon/kimi_moe_k3_inference_pipeline.h"
 #include "lsxcommon/kimi_moe_k3_load.h"
 #include "lsxcommon/kimi_moe_pro_convert.h"
+#include "lsxcommon/model_factory.h"
 #include "lsxcommon/sampling.h"
 #include "test_kimi_pro_fixture.h"
+#include "test_streaming_assert.h"
 
 namespace fs = std::filesystem;
 using namespace lsxcommon;
@@ -220,4 +227,135 @@ TEST_CASE("kimi-k3.1-pro pipeline: the DSA branch selects above the top-k",
     REQUIRE(again.final_logits.size() == out.final_logits.size());
     for (size_t i = 0; i < out.final_logits.size(); ++i)
         REQUIRE(out.final_logits[i] == again.final_logits[i]);
+}
+
+// ─────────────────────── Task 6: model, registry, lifecycle ───────────────
+
+namespace {
+
+std::unique_ptr<IModel> MakeModel(const fs::path &root)
+{
+    ModelInitConfig cfg;
+    cfg.model_path = root.string();
+    cfg.model_type = kimi_pro::frozen::kModelType;
+    cfg.fast_math_mode = FastMathMode::kOff;
+    return LsxModelFactory::Create(cfg);
+}
+
+// Rewrites one string in the converted index in place, so a hand-broken tree
+// can be handed to `Load` without touching the converter.
+void PatchIndex(const fs::path &root, const std::string &from,
+                const std::string &to)
+{
+    const fs::path idx = root / "logestix" / "model.index.json";
+    std::ifstream in(idx, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    in.close();
+    std::string s = ss.str();
+    const auto at = s.find(from);
+    if (at == std::string::npos) FAIL("index does not contain " << from);
+    REQUIRE(at != std::string::npos);
+    s.replace(at, from.size(), to);
+    std::ofstream out(idx, std::ios::binary);
+    out << s;
+}
+
+}  // namespace
+
+TEST_CASE("kimi-k3.1-pro model: registry and variant type", "[kimi-pro][model]")
+{
+    EnsureModelRegistry();
+    CHECK(KimiK31ProModel::kType == "kimi-k3.1-pro");
+    CHECK(KimiK31ProModel::kType == kimi_pro::frozen::kModelType);
+    // The variant must not shadow its parent's registration.
+    CHECK(KimiK3Model::kType == "kimi-k3");
+}
+
+TEST_CASE("kimi-k3.1-pro model: a Kimi-K3 tree is rejected",
+          "[kimi-pro][model][lifecycle]")
+{
+    if (!GpuAvailable()) SKIP("no CUDA device");
+    EnsureModelRegistry();
+    const fs::path k3 = BuildTree("model_k3", kimiprotest::Variant::k3);
+    auto model = MakeModel(k3);
+    REQUIRE(model != nullptr);
+    // Asked to load as the DSA variant, a Kimi-K3 tree must fail: the format
+    // tag, the topology's `dsa` flag and the passport all disagree.
+    CHECK_FALSE(model->Load());
+    model->Unload();
+}
+
+TEST_CASE("kimi-k3.1-pro model: an off-passport indexer geometry fails Load",
+          "[kimi-pro][model][lifecycle]")
+{
+    if (!GpuAvailable()) SKIP("no CUDA device");
+    EnsureModelRegistry();
+    const fs::path root = BuildTree("model_heads", kimiprotest::Variant::kPro);
+    // The indexer's own shape check (the frozen top-k alone does not cover it):
+    // a tree claiming a different head count is rejected at load, before any
+    // wrong-shaped tensor can reach a kernel.
+    PatchIndex(root, "\"index_num_heads\": 2", "\"index_num_heads\": 3");
+    auto model = MakeModel(root);
+    REQUIRE(model != nullptr);
+    CHECK_FALSE(model->Load());
+    model->Unload();
+}
+
+TEST_CASE("kimi-k3.1-pro model: lifecycle", "[kimi-pro][model][lifecycle]")
+{
+    if (!GpuAvailable()) SKIP("no CUDA device");
+    EnsureModelRegistry();
+
+    // An Infer before Load is a clean error, not a crash.
+    {
+        ModelInitConfig cfg;
+        cfg.model_type = kimi_pro::frozen::kModelType;
+        cfg.fast_math_mode = FastMathMode::kOff;
+        auto unloaded = LsxModelFactory::Create(cfg);
+        REQUIRE(unloaded != nullptr);
+        ModelRequest req;
+        req.input_ids = {3};
+        req.max_gen_tokens = 1;
+        const auto r = unloaded->Infer(req);
+        CHECK_FALSE(r.ok);
+        CHECK_FALSE(r.error_msg.empty());
+    }
+
+    const fs::path root = BuildTree("model_life", kimiprotest::Variant::kPro);
+    auto model = MakeModel(root);
+    REQUIRE(model != nullptr);
+    if (!model->Load()) FAIL("load failed");
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {3, 5, 7};
+    req.max_gen_tokens = 2;
+    req.ignore_eos = true;
+    const auto r = model->Infer(req);
+    if (!r.ok) FAIL(r.error_msg);
+    REQUIRE(r.ok);
+    REQUIRE(r.gen_tokens.size() == 2);
+    REQUIRE(r.final_logits.size() == static_cast<size_t>(kimik3test::kVocab));
+    bool any_nonzero = false;
+    for (float v : r.final_logits) {
+        REQUIRE(std::isfinite(v));
+        if (v != 0.0f) any_nonzero = true;
+    }
+    CHECK(any_nonzero);
+    CHECK(r.weight_resident_bytes > 0);
+    CHECK(r.num_layers == kimik3test::kLayers);
+
+    // Streaming and cancel, the shared contract every family wires.
+    ModelRequest stream_req;
+    stream_req.input_ids = {5};
+    stream_req.max_gen_tokens = 3;
+    stream_req.ignore_eos = true;
+    ExpectStreamMatchesTokens(*model, stream_req);
+    ModelRequest cancel_req;
+    cancel_req.input_ids = {5, 7, 9};
+    cancel_req.ignore_eos = true;
+    ExpectPreSetAbortStops(*model, cancel_req);
+    ExpectCallbackAbortStops(*model, cancel_req);
+    model->Unload();
 }

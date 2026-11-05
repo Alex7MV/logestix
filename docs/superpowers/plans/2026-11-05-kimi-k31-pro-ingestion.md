@@ -233,15 +233,25 @@ Calling `RunKimiK3MlaAttention` with `sel == nullptr, n_sel == 0` reproduces tod
 ### Task 6: Model, registry, tool bridge, lifecycle
 
 **Files:**
-- Create: `libs/lsxcommon/include/lsxcommon/kimi_moe_pro_model.h`, `libs/lsxcommon/src/kimi_moe_pro_model.cpp`
+- Create: `libs/lsxcommon/src/kimi_moe_pro_model.h`, `libs/lsxcommon/src/kimi_moe_pro_model.cpp` (the family's model TUs live in `src/`, like `kimi_moe_k3_model.*`)
 - Modify: `libs/lsxcommon/src/model_registry.cpp` (register `kimi-k3.1-pro`)
-- Modify: `tests/test_model_independence_guard.cpp` (`consumers`, `kLifecycle`)
-- Test: `tests/test_kimi_pro_model.cpp` (label `fast`)
+- Modify: `tests/test_model_independence_guard.cpp` (`kPassports`, `owners`, `consumers`, `kLifecycle`)
+- Test: `tests/test_kimi_pro_model.cpp` (label `inference`, not `fast`: it loads a model)
 
 **Interfaces:**
 - Produces: `class KimiK31ProModel final : public ModelBase` with `static const std::string kType;` (`"kimi-k3.1-pro"`), `Load`, `Infer`, `SelfCheck`, `Unload`, `Inspect`, `BuildConversationInputIds`, `BuildPromptInputIds`, `ParseToolCalls`, `TeardownWeights`; framing delegates to `kimi_moe_k3_tool_format.h` (XTML, identical tokenizer).
 
-- [ ] **Step 1: Write the failing test** — `tests/test_kimi_pro_model.cpp`: `TEST_CASE("kimi-k3.1-pro model: registry")` asserts `LsxModelFactory::Create("kimi-k3.1-pro")` is non-null and `KimiK31ProModel::kType == "kimi-k3.1-pro"`; `TEST_CASE("kimi-k3.1-pro model: a Kimi-K3 tree is rejected")` loads the K3 synthetic tree and asserts `Load()` is false with the variant message; `TEST_CASE("kimi-k3.1-pro model: frozen mismatch fails Load")` flips `index_topk` in the index and asserts failure; `TEST_CASE("kimi-k3.1-pro model: lifecycle")` asserts `Infer` on an unloaded model returns a clean error, and (synthetic tree) a 2-token `Infer` returns `ok`, `weight_resident_bytes > 0`, `output_text` decoded, `token_callback` invoked once per token, and a pre-set `abort_flag` stops after zero or one token; `TEST_CASE("kimi-k3.1-pro pipeline: the DSA branch engages above the top-k")` from Task 5.
+- [x] **Step 1: Write the failing test** — `tests/test_kimi_pro_model.cpp`: `TEST_CASE("kimi-k3.1-pro model: registry and variant type")` asserts the two `kType`s; `TEST_CASE("kimi-k3.1-pro model: a Kimi-K3 tree is rejected")` loads the K3 synthetic tree and asserts `Load()` is false; `TEST_CASE("kimi-k3.1-pro model: an off-passport indexer geometry fails Load")` patches `index_num_heads` in the converted index and asserts a hard `Load()` failure; `TEST_CASE("kimi-k3.1-pro model: lifecycle")` asserts `Infer` on an unloaded model returns a clean error, and (synthetic tree) a 2-token `Infer` returns `ok`, `weight_resident_bytes > 0`, `num_layers`, finite non-zero logits, the streaming order, and both halves of cooperative cancel.
+
+  Deviations (recorded): (a) the planned `frozen mismatch fails Load` case was replaced by the off-passport-geometry case — a model-stage target runs with `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1` (it can never load a real tree), and that env exists precisely to bypass the passport, so flipping `index_topk` on a synthetic tree cannot fail for the intended reason and would only pass by accident; the passport gate is pinned end-to-end by `test_kimi_pro_loader`'s `FillDsaBlock` unit case (top-k, rope width, eps, DSA table) instead, which exercises the same function the model calls; (b) `Load` therefore gained an UNCONDITIONAL structural check (`top_.dsa` must be true) that is not bypassed by synthetic mode, because "this model runs the indexer" is a claim about the model, not about the tree's geometry; (c) `output_text` is not asserted: the synthetic tree has no tokenizer arrow, so the model runs with `tokenizer_optional_` set and publishes no text (the K3 model test does the same).
+
+- [x] **Step 2: Run to verify it fails** — `fatal error: kimi_moe_pro_model.h: No such file or directory`.
+
+- [x] **Step 3: Implement** — the model is the K3 model with the variant gate: `LsxFastMathScope(EffectiveFastMathMode(cfg_))` in `Infer`, `RunUnderResidencyLock` around generation, `GenerationStream` wired from `req.token_callback`/`req.abort_flag`, `AcquirePermanentWeights`, `FinishLoad`, `TeardownContext` in `TeardownWeights`; framing delegates to `kimi_moe_k3_tool_format.h` unchanged (the variant changes what the layers attend to, never the wire); env knobs `LSX_KIMI_K31_PRO_MAX_OPEN` / `_MAX_CONTEXT`; registered in `model_registry.cpp`; `kPassports` + `owners` + `consumers` + `kLifecycle` rows added.
+
+- [x] **Step 4: Run to verify it passes** — `test_kimi_pro_model` 6 cases / 216 assertions; `test_model_independence_guard` + `test_code_naming_guard` green; the `kimi` inference group green; full `ctest --preset linux-debug` 134/134.
+
+- [x] **Step 5: Commit** — `feat(kimi-k31-pro): IModel, registry, XTML bridge and the lifecycle contract`.
 
 - [ ] **Step 2: Run to verify it fails.**
 

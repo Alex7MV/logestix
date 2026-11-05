@@ -62,6 +62,7 @@ add_library(lsxcommon STATIC
     src/kimi_moe_k3_model.cpp
     src/kimi_moe_k3_tool_format.cpp
     src/kimi_moe_pro_convert.cpp
+    src/kimi_moe_pro_model.cpp
     src/alice_moe_load.cpp
     src/alice_moe_model.cpp
     src/alice_tool_format.cpp

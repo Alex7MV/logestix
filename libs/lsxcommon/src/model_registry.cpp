@@ -27,6 +27,7 @@
 #include "glm_moe_model.h"
 #include "kimi_moe_model.h"
 #include "kimi_moe_k3_model.h"
+#include "kimi_moe_pro_model.h"
 #include "nemotron_moe_model.h"
 #include "nemotron_moe_nvfp4_model.h"
 #include "qwen_dense_model.h"
@@ -47,6 +48,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<GlmV5Model>();
         LsxModelFactory::Register<KimiK27CodeModel>();
         LsxModelFactory::Register<KimiK3Model>();
+        LsxModelFactory::Register<KimiK31ProModel>();
         LsxModelFactory::Register<Qwen3_5_9BModel>();
         LsxModelFactory::Register<Qwen3_8_27BModel>();
         LsxModelFactory::Register<Gemma4_26BA4BModel>();
