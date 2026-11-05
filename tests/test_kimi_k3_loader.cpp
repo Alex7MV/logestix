@@ -6,6 +6,8 @@
 #include <cuda_runtime.h>
 
 #include <cstdlib>
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -193,4 +195,102 @@ TEST_CASE("kimi-k3 expert store starts cold when warm-on-load is off",
 
     kimi_k3::FreeKimiK3ExpertIndex(warm);
     kimi_k3::FreeKimiK3ExpertIndex(cold);
+}
+
+// Eviction must not drain the CUDA stream. The decode loop issues an async H2D
+// copy from each expert's mmap and only evicts that expert a layer or more
+// later, so the store cannot munmap on the spot — but the historical answer was
+// `cudaStreamSynchronize`, which stalls the host on EVERY evicted expert and
+// waits for work that has nothing to do with the expert being evicted. At 1472
+// evictions per token that is a per-token host stall, not a rounding error.
+//
+// The contract pinned here has two halves:
+//   1. eviction does not block the host on unrelated queued stream work, and
+//   2. an evicted expert's mapping survives until the copy reading it is done
+//      (checked by actually copying from the evicted pointer afterwards).
+TEST_CASE("kimi-k3 expert eviction neither drains the stream nor unmaps live",
+          "[kimi-k3][loader]")
+{
+    if (!GpuAvailable()) SKIP("no CUDA device");
+    const fs::path root = BuildConverted();
+
+    // A window of 2 forces an eviction on every third residency request.
+    auto db = kimi_k3::LoadKimiK3ExpertIndex(
+        root.string(), kimik3test::kLayers, kimik3test::kExperts,
+        kimik3test::kDenseLayers, /*max_open=*/2, /*warm_on_load=*/false);
+
+    // 1 GiB of device memory, memset repeatedly: enough queued stream work that
+    // a host drain is unmistakable (tens of ms) next to an immediate return.
+    void *device = nullptr;
+    if (cudaMalloc(&device, size_t{1} << 30) != cudaSuccess) {
+        cudaGetLastError();
+        kimi_k3::FreeKimiK3ExpertIndex(db);
+        SKIP("cannot allocate the 1 GiB timing buffer");
+    }
+    constexpr int kFlushPasses = 32;   // 32 GiB of memset traffic
+    auto queue_work = [&]() {
+        for (int i = 0; i < kFlushPasses; ++i)
+            cudaMemsetAsync(device, i, size_t{1} << 30, 0);
+    };
+
+    // Calibration: how long does that queued work actually take on the device?
+    queue_work();
+    const auto t_cal0 = std::chrono::steady_clock::now();
+    cudaStreamSynchronize(0);
+    const auto t_cal1 = std::chrono::steady_clock::now();
+    const double work_ms =
+        std::chrono::duration<double, std::milli>(t_cal1 - t_cal0).count();
+
+    kimi_k3::EnsureKimiK3ExpertResident(db, 1, 0, 0);
+    kimi_k3::EnsureKimiK3ExpertResident(db, 1, 1, 0);
+    REQUIRE(db.lru.size() == 2);
+
+    // Now evict (window full) while unrelated work is queued ahead on the same
+    // stream. A draining implementation waits for all of it.
+    queue_work();
+    const auto t0 = std::chrono::steady_clock::now();
+    kimi_k3::EnsureKimiK3ExpertResident(db, 1, 2, 0);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double evict_ms =
+        std::chrono::duration<double, std::milli>(t1 - t0).count();
+    cudaStreamSynchronize(0);
+
+    INFO("queued device work: " << work_ms << " ms, eviction call: "
+                                << evict_ms << " ms");
+    REQUIRE(work_ms > 8.0);  // the probe must be able to see a drain at all
+    CHECK(evict_ms < work_ms * 0.5);
+
+    // Half 2: a copy issued from an expert's mmap must still be correct after
+    // that expert has been evicted (the mapping may not be released while the
+    // DMA reading it is in flight).
+    kimi_k3::EnsureKimiK3ExpertResident(db, 2, 0, 0);
+    const auto &victim =
+        db.entries[static_cast<size_t>(2 * kimik3test::kExperts + 0)];
+    REQUIRE(victim.host_w1 != nullptr);
+    const int64_t bytes = victim.w1_bytes;
+    REQUIRE(bytes > 0);
+    std::vector<uint8_t> host_ref(static_cast<size_t>(bytes));
+    std::memcpy(host_ref.data(), victim.host_w1, static_cast<size_t>(bytes));
+    const uint8_t *live_ptr = victim.host_w1;
+
+    uint8_t *stage = nullptr;
+    REQUIRE(cudaMalloc(&stage, static_cast<size_t>(bytes)) == cudaSuccess);
+    REQUIRE(cudaMemcpyAsync(stage, live_ptr, static_cast<size_t>(bytes),
+                            cudaMemcpyHostToDevice, 0) == cudaSuccess);
+
+    // Evict it out from under the in-flight copy.
+    for (int k = 1; k <= 3; ++k)
+        kimi_k3::EnsureKimiK3ExpertResident(db, 2, k % kimik3test::kExperts, 0);
+    CHECK(db.entries[static_cast<size_t>(2 * kimik3test::kExperts + 0)]
+              .host_w1 == nullptr);
+
+    REQUIRE(cudaStreamSynchronize(0) == cudaSuccess);
+    std::vector<uint8_t> got(static_cast<size_t>(bytes));
+    REQUIRE(cudaMemcpy(got.data(), stage, static_cast<size_t>(bytes),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(std::memcmp(got.data(), host_ref.data(), static_cast<size_t>(bytes)) == 0);
+
+    cudaFree(stage);
+    cudaFree(device);
+    kimi_k3::FreeKimiK3ExpertIndex(db);
 }

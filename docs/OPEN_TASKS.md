@@ -1175,6 +1175,38 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   from 2.98 s/token (~13.6 h, see P3), and both perf rows remain unseeded — a
   harness row is what would make these numbers quotable.
 
+  **P5a — DONE (2026-11-05): eviction no longer drains the stream.** The half of
+  the synchronous loop that lived in the *store* is fixed. `EnsureResident` used
+  to call `cudaStreamSynchronize` whenever the window was full (the Kimi call
+  site passes no `evict_done`), so every evicted expert stalled the host until
+  **unrelated** queued work finished — measured in `test_kimi_k3_loader` as a
+  20.32 ms eviction against 20.20 ms of queued memset traffic, i.e. a full drain.
+  An evicted slot's mapping is now **retired with a `cudaEventDisableTiming`
+  event** recorded on the stream that issued the copies and released once
+  `cudaEventQuery` reports completion (`RetireSlot`/`ReapRetired`), so nothing
+  is unmapped under an in-flight DMA and the host never blocks. Memory stays
+  bounded by `max_retired` (64), past which only the *oldest* retiree is waited
+  on. Same test after the fix: **0.072 ms** per eviction (282x), and a copy
+  issued from an expert's mmap is still byte-exact after that expert was evicted
+  out from under it (both halves asserted).
+
+  Real-weight effect is in the eviction-heavy regime and neutral everywhere else,
+  which is what the mechanism predicts (K3, same binary, 64-token cycles):
+
+  | window | evictions/token | before | after |
+  |---|---|---|---|
+  | 512 | 1472 (~100 %) | 6.95 | **6.26** (≈0.47 ms of stall removed per eviction) |
+  | 2048 | 0 after warm-up | 5.57 | 5.80 (noise) |
+  | 65 536 (shipped) | ~80 (~5 %) | 2.96 | 3.05 (noise) |
+
+  So the shipped configuration gains little — it evicts rarely by design — but
+  the families that *stream* through a small window (mistral-small-4, ling,
+  beam, step, and any Kimi tree run with a small `MAX_OPEN`) keep this path hot.
+  Verified on mistral-small-4 real weights: bit-exact
+  (`logits_hash cdfd7309bb141772`, "Paris") plus the native tool round-trip, and
+  all 21 store-consuming test targets pass. What remains open is the other half —
+  overlapping the copy with compute — which still needs the queue.
+
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 
 **Landed.** Family `flint` (`logestix-flint-nvfp4`) is registered and runs on the

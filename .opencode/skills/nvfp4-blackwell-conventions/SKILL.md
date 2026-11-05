@@ -120,6 +120,14 @@ attribution, budget tests, baselines) is the `perf-tuning-a-model` skill.
   thought you removed.
 - **Routed-expert host memory goes through the neutral `ExpertStore`**
   (`include/lsxcommon/expert_store.h`), whose `max_open` bounds mapped file.
+  Two properties of that store are load-bearing and easy to lose:
+  (a) the window must cover one token's working set — the layers are visited
+  once each per token, so a smaller window is a cyclic scan with a *provably
+  zero* hit rate, not a smaller cache; and (b) eviction must not drain the
+  stream. An evicted slot's mapping is retired with a CUDA event and released
+  once the copies issued so far have executed (`RetireSlot`/`ReapRetired`), so
+  never reintroduce a `cudaStreamSynchronize` on that path — it stalls on
+  unrelated work and measured 20.3 ms per eviction against 0.072 ms.
   The full rule set, the two sanctioned storage shapes and the measured cost of
   the forbidden ones are in the `ingesting-a-model` skill, section **"Host-side
   weight storage — `ExpertStore` and Arrow zero-copy"**.

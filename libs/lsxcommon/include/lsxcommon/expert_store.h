@@ -87,6 +87,27 @@ struct ExpertStore {
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
     int64_t parse_calls = 0;
     int64_t parse_ok = 0;
+    // ── Deferred unmap of evicted slots ───────────────────────────────────
+    // The decode loop issues an async H2D copy from an expert's mmap and may
+    // evict that expert several residency calls later, so the mapping cannot be
+    // released on the spot. The historical answer was cudaStreamSynchronize —
+    // which stalls the host on EVERY eviction and waits for unrelated work
+    // (measured: a 20 ms queued memset made a 2-slot eviction take 20.3 ms).
+    // Instead the mapping is RETIRED with an event recorded on the stream that
+    // issued the copies, and released once cudaEventQuery reports completion.
+    // Nothing is unmapped while a DMA that could still read it is in flight,
+    // and the host never blocks.
+    struct RetiredMapping {
+        std::shared_ptr<arrow::io::MemoryMappedFile> mmap;
+        std::shared_ptr<arrow::RecordBatch> batch;
+        cudaEvent_t ev = nullptr;  // null = nothing in flight, release at will
+    };
+    std::vector<RetiredMapping> retired;
+    std::vector<cudaEvent_t> retired_event_pool;
+    // Upper bound on mappings kept alive past their eviction; on overflow the
+    // oldest event is synchronized (a rare, amortized host wait) so memory
+    // stays bounded even if the GPU falls many layers behind.
+    size_t max_retired = 64;
     // Optional per-store drain hook for the pending-prefetch-copy registry.
     // A family whose prefetch copies live in its own registry sets this;
     // when null the shared lsx_pending_copy_drain hook is called.
@@ -390,14 +411,80 @@ struct ExpertStore {
     //    fails right after a successful load", with no hint about pinning.
     // So: align down, sort, merge, and register the disjoint result. Pin and
     // unpin must use the SAME helper or the bookkeeping drifts.
+    // Releases every retired mapping whose copies have completed. Called after
+    // each eviction (bounded per call) and at teardown.
+    void ReapRetired()
+    {
+        for (size_t i = 0; i < retired.size();) {
+            RetiredMapping &r = retired[i];
+            bool done = true;
+            if (r.ev) {
+                const cudaError_t q = cudaEventQuery(r.ev);
+                if (q == cudaErrorNotReady) {
+                    done = false;
+                } else if (q != cudaSuccess) {
+                    // The stream or context is gone: no copy can still be
+                    // reading this mapping. Clear the sticky error.
+                    (void)cudaGetLastError();
+                }
+            }
+            if (!done) {
+                ++i;
+                continue;
+            }
+            if (r.ev) retired_event_pool.push_back(r.ev);
+            r.mmap.reset();
+            r.batch.reset();
+            retired.erase(retired.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+    }
+
+    // Moves an evicted slot's mapping out of the live tables and keeps it alive
+    // until `stream`'s work issued so far has executed. Falls back to a full
+    // sync only if no event can be obtained (then the release is immediate and
+    // therefore must be ordered).
+    void RetireSlot(size_t idx, cudaStream_t stream)
+    {
+        RetiredMapping r;
+        r.mmap = std::move(mmaps[idx]);
+        r.batch = std::move(batches[idx]);
+        entries[idx] = TEntry();
+        if (!r.mmap) return;  // never mapped (or pinned store): nothing to wait on
+
+        cudaEvent_t ev = nullptr;
+        if (!retired_event_pool.empty()) {
+            ev = retired_event_pool.back();
+            retired_event_pool.pop_back();
+        } else if (cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) !=
+                   cudaSuccess) {
+            (void)cudaGetLastError();
+            ev = nullptr;
+        }
+        if (ev) {
+            if (cudaEventRecord(ev, stream) != cudaSuccess) {
+                (void)cudaGetLastError();
+                retired_event_pool.push_back(ev);
+                ev = nullptr;
+            }
+        }
+        if (!ev) {
+            // No event: order the release the slow way rather than unmap under
+            // a possible in-flight copy.
+            if (stream) (void)cudaStreamSynchronize(stream);
+            else (void)cudaDeviceSynchronize();
+        }
+        r.ev = ev;
+        retired.push_back(std::move(r));
+    }
+
     // Touch a resident entry or parse it, evicting the LRU tail under max_open.
-    // The caller's stream is synchronized ONCE, only before the first eviction
-    // (pre-munmap barrier for in-flight cudaMemcpyAsync reading host mmap).
-    // @p evict_done, when non-null, releases that barrier via
-    // cudaEventRecord + cudaStreamWaitEvent instead of cudaStreamSynchronize:
-    // an in-flight async H2D reading an about-to-be-munmap'd host mmap is
-    // awaited without draining unrelated stream work. nullptr preserves the
-    // prior behavior exactly (existing DeepSeek call sites pass none).
+    // Eviction NEVER drains the host on the stream: an evicted expert's mapping
+    // is retired with an event (RetireSlot) and released once the stream has
+    // executed the copies issued so far — see the RetiredMapping comment for
+    // the measurement and the bound. (@p evict_done, when non-null, still
+    // records an event and makes the stream wait on it, so a family that wants
+    // that ordering point can keep it; the DeepSeek call sites use it, Kimi
+    // passes nullptr and relies on the retire/event path.)
     void EnsureResident(int layer, int expert, cudaStream_t stream,
                         cudaEvent_t evict_done = nullptr)
     {
@@ -419,20 +506,32 @@ struct ExpertStore {
             if (evict_done) {
                 cudaEventRecord(evict_done, stream);
                 cudaStreamWaitEvent(stream, evict_done, 0);
-            } else {
-                cudaStreamSynchronize(stream);
             }
+            // Deliberately NO host drain here: an eviction retires the mapping
+            // with an event (RetireSlot) instead of waiting for the whole
+            // stream. See the RetiredMapping comment.
         }
         while (lru.size() >= max_open) {
             size_t evict = lru.back();
             lru.pop_back();
             // Retire any in-flight prefetch DMA reading this mapping before
             // it disappears (munmap under an async copy = silent garbage).
-            if (pending_drain) pending_drain(entries[evict].host_w1);
-            else lsx_pending_copy_drain(entries[evict].host_w1);
-            mmaps[evict].reset();
-            batches[evict].reset();
-            entries[evict] = TEntry();
+            // Families with their own copy registry drain it here; the shared
+            // hook covers the rest. RetireSlot keeps the mapping itself alive
+            // until the stream has executed the copies issued so far.
+            if (entries[evict].host_w1) {
+                if (pending_drain) pending_drain(entries[evict].host_w1);
+                else lsx_pending_copy_drain(entries[evict].host_w1);
+            }
+            RetireSlot(evict, stream);
+        }
+        ReapRetired();
+        if (retired.size() > max_retired) {
+            // Bounded memory: wait for the oldest retiree only, then reap what
+            // has completed. Amortized and rare — it needs the GPU to be
+            // max_retired experts behind the host.
+            if (retired.front().ev) (void)cudaEventSynchronize(retired.front().ev);
+            ReapRetired();
         }
         if (ParseFile(idx))
             lru.insert(lru.begin(), idx);
@@ -440,6 +539,13 @@ struct ExpertStore {
 
     void Free()
     {
+        // Retired mappings first: an evicted expert's mmap may still have a
+        // copy reading it, so wait for its event before releasing anything.
+        for (auto &r : retired)
+            if (r.ev) (void)cudaEventSynchronize(r.ev);
+        retired.clear();
+        for (auto ev : retired_event_pool) (void)cudaEventDestroy(ev);
+        retired_event_pool.clear();
         if (pinned_pool) cudaFreeHost(pinned_pool);
         pinned_pool = nullptr;
         pinned_bytes = 0;
