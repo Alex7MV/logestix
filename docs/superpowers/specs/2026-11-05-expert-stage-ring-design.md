@@ -337,3 +337,87 @@ Measured, not decided here:
   ~20 GB/s instead of 39.8, the ceiling is 1.9 s/token (0.53 t/s) — still a 1.7×
   win, and still worth landing. This is stated up front so a smaller result is
   read as the array's behaviour, not as a failed change.
+
+---
+
+## Outcome of execution (2026-11-05)
+
+Implemented, tested, bit-exact, and **neutral on this host**. The ring is off by
+default; `kimi-k3.1-pro` is wired behind `LSX_EXPERT_STAGE_RING`.
+
+### What was built
+
+- `PreadPool` (`pread_pool.h`) — persistent N-thread pread, short reads not
+  counted as complete, `Run` waits for **all** workers.
+- Plane locators per resident expert, derived from the decoder's own pointers
+  (one owner for the column→plane mapping) and gated three ways, so a mapping
+  base off by the Arrow header is loud instead of silent.
+- The ring: `InitStageRing` / `PrefetchStage` / `StageFromSlot` / `AwaitStage`,
+  per-slot DMA events. Slot reuse waits **host-side** — see "the defect the
+  doctoring found" below.
+- Env knobs + engagement counters, and a machine-keyed bandwidth floor
+  (`expert_store.stage_ring_gbps`, measured 9.36 GB/s, floor 7.49).
+
+### Measured, on the real tree
+
+Paired runs, same binary, same prompt, 32 and 64 tokens, ring off as control:
+
+| arm | 32 tok | 64 tok | notes |
+|---|---|---|---|
+| ring off (control) | 122.5 s, 124.6 s | 184.1 s, 264.5 s† | †first run of the session, cold cache — not comparable |
+| ring on, per-expert refill | 163.9 s | — | 1472 pinned slots = 27 GiB locked; alloc alone 14 s |
+| ring on, 64/128 slots | 150.9 / 150.2 s | — | still worse than control |
+| **ring on, layer-wide prefetch, 16/32 slots** | **119.4 / 121.2 s** | — | ≈ control, inside noise |
+
+nsys at 32 tokens, ring off → on:
+
+| | off | on |
+|---|---|---|
+| H2D copies | 558 478 | 558 478 |
+| H2D bytes/run | 1978.3 GiB | 1978.3 GiB |
+| H2D effective bandwidth | 23.7 GB/s | 22.3 GB/s |
+| host time inside `cudaMemcpyAsync` | 118.0 s | **45.3 s** |
+| kernel time | 6.8 s | 6.8 s |
+
+The host-side copy cost genuinely drops by 62%. The wall does not move.
+
+### Why neutral — two measured reasons
+
+1. **This host serves the reads from the page cache.** 665 GB of the 750 GB of
+   RAM sits in buff/cache, and the whole per-token working set is far smaller
+   than that, so the pageable path already runs at 23.7 GB/s — not the 5.2 GB/s
+   the cold-cache probe measured, and not the 19.4 GB/s an earlier profile saw in
+   a colder state. Pinning cannot beat a copy that is already cache-served.
+2. **Expert staging is a minority of the traffic.** 61.8 GiB/token goes H2D;
+   routed experts are 25.5 GiB of it (41%) and the remaining **36.4 GiB/token is
+   the streamed latent/shared/dense plane**, which never goes through
+   `ExpertStore` at all. A *perfect* expert path therefore touches 41% of the
+   copy time at most, and on this host that 41% is already at cache speed.
+
+### The two defects the doctoring found
+
+- **Slot reuse cannot be a stream wait.** The refill writes the pinned buffer
+  from the host with pread, so `cudaStreamWaitEvent` orders device work while the
+  host overwrites the buffer a pending DMA will read. The hazard test passed
+  against a ring with no check at all until it was given payloads that differ per
+  expert and a busy stream; then the doctored run showed expert 0's buffer
+  holding expert 1's bytes. Reuse is now `cudaEventSynchronize`, which is rare
+  because slots ≥ top-k makes recycling a once-per-layer event.
+- **`warm_on_load = false` means no plane geometry at init.** This family
+  disabled the eager pre-parse (§R17 P5), so the ring logged "no plane geometry"
+  and every expert silently fell back — a change that looks like it simply did
+  not help. One expert is now parsed at ring init; the regression test fails
+  without that.
+
+### Not done, stated as debt
+
+- **Canonical 2048-token rows were not run** for either arm. At the measured
+  rates that is ~2.1 h per arm, and the 32/64-token pair plus the mechanism above
+  already answers the question the rows would answer. They are the quotable
+  form, so `§R17 P6` records them as `not run`, not as a pass.
+- **GPUDirect Storage** remains unavailable on this host (`nvidia_fs` not
+  loaded, no `libcufile`), and it is the one lever that would remove the host
+  copy from the 59% instead of optimising the 41%.
+- **The cold-cache win is unverified end to end.** The probe's 26.9 ms vs
+  54.8 ms per layer is a real cold measurement; reproducing it on the model
+  needs a machine whose page cache cannot hold the tree (or root to drop it).

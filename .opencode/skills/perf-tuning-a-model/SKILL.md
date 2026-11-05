@@ -291,6 +291,20 @@ Then the traps:
   have moved the number.
 - **Cheap wins first.** Pinning/residency conversions and a wrong dispatch
   threshold beat writing new kernels.
+- **Pin the traffic split before optimising a copy path.** Measured on
+  kimi-k3.1-pro: 61.8 GiB/token goes H2D, of which routed experts are 25.5 GiB
+  (41%) and the streamed latent/shared/dense plane is 36.4 GiB (59%). A pinned
+  staging ring for the expert half cut the host-side copy cost by 62% (118.0 →
+  45.3 s inside `cudaMemcpyAsync` in a 32-token run) and moved the wall by
+  nothing, because (a) that 41% was already being served from a 665 GB page
+  cache at 23.7 GB/s and (b) it is the minority of the traffic. Optimising the
+  smaller half of a copy-bound wall is how a 62% improvement in one term becomes
+  a 2% change in the number.
+- **A pageable `cudaMemcpyAsync` is not asynchronous.** The driver stages the
+  pageable source through an internal pinned buffer during the call, so the host
+  blocks for the whole copy and the two halves never overlap. That is why host
+  time inside the call can exceed wall time on some streams, and why "it is
+  async, so it must overlap" is not a measurement.
 
 ## Common mistakes
 

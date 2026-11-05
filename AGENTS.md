@@ -129,7 +129,16 @@ procedure — `perf-tuning-a-model`.
   `test_model_independence_guard.cpp`), `chat_conversation.h`/`tool_format.{h,cpp}` (tool
   calling render/parse), `incremental_detokenizer.{h,cpp}`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
-  (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`,
+  (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`
+  (+ `pread_pool.h`; the store carries an **opt-in pinned staging ring** —
+  `LSX_EXPERT_STAGE_RING`, off by default, wired for `kimi-k3.1-pro` only. It
+  replaces pageable per-expert copies with a persistent pread pool into pinned
+  slots plus per-slot DMA events; a slot's mapping may not be refilled until its
+  DMA has **executed**, which is a host-side `cudaEventSynchronize` and not a
+  stream wait, because the refill writes the buffer from the host. Measured
+  neutral on this host — the page cache serves the reads at 23.7 GB/s and expert
+  staging is 41% of the 61.8 GiB/token of H2D traffic — see `OPEN_TASKS` §R17 P6
+  before switching it on for anyone else),
   `lsx_attn_inference.{h,cu}` (model-neutral **attention/MLP kernel** layer in
   `lsxcommon::attn` — full-attn + GatedDeltaNet hybrid, fused decode-attn/MLP,
   RMSNorm/RoPE/embed; its neutral weight bundle and geometry POD live in

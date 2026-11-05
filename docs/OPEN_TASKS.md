@@ -1090,15 +1090,37 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   the two prefetch designs measured and rejected, and the 6.6% mistral-small-4
   regression this fix itself introduced and how it was found:
   [`open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`](open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md).
-- P6. **Open — overlap the expert staging with the compute.** The measured rate
-  is still only ~7.6–8 GB/s of effective expert traffic against the 39.8 GB/s
-  this array delivers at 32 concurrent cold reads, so the remaining lever is
-  structural: replace the synchronous per-expert
-  `EnsureResident` + six `cudaMemcpyAsync` + three GEMVs with a queue that
-  stages layer N+1 while layer N computes. That is the shared `ExpertStore`
-  contract, not a Kimi-local edit, and it is the only reason these families are
-  at 0.30 t/s rather than the roofline. Owner: whoever next touches
-  `expert_store.h`.
+- P6. **Pinned staging ring: built, tested, bit-exact — and NEUTRAL on this host
+  (2026-11-05).** The entry used to say the remaining lever was to "stage layer
+  N+1 while layer N computes". That is impossible: the expert ids of a layer are a
+  function of the previous layer's output, so there is nothing to stage until the
+  layer that would have been overlapped has finished. What was built instead is
+  the other structural change — a pinned staging ring in the shared
+  `ExpertStore` (persistent pread pool + per-slot DMA events, layer-wide
+  prefetch), off by default, with `kimi-k3.1-pro` wired behind
+  `LSX_EXPERT_STAGE_RING`. Design and full measurement table:
+  [`superpowers/specs/2026-11-05-expert-stage-ring-design.md`](superpowers/specs/2026-11-05-expert-stage-ring-design.md).
+
+  Measured, and this is why it is not switched on: the host-side copy cost drops
+  62% (118.0 → 45.3 s of `cudaMemcpyAsync` inside a 32-token run) and the wall
+  does not move (119.4–121.2 s with the ring against 122.5 s without). Two
+  reasons, both measured. (a) This host keeps 665 GB of 750 GB in buff/cache, so
+  the pageable path already copies at **23.7 GB/s**, not the 5.2 GB/s of the cold
+  probe — pinning cannot beat a copy the cache already serves. (b) Expert staging
+  is a minority of the traffic: **61.8 GiB/token goes H2D, routed experts are
+  25.5 GiB (41%), and 36.4 GiB/token is the streamed latent/shared/dense plane**,
+  which never enters `ExpertStore`. A perfect expert path therefore touches at
+  most 41% of the copy time.
+
+  So the lever this entry named was mis-scoped, and the honest remainder is the
+  59%, not the 41%. Two follow-ups, both leaving the ring parked:
+  - the **canonical 2048-token rows were not run** for either arm (~2.1 h each);
+    the cells are `not run`, not a pass. They are what a future reader needs
+    before quoting any of this;
+  - the cold-cache win (26.9 ms vs 54.8 ms per layer, probe on real files) is
+    **unverified end to end**, because this host's cache holds the tree. GPUDirect
+    Storage would remove the host copy from the 59% instead of optimising the 41%
+    — `nvidia_fs`/`libcufile` are still absent here.
 
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 
