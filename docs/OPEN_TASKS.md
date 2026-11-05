@@ -720,16 +720,43 @@ row) on the same weights. This is the 13.5 toolkit, not our code: the control ar
 shows it. Other families' `r3` rows predate 13.5 and will re-seed upward on their
 next harness run — do not read those as regressions.
 
-**U3 — driver-gated 13.5 features (open only if the driver moves).** Verified
-absent on driver `595.99.02`: oversized shared memory, locality domains, TMA
-large-allocation class, memcpy-batch **graph nodes** (the shape §R17 P6 needs),
-fabric/cliques, `cuMemGetLocationInfo`, `cuTensorMapSetAllocationClass`. The
-attributes return `CUDA_ERROR_INVALID_VALUE` and the symbols are missing from
-`libcuda.so`. Oversized SMEM is additionally hardware-capped on the 5090
-(`MAX_SHARED_MEMORY_PER_MULTIPROCESSOR = 102400`), so it would buy nothing even
-then. `cuMemcpyBatchAsync` and the `cuCheckpoint*` family ARE present today —
-batched copies and a warm process snapshot are reachable without a driver bump
-and are not yet used.
+**U3 — driver re-probed after the 2026-11-05 update: nothing opened that helps.**
+The driver moved `595.99.02` (API 13.2) → **`615.71.09` (API 13.4)**; the toolkit
+did not change (13.5.37). The runtime is therefore one minor ABOVE the driver,
+which is supported by CUDA's minor-version compatibility but means 13.5-only
+APIs are absent at runtime. Measured delta of `libcuda`'s exported `cu*` surface:
+
+| item | 13.2 driver | 13.4 driver |
+|---|---|---|
+| `cuMemGetLocationInfo` | absent | **present** |
+| `cuGraphAddNode_v3` | absent | **present** |
+| `cuDeviceGetCliqueInfo` / `GetCliqueCount` | absent | **present** |
+| `cuTensorMapSetAllocationClass` (TMA large class) | absent | still absent |
+| `cuGraphAddMemcpyBatchNode` / `...NodeGetParams` | absent | still absent |
+| `cuMemsetBatchAsync`, `cuFabricCpyBatchAsync` | absent | still absent |
+| `cuMemcpyBatchAsync` (`_v2`), `cuCheckpointProcess*` | present | present |
+
+None of the three that opened is a lever here: the clique API is multi-GPU
+fabric, `cuGraphAddNode_v3` adds graph node kinds we do not need, and
+`cuMemGetLocationInfo` answers "which device backs this UVa page" for a store we
+map through the page cache. **Correction to what this entry said before:** the
+memcpy-batch **graph node** was described as "the shape §R17 P6 needs" — that was
+wrong. P6 needs batched copies overlapped with compute, and the stream API
+`cuMemcpyBatchAsync` has been there all along; only the graph-node convenience is
+driver-gated. P6 is **not** blocked on a driver update.
+
+Two things that used to be inferences are now measurements on a driver that can
+answer:
+
+- **Oversized shared memory buys nothing on this card, now measured.**
+  `MAX_OVERSIZED_SHARED_MEMORY_PER_BLOCK` resolves and equals
+  `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN` (101 376) — the attribute is queryable on
+  this driver, and there is no headroom above the ordinary opt-in limit.
+- **Locality domains are useless here.** `LOCALITY_DOMAIN_COUNT = 1`
+  (`..._MULTIPROCESSOR_COUNT = 170`): one domain, nothing to partition across.
+
+So §U remains a record, not a work item, and the only real lever for the
+host-store-bound families is still §R17 P6.
 
 ## R14. Mistral-Large-4-1T-A52B (1T-A52B) — ingestion landed, four gates green on template goldens (2026-11-02)
 

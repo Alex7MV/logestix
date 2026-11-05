@@ -8,10 +8,11 @@ Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
 Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
 No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is rejected.
 CUDA Toolkit 13.5 (nvcc V13.5.37; minimum 13.2+), full native C++23 support in NVCC.
-The Linux driver here is 13.2 (`595.99.02`), so every 13.5 feature that needs a
-newer driver is unavailable and verified absent (oversized SMEM, locality
-domains, TMA large-allocation class, memcpy-batch graph nodes): the attributes
-return `CUDA_ERROR_INVALID_VALUE` and the symbols are missing from `libcuda.so`.
+The Linux driver is 13.4 (`615.71.09`, driver API 13040), so the runtime 13.5 runs
+in **minor-version compatibility** mode: APIs introduced after 13.4 are present in
+the headers and absent from `libcuda.so` at runtime (`cuTensorMapSetAllocationClass`,
+`cuGraphAddMemcpyBatchNode`, `cuMemsetBatchAsync`, `cuFabricCpyBatchAsync`).
+`test_cuda_toolkit_guard` prints that skew and fails only on a major mismatch.
 
 Open, triaged follow-up work (real defects, Windows platform gaps,
 hardware-dependent budgets, missing coverage) — `docs/OPEN_TASKS.md`. It keeps

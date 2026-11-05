@@ -175,9 +175,13 @@ it makes CMake fail with a bare "Error: generator platform: x64".
 
 Tested versions; newer also work: CMake 3.25+ (tree used 4.2.3), GCC 15.2
 (Ubuntu 26.04), NVCC **13.5.37** on Linux (`/usr/local/cuda` → `cuda-13.5`, CCCL
-3.5.0 from the bundle; the installed *driver* is 13.2, so driver-gated 13.5
-features are unavailable — that is why the family-specific arch targets must be
-verified on SASS, not assumed) / 13.4.92 on Windows. CUDA Toolkit ≥13.2 (guard
+3.5.0 from the bundle; the *driver* is 13.4 / `615.71.09`, so the runtime runs in
+CUDA's minor-version-compatibility mode and APIs introduced after 13.4 exist in
+the headers but not in `libcuda.so` — check with
+`nm -D --defined-only $(readlink -f /usr/lib/x86_64-linux-gnu/libcuda.so.1)`
+before using one, and note that the family-specific arch targets must be verified
+on SASS because the driver cannot execute what the compiler can emit) /
+13.4.92 on Windows. CUDA Toolkit ≥13.2 (guard
 `test_cuda_toolkit_guard`, which pins the 13.2 floor and the 13.x major -- patch
 levels pass through it, plus the build-toolkit stamp below). The project is
 deliberately pinned to C++20 (NVCC also ships full C++23).

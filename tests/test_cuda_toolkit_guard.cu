@@ -24,6 +24,25 @@ std::string StampToolkit(const std::string &stamp)
                                                       : to - from);
 }
 
+// The DRIVER half. `cudaRuntimeGetVersion` reports the cudart the binary links
+// (i.e. CUDART_VERSION, always equal), so it says nothing about the driver in
+// the kernel. CUDA's minor-version compatibility lets a 13.y runtime run on a
+// 13.x driver with x <= y, which is the state this host is in (runtime 13.5,
+// driver 13.4) and is supported — but only for APIs that existed in 13.x, so it
+// has to be VISIBLE rather than assumed. A driver in another major cannot run
+// this runtime at all.
+// Returns an empty string when the pair is usable.
+std::string DriverCompatibility(int driverVersion, int runtimeVersion)
+{
+    const int d_major = driverVersion / 1000;
+    const int r_major = runtimeVersion / 1000;
+    if (d_major != r_major)
+        return "driver supports CUDA " + std::to_string(d_major) +
+               ".x but the runtime is " + std::to_string(r_major) +
+               ".x — a driver in another major cannot run this runtime";
+    return {};
+}
+
 } // namespace
 
 TEST_CASE("cuda_toolkit_guard: runtime 13.x, floor 13.2, header/runtime match",
@@ -112,4 +131,42 @@ TEST_CASE("cuda_toolkit_guard: the build tree matches the headers I compiled wit
     int runtime = 0;
     REQUIRE(cudaRuntimeGetVersion(&runtime) == cudaSuccess);
     REQUIRE(runtime == CUDART_VERSION);
+}
+
+TEST_CASE("cuda_toolkit_guard: driver-compatibility rule", "[cuda_toolkit_guard]") {
+    // Same pair, newer driver, older driver in the same major: all usable.
+    CHECK(DriverCompatibility(13040, 13050).empty());   // this host
+    CHECK(DriverCompatibility(13050, 13050).empty());
+    CHECK(DriverCompatibility(13000, 13050).empty());
+    // Another major cannot run this runtime.
+    CHECK(!DriverCompatibility(12090, 13050).empty());
+    CHECK(!DriverCompatibility(14000, 13050).empty());
+}
+
+TEST_CASE("cuda_toolkit_guard: the driver can run this runtime",
+          "[cuda_toolkit_guard]") {
+    // cudaDriverGetVersion reports the DRIVER's CUDA version through the
+    // runtime API, so this needs no libcuda link (the target links cudart).
+    int driver = 0;
+    const cudaError_t rc = cudaDriverGetVersion(&driver);
+    if (rc != cudaSuccess) SKIP("no CUDA driver on this host");
+    REQUIRE(driver > 0);
+
+    const int d_major = driver / 1000, d_minor = (driver % 1000) / 10;
+    const int r_major = CUDART_VERSION / 1000, r_minor = (CUDART_VERSION % 1000) / 10;
+    INFO("driver 13.4-style version " << d_major << "." << d_minor
+                                      << " (raw " << driver << "), runtime "
+                                      << r_major << "." << r_minor);
+    if (d_minor < r_minor) {
+        // Not a failure — minor-version compatibility — but it means 13.
+        // feature-specific APIs may be absent at runtime, so it must be said.
+        WARN("running a " << r_major << "." << r_minor << " runtime on a "
+                          << d_major << "." << d_minor
+                          << " driver: minor-version compatibility, so APIs "
+                             "introduced after " << d_major << "." << d_minor
+                          << " are unavailable at runtime");
+    }
+    const std::string problem = DriverCompatibility(driver, CUDART_VERSION);
+    INFO(problem);
+    REQUIRE(problem.empty());
 }
