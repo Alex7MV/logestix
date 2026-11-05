@@ -376,3 +376,19 @@ TEST_CASE("kimi-k3.1-pro frozen cross-check distinguishes the variant",
     broken.hidden = kHidden - 1;
     CHECK_FALSE(kimi_k3::KimiK3TopologyMatchesFrozen(broken, true, kIndexTopK));
 }
+
+// The DSA variant inherits the parent's expert working set, so the routed-expert
+// window floor is the same 1472 and the same clamp applies (see
+// tests/test_kimi_k3_loader.cpp for the measurement behind the floor).
+TEST_CASE("kimi-k3.1-pro expert window floor matches the parent's",
+          "[kimi-pro][loader][unit]")
+{
+    using namespace kimi_pro::frozen;
+    auto pro = FrozenTopology();
+    FillDsaBlock(pro);
+    CHECK(kimi_k3::KimiK3ExpertWindowFloor(pro) ==
+          static_cast<size_t>((kLayers - kDenseLayers) * kTopK));
+    CHECK(kimi_k3::KimiK3ExpertWindowFloor(pro) == 1472);
+    CHECK(kimi_k3::KimiK3ResolveExpertWindow(pro, 512) == 1472);
+    CHECK(kimi_k3::KimiK3ResolveExpertWindow(pro, 4096) == 4096);
+}

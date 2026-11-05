@@ -992,14 +992,15 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
 | tokenizer parity | 23/23 against the checkpoint's `tiktoken.model` (`tokenizer_kind 2`) |
 | tool codec | byte-exact against `encoding_k3.py` frames (synthetic tokenizer) |
 | FSI / CODE / DET | goldens committed (template-derived); **not yet run** on real weights |
-| perf | **not measured** (host-store bound by construction) |
+| decode rate | **2.96–2.97 s/token** (0.34 t/s) measured 2026-11-05 at the shipped configuration (expert window 65 536, no eager warm), 64-token cycles, bit-exact throughout. It was 6.95 s/token at the old 512-slot window against a 1472-expert working set — see §R17 P5, which also records that the `~2 s/token` this report first quoted was prose committed before the run it described |
+| perf row | **not seeded** — no `perf`/`r3` entry in `perf_baselines.json` for this tree |
 
 **Open, explicitly.**
 
-- K1. FSI/CODE/DET were not executed to completion. At the measured ~2 s/token
-  the budgets (512–2048 tokens × 3 prompts, DET × 3 stress runs) are multi-hour
-  runs; the goldens and tests are in place and SKIP (4) until then. Do **not**
-  read the matrix row as green.
+- K1. FSI/CODE/DET were not executed to completion. At the measured decode rate
+  (see K3 below) the budgets (512–2048 tokens × 3 prompts, DET × 3 stress runs)
+  are multi-hour runs; the goldens and tests are in place and SKIP (4) until
+  then. Do **not** read the matrix row as green.
 - K2. The parity goldens are **template-derived** (`tools/kimi_k3_template_goldens.py`):
   the 1.5 TB source needs `fla-core` and a multi-GPU runner, so no
   model-defined golden can be captured here. `expected` is the prompt set's own
@@ -1077,53 +1078,102 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   instrument is missing".
 - P3. **The real-weight FSI / CODE / DET and perf sweep was not run** (operator
   ruling, 2026-11-05: record it as debt rather than spend the GPU time). The cost
-  is measured, not guessed: this variant decodes at **7.0–8.6 s per token
-  (0.12–0.14 t/s)** on the reference host, read off the `test_kimi_pro_selfcheck`
-  run log (three 64-token cycles took 9.2, 7.7 and 7.5 min; the first is cold),
-  and a load of the 23 GB pinned graph is ~10 min. So one 2048-token generation
-  is ~4 h and the sweep is ~32 h of exclusive GPU (39 h at the cold rate):
+  is measured, not guessed, and it shrank by ~2.2x when P5's window defect was
+  fixed: at the shipped 3.23 s/token for this tree (window 65 536, no eager warm
+  — see P5; the figures below were first written at the pre-fix 0.14 t/s):
 
-  | target | generations × tokens | wall clock at 0.14 t/s |
+  | target | generations × tokens | wall clock at 3.23 s/token |
   |---|---|---|
-  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~12.1 h (+load) |
-  | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~3.0 h (+load) |
-  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~9.1 h (+load) |
-  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~8.1 h (+2 loads) |
+  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~5.5 h (+load) |
+  | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~1.4 h (+load) |
+  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~4.1 h (+load) |
+  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~3.7 h (+2 loads) |
 
-  FSI was actually started (release tree) and stopped 97 min in, still inside
-  FSI-TEST-01; the interruption made the harness emit three empty generations,
-  and **an in-flight kill is not a verdict** — the cells stay `not run`. The
-  ctest budgets were raised to what a real completion needs (FSI 54 000 s,
-  CODE 18 000 s, DET 43 200 s, perf 43 200 s) so no entry can be killed by a
-  budget that could never fit it. To close this item, run each target alone
-  (GPU exclusivity) with `LSX_FSI_GOLDEN_DIR`/`LSX_CODE_GOLDEN_DIR`/
-  `LSX_DET_GOLDEN_DIR` pointing at `tests/fixtures/<stage>`, then let the
-  harness seed `tests/perf/perf_baselines.json` — never by hand. Note what a
-  green row would and would not mean: the goldens are **template-derived**
-  (P4), and no gate observes the indexer (P1/P2).
+  so the sweep is ~14.7 h of exclusive GPU on this host (it was ~32 h at the
+  pre-fix rate). FSI was actually started (release tree) and stopped 97 min in,
+  still inside FSI-TEST-01; the interruption made the harness emit three empty
+  generations, and **an in-flight kill is not a verdict** — the cells stay
+  `not run`. The ctest budgets still describe the pre-fix worst case (FSI
+  54 000 s, CODE 18 000 s, DET 43 200 s, perf 43 200 s), which is now ~4x
+  generous rather than tight; leave them, since a budget may only be wrong in
+  the safe direction. To close this item, run each target alone (GPU exclusivity)
+  with `LSX_FSI_GOLDEN_DIR`/`LSX_CODE_GOLDEN_DIR`/`LSX_DET_GOLDEN_DIR` pointing
+  at `tests/fixtures/<stage>`, then let the harness seed
+  `tests/perf/perf_baselines.json` — never by hand. Note what a green row would
+  and would not mean: the goldens are **template-derived** (P4), and no gate
+  observes the indexer (P1/P2).
 - P4. **The FSI/CODE/DET goldens are template-derived**, payload-identical to
   `kimi-k3`'s (same XTML frames, same prompt-set Expected Template values,
   `tools/kimi_k3_template_goldens.py --model kimi-k3.1-pro`): the 1.5 TB MXFP4
   source needs `fla-core` and a multi-GPU runner, so no source oracle can be
   captured on this card. A green row pins the converted path against the
   template, never source parity.
-- P5. **A 4x throughput gap against the plain Kimi-K3 measurement is
-  unexplained.** `docs/model-reports/2026-11-03-Kimi-K3.md` records "the measured
-  ~2 s/token" (≈0.5 t/s) for the parent on this same host; `kimi-k3.1-pro`
-  measures 7.0–8.6 s/token on **identical geometry, identical tree layout and
-  the same expert count**. The indexer is *not* the cause: at `n_pos <= 2048`
-  the pipeline takes the `sel == nullptr` branch and neither the score pass nor
-  the top-k runs
-  (`kimi_moe_k3_inference_pipeline.cu`, the `pos + 1 > index_topk` guard), so the
-  sparse machinery costs exactly zero at the protocol both numbers were taken
-  at. The plausible causes are a difference in the measurement itself (the K3
-  figure is prose, not a harness row — no `perf`/`r3` entry exists for either
-  tree, so neither number has been through `test_perf_baseline`) or the two runs
-  landing on different expert-cache capacities, which this family's decode rate
-  is coupled to. Until someone seeds both rows through the harness at equal
-  capacity, the honest reading is that the two figures are not comparable —
-  do not quote the delta as a regression, and do not quote 0.14 t/s as a
-  property of the architecture.
+- P5. **RESOLVED (2026-11-05) — the 4x gap was never real, and the real defect it
+  hid was the expert window.** Two separate errors were conflated:
+
+  1. *The baseline was prose, not a measurement.* `2026-11-03-Kimi-K3.md`
+     recorded "the measured ~2 s/token" at commit `3bc13da7` (04:16:28), i.e.
+     **before** K3's first real measurement landed in that same run log at
+     04:24:38. K3's own cycles are 434.6 s and 426.3 s per 64 tokens =
+     **6.66–6.79 s/token**, and Pro's are 461.3 / 446.6 s = **6.98–7.21**. At
+     identical binary (both rebuilt from `main`), identical geometry, identical
+     tree layout, the same 1472-expert working set and the same window, the two
+     models measured **6.95 vs 6.98 s/token — a ratio of 1.00**. The indexer is
+     not a factor: below `index_topk` the pipeline takes the `sel == nullptr`
+     branch and runs neither the score pass nor the top-k, and at the protocol
+     both numbers were taken at that branch is always the one taken.
+     `perf_baselines.json` still has no row for either tree.
+  2. *The real defect:* `max_open` was **512** against a **1472**-expert
+     working set (92 MoE layers × top-16, each layer visited once per token in
+     ascending order). A cyclic scan over 1472 items with 512 slots has a
+     **provably zero hit rate**, so every expert was re-opened, re-mmap'd,
+     re-parsed and re-evicted — with a full `cudaStreamSynchronize` on each
+     eviction, because the Kimi call site passes no `evict_done`. Kimi was the
+     only family at 512 (DeepSeek-Pro uses 4096; the rest inherit the store's
+     65 536), and the K3 plan's `LSX_KIMI_K3_EXPERT_CACHE_SLOTS` /
+     `LSX_KIMI_K3_PIN_DENSE` knobs were never implemented — that plan step is
+     still unticked.
+
+  **Fixed** (Kimi-local, bit-exact: `logits_hash 5c1e227265d6a27b` on every run):
+  the window is clamped up to the working-set floor (`KimiK3ExpertWindowFloor` /
+  `KimiK3ResolveExpertWindow`), default 65 536; and `Load()`'s eager pre-parse is
+  switched off for these trees (`warm_on_load=false`) because it walks experts in
+  *path* order, not decode order — it cost **156 s** of load at a 65 536 window
+  and bought nothing.
+
+  Measured on real weights, 64-token cycles, same binary, GPU-exclusive:
+
+  | window | eager warm | load | warm s/token | vs shipped |
+  |---|---|---|---|---|
+  | 512 (shipped before this fix) | on | 6 s | 6.95 | 1.00× |
+  | 1472 (floor) | on | 18 s | 6.05 | 1.15× |
+  | 2048 | on | 10 s | 5.57 | 1.25× |
+  | 65 536 | on | **156 s** | 3.01 | 2.31× |
+  | **65 536 (shipped now)** | **off** | **5 s** | **2.98** (K3) / **3.23** (Pro) | **2.33×** / **2.16×** |
+
+  **Rejected after measurement:** a per-layer page-cache prefetch of the
+  router's top-k (the 22× serial-vs-parallel cold-read gap, 1.82 GB/s at one
+  request in flight vs 39.8 GB/s at 32, made it look promising). Both forms lost
+  or drew: reading each file into a discard buffer measured **7.16 s/token**
+  (18% *worse* — the sink read is pure waste once the page is cached, and this
+  working set is re-visited 3.5× per expert), and `posix_fadvise(WILLNEED)`
+  measured 6.11 vs 6.15 (noise). Removed rather than shipped as an unmeasured
+  knob. The mechanism that actually pays is **retention**: with a wide window
+  experts are never `munmap`'d, so a re-read becomes a page-cache hit.
+
+  At equal binary and window the variant's own cost is now measurable for the
+  first time: **Pro decodes 3.23 s/token against the parent's 2.96, so the DSA
+  indexer costs ~9%**, not the 4× that the prose baseline implied.
+
+  **Still open, and honestly bounded.** The shipped 3.23 s/token is ~8 GB/s of
+  effective host-store traffic against 39.8 GB/s available, so a deeper fix
+  (overlapping the next layer's expert staging with the current layer's GEMMs)
+  could still pay — it needs the pipeline restructured around a queue instead of
+  one synchronous `EnsureResident` + six `cudaMemcpyAsync` + three GEMVs per
+  expert, and that is the shared `ExpertStore` contract, not a Kimi-local edit.
+  The *scale* is also now a floor, not a property: the debt sweep recomputes
+  from 2.98 s/token (~13.6 h, see P3), and both perf rows remain unseeded — a
+  harness row is what would make these numbers quotable.
 
 ## R6. Recursive Flint (39.8B-A2.5B) — ingestion landed, expert precision + goldens open (2026-10-30)
 

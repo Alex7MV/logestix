@@ -266,7 +266,20 @@ cudaError_t StageKimiK3Layer(KimiK3PinnedWeights &pw, int layer,
 
 KimiK3ExpertDb LoadKimiK3ExpertIndex(const std::string &model_path,
                                      int num_layers, int experts_per_layer,
-                                     int first_moe_layer, size_t max_open);
+                                     int first_moe_layer, size_t max_open,
+                                     bool warm_on_load = true);
+// Minimum routed-expert LRU window for a topology: one decode token's working
+// set, i.e. one top_k-sized draw from every MoE layer. The layers are visited
+// in ascending order once per token, so a window below this turns the access
+// pattern into a cyclic scan whose hit rate is provably zero — every expert is
+// re-opened, re-mmap'd, re-parsed and re-evicted, and (with no eviction event
+// wired) each eviction also forces a full stream synchronize. Measured on the
+// real trees: 512 slots against the 1472-expert set cost 1.26x on warm cycles.
+size_t KimiK3ExpertWindowFloor(const KimiK3Topology &top);
+// Resolves a requested window against the floor: a request below it is clamped
+// up (a pathological window is a decode regression, not a preference), and any
+// non-positive request means "use the floor".
+size_t KimiK3ResolveExpertWindow(const KimiK3Topology &top, long requested);
 void EnsureKimiK3ExpertResident(KimiK3ExpertDb &db, int layer, int expert,
                                 cudaStream_t stream);
 void FreeKimiK3ExpertIndex(KimiK3ExpertDb &db);

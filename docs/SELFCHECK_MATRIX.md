@@ -73,10 +73,14 @@ one in a ctest summary, which is why the debt rows are called out below.
   on the real weights — Paris ×3 bit-exact, plus the native XTML tool round-trip
   `get_weather {"city":"Paris"}` — so it earned its move out of §3. The three
   parity cells are **not run, and that is a measurement, not a formality**: this
-  variant decodes at **7.0–8.6 s per token (0.12–0.14 t/s)** here (host-store
-  bound: 92 MoE layers × top-16 experts streamed per token from 1.4 TB), read
-  off the three 64-token self-check cycles in the run log, so one 2048-token FSI
-  case is ~4 h and the FSI+CODE+DET+perf sweep is ~32 h of exclusive GPU. An FSI
+  variant decodes at **3.23 s per token (0.31 t/s)** at the shipped configuration
+  (expert window 65 536, no eager warm), down from 6.95 s/token when it first
+  landed — the window was 512 against a 1472-expert working set, a cyclic scan
+  with a zero hit rate (`docs/OPEN_TASKS.md` §R17 P5 has the sweep and the two
+  prefetch designs that were measured and rejected). Its parent measures 2.96 in
+  the same build, so the DSA indexer costs ~9%. Even at the fixed rate one
+  2048-token FSI case is ~1.8 h and the FSI+CODE+DET+perf sweep is ~14.7 h of
+  exclusive GPU. An FSI
   run was started and stopped 97 min in — the kill is not a verdict, hence `not run`
   rather than a red. Its goldens are **template-derived** and payload-identical
   to `kimi-k3`'s, so a future green row pins the converted path against the

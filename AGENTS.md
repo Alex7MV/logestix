@@ -746,15 +746,18 @@ procedure — `perf-tuning-a-model`.
   + 8.9 GB streamed latent/shared plane + 1.4 TB expert arrows): SelfCheck
   Paris ×3 bit-exact (`logits_hash 98ec1bbb372c9181`, top-1 40) and the native
   XTML tool round-trip `get_weather {"city":"Paris"}` are green. Decode measures
-  **7.0–8.6 s/token (0.12–0.14 t/s)** here — host-store bound, tens of GB of
-  experts streamed per token — so the FSI/CODE/DET and perf sweep (~32 h of
+  **3.23 s/token (0.31 t/s)** at the shipped configuration — host-store bound:
+  92 MoE layers × top-16 experts, 25.5 GiB of reads per token; the parent K3
+  measures 2.96, so the indexer costs ~9% — so the
+  FSI/CODE/DET and perf sweep (~14.7 h of
   exclusive GPU) is **declared debt, not a pass**: those cells are `not run`.
   Open, and load-bearing for how the gates may be read — `docs/OPEN_TASKS.md`
   §R17 (P1: the indexer arithmetic is reconstructed, no modeling code ships;
   P2: the family's synthetic fixture is input-invariant, so no model-stage test
   can observe a wrong key set; P3: the sweep is debt; P4: its goldens are
-  template-derived; P5: the 4x gap against K3's quoted ~2 s/token is
-  unexplained and neither figure has been through the perf harness).
+  template-derived; P5: RESOLVED — the reported 4x gap was a prose baseline, and
+  the defect it hid was the 512-slot expert window against a 1472-expert working
+  set, 6.95 → 2.98 (K3) / 3.23 (Pro) s/token).
   Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
   560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
   (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited

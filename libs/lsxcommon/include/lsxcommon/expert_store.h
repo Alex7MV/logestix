@@ -75,6 +75,14 @@ struct ExpertStore {
     // Converted trees are uniformly per-16 (measured over the whole vault);
     // a pre-repack source store sets 0 to disable the check.
     int32_t scale_block_size = 16;
+    // Load() pre-parses up to max_open experts into the LRU so the first token
+    // does not crawl. That is the right default for a small window, but it is a
+    // pure startup tax once the window is large: it walks experts in PATH order
+    // (layer 1..N, expert 0..895), not in the order decode will ask for them, at
+    // ~2.4 ms per expert. A KimiLinear tree with a 65 536 window paid 156 s of
+    // load for capacity the LRU would have filled on its own within two tokens,
+    // so that family opts out and lets the window fill from real accesses.
+    bool warm_on_load = true;
 
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
     int64_t parse_calls = 0;
@@ -136,9 +144,12 @@ struct ExpertStore {
         }
 
         // Warm the cache up to max_open (matches the per-model loop order).
-        for (size_t idx = 0; idx < paths.size() && lru.size() < max_open; ++idx) {
-            if (paths[idx].empty()) continue;  // dense-prefix slot
-            if (ParseFile(idx)) lru.push_back(idx);
+        if (warm_on_load) {
+            for (size_t idx = 0; idx < paths.size() && lru.size() < max_open;
+                 ++idx) {
+                if (paths[idx].empty()) continue;  // dense-prefix slot
+                if (ParseFile(idx)) lru.push_back(idx);
+            }
         }
         return true;
     }

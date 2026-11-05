@@ -266,6 +266,7 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 | `LSX_V41_EXPERT_CACHE` | DeepSeek-V4.1 expert-cache override |
 | `LSX_*_EXPERT_CACHE_SLOTS` | per-model LRU slot override (`GLM`, `QWEN_MOE`, `QWEN38`, `GEMMA`, `KIMI`, `DEEPSEEK`, `NEMOTRON`, `GIGACHAT`, `ORNITH_MOE`, `MIMO`) |
 | `LSX_KIMI_CACHE_BYPASS` | bypass the Kimi expert cache |
+| `LSX_KIMI_K3_MAX_OPEN` / `LSX_KIMI_K31_PRO_MAX_OPEN` | routed-expert window for the KimiLinear trees (default 65 536). Values below one token's working set (1472 = 92 MoE layers × top-16) are clamped up: the layers are visited once each per token, so a smaller window is a cyclic scan whose hit rate is provably zero. The window is retention, not memory — experts stay mmap'd, and re-reads become page-cache hits. These trees also set `warm_on_load=false`: `Load()`'s eager pre-parse walks experts in path order at ~2.4 ms each, which cost 156 s at a 65 536 window and bought nothing (measured 3.01 s/token warm with it, 2.96 without) |
 
 **Prod — numeric / model toggles** (A/B switches; leave unset in production)
 

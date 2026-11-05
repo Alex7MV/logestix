@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iterator>
 #include <string_view>
+#include <vector>
 
 namespace lsxcommon::kimi_k3 {
 namespace {
@@ -766,9 +767,33 @@ cudaError_t StageKimiK3Layer(KimiK3PinnedWeights &pw, int layer,
     return cudaGetLastError();
 }
 
+size_t KimiK3ExpertWindowFloor(const KimiK3Topology &top)
+{
+    const int moe_layers = std::max(0, top.num_layers - top.dense_layers);
+    const int top_k = std::max(0, top.top_k);
+    const size_t floor =
+        static_cast<size_t>(moe_layers) * static_cast<size_t>(top_k);
+    return floor > 0 ? floor : 1;
+}
+
+size_t KimiK3ResolveExpertWindow(const KimiK3Topology &top, long requested)
+{
+    const size_t floor = KimiK3ExpertWindowFloor(top);
+    if (requested <= 0) return floor;
+    const size_t want = static_cast<size_t>(requested);
+    if (want >= floor) return want;
+    log::warn(absl::StrCat(
+        "[kimi_k3_load] expert window ", want,
+        " is below one token's working set (", floor,
+        " = MoE layers x top-k); clamping up — below the floor every access "
+        "misses and the store re-reads experts it already had"));
+    return floor;
+}
+
 KimiK3ExpertDb LoadKimiK3ExpertIndex(const std::string &model_path,
                                      int num_layers, int experts_per_layer,
-                                     int first_moe_layer, size_t max_open)
+                                     int first_moe_layer, size_t max_open,
+                                     bool warm_on_load)
 {
     KimiK3ExpertDb db;
     db.num_layers = num_layers;
@@ -778,7 +803,11 @@ KimiK3ExpertDb LoadKimiK3ExpertIndex(const std::string &model_path,
     db.mmap_fail_verb = "expert mmap fail ";
     db.emit_diag = false;
     db.log_batch_fails = true;
-    db.max_open = max_open ? max_open : 512;
+    db.warm_on_load = warm_on_load;
+    // max_open arrives already resolved against the working-set floor by the
+    // model (KimiK3ResolveExpertWindow); the store's own default applies only
+    // when a caller passes 0.
+    db.max_open = max_open ? max_open : 65536;
     db.Load(model_path, /*fallback=*/true);
     return db;
 }

@@ -64,7 +64,9 @@ bool KimiK3Model::Load()
         kimi_k3::LoadKimiK3ExpertIndex(
             cfg_.model_path, top_.num_layers, top_.num_experts,
             top_.dense_layers,
-            static_cast<size_t>(EnvInt("LSX_KIMI_K3_MAX_OPEN", 512))));
+            kimi_k3::KimiK3ResolveExpertWindow(
+                top_, EnvInt("LSX_KIMI_K3_MAX_OPEN", 65536)),
+            /*warm_on_load=*/false));
     weights_loaded_ = true;
     resident_bytes_ = pw_.resident_bytes;
 
