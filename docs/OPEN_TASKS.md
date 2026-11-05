@@ -681,6 +681,56 @@ decisions, not yet-worth-it work.
   depending on a second list. Until then: adding a model means touching both,
   and the audit's own coverage claim rests on the list being complete.
 
+## U. CUDA 13.5 adoption — landed, one measured negative (2026-11-05)
+
+Toolkit 13.4.92 → **13.5.37** (driver stays 13.2). Design and the full
+measurement: `docs/superpowers/specs/2026-11-05-cuda-13.5-adoption-design.md`,
+plan `docs/superpowers/plans/2026-11-05-cuda-13.5-adoption.md`.
+
+**Landed.** (a) A build-toolkit **stamp** (`lsx_cuda_toolkit_stamp.txt`) — the
+tree really was half-converted: 1250 of 1460 objects were 13.4 headers linked
+against a 13.5 runtime and every build step succeeded, because CUDA's headers
+carry *package* mtimes older than the objects. Configure now refuses the swap and
+`test_cuda_toolkit_guard` (moved to label `fast` — it was the only instrument that
+saw it, and `ctest --preset linux-debug` never ran it) catches a mixed tree.
+(b) Device codegen arch lives in ONE expanded place: 30 test targets had their own
+`--generate-code=arch=compute_120,code=sm_120` literal, so the arch was in 31
+places and would have stayed non-family on any bump. (c) The AOCC preset pinned
+only the C++ compiler, so a fresh release configure died in uriparser with
+`-Qunused-arguments`; `CMAKE_C_COMPILER` is now AOCC's clang.
+
+**U1 — REJECTED on measurement: family-specific targets are neutral here.**
+`sm_120f` really does change the SASS — the plain build compiles the NVFP4 decode
+to `F2FP.BF16.F32` (FP32 emulation), the family build to
+`F2FP.BF16.E2M1.UNPACK_B` (384 in the gemma TU alone) — and the sm_120f cubin
+runs on the 13.2 driver. It does not move the wall clock: qwen3.5-9b, 2048-token
+protocol, GPU exclusive, three runs per arm gave control 171.7/171.7/171.79,
+family-arch 171.71, family-arch + hardware decode 171.70/171.70/171.70. The
+spread inside the control arm (168.99 on its first cold run) exceeds any
+difference between arms. Cause: every NVFP4 decode path in this repository is
+weight-streaming bound — the GEMV waits on HBM/page cache, not on the converter,
+which is §R17 P6 seen from the other side. The numeric half was removed rather
+than kept with tests behind it; `-DLSX_CUDA_ARCH=120f;121f` remains a
+one-variable experiment for a compute-bound case (a long prefill is the only
+plausible one). **Not worth re-deriving** unless the decode stops being
+byte-bound.
+
+**U2 — free win, attributed.** qwen3.5-9b `r3` 147.00 → **170.00 t/s** (harness
+row) on the same weights. This is the 13.5 toolkit, not our code: the control arm
+shows it. Other families' `r3` rows predate 13.5 and will re-seed upward on their
+next harness run — do not read those as regressions.
+
+**U3 — driver-gated 13.5 features (open only if the driver moves).** Verified
+absent on driver `595.99.02`: oversized shared memory, locality domains, TMA
+large-allocation class, memcpy-batch **graph nodes** (the shape §R17 P6 needs),
+fabric/cliques, `cuMemGetLocationInfo`, `cuTensorMapSetAllocationClass`. The
+attributes return `CUDA_ERROR_INVALID_VALUE` and the symbols are missing from
+`libcuda.so`. Oversized SMEM is additionally hardware-capped on the 5090
+(`MAX_SHARED_MEMORY_PER_MULTIPROCESSOR = 102400`), so it would buy nothing even
+then. `cuMemcpyBatchAsync` and the `cuCheckpoint*` family ARE present today —
+batched copies and a warm process snapshot are reachable without a driver bump
+and are not yet used.
+
 ## R14. Mistral-Large-4-1T-A52B (1T-A52B) — ingestion landed, four gates green on template goldens (2026-11-02)
 
 Branch `feat/mistral-large4-ingest`. A new `mistral` variant (`large4`,
@@ -1585,53 +1635,3 @@ instrument, not an experiment.
   (3712 failed mmap opens, debug-logged) because `ExpertStore::Load` does not
   consult `moe_index_of_layer`. Harmless (entries stay empty, the compact
   device id map is correct) and ~30 ms per load; noted, not fixed.
-
-## U. CUDA 13.5 adoption — landed, one measured negative (2026-11-05)
-
-Toolkit 13.4.92 → **13.5.37** (driver stays 13.2). Design and the full
-measurement: `docs/superpowers/specs/2026-11-05-cuda-13.5-adoption-design.md`,
-plan `docs/superpowers/plans/2026-11-05-cuda-13.5-adoption.md`.
-
-**Landed.** (a) A build-toolkit **stamp** (`lsx_cuda_toolkit_stamp.txt`) — the
-tree really was half-converted: 1250 of 1460 objects were 13.4 headers linked
-against a 13.5 runtime and every build step succeeded, because CUDA's headers
-carry *package* mtimes older than the objects. Configure now refuses the swap and
-`test_cuda_toolkit_guard` (moved to label `fast` — it was the only instrument that
-saw it, and `ctest --preset linux-debug` never ran it) catches a mixed tree.
-(b) Device codegen arch lives in ONE expanded place: 30 test targets had their own
-`--generate-code=arch=compute_120,code=sm_120` literal, so the arch was in 31
-places and would have stayed non-family on any bump. (c) The AOCC preset pinned
-only the C++ compiler, so a fresh release configure died in uriparser with
-`-Qunused-arguments`; `CMAKE_C_COMPILER` is now AOCC's clang.
-
-**U1 — REJECTED on measurement: family-specific targets are neutral here.**
-`sm_120f` really does change the SASS — the plain build compiles the NVFP4 decode
-to `F2FP.BF16.F32` (FP32 emulation), the family build to
-`F2FP.BF16.E2M1.UNPACK_B` (384 in the gemma TU alone) — and the sm_120f cubin
-runs on the 13.2 driver. It does not move the wall clock: qwen3.5-9b, 2048-token
-protocol, GPU exclusive, three runs per arm gave control 171.7/171.7/171.79,
-family-arch 171.71, family-arch + hardware decode 171.70/171.70/171.70. The
-spread inside the control arm (168.99 on its first cold run) exceeds any
-difference between arms. Cause: every NVFP4 decode path in this repository is
-weight-streaming bound — the GEMV waits on HBM/page cache, not on the converter,
-which is §R17 P6 seen from the other side. The numeric half was removed rather
-than kept with tests behind it; `-DLSX_CUDA_ARCH=120f;121f` remains a
-one-variable experiment for a compute-bound case (a long prefill is the only
-plausible one). **Not worth re-deriving** unless the decode stops being
-byte-bound.
-
-**U2 — free win, attributed.** qwen3.5-9b `r3` 147.00 → **170.00 t/s** (harness
-row) on the same weights. This is the 13.5 toolkit, not our code: the control arm
-shows it. Other families' `r3` rows predate 13.5 and will re-seed upward on their
-next harness run — do not read those as regressions.
-
-**U3 — driver-gated 13.5 features (open only if the driver moves).** Verified
-absent on driver `595.99.02`: oversized shared memory, locality domains, TMA
-large-allocation class, memcpy-batch **graph nodes** (the shape §R17 P6 needs),
-fabric/cliques, `cuMemGetLocationInfo`, `cuTensorMapSetAllocationClass`. The
-attributes return `CUDA_ERROR_INVALID_VALUE` and the symbols are missing from
-`libcuda.so`. Oversized SMEM is additionally hardware-capped on the 5090
-(`MAX_SHARED_MEMORY_PER_MULTIPROCESSOR = 102400`), so it would buy nothing even
-then. `cuMemcpyBatchAsync` and the `cuCheckpoint*` family ARE present today —
-batched copies and a warm process snapshot are reachable without a driver bump
-and are not yet used.
