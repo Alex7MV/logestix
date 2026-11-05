@@ -41,8 +41,11 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | Granite-Switch-4.1-30B | `2026-10-31-granite-switch-4.1-30b.md` |
 | Hy-SimulMT-30B-A3B | `2026-10-31-hy-simulmt-30b-a3b.md` |
 | Step-5-Preview | `2026-10-31-Step-5-Preview.md` |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 | `2026-11-01-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4.md` |
 | Mistral-Large-4-1T-A52B | `2026-11-02-Mistral-Large-4-1T-A52B.md` |
 | Qwen3.8-27B | `2026-11-03-Qwen3.8-27B.md` |
 | AliceAI-Foundation-80B-A3B-Base | `2026-11-03-AliceAI-Foundation-80B-A3B-Base.md` |
+| Kimi-K3 | `2026-11-03-Kimi-K3.md` |
+| granite-4.2-30b | `2026-11-03-granite-4.2-30b.md` |
 | Qwen3.8-Flash-Next | `2026-11-04-Qwen3.8-Flash-Next.md` |
 | Kimi-K3.1-Pro | `2026-11-05-Kimi-K3.1-Pro.md` |

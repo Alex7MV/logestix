@@ -1079,17 +1079,17 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
 - P3. **The real-weight FSI / CODE / DET and perf sweep was not run** (operator
   ruling, 2026-11-05: record it as debt rather than spend the GPU time). The cost
   is measured, not guessed, and it shrank by ~2.2x when P5's window defect was
-  fixed: at the shipped 3.23 s/token for this tree (window 65 536, no eager warm
-  — see P5; the figures below were first written at the pre-fix 0.14 t/s):
+  fixed: at the shipped 3.2–3.35 s/token for this tree (window 65 536, no eager
+  warm — see P5; the figures below were first written at the pre-fix 0.14 t/s):
 
-  | target | generations × tokens | wall clock at 3.23 s/token |
+  | target | generations × tokens | wall clock at 3.2–3.35 s/token |
   |---|---|---|
-  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~5.5 h (+load) |
+  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~5.5–5.7 h (+load) |
   | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~1.4 h (+load) |
-  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~4.1 h (+load) |
-  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~3.7 h (+2 loads) |
+  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~4.1–4.3 h (+load) |
+  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~3.7–3.8 h (+2 loads) |
 
-  so the sweep is ~14.7 h of exclusive GPU on this host (it was ~32 h at the
+  so the sweep is ~14.7–15.3 h of exclusive GPU on this host (it was ~32 h at the
   pre-fix rate). FSI was actually started (release tree) and stopped 97 min in,
   still inside FSI-TEST-01; the interruption made the harness emit three empty
   generations, and **an in-flight kill is not a verdict** — the cells stay
@@ -1149,7 +1149,7 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   | 1472 (floor) | on | 18 s | 6.05 | 1.15× |
   | 2048 | on | 10 s | 5.57 | 1.25× |
   | 65 536 | on | **156 s** | 3.01 | 2.31× |
-  | **65 536 (shipped now)** | **off** | **5 s** | **2.98** (K3) / **3.23** (Pro) | **2.33×** / **2.16×** |
+  | **65 536 (shipped now)** | **off** | **5 s** | **2.98** (K3) / **3.23–3.35** (Pro) | **2.33×** / **2.16–2.21×** |
 
   **Rejected after measurement:** a per-layer page-cache prefetch of the
   router's top-k (the 22× serial-vs-parallel cold-read gap, 1.82 GB/s at one
@@ -1162,15 +1162,19 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   experts are never `munmap`'d, so a re-read becomes a page-cache hit.
 
   At equal binary and window the variant's own cost is now measurable for the
-  first time: **Pro decodes 3.23 s/token against the parent's 2.96, so the DSA
-  indexer costs ~9%**, not the 4× that the prose baseline implied.
+  first time: **Pro decodes 3.23–3.35 s/token against the parent's 2.96, so the
+  DSA indexer costs ~9–13 %**, not the 4× that the prose baseline implied (3.23
+  before the store's eviction path changed, 3.35 on the verification run after
+  it — the same mechanism, two runs, so the range is the honest figure).
 
-  **Still open, and honestly bounded.** The shipped 3.23 s/token is ~8 GB/s of
-  effective host-store traffic against 39.8 GB/s available, so a deeper fix
-  (overlapping the next layer's expert staging with the current layer's GEMMs)
-  could still pay — it needs the pipeline restructured around a queue instead of
-  one synchronous `EnsureResident` + six `cudaMemcpyAsync` + three GEMVs per
-  expert, and that is the shared `ExpertStore` contract, not a Kimi-local edit.
+  **Still open, and honestly bounded.** The shipped 3.2–3.35 s/token is
+  ~7.6–8 GB/s of effective host-store traffic against 39.8 GB/s available, so a
+  deeper fix (overlapping the next layer's expert staging with the current
+  layer's GEMMs) could still pay — it needs the pipeline restructured around a
+  queue instead of one synchronous `EnsureResident` + six `cudaMemcpyAsync` +
+  three GEMVs per expert, and that is the shared `ExpertStore` contract, not a
+  Kimi-local edit. The *drain* half of that loop is already gone (P5a): what
+  remains is the overlap, not the stall.
   The *scale* is also now a floor, not a property: the debt sweep recomputes
   from 2.98 s/token (~13.6 h, see P3), and both perf rows remain unseeded — a
   harness row is what would make these numbers quotable.

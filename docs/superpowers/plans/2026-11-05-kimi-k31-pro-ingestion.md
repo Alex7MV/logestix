@@ -124,7 +124,8 @@
 **Files:**
 - Modify: `libs/lsxcommon/include/lsxcommon/kimi_moe_k3_load.h`
 - Modify: `libs/lsxcommon/src/kimi_moe_k3_load.cpp`
-- Test: `tests/test_kimi_pro_loader.cpp` (label `fast`)
+- Test: `tests/test_kimi_pro_loader.cpp` (label `inference` — as landed; the
+  draft said `fast`, but the target allocates and reads back device memory)
 
 **Interfaces:**
 - Produces: `KimiK3Topology` gains `bool dsa = false; std::vector<int> dsa_layers; int index_heads = 0, index_head_dim = 0, index_topk = 0, index_rope_dim = 0;` and `bool IsDsa(int layer) const`. `KimiK3LayerWeights` gains `__half *idx_wqb = nullptr, *idx_wk = nullptr, *idx_knorm_w = nullptr, *idx_knorm_b = nullptr, *idx_wproj = nullptr;`. `KimiK3TopologyMatchesFrozen` keeps its signature; the pro model passes its own expected values through a new `bool KimiK3TopologyMatchesFrozen(const KimiK3Topology&, bool expect_dsa, int expect_topk)` overload (the existing one-argument form delegates with `expect_dsa = false`, preserving K3).
@@ -253,13 +254,14 @@ Calling `RunKimiK3MlaAttention` with `sel == nullptr, n_sel == 0` reproduces tod
 
 - [x] **Step 5: Commit** — `feat(kimi-k31-pro): IModel, registry, XTML bridge and the lifecycle contract`.
 
-- [ ] **Step 2: Run to verify it fails.**
-
-- [ ] **Step 3: Implement** — copy the K3 model shape: `LsxFastMathScope(EffectiveFastMathMode(cfg_))` in `Infer`, `RunUnderResidencyLock` around generation, `GenerationStream` wired from `req.token_callback`/`req.abort_flag`, `AcquirePermanentWeights`, `FinishLoad`, `TeardownContext` in `TeardownWeights`, env knobs `LSX_KIMI_K31_PRO_MAX_OPEN` / `_MAX_CONTEXT`; register the type in `model_registry.cpp`; add the `kPassports` row here (see Task 1 Step 5) together with the `kLifecycle` row.
-
-- [ ] **Step 4: Run to verify it passes** — plus `ctest -R "test_model_independence_guard|test_code_naming_guard"`.
-
-- [ ] **Step 5: Commit** — `feat(kimi-k31-pro): IModel, registry, XTML bridge and the lifecycle contract`.
+Deviations recorded on landing: the loader owns no TU of its own — Task 3's
+variant-aware work landed **inside the shared `kimi_moe_k3_load.cpp`** (the
+`is_pro` / `indexer` branch pins the five FP16 indexer tensors per DSA layer and
+counts `indexer_bytes`), so there is no `kimi_moe_pro_load.*` in the tree even
+though the Files list above names one; and the model TU lives in
+`libs/lsxcommon/src/` next to `kimi_moe_k3_model.h`, not in `include/lsxcommon/`
+(the family owns its model header in `src/`; no consumer outside the library
+includes it). Both are recorded in the SDD ledger.
 
 ---
 
