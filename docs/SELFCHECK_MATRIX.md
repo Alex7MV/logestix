@@ -57,7 +57,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
-| **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~4.5 h/case) | not run (debt) | not run (debt) |
+| **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.8–1.9 h/case) | not run (debt) | not run (debt) |
 
 - SelfCheck **23/23 rows** (every row above), FSI **58/63**, CODE **62/63**,
   DET **62/63**. Counting rule: one case per prompt, three prompts per measured
