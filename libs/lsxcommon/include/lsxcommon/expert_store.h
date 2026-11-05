@@ -20,6 +20,7 @@
 #include <sys/mman.h>
 #endif
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <atomic>
 #include <filesystem>
@@ -51,6 +52,24 @@ struct ExpertStore {
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
     std::vector<std::string> paths;      // per flat index (for lazy open)
     std::vector<size_t> lru;             // flat indices, back = least recently used
+    // ── Where each plane lives in its file ────────────────────────────────
+    // The staging ring fills pinned slots with pread, which needs file offsets,
+    // and the store is the only place that knows how a file maps onto the nine
+    // ExpertSchema columns. Six spans per flat index, in ExpertSchema order
+    // (w1, w2, w3, w1_scales, w2_scales, w3_scales); all zeros for a non-resident
+    // entry. Written only by that entry's own ParseFile, which is the same
+    // thread-ownership rule entries[]/mmaps[]/batches[] already follow.
+    struct PlaneLocator {
+        int64_t offset = 0;  // bytes from the start of the file
+        int64_t bytes = 0;
+    };
+    std::vector<std::array<PlaneLocator, 6>> planes;
+    // Per-store geometry, filled in the single-threaded phases of Load() /
+    // LoadParallelParse() after workers have joined. Kept as plain scalars
+    // because ExpertStore is moved by value (a mutex or an atomic member would
+    // delete the move constructor several families rely on).
+    int64_t plane_bytes[6] = {0, 0, 0, 0, 0, 0};
+    int64_t file_bytes = 0;
     // 11008 DeepSeek experts = 11008 fds. The historical 7000 cap (Windows
     // CRT 8192 limit) forced constant mmap churn past layer 27 — and every
     // eviction munmap'ed entries whose async prefetch DMA could still be
@@ -138,6 +157,7 @@ struct ExpertStore {
         int total = num_layers * experts_per_layer;
         if (total <= 0) return false;
         entries.assign(static_cast<size_t>(total), TEntry());
+        planes.assign(static_cast<size_t>(total), {});
         mmaps.assign(static_cast<size_t>(total), nullptr);
         batches.assign(static_cast<size_t>(total), nullptr);
         paths.resize(static_cast<size_t>(total));
@@ -172,7 +192,32 @@ struct ExpertStore {
                 if (ParseFile(idx)) lru.push_back(idx);
             }
         }
+        FillStoreGeometry();
         return true;
+    }
+
+    // Reads the uniform geometry of the tree from the first resident entry.
+    // Called only from the single-threaded phases (after Load()'s warm loop, or
+    // after LoadParallelParse's workers have joined), so it needs no locking and
+    // ExpertStore stays movable by value.
+    void FillStoreGeometry()
+    {
+        for (size_t idx = 0; idx < entries.size(); ++idx) {
+            if (!entries[idx].host_w1 || idx >= planes.size()) continue;
+            bool any = false;
+            for (int k = 0; k < 6; ++k) {
+                plane_bytes[k] = planes[idx][static_cast<size_t>(k)].bytes;
+                any = any || plane_bytes[k] > 0;
+            }
+            if (!any) continue;
+            const int64_t end = planes[idx][5].offset + planes[idx][5].bytes;
+            file_bytes = end > 0 ? end : 0;
+            if (idx < mmaps.size() && mmaps[idx]) {
+                auto sz = mmaps[idx]->GetSize();
+                if (sz.ok()) file_bytes = *sz;
+            }
+            return;
+        }
     }
 
     // Parallel bulk-parse (Linux): same work as the Load() warm loop but
@@ -217,6 +262,8 @@ struct ExpertStore {
                                      std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count()) + " ms");
+        // Workers have joined: the shared geometry is ours to fill now.
+        FillStoreGeometry();
         return ok_cnt.load() > 0;
 #else
         (void)n_threads;
@@ -227,9 +274,16 @@ struct ExpertStore {
     // Decodes the shared 6-bin + 3-float ExpertSchema fields into @p out.
     // Returns a status on a malformed/foreign batch so the caller never keeps a
     // partially decoded entry (null payload pointers or bogus byte counts).
+    // `plane_ptrs`/`plane_sizes`, when given, receive the six host pointers the
+    // decoder resolved, in ExpertSchema order. They exist so the file locators
+    // (ParseFile) are derived from the SAME column mapping the decode uses —
+    // a second copy of that mapping in ParseFile would be free to drift, and a
+    // drifted mapping stages a neighbouring plane (wrong model, no error).
     static arrow::Status DecodeEntry(const std::shared_ptr<arrow::RecordBatch> &batch,
                                      TEntry &out,
-                                     int32_t scale_block = 16)
+                                     int32_t scale_block = 16,
+                                     const uint8_t *plane_ptrs[6] = nullptr,
+                                     int64_t plane_sizes[6] = nullptr)
     {
         if (!batch ||
             batch->num_columns() != lsxcommon::ExpertSchema::kNumFields)
@@ -311,7 +365,75 @@ struct ExpertStore {
                s1.first, s2.first, s3.first, g1, g2, g3,
                w1.second, w2.second, w3.second,
                s1.second, s2.second, s3.second};
+        if (plane_ptrs != nullptr) {
+            plane_ptrs[0] = w1.first;
+            plane_ptrs[1] = w2.first;
+            plane_ptrs[2] = w3.first;
+            plane_ptrs[3] = s1.first;
+            plane_ptrs[4] = s2.first;
+            plane_ptrs[5] = s3.first;
+        }
+        if (plane_sizes != nullptr) {
+            plane_sizes[0] = w1.second;
+            plane_sizes[1] = w2.second;
+            plane_sizes[2] = w3.second;
+            plane_sizes[3] = s1.second;
+            plane_sizes[4] = s2.second;
+            plane_sizes[5] = s3.second;
+        }
         return arrow::Status::OK();
+    }
+
+    // Converts the decoder's six host pointers into file offsets.
+    //
+    // The mapping base comes from a zero-copy ReadAt(0, 8): Arrow's
+    // MemoryMappedFile::ReadAt(position, n) returns a Slice of the mapping, so
+    // at position 0 the returned buffer's address IS the mapping base. Asking
+    // for 8 bytes rather than the whole file is deliberate — ReadAt calls
+    // MemoryAdviseWillNeed on the requested range, and advising the full
+    // 18.6 MB of every expert is exactly the page-cache prefetch that was
+    // measured as an 18% loss (§R17 P5) and must not come back by accident.
+    //
+    // The gate is three checks at once, and it is the reason a wrong base is
+    // loud rather than silent: offsets must be ascending and non-overlapping in
+    // schema order, every span must sit inside the file, and the spans must
+    // partition as packed planes followed by scale planes. A base off by the
+    // Arrow header (16 bytes) or by a page breaks all three.
+    static arrow::Result<std::array<PlaneLocator, 6>> RecordPlaneLocators(
+        arrow::io::MemoryMappedFile *mmap, const uint8_t *const plane_ptrs[6],
+        const int64_t plane_sizes[6])
+    {
+        if (mmap == nullptr)
+            return arrow::Status::Invalid("no mapping for expert file");
+        auto head = mmap->ReadAt(0, 8);
+        if (!head.ok()) return head.status();
+        const uint8_t *base =
+            reinterpret_cast<const uint8_t *>((*head)->address());
+        if (base == nullptr)
+            return arrow::Status::Invalid("empty mapping for expert file");
+        auto size_res = mmap->GetSize();
+        if (!size_res.ok()) return size_res.status();
+        const int64_t size = *size_res;
+
+        std::array<PlaneLocator, 6> out{};
+        int64_t prev_end = 0;
+        for (int k = 0; k < 6; ++k) {
+            if (plane_ptrs[k] == nullptr || plane_sizes[k] <= 0)
+                return arrow::Status::Invalid("plane ", k, " is empty");
+            const int64_t off = static_cast<int64_t>(plane_ptrs[k] - base);
+            if (off < prev_end)
+                return arrow::Status::Invalid(
+                    "plane ", k, " starts at ", off,
+                    " inside the previous plane (ends ", prev_end,
+                    ") — the mapping base is wrong");
+            if (off + plane_sizes[k] > size)
+                return arrow::Status::Invalid(
+                    "plane ", k, " spans [", off, ",", off + plane_sizes[k],
+                    ") outside the ", size, "-byte file");
+            out[static_cast<size_t>(k)] = {off, plane_sizes[k]};
+            prev_end = off + plane_sizes[k];
+        }
+        return out;
     }
 
     bool ParseFile(size_t idx)
@@ -343,13 +465,27 @@ struct ExpertStore {
         }
         auto batch = *batch_res;
 
-        const auto dec = DecodeEntry(batch, entries[idx], scale_block_size);
+        const uint8_t *plane_ptrs[6] = {};
+        int64_t plane_sizes[6] = {};
+        const auto dec = DecodeEntry(batch, entries[idx], scale_block_size,
+                                     plane_ptrs, plane_sizes);
         if (!dec.ok()) {
             if (log_batch_fails)
                 log::debug(log_prefix + "expert batch decode failed for " +
                            apath + ": " + dec.ToString());
             return false;
         }
+        // The ring stages with pread, so it needs file offsets, not pointers.
+        // Deriving them here (rather than in the ring) keeps one owner for the
+        // mapping and lets the sanity gate below run where the failure can still
+        // be reported against a file name.
+        auto loc = RecordPlaneLocators(mmap.get(), plane_ptrs, plane_sizes);
+        if (!loc.ok()) {
+            log::error(log_prefix + "expert plane locators rejected for " +
+                       apath + ": " + loc.status().ToString());
+            return false;
+        }
+        planes[idx] = *loc;
 
         if (emit_diag && (idx == 0 || idx == 1 ||
                           idx == static_cast<size_t>(experts_per_layer))) {

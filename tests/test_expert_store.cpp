@@ -117,3 +117,83 @@ TEST_CASE("ExpertStore::EnsureResident honors an eviction release event", "[expe
     cudaEventDestroy(ev);
     cudaStreamDestroy(stream);
 }
+// ── Plane locators (pinned staging ring, task 2) ──────────────────────
+//
+// The ring stages an expert with pread, which needs to know WHERE in the file
+// each of the six planes lives. The store already decodes the planes but not
+// their file offsets, so it records them at parse time.
+//
+// Why this deserves its own case: a locator that is off by the Arrow header
+// (16 bytes) or that points at a neighbouring plane does not produce an error.
+// It produces a model that runs, answers, and is wrong — every weight of every
+// expert shifted by one plane. The fixture writes a distinct constant into each
+// plane (w1=0x01 w2=0x02 w3=0x03 s1=0x80 s2=0x81 s3=0x82), so reading the file
+// at a locator is a byte-exact statement about which plane it addresses.
+TEST_CASE("ExpertStore records where each plane lives in the file",
+          "[expert_store][stage]")
+{
+    Store s;
+    s.num_layers = 2;
+    s.experts_per_layer = 2;
+    s.max_open = 4;
+    REQUIRE(s.Load(MakeExpertDir().string(), false));
+    REQUIRE(s.planes.size() == 4);
+    REQUIRE(s.file_bytes > 0);
+
+    // Six locators per resident entry, ascending and inside the file.
+    for (size_t idx = 0; idx < 4; ++idx) {
+        int64_t prev_end = 0;
+        for (int k = 0; k < 6; ++k) {
+            INFO("idx " << idx << " plane " << k);
+            REQUIRE(s.planes[idx][static_cast<size_t>(k)].bytes > 0);
+            REQUIRE(s.planes[idx][static_cast<size_t>(k)].offset >= prev_end);
+            prev_end = s.planes[idx][static_cast<size_t>(k)].offset +
+                       s.planes[idx][static_cast<size_t>(k)].bytes;
+            REQUIRE(prev_end <= s.file_bytes);
+        }
+    }
+    // Each locator's length is that plane's length, not a neighbour's.
+    CHECK(s.planes[0][0].bytes == s.entries[0].w1_bytes);
+    CHECK(s.planes[0][1].bytes == s.entries[0].w2_bytes);
+    CHECK(s.planes[0][2].bytes == s.entries[0].w3_bytes);
+    CHECK(s.planes[0][3].bytes == s.entries[0].w1_scales_bytes);
+
+    // The decisive check: the file at a locator holds that plane's bytes.
+    const uint8_t want[6] = {0x01, 0x02, 0x03, 0x80, 0x81, 0x82};
+    for (size_t idx = 0; idx < 4; ++idx) {
+        std::FILE *f = std::fopen(s.paths[idx].c_str(), "rb");
+        REQUIRE(f != nullptr);
+        for (int k = 0; k < 6; ++k) {
+            const auto &p = s.planes[idx][static_cast<size_t>(k)];
+            INFO("idx " << idx << " plane " << k << " off " << p.offset);
+            REQUIRE(std::fseek(f, static_cast<long>(p.offset), SEEK_SET) == 0);
+            std::vector<uint8_t> buf(static_cast<size_t>(p.bytes));
+            REQUIRE(std::fread(buf.data(), 1, buf.size(), f) == buf.size());
+            REQUIRE(buf.front() == want[k]);
+            REQUIRE(buf.back() == want[k]);
+        }
+        std::fclose(f);
+    }
+}
+
+TEST_CASE("ExpertStore plane locators agree across experts of one store",
+          "[expert_store][stage]")
+{
+    // A converted tree is uniform: every expert file has the same six planes at
+    // the same offsets. The ring sizes its pinned slots from that, so a tree
+    // that is NOT uniform has to be caught at parse time rather than producing
+    // a slot too small for the expert that lands in it.
+    Store s;
+    s.num_layers = 2;
+    s.experts_per_layer = 2;
+    s.max_open = 4;
+    REQUIRE(s.Load(MakeExpertDir().string(), false));
+    for (size_t idx = 1; idx < 4; ++idx)
+        for (int k = 0; k < 6; ++k) {
+            INFO("idx " << idx << " plane " << k);
+            CHECK(s.planes[idx][static_cast<size_t>(k)].offset ==
+                  s.planes[0][static_cast<size_t>(k)].offset);
+            CHECK(s.planes[idx][static_cast<size_t>(k)].bytes ==
+                  s.planes[0][static_cast<size_t>(k)].bytes);
+        }
+}
