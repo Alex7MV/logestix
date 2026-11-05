@@ -663,6 +663,16 @@ set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES LABELS inference
 set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES
     SKIP_RETURN_CODE 4)
 
+# ── Shared pread pool (pinned expert staging, host-only, no GPU) ───────
+lsx_add_test(NAME test_pread_pool LINK lsxcommon)
+# The label is set on the next line in the literal properties form on purpose:
+# test_ctest_labels_guard resolves labels by scanning for that call and does not
+# read lsx_add_test's LABEL argument — the same limitation that made
+# test_cuda_toolkit_guard's move to fast need a literal call. Weakening the
+# guard is not the fix, and a comment that quotes the scanned pattern counts as
+# a registration to it.
+set_tests_properties(test_pread_pool PROPERTIES LABELS fast)
+
 # ── Shared ExpertStore test (LRU loader for MoE experts) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)

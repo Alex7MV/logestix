@@ -149,6 +149,7 @@ add_library(lsxcommon STATIC
     src/resource_governor.cpp
     src/runtime_tuner.cpp
     src/schema.cpp
+    src/pread_pool.cpp
     src/arrow_tree_verify.cpp
     src/tokenizer.cpp
     src/tokenizer_arrows.cpp
