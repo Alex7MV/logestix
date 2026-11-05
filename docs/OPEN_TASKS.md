@@ -797,6 +797,22 @@ decisions, not yet-worth-it work.
   plus wiring `--verify` into the conversion wrapper so a converted tree is
   never published unverified.
 
+### S7. The audit-matrix coverage rule is keyed off a hand-written list
+- **Open, instrument.** `test_arrow_usage_guard` enforces R-A8 ("every adapted
+  model has a row") as `by_model[model] == 1` for each entry of `kModels` plus
+  `rows.size() == kModels.size()`. Both sides are hand-maintained, so a model
+  present in **neither** is invisible and the rule silently passes over it —
+  which is exactly what happened to `Kimi-K3.1-Pro` until 2026-11-05 (added in
+  `0f919929`, after the variant had already landed with real-weight gates).
+  The finding cost one audit, not a defect: the guard was not wrong about the
+  rows it knew.
+- **Fix shape:** derive the model set from a machine-checked registry instead of
+  restating it — `test_model_suite_guard.cpp::Suites()` already enumerates every
+  ingested model and is extended in the same commit as the model files, so the
+  Arrow guard could assert `kModels ⊇ Suites()` (name mapping aside) and stop
+  depending on a second list. Until then: adding a model means touching both,
+  and the audit's own coverage claim rests on the list being complete.
+
 ## R14. Mistral-Large-4-1T-A52B (1T-A52B) — ingestion landed, four gates green on template goldens (2026-11-02)
 
 Branch `feat/mistral-large4-ingest`. A new `mistral` variant (`large4`,
