@@ -389,8 +389,17 @@ CodeResult RunCodeSelfCheck(IModel &model, const CodeGolden &golden,
                             const CodeDecodeFn &decode)
 {
     CodeResult res;
-    for (const CodeGoldenCase &c : golden.cases)
+    // Progress line per case (see RunFsiSelfCheck): the verdict lines arrive
+    // only after the last case, so a slow model needs a heartbeat.
+    for (std::size_t i = 0; i < golden.cases.size(); ++i) {
+        const CodeGoldenCase &c = golden.cases[i];
+        lsxcommon::log::info(absl::StrFormat(
+            "[code] %s start (%u/%u) max_new_tokens=%d ignore_eos=%s",
+            c.id.c_str(), static_cast<unsigned>(i + 1),
+            static_cast<unsigned>(golden.cases.size()), c.max_new_tokens,
+            c.ignore_eos ? "true" : "false"));
         res.cases.push_back(RunCodeCase(model, c, decode));
+    }
     res.all_passed = !res.cases.empty();
     for (const CodeCaseResult &c : res.cases) {
         lsxcommon::log::info(absl::StrFormat(

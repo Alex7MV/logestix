@@ -294,8 +294,25 @@ DetResult RunDetSelfCheck(IModel &model, const DetGolden &golden,
                           const DetDecodeFn &decode, int stress_runs_override)
 {
     DetResult res;
-    for (const DetGoldenCase &c : golden.cases)
+    // Progress line per case and per determinism run (see RunFsiSelfCheck):
+    // DET repeats each prompt `runs` times, so it is the slowest of the three
+    // gates and the one that most needs a heartbeat.
+    for (std::size_t i = 0; i < golden.cases.size(); ++i) {
+        const DetGoldenCase &c = golden.cases[i];
+        int runs = (stress_runs_override > 0) ? stress_runs_override
+                                              : c.stress_runs;
+        if (runs < 3) runs = 3;
+        lsxcommon::log::info(absl::StrFormat(
+            "[det] %s start (%u/%u) runs=%d max_new_tokens=%d",
+            c.id.c_str(), static_cast<unsigned>(i + 1),
+            static_cast<unsigned>(golden.cases.size()), runs,
+            c.max_new_tokens));
         res.cases.push_back(RunDetCase(model, c, decode, stress_runs_override));
+        lsxcommon::log::info(absl::StrFormat(
+            "[det] %s done deterministic=%s tokens_ok=%s", c.id.c_str(),
+            res.cases.back().deterministic ? "true" : "false",
+            res.cases.back().error.empty() ? "true" : "false"));
+    }
     res.all_passed = !res.cases.empty();
     for (const DetCaseResult &c : res.cases) {
         lsxcommon::log::info(absl::StrFormat(
