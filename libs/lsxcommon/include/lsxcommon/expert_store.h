@@ -846,7 +846,15 @@ struct ExpertStore {
         int64_t cursor = 0;
         for (int k = 0; k < 6; ++k) {
             const auto &p = planes[idx][static_cast<size_t>(k)];
-            jobs.push_back({fd, p.offset, slot.host + cursor, p.bytes});
+            // Explicit construction, not brace-init: this header is compiled by
+            // NVCC too, and aggregate init with a uint8_t* into a void* member
+            // does not resolve there.
+            io::PreadJob job;
+            job.fd = fd;
+            job.offset = p.offset;
+            job.dst = static_cast<void *>(slot.host + cursor);
+            job.len = static_cast<size_t>(p.bytes);
+            jobs.push_back(job);
             cursor += p.bytes;
             staged += p.bytes;
         }

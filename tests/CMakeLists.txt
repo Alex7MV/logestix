@@ -673,6 +673,12 @@ lsx_add_test(NAME test_pread_pool LINK lsxcommon)
 # a registration to it.
 set_tests_properties(test_pread_pool PROPERTIES LABELS fast)
 
+# ── Staging-ring bandwidth floor (pinned pread + DMA) ─────────────────
+# A budget test: it SKIPs without a record for this GPU and takes the shared gpu
+# resource lock, so it is registered in LSX_KERNEL_BUDGET_TESTS below as well.
+lsx_add_cuda_test(NAME test_expert_store_stage)
+set_tests_properties(test_expert_store_stage PROPERTIES LABELS fast)
+
 # ── Shared ExpertStore test (LRU loader for MoE experts) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -5460,7 +5466,7 @@ set(LSX_KERNEL_BUDGET_TESTS
     test_gemma_moe_norm test_gemma_moe_moe test_glm_moe_flash_kernels
     test_qwen_moe_kernels test_qwen_nvfp4_gemv test_qwen_moe_exp_kernels
     test_nemotron_moe_kernels test_gigachat_moe_devkernels
-    test_ornith_moe_kernels)
+    test_ornith_moe_kernels test_expert_store_stage)
 foreach(_bt IN LISTS LSX_KERNEL_BUDGET_TESTS)
     set_tests_properties(${_bt} PROPERTIES SKIP_RETURN_CODE 4)
     # These measure latency/bandwidth budgets. A concurrent GPU workload makes
