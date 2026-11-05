@@ -311,10 +311,14 @@ before the real-weight numbers do.
 
 ### Task 9: Real weights (vault)
 
-- [ ] **Step 1** Convert: `lsxforge --kimi_k31_pro --input /mnt/fast_storage/huggingface/Kimi-K3.1-Pro --output ...` in the background (1.56 TB, ~2 h); verify the index (`dsa_layers` = 24 layers, `total_experts == 82 432`, `total_pinned_tensors` includes 120 indexer tensors).
-- [ ] **Step 2** `lsxbenchmark --selfcheck --model /mnt/fast_storage/huggingface/Kimi-K3.1-Pro --model-type kimi-k3.1-pro` → Paris ×3 bit-exact, record `logits_hash`.
-- [ ] **Step 3** Tool round-trip `get_weather {"city":"Paris"}` through `lsxbenchmark --selfcheck` + `ParseToolCalls`.
-- [ ] **Step 4** Run FSI/CODE/DET time-boxed; record measured outcomes (a non-finishing run is debt, never a pass).
-- [ ] **Step 5** Seed perf rows through `lsxbenchmark --bench` at 2048 tokens (`perf` + `r3`) or record why not.
-- [ ] **Step 6** Update the matrix + `perf_baselines.json` (harness-written) + write `docs/model-reports/2026-11-05-Kimi-K3.1-Pro.md`.
-- [ ] **Step 7 Commit** — `docs(kimi-k31-pro): real-weight gates and the model report`.
+- [x] **Step 1** Convert (`lsxforge --kimi_k31_pro`, in place, 17 min → 1.5 TB tree at `/mnt/fast_storage/huggingface/Kimi-K3.1-Pro/logestix`); index verified: `format logestix-kimi-k31-pro-nvfp4`, `model_type kimi-k3.1-pro`, `indexer true`, 24 `dsa_layers`, `total_experts 82432`, 2120 pinned + 460 streamed, 165 vision + 3 projector stripped/counted, and all 120 indexer tensors present as BF16 via pyarrow over every DSA layer.
+- [x] **Step 2** `test_kimi_pro_selfcheck` → Paris ×3 bit-exact, `logits_hash 98ec1bbb372c9181`, top-1 token 40 (23 assertions / 2 cases PASS).
+- [x] **Step 3** Tool round-trip `get_weather {"city":"Paris"}` green in the same target (one 23 GB load serves both cases; TIMEOUT raised 5400 → 7200 s).
+- [x] **Step 4** FSI/CODE/DET **not run** — operator ruling 2026-11-05: record the sweep as debt. Measured decode ~0.125 t/s here, so FSI alone is ~13.7 h and the sweep ~36 h. FSI was started and stopped 97 min in; the kill is not a verdict, so the cells stay `not run`, and the four ctest budgets were raised to what a real completion needs (54 000 / 18 000 / 43 200 / 43 200 s).
+- [x] **Step 5** Perf rows **not seeded**, same ruling and same reason (`docs/OPEN_TASKS.md` §R17 P3); `perf_baselines.json` stays harness-owned.
+- [x] **Step 6** Matrix row moved from §3 into §1 (SelfCheck measured, three cells `not run`), `AGENTS.md` structure entry carries the real numbers and the debt, `docs/OPEN_TASKS.md` §R17 rewritten (P1/P2 unchanged, new P3 sweep-debt cost table + how to close, new P4 template-derived goldens), report written at `docs/model-reports/2026-11-05-Kimi-K3.1-Pro.md` + its README index row.
+- [x] **Step 7 Commit** — `docs(kimi-k31-pro): real-weight gates and the model report`.
+
+Deviations recorded:
+- Steps 4 and 5 are closed as *measured debt*, not as passes: the operator chose to record the sweep in `docs/OPEN_TASKS.md` rather than spend ~36 h of exclusive GPU. Every cell involved says `not run` — never `PASS`.
+- The report is written even though the sweep is debt, because the README rule is "do not rewrite a gate result: a SKIP is a gap, never a pass" — the report states the gap with its measured cost.

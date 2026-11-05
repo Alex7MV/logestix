@@ -8,8 +8,9 @@ their trees were in the vault),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;
-`kimi-k3.1-pro` row added 2026-11-05 on `feat/kimi-k31-pro` (its conversion was
-still in flight — §3).
+`kimi-k3.1-pro` row measured 2026-11-05 on `feat/kimi-k31-pro` (tree converted
+that day; SelfCheck green, the parity sweep declared debt — §1 and
+`docs/OPEN_TASKS.md` §R17).
 
 This is a **measurement**, not a policy. The machine-checked registry is the
 source of truth for which target covers which model and stage:
@@ -56,14 +57,31 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
+| **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~4.5 h/case) | not run (debt) | not run (debt) |
 
-- SelfCheck **22/22 rows** (every row above), FSI **58/63**, CODE **62/63**,
+- SelfCheck **23/23 rows** (every row above), FSI **58/63**, CODE **62/63**,
   DET **62/63**. Counting rule: one case per prompt, three prompts per measured
   row, so the denominators are 3 × the rows that carry a measured cell (21 —
-  `kimi-k3` has no parity verdict yet); a `not run` cell is excluded rather than
-  counted as a pass. The five FSI reds are gemma-4-31b FSI-01, deepseek-v4-pro
-  FSI-02, minimax-m3 FSI-01 and deepseek-v4.1-flash FSI-01/02; the CODE red is
-  deepseek-v4.1-flash CODE-01; the DET red is granite-switch DET-02.
+  `kimi-k3` and `kimi-k3.1-pro` have no parity verdict yet); a `not run` cell is
+  excluded rather than counted as a pass. The five FSI reds are gemma-4-31b
+  FSI-01, deepseek-v4-pro FSI-02, minimax-m3 FSI-01 and deepseek-v4.1-flash
+  FSI-01/02; the CODE red is deepseek-v4.1-flash CODE-01; the DET red is
+  granite-switch DET-02.
+- **kimi-k3.1-pro** added 2026-11-05 (branch `feat/kimi-k31-pro`): the 892 GB
+  source converted in place to a **1.5 TB** tree (1.4 TB routed-expert arrows,
+  23 GB pinned graph, 8.9 GB streamed latent/shared plane) and SelfCheck is green
+  on the real weights — Paris ×3 bit-exact, plus the native XTML tool round-trip
+  `get_weather {"city":"Paris"}` — so it earned its move out of §3. The three
+  parity cells are **not run, and that is a measurement, not a formality**: this
+  variant decodes at ~0.125 t/s here (host-store bound: 92 MoE layers × top-16
+  experts streamed per token from 1.4 TB), so one 2048-token FSI case is ~4.5 h
+  and the FSI+CODE+DET+perf sweep is ~36 h of exclusive GPU. An FSI run was
+  started and stopped 97 min in — the kill is not a verdict, hence `not run`
+  rather than a red. Its goldens are **template-derived** and payload-identical
+  to `kimi-k3`'s, so a future green row pins the converted path against the
+  template, **not** source parity; and no gate at all observes the DSA indexer,
+  whose selection is dormant at the canonical 2048-token protocol. Debt,
+  budgets and how to close: `docs/OPEN_TASKS.md` §R17 (P1/P2/P3/P4).
 - **Qwen3.5-35B-A3B** was audited on 2026-11-04 (it had been listed under §3 as
   "no converted tree" while its 19 GB tree had been in the vault since
   2026-10-01): SelfCheck Paris ×3 bit-exact (`logits_hash f4c91be5f2206d56`,
@@ -218,16 +236,18 @@ Release harness; now seeded at **1.61 t/s (perf) / 1.60 t/s (r3)**, TTFT ≈27 s
 
 ## 3. Golden present, **no converted tree** — SKIP (needs the vault, not a code fix)
 
-**2026-11-04:** empty; both former members were audited and moved into §1
+**2026-11-04:** both former members were audited and moved into §1
 (`qwen3.5-35b-a3b`, 19 GB tree in the vault since 2026-10-01, all four gates
 green; and `deepseek-v4.1-flash`, 294 GB tree, SelfCheck green, FSI/CODE red as
 recorded in `docs/OPEN_TASKS.md` §Q, and its cooperative-cancel case RED — §A2
-there). A row in this section SKIPs (ctest exit 4) and must never be read as a
-pass.
+there).
+**2026-11-05:** empty again. `kimi-k3.1-pro` was the last member; its 1.5 TB tree
+was converted that day and the row moved into §1 (SelfCheck green, the parity
+sweep declared debt). A row in this section SKIPs (ctest exit 4) and must never
+be read as a pass.
 
 | model | SelfCheck | FSI | CODE | DET | why |
 |---|---|---|---|---|---|
-| kimi-k3.1-pro | SKIP | SKIP | SKIP | SKIP | the three goldens are committed (`tools/kimi_k3_template_goldens.py --model kimi-k3.1-pro`) but the 1.56 TB conversion had not run at the time of this snapshot — ingestion Task 9, `docs/OPEN_TASKS.md` §R17. The goldens are **template-derived** and payload-identical to `kimi-k3`'s (same XTML framing, same prompt-set Expected Template): the 1.5 TB MXFP4 source needs `fla-core` and a multi-GPU runner, so no source oracle exists on this card. A green FSI/CODE/DET row here would pin the converted path against the template, **not** source parity — and no gate at all observes the DSA indexer, whose selection is dormant at the canonical 2048-token protocol (§R17 P1/P2) |
 
 
 ## 4. Neither — SKIP

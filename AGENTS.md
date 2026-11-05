@@ -742,10 +742,18 @@ procedure — `perf-tuning-a-model`.
   pipeline/model of `kimi-k3` learn exactly one optional component (the
   `indexer` index flag + the `kimi_moe_k3_kernels` indexer entry points + the
   pipeline's indexer key cache and DSA branch), precedent `minimax-m3.1-flash`.
+  Real weights (892 GB MXFP4 source → 1.5 TB tree in 17 min: 23 GB pinned graph
+  + 8.9 GB streamed latent/shared plane + 1.4 TB expert arrows): SelfCheck
+  Paris ×3 bit-exact (`logits_hash 98ec1bbb372c9181`, top-1 40) and the native
+  XTML tool round-trip `get_weather {"city":"Paris"}` are green. Decode is
+  **~0.125 t/s** on this card (host-store bound: 92 MoE layers × top-16 experts
+  streamed per token), so the FSI/CODE/DET and perf sweep (~36 h of exclusive
+  GPU) is **declared debt, not a pass** — those cells are `not run`.
   Open, and load-bearing for how the gates may be read — `docs/OPEN_TASKS.md`
   §R17 (P1: the indexer arithmetic is reconstructed, no modeling code ships;
   P2: the family's synthetic fixture is input-invariant, so no model-stage test
-  can observe a wrong key set).
+  can observe a wrong key set; P3: the sweep is debt; P4: its goldens are
+  template-derived).
   Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
   560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
   (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited
