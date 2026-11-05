@@ -132,6 +132,7 @@ const std::vector<std::string> kModels = {
     "Hy-SimulMT-30B-A3B",
     "Kimi-K2.7-Code",
     "Kimi-K3",
+    "Kimi-K3.1-Pro",
     "Ling-3.1-flash",
     "MiniMax-M3",
     "MiniMax-M3.1-Flash",

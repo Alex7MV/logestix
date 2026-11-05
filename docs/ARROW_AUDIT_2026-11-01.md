@@ -41,6 +41,11 @@ layer_N_adapters}.arrow`, `shared/layer_N_{nvfp4,gate}.arrow`,
 `views+dense`). Плотные (pinned) тензоры во всех семействах читаются
 zero-copy view-хелперами; исключение — gemma (см. A-07).
 
+Строка `Kimi-K3.1-Pro` добавлена позже самого аудита (2026-11-05, вместе с
+вариантом): он переиспользует загрузчик `kimi_moe_k3_load.cpp` и добавляет к
+нему только FP16-плоскость индексера, поэтому новых путей чтения не появляется.
+Остальные строки — снимок 2026-11-01.
+
 <!-- arrow-matrix:start -->
 | model | converter | loader | read path | write path | verdict |
 |---|---|---|---|---|---|
@@ -55,6 +60,7 @@ zero-copy view-хелперами; исключение — gemma (см. A-07).
 | Hy-SimulMT-30B-A3B | hy_moe_simulmt_convert.cpp | hy_moe_load.cpp | views + resident device slabs | schema.cpp | views+resident-slabs |
 | Kimi-K2.7-Code | kimi_moe_convert.cpp | kimi_moe_load.cpp | views + PinChunked | schema.cpp | views+PinChunked |
 | Kimi-K3 | kimi_moe_k3_convert.cpp | kimi_moe_k3_load.cpp | views+ExpertStore (+ transient pinned unpack) | schema.cpp | views+dense |
+| Kimi-K3.1-Pro | kimi_moe_pro_convert.cpp | kimi_moe_k3_load.cpp | views+ExpertStore (+ transient pinned unpack, + FP16 indexer plane) | schema.cpp | views+ExpertStore |
 | Ling-3.1-flash | ling_moe_convert.cpp | ling_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | MiniMax-M3 | minimax_moe_convert.cpp | minimax_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
 | MiniMax-M3.1-Flash | minimax_moe_flash_convert.cpp | minimax_moe_load.cpp | views + neutral ExpertStore | schema.cpp | views+ExpertStore |
