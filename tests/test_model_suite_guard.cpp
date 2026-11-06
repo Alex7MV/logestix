@@ -41,6 +41,9 @@ namespace fs = std::filesystem;
 #ifndef LSX_SOURCE_DIR
 #define LSX_SOURCE_DIR "."
 #endif
+#ifndef LSX_MANIFEST_GENERATED_DIR
+#define LSX_MANIFEST_GENERATED_DIR ""
+#endif
 
 namespace {
 
@@ -144,6 +147,22 @@ std::string ReadFileOrThrow(const fs::path &p)
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
+}
+
+// The CMake text this guard scans: the hand-written registrations plus the
+// manifest-generated fragment, which now owns every model target's add_test and
+// properties. Reading only one of the two made the guard report 90 of 511
+// registrations after the registration move.
+std::string CmakeCorpus(const fs::path &root)
+{
+    std::string text = ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+    const fs::path generated(LSX_MANIFEST_GENERATED_DIR "/model_targets.cmake");
+    std::error_code ec;
+    // The separator matters: without it the last line of CMakeLists.txt and the
+    // first add_test of the fragment merge into one unparseable line.
+    if (fs::exists(generated, ec))
+        text += "\n" + ReadFileOrThrow(generated);
+    return text;
 }
 
 std::vector<std::string> RegisteredTestNames(const std::string &text)
@@ -406,7 +425,7 @@ TEST_CASE("suite guard: every model suite covers the full lifecycle",
 {
     const fs::path root(LSX_SOURCE_DIR);
     const std::string cmake_text =
-        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+        CmakeCorpus(root);
     const auto registered = [&] {
         std::set<std::string> s;
         for (const auto &n : RegisteredTestNames(cmake_text)) s.insert(n);
@@ -426,7 +445,7 @@ TEST_CASE("suite guard: selfcheck, fsi, code and det targets declare "
 {
     const fs::path root(LSX_SOURCE_DIR);
     const std::string cmake_text =
-        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+        CmakeCorpus(root);
     auto v = CheckSelfcheckSkip(cmake_text);
     std::string joined;
     for (const auto &s : v) joined += s + "\n";
@@ -479,7 +498,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
 {
     const fs::path root(LSX_SOURCE_DIR);
     const std::string cmake_text =
-        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+        CmakeCorpus(root);
     const auto registered = [&] {
         std::set<std::string> s;
         for (const auto &n : RegisteredTestNames(cmake_text)) s.insert(n);
@@ -610,7 +629,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
     const std::set<std::string> registered = [] {
         std::set<std::string> names;
         for (const auto &n : RegisteredTestNames(
-                 ReadFileOrThrow(fs::path(LSX_SOURCE_DIR) / "tests" / "CMakeLists.txt")))
+                 CmakeCorpus(fs::path(LSX_SOURCE_DIR))))
             names.insert(n);
         return names;
     }();

@@ -5,6 +5,9 @@
 #include "lsxcommon/perf_baseline.h"
 #include "test_kernel_budget.h"
 
+#ifndef LSX_MANIFEST_GENERATED_DIR
+#define LSX_MANIFEST_GENERATED_DIR ""
+#endif
 #ifndef LSX_SOURCE_DIR
 #define LSX_SOURCE_DIR "."
 #endif
@@ -490,8 +493,11 @@ TEST_CASE("perf registry: every perf TEST_CASE has a registered ctest target",
     const std::string root = LSX_SOURCE_DIR;
     const std::string test_src =
         ReadAll(root + "/tests/test_perf_baseline.cpp");
-    const std::string cmake_src =
-        ReadAll(root + "/tests/CMakeLists.txt");
+    // Perf case targets are registered by the generator now, so the corpus is
+    // the hand-written file plus the manifest-generated fragment.
+    std::string cmake_src = ReadAll(root + "/tests/CMakeLists.txt");
+    cmake_src += "\n" + ReadAll(std::string(LSX_MANIFEST_GENERATED_DIR) +
+                                "/model_targets.cmake");
 
     // Every `add_test(NAME test_perf_baseline_<name> ... COMMAND test_perf_baseline
     // "<case name>")` in the CMake file. The COMMAND argument is the TEST_CASE

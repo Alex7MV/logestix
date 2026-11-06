@@ -207,7 +207,8 @@ target_link_libraries(test_perf_baseline_logic PRIVATE lsxcommon
 # test TU from the source tree, so it needs the source root (ctest runs the
 # binary with the build dir as CWD).
 target_compile_definitions(test_perf_baseline_logic PRIVATE
-    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    LSX_MANIFEST_GENERATED_DIR="${LSX_MANIFEST_GENERATED_DIR}")
 add_test(NAME test_perf_baseline_logic COMMAND test_perf_baseline_logic)
 
 # ── GPU board-power sampling (host-only; NVML cases SKIP when unavailable) ──
@@ -3973,6 +3974,7 @@ lsx_add_test(NAME test_ctest_labels_guard
 # fixture-borrowing ban (test-side mirror of model independence).
 lsx_add_test(NAME test_model_suite_guard
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+           "LSX_MANIFEST_GENERATED_DIR=\"${LSX_MANIFEST_GENERATED_DIR}\""
     INCLUDE "${LSX_MANIFEST_GENERATED_DIR}")
 
 # ── FSISelfCheck: host-only extraction/golden/harness unit tests (no GPU) ──
