@@ -464,8 +464,21 @@ struct ExpertStore {
         std::array<PlaneLocator, 6> out{};
         int64_t prev_end = 0;
         for (int k = 0; k < 6; ++k) {
-            if (plane_ptrs[k] == nullptr || plane_sizes[k] <= 0)
-                return arrow::Status::Invalid("plane ", k, " is empty");
+            // An EMPTY plane is legal and expected: NemotronH experts are
+            // non-gated relu^2 MLPs whose converter writes w1 with shape {0,0},
+            // so the file genuinely has no w1. Rejecting it made ParseFile fail
+            // and left the entry pointing into a mapping that was about to be
+            // destroyed — the nemotron model test segfaulted on it. An empty
+            // plane is recorded as a zero span and skipped by the staging code;
+            // the ordering and bounds checks still cover every plane that has
+            // bytes, which is where a wrong mapping base shows up.
+            if (plane_sizes[k] <= 0) {
+                out[static_cast<size_t>(k)] = {0, 0};
+                continue;
+            }
+            if (plane_ptrs[k] == nullptr)
+                return arrow::Status::Invalid("plane ", k, " has ", plane_sizes[k],
+                                              " bytes but no pointer");
             const int64_t off = static_cast<int64_t>(plane_ptrs[k] - base);
             if (off < prev_end)
                 return arrow::Status::Invalid(
@@ -529,6 +542,13 @@ struct ExpertStore {
         if (!loc.ok()) {
             log::error(log_prefix + "expert plane locators rejected for " +
                        apath + ": " + loc.status().ToString());
+            // DecodeEntry has already written into entries[idx], and those
+            // pointers address THIS mapping, which is released when this
+            // function returns. Leaving them behind is a dangling pointer the
+            // caller cannot distinguish from a resident expert — that is how a
+            // rejected locator became a SIGSEGV instead of a clean "not
+            // resident". Clear it.
+            entries[idx] = TEntry();
             return false;
         }
         planes[idx] = *loc;

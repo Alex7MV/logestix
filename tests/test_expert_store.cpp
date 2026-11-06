@@ -560,3 +560,92 @@ TEST_CASE("ExpertStore PrefetchStage refuses an oversized expert without "
     std::filesystem::remove_all(container);
 #endif
 }
+
+TEST_CASE("ExpertStore accepts an expert whose schema plane is empty",
+          "[expert_store][stage]")
+{
+    // NemotronH experts are non-gated relu^2 MLPs: w1 is UNUSED and the converter
+    // writes it with shape {0,0}, so the file genuinely has an empty w1 plane.
+    // The locator gate must accept that (recording {0,0} and skipping the plane)
+    // rather than rejecting the expert: rejecting it made ParseFile fail, the
+    // entry non-resident, and the nemotron model test segfaulted on a null
+    // weight pointer. The gate still has to reject a WRONG base, which the
+    // non-empty planes cover.
+    const std::filesystem::path container =
+        std::filesystem::temp_directory_path() /
+        ("lsx_expert_nongated_" + std::to_string(std::rand()));
+    const auto exps = container / "logestix" / "experts" / "layer_0";
+    std::filesystem::create_directories(exps);
+    {
+        lsxcommon::PackedExpert pe;
+        pe.w1_packed.clear();          // non-gated: unused plane
+        pe.w1_shape = {0, 0};
+        pe.w2_packed.assign(16, 0x02u);
+        pe.w3_packed.assign(16, 0x03u);
+        pe.w1_scales.clear();
+        pe.w2_scales.assign(2, 0x81u);
+        pe.w3_scales.assign(2, 0x82u);
+        auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
+        REQUIRE(batch.ok());
+        REQUIRE(lsxcommon::WriteRecordBatchToFile(
+                    *batch, exps / "exp_0.arrow").ok());
+    }
+
+    Store s;
+    s.num_layers = 1;
+    s.experts_per_layer = 1;
+    s.max_open = 1;
+    REQUIRE(s.Load(container.string(), false));
+
+    // The expert parsed: resident, and its empty plane recorded as a zero span.
+    REQUIRE(s.entries[0].host_w2 != nullptr);
+    REQUIRE(s.planes.size() == 1);
+    CHECK(s.planes[0][0].bytes == 0);
+    CHECK(s.planes[0][0].offset == 0);
+    // The two live planes still address their own bytes.
+    const uint8_t want[6] = {0x00, 0x02, 0x03, 0x00, 0x81, 0x82};
+    std::FILE *f = std::fopen(s.paths[0].c_str(), "rb");
+    REQUIRE(f != nullptr);
+    for (int k : {1, 2, 4, 5}) {
+        const auto &p = s.planes[0][static_cast<size_t>(k)];
+        INFO("plane " << k);
+        REQUIRE(p.bytes > 0);
+        REQUIRE(std::fseek(f, static_cast<long>(p.offset), SEEK_SET) == 0);
+        std::vector<uint8_t> buf(static_cast<size_t>(p.bytes));
+        REQUIRE(std::fread(buf.data(), 1, buf.size(), f) == buf.size());
+        REQUIRE(buf.front() == want[k]);
+    }
+    std::fclose(f);
+
+    // And the ring stages it without trying to move a zero-length plane.
+    s.stage_ring.slots = 1;
+    REQUIRE(s.InitStageRing());
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    const int64_t packed = s.planes[0][1].bytes;   // w2
+    const int64_t scaled = s.planes[0][4].bytes;   // w2_scales
+    // Only four planes carry bytes here; the two empty ones (w1, w1_scales)
+    // must be skipped by the ring rather than written somewhere.
+    const int64_t off[6] = {0,                            // w1     — empty
+                            0,                            // w2
+                            packed,                       // w3
+                            0,                            // w1s    — empty
+                            2 * packed,                   // w2s
+                            2 * packed + scaled};         // w3s
+    const size_t total = static_cast<size_t>(2 * packed + 2 * scaled);
+    uint8_t *dev = nullptr;
+    REQUIRE(cudaMalloc(reinterpret_cast<void **>(&dev), total) == cudaSuccess);
+    REQUIRE(s.EnqueueStage(0, dev, off, stream));
+    s.AwaitStage(0, stream);
+    std::vector<uint8_t> got(total, 0xEE);
+    REQUIRE(cudaMemcpy(got.data(), dev, total, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    CHECK(got[0] == 0x02);                                     // w2
+    CHECK(got[static_cast<size_t>(packed)] == 0x03);           // w3
+    CHECK(got[static_cast<size_t>(2 * packed)] == 0x81);       // w2_scales
+    CHECK(got[static_cast<size_t>(2 * packed + scaled)] == 0x82);  // w3_scales
+
+    cudaFree(dev);
+    cudaStreamDestroy(stream);
+    std::filesystem::remove_all(container);
+}
