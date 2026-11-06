@@ -1,37 +1,116 @@
 # logestix — AGENTS.md
 
-## Project
+Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C23.
+CMake 3.25+ (CMakePresets). Target architecture: NVIDIA Blackwell
+(CC 12.0 / 12.1), 5th-gen Tensor Cores and TMA. Max warps per SM on Blackwell:
+48 (factor into occupancy calculations).
 
-Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C23. CMake 3.25+ (CMakePresets).
-Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Tensor Cores and TMA.
-Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
-Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
-No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is rejected.
-CUDA Toolkit 13.5 (nvcc V13.5.37; minimum 13.2+), full native C++23 support in NVCC.
-The Linux driver is 13.4 (`615.71.09`, driver API 13040), so the runtime 13.5 runs
-in **minor-version compatibility** mode: APIs introduced after 13.4 are present in
-the headers and absent from `libcuda.so` at runtime (`cuTensorMapSetAllocationClass`,
-`cuGraphAddMemcpyBatchNode`, `cuMemsetBatchAsync`, `cuFabricCpyBatchAsync`).
-`test_cuda_toolkit_guard` prints that skew and fails only on a major mismatch.
+**Forbidden architectures:** Hopper (90), Ada (89), Ampere (80). No backward
+compatibility — any code targeting pre-Blackwell is rejected.
 
-Open, triaged follow-up work (real defects, Windows platform gaps,
-hardware-dependent budgets, missing coverage) — `docs/OPEN_TASKS.md`. It keeps
-only genuinely open work; resolved items move to a dated snapshot in
-`docs/open-tasks/` (index: `docs/open-tasks/README.md`). The
-`fast` label is green (86/86); `inference` is not, and the reasons are
-catalogued there rather than left to be rediscovered.
+**Toolkit/driver skew.** CUDA Toolkit 13.5 (nvcc V13.5.37; minimum 13.2+). The
+Linux driver is 13.4 (`615.71.09`, driver API 13040), so the runtime runs in
+**minor-version compatibility** mode: APIs introduced after 13.4 are in the
+headers and absent from `libcuda.so` at runtime
+(`cuTensorMapSetAllocationClass`, `cuGraphAddMemcpyBatchNode`,
+`cuMemsetBatchAsync`, `cuFabricCpyBatchAsync`). `test_cuda_toolkit_guard` prints
+that skew and fails only on a major mismatch.
 
-The measured model x gate status (which model passes which parity gate, which
-rows are declared debt and which only SKIP for a missing tree) —
-`docs/SELFCHECK_MATRIX.md`; the per-session trail is the open-tasks archive.
+## Where things are
 
-Why the open list is never empty and why a green suite is a sample rather than
-a proof — `docs/OPEN_ENDEDNESS.md`. A system cannot certify its own correctness
-from within, so every numeric claim needs an external oracle (upstream
-`modeling_*.py`, a host reimplementation over the source safetensors, the second
-numeric mode, a sanitizer, a mutational check). When a defect survives a green
-suite, the first question is **which instrument is missing** — more assertions
-in the same class will not find it.
+| question | answer |
+|---|---|
+| how do I build it / where are the binaries | skill **`building-the-project`** |
+| build broke, or I am wiring CMake | skill **`cuda-cmake-build-gotchas`** |
+| which file holds model X's converter / kernels / loader | skill **`logestix-repo-map`** |
+| what a model IS: geometry, format tag, vault dir, gates, perf, debt | `docs/MODELS.md` (generated) |
+| which model passes which parity gate | `docs/SELFCHECK_MATRIX.md` |
+| why is throughput what it is | `tests/perf/perf_baselines.json` + the model's report |
+| what is open / known broken | `docs/OPEN_TASKS.md` (resolved work: `docs/open-tasks/`) |
+| why a green suite is a sample, not a proof | `docs/OPEN_ENDEDNESS.md` |
+| how do I run a model | skill **`running-a-model`** |
+| how do I add one | skill **`ingesting-a-model`** |
+| how do I make it faster | skill **`perf-tuning-a-model`** |
+| labels, presets, test router | skill **`test-lifecycle`** |
+| FSI / CODE / DET checkpoint gates | skills **`fsi-selfcheck`**, **`code-selfcheck`**, **`det-selfcheck`** |
+| host C++ style, logging, git | skill **`coding-conventions`** |
+| containers/strings in host C++ | skill **`absl-in-cuda-cpp`** |
+| NVFP4 / Blackwell kernel rules | skill **`nvfp4-blackwell-conventions`** |
+| an ingested model's report | `docs/model-reports/YYYY-MM-DD-<name>.md` |
+
+A number in prose rots; the registries do not. When this file and a
+machine-checked registry disagree, the registry wins.
+
+## The model registry
+
+`models/<model_type>.json` is the single source of truth for one ingested model.
+Everything derived from it is generated at configure time into
+`${CMAKE_BINARY_DIR}/generated/` and must never be hand-edited:
+
+| generated | replaces |
+|---|---|
+| `model_manifest.h` | the guard registries (`kModels`/`kTargets`/`kLifecycle`/`kDebt`) |
+| `model_targets.cmake` | every model target's `add_test` + label/timeout/skip/lock/env |
+| `model_registry.inc` | the `LsxModelFactory` registration list and its aliases |
+
+`test_manifest_sync` (label `fast`) proves the compiled table equals the
+manifests, the committed `docs/MODELS.md` is current (`--check`) and no
+`tests/test_*.{cpp,cu}` file is unclaimed (`--strict`). Adding a model means
+adding a manifest row, a converter and its kernels — no registry, no CMake
+registration, no prose.
+
+Regenerate the catalogue after editing a manifest:
+
+```bash
+python3 tools/gen_model_manifest.py --docs docs/MODELS.md --root .
+```
+
+## The lifecycle gate (+ the direction to grow)
+
+Every model must satisfy: SelfCheck ("Paris", >= 3 bit-exact cycles), FSI, CODE,
+DET (`docs/SELFCHECK_MATRIX.md`), a native tool round-trip, and a seeded perf
+row at the canonical 2048-token protocol. A gate that SKIPs is **not** a pass;
+a gate whose golden was never captured is declared debt in the manifest, and
+`test_model_suite_guard` fails an undeclared gap.
+
+Shared kernel layers exist so families do not copy each other: `lsx_nvfp4`
+(the only NVFP4 path), `lsx_gemv` (**the only GEMM path** — cuBLAS is not linked),
+`lsxcommon::attn` / `dense` / `moe`, `lsx_device_math.h`, `lsx_reduce.cuh`.
+`test_model_independence_guard` enforces unique frozen geometry per model and
+forbids cross-family borrowing; `test_model_suite_guard` enforces that each
+family's suite is complete and self-contained.
+
+## Invariants that are easy to break
+
+- **Logging** goes through spdlog / `lsxcommon::log` only. No `std::cout`,
+  no `printf` in `libs/` or `apps/` (`test_logging_guard`, two-way allowlist).
+- **`absl::StrFormat` is printf-style** — `%s`/`%d`, never `{}`
+  (`test_absl_format_guard`).
+- **Host-only C++ prefers `absl::`** (flat/btree containers, `StrCat`).
+  Headers reachable from `.cu`/`.cuh` must NOT include `<absl/container/*>`
+  (NVCC fails in raw_hash_map with C2794/C2938); there it stays `std::`
+  (`test_absl_container_guard`).
+- **Arrow reads are mmap-only** and writes atomic (`test_arrow_usage_guard`).
+- **No CLI speed flags.** The engine always runs a per-GPU auto policy; the only
+  numeric run flag is `--bit-exact` (`FastMathMode::kOff`). A family that pins
+  `kOff` does it because the NVFP4 tensor-core path overflows on its
+  activations, and says so in its manifest/report.
+- **One GPU workload at a time.** `lsxbenchmark` and every perf target take
+  `RESOURCE_LOCK "gpu"`; run the perf sweep last.
+- **Dependency include paths live only in `lsx_dep_includes`.** Never spell
+  `${CMAKE_BINARY_DIR}/_deps/...` in a target (`test_infrastructure_guard`).
+- **Device codegen comes from `LSX_CUDA_ARCH`** via
+  `lsx_cuda_gencode_flags()`; every device target sets `CUDA_ARCHITECTURES OFF`.
+  Never hand `LSX_CUDA_ARCH` to `CUDA_ARCHITECTURES`: CMake 4.x drops the family
+  suffix and silently substitutes `compute_75`.
+- **Test registration:** use `cmake/LsxTestHelpers.cmake`
+  (`lsx_add_test`/`lsx_add_cuda_test`); every target carries one label
+  (`fast|convert|inference|perf`) and every skip-capable target sets
+  `SKIP_RETURN_CODE 4` (`test_ctest_labels_guard`). Windows runs only
+  `qwen|gemma` model tests.
+- **NVIDIA documentation is not vendored** — load current docs from the
+  `nvidia-cuda-docs` MCP before editing NVFP4/CUDA kernels
+  (`docs/NVIDIA_DOCS.md`); if it is unavailable, stop and ask.
 
 ## Dependencies
 
@@ -39,1071 +118,47 @@ in the same class will not find it.
 |---|---|---|---|
 | Apache Arrow | 26.0.1 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
 | spdlog | 1.17.0 | FetchContent | Header-only |
-| FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
-| libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v5.0.6 | submodule (`third_party/simdjson`) | Static (`.lib`) |
-| NVIDIA CCCL | from CUDA Toolkit (accepted band 3.2.x–3.5.x) | CUDA Toolkit bundle (`<include>/cccl`) | Header-only |
-| abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
+| FlatBuffers | v25.12.19 | submodule | Static |
+| libzmq | v4.3.5 | submodule | Static |
+| simdjson | v5.0.6 | submodule | Static (`.lib`) |
+| NVIDIA CCCL | toolkit bundle, band 3.2.x–3.5.x | `<include>/cccl` | Header-only |
+| abseil-cpp | 20260817.0 | FetchContent (LTS) | Header-only + static |
 | Catch2 | v3.16.1 | FetchContent (test only) | Header-only |
-| cpp-httplib | v0.63.0 | FetchContent (host-only HTTP) | Header-only |
+| cpp-httplib | v0.63.0 | FetchContent (host HTTP) | Header-only |
 
-Versions are enforced by code: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
-versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, cpp-httplib,
-abseil — the latter via `ABSL_LTS_RELEASE_VERSION`, so a non-LTS pin will
-not build); there is no guard for `flatbuffers`/`libzmq`. CCCL is deliberately not
-pinned: it is taken from the CUDA toolkit bundle and **band-guarded** instead
-(configure-time check in the root `CMakeLists.txt` + the same band in
-`test_core.cpp`), so a toolkit bump that moves CCCL outside the validated window
-fails configure rather than silently swapping the libcu++ under the whole tree.
-The dependency bump procedure
-(pin the submodule/FetchContent `GIT_TAG` + guard + AGENTS/README tables
-+ re-check after-fetch patches) — skill `cuda-cmake-build-gotchas`.
+Pins are enforced by `tests/test_core.cpp` → `TEST_CASE("pinned dependency
+versions")` (no guard for flatbuffers/libzmq). CCCL is deliberately not pinned:
+it is band-guarded at configure time and in `test_core.cpp`, so a toolkit bump
+outside the validated window fails configure. The bump procedure (pin + guard +
+tables + re-check the after-fetch patches) is skill
+`cuda-cmake-build-gotchas`.
 
-## Build
-
-Presets, the AOCC build, the Windows toolchain (VS 2026) with exact paths, toolchain
-minimums and binary locations — skill **`building-the-project`**
-(`.opencode/skills/building-the-project/SKILL.md`).
-
-Quick check:
-
-```bash
-cmake --preset linux-debug && cmake --build --preset linux-debug
-ctest --preset linux-debug                     # fast only
-```
-
-Non-obvious build pitfalls — skill **`cuda-cmake-build-gotchas`**
-(`.opencode/skills/cuda-cmake-build-gotchas/SKILL.md`): CMake 4.x and
-`enable_language(CUDA)` in a nested directory, host flags leaking into NVCC,
-`/Zc:preprocessor` vs CCCL/thrust, `CMAKE_POLICY_VERSION_MINIMUM` for xsimd,
-Arrow/Boost/abseil patches, `lsx_tune`/LTO gating, the `cc12x`-only arch set, host-only
-CUDA surfaces and the `_putenv` guard, dependency bumps. It also has the
-"symptom → cause" table.
-
-## Resources (host)
-
-Host-machine resource policy, the inference exemption and the
-"one GPU load at a time" rule (including strict GPU exclusivity for `lsxbenchmark` and
-running perf last) — the "Host resource policy and GPU scheduling" section of skill
-**`running-a-model`**
-(`.opencode/skills/running-a-model/SKILL.md`).
-
-## Test
-
-`BUILD_TESTING=ON` is enabled in all presets. Test categories (labels
-`fast`/`convert`/`inference`/`perf`), presets, the path router
-(`tools/test_router.cmake`, `LSX_PRESET`/`LSX_LIST`/`LSX_DIFF`), label discipline
-in the same commit, the guard-test registry and the WINDOWS restriction
-(`ctest -R "qwen|gemma"`) — skill **`test-lifecycle`**
-(`.opencode/skills/test-lifecycle/SKILL.md`).
-
-Converter test rules (label `convert`, bounded TIMEOUT, synthetic
-checkpoint, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` as a runtime env) — the
-"Converter test rules" section in `ingesting-a-model`; the measurement/speed-up
-procedure — `perf-tuning-a-model`.
-
-## Structure
-
-- `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`. Core:
-  `core.cpp` (logging/init), `schema.cpp` (ExpertSchema/PackedExpert),
-  `converter.cpp` (GPU NVFP4 quantization; also the safetensors shard/header
-  scan declared in `safetensors.h`: `TensorInfo` defaults +
-  `ValidateTensorInfo` + `ParseTensorInfos`, and the single validated
-  `ReadTensorData`/`ReadTensorDataChecked` every converter must call — bounds
-  come from the real file size, never from `shard.file_size`;
-  `VerifyAllTensorReads` is the adapter over it; fuzz harness
-  `tests/test_safetensors.cpp` (deterministic) + opt-in
-  `tests/fuzz/safetensors_fuzz.cpp`), `tokenizer.cpp` +
-  `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
-  `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp` (+ the 512 MiB
-  DRAM copy probe that is the perf baseline's environment oracle),
-  `sampling.{h,cu}` (`SamplingParams`; greedy by default, `SamplingSampler`
-  for temperature/top-k/top-p with an exact radix top-k and a counter-based
-  RNG, selected per request by `SamplerFor(req.sampling)`; every family must
-  thread it — `test_model_independence_guard` scans each `Infer`), `token_stream.h`
-  (`GenerationStream`: CUDA-safe per-token callback + abort, threaded into every
-  family generation loop; `Emit(token, step, logit_maxv)`. The shared lifecycle
-  contract each family must wire — residency lock, streaming/abort, context
-  teardown, governor lease, result fill, session state under the lock — is
-  machine-enforced per model by the `kLifecycle` registry in
-  `test_model_independence_guard.cpp`), `chat_conversation.h`/`tool_format.{h,cpp}` (tool
-  calling render/parse), `incremental_detokenizer.{h,cpp}`, the model-neutral
-  layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
-  (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`
-  (+ `pread_pool.h`; the store carries an **opt-in pinned staging ring** —
-  `LSX_EXPERT_STAGE_RING`, off by default, wired for `kimi-k3.1-pro` only. It
-  replaces pageable per-expert copies with a persistent pread pool into pinned
-  slots plus per-slot DMA events; a slot's mapping may not be refilled until its
-  DMA has **executed**, which is a host-side `cudaEventSynchronize` and not a
-  stream wait, because the refill writes the buffer from the host. Measured
-  neutral on this host — the page cache serves the reads at 23.7 GB/s and expert
-  staging is 41% of the 61.8 GiB/token of H2D traffic — see `OPEN_TASKS` §R17 P6
-  before switching it on for anyone else),
-  `lsx_attn_inference.{h,cu}` (model-neutral **attention/MLP kernel** layer in
-  `lsxcommon::attn` — full-attn + GatedDeltaNet hybrid, fused decode-attn/MLP,
-  RMSNorm/RoPE/embed; its neutral weight bundle and geometry POD live in
-  `lsx_inference_load.h`, and `attn::KvCache`/`attn::GenerationResult` (with an
-  explicit `KvGeometry`) are the neutral session state; the qwen generation driver + KV session stay
-  family-named in `qwen_dense_inference_pipeline.{h,cu}`; consumed by Qwen
-  dense+MoE, Qwen MoE Exp, Ornith and Alice),
-  `lsx_dense_inference.{h,cu}` (model-neutral **dense-decoder kernel** layer in
-  `lsxcommon::dense` — RMSNorm, full-dim RoPE, causal GQA attention with the
-  split-KV flash-decode path, fused split-QKV, fused SwiGLU; the algorithm is
-  the one Granite-4.2 always ran, moved verbatim — `tools/dedup_provenance.py`
-  proves it; consumed by granite, granite-switch and phi, whose
-  `RunGranite*`/`RunGraniteSwitch*`/`RunPhi*` are inline delegates and whose
-  layer drivers stay family-named),
-  `lsx_moe_inference.{h,cu}` (model-neutral **routed-MoE kernel** layer in
-  `lsxcommon::moe` — router top-k, routed FFN, expert host store +
-  `EnsureMoEExpertResident`; consumed by Qwen MoE, Gemma MoE, GLM MoE Flash and
-  Qwen MoE Exp, with the qwen generation driver staying family-named in
-  `qwen_moe_inference_pipeline.{h,cu}`; `test_model_independence_guard` forbids
-  `QwenMoe*` symbols and model-owned headers there — see §R),
-  `lsx_device_math.h` (model-neutral glibc-replica `ExpfGlibc`/`RsqrtfGlibc`;
-  `glm_moe_device_math.h` aliases it) and `lsx_reduce.cuh` (model-neutral
-  `BlockMaxShfl`; `qwen_reduce.cuh` aliases it); `synthetic_geometry.h`
-  (`SyntheticGeometryAllowed()`, the single `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY`
-  gate shared by every converter, loader and `ModelBase`).
-  FSISelfCheck (`fsi_selfcheck.{h,cpp}`, host-only, model-neutral; capture
-  `tools/fsi_capture.py` + `tools/fsi_prompts.json`; per-family goldens
-  `tests/fixtures/fsi/<type>.json`; separate from SelfCheck — compares the
-  converted model's canonicalized answer at `kOff` to a golden captured from the
-  source safetensors; `lsxbenchmark --fsi-selfcheck`; per-family
-  `test_<family>_fsi_selfcheck.cpp`, label `inference`, SKIP 4; findings
-  `docs/FSI_SELFCHECK_FINDINGS.md`). Capture/verify workflow, golden schema and
-  per-model quirks — skill **`fsi-selfcheck`**
-  (`.opencode/skills/fsi-selfcheck/SKILL.md`).
-  CODESelfCheck (`code_selfcheck.{h,cpp}`, host-only, model-neutral — the
-  compiler-syntactic-strictness analogue of FSI, comparing the converted model's
-  *exactly* normalized answer at `kOff` to a golden captured from the source
-  safetensors; capture `tools/code_capture.py` + `tools/code_prompts.json`;
-  per-family goldens `tests/fixtures/code/<type>.json`; `lsxbenchmark
-  --code-selfcheck`; per-family `test_<family>_code_selfcheck.cpp`, label
-  `inference`, SKIP 4; suite-guard `code` stage; findings
-  `docs/CODE_SELFCHECK_FINDINGS.md`; design
-  `docs/superpowers/specs/2026-09-27-code-selfcheck-design.md`). Capture/verify
-  workflow, golden schema (incl. the prompt-echo `body` cut), extraction
-  (json/assignment/regex) and per-model quirks — skill **`code-selfcheck`**
-  (`.opencode/skills/code-selfcheck/SKILL.md`).
-  DETSelfCheck (`det_selfcheck.{h,cpp}`, host-only, model-neutral — the
-  determinism + near-tie analogue of FSI/CODE: runs each prompt R times
-  (`stress_runs`, default 3, floored at 3, `LSX_DET_STRESS_RUNS` override),
-  requires byte-identical `gen_tokens` across runs and the extracted canonical
-  token at `kOff` to match a golden captured from the source safetensors;
-  capture `tools/det_capture.py` + `tools/det_prompts.json`; per-family goldens
-  `tests/fixtures/det/<type>.json`; `lsxbenchmark --det-selfcheck`; per-family
-  `test_<family>_det_selfcheck.cpp`, label `inference`, SKIP 4; suite-guard
-  `det` stage; findings `docs/DET_SELFCHECK_FINDINGS.md`; design
-  `docs/superpowers/specs/2026-09-27-det-selfcheck-design.md`). Capture/verify
-  workflow, golden schema, extraction (`token`) and per-model quirks — skill
-  **`det-selfcheck`** (`.opencode/skills/det-selfcheck/SKILL.md`).
-  Models: glm / qwen / deepseek / gemma / kimi / nemotron / ornith (NemotronH hybrid
-  Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
-  `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),
-  `nemotron_moe_expert_cache.{h,cpp}` (host mmap store of 2944 experts + device
-  slot-LRU; dense always resident, experts streamed — the model fits in 16 GiB,
-  knob `LSX_NEMOTRON_EXPERT_CACHE_SLOTS`), `nemotron_moe_model.*`,
-  `nemotron_moe_kernels.{h,cu}` (conv/SSM/gated-RMSNorm/router/relu2),
-  `nemotron_moe_inference_attn.cu` (**NoPE** + GQA — the checkpoint's full
-  attention has no rotary module, `position_ids` is ignored; applying RoPE, as
-  the engine did until 2026-11-01, degenerates any long prompt, measured
-  0.09 → 1.20 per-layer relL2 at ctx 285 and a broken tool call),
-  `nemotron_moe_inference_pipeline.cu`, `nemotron_moe_device_math.h`; format tag
-  `logestix-nemotron-nvfp4`). Source oracle for both siblings:
-  `tools/nemotron_nvfp4_oracle.py` (ModelOpt -> BF16 CPU reference; the tokenizer
-  gate is `test_nemotron_moe_tokenizer_parity` + `tools/nemotron_tokenizer_capture.py`).
-  Qwen3.8-Flash-Next (member of the `qwen` family, registry
-  `qwen3.8-flash-next`, `Qwen38FlashNextModel` / namespace
-  `lsxcommon::qwen_moe_exp`: the `Qwen4ExpForConditionalGeneration` checkpoint,
-  text `qwen4_exp_text` — 48 layers as 12 x [3 GatedDeltaNet + 1 QSA full
-  attention], 2560H, 24Q / 2KV / 256HD with 64 rotary dims (theta 1e7), QSA
-  indexer 4 heads x 128 at block 4 / top-512 over a 2048-token budget,
-  hyper-connections (4 streams, lowrank 320), 512 routed experts top-10 at
-  I=640 + one shared I=640, a PLE n-gram embedding on layer 2 (128 shards),
-  vocab 248320 (eos 248046 / 248044) and one MTP layer stored+counted;
-  `qwen_moe_exp_constants.h` (frozen passport), `qwen_moe_exp_convert.{h,cpp}`
-  (BF16 -> NVFP4 in place, `lsxforge --qwen38flashnext`, format tag
-  `logestix-qwen38flashnext`), `qwen_moe_exp_load.{h,cpp}` (pinned host arena +
-  `gpu::ExpertDeviceCache` slot-LRU, knob `LSX_QWEN38_EXPERT_CACHE_SLOTS`; the
-  arena is REQUIRED for this family — the decode working set is the whole
-  expert set, see `docs/open-tasks/2026-10-14-qwen38-arena-required-negative.md`),
-  `qwen_moe_exp_inference.{h,cu}` (the token-by-token driver: GDN/QSA attention,
-  hyper-connection residual, PLE injection, router readback + residency
-  staging, batched TC routed FFN, shared expert, head),
-  `qwen_moe_exp_model.{h,cpp}`, `qwen_moe_exp_device_math.h`. Real weights
-  (336 GB BF16 -> 164 GB tree, 63.6 GB expert arena): SelfCheck Paris x3
-  bit-exact (`logits_hash 2e3bcd090441ad65`, top-1 11751), FSI/CODE/DET 3/3 each
-  plus the family's EOS + cross-instance determinism gate,
-  native tool round-trip `get_weather {"city":"Paris"}`, **42.98 t/s (perf) /
-  33.88 (r3)** at 2048 tokens, 3615 MiB pinned + 5350 / 4319 expert slots; its
-  throughput is expert-cache **capacity** bound (hit rate 0.86, ~340 MB of
-  experts streamed per token), so a delta is only a regression if the slot
-  count holds. Framing is shared with the rest of the family and is template
-  exact for every member since 2026-11-04: `render_content|trim` on message
-  content (never on tool definitions, parameter names or argument values) and
-  jinja `tojson` tool serialisation are unconditional in `qwen_tool_format.h`
-  because no qwen template makes them configurable; only what genuinely differs
-  per family is a `QwenRenderPolicy` field -- `enable_thinking`, the 3.8
-  `preserve_thinking` default (`history_think_block`, the closed think block on
-  every assistant history turn) and its empty-system-turn guard
-  (`suppress_empty_system`, pinned by `kQwen38RenderPolicy` and a test).
-  GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE,
-  ~432B / ~28B active: 40L / 7168H / 64 MLA heads (qk 128+64, v 128,
-  q_lora 1536, kv_lora 512, output gate) at layers 3,7,...,39 and GDN
-  (32K·64V·128HD, conv-4) elsewhere / 256 routed experts top-8 (I=2048) + one
-  shared expert / ZeroCenteredGatedNorm on every norm / FP8 block-128 source;
-  `gigachat_moe_constants.h` (frozen passport), `gigachat_moe_convert.{h,cpp}`
-  (FP8 block-128 -> neutral NVFP4; also builds and verifies the tokenizer
-  arrows), `gigachat_moe_dequant.cu` (partial-tile FP8->BF16),
-  `gigachat_moe_load.{h,cpp}`, `gigachat_moe_model.{h,cpp}`,
-  `gigachat_moe_device_math.h`, `gigachat_moe_inference_attn.{h,cu}` (MLA +
-  GDN decode), `gigachat_moe_inference_pipeline.{h,cu}` (the 40-layer hybrid
-  driver), `gigachat_moe_norm_kernels.cu` / `gigachat_moe_kernels.{h,cu}`
-  (ZeroCenteredGatedNorm, GDN output norm, sigmoid router, swiglu_limit,
-  sigmoid gate), `gigachat_moe_expert_cache.{h,cpp}` (host mmap store of 9472
-  experts + device slot-LRU, knob `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`),
-  `gigachat_tool_format.{h,cpp}` (native chatml-v5 GCML codec);
-  format tag `logestix-gigachat-nvfp4`; converted in place with
-  `lsxforge --gigachat`; tokenizer `tokenizer_kind 3` (Llama-3/o200k case-run
-  pre-tokenizer, parity 30/30 — the legacy kind-0 split mis-splits mixed-case
-  identifiers). Real weights (241 GB tree: 219 GB routed experts + 13 GB MTP
-  stored-not-applied + 9.7 GB pinned): SelfCheck Paris ×3 bit-exact
-  (`logits_hash 2743ee1c26f859d5`, top-1 19904), native tool round-trip
-  `get_weather {"city":"Paris"}`, FSI/CODE/DET 3/3 each on **template-derived**
-  goldens (the 432B FP8 vendor stack is multi-GPU and the BF16 body exceeds
-  host RAM), **11.32 t/s (perf) / 11.10 (r3)** at 2048 tokens, TTFT ~3.9 s,
-  26.2 GiB resident; report
-  `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md`).
-  Ornith-1.5-35B-A3B (independent family `ornith`: a Qwen3.5-MoE reasoning
-  fine-tune, architecture-identical to Qwen3.5/3.6-35B; `ornith_moe_constants.h`
-  (frozen passport), the standalone converter `ornith_moe_convert.{h,cpp}`
-  (accepts both published source layouts — the MLX export
-  `language_model.model.*` + `mlp.switch_mlp.*` stacked experts + conv `[C,K,1]`
-  + absolute norms, and the transformers release `model.language_model.*` +
-  root `lm_head.weight` + fused `mlp.experts.{gate_up_proj,down_proj}` + conv
-  `[C,1,K]` + offset norms; the layout selects the norm fixup and the expert
-  split, `model.visual.*` is skipped+counted, `mtp.*` is stored+counted under
-  `deferred`),
-  `ornith_moe_load.{h,cpp}` + `ornith_moe_inference_pipeline.{h,cu}` (the
-  qwen-owned generation driver; the routed-MoE kernels it calls are the
-  **neutral** `lsx_moe_inference.{h,cu}` layer, shared with Qwen MoE, Gemma MoE
-  and Qwen MoE Exp — ornith no longer duplicates them — and NVFP4 routes
-  through the neutral `lsx_nvfp4`), `ornith_moe_model.{h,cpp}`;
-  format tag `logestix-ornithmoe`; knob
-  `LSX_ORNITH_MOE_EXPERT_CACHE_SLOTS`).
-  Granite-4.2-30B (independent family `granite`: dense decoder-only,
-  64L / 4096H / 32Q / 8KV / 128HD / 32768I, SwiGLU, full-dim RoPE,
-  `attention_multiplier=1/128`; `granite_dense_constants.h` (frozen passport),
-  `granite_dense_convert.{h,cpp}` (flat Granite config -> `logestix-granite`),
-  `granite_dense_load.{h,cpp}` (NVFP4 pinned weights, fused `gate_up`),
-  `granite_dense_inference.{h,cu}` (causal GQA + full RoPE + SwiGLU dense loop
-  over the neutral `lsx_nvfp4` layer, the neutral `lsxcommon::dense` kernels and
-  the shared `lsx_kernels_*.cuh` primitives), `granite_dense_model.{h,cpp}`;
-  converted in place with
-  `lsxforge --granite`; full 2048-token pipeline is correct-first
-  (KV-cache decode, non-incremental prefill). Re-verified on real weights
-  2026-11-03: SelfCheck Paris ×3 bit-exact
-  (`logits_hash c165e80fde6401cf`, top-1 12366), FSI/CODE/DET 3/3 each, native
-  tool round-trip `get_weather {"city":"Paris"}`, **76.79 t/s (perf) / 76.47
-  (r3)** at 2048 tokens, 15.3 GiB resident. `Infer` pins
-  `FastMathMode::kOff`: the auto/TC NVFP4 path overflows on the long tool
-  prompt (the same class as `granite-switch`), and the strict path reproduces
-  the source tool call token-for-token; report
-  `docs/model-reports/2026-11-03-granite-4.2-30b.md`).
-  Granite-Switch-4.1-30B (variant `switch` of `granite`): the Granite 4.1 30B
-  dense decoder composed with two embedded aLoRA adapters (`guardian-core`
-  rank 16 on q/k/v/o, `decision` rank 64 on q/k/v/o + MLP), control-token
-  routing and token exchange. 64 decoder layers (config says 66 = 64 + 2
-  switch cache slots), 4096H / 32Q / 8KV / 128HD / 32768I / vocab 100355,
-  tied embeddings, `embedding_multiplier=12`, `residual_multiplier=0.175`,
-  `logits_scaling=16`; `granite_dense_switch_constants.h` (frozen passport),
-  `granite_dense_switch_convert.{h,cpp}` (fused base_layer/qkv/gate_up +
-  rank-trimmed LoRA planes + LUT verification -> `logestix-granite-switch`),
-  `granite_dense_switch_load.{h,cpp}` (NVFP4 base + FP16 LoRA, tied-head
-  alias at `global_scale/16`), `granite_dense_switch_inference.{h,cu}`
-  (host prefix-scan routing, token exchange, multiplier scale/scale-add,
-  per-slice aLoRA shrink/expand over the neutral `lsx_nvfp4` layer),
-  `granite_dense_switch_model.{h,cpp}`, `granite_switch_tool_format.{h,cpp}`
-  (native `<|start_of_role|>` framing, `<tools>` block, bare-JSON tool calls,
-  aLoRA invocation insertion); converted in place with
-  `lsxforge --granite_switch`. The switch's coded-memory retrieval is exactly
-  the prefix scan over control tokens (validated against the reference on
-  random sequences), so the codebook is stored but not uploaded. Real-weight
-  results: SelfCheck Paris x3 bit-exact, FSI 3/3, CODE 3/3, DET 2/3 (DET-02 is
-  a source-vs-prompt disagreement — source and converted both answer
-  `CRITICAL` deterministically; `docs/OPEN_TASKS.md` §R10), adapter parity 3/3
-  (routing 0/1/2 and token-for-token source `input_ids`), 16.22 GiB resident,
-  **69.28 t/s (perf) / 70.07 t/s (r3)** at 2048 tokens. `Infer` pins
-  `FastMathMode::kOff` because the checkpoint's ~6e3 activations exceed the
-  NVFP4 TC A4 range (TC prefill decoded garbage on the 197-token tool prompt;
-  the strict path reproduces the source tool call; kOff is also the faster r3
-  row). ASR/`<|audio|>` is out
-  of scope (the 470M encoder is not in this checkpoint); 131k context KV
-  (~34.4 GiB) does not fit this card.
-  phi-4 (independent family `phi`: dense decoder-only, 40L / 5120H / 40Q / 10KV
-  / 128HD / 17920I, SwiGLU, full-dim RoPE, attention scale `1/sqrt(128)`, source
-  projections pre-fused `qkv_proj`/`gate_up_proj`; `phi_dense_constants.h`
-  (frozen passport), `phi_dense_convert.{h,cpp}` (flat phi3 config ->
-  `logestix-phi`), `phi_dense_load.{h,cpp}` (NVFP4 pinned weights, fused
-  `qkv`/`gate_up` row-slices), `phi_dense_inference.{h,cu}` (causal GQA + full
-  RoPE + SwiGLU dense loop over the neutral `lsx_nvfp4` layer, the neutral
-  `lsxcommon::dense` kernels and the shared `lsx_kernels_*.cuh` primitives),
-  `phi_dense_model.{h,cpp}` (native ChatML
-  `<|im_start|>role<|im_sep|>content<|im_end|>` framing; generic tool parser);
-  converted in place with `lsxforge --phi`). The tree is **4-bit body + a
-  residual plane + FP16 edges**: every projection carries a second NVFP4 record
-  (`<name>.res`, `quantize_residual_tensor_gpu` = w − dequant(base)) decoded with
-  `acc=true`, which lifts the effective weight precision to ~8 bits at 2x the
-  read, and `embed_tokens`/`lm_head` stay FP16 (no standard 4-bit recipe
-  quantizes them; quantizing them cost 0.12 perplexity and two of nine near-tie
-  answers). That mix is what makes **all four parity gates green** — a 4-bit-only
-  body flipped DET-TEST-02's 1.1-logit near-tie deterministically, and the error
-  is spread over all 40 layers (per-layer ablation), so no smaller high-precision
-  subset works. Measured: 16.6 GiB resident, **71 t/s** at 2048 tokens (RTX
-  5090), Paris ×3 bit-exact, FSI/CODE/DET 3/3 each.
-  MiMo-V2.6-Flash-RL (independent family `mimo`: hybrid SWA + full-attention
-  sparse MoE, 48L / 4096H / 64Q / 4KV(GA)·8KV(SWA) / 192QK·128V head, 256 routed
-  experts / top-8, partial RoPE on 64 dims, learned sink bias on the 39 SWA
-  layers, sigmoid `noaux_tc` router; `mimo_moe_constants.h` (frozen passport),
-  `mimo_moe_convert.{h,cpp}` + `mimo_moe_dequant.cu` (FP8-block-128 dense ->
-  NVFP4, MXFP4 experts via neutral `PackExpertNVFP4` with an E8M0-spread
-  fallback, multimodal stripped, MTP stored+counted), `mimo_moe_load.{h,cpp}`
-  (format/geometry gates), `mimo_moe_kernels.{h,cu}` (RMSNorm / router / SwiGLU),
-  `mimo_moe_inference_attn.{h,cu}` (fused-QKV split, partial RoPE, GQA,
-  causal/sliding-window + sink bias, KV cache), `mimo_moe_expert_cache.{h,cpp}`
-  (host mmap store of 12032 experts + device slot-LRU, knob
-  `LSX_MIMO_EXPERT_CACHE_SLOTS`), `mimo_moe_model.{h,cpp}`, `mimo_tool_format.*`
-  (ChatML + `<tool_call>` codec); format tag `logestix-mimo-nvfp4`; converted
-  with `lsxforge --mimo`; correctness-first token-by-token prefill/decode over
-  the neutral `lsx_nvfp4` layer).
-  AliceAI-Foundation-80B-A3B-Base (independent family `alice`: hybrid KDA
-  (Kimi Delta Attention) + gated-attention sparse MoE with a **block
-  attention-residual (AttnRes)** depth mixer, 48L / 12×(3×KDA→MoE … 1×gated
-  attn→MoE) / 2048H / 16Q·2KV·256HD (partial RoPE 64, output gate) / KDA
-  32K·32V·128HD conv-4 / 512 experts top-10 I=512 + shared I=512 / block=4;
-  `alice_moe_constants.h` (frozen passport), `alice_moe_convert.{h,cpp}` (BF16 →
-  NVFP4 **only the routed + shared MoE**; KDA/attention projections kept FP16
-  because the exponential KDA gate amplifies their quantization), the
-  model-neutral **SentencePiece-BPE** tokenizer bridge
-  (`BuildTokenizerArrowFilesSentencePiece` + `tokenizer_kind="sp-bpe"`),
-  `alice_moe_load.{h,cpp}` (pinned graph + the neutral zero-copy
-  `ExpertStore` routed-expert store, `AliceExpertDb`),
-  `alice_moe_kernels.{h,cu}` (ZC-RMSNorm / AttnRes depth-softmax / sigmoid
-  top-k router / SwiGLU / KDA conv+delta recurrence), `alice_moe_inference.{h,cu}`
-  (gated full attention: per-head q/gate split + ZC q/k norm + partial RoPE +
-  GQA + output gate), `alice_moe_inference_pipeline.{h,cu}` (AttnRes-blocked
-  layer graph + generation), `alice_moe_model.{h,cpp}`; format tag
-  `logestix-alice-nvfp4`; converted with `lsxforge --alice`; re-ingested
-  2026-11-03 on real weights — SelfCheck Paris ×3 bit-exact
-  (`logits_hash f900547d25be7914`), FSI/CODE/DET 3/3 each, native tool
-  round-trip `get_weather {"city":"Paris"}`, **45.70 t/s (perf) / 45.88 (r3)**
-  at 2048 tokens, 4.13 GiB device-resident (2.9 s load), routed experts
-  host-streamed; report
-  `docs/model-reports/2026-11-03-AliceAI-Foundation-80B-A3B-Base.md`).
-  Xing4.0-29B-A4B (independent family `xing`: TeleChat, mHC (hyper-connection)
-  depth mixer with **4 parallel hidden streams** + full MLA + stored MTP layer,
-  40L resident + MTP layer 40 / 3584H / 32 MLA heads / `q_lora=768` /
-  `kv_lora=512` / `qk_nope=128` + `qk_rope=64` / `v_head=128` / 64 routed
-  experts top-4 (2 dense first layers) + 1 shared I=9216 / vocab 131072 /
-  YaRN factor 64 with `mscale^2` folded into the softmax scale ONLY (the tables
-  stay unscaled — upstream's rotary returns `attention_factor = 1.0`);
-  `xing_moe_constants.h` (frozen passport), `xing_moe_convert.{h,cpp}` (BF16 →
-  NVFP4 for every linear incl. embed/lm_head; **mHC tensors, all norms and the
-  BF16 router stay high precision** — NVFP4 rounding in the router does not blur
-  an output, it swaps the expert set), `xing_moe_load.{h,cpp}` (all 2432 routed
-  experts **resident**, three NVFP4 views per expert in the repo's w1/w2/w3 order
-  `[gate | down | up]`; no expert cache/LRU — the model fits in 16 GiB),
-  `xing_moe_kernels.{h,cu}` (unweighted RMSNorm / mHC + 20-iteration Sinkhorn /
-  four-stream mix / sigmoid noaux_tc router), `xing_moe_inference.{h,cu}`
-  (MLA with interleaved YaRN RoPE, **per-layer** KV cache slices, dense+MoE
-  decode, `LaunchXingRopeQ/K` export the per-head offset internally),
-  `xing_moe_model.{h,cpp}`, `xing_moe_tool_format.{h,cpp}` (native tool calling;
-  the markers at ids 11/12 are the **plain** `<tool_call>` spellings — the
-  zero-width-space variants in `tokenizer_config.json` are not vocabulary pieces);
-  format tag `logestix-xing-nvfp4`; converted with `lsxforge --xing`; real-weight
-  SelfCheck + FSI + CODE + DET all pass. Decode: **146.65 t/s (perf) / 123.92 t/s
-  (r3)** at 2048 tokens against a 694 t/s memory roofline
-  (`tests/perf/perf_baselines.json`); every serial/one-block kernel on the
-  decode path is parallelised (mHC, warp-Sinkhorn gates, router, split-K
-  attention, split collapse, split router), the expert-batch GEMV uses the dense
-  kernel's four 128-bit activation loads, the mHC gates+collapse share one
-  launch with the 57 KB stream prefetch under the Sinkhorn, RMSNorm is
-  float4/512, and the step replays as a CUDA graph (`LSX_XING_CUDA_GRAPH=0` for
-  the legacy per-token launch path). Attention split-K is now ~27% of the 2048
-  step and sits on the KV memory roofline; token-by-token prefill is the
-  remaining TTFT cost. History and profile: archive
-  `docs/open-tasks/2026-10-23-residual-closures.md`.
-  Gemma-4 (two members, one tokenizer): the MoE 26B (`gemma_moe_*` +
-  `gemma_base_model.*` + `gemma_tool_format.*`, format tag `logestix-gemma`;
-  its attention projections and dense MLP carry a second NVFP4 plane —
-  `<name>.res`, decoded with `acc=true` — while the routed experts stay 4-bit,
-  which is what makes **all four parity gates green** (SelfCheck, FSI 3/3,
-  CODE 3/3, DET 3/3); index field `"residual": "attn+mlp"`; the cost is the
-  doubled attn+MLP read: **128.25 t/s** (perf) / **128.34 t/s** (r3) at 2048
-  tokens, previously 156.7 — deliberate, measured, re-seeded; see
-  `docs/open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md`) and
-  the DENSE 31B (`gemma_dense_constants.h` (frozen passport),
-  `gemma_dense_convert.{h,cpp}` (vision ballast stripped), `gemma_dense_load.*`,
-  `gemma_dense_inference.{h,cu}` (HF-exact "proportional" RoPE on the global
-  layers, K-tied-to-V, GeGLU, NVFP4 tied head; FP16 activations) and
-  `gemma_dense_model.{h,cpp}`; format tag `logestix-gemma-dense`; converted in
-  place with `lsxforge --gemma4dense`; CODE 3/3, DET 3/3, FSI 2/3 (FSI-01 is the
-  same NVFP4-borderline class, and it is the one gate the cheap recipe does
-  NOT clear: the pair that fixes the 26B costs nothing here, because the dense
-  body needs ~8 bits on *every* linear — 33.7 GiB resident, over this card.
-  Numbers in `docs/OPEN_TASKS.md` §R).
-  Mistral-Small-4-119B-2603-NVFP4 (independent family `mistral`: MLA
-  q_lora 1024 / kv_lora 256 / qk_nope 64 / qk_rope 64 / v_head 128 + 128-expert
-  top-4 MoE with one **ungated** shared expert, every layer MoE
-  (first_k_dense_replace 0), split-half YaRN factor 128 over an 8192 original
-  window with a Llama-4 logit temperature; source is the Mistral "consolidated"
-  layout — `params.json` + `consolidated-*.safetensors`, attention/norms/router
-  BF16, routed+shared experts already NVFP4 `weight_packed`/`weight_scale`/
-  `weight_global_scale`; `mistral_moe_constants.h` (frozen passport),
-  `mistral_moe_convert.{h,cpp}` (strips the vision tower, repacks the experts
-  verbatim), `mistral_moe_load.{h,cpp}` (BF16 dense graph + the neutral MoE
-  layer's host expert store — `MoEExpertStore`, i.e. the shared mmap-view +
-  LRU `ExpertStore` (the pinned arena was retired 2026-10-14:
-  `docs/open-tasks/2026-10-14-expert-store-arena-retired.md`), `mistral_moe_inference.{h,cu}` (MLA decode: neutral BF16 GEMV
-  projections, plain RMSNorm, split-half YaRN RoPE, per-head attention over a
-  `KvCacheGeometry` cache, neutral MoE, ungated shared expert),
-  `mistral_moe_model.{h,cpp}`, `mistral_moe_tool_format.{h,cpp}` (native
-  `[INST]`/`[TOOL_CALLS]name[ARGS]{json}` codec); format tag
-  `logestix-mistral-nvfp4`; converted with `lsxforge --mistral`; knob
-  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt: the
-  source is the Mistral "consolidated" layout (`params.json`, no `config.json`,
-  no `model_type`) whose tensor names and per-expert layout do not match any HF
-  class, so a parity oracle needs a name+repack mapping and the goldens
-  are deliberately not committed rather than shipped permanently red —
-  `docs/OPEN_TASKS.md` §T. **Re-ingested 2026-11-06** (§T.1) after the converted
-  tree had been lost: re-converted in 76 s (66 GB, 4608 experts, 222 vision
-  tensors stripped), and a real defect fixed — the index carried **no `vram`
-  block** and the family never overrode `VramRequirements()`, so the placement
-  plan and `lsxcli --info` silently saw an all-zero profile; the tree now
-  reports min 4 GiB / optimal 50 GiB / max 111 GiB at ctx 1048576. Real-weight
-  gates green: SelfCheck Paris ×3 bit-exact (`logits_hash cdfd7309bb141772`,
-  top-1 6993), native tool round-trip
-  `get_weather {"city":"Paris"}`, `--validate` loads in 1053 ms with
-  4 715 087 872 B resident and 1398/4608 expert slots. Perf rows re-seeded
-  through the harness: **perf 45.77 t/s / r3 49.82 t/s** at 2048 tokens, TTFT
-  525/509 ms (RTX 5090/Linux). The three parity gates were **run**, not left as
-  unexamined SKIPs: **FSI 1/3, CODE 0/3, DET 0/3** with DET deterministic across
-  three byte-identical runs; they stay declared debt because a prompt-derived
-  expected value cannot establish parity. A source-faithful golden is blocked by
-  the checkpoint's tensor names and per-expert layout (50 missing / 3118
-  unexpected vs `Mistral4ForCausalLM`), **not** by its config — `transformers`
-  5.15.1's class defaults match this checkpoint and a synthesized `config.json`
-  loads all 13 shards; `tools/mistral_small4_oracle.py` carries the config
-  synthesis and refuses a partially-random model by construction. Two harness
-  defects were fixed on the way: `tools/fsi_capture.py` never applied its
-  `chat_template` override (the 0/3 it first measured was the checkpoint's vendor
-  system prompt, which the engine does not send), and this family's CODE/DET
-  targets still named `xing` — the class-wide fix is
-  `test_parity_selfcheck_naming_guard`. Report:
-  `docs/model-reports/2026-11-06-Mistral-Small-4-119B-2603-NVFP4.md`.
-  Mistral-Large-4-1T-A52B (variant `large4` of the `mistral` family, registry
-  `mistral-large-4-1t`; 1T total / ~52B active): 72L / 6144H / 64 MLA heads
-  with NO Q-LoRA (kv_lora 512, qk_nope 64 + qk_rope 64, v 128) / 128 routed
-  experts top-4 (I=6144) + one gated shared expert / dense layer 0 / vocab
-  204800 / final logit softcap 30. Five components no other family has:
-  **hybrid RoPE/NoPE** (every 4th layer is NoPE and its 64 rotary dims become
-  plain key dims; `wkv_a` is 512 vs 576 and `wkv_b` 16384 vs 12288 rows),
-  **LeRoPE** (learned per-frequency `inv_freq *= exp(lerope.alpha)` over YaRN
-  θ=1e4 / factor 2048 / original 512, interleaved pairs, attention_factor 1.0),
-  **ssmax** (per-head position-dependent query scale `s[h]*log(pos+1)+b[h]`
-  applied before QK), a **DSA Lightning Indexer** (32 heads × 128, top-2048,
-  44 full layers, 28 reusing the previous full layer's mask) and **cross-layer
-  latent-KV sharing** (layers 39,43,…,71 have no `kv_a` and read layer 35).
-  Files: `mistral_moe_large4_constants.h` (frozen passport + the four per-layer
-  tables), `mistral_moe_large4_convert.{h,cpp}` (`lsxforge --mistral_large4`,
-  `logestix-mistral-large4-nvfp4`; FP8-E4M3 + F32 128×128 tile `qscale_weight`
-  -> NVFP4 via the neutral `DequantFp8Tile128ToBf16Gpu`, BF16 edges verbatim,
-  vision tower + `mtp_dspark` stripped and counted),
-  `mistral_moe_large4_load.{h,cpp}` (NVFP4 projections + BF16 edges + the
-  neutral `MoEExpertRuntime` store with `first_moe_layer = 1`),
-  `mistral_moe_large4_kernels.{h,cu}` (LeRoPE tables, interleaved rotation,
-  ssmax, FP32 router, indexer scoring + exact top-k, MLA absorption),
-  `mistral_moe_large4_inference_attn.{h,cu}` (latent cache + absorbed decode:
-  q_abs = q_nope @ W_k, ctx = Σ p_t latent_t, out = W_v ctx —
-  mathematically the reference's `expand_kv`; KV sharing; DSA gather),
-  `mistral_moe_large4_inference_pipeline.{h,cu}` (72-layer driver, MoE +
-  shared expert + dense MLP, softcap), `mistral_moe_large4_model.{h,cpp}`;
-  tool codec reuses the allowlisted `mistral_moe_tool_format` with a
-  `MistralFormat::kLarge4` policy (always-on `[MODEL_SETTINGS]
-  {"reasoning_effort":"high"}`); tokenizer `tokenizer_kind` 12 (o200k case-run
-  pattern, RIGHT-grouped digits) with 50/50 parity against the checkpoint's own
-  tokenizer. Real weights (988 GB FP8 -> 555 GB tree; 16.1 GB pinned + 547 GB
-  mmap-streamed experts): SelfCheck Paris ×3 bit-exact
-  (`logits_hash 747bf131f1ac557f`), FSI/CODE/DET 3/3 each on
-  **template-derived** goldens (an inline-reasoning trap: the `[THINK]` markers
-  are special ids the decoder drops, so the harness cuts by id —
-  `docs/OPEN_TASKS.md` §R14), native tool
-  round-trip `get_weather {"city":"Paris"}`. Perf at 2048 tokens:
-  **1.04 t/s (perf) / 1.03 t/s (r3)**, TTFT 5.7 s, host-store bound (17 GB of experts
-  streamed per token). Knobs `LSX_MISTRAL_LARGE4_EXPERT_CACHE_SLOTS`,
-  `LSX_MISTRAL_LARGE4_MAX_OPEN`.
-  DeepSeek-V4-Pro-0813 (independent family `deepseek` variant `pro`: the same
-  DeepseekV4ForCausalLM contour as V4-Flash — MLA + Hyper-Connections +
-  compressed-KV/indexer + hash router + sqrtsoftplus MoE — with Pro geometry
-  61L / 7168H / 128 heads (head_dim 512) / q_lora 1536 / o_groups 16 /
-  384x3072 experts top-6 / route_scale 2.5 / index 64x128 topk 1024 and a
-  `128,128,4,128,4,...` compression grid (indexer on every ratio-4 layer, hash
-  router on layers 0..2); `deepseek_moe_pro_constants.h` (frozen passport,
-  `lsxcommon::deepseek_pro`), `deepseek_moe_pro_convert.{h,cpp}` (wraps the
-  generic Converter with the passport gate; DSpark `mtp.0..2` stripped AND
-  counted), `deepseek_moe_pro_load.{cuh,cu}` + `deepseek_moe_pro_inference_*.cu`
-  + `deepseek_moe_pro_norm_kernels.cu` + `deepseek_moe_pro_model.{h,cpp}`;
-  converted with `lsxforge --deepseek_pro`; the 822 GiB routed-expert set is
-  mmap-streamed through the neutral `ExpertStore` (never pinned by default;
-  `LSX_DEEPSEEK_PRO_PIN=1` opts in under a 64 GiB cap,
-  `LSX_DEEPSEEK_PRO_MAX_OPEN` sizes the LRU window, default 4096), and the store
-  gains a `pending_drain` hook because the prefetch-copy registry is
-  family-local. Converted in place 2026-10-26 (892.7 GB source -> 838 GB tree:
-  27 GB pinned + 811 GB experts, `deferred.mtp = 7009`). Real-weight SelfCheck:
-  Paris x3 bit-exact (`logits_hash` stable), streaming + pre-start/mid-generation
-  cancel green; the tool round-trip returned `get_weather {"city":"Paris"}`.
-  Two Pro-specific numeric/lifecycle facts are load-bearing: the HC residual
-  can exceed the FP16 range (the source runs BF16/FP8), so the HC-combined
-  vector is kept FP32 (`d_single_f32`) before the scale-invariant RMSNorm; and
-  the layer `Free()` must release the separately-allocated shared-expert blobs
-  (~4 GiB) or the second model load in one process OOMs. FSI/CODE/DET goldens
-  are **template-derived** (authored Expected Template + Pro's own
-  `encoding_dsv4.py` framing; the source oracle is the TP-4 FP8 runner, which
-  this 32 GB card cannot execute) and now run: FSI 2/3 (FSI-02 RED — the model
-  inlines numeric constants instead of the required symbolic form), CODE 3/3,
-  DET 3/3. Perf rows are seeded through the harness at the
-  canonical 2048-token protocol: **perf 0.77 t/s / r3 0.79 t/s**, TTFT ~9.0 s,
-  28.0 GiB resident (host-store bound: ~13.5 GB of experts streamed per token
-  from the 811 GB mmap tree) — `tests/perf/perf_baselines.json`; history in
-  `docs/OPEN_TASKS.md` §R3.
-  MiniMax-M3 (~428B / ~23B active, independent family `minimax`): GQA
-  60L / 6144H / 64 Q / 4 KV / 128HD with Gemma-form (1+w) RMSNorm, per-head QK
-  norm, partial RoPE on the first 64 of 128 head dims (theta 5e6), MiniMax
-  Sparse Attention (MSA: a 4-head x 128-dim Lightning Indexer that max-pools
-  128-key blocks, always keeps the local block and selects the top-16 per KV
-  group, layers >= 3), GPT-OSS-style SwiGLU-OAI (`(up+1)*gate*sigmoid(alpha*
-  gate)`, both clamped to +-7, alpha 1.702), sigmoid router with an
-  `e_score_correction_bias` (top-4 by `sigmoid+bias`, weights renormalized from
-  the plainer sigmoid scores, routed sum x 2.0 then added to an UNGATED 3072
-  shared expert), layers 0-2 dense MLP + dense attention; 128 experts x 3072,
-  vocab 200064, tokenizer = byte-level BPE (Llama-3/o200k-style pre-tokenizer)
-  with `]~!b[]~b]system`-style native framing; `minimax_moe_constants.h` (frozen
-  passport, `lsxcommon::minimax::frozen`), `minimax_moe_convert.{h,cpp}`
-  (BF16 -> NVFP4; expert-major second pass joins w1/w2/w3 across shards so the
-  800 GB source is never resident; vision tower/projector stripped+counted),
-  `minimax_moe_load.{h,cpp}` (pinned dense graph + F32 router + neutral mmap
-  `ExpertStore` for 57x128 routed experts, `MinimaxExpertEntry` aliasing
-  `ExpertStore`, device slot LRU, `LSX_MINIMAX_EXPERT_{CACHE_SLOTS,MAX_OPEN}`),
-  `minimax_moe_kernels.{h,cu}` (router, SwiGLU-OAI, per-head norm, partial RoPE,
-  indexer block selection, masked decode attention, NVFP4 row embedding,
-  routed accumulate/combine), `minimax_moe_inference_pipeline.{h,cu}` (session =
-  pos-major KV through `KvCacheGeometry` + per-layer indexer key history;
-  token-by-token prefill/decode, streaming + abort, published result),
-  `minimax_moe_model.{h,cpp}`, `minimax_moe_tool_format.{h,cpp}` (native
-  `]<]minimax[>[<invoke name=...>` XML codec, thinking disabled = the
-  template's think-END generation prefix); format tag
-  `logestix-minimax-nvfp4`; converted with `lsxforge --minimax`. Up to
-  `topk_blocks*block_size` = 2048 tokens every key block is selected, so the
-  canonical protocol runs on the neutral coalesced attention kernel; past that
-  the two-pass masked kernel engages (perf debt, correctness first).
-  Session facts, gates and perf rows: `docs/OPEN_TASKS.md` §R4.
-  MiniMax-M3.1-Flash (sibling variant of `minimax`, registry
-  `minimax-m3.1-flash`): the same M3 backbone contour with **MSA on every
-  layer** (no dense-attention prefix; the dense-MLP prefix stays), RoPE theta
-  1e7, and a **pre-quantized source** — MXFP8 dense (F8_E4M3 + per-32 E8M0
-  `weight_scale_inv`) and ModelOpt NVFP4 routed experts (`weight_packed` /
-  `weight_scale` / F32 divisor `weight_global_scale` + `input_global_scale`).
-  The shared converter DEQUANTIZES the dense side through the neutral
-  quantizer's E8M0 tile path and passes the experts through verbatim (divisor
-  global scale inverted, the Mistral rule); `minimax_moe_flash_convert.{h,cpp}`
-  is the `lsxforge --minimax_flash` entry with the variant discriminator
-  (theta + first-sparse-layer) so an M3 tree and an M3.1 tree cannot be
-  converted/loaded as each other. `minimax_moe_flash_constants.h` (frozen
-  passport, `lsxcommon::minimax_flash::frozen`), `minimax_moe_flash_model.{h,cpp}`
-  (parent loader/kernels/pipeline reused; format tag shared because the emitted
-  layout is identical — only the index `model` field distinguishes the trees),
-  and a `MinimaxRenderPolicy` on the shared tool codec for the M3.1 template
-  (fixed adaptive thinking, `<model_id>8bb8149fe</model_id>`, `developer`
-  blocks, batched tool results). `LoadMinimaxTopology` now derives
-  `first_moe_layer`/`first_sparse_layer` and every member cross-checks them +
-  its RoPE theta against its passport. Real weights: SelfCheck Paris x3
-  bit-exact, FSI/CODE/DET 3/3 (template-derived goldens), tool round-trip green;
-  **6.23 t/s (perf) / 6.18 t/s (r3)** at 2048 tokens, TTFT ~49 s. Session facts:
-  `docs/open-tasks/2026-10-31-minimax-m31-flash-ingest.md`.
-  Recursive Flint (39.8B / ~2.5B active, independent family `flint`): a
-  Qwen3-MoE-contour decoder (GQA + per-head QK RMSNorm + SwiGLU) with five
-  deltas in no other family — learned per-head attention sinks
-  (`self_attn.softmax_offset`, an extra softmax COLUMN with no value
-  contribution), hybrid attention from `config.layer_types` (35 sliding layers,
-  window 513) with **no positional encoding on the 14 full-attention layers**
-  (`no_rope_layer_indices` == the full set), a dense SwiGLU prefix
-  (`mlp_only_layers` 0,1), a sigmoid top-6 router with renormalized weights and
-  one **ungated** shared expert; 49L / 2048H / 32Q·4KV·128HD, 256 experts at
-  I=512, shared I=1024, vocab 150144, 4 stop ids. Files:
-  `flint_moe_constants.h` (frozen passport + layer tables), `flint_moe_convert.*`
-  (`lsxforge --flint`, `logestix-flint-nvfp4`; the dense side carries a second
-  NVFP4 plane — `"residual": "attn+mlp+shared"` — while the routed experts stay
-  4-bit), `flint_moe_load.*` (pinned graph + all 12 032 routed experts resident
-  in per-layer slabs), `flint_moe_kernels.{h,cu}`,
-  `flint_moe_inference_attn.{h,cu}` (sink column + window + per-layer RoPE
-  skip), `flint_moe_inference_pipeline.*`, `flint_moe_model.*`,
-  `flint_moe_tool_format.*` (inline `<|system|>`/`<|user|>`/`<|assistant|>`
-  framing + `<tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value>` codec),
-  `flint_moe_device_math.h` (host reference). Two numeric facts are
-  load-bearing: the checkpoint has **massive activations** (residual ~1.4e4,
-  one layer amplifies ~300x; gate 5.3e4, SwiGLU ~1.5e8 in the source's BF16), so
-  the residual stream is **FP32** and the FFN intermediates are kept in range by
-  power-of-two scaling (`kFfnInScale` 64 / `kFfnOutScale` 8192) — under FP16 the
-  model produced NaN at layer 47; and the tokenizer needs `tokenizer_kind` 4
-  (3-split: `\p{N}{1,3}` + CJK isolated, then the o200k case-run pattern with
-  `[\p{P}\p{S}]+[\r\n]*`). Source oracle: `tools/flint_oracle.py` (CPU BF16).
-  SelfCheck Paris ×3 bit-exact; tokenizer parity 27/27; tool codec byte-exact
-  against the template; FSI/CODE/DET goldens are declared debt and the
-  routed-expert 4-bit error is the measured parity gap — `docs/OPEN_TASKS.md`
-  §R6.
-  Hy-Memory-30B-A3B (~30B / ~3B active, independent family `hy`): a
-  long-term-memory writer built on `HYV3ForCausalLM` (model_type `hy_v3`) —
-  plain RMSNorm (weight form, NOT Gemma's 1+w), full 128-dim RoPE
-  (theta 11158840), per-head QK RMSNorm, a dense SwiGLU MLP on layer 0 and a
-  sigmoid router with an `expert_bias` on layers 1..47 (top-8 by
-  `sigmoid+bias`, coefficients renormalized from the plain sigmoid scores and
-  multiplied by `router_scaling_factor` 2.826) plus ONE gated shared expert
-  combined in FP32; 48L / 2048H / 32Q·4KV·128HD, 128 experts at intermediate
-  768 (config `expert_hidden_dim`; the vestigial `moe_intermediate_size` 1536
-  is NOT the tensor width — the converter pins 768 and rejects a 1536-wide
-  tree), vocab 120832, no vision/MTP ballast; `hy_moe_constants.h` (frozen
-  passport), `hy_moe_convert.{h,cpp}` (BF16 → NVFP4, embed/lm_head stay FP16),
-  `hy_moe_load.{h,cpp}` (pinned graph + **all 6016 routed experts resident** in
-  per-layer device slabs — 16.8 GiB — so there is no expert cache/LRU and no
-  host expert store), `hy_moe_kernels.{h,cu}` (full RoPE / sigmoid+bias router
-  / routed accumulate / FP32 combine; RMSNorm, GEMV, batched expert GEMV and
-  the causal GQA attention kernels are the shared neutral ones),
-  `hy_moe_inference_pipeline.{h,cu}` (pos-major KV session, token-by-token
-  prefill/decode, streaming + abort), `hy_moe_model.{h,cpp}`,
-  `hy_moe_tool_format.{h,cpp}` (native `<|User|>`/`<|Assistant|>` framing with
-  the `no_think` prefix and the `<tool_calls>`/`<tool_sep>`/`<arg_key>` XML
-  codec, byte-identical to the checkpoint's `chat_template.jinja`); format tag
-  `logestix-hy-nvfp4`; converted with `lsxforge --hy`.
-  Two tokenizer facts are load-bearing and now carried by the bridge: the
-  vocabulary has **no CR byte token** (the reference DROPS `\r`) and no
-  single-byte token for the 13 UTF-8-illegal lead bytes, so
-  `TokenizerSpecialPolicy::drop_unmapped_bytes` maps them to -1 and the encoder
-  skips them; and its 818 added tokens include **plain (special:false)**
-  control markers (`<think>`, `<tool_call>`, …) which the reference matches
-  literally — the kind-0 encoder now does too when the vocab metadata carries
-  `base_vocab_size` (only this family writes it). Source-oracle loading needs
-  `tools/hy_v3_oracle.py`: the published checkpoint is per-expert
-  (`mlp.experts.E.{gate,up,down}_proj`) with `mlp.shared_mlp.*` and
-  `mlp.router.gate`, which the stock HF class does not accept, so the oracle
-  assembles the fused tensors. Session facts, gates and perf rows:
-  `docs/OPEN_TASKS.md` §R5.
-  Hy-SimulMT-30B-A3B (sibling of `hy`, registry `hy-simulmt-30b-a3b`): the
-  `HYV3SpeechForCausalLM` checkpoint whose text side is the SAME `hy_v3`
-  backbone (18 673 identically-named tensors, byte-identical `tokenizer.json`)
-  plus a 24-layer speech encoder that is stripped AND counted (403
-  `audio_tower.*` tensors, `skipped_visual_tensors`); `hy_moe_simulmt_constants.h`
-  (frozen passport, `logestix-hy-simulmt-nvfp4`), the shared spec-driven
-  converter via `hy_moe_simulmt_convert.{h,cpp}` + `lsxforge --hy_simulmt`,
-  `hy_moe_simulmt_model.{h,cpp}` (reuses the parent's loader/kernels/pipeline
-  through `HyPassportGeometry`). It is a direction-bound zh↔en simultaneous
-  translator: the engine prefixes the checkpoint's own serving directive and
-  auto-selects the direction from the source script (Han → zh-en, else en-zh),
-  so a plain text request is a translation request; without the directive the
-  decoder only summarises. Two stop ids (`eos_token_ids`: `<eos>` and
-  `<|hy_EOT|>`), `HyRenderPolicy` carries the template's `</tool_calls>`
-  example-close delta. SelfCheck PASS (translation direction), FSI/CODE/DET are
-  declared debt (the source summarises the QA bodies instead of answering);
-  perf 87.57 / 74.85 t/s at 2048 tokens. Audio input/speech output are out of
-  scope. `docs/OPEN_TASKS.md` §R11.
-  Kimi-K2.7-Code (independent family `kimi`: DeepSeek-V3 MLA + 384-expert top-8
-  MoE with one shared expert, 61 layers / 7168H / 64 heads / q_lora 1536 /
-  kv_lora 512 / qk_nope 128 / qk_rope 64, YaRN factor 64;
-  `kimi_moe_load.h` (frozen passport + the rope/temperature constants),
-  `kimi_moe_convert.{h,cpp}` (INT4 group-32 offset-binary → NVFP4, ballast
-  counted, token policy from `config.json`), `kimi_moe_load.cpp` (pinned MLA
-  graph + neutral `ExpertStore` with chunked pinning, 542 GB tree),
-  `kimi_moe_inference.cu` (absorbed MLA decode, router, expert FFN, staged and
-  resident paths), `kimi_moe_expert_cache.{h,cu}` (device slot-LRU),
-  `kimi_moe_model.{h,cpp}`, `kimi_moe_tool_format.{h,cpp}` (native
-  `<|im_*|>`/`<|tool_call_begin|>functions.{name}:{i}<|tool_call_argument_begin|>`
-  codec, thinking-only `<think>` prefix); the tokenizer is tiktoken
-  (`tokenizer_kind=2`: the vocabulary IS the merge table, added tokens matched
-  literally, no BOS, stop id `<|im_end|>` = 163586); format tag
-  `logestix-kimi-r2`. Verified on real weights 2026-10-26: SelfCheck Paris ×3
-  bit-exact and a per-layer reference oracle (relL2 0.0034 → 0.1226, cos ≥
-  0.9925) — `docs/open-tasks/2026-10-26-kimi-audit-verification.md`; FSI/CODE/DET
-  are declared golden debt (`docs/OPEN_TASKS.md` §R2).
-  Kimi-K3 (variant `k3` of the `kimi` family, registry `kimi-k3`);
-  2.8T total / ~104B active KimiLinear: 93 layers (dense SiTU MLP on layer 0),
-  **69 KDA + 24 gated NoPE MLA** layers (0-based `{3,7,…,91,92}`), **AttnRes**
-  block 12, **Stable LatentMoE** (hidden→3584 latent + RMSNorm, 896 experts
-  top-16, 2 shared at 6144), SiTU-GLU (β 4 / linear β 25), 7168H, vocab 163840;
-  `kimi_moe_k3_constants.h` (frozen passport), `kimi_moe_k3_convert.{h,cpp}`
-  (`lsxforge --kimi_k3`; MXFP4(E8M0/32) experts repacked **exactly** into the
-  neutral NVFP4 record, vision tower + projector stripped and counted),
-  `kimi_moe_k3_load.{h,cpp}` (pinned attention/dense graph + the latent/shared
-  plane kept as Arrow **mmap views and streamed per layer** because pinning it
-  needs ~34 GiB + the neutral `ExpertStore` for 82 432 routed arrows),
-  `kimi_moe_k3_kernels.{h,cu}` (SiTU, 896-way sigmoid+bias router, AttnRes
-  mixer, KDA conv-4 + channel-wise delta recurrence, absorbed gated NoPE MLA),
-  `kimi_moe_k3_inference_pipeline.{h,cu}` (93-layer driver, token-by-token),
-  `kimi_moe_k3_model.{h,cpp}`, `kimi_moe_k3_tool_format.{h,cpp}` (native XTML
-  `<|open|>/<|close|>/<|sep|>` chat + tool codec; `tokenizer_kind 2`, no BOS,
-  stop `<|end_of_msg|>` 163586); format tag `logestix-kimi-k3-nvfp4`.
-  Real weights: SelfCheck (framed) PASS `The answer is Paris.`,
-  `logits_hash=5c1e227265d6a27b`; tokenizer parity 23/23; FSI/CODE/DET goldens
-  are template-derived and not yet run; perf unseeded — `docs/OPEN_TASKS.md`
-  §R15.
-  Kimi-K3.1-Pro (variant `k31_pro` of the `kimi` family, registry
-  `kimi-k3.1-pro`): the same KimiLinear contour as `kimi-k3` with **Gated DSA**
-  on the 24 gated-NoPE-MLA layers — a Lightning Indexer per full-attention layer
-  (`wq_b [4096,1536]` off the q-lora, `wk [128,7168]` + a 128-wide LayerNorm,
-  `weights_proj [32,7168]`, 32 heads x 128 dims) scoring `relu(q·k)` with
-  `score[t,s] = Σ_h w[h]·relu(q[h]·k[s])`, then an EXACT top-`index_topk = 2048`
-  selection that the MLA decode attends over; crossing the tie boundary emits
-  positions strictly above the threshold in ascending order, then the boundary
-  group from the lowest position up (not a value-sorted list). Selection is
-  **dormant at `n_pos <= 2048`**, which is the canonical protocol: the sparse
-  path is bit-identical to the dense K3 path there. Files: the frozen passport
-  `kimi_moe_pro_constants.h` (`lsxcommon::kimi_pro::frozen`; `kIndexTopK`,
-  `kIndexHeads`/`kIndexHeadDim`, `kIndexNormEps`, the DSA layer table),
-  `kimi_moe_pro_convert.{h,cpp}` (`lsxforge --kimi_k31_pro`,
-  `logestix-kimi-k31-pro-nvfp4`; wraps the shared converter with the
-  wrapper-level `config.json.model_type == "kimi_k31"` + `dsa_config` + indexer
-  tensor gate, both directions — `text_config.model_type` is `kimi_linear` for
-  both trees and cannot discriminate), the **shared** `kimi_moe_k3_load.{h,cpp}`
-  (the variant owns no loader TU: under the Pro format tag it pins the 120
-  indexer tensors as FP16, never quantized, counts `indexer_bytes` and
-  cross-checks the variant), and `kimi_moe_pro_model.{h,cpp}` (Load's
-  unconditional `dsa` structural check, Infer, SelfCheck, the inherited XTML
-  bridge). The converter/loader/kernels/
-  pipeline/model of `kimi-k3` learn exactly one optional component (the
-  `indexer` index flag + the `kimi_moe_k3_kernels` indexer entry points + the
-  pipeline's indexer key cache and DSA branch), precedent `minimax-m3.1-flash`.
-  Real weights (1.5 TB MXFP4 source → 1.5 TB tree in 17 min: 23 GB pinned graph
-  + 8.9 GB streamed latent/shared plane + 1.4 TB expert arrows): SelfCheck
-  Paris ×3 bit-exact (`logits_hash 98ec1bbb372c9181`, top-1 40) and the native
-  XTML tool round-trip `get_weather {"city":"Paris"}` are green. Decode is a
-  harness row, not prose: **0.50 t/s (perf) / 0.51 (r3) at 2048 tokens = 2.00 /
-  1.96 s per token** (`tests/perf/perf_baselines.json`, seeded 2026-11-06) — still
-  host-store bound (92 MoE layers × top-16 experts, 25.5 GiB of reads per token),
-  and **faster than its parent** K3, which seeds at 0.47/0.49 t/s (2.13/2.04
-  s/token), so the DSA indexer is not a net cost at this length. That replaces the
-  earlier 3.23–3.35 estimate, which was log-derived. The FSI/CODE/DET sweep
-  (~7 h of exclusive GPU at the measured rate) is **declared debt, not a pass**:
-  those cells are `not run`.
-  Open, and load-bearing for how the gates may be read — `docs/OPEN_TASKS.md`
-  §R17 (P1: the indexer arithmetic is reconstructed, no modeling code ships;
-  P2: the family's synthetic fixture is input-invariant, so no model-stage test
-  can observe a wrong key set; P3: the sweep is debt; P4: its goldens are
-  template-derived; P5: RESOLVED — the reported 4x gap was a prose baseline, and
-  the defect it hid was the 512-slot expert window against a 1472-expert working
-  set, 6.95 → 2.98 (K3) / 3.23–3.35 (Pro) s/token as measured then; the eviction
-  half of the same loop is closed too — P5a, both archived. **The window numbers
-  above are history, not the current rate**: the 2026-11-06 harness rows put K3 at
-  2.13/2.04 and Pro at 2.00/1.96 s/token, and the 2.98/3.23–3.35 figures were
-  log-derived prose. P3's perf half is closed; its FSI/CODE/DET half is not).
-  Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
-  560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
-  (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited
-  sigmoid + `expert_bias`, renorm ×2.5) + one ungated shared expert, 72 main
-  layers + MTP layer 72 (stripped+counted), 4096H / 64 heads / 128HD, vocab
-  157 184, FP8 block-128 source; `ling_moe_constants.h` (frozen passport),
-  `ling_moe_convert.{h,cpp}` (FP8→NVFP4, MTP `deferred.mtp`, per-expert
-  global scales), `ling_moe_dequant.cu`, `ling_moe_load.{h,cpp}` (pinned dense
-  graph + neutral `ExpertStore` + device slot LRU, 298 GB expert tree),
-  `ling_moe_kernels.{h,cu}` (KDA conv/delta, interleaved partial RoPE,
-  group-limited router, SwiGLU limits), `ling_moe_inference.{h,cu}`,
-  `ling_moe_model.{h,cpp}`, `ling_moe_tool_format.{h,cpp}` (native
-  `<role>…</role>` framing + `<tool_call>` XML); format tag
-  `logestix-ling-nvfp4`; converted with `lsxforge --ling`; tokenizer
-  `tokenizer_kind 5` (`LingWordStream`, parity 27/27). Two load-bearing numeric
-  facts: every routed expert carries its OWN three `global_scale`s (one shared
-  value makes the model incoherent), and the official SGLang SwiGLU limits
-  (`share_expert_swiglu_limit_list` from layer 64, `expert_swiglu_limit_list`
-  from 65) must be applied. Real-weight SelfCheck: Paris ×3 bit-exact (kOff);
-  kAuto token stream stable; tool round-trip green. Perf at 2048 tokens:
-  **2.77 t/s (perf) / 2.41 t/s (r3)**, TTFT ≈10.3 s, 10.2 GiB pinned + 16-17
-  GiB expert cache. FSI/CODE/DET are declared golden debt (560B source cannot
-  run on one card) — `docs/OPEN_TASKS.md` §R7.
-  Beam-1.0-501B-A23B (independent family `beam`; `model_type = "beam"`,
-  `BeamForCausalLM`, 52L / 5120H / 48Q·8KV·128HD, 3 dense + 49 MoE layers ×
-  256 routed experts top-8 with no shared expert, vocab 151 936);
-  `beam_moe_constants.h` (frozen passport), `beam_moe_convert.{h,cpp}` (BF16 →
-  NVFP4; the 4 sandwich norms, per-head q/k norms, per-head attention gate bias
-  and FP16 embed/lm_head stay high precision, the router + correction bias stay
-  F32), `beam_moe_load.{h,cpp}` (pinned dense graph + F32 router + the neutral
-  mmap `ExpertStore` streamed with `first_moe_layer = 3`),
-  `beam_moe_kernels.{h,cu}` (plain/per-head RMSNorm, rotate-half RoPE, NoPE
-  SSMax query scale, warp-per-head gated sliding-window decode attention,
-  group-limited sigmoid router, FP32 SwiGLU, depth-scaled residual, softcap),
-  `beam_moe_inference.{h,cu}` (token-by-token prefill/decode over the neutral
-  NVFP4 GEMV and the streamed experts; per-layer router readback is the
-  documented perf debt), `beam_moe_model.{h,cpp}`,
-  `beam_moe_tool_format.{h,cpp}` (modified-Harmony `analysis`/`final` channels,
-  `to={name}` + `<rfl:parameter>` XML bodies), `tokenizer_kind = 6`
-  (`BeamWordStream`, the Qwen2/3 single-run pattern) with the Harmony markers as
-  plain added tokens; format tag `logestix-beam-nvfp4`; converted with
-  `lsxforge --beam`; knob `LSX_BEAM_EXPERT_CACHE_SLOTS` (default 512) and
-  `LSX_BEAM_EXPERT_MAX_OPEN`. Session facts, gates and debt:
-  `docs/OPEN_TASKS.md` §R8.
-  Step-5-Preview (600B total / 27B active, independent family `step`): a
-  GQA + DSA-hybrid decoder with 92 layers / 4096H / 64Q·4KV·192HD and 352 routed
-  experts top-8 (I=1536) plus one gated shared expert, layers 0..2 and 91 dense.
-  Five deltas in no other family: ZERO-CENTERED RMSNorm (`(1+w)`, F32 weights —
-  the checkpoint's weights are centred on zero, so reading them as plain scales
-  zeroes every activation), NEOX-paired PARTIAL RoPE whose span is per layer
-  (192 on the 69 sliding layers, 64 on the 23 full-attention layers, thetas 1e4
-  / 1e7), a per-head sigmoid output gate (`self_attn.g_proj`, applied BEFORE
-  o_proj), FUSED FP8 expert stacks `[352,1536,4096]` + a 128x128 F32
-  `weight_scale_inv` grid that the converter splits per expert (layers 88..90
-  are BF16 experts, `modules_to_not_convert`), and an FP32 residual stream whose
-  final RMSNorm narrows to BF16 first. The DSA Lightning Indexer (region 8,
-  proxy 256, top-512 regions = 4096 tokens) is stored-not-applied: at <=4096
-  tokens every region is selected, so the dense causal path IS the reference
-  path (OPEN_TASKS §R9). Files: `step_moe_constants.h` (frozen passport),
-  `step_moe_convert.{h,cpp}` (`lsxforge --step`, `logestix-step5-nvfp4`;
-  MTP layers 92..94 and the 667-tensor vision tower stripped+counted),
-  `step_moe_dequant.{h,cu}` (FP8 stack -> BF16 on the GPU),
-  `step_moe_load.{h,cpp}` (pinned dense graph + neutral mmap `ExpertStore`,
-  `LSX_STEP_EXPERT_{CACHE_SLOTS,MAX_OPEN}`), `step_moe_kernels.{h,cu}`,
-  `step_moe_inference_attn.{h,cu}` (windowed/full GQA decode attention),
-  `step_moe_inference_pipeline.{h,cu}`, `step_moe_model.{h,cpp}`,
-  `step_moe_tool_format.{h,cpp}` (native ChatML `<|im_start|>` framing +
-  `<tool_call>\n<function=…>\n<parameter=…>` codec; `tokenizer_kind` 4).
-- `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
-  async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
-  OpenAI endpoint, affinity).
-- `apps/lsxfabric/` — B2B inference engine, always maximum speed
-  (`--localmodel`, `--validate`, `--testprompt`); `--serve` runs the v2 streaming
-  ZeroMQ bus (`--listen` ROUTER + `--listen-cancel` PULL, DEALER/ROUTER token
-  frames, per-request cancel); speed measurement and bit-exactness
-  moved to lsxbenchmark. `apps/lsxforge/` — data preprocessing utility
-  (`--glm`/GLM-5.2 pipeline, `--tokenizer`, repack flags). `apps/taskmosaic/` —
-  OpenAI- and Anthropic-compatible HTTP/SSE bridge to a running
-  `lsxfabric --serve` over the v2 streaming fabric protocol (`--config`):
-  `/v1/chat/completions` (+ `tools`/`tool_calls`, `stop`), `/v1/completions`,
-  `/v1/models`, `/health`, `/ready`, and the Anthropic Messages API
-  (`/v1/messages`, `/v1/messages/count_tokens`, `HEAD /api/hello`,
-  `stop_sequences`). Sampling fields (`temperature`/`top_p`/`top_k`/`seed`)
-  are forwarded on the v3 request frame; absent/zero keeps greedy, which is the
-  numeric class the parity goldens pin. Tool calling has verified native render/parse for
-  Qwen3.5/3.6 (ChatML XML), GLM-5.3-Flash (`<|system|>` + `<arg_key>`),
-  DeepSeek-V4/V4.1/Pro (DSML; `deepseek_moe_tool_format.{h,cpp}`), Gemma-4
-  (`<|tool_call>call:…`; `gemma_tool_format.{h,cpp}`), GigaChat-3.5
-  (chatml-v5 GCML; `gigachat_tool_format.{h,cpp}`), Nemotron-3.5
-  (Qwen-style XML) and Xing-4.0 (`<tool_call>` + `<param_key>`; the markers
-  are the control ids 11/12, so the parse splices them from the ids -
-  `xing_moe_tool_format.{h,cpp}`, real-weight verified), with a generic Hermes
-  fallback elsewhere. The fallback
-  families emit a bare `{"name":…,"arguments":…}` object, so the generic
-  parser tries `tools::ParseBareToolCallJson` after `tools::ParseToolCallsText`;
-  do NOT add a "native" renderer for a fallback family without re-verifying that
-  round-trip. (Granite-4.2's tool round-trip regressed when the offline
-  block-scale encoder switched to full E4M3, then recovered after the
-  2026-10-07 E4M3FN subnormal alignment — `test_granite_dense_selfcheck` passes;
-  see `docs/open-tasks/2026-10-07-nemotron-nvfp4-and-codec-closed.md`.) Entry points: the per-family
-  `BuildConversationInputIds`/`ParseToolCalls` virtuals. `apps/lsxcli/` — CLI client
-  (`--model`, `--info`, `--infofull`).
-- `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`
-  (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
-  (`FastMathMode::kOff`); the only app with a numeric mode.
-- `tests/` — Catch2 v3.16.1 suite; labels `fast`/`convert`/`inference`/`perf`
-  (see § Test) + model/naming/absl/logging/toolchain guard tests. Arrow IPC rules are
-  machine-checked by `test_arrow_usage_guard` (mmap-only reads, recorded
-  `UnpackBatch` verdicts, atomic writes, the per-model audit matrix), hardened
-  by `test_arrow_validation` and validated against the real converted trees by
-  `test_arrow_tree_integrity`; findings — `docs/ARROW_AUDIT_2026-11-01.md`.
-- `third_party/flatbuffers/`, `third_party/libzmq/`, `third_party/simdjson/` —
-  submodules. CCCL is not vendored: it comes from the CUDA toolkit bundle
-  (`<include>/cccl`), band-guarded at configure time (root `CMakeLists.txt`).
-
-The full per-file inventory (by family and subsystem: suite membership and
-assertions, selfcheck env vars, model perf details) — skill
-**`logestix-repo-map`**
-(`.opencode/skills/logestix-repo-map/SKILL.md`). Its machine-checked
-equivalents: `test_model_suite_guard.cpp::Suites()` (model → stages →
-ctest targets), `test_model_independence_guard.cpp::kPassports` (model →
-passport header → namespace) and `::kLifecycle` (model → the TU(s) that must
-wire the shared lifecycle contract) — when they disagree, they are
-authoritative.
-
-### Skill map — the model lifecycle, phase by phase
+## Skill map — the model lifecycle, phase by phase
 
 | phase | skill | what it decides |
 |---|---|---|
-| 0. intake / triage | **`ingesting-a-model`** § Stage 0 | is this a new family or a sibling? geometry, tokenizer verdict, what to strip, does it fit this machine |
-| 1. ingestion | **`ingesting-a-model`** stages 1–8 | converter → NVFP4 → registration → tokenizer bridge → 4b tool calling → kernels → sandbox → tests (stage 7, the token-translation passport, is retired: no consumer) |
-| 2. build | **`building-the-project`**, `cuda-cmake-build-gotchas` | presets, toolchain, where the binaries land, why the build breaks |
-| 3. correctness gates | **`test-lifecycle`**, `fsi-selfcheck`, `code-selfcheck`, `det-selfcheck` | labels, targets, and the three parity/determinism goldens |
-| 4. throughput | **`perf-tuning-a-model`** | attribute the wall time, budget tests, baselines |
+| 0. intake / triage | **`ingesting-a-model`** § Stage 0 | new family or sibling? geometry, tokenizer verdict, ballast, does it fit |
+| 1. ingestion | **`ingesting-a-model`** stages 1–8 | manifest → converter → NVFP4 → tokenizer bridge → 4b tool calling → kernels → sandbox → tests (stage 7, the token-translation passport, is retired) |
+| 2. build | **`building-the-project`**, `cuda-cmake-build-gotchas` | presets, toolchain, where binaries land, why the build breaks |
+| 3. correctness gates | **`test-lifecycle`**, `fsi-selfcheck`, `code-selfcheck`, `det-selfcheck` | labels, targets, the three parity/determinism goldens |
+| 4. throughput | **`perf-tuning-a-model`** | attribute wall time, budget tests, baselines |
 | 5. launch + serve | **`running-a-model`** §2a/§2b | the ordered fast-launch runbook and the acceptance checklist |
 | 6. locating code / rules | **`logestix-repo-map`**, `nvfp4-blackwell-conventions`, `absl-in-cuda-cpp`, `coding-conventions` | which file owns what; kernel and host-C++ rules |
-| 7. report artifact | **`ingesting-a-model`** § Stage 9 | the publishable model report in `docs/model-reports/` + its evidence |
+| 7. report artifact | **`ingesting-a-model`** § Stage 9 | the publishable report in `docs/model-reports/` + its evidence |
 | host resources / GPU | **`running-a-model`** §8 | one GPU workload at a time, inference exemption |
-
-Running and operating inference — skill **`running-a-model`**
-(`.opencode/skills/running-a-model/SKILL.md`): apps and their flags
-(`lsxbenchmark --bench/--selfcheck`, `lsxfabric --localmodel --testprompt/--validate`,
-`lsxforge`, `lsxcli`), vault paths (`path_registry`; override the default root with
-`LSX_MODEL_ROOT`, and the CLI takes the model ROOT, not `logestix/`), the engine
-lifecycle (`InferenceEngine::Session`), prompt
-framing/sampling, the resource layer (governor/VRAM/LRU planning) and the catalog of
-runtime env knobs `LSX_*`/`KIMI_*`.
-
-## Model Ingestion Protocol
-
-Adding/adapting a new model — skill **`ingesting-a-model`**
-(`.opencode/skills/ingesting-a-model/SKILL.md`): the 8-step MODEL INGEST INVARIANT
-(lsxforge converter → NVFP4 quantization → registration in `LsxModelFactory` +
-frozen geometry → tokenizer bridge → CUDA kernels → shared-mem sandbox →
-SelfCheck/tests; stage 7 — the binary token-translation passport — is retired,
-see the skill) plus the mandatory stage 4b tool bridge and the closing
-**stage 9 model report** (`docs/model-reports/YYYY-MM-DD-<model-card-name>.md`: a
-publishable English post + the internal evidence, so the report can be
-re-read or published later), the model file naming convention
-(`<family>_<type>[_<variant>]_<role>[_<subsystem>]`) and the guard-test registries
-(`test_code_naming_guard`, `test_model_independence_guard`,
-`test_model_suite_guard`), which must be extended in the same commit as the
-model files. The single source of truth is SKILL.md; only an anchor is kept here
-because the protocol is cited in code as "Model Ingestion Protocol step N".
-
-## CMake Key Points
-
-- `lsxcommon` — STATIC (`libs/lsxcommon/CMakeLists.txt`); PUBLIC links to spdlog,
-  flatbuffers, libzmq-static, cudart, lsxnetwork and the dependency propagator
-  `lsx_dep_includes`; PRIVATE — `${CMAKE_DL_LIBS}`.
-- `lsx_dep_includes` (root `CMakeLists.txt`) is the ONLY place dependency
-  include paths live: it links `arrow_shared`, `arrow_cuda_shared`,
-  `spdlog::spdlog`, `simdjson::simdjson`, `absl::strings` and adds the toolkit /
-  CCCL dirs, plus Arrow's build-tree headers (`${FETCHCONTENT_BASE_DIR}/...`,
-  because Arrow's own target keeps them directory-scoped). Targets link it —
-  never `${CMAKE_BINARY_DIR}/_deps/...` (a dependency source swap must not
-  break the build). `LSX_CUDA_ARCH` (`120;121`) is the single source of truth for
-  device codegen — it is expanded by `lsx_cuda_gencode_flags()` into nvcc's own
-  `--generate-code` spelling, and every device target sets
-  `CUDA_ARCHITECTURES OFF`. It must NOT be handed to `CUDA_ARCHITECTURES`:
-  CMake 4.x does not know CUDA's family suffix and, measured on 4.2.3, silently
-  replaces the whole list with `compute_75` (a binary that still runs through
-  PTX JIT, slower than plain sm_120, with no warning). `-DLSX_CUDA_ARCH=120f;121f`
-  selects family-specific codegen — measured **neutral** on 2026-11-05 because
-  every NVFP4 decode path is weight-streaming bound, so it is a one-variable
-  experiment for a compute-bound case, not a default. The target's includes are SYSTEM (dependency
-  headers never emit warnings into our TUs), and the project warning flags come
-  from `lsx_warning_policy()` (called by `libs/`, `apps/`, `tests/`, never the
-  root — a global `add_compile_options` also hits Arrow/abseil and adds ~12k
-  warnings to every clean build); `-Wpedantic` is limited to
-  `COMPILE_LANGUAGE:C,CXX` because nvcc forwards it to the host compiler, which
-  then flags nvcc's own `#line` markers. Three machine checks keep this state:
-  `test_infrastructure_guard` (no `${CMAKE_BINARY_DIR}/_deps` paths, one
-  definition per shared converter helper, `CUDA_ARCHITECTURES` only `OFF`, no
-  family suffix in it, no literal `--generate-code` outside the expansion
-  function, and the build-toolkit stamp rule). Our own sources build with **zero** warnings (a
-  clean Linux build is 246 lines, all from the vendored targets' own builds);
-  `-Werror` is still gated on validating the MSVC/AOCC presets.
-- CUDA `.cu` files are split into separate OBJECT libraries (`lsxcommon_cu`,
-  `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), linked into `lsxcommon`
-  PUBLIC — this isolates NVCC from MSVC flags. `cudart` is found via
-  `find_package(CUDAToolkit)` (Linux and Windows), not hardcoded paths; cuBLAS is not
-  linked and not used at all — the only GEMM path is device-independent `lsx_gemv`
-  (see `numeric-conformance-audit.md`).
-- Test registration goes through `cmake/LsxTestHelpers.cmake`:
-  `lsx_add_test(NAME … SOURCES … LINK … INCLUDE … DEFINE … LABEL … TIMEOUT … SKIP … ENV …)`
-  and `lsx_add_cuda_test(NAME …)` (the .cu OBJECT-library + CXX-executable
-  shape, `FMAD_OFF`, arch from `LSX_CUDA_ARCH`); both add the Windows Arrow DLL
-  copy (`lsx_copy_arrow_dlls`, `ARROW_ONLY` for the arrow_shared-only case).
-  New tests use these helpers; the remaining legacy registrations are being
-  migrated mechanically, not by rewriting labels.
-- `lsxnetwork` — STATIC; simdjson, libzmq-static and Threads PUBLIC
-  (a STATIC library re-exports link dependencies), spdlog PRIVATE.
-- Every app in `apps/*/` links `lsxcommon` PRIVATE; Catch2 v3.16.1
-  via FetchContent when `BUILD_TESTING=ON`.
-- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` **Win32 only**
-  (`if(WIN32)` before `add_subdirectory`) — on Linux the binaries stay in
-  `build/<preset>/apps/<app>/`; POST_BUILD copies `arrow.dll`/`arrow_cuda.dll`
-  (Win32) through `lsx_copy_arrow_dlls()`.
-- Flags (MSVC/NVCC), `lsx_tune`/LTO gating, dependency patches and CUDA architectures
-  — skill `cuda-cmake-build-gotchas`.
-
-## Conventions
-
-Language C++20/C23, logging only via spdlog (no `std::cout`/`printf`;
-machine-checked by `test_logging_guard`, label `fast`),
-`#include` style, `target_include_directories` with `$<BUILD_INTERFACE:...>`, placement
-of new `.cpp` files (app `add_executable` vs `libs/lsxcommon/`) and preservation of
-Doxygen/JSDoc — skill **`coding-conventions`**
-(`.opencode/skills/coding-conventions/SKILL.md`).
-
-Kernel/Blackwell rules — skill **`nvfp4-blackwell-conventions`**
-(`.opencode/skills/nvfp4-blackwell-conventions/SKILL.md`): one stream and minimal
-`cudaDeviceSynchronize`, shared-mem sandbox (thread 0 + barriers), NVFP4 only via the
-neutral `lsx_inference_nvfp4` + `std::mdspan`, CCCL priority (cub, thrust
-fallback on MSVC), Tile C++, CompileIQ, alignment/48 warps, zero-copy Arrow+CUDA and
-simdjson+libzmq, "if unsure about a signature — check the `.h`/`.cuh`".
-
-## absl:: Priority (Container/String policy)
-
-Host-only C++ (NOT compiled by NVCC) prefers `absl::`: `unordered_map/set` →
-`flat_hash_map/set`, `map/set` → `btree_map/set`, simple concatenations →
-`absl::StrCat`/`StrAppend`. The priority table, exceptions (what stays `std::`),
-the NVCC container incompatibility with the reachability rule and recipe check,
-the printf contract of `absl::StrFormat` and the CMake anchors (ABSL_PROPAGATE_CXX_STD,
-crc32 and format-checker patches) — skill **`absl-in-cuda-cpp`**
-(`.opencode/skills/absl-in-cuda-cpp/SKILL.md`). The inviolable parts stay here:
-
-- Headers reachable from `.cu`/`.cuh` must NOT include `<absl/container/*>`
-  (NVCC fails in raw_hash_map: `C2794`/`C2938`); in `.cu`/`.cuh` containers and
-  streams stay `std::`. The headers that do include a container header are
-  `lsx_orchestrator.h`, `model_integrity.h` and taskmosaic's `lsx_framer.h` (all
-  host-only, not reachable from `.cu`); the transitive include closure is
-  machine-checked by `test_absl_container_guard.cpp` (host-only static scan,
-  label `fast`).
-- `absl::StrFormat`/`StrAppendFormat`/`Format` — printf style (`%s/%d/%u/%f`);
-  `{}` is printed literally (guard `test_absl_format_guard`).
-- These stay `std::`: `string_view`/`optional`/`variant`/`function`/`unique_ptr`,
-  stream builders with `setw`/`setfill`, custom hasher functors.
-
-## NVIDIA Docs Reference (mandatory)
-
-- NVIDIA documentation is NOT vendored: dumps from the `nvidia-cuda-docs` MCP
-  have been removed from the repository to avoid distributing copyrighted material.
-  The pointer and procedure — `docs/NVIDIA_DOCS.md`.
-- Before editing NVFP4/CUDA kernels, load the current documentation from the
-  `nvidia-cuda-docs` MCP (PTX ISA, CUDA C++ Programming Guide, `cuda_fp4`/`cuda_fp8`,
-  CUTLASS, TMA, tcgen05) instead of relying on outdated excerpts. If the MCP is
-  unavailable — stop and get access to the current docs.
-- Discipline (verify semantics BEFORE editing, record derived
-  invariants in code/regression tests) — skill `nvfp4-blackwell-conventions`.
-
-## GPU Perf Auto-Tuning
-
-All speed work — decode-token profiling (nsys), TDD budget tests,
-`gpu_perf` knobs, the perf baseline — is described in skill **`perf-tuning-a-model`**
-(`.opencode/skills/perf-tuning-a-model/SKILL.md`). The inviolable parts stay here:
-
-- **No CLI speed/perf flags**: the engine always runs a per-GPU auto policy;
-  the only numeric run flag is `--bit-exact` (lsxbenchmark), which maps
-  to `FastMathMode::kOff`. `LSX_PERF_AUTO=0` restores the legacy bit-exact defaults,
-  `LSX_TEST_FAST_MATH` forces TC. Tests that pin the numeric class set `kOff`.
-- `test_perf_baseline` measures a DRAM-bound copy probe once per target and
-  records it as a synthetic baseline entry (`__gpu_probe__`/`probe`); a
-  low model reading is reported as ENVIRONMENT (not failed) only when the probe
-  is also down by at least as much (`perf_baseline::AttributeDegrade`), so the
-  oracle cannot mask a code regression.
-- `gpu_perf` (`include/lsxcommon/gpu_perf.h`) resolves the knobs at `InitializeEngine`
-  (TC fast-math, GEMV MiB limit, split-K threshold, % VRAM for the expert cache,
-  dual-stream staging); the resolution priority and knob consumers are in the skill.
-- `lsxbenchmark` — strict GPU exclusivity (see Resources).
-
-## Git
-
-English commit messages and the prefixes `build:`/`feat:`/`fix:`/`refactor:`/
-`test:`/`docs:` (plus the "commit only on explicit request" rule) — skill
-**`coding-conventions`** (`.opencode/skills/coding-conventions/SKILL.md`).
 
 ## Autonomous Mode
 
-- The AI agent is the sole creator and editor of code files (`.cu`, `.cpp`, `.h`, `CMakeLists.txt`).
-- The operator manages the process exclusively through high-level prompts and changes to instruction files.
-- If manual code changes are detected outside AI sessions, perform a full diff audit and reconcile with the operator before proceeding.
-- **No parallel/subagents**: using Task subagents (explore/general/parallel agents) is forbidden — they make many mistakes. All codebase research, audits and edits are done by the main session directly (Read/Grep/Edit/etc.).
+- The AI agent is the sole creator and editor of code files (`.cu`, `.cpp`, `.h`,
+  `CMakeLists.txt`). The operator drives through prompts and instruction files.
+- If manual code changes appear outside AI sessions, audit the full diff and
+  reconcile with the operator before proceeding.
+- **No parallel/subagents**: Task subagents (explore/general/parallel agents) are
+  forbidden — they make many mistakes. All research, audits and edits happen in
+  the main session directly.
+
+## Git
+
+English commit messages; prefixes `build:`/`feat:`/`fix:`/`refactor:`/`test:`/
+`docs:`. Commit only on explicit request; never amend, force-push or commit
+secrets. Full rules: skill `coding-conventions`.

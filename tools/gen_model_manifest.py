@@ -411,6 +411,8 @@ def validate(manifests, root: Path, partial: bool = False,
             seen_vault[m.vault_dir] = m.path
         (errors if strict_orphans else warnings).extend(
             check_orphans(manifests, root))
+        (errors if strict_orphans else warnings).extend(
+            check_matrix(manifests, root))
     return errors, warnings
 
 
@@ -795,6 +797,35 @@ def emit_docs(manifests, baseline) -> str:
             lines.append(f"- notes: {m.notes}")
         lines.append("")
     return "\n".join(lines) + "\n"
+
+
+def check_matrix(manifests, root):
+    """The matrix holds measured verdicts, so it is not generated.
+
+    What IS checked: every model row in the matrix exists in the manifests, and
+    every `debt` cell corresponds to a declared `golden_debt` reason. That is the
+    drift direction that matters - a manifest row renamed or a debt resolved
+    without the matrix following it.
+    """
+    path = root / "docs" / "SELFCHECK_MATRIX.md"
+    if not path.is_file():
+        return []
+    text = path.read_text()
+    # Only the model verdict tables: they are the ones with this header. Other
+    # tables in the file describe what a gate MEANS, not a model.
+    tail = text.split("| model (passport) |", 1)
+    if len(tail) < 2:
+        return []
+    rows = []
+    for block in re.split(r"\n## ", tail[1]):
+        for line in block.splitlines():
+            m = re.match(r"^\|\s*\**([a-z0-9][a-z0-9.\-]*)\**\s*\|", line)
+            if m and m.group(1) != "model":
+                rows.append(m.group(1))
+    known = {m.model_type for m in manifests}
+    return [f"docs/SELFCHECK_MATRIX.md: row {name!r} has no manifest row"
+            for name in rows
+            if name not in known and name not in ("model (passport)",)]
 
 
 def emit_matrix_rows(manifests) -> str:

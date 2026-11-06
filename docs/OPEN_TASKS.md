@@ -1809,3 +1809,26 @@ instrument, not an experiment.
   (3712 failed mmap opens, debug-logged) because `ExpertStore::Load` does not
   consult `moe_index_of_layer`. Harmless (entries stay empty, the compact
   device id map is correct) and ~30 ms per load; noted, not fixed.
+
+## Model manifest migration (2026-11-06) — what it did not cover
+
+The registry moved from six hand-maintained projections to `models/*.json`.
+Closed: the guard registries, the ctest registration, the factory list, the
+parity-gate and selfcheck test files, the `AGENTS.md` model narrative
+(1109 -> 164 lines) and the `README.md` inventory.
+
+Still open, by construction:
+
+- **Build wiring is still per model.** `add_executable`, the CUDA OBJECT
+  libraries and per-target includes/defines stay in `tests/CMakeLists.txt`: only
+  10 of 421 targets follow a convention, so a generated build graph would be a
+  worse copy of the same information. Revisit only if a re-architecture makes
+  the wiring conventional.
+- **`format_tag` is declared for 8 of 35 models.** The rest have no
+  machine-readable source (no `kFormatTag` constant; the tag lives inside a
+  converter's index writer). The catalogue prints "not declared" rather than a
+  guess. Closing it means exposing each converter's tag as a constant.
+- **Per-model goldens and perf rows are still captured by hand.** The manifest
+  names them and records debt; it cannot produce them.
+- **Approach C (family scaffolder) is not built.** Decided after this work, on
+  the measure "lines a fresh family needs that are not converter/kernel logic".

@@ -71,10 +71,11 @@ that decides it, and it is where a model is won or lost: every number you skip
 here comes back as a silently wrong token.
 
 **0.1 Classify: new family, sibling variant, or unsupported?**
-- Existing `kType` in `libs/lsxcommon/src/model_registry.cpp` and the same
-  architecture → **sibling variant**: add a `kPassports` row, a `Suites()` row
-  and a `kLifecycle` row, and reuse the parent's loader/kernels. Do NOT write a
-  new constants header (that is what model independence forbids).
+- Existing `model_type` in `models/*.json` and the same architecture → **sibling
+  variant**: add a manifest row (same `family`, own `variant`, shared `namespace`
+  is forbidden so give it its own passport or reuse the parent's class) and reuse
+  the parent's loader/kernels. Do NOT write a new constants header when the
+  geometry is identical (that is what model independence forbids).
 - Same architecture family, different geometry (width, expert count, hybrid
   pattern, head layout) → **new family** → its own frozen header (stage 3).
 - A tensor the classifier does not recognise → unsupported until you extend the
@@ -544,21 +545,84 @@ token sets below are what it currently accepts.
   `SchemeRegex()` in the SAME commit as the files that use it** — otherwise the
   guard rejects the file names.
 
-## Guard registries — extend in the SAME commit as the model
+## The manifest is the only registry you write by hand
 
-These guards are the machine-enforced part of this protocol. Adding a model
-without updating them fails CI.
+`models/<model_type>.json` is the single source of truth for one ingested model.
+Write it (stage 1), then everything the guards and ctest need is GENERATED at
+configure time into `${CMAKE_BINARY_DIR}/generated/`:
 
-| Guard (in `tests/`) | What to extend | Rule it enforces |
-|---|---|---|
-| `test_code_naming_guard.cpp` | `SchemeRegex()` token sets, `AllowedCommon()` allowlist | the naming convention above |
-| `test_model_independence_guard.cpp` | `kPassports` row (`model_type`, passport `header`, owning `ns`) + `consumers` (new model `.cpp`) + `kLifecycle` (model → the TU(s) forming its generation path) | unique frozen-geometry passport per model, one constants header per model in its own namespace, no passport→passport includes, no cross-family geometry borrowing, `LsxFastMathScope` in `Infer`, and the shared lifecycle contract (residency lock, streaming/abort, context teardown, governor lease, result fill, session state under the lock) |
-| `test_model_suite_guard.cpp` | `Suites()` row: convert → load → model → kernels → selfcheck → fsi → code → det → perf | full autonomous lifecycle; every stage target registered in `tests/CMakeLists.txt`; `SKIP_RETURN_CODE 4` on the selfcheck/fsi/code/det targets; no cross-family test fixtures; no vault loading in loader/model stages; synth primitives only in `test_synth_checkpoint.h`. Sharing a stage with a sibling variant is allowed but must be written in the row (e.g. qwen3.6 reuses qwen_moe's loader + kernels), and the guard rejects both an unclaimed family target and a row missing a stage. A second case binds stage 4b: every family must declare its tool-calling verdict (the proving target, or an explicit "generic" row) |
-| `test_ctest_labels_guard.cpp` | — (just label new tests) | every test carries a label in the same commit |
-| `test_model_suite_guard.cpp` (golden case) | fsi/code/det **golden files**, or an explicit `kGoldenDebt` entry | a parity stage whose golden is absent SKIPs, and a SKIP is indistinguishable from a pass — this is how gemma reported SUCCESS on two stages that never ran |
-| `test_absl_format_guard.cpp` | — | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
-| `test_logging_guard.cpp` | — (fix the call or add an exact-line allowlist entry with a category) | host logging uses spdlog / `lsxcommon::log`: no `std::cout` and no stdio logging (`printf`/`fprintf`/…) in the family's `libs/`/`apps/` code |
-| `test_expert_store_guard.cpp` | only if you migrate a **legacy** model off `MoEExpertStore` — then delete its rows from `kLegacyConsumers` | the host routed-expert store is the neutral `ExpertStore`, never a family-private OWNING container: no owning map of `PackedExpert`/`TensorRecord`/`DenseNvfp4Record`/`SharedExpertRecord`, no `…ExpertHost`/`…ExpertTable` identifier, every `*ExpertEntry` view file aliases `ExpertStore<`, and the legacy all-experts-in-pinned-slabs store cannot spread to a new family. Enforces R1/R2 below |
+| artifact | replaces |
+|---|---|
+| `model_manifest.h` | `kPassports`, `FamilyStems()`, `kGoldenDebt`, `Suites()` and `kLifecycle` — the guards now project this table |
+| `model_targets.cmake` | every model target's `add_test` + label / timeout / `SKIP_RETURN_CODE` / `RESOURCE_LOCK` / environment |
+| `model_registry.inc` | the `LsxModelFactory` registration list + vault-normalized aliases |
+
+`test_manifest_sync` (label `fast`) fails when the compiled table disagrees with
+the manifests, when `docs/MODELS.md` is stale (`--check`), when a test file is
+claimed by no manifest (`--strict`) or when a `docs/SELFCHECK_MATRIX.md` row
+names a model that no manifest declares.
+
+**A manifest is not a form to fill in loosely.** `--self-test` proves five schema
+rules and `--diff-cmake <oracle>` proves the resulting target set: 421 targets
+reproduced with zero differences is the standard this registry was migrated at.
+
+### What the manifest must contain
+
+```jsonc
+{
+  "model_type": "flint",              // == T::kType == LsxModelFactory key
+  "family": "flint",                  // shared across siblings; variants differ by "variant"
+  "variant": null,
+  "model_class": "FlintMoeModel",
+  "model_header": "flint_moe_model.h",       // relative to libs/lsxcommon/src
+  "passport": "libs/lsxcommon/src/flint_moe_constants.h",
+  "namespace": "lsxcommon::flint::frozen",
+  "format_tag": "logestix-flint-nvfp4",      // only where a constant exists
+  "forge_flag": "--flint",
+  "tokenizer_kind": 4,
+  "vault": { "dir": "flint", "env": "LSX_TEST_FLINT_ROOT" },  // env is derived
+  "lifecycle_tu": ["flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"],
+  "stages": { "convert": [...], "load": [...], "model": [...], "kernels": [...],
+              "selfcheck": [...], "fsi": [...], "code": [...], "det": [...],
+              "perf": [...] },
+  "perf": { "vault_subdir": "flint", "timeout": 3000, "resource_lock": "gpu" },
+  "target_overrides": { "test_x": { "label": "inference", "timeout": 1800 } },
+  "tool_roundtrip": true, "auto_path_determinism": true,
+  "golden_debt": { "fsi": "why no source golden can exist" },
+  "aliases": ["flint-1.0"],           // must be the lower-cased vault dir
+  "report": "docs/model-reports/....md", "notes": "one line"
+}
+```
+
+Validation refuses: an unknown stage, an empty stage without a `golden_debt`
+reason, a missing passport or namespace, a `model_class` whose `kType` differs
+from `model_type`, a target with no source, a shared vault directory, an alias
+that is not the lower-cased vault dir, or a second manifest reusing a namespace.
+
+### Which test files still exist per model
+
+Most stages are ONE target with its own TU (`test_<family>_<stage>.cpp`). Three
+are shared drivers parameterised by the manifest:
+
+- FSI / CODE / DET → `tests/test_parity_gate.cpp`, compiled once per
+  (model, kind) with `LSX_GATE_MODEL` / `LSX_GATE_KIND`. Do **not** add a
+  per-family gate file: it is how three files came to SKIP with a neighbour's
+  model name.
+- SelfCheck → `tests/test_selfcheck_driver.cpp` with declared hooks
+  (`paris_cycles` always, `tool_roundtrip` / `auto_path_determinism` per flag).
+  A family case that is not one of those hooks keeps its own file and target
+  (`test_qwen_moe_exp_eos_selfcheck` is the precedent).
+
+### Guards you still run (their data is generated, their rules are not)
+
+| Guard (in `tests/`) | What it enforces now |
+|---|---|
+| `test_manifest_sync.cpp` | the generated table equals the manifests; the committed catalogue is current; no unclaimed test file; every row resolves through `LsxModelFactory` |
+| `test_model_independence_guard.cpp` | unique frozen passport per model, no passport→passport includes, no cross-family geometry borrowing, `LsxFastMathScope` in `Infer`, and the shared lifecycle contract (residency lock, streaming/abort, context teardown, governor lease, result fill, session state under the lock) — all projected from `kModels`/`kLifecycle` |
+| `test_model_suite_guard.cpp` | full lifecycle coverage per model, `SKIP_RETURN_CODE 4` on the gate targets, no cross-family fixtures, no vault loading in loader/model stages, every family target claimed, the stage-4b tool verdict, and the golden/debt pairing |
+| `test_code_naming_guard.cpp` | file-naming scheme |
+| `test_ctest_labels_guard.cpp` | one label per target (it reads the generated fragment too), skip-capable targets set 4, convert targets carry a bounded TIMEOUT |
+| `test_absl_format_guard.cpp`, `test_logging_guard.cpp`, `test_expert_store_guard.cpp` | unchanged |
 
 ## Definition of done
 
@@ -574,21 +638,28 @@ without updating them fails CI.
       checkpoint template, plus a host `fast` test on a synthetic tokenizer.
       The verdict (target name, or "generic") is written into the tool-verdict
       table of `test_model_suite_guard.cpp` in the same commit.
-- [ ] `test_<model>_selfcheck.cpp` ≥3 cycles, bit-exact, `SKIP_RETURN_CODE 4`.
+- [ ] `models/<model_type>.json` written and `python3
+      tools/gen_model_manifest.py --strict` clean; `--docs docs/MODELS.md`
+      regenerated in the same commit.
+- [ ] SelfCheck ≥3 bit-exact cycles (the shared driver does it; a family case
+      outside the hooks gets its own file).
 - [ ] FSI/CODE/DET goldens captured from the source and the gates **run** (a
       SKIP is not a pass). If one is red on a borderline answer, follow
       "Parity fix: the residual plane" in stage 2 — and record the outcome
       (green, or the measured reason it cannot be green on this card) in
       `docs/SELFCHECK_MATRIX.md` + `docs/OPEN_TASKS.md`.
-- [ ] perf entry in `tests/perf/perf_baselines.json` + `TEST_CASE` in
-      `test_perf_baseline.cpp` + `add_test` target in `tests/CMakeLists.txt` (label
-      `perf`, `SKIP_RETURN_CODE 4`).
-- [ ] All guard registries above updated.
+- [ ] perf entry in `tests/perf/perf_baselines.json` + a `TEST_CASE` in
+      `test_perf_baseline.cpp`; the `perf` stage target in the manifest supplies
+      the ctest registration (label `perf`, `SKIP_RETURN_CODE 4`).
+- [ ] No hand-written registry: if you edited a guard registry or a
+      `tests/CMakeLists.txt` registration for a model target, stop — the
+      manifest is missing a field.
 - [ ] Routed experts are read through the neutral `ExpertStore` (R1/R2 below):
       `test_expert_store_guard` green, and a new family that needs the expert
       host store must NOT appear in that test's `kLegacyConsumers`.
-- [ ] `AGENTS.md` Structure section gets the new files; `test_model_suite_guard`
-      and `test_code_naming_guard` green.
+- [ ] `docs/MODELS.md` regenerated (it is the per-model catalogue; `AGENTS.md` is
+      a router and needs no model section); `test_model_suite_guard` and
+      `test_code_naming_guard` green.
 - [ ] Model report artifact (stage 9) written to
       `docs/model-reports/YYYY-MM-DD-<model-card-name>.md`, with a
       publish-ready English

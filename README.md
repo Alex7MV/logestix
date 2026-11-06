@@ -124,44 +124,23 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 
 ## Structure
 
-- `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`
-  - `core` — logging and initialization (spdlog)
-  - `common` — version string, CUDA GPU enumeration
-  - `schema` — `ExpertSchema` (9 fields: weights, E4M3 per-block scales, float32 global scales), `PackedExpert`, `ExpertData` structs
-  - `converter` — GPU-only NVFP4 quantization (per-block E4M3 + global scale via CUDA), safetensors parsing, Arrow IPC serialization
-  - `loader` — Arrow file loading, CUDA pinned memory registration, E4M3 scale decoding
-  - `tokenizer` / `pretokenizer` / `unicode` — BPE tokenizer, word-level pre-tokenization, Unicode classification
-  - `tokenizer_convert` — tokenizer Arrow files (string `"a b"` and array `["a","b"]` merges, byte_to_token_id, bos/eos/pad)
-  - `safetensors_gpu` — GPU-accelerated tensor quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; global max is a hand-written reduction, no thrust)
-  - `glm_convert` — GLM-5.2 classifier, Topology, `ConvertGlmModel`, `SaveGlmPinnedTensors`, `WriteGlmModelIndex` (extended `logestix-glm` format)
-  - `glm_inference_load` — host GLM loader: `LoadGlmPinnedWeights` (BF16→FP16 upload), `GlmLayerWeights`/`GlmPinnedWeights`
-  - `glm_v5_model` — `GlmV5Model` (IModel, registry `glm-5.2`); 79-layer Infer (dense 0-2 + IndexShare attention + MoE router + NVFP4 experts 3-77 + MTP 78)
-  - `deepseek_v4_flash_model` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`)
-  - `model_factory` / `model_registry` — `LsxModelFactory` + IModel registry
-  - `models/lsx_orchestrator` — TaskMosaic orchestrator: lock-free SPSC dispatch (GLM-5.2 / DeepSeek / unknown)
-  - `inference_*.cu` — DeepSeek-V4-Flash CUDA kernels (load, norm, moe, head, attn, csa, pipeline)
-  - `shared_experts.cu` — NVFP4 decode tables (E2M1/E8M0), routed-expert FFN
-  - `glm_inference.cu` — GLM-5.2 CUDA kernels (router, IndexShare attention, NVFP4 expert decode)
-  - `lsx_inference_nvfp4.{h,cu}` — model-neutral NVFP4 layer (namespace `lsx_nvfp4`): `LsxNvfp4Weight`, `RunLsxNvfp4Gemm` dispatcher (seq==1 weight-streaming GEMV / TC mxf4nvf4 / scalar tile), fast-math routing toggles + `LsxFastMathScope` per-model policy guard
-  - `glm_moe_flash_{convert,load,model,inference}` — GLM-5.3-Flash (`glm-5.3-flash`): 45-layer KDA/DSA hybrid, NVFP4 experts (45×288 store, LRU device cache sized to free VRAM), step-7 token passport bridge to DeepSeek-V4-Flash; Paris selfcheck bit-exact
-  - `benchmark_gpu` — `--benchmark` pipeline: NVFP4 ping-pong benchmark
-- `libs/lsxnetwork/` — zero-alloc async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`)
-  - `apps/lsxfabric/src/validator.cpp` — NVFP4/E4M3/global-scale validator
-- `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
-- `apps/taskmosaic/` — OpenAI- and Anthropic-compatible HTTP/SSE bridge to a running `lsxfabric --serve`
-- `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
-- `tests/` — Catch2 suite; GLM (`test_glm_*.cpp`) and DeepSeek (`test_deepseek_*.cpp`) test sets are autonomous
-  - `test_core` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
-  - `test_deepseek_loader` — loader round-trip and E4M3 encoding tests
-  - `test_deepseek_inference_kernels` — DeepSeek CUDA inference kernel unit tests
-  - `test_glm_*` — GLM-5.2 converter/loader/model/compute/inference/full-loop tests
-  - `test_mosaic_network` — lsxnetwork (FrameQueue SPSC, zero-copy)
-  - `test_integrated_pipeline` — TaskMosaic orchestrator (GLM + DeepSeek burst)
-- CCCL — not vendored; comes from the CUDA toolkit bundle (`<include>/cccl`), band-guarded at configure time
-- `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
-- `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
-- `third_party/simdjson/` — simdjson v5.0.6
+- `libs/lsxcommon/` — shared STATIC library (`lsxcommon`): the model-neutral
+  kernel layers (`lsx_nvfp4`, `lsx_gemv`, `lsxcommon::attn`/`dense`/`moe`),
+  tokenizer bridge, `ExpertStore`, the engine and every model family.
+- `libs/lsxnetwork/` — zero-alloc async network layer for TaskMosaic CE
+  (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity).
+- `apps/lsxfabric/` — the inference engine (`--localmodel`, `--validate`,
+  `--serve`); `apps/lsxforge/` — checkpoint conversion; `apps/taskmosaic/` —
+  OpenAI/Anthropic HTTP+SSE bridge; `apps/lsxcli/` — CLI client;
+  `apps/lsxbenchmark/` — speed measurement and bit-exactness.
+- `models/<model_type>.json` — the manifest: one file per ingested model, the
+  single source of truth for its vault directory, passport namespace, format tag,
+  tokenizer kind and lifecycle-stage targets.
+- `tests/` — Catch2 suite (labels `fast`/`convert`/`inference`/`perf`).
+
+Per-file inventory and which file owns what — skill `logestix-repo-map`.
+What each model is (geometry, gates, throughput, debt) — **`docs/MODELS.md`**,
+generated from the manifests.
 
 ## TaskMosaic OpenAI bridge
 
