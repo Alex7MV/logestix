@@ -1,0 +1,81 @@
+{
+  "model_type": "deepseek-v4-pro-0813",
+  "display_name": "deepseek-v4-pro-0813",
+  "family": "deepseek",
+  "variant": null,
+  "model_class": "DeepSeekV4ProModel",
+  "model_header": "deepseek_moe_pro_model.h",
+  "passport": "libs/lsxcommon/src/deepseek_moe_pro_constants.h",
+  "namespace": "lsxcommon::deepseek_pro",
+  "format_tag": "",
+  "forge_flag": "--deepseek_pro",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "DeepSeek-V4-Pro-0813",
+    "env": "LSX_TEST_DEEPSEEK_V4_PRO_0813_ROOT"
+  },
+  "lifecycle_tu": [
+    "deepseek_moe_pro_model.cpp",
+    "deepseek_moe_pro_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_deepseek_moe_pro_convert"
+    ],
+    "load": [
+      "test_deepseek_moe_pro_loader",
+      "test_deepseek_moe_pro_load_fast"
+    ],
+    "model": [
+      "test_deepseek_moe_pro_model",
+      "test_deepseek_tool_framing"
+    ],
+    "kernels": [
+      "test_deepseek_moe_pro_kernels"
+    ],
+    "selfcheck": [
+      "test_deepseek_moe_pro_selfcheck"
+    ],
+    "fsi": [
+      "test_deepseek_moe_pro_fsi_selfcheck"
+    ],
+    "code": [
+      "test_deepseek_moe_pro_code_selfcheck"
+    ],
+    "det": [
+      "test_deepseek_moe_pro_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_deepseek_v4_pro"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_deepseek_v4_pro",
+    "vault_subdir": "DeepSeek-V4-Pro-0813",
+    "timeout": 5400
+  },
+  "target_overrides": {
+    "test_deepseek_moe_pro_loader": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_deepseek_moe_pro_load_fast": {
+      "skip": false,
+      "env": []
+    },
+    "test_deepseek_moe_pro_model": {
+      "label": "fast",
+      "env": []
+    },
+    "test_deepseek_tool_framing": {
+      "label": "fast",
+      "env": []
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "",
+  "notes": ""
+}

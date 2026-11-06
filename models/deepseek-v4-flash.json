@@ -1,0 +1,114 @@
+{
+  "model_type": "deepseek-v4-flash",
+  "display_name": "deepseek-v4-flash",
+  "family": "deepseek",
+  "variant": null,
+  "model_class": "DeepSeekV4FlashModel",
+  "model_header": "deepseek_moe_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/deepseek_moe_constants.h",
+  "namespace": "lsxcommon::deepseek",
+  "format_tag": "",
+  "forge_flag": "--deepseek_nvfp4",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "DeepSeek-V4-Flash",
+    "env": "LSX_TEST_DEEPSEEK_V4_FLASH_ROOT"
+  },
+  "lifecycle_tu": [
+    "deepseek_moe_model.cpp",
+    "deepseek_moe_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_deepseek_moe_convert",
+      "test_deepseek_nvfp4_repack",
+      "test_deepseek_nvfp4_repack_tool"
+    ],
+    "load": [
+      "test_deepseek_moe_loader",
+      "test_deepseek_moe_load_fast"
+    ],
+    "model": [
+      "test_deepseek_moe_model",
+      "test_deepseek_moe_prompt_output",
+      "test_deepseek_tool_framing"
+    ],
+    "kernels": [
+      "test_deepseek_moe_inference_kernels",
+      "test_deepseek_moe_arena",
+      "test_deepseek_moe_moe",
+      "test_deepseek_moe_norm_kernels"
+    ],
+    "selfcheck": [
+      "test_deepseek_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_deepseek_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_deepseek_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_deepseek_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_deepseek_v4_flash"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_deepseek_v4_flash",
+    "vault_subdir": "DeepSeek-V4-Flash",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_deepseek_nvfp4_repack": {
+      "label": "fast",
+      "timeout": 0,
+      "env": []
+    },
+    "test_deepseek_nvfp4_repack_tool": {
+      "env": [],
+      "command": "test_deepseek_nvfp4_repack",
+      "filter": "[tool]*"
+    },
+    "test_deepseek_moe_loader": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_deepseek_moe_load_fast": {
+      "skip": false,
+      "env": []
+    },
+    "test_deepseek_moe_model": {
+      "label": "fast",
+      "env": []
+    },
+    "test_deepseek_moe_prompt_output": {
+      "skip": true,
+      "env": []
+    },
+    "test_deepseek_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_deepseek_moe_inference_kernels": {
+      "skip": false
+    },
+    "test_deepseek_moe_arena": {
+      "skip": false
+    },
+    "test_deepseek_moe_moe": {
+      "skip": false
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "",
+  "notes": ""
+}

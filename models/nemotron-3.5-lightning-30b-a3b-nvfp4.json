@@ -1,0 +1,84 @@
+{
+  "model_type": "nemotron-3.5-lightning-30b-a3b-nvfp4",
+  "display_name": "nemotron-3.5-lightning-30b-a3b-nvfp4",
+  "family": "nemotron",
+  "variant": null,
+  "model_class": "NemotronNvfp4Model",
+  "model_header": "nemotron_moe_nvfp4_model.h",
+  "passport": "libs/lsxcommon/src/nemotron_moe_nvfp4_constants.h",
+  "namespace": "lsxcommon::nemotron_nvfp4::frozen",
+  "format_tag": "",
+  "forge_flag": "--nemotron_nvfp4",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    "env": "LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_NVFP4_ROOT"
+  },
+  "lifecycle_tu": [
+    "nemotron_moe_nvfp4_model.cpp",
+    "nemotron_moe_model.cpp"
+  ],
+  "stages": {
+    "convert": [
+      "test_nemotron_moe_nvfp4_convert"
+    ],
+    "load": [
+      "test_nemotron_moe_nvfp4_loader",
+      "test_nemotron_moe_tokenizer_parity"
+    ],
+    "model": [
+      "test_nemotron_moe_nvfp4_model"
+    ],
+    "kernels": [
+      "test_nemotron_moe_kernels",
+      "test_nemotron_moe_math",
+      "test_nemotron_session"
+    ],
+    "selfcheck": [
+      "test_nemotron_moe_nvfp4_selfcheck"
+    ],
+    "fsi": [
+      "test_nemotron_moe_nvfp4_fsi_selfcheck"
+    ],
+    "code": [
+      "test_nemotron_moe_nvfp4_code_selfcheck"
+    ],
+    "det": [
+      "test_nemotron_moe_nvfp4_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_nemotron_nvfp4"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_nemotron_nvfp4",
+    "vault_subdir": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    "timeout": 2400
+  },
+  "target_overrides": {
+    "test_nemotron_moe_nvfp4_loader": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_nemotron_moe_tokenizer_parity": {
+      "env": []
+    },
+    "test_nemotron_moe_kernels": {
+      "resource_lock": "gpu"
+    },
+    "test_nemotron_moe_math": {
+      "label": "fast",
+      "skip": false
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "",
+  "notes": ""
+}

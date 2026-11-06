@@ -1,0 +1,122 @@
+{
+  "model_type": "glm-5.2",
+  "display_name": "glm-5.2",
+  "family": "glm",
+  "variant": null,
+  "model_class": "GlmV5Model",
+  "model_header": "glm_moe_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/glm_moe_load.h",
+  "namespace": "lsxcommon::glm",
+  "format_tag": "",
+  "forge_flag": "--glm",
+  "tokenizer_kind": 8,
+  "vault": {
+    "dir": "GLM-5.2",
+    "env": "LSX_TEST_GLM_5_2_ROOT"
+  },
+  "lifecycle_tu": [
+    "glm_moe_model.cpp",
+    "glm_moe_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_glm_moe_convert"
+    ],
+    "load": [
+      "test_glm_moe_loader",
+      "test_glm_moe_load_fast",
+      "test_glm_moe_expert_cache"
+    ],
+    "model": [
+      "test_glm_moe_model",
+      "test_glm_moe_model_lifecycle",
+      "test_glm_moe_prompt_output",
+      "test_glm_moe_prompt_framing"
+    ],
+    "kernels": [
+      "test_glm_moe_moe_compute",
+      "test_glm_moe_attention",
+      "test_glm_moe_experts",
+      "test_glm_moe_dense_compute",
+      "test_glm_moe_layer_compute",
+      "test_glm_moe_moe_router",
+      "test_glm_moe_full_compute",
+      "test_glm_moe_inference",
+      "test_glm_moe_prefill_seqp"
+    ],
+    "selfcheck": [
+      "test_glm_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_glm_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_glm_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_glm_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_glm_5_2"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_glm_5_2",
+    "vault_subdir": "GLM-5.2",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_glm_moe_convert": {
+      "env": []
+    },
+    "test_glm_moe_loader": {
+      "skip": false,
+      "env": []
+    },
+    "test_glm_moe_load_fast": {
+      "skip": false,
+      "env": []
+    },
+    "test_glm_moe_expert_cache": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_glm_moe_model": {
+      "env": []
+    },
+    "test_glm_moe_model_lifecycle": {
+      "skip": true,
+      "env": []
+    },
+    "test_glm_moe_prompt_output": {
+      "skip": true,
+      "env": []
+    },
+    "test_glm_moe_prompt_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_glm_moe_moe_compute": {
+      "skip": false
+    },
+    "test_glm_moe_attention": {
+      "skip": false
+    },
+    "test_glm_moe_experts": {
+      "skip": false
+    },
+    "test_glm_moe_dense_compute": {
+      "skip": false
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "",
+  "notes": ""
+}

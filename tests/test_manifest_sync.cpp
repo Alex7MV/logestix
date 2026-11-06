@@ -146,12 +146,46 @@ TEST_CASE("manifest sync: generated table matches the manifests",
 
 TEST_CASE("manifest sync: --check reports no drift", "[manifest][fast]")
 {
-    const auto [rc, _unused] = RunGenerator("--check");
+    // --check: the committed catalogue is current. --strict: every test file is
+    // owned. Both together are the state a release must be in.
+    const auto [rc, _unused] = RunGenerator("--check --strict");
     INFO("regenerate docs/MODELS.md with: tools/gen_model_manifest.py --docs "
          "docs/MODELS.md --root .");
     REQUIRE(rc == 0);
 }
 
-// The third case - "no unclaimed model test file" - is added once all 35
-// manifests exist (plan Task 3), because a partially authored tree makes it
-// unconditionally red and a guard that can only fail is not a guard.
+TEST_CASE("manifest sync: no unclaimed model test file", "[manifest][fast]")
+{
+    // Every tests/test_*.{cpp,cu} is either claimed by a manifest stage (or is
+    // the second TU of a claimed target) or is a frozen infrastructure test.
+    // A model test that no manifest names would silently stop running when the
+    // ctest registration moves to the manifest: Review Focus #1.
+    const auto [rc, text] = RunGenerator("--print-non-model-tests");
+    INFO("generator exit " << rc);
+    REQUIRE(rc == 0);
+    const auto lines = Lines(text);
+    const std::set<std::string> allowed(lines.begin(), lines.end());
+    REQUIRE(allowed.size() > 100);
+
+    std::vector<std::string> offenders;
+    std::size_t seen = 0;
+    for (const auto &entry : fs::directory_iterator(kRoot / "tests"))
+    {
+        if (!entry.is_regular_file()) continue;
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("test_", 0) != 0) continue;
+        const auto ext = entry.path().extension().string();
+        if (ext != ".cpp" && ext != ".cu") continue;
+        ++seen;
+        if (!allowed.count(entry.path().stem().string())) offenders.push_back(name);
+    }
+    INFO("scanned " << seen << " test files");
+    REQUIRE(seen > 100);   // a directory scan that finds nothing proves nothing
+
+    std::string report;
+    for (const auto &n : offenders)
+        report += "unclaimed model test file (add it to a manifest stage, or to "
+                  "the generator's NON_MODEL_TESTS): " + n + "\n";
+    INFO(report);
+    REQUIRE(offenders.empty());
+}

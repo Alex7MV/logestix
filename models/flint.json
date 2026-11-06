@@ -1,6 +1,6 @@
 {
   "model_type": "flint",
-  "display_name": "Recursive Flint",
+  "display_name": "flint",
   "family": "flint",
   "variant": null,
   "model_class": "FlintMoeModel",
@@ -57,58 +57,58 @@
     "resource_lock": "gpu"
   },
   "target_overrides": {
-    "test_flint_moe_pretokenizer": {
-      "label": "fast",
-      "timeout": 0,
-      "env": [],
-      "resource_lock": null,
-      "skip": false
-    },
-    "test_flint_moe_tokenizer_parity": {
-      "label": "inference",
-      "timeout": 0,
-      "env": [],
-      "resource_lock": null
-    },
-    "test_flint_moe_kernels": {
-      "label": "inference",
-      "timeout": 0
+    "test_flint_moe_convert": {
+      "resource_lock": "gpu"
     },
     "test_flint_moe_loader": {
-      "label": "fast"
-    },
-    "test_flint_moe_tool_framing": {
       "label": "fast",
-      "env": [],
-      "skip": true,
-      "timeout": 0,
-      "resource_lock": null
+      "resource_lock": "gpu"
+    },
+    "test_flint_moe_pretokenizer": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_flint_moe_tokenizer_parity": {
+      "env": []
     },
     "test_flint_moe_model": {
       "timeout": 300,
-      "skip": true
+      "skip": true,
+      "resource_lock": "gpu"
+    },
+    "test_flint_moe_tool_framing": {
+      "label": "fast",
+      "skip": true,
+      "env": []
+    },
+    "test_flint_moe_kernels": {
+      "resource_lock": "gpu"
     },
     "test_flint_moe_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "resource_lock": "gpu"
     },
     "test_flint_moe_fsi_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "resource_lock": "gpu"
     },
     "test_flint_moe_code_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "resource_lock": "gpu"
     },
     "test_flint_moe_det_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "resource_lock": "gpu"
     }
   },
   "tool_roundtrip": true,
   "auto_path_determinism": true,
   "golden_debt": {
-    "fsi": "goldens are template-derived; see docs/OPEN_TASKS.md R6",
-    "code": "same",
-    "det": "same"
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
   },
-  "report": "docs/model-reports/2026-10-31-Recursive-Flint.md",
-  "notes": "hybrid sink/SWA/no-RoPE MoE; learned attention sinks",
-  "resource_lock": "gpu"
+  "report": "",
+  "notes": ""
 }

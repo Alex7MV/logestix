@@ -1,0 +1,81 @@
+{
+  "model_type": "phi-4",
+  "display_name": "phi-4",
+  "family": "phi",
+  "variant": null,
+  "model_class": "Phi4Model",
+  "model_header": "phi_dense_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/phi_dense_constants.h",
+  "namespace": "lsxcommon::phi::frozen",
+  "format_tag": "",
+  "forge_flag": "--phi",
+  "tokenizer_kind": 8,
+  "vault": {
+    "dir": "phi-4",
+    "env": "LSX_TEST_PHI_4_ROOT"
+  },
+  "lifecycle_tu": [
+    "phi_dense_model.cpp",
+    "phi_dense_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_phi_dense_convert"
+    ],
+    "load": [
+      "test_phi_dense_loader"
+    ],
+    "model": [
+      "test_phi_dense_model",
+      "test_phi_tool_framing"
+    ],
+    "kernels": [
+      "test_phi_dense_kernels",
+      "test_dense_kernels"
+    ],
+    "selfcheck": [
+      "test_phi_dense_selfcheck"
+    ],
+    "fsi": [
+      "test_phi_dense_fsi_selfcheck"
+    ],
+    "code": [
+      "test_phi_dense_code_selfcheck"
+    ],
+    "det": [
+      "test_phi_dense_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_phi_4"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_phi_4",
+    "vault_subdir": "phi-4",
+    "timeout": 3000
+  },
+  "target_overrides": {
+    "test_phi_dense_convert": {
+      "env": []
+    },
+    "test_phi_dense_loader": {
+      "skip": false,
+      "env": []
+    },
+    "test_phi_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_phi_dense_kernels": {
+      "skip": false
+    },
+    "test_dense_kernels": {
+      "skip": false
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "",
+  "notes": ""
+}

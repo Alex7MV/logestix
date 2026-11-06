@@ -55,7 +55,9 @@ STAGE_DEFAULTS = {
 # stage -> default resource lock ("" = none)
 STAGE_LOCKS = {
     "convert": "", "load": "", "model": "", "kernels": "", "selfcheck": "",
-    "fsi": "", "code": "", "det": "", "perf": "gpu",
+    # perf targets carry the lock in only a minority of the tree; the rest is
+    # recorded per target like every other property.
+    "fsi": "", "code": "", "det": "", "perf": "",
 }
 
 # Stages whose tests build a synthetic checkpoint/tree and therefore need the
@@ -92,6 +94,9 @@ class Target:
     defines: list = field(default_factory=list)
     cuda: bool = False
     perf_case: str = ""
+    sources: tuple = ()    # extra TUs beyond the conventional one
+    command: str = ""      # executable; defaults to the target name
+    filter: str = ""       # Catch2 name/tag filter for a second case
 
 
 @dataclass
@@ -160,10 +165,14 @@ class Manifest:
             source = ov["source"]
             cuda = source.endswith(".cu")
         defines = list(ov.get("defines", defines))
+        sources = tuple(ov.get("sources", ()))
+        command = ov.get("command", name)
+        filter_ = ov.get("filter", "")
         return Target(name=name, stage=stage, model_type=self.model_type,
                       source=source, label=label, timeout=timeout, skip=skip,
                       env=env, resource_lock=lock, defines=defines, cuda=cuda,
-                      perf_case=perf_case)
+                      perf_case=perf_case, command=command, filter=filter_,
+                      sources=sources)
 
 
 # `LSX_SOURCE_DIR` is emitted literally; the consuming CMake passes the value.
@@ -273,12 +282,23 @@ def validate(manifests, root: Path, partial: bool = False,
         else:
             text = strip_comments(passport.read_text(errors="replace"))
             last = m.ns.split("::")[-1]
-            if not re.search(r"\bnamespace\s+" + re.escape(last) + r"\b", text):
+            # Namespaced passports declare `namespace <last>`; the dense qwen
+            # passports are CLASS-scoped and declare the model class instead
+            # (test_model_independence_guard documents both forms).
+            declared = (re.search(r"\bnamespace\s+" + re.escape(last) + r"\b", text)
+                        or re.search(r"\b(class|struct)\s+" + re.escape(last) + r"\b",
+                                     text))
+            if not declared:
                 add(m, "namespace",
-                    f"passport {m.passport} does not declare 'namespace {last}'")
+                    f"passport {m.passport} declares neither 'namespace {last}' "
+                    f"nor 'class {last}'")
 
-        # rule 5: the model class exists and its kType is this model_type
-        header = src / m.model_header if "/" not in m.model_header else root / m.model_header
+        # rule 5: the model class exists and its kType resolves to this
+        # model_type. Two legitimate spellings: a literal, or an assignment from
+        # the passport's own frozen constant (4 of 35 models use the latter).
+        # model_header is spelled relative to libs/lsxcommon/src (kPassports
+        # convention), so "../include/lsxcommon/x.h" resolves inside the library.
+        header = (src / m.model_header).resolve()
         if not header.is_file():
             add(m, "model_header", f"model_class not found in src: {m.model_header}")
         else:
@@ -288,21 +308,39 @@ def validate(manifests, root: Path, partial: bool = False,
                 add(m, "model_class",
                     f"model_class not found in src: {m.model_class} "
                     f"(not declared in {m.model_header})")
-        ktype = None
+        ktype, ktype_from = None, None
         for cand in sorted(src.glob("*.cpp")) + sorted(src.glob("*.h")):
+            body = cand.read_text(errors="replace")
             hit = re.search(
                 re.escape(m.model_class) + r"\s*::\s*kType\s*=\s*\"([^\"]*)\"",
-                cand.read_text(errors="replace"))
+                body)
             if hit:
-                ktype = hit.group(1)
+                ktype, ktype_from = hit.group(1), cand.name
                 break
+            hit = re.search(
+                re.escape(m.model_class) + r"\s*::\s*kType\s*=\s*[\w:]*::(\w+)\s*;",
+                body)
+            if hit:
+                # resolve the constant it aliases, in the passport first
+                const = hit.group(1)
+                for scope in (passport, *sorted(src.glob("*.h"))):
+                    if not scope.is_file():
+                        continue
+                    res = re.search(
+                        r"\b" + re.escape(const) + r"\s*(?:\[[^\]]*\])?\s*=\s*\"([^\"]*)\"",
+                        scope.read_text(errors="replace"))
+                    if res:
+                        ktype, ktype_from = res.group(1), f"{cand.name}->{scope.name}"
+                        break
+                if ktype:
+                    break
         if ktype is None:
             add(m, "model_class", f"model_class not found in src: {m.model_class} "
-                                  f"has no kType literal")
+                                  f"has no resolvable kType (literal or passport alias)")
         elif ktype != m.model_type:
             add(m, "model_class",
-                f"model_class {m.model_class} declares kType {ktype!r}, "
-                f"manifest says {m.model_type!r}")
+                f"model_class {m.model_class} declares kType {ktype!r} "
+                f"(via {ktype_from}), manifest says {m.model_type!r}")
 
         # rule 6: every stage target resolves to a source file
         for t in m.targets():
@@ -311,12 +349,21 @@ def validate(manifests, root: Path, partial: bool = False,
                     add(m, "stages.perf", f"no source for target {t.name} "
                                           f"({PERF_BINARY}.cpp missing)")
                 continue
+            if t.command != t.name or t.filter:
+                # A second Catch2 case over an existing binary (perf rows,
+                # "[tool]*" cases): the source is the command's, not its own.
+                if not (root / "tests" / f"{t.command}.cpp").is_file() and \
+                   not (root / "tests" / f"{t.command}.cu").is_file():
+                    add(m, f"stages.{t.stage}",
+                        f"no source for target {t.name}: shared binary "
+                        f"{t.command} has no test source")
+                continue
             if not (root / "tests" / t.source).is_file():
                 add(m, f"stages.{t.stage}",
                     f"no source for target {t.name}: tests/{t.source} does not exist")
 
     if not partial:
-        seen_type, seen_ns, fam_variant = {}, {}, {}
+        seen_type, seen_ns, fam_variant, seen_vault = {}, {}, {}, {}
         for m in manifests:
             if m.model_type in seen_type:
                 errors.append(f"{m.path}: model_type {m.model_type!r} duplicated "
@@ -331,16 +378,28 @@ def validate(manifests, root: Path, partial: bool = False,
                 errors.append(f"{m.path}: family {m.family!r} variant "
                               f"{m.variant!r} duplicated by {fam_variant[key]}")
             fam_variant[key] = m.path
+            # rule 10: one vault directory per model. Two models pointing at the
+            # same tree means one of them silently loads the other's weights.
+            if m.vault_dir in seen_vault:
+                errors.append(
+                    f"{m.path}: vault.dir {m.vault_dir!r} already used by "
+                    f"{seen_vault[m.vault_dir]} (one tree cannot be two models)")
+            seen_vault[m.vault_dir] = m.path
         (errors if strict_orphans else warnings).extend(
             check_orphans(manifests, root))
     return errors, warnings
 
 
 def claimed_targets(manifests):
+    """Target names AND the TUs they build: a second source of an existing
+    target (test_kimi_pro_constants.cpp in test_kimi_k3_constants) is claimed."""
     names = set()
     for m in manifests:
         for stage in STAGES:
-            names.update(m.stages.get(stage, []))
+            for target in m.stages.get(stage, []):
+                names.add(target)
+                for src in m.target_overrides.get(target, {}).get("sources", ()):
+                    names.add(Path(src).stem)
     return names
 
 
@@ -372,13 +431,38 @@ def non_model_tests(root: Path):
             doc = json.loads(path.read_text())
         except json.JSONDecodeError:
             continue
+        overrides = doc.get("target_overrides", {})
         for names in doc.get("stages", {}).values():
-            claimed.update(names)
+            for target in names:
+                claimed.add(target)
+                for src in overrides.get(target, {}).get("sources", ()):
+                    claimed.add(Path(src).stem)
     explicit = _NON_MODEL_TESTS
     return sorted(claimed | explicit)
 
 
-_NON_MODEL_TESTS = frozenset()
+_NON_MODEL_TESTS = frozenset({
+    "test_absl_container_guard", "test_absl_format_guard", "test_anthropic_endpoint", "test_arrow_tree_integrity",
+    "test_arrow_usage_guard", "test_arrow_validation", "test_blackwell_micro_gemm", "test_blackwell_perf_deepseek",
+    "test_blackwell_perf_dense", "test_blackwell_perf_glm", "test_blackwell_perf_kimi", "test_blackwell_perf_moe",
+    "test_blackwell_tc_mma", "test_code_naming_guard", "test_code_selfcheck", "test_converter_helpers",
+    "test_core", "test_ctest_labels_guard", "test_cuda_event_wait", "test_cuda_toolkit_guard",
+    "test_det_selfcheck", "test_diagnostics", "test_expert_store", "test_expert_store_guard",
+    "test_expert_store_stage", "test_fabric_client", "test_fabric_wire", "test_fast_load",
+    "test_fast_math_guard_cross_tu", "test_fast_math_guard_other_tu", "test_fsi_selfcheck", "test_generation_cli",
+    "test_generation_stream", "test_geometry_guard", "test_gpu_perf", "test_gpu_power",
+    "test_hardware_profile", "test_http_server", "test_incremental_detokenizer", "test_infrastructure_guard",
+    "test_integrated_pipeline", "test_json_escape", "test_kv_cache_layout", "test_kv_cache_layout_device",
+    "test_license_guard", "test_lifecycle_plan", "test_logging_guard", "test_lsx_gemv",
+    "test_lsx_kernels", "test_lsx_nvfp4_dispatch", "test_manifest_sync", "test_model_engine",
+    "test_model_factory", "test_model_independence_guard", "test_model_integrity", "test_model_runtime",
+    "test_model_suite_guard", "test_mosaic_frontend_route", "test_mosaic_network", "test_nvfp4_pack",
+    "test_nvfp4_scale", "test_parity_selfcheck_naming_guard", "test_path_registry", "test_perf_baseline",
+    "test_perf_baseline_logic", "test_perf_knobs_apply", "test_pread_pool", "test_prompt_bridge",
+    "test_resource_governor", "test_runtime_tuner", "test_safetensors", "test_sampling",
+    "test_schema_views", "test_stream_read_ceiling", "test_stream_scratch", "test_tokenizer",
+    "test_tokenizer_arrows", "test_tokenizer_vocab_contract", "test_tool_format", "test_vram_estimate",
+})
 
 
 # ── emitters ──────────────────────────────────────────────────────────────
@@ -478,7 +562,27 @@ def emit_cmake(manifests) -> str:
                 out.append("")
                 continue
 
-            args = [f"NAME {t.name}", f"SOURCES {t.source}", "LINK lsxcommon"]
+            if t.command != t.name or t.filter:
+                props = [f"LABELS {t.label}"]
+                if t.timeout:
+                    props.append(f"TIMEOUT {t.timeout}")
+                if t.skip:
+                    props.append("SKIP_RETURN_CODE 4")
+                if t.resource_lock:
+                    props.append(f'RESOURCE_LOCK "{t.resource_lock}"')
+                quoted = f' "{t.filter}"' if t.filter else ""
+                out.append(f"add_test(NAME {t.name} COMMAND {t.command}{quoted})")
+                out.append(f"set_tests_properties({t.name} PROPERTIES "
+                           + " ".join(props) + ")")
+                if t.env:
+                    out.append(f"set_tests_properties({t.name} PROPERTIES "
+                               f'ENVIRONMENT "{_env_list(t.env)}")')
+                out.append("")
+                continue
+
+            all_sources = [t.source, *t.sources]
+            args = [f"NAME {t.name}", "SOURCES " + " ".join(all_sources),
+                    "LINK lsxcommon"]
             args.append(f'INCLUDE "${{PROJECT_SOURCE_DIR}}/libs/lsxcommon/src"')
             if t.defines:
                 args.append("DEFINE " + " ".join(
@@ -538,8 +642,12 @@ def emit_docs(manifests, baseline) -> str:
             f"- family `{m.family}`" + (f", variant `{m.variant}`" if m.variant else ""),
             f"- class `{m.model_class}`, passport `{m.passport}`, "
             f"namespace `{m.ns}`",
-            f"- format `{m.format_tag}`, forge `{m.forge_flag}`, "
-            f"tokenizer kind {m.tokenizer_kind}",
+            *( [f"- format `{m.format_tag}`" + (f", forge `{m.forge_flag}`" if m.forge_flag else "")]
+               if m.format_tag else
+               [f"- forge `{m.forge_flag}`"] if m.forge_flag else [] ),
+            *([f"- tokenizer kind {m.tokenizer_kind}"] if m.tokenizer_kind else []),
+            *(["- format tag not declared in the manifest"]
+              if not m.format_tag else []),
             f"- vault `{m.vault_dir}` (override `{m.vault_env}`)",
             f"- lifecycle TUs: {', '.join(f'`{t}`' for t in m.lifecycle_tu) or 'none declared'}",
             f"- gates: {'; '.join(gates)}",

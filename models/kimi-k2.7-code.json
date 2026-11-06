@@ -1,0 +1,121 @@
+{
+  "model_type": "kimi-k2.7-code",
+  "display_name": "kimi-k2.7-code",
+  "family": "kimi",
+  "variant": null,
+  "model_class": "KimiK27CodeModel",
+  "model_header": "kimi_moe_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/kimi_moe_load.h",
+  "namespace": "lsxcommon::kimi",
+  "format_tag": "",
+  "forge_flag": "--kimi",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "Kimi-K2.7-Code",
+    "env": "LSX_TEST_KIMI_K2_7_CODE_ROOT"
+  },
+  "lifecycle_tu": [
+    "kimi_moe_model.cpp",
+    "kimi_moe_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_kimi_moe_convert"
+    ],
+    "load": [
+      "test_kimi_moe_loader",
+      "test_kimi_moe_expert_cache",
+      "test_kimi_moe_tokenizer",
+      "test_kimi_moe_tokenizer_parity"
+    ],
+    "model": [
+      "test_kimi_moe_model",
+      "test_kimi_tool_framing"
+    ],
+    "kernels": [
+      "test_kimi_moe_router",
+      "test_kimi_moe_attention",
+      "test_kimi_moe_rope_parity",
+      "test_kimi_moe_experts",
+      "test_kimi_moe_int4_dequant",
+      "test_kimi_moe_inference",
+      "test_kimi_moe_int4_real",
+      "test_kimi_moe_mla_proj_real",
+      "test_kimi_moe_tc_batch",
+      "test_kimi_moe_tc_diag"
+    ],
+    "selfcheck": [
+      "test_kimi_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_kimi_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_kimi_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_kimi_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_kimi_k2_7_code"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_kimi_k2_7_code",
+    "vault_subdir": "Kimi-K2.7-Code",
+    "timeout": 2400
+  },
+  "target_overrides": {
+    "test_kimi_moe_convert": {
+      "skip": true
+    },
+    "test_kimi_moe_loader": {
+      "skip": false
+    },
+    "test_kimi_moe_expert_cache": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_kimi_moe_tokenizer": {
+      "label": "fast",
+      "env": []
+    },
+    "test_kimi_moe_tokenizer_parity": {
+      "label": "fast",
+      "env": []
+    },
+    "test_kimi_moe_model": {
+      "skip": true
+    },
+    "test_kimi_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_kimi_moe_router": {
+      "skip": false
+    },
+    "test_kimi_moe_attention": {
+      "skip": false
+    },
+    "test_kimi_moe_rope_parity": {
+      "label": "fast",
+      "skip": false
+    },
+    "test_kimi_moe_int4_dequant": {
+      "skip": false
+    },
+    "test_kimi_moe_tc_batch": {
+      "skip": false
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "",
+  "notes": ""
+}

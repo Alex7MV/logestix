@@ -1,0 +1,94 @@
+{
+  "model_type": "mimo-v2.6-flash-rl",
+  "display_name": "mimo-v2.6-flash-rl",
+  "family": "mimo",
+  "variant": null,
+  "model_class": "MiMoV26FlashModel",
+  "model_header": "mimo_moe_model.h",
+  "passport": "libs/lsxcommon/src/mimo_moe_constants.h",
+  "namespace": "lsxcommon::mimo::frozen",
+  "format_tag": "",
+  "forge_flag": "--mimo",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "MiMo-V2.6-Flash-RL",
+    "env": "LSX_TEST_MIMO_V2_6_FLASH_RL_ROOT"
+  },
+  "lifecycle_tu": [
+    "mimo_moe_model.cpp"
+  ],
+  "stages": {
+    "convert": [
+      "test_mimo_moe_convert"
+    ],
+    "load": [
+      "test_mimo_moe_loader",
+      "test_mimo_moe_expert_cache",
+      "test_mimo_moe_geometry"
+    ],
+    "model": [
+      "test_mimo_moe_model",
+      "test_mimo_tool_framing"
+    ],
+    "kernels": [
+      "test_mimo_moe_kernels",
+      "test_mimo_moe_dequant"
+    ],
+    "selfcheck": [
+      "test_mimo_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_mimo_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_mimo_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_mimo_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_mimo_v2_6_flash_rl"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_mimo_v2_6_flash_rl",
+    "vault_subdir": "MiMo-V2.6-Flash-RL",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_mimo_moe_loader": {
+      "skip": false
+    },
+    "test_mimo_moe_expert_cache": {
+      "skip": false,
+      "env": []
+    },
+    "test_mimo_moe_geometry": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_mimo_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_mimo_moe_kernels": {
+      "skip": false,
+      "sources": [
+        "test_mimo_moe_attn.cu"
+      ]
+    },
+    "test_mimo_moe_dequant": {
+      "skip": false
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "",
+  "notes": ""
+}

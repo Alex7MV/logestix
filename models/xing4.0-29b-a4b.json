@@ -1,0 +1,83 @@
+{
+  "model_type": "xing4.0-29b-a4b",
+  "display_name": "xing4.0-29b-a4b",
+  "family": "xing",
+  "variant": null,
+  "model_class": "XingMoeModel",
+  "model_header": "xing_moe_model.h",
+  "passport": "libs/lsxcommon/src/xing_moe_constants.h",
+  "namespace": "lsxcommon::xing::frozen",
+  "format_tag": "",
+  "forge_flag": "--xing",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "Xing4.0-29B-A4B",
+    "env": "LSX_TEST_XING4_0_29B_A4B_ROOT"
+  },
+  "lifecycle_tu": [
+    "xing_moe_model.cpp"
+  ],
+  "stages": {
+    "convert": [
+      "test_xing_moe_convert"
+    ],
+    "load": [
+      "test_xing_moe_loader"
+    ],
+    "model": [
+      "test_xing_moe_model",
+      "test_xing_tool_framing",
+      "test_xing_warmup_ramp"
+    ],
+    "kernels": [
+      "test_xing_moe_kernels",
+      "test_xing_kv_layout_parity"
+    ],
+    "selfcheck": [
+      "test_xing_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_xing_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_xing_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_xing_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_xing_4_0_29b_a4b"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_xing_4_0_29b_a4b",
+    "vault_subdir": "Xing4.0-29B-A4B",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_xing_moe_model": {
+      "timeout": 600
+    },
+    "test_xing_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_xing_warmup_ramp": {
+      "label": "perf",
+      "timeout": 1800,
+      "skip": true
+    },
+    "test_xing_kv_layout_parity": {
+      "label": "fast",
+      "timeout": 900,
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "",
+  "notes": ""
+}

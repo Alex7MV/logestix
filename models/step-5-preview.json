@@ -1,0 +1,107 @@
+{
+  "model_type": "step-5-preview",
+  "display_name": "step-5-preview",
+  "family": "step",
+  "variant": null,
+  "model_class": "Step5PreviewModel",
+  "model_header": "step_moe_model.h",
+  "passport": "libs/lsxcommon/src/step_moe_constants.h",
+  "namespace": "lsxcommon::step::frozen",
+  "format_tag": "logestix-step5-nvfp4",
+  "forge_flag": "--step",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "Step-5-Preview",
+    "env": "LSX_TEST_STEP_5_PREVIEW_ROOT"
+  },
+  "lifecycle_tu": [
+    "step_moe_model.cpp",
+    "step_moe_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_step_moe_convert"
+    ],
+    "load": [
+      "test_step_moe_loader",
+      "test_step_moe_tokenizer"
+    ],
+    "model": [
+      "test_step_moe_model",
+      "test_step_moe_tool_framing"
+    ],
+    "kernels": [
+      "test_step_moe_kernels"
+    ],
+    "selfcheck": [
+      "test_step_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_step_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_step_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_step_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_step_5_preview"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_step_5_preview",
+    "vault_subdir": "Step-5-Preview",
+    "timeout": 7200,
+    "resource_lock": "gpu"
+  },
+  "target_overrides": {
+    "test_step_moe_convert": {
+      "resource_lock": "gpu"
+    },
+    "test_step_moe_loader": {
+      "label": "fast",
+      "resource_lock": "gpu"
+    },
+    "test_step_moe_tokenizer": {
+      "env": []
+    },
+    "test_step_moe_model": {
+      "timeout": 300,
+      "skip": true,
+      "resource_lock": "gpu"
+    },
+    "test_step_moe_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_step_moe_kernels": {
+      "resource_lock": "gpu"
+    },
+    "test_step_moe_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu"
+    },
+    "test_step_moe_fsi_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu"
+    },
+    "test_step_moe_code_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu"
+    },
+    "test_step_moe_det_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": true,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "",
+  "notes": ""
+}
