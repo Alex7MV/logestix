@@ -679,6 +679,13 @@ target_link_libraries(lsx_dep_includes INTERFACE
 # lsx_add_test() / lsx_add_cuda_test() — see cmake/LsxTestHelpers.cmake.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LsxTestHelpers.cmake")
 
+# ── Model manifest ────────────────────────────────────────────────────────────
+# models/<model_type>.json is the single source of truth for the model registry;
+# the C++ table, the ctest targets and the factory registration list are
+# generated from it at configure time. See cmake/LsxModelManifest.cmake.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LsxModelManifest.cmake")
+lsx_configure_model_manifest()
+
 # ── Subdirectories ────────────────────────────────────────────────────────────
 
 # enable_testing must be called before add_subdirectory(apps) so that

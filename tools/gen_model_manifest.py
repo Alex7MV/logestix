@@ -120,6 +120,7 @@ class Manifest:
     report: str
     notes: str
     path: str
+    root: "Path" = None
 
     def targets(self):
         out = []
@@ -132,7 +133,10 @@ class Manifest:
         label, timeout, skip = STAGE_DEFAULTS[stage]
         env = [SYNTHETIC_ENV] if stage in SYNTHETIC_STAGES else []
         lock = self.resource_lock or STAGE_LOCKS[stage]
-        source = f"{name}.cu" if (Path("tests") / f"{name}.cu").exists() else f"{name}.cpp"
+        # Root-relative, never cwd-relative: this runs from whatever directory
+        # the build (or a ctest) happens to use.
+        source = (f"{name}.cu" if (self.root / "tests" / f"{name}.cu").exists()
+                  else f"{name}.cpp")
         cuda = source.endswith(".cu")
         defines = [f'LSX_SOURCE_DIR="{TOKEN_SOURCE_DIR}"']
         perf_case = ""
@@ -229,6 +233,7 @@ def load_one(path: Path) -> Manifest:
         report=doc.get("report", ""),
         notes=doc.get("notes", ""),
         path=path.name,
+        root=path.parent.parent,
     )
 
 
@@ -686,7 +691,11 @@ def main(argv=None):
     ap.add_argument("--registry")
     ap.add_argument("--docs")
     ap.add_argument("--matrix")
-    ap.add_argument("--check", action="store_true")
+    ap.add_argument("--check", action="store_true",
+                    help="regenerate the committed docs and fail on drift")
+    ap.add_argument("--strict", action="store_true",
+                    help="also fail on a test file no manifest claims "
+                         "(run with --check once every model is manifested)")
     ap.add_argument("--self-test", metavar="FIXTURES")
     ap.add_argument("--diff-cmake", metavar="BASELINE_JSON")
     ap.add_argument("--print-model-rows", action="store_true")
@@ -706,13 +715,21 @@ def main(argv=None):
     try:
         manifests = load_manifests(root)
         errors, warnings = validate(manifests, root,
-                                    strict_orphans=args.check)
+                                    strict_orphans=args.strict)
     except ManifestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    for w in warnings:
-        print(f"warning: {w}", file=sys.stderr)
+    if warnings:
+        print(f"{len(warnings)} warning(s):", file=sys.stderr)
+        for w in warnings[:5]:
+            print(f"warning: {w}", file=sys.stderr)
+        if len(warnings) > 5:
+            print(f"warning: ... and {len(warnings) - 5} more "
+                  f"(run with --check to see them all)", file=sys.stderr)
+    if warnings and args.strict:
+        for w in warnings:
+            print(f"warning: {w}", file=sys.stderr)
     if errors:
         print(f"{len(errors)} manifest error(s):", file=sys.stderr)
         for e in errors:

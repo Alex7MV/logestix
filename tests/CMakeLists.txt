@@ -6380,3 +6380,16 @@ target_link_libraries(test_step_moe_tokenizer PRIVATE lsxcommon
 add_test(NAME test_step_moe_tokenizer COMMAND test_step_moe_tokenizer)
 set_tests_properties(test_step_moe_tokenizer PROPERTIES LABELS inference)
 set_tests_properties(test_step_moe_tokenizer PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Model manifest sync (the generated registries cannot drift) ───────────
+# models/<model_type>.json is the single source of truth; this target proves the
+# compiled table, the committed catalogue and the test-file ownership all agree
+# with it. It regenerates docs/MODELS.md in memory and fails on any difference.
+lsx_add_test(NAME test_manifest_sync
+    SOURCES test_manifest_sync.cpp
+    LINK lsxcommon
+    INCLUDE "${LSX_MANIFEST_GENERATED_DIR}"
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+           "LSX_GENERATED_DIR=\"${LSX_MANIFEST_GENERATED_DIR}\""
+           "LSX_PYTHON3=\"${LSX_PYTHON3}\""
+    LABEL fast)

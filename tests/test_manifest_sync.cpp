@@ -1,0 +1,157 @@
+// Model manifest sync guard (host-only, label fast).
+//
+// `models/<model_type>.json` is the single source of truth for the model
+// registry, and every other representation is generated from it. This test is
+// the machine that keeps that true:
+//
+//   1. the COMPILED table (model_manifest.h) equals the generator's own
+//      projection of the manifests - one JSON implementation, two views. A
+//      difference means a stale build tree or a wrong emitter.
+//   2. the COMMITTED docs (docs/MODELS.md) are byte-identical to a fresh
+//      regeneration (`--check`), so nobody can hand-edit the catalogue.
+//   3. every tests/test_*.{cpp,cu} file is claimed by a manifest (or is a
+//      declared infrastructure test). This is the check that a model's tests
+//      cannot silently stop running: Review Focus #1 of the migration plan.
+//
+// A mutated manifest MUST fail here - see the plan's Task 10 negative test.
+#include <catch2/catch_test_macros.hpp>
+
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_split.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "model_manifest.h"
+
+#ifndef LSX_SOURCE_DIR
+#define LSX_SOURCE_DIR "."
+#endif
+#ifndef LSX_PYTHON3
+#define LSX_PYTHON3 "python3"
+#endif
+#ifndef LSX_GENERATED_DIR
+#define LSX_GENERATED_DIR ""
+#endif
+
+namespace {
+
+namespace fs = std::filesystem;
+
+const fs::path kRoot(LSX_SOURCE_DIR);
+
+// Runs the generator with `args` and returns (exit_code, stdout_text).
+// Output goes through a temp file: std::system cannot capture a pipe portably
+// (this test also has to build under MSVC).
+std::pair<int, std::string> RunGenerator(const std::string &args)
+{
+    const fs::path out =
+        fs::temp_directory_path() / "lsx_manifest_projection.txt";
+    std::error_code ec;
+    fs::remove(out, ec);
+    const std::string cmd = absl::StrCat("\"", LSX_PYTHON3, "\" \"",
+                                         (kRoot / "tools" / "gen_model_manifest.py").string(),
+                                         "\" --root \"", kRoot.string(), "\" ",
+                                         args, " > \"", out.string(), "\"");
+    const int rc = std::system(cmd.c_str());
+    std::ifstream in(out);
+    std::string text((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    return {rc, text};
+}
+
+std::vector<std::string> Lines(const std::string &text)
+{
+    std::vector<std::string> out;
+    for (absl::string_view line : absl::StrSplit(text, '\n'))
+        if (!line.empty()) out.emplace_back(line);
+    return out;
+}
+
+std::string RowKey(const lsxmanifest::ModelRow &r)
+{
+    return absl::StrCat(r.model_type, "\t", r.family, "\t",
+                        r.variant ? r.variant : "", "\t", r.model_class, "\t",
+                        r.model_header, "\t", r.passport, "\t", r.ns, "\t",
+                        r.format_tag, "\t", r.vault_dir, "\t", r.vault_env,
+                        "\t", r.tokenizer_kind, "\t",
+                        r.tool_roundtrip ? 1 : 0, "\t",
+                        r.auto_path_determinism ? 1 : 0);
+}
+
+std::string Escaped(const std::string &s)
+{
+    std::string out;
+    for (char c : s)
+    {
+        if (c == '\t') out += "\\t";
+        else out += c;
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("manifest sync: generated table matches the manifests",
+          "[manifest][fast]")
+{
+    REQUIRE(lsxmanifest::kModelCount > 0);   // a tree with no manifests is a bug
+    const auto [rc, text] = RunGenerator("--print-model-rows");
+    INFO("generator exit " << rc);
+    REQUIRE(rc == 0);
+
+    std::vector<std::string> generated = Lines(text);
+    REQUIRE(generated.size() == lsxmanifest::kModelCount);
+
+    std::vector<std::string> compiled;
+    compiled.reserve(lsxmanifest::kModelCount);
+    for (std::size_t i = 0; i < lsxmanifest::kModelCount; ++i)
+    {
+        const auto &row = lsxmanifest::kModels[i];
+        compiled.push_back(RowKey(row));
+        // The compiled table must be sorted by model_type so that a diff of the
+        // two lists points at the model, not at an arbitrary permutation.
+        if (i > 0)
+            CHECK(std::string(lsxmanifest::kModels[i - 1].model_type) <
+                  std::string(row.model_type));
+    }
+
+    for (std::size_t i = 0; i < compiled.size(); ++i)
+    {
+        INFO("model row " << i << ": compiled='" << Escaped(compiled[i])
+                          << "' generated='" << Escaped(generated[i]) << "'");
+        REQUIRE(compiled[i] == generated[i]);
+    }
+
+    // Every target row must belong to a declared model and name its stage.
+    for (std::size_t i = 0; i < lsxmanifest::kTargetCount; ++i)
+    {
+        const auto &t = lsxmanifest::kTargets[i];
+        INFO("target " << t.target << " of " << t.model_type);
+        bool known = false;
+        for (std::size_t m = 0; m < lsxmanifest::kModelCount; ++m)
+            if (std::string(lsxmanifest::kModels[m].model_type) == t.model_type)
+                known = true;
+        REQUIRE(known);
+        REQUIRE(t.stage != nullptr);
+        REQUIRE(t.label != nullptr);
+    }
+}
+
+TEST_CASE("manifest sync: --check reports no drift", "[manifest][fast]")
+{
+    const auto [rc, _unused] = RunGenerator("--check");
+    INFO("regenerate docs/MODELS.md with: tools/gen_model_manifest.py --docs "
+         "docs/MODELS.md --root .");
+    REQUIRE(rc == 0);
+}
+
+// The third case - "no unclaimed model test file" - is added once all 35
+// manifests exist (plan Task 3), because a partially authored tree makes it
+// unconditionally red and a guard that can only fail is not a guard.
