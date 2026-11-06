@@ -1,7 +1,7 @@
 {
   "model_type": "qwen3.8-27b",
   "display_name": "qwen3.8-27b",
-  "family": "qwen3.8-27b",
+  "family": "qwen",
   "variant": null,
   "model_class": "Qwen3_8_27BModel",
   "model_header": "qwen_dense_27b_model.h",

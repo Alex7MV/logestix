@@ -35,6 +35,8 @@
 #include <sstream>
 #include <string>
 #include <utility>
+
+#include "test_manifest_query.h"
 #include <vector>
 
 namespace {
@@ -47,6 +49,11 @@ const fs::path kIncDir = LSX_SOURCE_DIR "/libs/lsxcommon/include/lsxcommon";
 fs::path PassportPath(const char *header)
 {
     const std::string h = header;
+    // models/*.json spells the passport repo-relative
+    // ("libs/lsxcommon/src/x.h"), the old literal spelled it src-relative.
+    const std::string kRepoPrefix = "libs/lsxcommon/";
+    if (h.rfind(kRepoPrefix, 0) == 0)
+        return fs::path(LSX_SOURCE_DIR) / h;
     const std::string kIncPrefix = "../include/lsxcommon/";
     if (h.rfind(kIncPrefix, 0) == 0)
         return kIncDir / h.substr(kIncPrefix.size());
@@ -64,66 +71,24 @@ struct PassportRow {
     const char *ns;  // fully qualified namespace holding the constants
 };
 
-const std::vector<PassportRow> kPassports = {
-    {"glm-5.2", "../include/lsxcommon/glm_moe_load.h", "lsxcommon::glm"},
-    {"glm-5.3-flash", "glm_moe_flash_constants.h",
-     "lsxcommon::glm_moe_flash::frozen"},
-    {"deepseek-v4-flash", "../include/lsxcommon/deepseek_moe_constants.h",
-     "lsxcommon::deepseek"},
-    {"deepseek-v4.1-flash", "deepseek_moe_v41_constants.h",
-     "lsxcommon::deepseek_v41"},
-    {"deepseek-v4-pro-0813", "deepseek_moe_pro_constants.h",
-     "lsxcommon::deepseek_pro"},
-    {"gemma-4-26b-a4b-it", "../include/lsxcommon/gemma_moe_load.h",
-     "lsxcommon::gemma"},
-    {"gemma-4-31b-it", "../include/lsxcommon/gemma_dense_constants.h",
-     "lsxcommon::gemma_dense::frozen"},
-    {"kimi-k2.7-code", "../include/lsxcommon/kimi_moe_load.h",
-     "lsxcommon::kimi"},
-    {"qwen3.5-9b", "qwen_dense_model.h", "Qwen3_5_9BModel"},
-    {"qwen3.8-27b", "qwen_dense_27b_model.h", "Qwen3_8_27BModel"},
-    {"qwen3.5-35b-a3b", "qwen_moe_constants.h", "lsxcommon::qwen_moe::frozen"},
-    {"qwen3.8-flash-next", "qwen_moe_exp_constants.h",
-     "lsxcommon::qwen_moe_exp::frozen"},
-    {"qwen3.6-35b-a3b", "qwen_moe_36_constants.h",
-     "lsxcommon::qwen_moe_36::frozen"},
-    {"nemotron-3.5-lightning-30b-a3b", "nemotron_moe_constants.h",
-     "lsxcommon::nemotron_moe::frozen"},
-    {"nemotron-3.5-lightning-30b-a3b-nvfp4", "nemotron_moe_nvfp4_constants.h",
-     "lsxcommon::nemotron_nvfp4::frozen"},
-    {"gigachat3.5-432b-a28b-reasoning", "gigachat_moe_constants.h",
-     "lsxcommon::gigachat::frozen"},
-    {"ornith-1.5-35b-a3b", "ornith_moe_constants.h",
-     "lsxcommon::ornith::frozen"},
-    {"granite-4.2-30b", "../include/lsxcommon/granite_dense_constants.h",
-     "lsxcommon::granite::frozen"},
-    {"granite-switch-4.1-30b",
-     "../include/lsxcommon/granite_dense_switch_constants.h",
-     "lsxcommon::granite_switch::frozen"},
-    {"mimo-v2.6-flash-rl", "mimo_moe_constants.h", "lsxcommon::mimo::frozen"},
-    {"phi-4", "../include/lsxcommon/phi_dense_constants.h",
-     "lsxcommon::phi::frozen"},
-    {"alice-foundation-80b-a3b", "alice_moe_constants.h",
-     "lsxcommon::alice::frozen"},
-    {"xing4.0-29b-a4b", "xing_moe_constants.h", "lsxcommon::xing::frozen"},
-    {"mistral-small-4-119b", "mistral_moe_constants.h",
-     "lsxcommon::mistral_moe::frozen"},
-    {"mistral-large-4-1t", "mistral_moe_large4_constants.h",
-     "lsxcommon::mistral_large4::frozen"},
-    {"minimax-m3", "minimax_moe_constants.h", "lsxcommon::minimax::frozen"},
-    {"minimax-m3.1-flash", "minimax_moe_flash_constants.h",
-     "lsxcommon::minimax_flash::frozen"},
-    {"hy-memory-30b-a3b", "hy_moe_constants.h", "lsxcommon::hy::frozen"},
-    {"hy-simulmt-30b-a3b", "hy_moe_simulmt_constants.h",
-     "lsxcommon::hy_simulmt::frozen"},
-    {"flint", "flint_moe_constants.h", "lsxcommon::flint::frozen"},
-    {"ling", "ling_moe_constants.h", "lsxcommon::ling::frozen"},
-    {"beam", "beam_moe_constants.h", "lsxcommon::beam::frozen"},
-    {"step-5-preview", "step_moe_constants.h", "lsxcommon::step::frozen"},
-    {"kimi-k3", "kimi_moe_k3_constants.h", "lsxcommon::kimi_k3::frozen"},
-    {"kimi-k3.1-pro", "kimi_moe_pro_constants.h",
-     "lsxcommon::kimi_pro::frozen"},
-};
+// Built from models/*.json (tests/model_manifest.h). The registry used to be a
+// hand-written literal here, which is how five families (beam, hy, minimax,
+// mistral, xing) fell out of the cross-family checks without a single failure.
+const std::vector<PassportRow> &Passports()
+{
+    static const std::vector<PassportRow> v = [] {
+        std::vector<PassportRow> out;
+        out.reserve(lsxmanifest::kModelCount);
+        for (std::size_t i = 0; i < lsxmanifest::kModelCount; ++i)
+        {
+            const auto &m = lsxmanifest::kModels[i];
+            out.push_back({m.model_type, m.passport, m.ns});
+        }
+        return out;
+    }();
+    return v;
+}
+
 
 std::string ReadFile(const fs::path &p)
 {
@@ -137,7 +102,7 @@ std::string ReadFile(const fs::path &p)
 
 TEST_CASE("every ingested model has its own constants header", "[independence]")
 {
-    for (const auto &row : kPassports) {
+    for (const auto &row : Passports()) {
         INFO("model " << row.model_type << " passport " << row.header);
         REQUIRE(fs::exists(PassportPath(row.header)));
     }
@@ -146,7 +111,7 @@ TEST_CASE("every ingested model has its own constants header", "[independence]")
 TEST_CASE("model constants namespaces are unique per model", "[independence]")
 {
     absl::btree_set<std::string> namespaces;
-    for (const auto &row : kPassports) {
+    for (const auto &row : Passports()) {
         INFO("namespace " << row.ns);
         REQUIRE(namespaces.insert(row.ns).second);
     }
@@ -175,9 +140,9 @@ TEST_CASE("no passport includes another model's passport", "[independence]")
         }
         return false;
     };
-    for (const auto &row : kPassports) {
+    for (const auto &row : Passports()) {
         const std::string text = ReadFile(PassportPath(row.header));
-        for (const auto &other : kPassports) {
+        for (const auto &other : Passports()) {
             if (std::string_view(other.header) == std::string_view(row.header))
                 continue;
             INFO(row.header << " must not include " << other.header);
@@ -431,73 +396,23 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         const char *model_type;
         std::vector<const char *> path;  // TUs forming the generation path
     };
-    const std::vector<LifecycleRow> kLifecycle = {
-        {"glm-5.2", {"glm_moe_model.cpp", "glm_moe_inference.cu"}},
-        {"glm-5.3-flash",
-         {"glm_moe_flash_model.cpp", "glm_moe_flash_inference.cu"}},
-        {"deepseek-v4-flash",
-         {"deepseek_moe_model.cpp", "deepseek_moe_inference_pipeline.cu"}},
-        {"deepseek-v4.1-flash",
-         {"deepseek_moe_v41_model.cpp", "deepseek_moe_v41_inference_pipeline.cu"}},
-        {"deepseek-v4-pro-0813",
-         {"deepseek_moe_pro_model.cpp",
-          "deepseek_moe_pro_inference_pipeline.cu"}},
-        {"qwen3.5-9b", {"qwen_base_model.cpp",
-                        "qwen_dense_inference_pipeline.cu"}},
-        {"qwen3.8-27b", {"qwen_base_model.cpp",
-                         "qwen_dense_inference_pipeline.cu"}},
-        {"qwen3.5-35b-a3b", {"qwen_moe_model.cpp",
-                             "qwen_moe_inference_pipeline.cu"}},
-        {"qwen3.6-35b-a3b", {"qwen_moe_model.cpp",
-                             "qwen_moe_inference_pipeline.cu"}},
-        {"qwen3.8-flash-next", {"qwen_moe_exp_model.cpp",
-                                "qwen_moe_exp_inference.cu"}},
-        {"gemma-4-26b-a4b-it",
-         {"gemma_base_model.cpp", "gemma_moe_inference.cu"}},
-        {"gemma-4-31b-it",
-         {"gemma_dense_model.cpp", "gemma_dense_inference.cu"}},
-        {"kimi-k2.7-code", {"kimi_moe_model.cpp", "kimi_moe_inference.cu"}},
-        {"ornith-1.5-35b-a3b",
-         {"ornith_moe_model.cpp", "ornith_moe_inference_pipeline.cu"}},
-        {"granite-4.2-30b",
-         {"granite_dense_model.cpp", "granite_dense_inference.cu"}},
-        {"granite-switch-4.1-30b",
-         {"granite_dense_switch_model.cpp",
-          "granite_dense_switch_inference.cu"}},
-        {"phi-4", {"phi_dense_model.cpp", "phi_dense_inference.cu"}},
-        {"nemotron-3.5-lightning-30b-a3b", {"nemotron_moe_model.cpp"}},
-        {"nemotron-3.5-lightning-30b-a3b-nvfp4",
-         {"nemotron_moe_nvfp4_model.cpp", "nemotron_moe_model.cpp"}},
-        {"gigachat3.5-432b-a28b-reasoning", {"gigachat_moe_model.cpp"}},
-        {"mimo-v2.6-flash-rl", {"mimo_moe_model.cpp"}},
-        {"alice-foundation-80b-a3b", {"alice_moe_model.cpp",
-                                      "alice_moe_inference_pipeline.cu"}},
-        {"xing4.0-29b-a4b", {"xing_moe_model.cpp"}},
-        {"mistral-small-4-119b",
-         {"mistral_moe_model.cpp", "mistral_moe_inference.cu"}},
-        {"mistral-large-4-1t",
-         {"mistral_moe_large4_model.cpp",
-          "mistral_moe_large4_inference_pipeline.cu"}},
-        {"minimax-m3",
-         {"minimax_moe_model.cpp", "minimax_moe_inference_pipeline.cu"}},
-        {"minimax-m3.1-flash",
-         {"minimax_moe_flash_model.cpp",
-          "minimax_moe_inference_pipeline.cu"}},
-        {"hy-memory-30b-a3b",
-         {"hy_moe_model.cpp", "hy_moe_inference_pipeline.cu"}},
-        {"hy-simulmt-30b-a3b",
-         {"hy_moe_simulmt_model.cpp", "hy_moe_inference_pipeline.cu"}},
-        {"flint",
-         {"flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"}},
-        {"ling", {"ling_moe_model.cpp", "ling_moe_inference.cu"}},
-        {"beam", {"beam_moe_model.cpp", "beam_moe_inference.cu"}},
-        {"step-5-preview",
-         {"step_moe_model.cpp", "step_moe_inference_pipeline.cu"}},
-        {"kimi-k3",
-         {"kimi_moe_k3_model.cpp", "kimi_moe_k3_inference_pipeline.cu"}},
-        {"kimi-k3.1-pro",
-         {"kimi_moe_pro_model.cpp", "kimi_moe_k3_inference_pipeline.cu"}},
-    };
+    // From models/*.json: one row per model, listing the TUs of its generation
+    // path. A model with no declared path fails below rather than passing
+    // silently - that is the check the hand-written table used to provide.
+    // The TUs come from the generated table, which already owns stable storage
+    // (inline constexpr): point at it rather than at a temporary vector.
+    std::vector<LifecycleRow> kLifecycle;
+    for (std::size_t i = 0; i < lsxmanifest::kModelCount; ++i)
+    {
+        LifecycleRow row;
+        row.model_type = lsxmanifest::kModels[i].model_type;
+        for (std::size_t j = 0; j < lsxmanifest::kLifecycleCount; ++j)
+            if (row.model_type ==
+                std::string_view(lsxmanifest::kLifecycle[j].model_type))
+                row.path.push_back(lsxmanifest::kLifecycle[j].tu);
+        kLifecycle.push_back(row);
+    }
+
     // marker group -> what it guarantees. EVERY spelling in a group must be
     // absent for the contract to be considered unwired (any-of semantics:
     // a family may publish the result field directly or through the shared
@@ -561,7 +476,7 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         }
     }
     // Every ingested model must be claimed by the registry itself.
-    for (const auto &p : kPassports) {
+    for (const auto &p : Passports()) {
         if (claimed.count(p.model_type) != 1) {
             violations.push_back(
                 absl::StrCat(p.model_type, ": no kLifecycle registry row"));

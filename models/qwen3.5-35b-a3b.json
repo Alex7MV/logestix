@@ -1,7 +1,7 @@
 {
   "model_type": "qwen3.5-35b-a3b",
   "display_name": "qwen3.5-35b-a3b",
-  "family": "qwen_moe",
+  "family": "qwen",
   "variant": null,
   "model_class": "Qwen35MoeModel",
   "model_header": "qwen_moe_model.h",

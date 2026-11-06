@@ -1,7 +1,7 @@
 {
   "model_type": "mistral-small-4-119b",
   "display_name": "mistral-small-4-119b",
-  "family": "mistral_moe",
+  "family": "mistral",
   "variant": null,
   "model_class": "MistralSmall4MoeModel",
   "model_header": "mistral_moe_model.h",

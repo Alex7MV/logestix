@@ -5120,7 +5120,8 @@ lsx_add_test(NAME test_infrastructure_guard
 # geometry borrowing (host-only, no lsxcommon deps).
 lsx_add_test(NAME test_model_independence_guard
     LINK absl::btree
-    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+    INCLUDE "${LSX_MANIFEST_GENERATED_DIR}")
 
 # Guard: ctest category-label discipline (fast | inference | perf).
 # Host-only static scan of tests/CMakeLists.txt (see spec 2026-09-10).
@@ -5132,7 +5133,8 @@ lsx_add_test(NAME test_ctest_labels_guard
 # selfcheck), SKIP_RETURN_CODE 4 on selfcheck targets, and a cross-family
 # fixture-borrowing ban (test-side mirror of model independence).
 lsx_add_test(NAME test_model_suite_guard
-    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+    INCLUDE "${LSX_MANIFEST_GENERATED_DIR}")
 
 # ── FSISelfCheck: host-only extraction/golden/harness unit tests (no GPU) ──
 add_executable(test_fsi_selfcheck test_fsi_selfcheck.cpp)

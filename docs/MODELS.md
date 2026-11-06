@@ -292,7 +292,7 @@ history live in `docs/model-reports/`; gate verdicts in
 
 ## mistral-small-4-119b
 
-- family `mistral_moe`
+- family `mistral`
 - class `MistralSmall4MoeModel`, passport `libs/lsxcommon/src/mistral_moe_constants.h`, namespace `lsxcommon::mistral_moe::frozen`
 - forge `--mistral`
 - tokenizer kind 9
@@ -301,6 +301,19 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `mistral_moe_model.cpp`, `mistral_moe_inference.cu`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 45.77 t/s (perf, 2026-11-06)
+- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+
+## nemotron-3.5-lightning-30b-a3b
+
+- family `nemotron`
+- class `NemotronHModel`, passport `libs/lsxcommon/src/nemotron_moe_constants.h`, namespace `lsxcommon::nemotron_moe::frozen`
+- forge `--nemotron`
+- tokenizer kind 9
+- format tag not declared in the manifest
+- vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_ROOT`)
+- lifecycle TUs: `nemotron_moe_model.cpp`
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt
+- perf: 24.07 t/s (r3, 2026-09-16)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
 
 ## nemotron-3.5-lightning-30b-a3b-nvfp4
@@ -313,19 +326,6 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `nemotron_moe_nvfp4_model.cpp`, `nemotron_moe_model.cpp`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 120.39 t/s (r3, 2026-11-01)
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
-
-## nemotron-3.5-lightning-30b-a3b
-
-- family `nemotron_moe`
-- class `NemotronHModel`, passport `libs/lsxcommon/src/nemotron_moe_constants.h`, namespace `lsxcommon::nemotron_moe::frozen`
-- forge `--nemotron`
-- tokenizer kind 9
-- format tag not declared in the manifest
-- vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_ROOT`)
-- lifecycle TUs: `nemotron_moe_model.cpp`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt
-- perf: 24.07 t/s (r3, 2026-09-16)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
 
 ## ornith-1.5-35b-a3b
@@ -354,6 +354,30 @@ history live in `docs/model-reports/`; gate verdicts in
 - perf: 71.29 t/s (r3, 2026-10-24)
 - debt: none
 
+## qwen3.5-35b-a3b
+
+- family `qwen`
+- class `Qwen35MoeModel`, passport `libs/lsxcommon/src/qwen_moe_constants.h`, namespace `lsxcommon::qwen_moe::frozen`
+- format `logestix-qwen35moe`, forge `--qwen35moe`
+- tokenizer kind 7
+- vault `Qwen3.5-35B-A3B` (override `LSX_TEST_QWEN3_5_35B_A3B_ROOT`)
+- lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
+- perf: 77.56 t/s (r3, 2026-11-04)
+- debt: none
+
+## qwen3.5-9b
+
+- family `qwen`
+- class `Qwen3_5_9BModel`, passport `libs/lsxcommon/src/qwen_dense_model.h`, namespace `Qwen3_5_9BModel`
+- forge `--qwen`
+- format tag not declared in the manifest
+- vault `Qwen3.5-9B` (override `LSX_TEST_QWEN3_5_9B_ROOT`)
+- lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
+- perf: 170.0 t/s (r3, 2026-11-05)
+- debt: none
+
 ## qwen3.6-35b-a3b
 
 - family `qwen`
@@ -363,6 +387,18 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 73.39 t/s (r3, 2026-10-23)
+- debt: none
+
+## qwen3.8-27b
+
+- family `qwen`
+- class `Qwen3_8_27BModel`, passport `libs/lsxcommon/src/qwen_dense_27b_model.h`, namespace `Qwen3_8_27BModel`
+- forge `--qwen`
+- format tag not declared in the manifest
+- vault `Qwen3.8-27B` (override `LSX_TEST_QWEN3_8_27B_ROOT`)
+- lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
+- perf: 60.15 t/s (r3, 2026-11-03)
 - debt: none
 
 ## qwen3.8-flash-next
@@ -376,42 +412,6 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `qwen_moe_exp_model.cpp`, `qwen_moe_exp_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 33.91 t/s (r3, 2026-11-04)
-- debt: none
-
-## qwen3.5-9b
-
-- family `qwen3.5-9b`
-- class `Qwen3_5_9BModel`, passport `libs/lsxcommon/src/qwen_dense_model.h`, namespace `Qwen3_5_9BModel`
-- forge `--qwen`
-- format tag not declared in the manifest
-- vault `Qwen3.5-9B` (override `LSX_TEST_QWEN3_5_9B_ROOT`)
-- lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: 170.0 t/s (r3, 2026-11-05)
-- debt: none
-
-## qwen3.8-27b
-
-- family `qwen3.8-27b`
-- class `Qwen3_8_27BModel`, passport `libs/lsxcommon/src/qwen_dense_27b_model.h`, namespace `Qwen3_8_27BModel`
-- forge `--qwen`
-- format tag not declared in the manifest
-- vault `Qwen3.8-27B` (override `LSX_TEST_QWEN3_8_27B_ROOT`)
-- lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: 60.15 t/s (r3, 2026-11-03)
-- debt: none
-
-## qwen3.5-35b-a3b
-
-- family `qwen_moe`
-- class `Qwen35MoeModel`, passport `libs/lsxcommon/src/qwen_moe_constants.h`, namespace `lsxcommon::qwen_moe::frozen`
-- format `logestix-qwen35moe`, forge `--qwen35moe`
-- tokenizer kind 7
-- vault `Qwen3.5-35B-A3B` (override `LSX_TEST_QWEN3_5_35B_A3B_ROOT`)
-- lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: 77.56 t/s (r3, 2026-11-04)
 - debt: none
 
 ## step-5-preview
