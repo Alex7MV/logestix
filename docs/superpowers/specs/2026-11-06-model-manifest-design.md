@@ -188,7 +188,7 @@ Rules the schema enforces (checked by the sync test, not by convention):
 | 1 | `generated/model_manifest.h` — `constexpr` table (type, family, namespace, passport, vault dir/env, tokenizer kind, stage presence, golden debt, lifecycle TUs) | configure time | `kPassports`, `FamilyStems`, `kGoldenDebt`, `Suites()`, `kLifecycle`, guard orphans |
 | 2 | `generated/model_registry.inc` — `#include` + `LsxModelFactory::Register<T>()` | configure time | the 35-line hand list in `model_registry.cpp` |
 | 3 | ctest registration for model targets (label, `SKIP_RETURN_CODE 4`, TIMEOUT, synthetic-geometry env chosen by stage) | configure time | ~2 300 hand-written CMake lines |
-| 4 | `docs/MODELS.md` — one section per model (what it is, geometry one-liner, gates, perf row, report link, open debt) | generator + `--check` | `AGENTS.md` § Structure (849 lines), `README.md` § Structure |
+| 4 | `docs/MODELS.md` — one section per model (identity, passport, vault, gates, perf row, report link, debt) | generator + `--check` | `AGENTS.md` § Structure (849 lines), `README.md` § Structure |
 | 5 | `docs/SELFCHECK_MATRIX.md` table rows (declared debt vs measured) | generator + `--check` | hand-updated matrix |
 
 Two rules make this drift-proof:
@@ -288,8 +288,9 @@ Phase 6 is a migration, not a deletion. Every paragraph of today's
 
 1. **Invariant / rule** (the only GEMM path is `lsx_gemm`; no CLI speed flags;
    MMAP-only Arrow reads) → a numbered section of the new `AGENTS.md`.
-2. **Per-model fact** (geometry, gates, perf row, format tag, debt) → generated
-   `docs/MODELS.md`.
+2. **Per-model fact** (identity, passport, vault, gates, perf row, format tag,
+   debt, report link) → generated `docs/MODELS.md`. **Geometry is not among them**
+   — see the amendment; the catalogue points at the passport instead.
 3. **Measured result with a canonical home** (perf row, `logits_hash`, gate
    verdict) → stays where it is (`perf_baselines.json`, `SELFCHECK_MATRIX.md`)
    and is *linked*, never restated.
@@ -351,7 +352,8 @@ P2→P5 are behaviour-preserving by construction; the oracle is a **target dump*
 ## 10. What stays manual (honest statement)
 
 The manifest removes **registration** toil, not model work. Still hand-written
-per model: geometry passport, converter, NVFP4 packing rules, kernels, loader,
+per model: the passport's geometry VALUES (the header itself is the source of
+truth and the catalogue links it), converter, NVFP4 packing rules, kernels, loader,
 pipeline, tool codec, goldens capture, perf seeding. That is 6 of the 8 ingestion
 stages — but it is the part that is genuinely different per model, and it is the
 part the operator wants to spend time on.
@@ -390,3 +392,27 @@ needs that are not converter/kernel logic". Not designed here.
 - How `variants` (kimi `k3`/`k31_pro`, mistral `large4`, gemma dense/moe) share
   a family stem — one manifest each, `family` shared, `variant` naming the
   delta; the sync test requires the shared family to be identical.
+
+---
+
+## Amendment (2026-11-06): no geometry in the catalogue
+
+The generated `docs/MODELS.md` deliberately does **not** restate each model's
+geometry. The original §8.2 row asked for a "geometry one-liner"; that promise is
+withdrawn here, for three measured reasons:
+
+1. **There is no single schema.** The models fall into four architecture classes
+   with genuinely different parameters: GQA+dense (5), GQA+MoE (16), MLA+MoE
+   (4), and the KDA/GDN hybrids (10) where two attention kinds coexist in one
+   model. A seven-field line would print blanks for half the catalogue.
+2. **A plausible wrong number is worse than no line.** A synonym table wide
+   enough to cover the three naming styles (`kHidden` / `kHiddenSize` /
+   `kGemmaHidden`) maps `kKvLora = 512` to "kv heads: 512" for GLM-5.3-Flash -
+   a latent rank read as a head count. This repository's own rule is that a
+   claim needs an external oracle; a catalogue line has none.
+3. **The passport already is the machine-checked source.** Every value is a
+   `constexpr` under `static_assert`, which is stronger than prose: it cannot rot
+   without failing the build.
+
+So the catalogue links the passport (`- class …, passport …, namespace …`) and
+the reader opens it, or the model's report, for numbers.

@@ -104,3 +104,21 @@ request**, so the invariant that used to live in `AGENTS.md` and in the
 Dated plan documents under `docs/superpowers/plans/` (2026-08-25, 2026-08-27)
 still mention the restriction: they record what was true when they were written
 and are not rewritten.
+
+## Update (2026-11-06, after the migration): geometry stays out of the catalogue
+
+Rows 22–48 sent the old paragraphs' geometry to `M` (`docs/MODELS.md`). That
+destination is withdrawn by the operator's decision, recorded in the design's
+amendment: the catalogue carries identity, passport, vault, gates, perf, debt and
+the report link, and **points at the passport** for numbers.
+
+What that means for the routing:
+
+- Geometry in those paragraphs is not lost — it lives in the passport under
+  `static_assert` (the source of truth) and in the model's report. The catalogue
+  line `- class …, passport …, namespace …` is the pointer.
+- The `M` destination for a paragraph therefore means "identity + pointer", not
+  "restated geometry".
+- Nothing else in this table changes: measured numbers still go to
+  `perf_baselines.json` / `SELFCHECK_MATRIX.md`, rationale still goes to the
+  report or the open-tasks archive.

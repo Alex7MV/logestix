@@ -860,6 +860,15 @@ Other amendments made during execution (each is also in the commits):
   (8 of 35); the rest print "not declared" in the catalogue rather than a guess.
 - **Task 9:** `docs/SELFCHECK_MATRIX.md` is checked, not generated — its cells are
   measured verdicts.
+- **Task 9 / Task 3 (catalogue contents):** `docs/MODELS.md` does **not** restate
+  per-model geometry. The design's "geometry one-liner" was withdrawn by the
+  operator after measuring it: four architecture classes need different fields
+  (GQA+dense, GQA+MoE, MLA+MoE, KDA/GDN hybrids), the naming styles differ across
+  passports, and a wide synonym table maps a latent rank (`kKvLora = 512`) to a
+  head count. A plausible wrong number in a catalogue is worse than no line, and
+  the passport is already the machine-checked source (constexpr under
+  `static_assert`). The catalogue links the passport; numbers live there or in
+  the model report.
 - **Task 1:** `--self-test` mutates a LIVE manifest (a checked-in fixture went
   stale the moment the per-family gate files were deleted) and is registered as
   `test_manifest_generator_selftest`.

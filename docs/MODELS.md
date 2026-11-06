@@ -10,7 +10,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## alice-foundation-80b-a3b
 
 - family `alice`
-- class `AliceFoundation80BModel`, passport `libs/lsxcommon/src/alice_moe_constants.h`, namespace `lsxcommon::alice::frozen`
+- class `AliceFoundation80BModel`, namespace `lsxcommon::alice::frozen`
+- geometry: `libs/lsxcommon/src/alice_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--alice`
 - vault `AliceAI-Foundation-80B-A3B-Base` (override `LSX_TEST_ALICE_FOUNDATION_80B_A3B_ROOT`)
 - lifecycle TUs: `alice_moe_model.cpp`, `alice_moe_inference_pipeline.cu`
@@ -22,7 +23,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## beam
 
 - family `beam`
-- class `BeamMoeModel`, passport `libs/lsxcommon/src/beam_moe_constants.h`, namespace `lsxcommon::beam::frozen`
+- class `BeamMoeModel`, namespace `lsxcommon::beam::frozen`
+- geometry: `libs/lsxcommon/src/beam_moe_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-beam-nvfp4`, forge `--beam`
 - tokenizer kind 6
 - vault `Beam-1.0-501B-A23B` (override `LSX_TEST_BEAM_ROOT`)
@@ -35,7 +37,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## deepseek-v4-flash
 
 - family `deepseek`
-- class `DeepSeekV4FlashModel`, passport `libs/lsxcommon/include/lsxcommon/deepseek_moe_constants.h`, namespace `lsxcommon::deepseek`
+- class `DeepSeekV4FlashModel`, namespace `lsxcommon::deepseek`
+- geometry: `libs/lsxcommon/include/lsxcommon/deepseek_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--deepseek_nvfp4`
 - vault `DeepSeek-V4-Flash` (override `LSX_TEST_DEEPSEEK_V4_FLASH_ROOT`)
 - lifecycle TUs: `deepseek_moe_model.cpp`, `deepseek_moe_inference_pipeline.cu`
@@ -47,7 +50,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## deepseek-v4-pro-0813
 
 - family `deepseek`
-- class `DeepSeekV4ProModel`, passport `libs/lsxcommon/src/deepseek_moe_pro_constants.h`, namespace `lsxcommon::deepseek_pro`
+- class `DeepSeekV4ProModel`, namespace `lsxcommon::deepseek_pro`
+- geometry: `libs/lsxcommon/src/deepseek_moe_pro_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--deepseek_pro`
 - vault `DeepSeek-V4-Pro-0813` (override `LSX_TEST_DEEPSEEK_V4_PRO_0813_ROOT`)
 - lifecycle TUs: `deepseek_moe_pro_model.cpp`, `deepseek_moe_pro_inference_pipeline.cu`
@@ -58,7 +62,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## deepseek-v4.1-flash
 
 - family `deepseek`
-- class `DeepSeekV41FlashModel`, passport `libs/lsxcommon/src/deepseek_moe_v41_constants.h`, namespace `lsxcommon::deepseek_v41`
+- class `DeepSeekV41FlashModel`, namespace `lsxcommon::deepseek_v41`
+- geometry: `libs/lsxcommon/src/deepseek_moe_v41_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--deepseek_v41`
 - vault `DeepSeek-V4.1-Flash` (override `LSX_TEST_DEEPSEEK_V4_1_FLASH_ROOT`)
 - lifecycle TUs: `deepseek_moe_v41_model.cpp`, `deepseek_moe_v41_inference_pipeline.cu`
@@ -69,7 +74,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## flint
 
 - family `flint`
-- class `FlintMoeModel`, passport `libs/lsxcommon/src/flint_moe_constants.h`, namespace `lsxcommon::flint::frozen`
+- class `FlintMoeModel`, namespace `lsxcommon::flint::frozen`
+- geometry: `libs/lsxcommon/src/flint_moe_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-flint-nvfp4`, forge `--flint`
 - tokenizer kind 4
 - vault `flint` (override `LSX_TEST_FLINT_ROOT`)
@@ -82,7 +88,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## gemma-4-26b-a4b-it
 
 - family `gemma`
-- class `Gemma4_26BA4BModel`, passport `libs/lsxcommon/include/lsxcommon/gemma_moe_load.h`, namespace `lsxcommon::gemma`
+- class `Gemma4_26BA4BModel`, namespace `lsxcommon::gemma`
+- geometry: `libs/lsxcommon/include/lsxcommon/gemma_moe_load.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--gemma4`
 - tokenizer kind 11
 - vault `gemma-4-26B-A4B-it` (override `LSX_TEST_GEMMA_4_26B_A4B_IT_ROOT`)
@@ -94,7 +101,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## gemma-4-31b-it
 
 - family `gemma`
-- class `Gemma4_31BDenseModel`, passport `libs/lsxcommon/include/lsxcommon/gemma_dense_constants.h`, namespace `lsxcommon::gemma_dense::frozen`
+- class `Gemma4_31BDenseModel`, namespace `lsxcommon::gemma_dense::frozen`
+- geometry: `libs/lsxcommon/include/lsxcommon/gemma_dense_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--gemma4dense`
 - tokenizer kind 11
 - vault `gemma-4-31B-it` (override `LSX_TEST_GEMMA_4_31B_IT_ROOT`)
@@ -106,7 +114,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## gigachat3.5-432b-a28b-reasoning
 
 - family `gigachat`
-- class `GigaChat35Model`, passport `libs/lsxcommon/src/gigachat_moe_constants.h`, namespace `lsxcommon::gigachat::frozen`
+- class `GigaChat35Model`, namespace `lsxcommon::gigachat::frozen`
+- geometry: `libs/lsxcommon/src/gigachat_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--gigachat`
 - tokenizer kind 3
 - vault `GigaChat3.5-432B-A28B-Reasoning` (override `LSX_TEST_GIGACHAT3_5_432B_A28B_REASONING_ROOT`)
@@ -118,7 +127,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## glm-5.2
 
 - family `glm`
-- class `GlmV5Model`, passport `libs/lsxcommon/include/lsxcommon/glm_moe_load.h`, namespace `lsxcommon::glm`
+- class `GlmV5Model`, namespace `lsxcommon::glm`
+- geometry: `libs/lsxcommon/include/lsxcommon/glm_moe_load.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--glm`
 - tokenizer kind 8
 - vault `GLM-5.2` (override `LSX_TEST_GLM_5_2_ROOT`)
@@ -131,7 +141,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## glm-5.3-flash
 
 - family `glm`
-- class `Glm5NextFlashModel`, passport `libs/lsxcommon/src/glm_moe_flash_constants.h`, namespace `lsxcommon::glm_moe_flash::frozen`
+- class `Glm5NextFlashModel`, namespace `lsxcommon::glm_moe_flash::frozen`
+- geometry: `libs/lsxcommon/src/glm_moe_flash_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--glmflash`
 - tokenizer kind 8
 - vault `GLM-5.3-Flash` (override `LSX_TEST_GLM_5_3_FLASH_ROOT`)
@@ -143,7 +154,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## granite-4.2-30b
 
 - family `granite`
-- class `Granite42_30BModel`, passport `libs/lsxcommon/include/lsxcommon/granite_dense_constants.h`, namespace `lsxcommon::granite::frozen`
+- class `Granite42_30BModel`, namespace `lsxcommon::granite::frozen`
+- geometry: `libs/lsxcommon/include/lsxcommon/granite_dense_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--granite`
 - tokenizer kind 10
 - vault `granite-4.2-30b` (override `LSX_TEST_GRANITE_4_2_30B_ROOT`)
@@ -155,7 +167,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## granite-switch-4.1-30b
 
 - family `granite`
-- class `GraniteSwitch41_30BModel`, passport `libs/lsxcommon/include/lsxcommon/granite_dense_switch_constants.h`, namespace `lsxcommon::granite_switch::frozen`
+- class `GraniteSwitch41_30BModel`, namespace `lsxcommon::granite_switch::frozen`
+- geometry: `libs/lsxcommon/include/lsxcommon/granite_dense_switch_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--granite_switch`
 - vault `granite-switch-4.1-30b` (override `LSX_TEST_GRANITE_SWITCH_4_1_30B_ROOT`)
 - lifecycle TUs: `granite_dense_switch_model.cpp`, `granite_dense_switch_inference.cu`
@@ -166,7 +179,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## hy-memory-30b-a3b
 
 - family `hy`
-- class `HyMemoryModel`, passport `libs/lsxcommon/src/hy_moe_constants.h`, namespace `lsxcommon::hy::frozen`
+- class `HyMemoryModel`, namespace `lsxcommon::hy::frozen`
+- geometry: `libs/lsxcommon/src/hy_moe_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-hy-nvfp4`, forge `--hy`
 - vault `Hy-Memory-30B-A3B` (override `LSX_TEST_HY_MEMORY_30B_A3B_ROOT`)
 - lifecycle TUs: `hy_moe_model.cpp`, `hy_moe_inference_pipeline.cu`
@@ -177,7 +191,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## hy-simulmt-30b-a3b
 
 - family `hy`
-- class `HySimulMTModel`, passport `libs/lsxcommon/src/hy_moe_simulmt_constants.h`, namespace `lsxcommon::hy_simulmt::frozen`
+- class `HySimulMTModel`, namespace `lsxcommon::hy_simulmt::frozen`
+- geometry: `libs/lsxcommon/src/hy_moe_simulmt_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--hy_simulmt`
 - vault `Hy-SimulMT-30B-A3B` (override `LSX_TEST_HY_SIMULMT_30B_A3B_ROOT`)
 - lifecycle TUs: `hy_moe_simulmt_model.cpp`, `hy_moe_inference_pipeline.cu`
@@ -189,7 +204,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## kimi-k2.7-code
 
 - family `kimi`
-- class `KimiK27CodeModel`, passport `libs/lsxcommon/include/lsxcommon/kimi_moe_load.h`, namespace `lsxcommon::kimi`
+- class `KimiK27CodeModel`, namespace `lsxcommon::kimi`
+- geometry: `libs/lsxcommon/include/lsxcommon/kimi_moe_load.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--kimi`
 - vault `Kimi-K2.7-Code` (override `LSX_TEST_KIMI_K2_7_CODE_ROOT`)
 - lifecycle TUs: `kimi_moe_model.cpp`, `kimi_moe_inference.cu`
@@ -201,7 +217,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## kimi-k3
 
 - family `kimi`
-- class `KimiK3Model`, passport `libs/lsxcommon/src/kimi_moe_k3_constants.h`, namespace `lsxcommon::kimi_k3::frozen`
+- class `KimiK3Model`, namespace `lsxcommon::kimi_k3::frozen`
+- geometry: `libs/lsxcommon/src/kimi_moe_k3_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--kimi_k3`
 - tokenizer kind 2
 - vault `Kimi-K3` (override `LSX_TEST_KIMI_K3_ROOT`)
@@ -214,7 +231,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## kimi-k3.1-pro
 
 - family `kimi`
-- class `KimiK31ProModel`, passport `libs/lsxcommon/src/kimi_moe_pro_constants.h`, namespace `lsxcommon::kimi_pro::frozen`
+- class `KimiK31ProModel`, namespace `lsxcommon::kimi_pro::frozen`
+- geometry: `libs/lsxcommon/src/kimi_moe_pro_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--kimi_k31_pro`
 - tokenizer kind 2
 - vault `Kimi-K3.1-Pro` (override `LSX_TEST_KIMI_K3_1_PRO_ROOT`)
@@ -227,7 +245,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## ling
 
 - family `ling`
-- class `LingMoeModel`, passport `libs/lsxcommon/src/ling_moe_constants.h`, namespace `lsxcommon::ling::frozen`
+- class `LingMoeModel`, namespace `lsxcommon::ling::frozen`
+- geometry: `libs/lsxcommon/src/ling_moe_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-ling-nvfp4`, forge `--ling`
 - tokenizer kind 5
 - vault `Ling-3.1-flash` (override `LSX_TEST_LING_ROOT`)
@@ -240,7 +259,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## mimo-v2.6-flash-rl
 
 - family `mimo`
-- class `MiMoV26FlashModel`, passport `libs/lsxcommon/src/mimo_moe_constants.h`, namespace `lsxcommon::mimo::frozen`
+- class `MiMoV26FlashModel`, namespace `lsxcommon::mimo::frozen`
+- geometry: `libs/lsxcommon/src/mimo_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--mimo`
 - vault `MiMo-V2.6-Flash-RL` (override `LSX_TEST_MIMO_V2_6_FLASH_RL_ROOT`)
 - lifecycle TUs: `mimo_moe_model.cpp`
@@ -253,7 +273,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## minimax-m3
 
 - family `minimax`
-- class `MinimaxM3Model`, passport `libs/lsxcommon/src/minimax_moe_constants.h`, namespace `lsxcommon::minimax::frozen`
+- class `MinimaxM3Model`, namespace `lsxcommon::minimax::frozen`
+- geometry: `libs/lsxcommon/src/minimax_moe_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-minimax-nvfp4`, forge `--minimax`
 - tokenizer kind 3
 - vault `MiniMax-M3` (override `LSX_TEST_MINIMAX_M3_ROOT`)
@@ -265,7 +286,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## minimax-m3.1-flash
 
 - family `minimax`
-- class `MiniMaxM31FlashModel`, passport `libs/lsxcommon/src/minimax_moe_flash_constants.h`, namespace `lsxcommon::minimax_flash::frozen`
+- class `MiniMaxM31FlashModel`, namespace `lsxcommon::minimax_flash::frozen`
+- geometry: `libs/lsxcommon/src/minimax_moe_flash_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--minimax_flash`
 - vault `MiniMax-M3.1-Flash` (override `LSX_TEST_MINIMAX_M3_1_FLASH_ROOT`)
 - lifecycle TUs: `minimax_moe_flash_model.cpp`, `minimax_moe_inference_pipeline.cu`
@@ -276,7 +298,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## mistral-large-4-1t
 
 - family `mistral`
-- class `MistralLarge4MoeModel`, passport `libs/lsxcommon/src/mistral_moe_large4_constants.h`, namespace `lsxcommon::mistral_large4::frozen`
+- class `MistralLarge4MoeModel`, namespace `lsxcommon::mistral_large4::frozen`
+- geometry: `libs/lsxcommon/src/mistral_moe_large4_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--mistral_large4`
 - vault `Mistral-Large-4-1T-A52B` (override `LSX_TEST_MISTRAL_LARGE_4_1T_ROOT`)
 - lifecycle TUs: `mistral_moe_large4_model.cpp`, `mistral_moe_large4_inference_pipeline.cu`
@@ -287,7 +310,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## mistral-small-4-119b
 
 - family `mistral`
-- class `MistralSmall4MoeModel`, passport `libs/lsxcommon/src/mistral_moe_constants.h`, namespace `lsxcommon::mistral_moe::frozen`
+- class `MistralSmall4MoeModel`, namespace `lsxcommon::mistral_moe::frozen`
+- geometry: `libs/lsxcommon/src/mistral_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--mistral`
 - tokenizer kind 9
 - vault `Mistral-Small-4-119B-2603-NVFP4` (override `LSX_TEST_MISTRAL_SMALL_4_119B_ROOT`)
@@ -300,7 +324,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## nemotron-3.5-lightning-30b-a3b
 
 - family `nemotron`
-- class `NemotronHModel`, passport `libs/lsxcommon/src/nemotron_moe_constants.h`, namespace `lsxcommon::nemotron_moe::frozen`
+- class `NemotronHModel`, namespace `lsxcommon::nemotron_moe::frozen`
+- geometry: `libs/lsxcommon/src/nemotron_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--nemotron`
 - tokenizer kind 9
 - vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_ROOT`)
@@ -313,7 +338,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## nemotron-3.5-lightning-30b-a3b-nvfp4
 
 - family `nemotron`
-- class `NemotronNvfp4Model`, passport `libs/lsxcommon/src/nemotron_moe_nvfp4_constants.h`, namespace `lsxcommon::nemotron_nvfp4::frozen`
+- class `NemotronNvfp4Model`, namespace `lsxcommon::nemotron_nvfp4::frozen`
+- geometry: `libs/lsxcommon/src/nemotron_moe_nvfp4_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--nemotron_nvfp4`
 - vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_NVFP4_ROOT`)
 - lifecycle TUs: `nemotron_moe_nvfp4_model.cpp`, `nemotron_moe_model.cpp`
@@ -325,7 +351,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## ornith-1.5-35b-a3b
 
 - family `ornith`
-- class `OrnithMoeModel`, passport `libs/lsxcommon/src/ornith_moe_constants.h`, namespace `lsxcommon::ornith::frozen`
+- class `OrnithMoeModel`, namespace `lsxcommon::ornith::frozen`
+- geometry: `libs/lsxcommon/src/ornith_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--ornith`
 - tokenizer kind 7
 - vault `Ornith-1.5-35B-A3B` (override `LSX_TEST_ORNITH_1_5_35B_A3B_ROOT`)
@@ -337,7 +364,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## phi-4
 
 - family `phi`
-- class `Phi4Model`, passport `libs/lsxcommon/include/lsxcommon/phi_dense_constants.h`, namespace `lsxcommon::phi::frozen`
+- class `Phi4Model`, namespace `lsxcommon::phi::frozen`
+- geometry: `libs/lsxcommon/include/lsxcommon/phi_dense_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--phi`
 - tokenizer kind 8
 - vault `phi-4` (override `LSX_TEST_PHI_4_ROOT`)
@@ -349,7 +377,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## qwen3.5-35b-a3b
 
 - family `qwen`
-- class `Qwen35MoeModel`, passport `libs/lsxcommon/src/qwen_moe_constants.h`, namespace `lsxcommon::qwen_moe::frozen`
+- class `Qwen35MoeModel`, namespace `lsxcommon::qwen_moe::frozen`
+- geometry: `libs/lsxcommon/src/qwen_moe_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-qwen35moe`, forge `--qwen35moe`
 - tokenizer kind 7
 - vault `Qwen3.5-35B-A3B` (override `LSX_TEST_QWEN3_5_35B_A3B_ROOT`)
@@ -361,7 +390,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## qwen3.5-9b
 
 - family `qwen`
-- class `Qwen3_5_9BModel`, passport `libs/lsxcommon/src/qwen_dense_model.h`, namespace `Qwen3_5_9BModel`
+- class `Qwen3_5_9BModel`, namespace `Qwen3_5_9BModel`
+- geometry: `libs/lsxcommon/src/qwen_dense_model.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--qwen`
 - vault `Qwen3.5-9B` (override `LSX_TEST_QWEN3_5_9B_ROOT`)
 - lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
@@ -372,7 +402,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## qwen3.6-35b-a3b
 
 - family `qwen`
-- class `Qwen36MoeModel`, passport `libs/lsxcommon/src/qwen_moe_36_constants.h`, namespace `lsxcommon::qwen_moe_36::frozen`
+- class `Qwen36MoeModel`, namespace `lsxcommon::qwen_moe_36::frozen`
+- geometry: `libs/lsxcommon/src/qwen_moe_36_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-qwen36moe`, forge `--qwen36moe`
 - vault `Qwen3.6-35B-A3B` (override `LSX_TEST_QWEN3_6_35B_A3B_ROOT`)
 - lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
@@ -383,7 +414,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## qwen3.8-27b
 
 - family `qwen`
-- class `Qwen3_8_27BModel`, passport `libs/lsxcommon/src/qwen_dense_27b_model.h`, namespace `Qwen3_8_27BModel`
+- class `Qwen3_8_27BModel`, namespace `Qwen3_8_27BModel`
+- geometry: `libs/lsxcommon/src/qwen_dense_27b_model.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--qwen`
 - vault `Qwen3.8-27B` (override `LSX_TEST_QWEN3_8_27B_ROOT`)
 - lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
@@ -394,7 +426,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## qwen3.8-flash-next
 
 - family `qwen`
-- class `Qwen38FlashNextModel`, passport `libs/lsxcommon/src/qwen_moe_exp_constants.h`, namespace `lsxcommon::qwen_moe_exp::frozen`
+- class `Qwen38FlashNextModel`, namespace `lsxcommon::qwen_moe_exp::frozen`
+- geometry: `libs/lsxcommon/src/qwen_moe_exp_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--qwen38flashnext`
 - tokenizer kind 7
 - vault `Qwen3.8-Flash-Next` (override `LSX_TEST_QWEN3_8_FLASH_NEXT_ROOT`)
@@ -406,7 +439,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## step-5-preview
 
 - family `step`
-- class `Step5PreviewModel`, passport `libs/lsxcommon/src/step_moe_constants.h`, namespace `lsxcommon::step::frozen`
+- class `Step5PreviewModel`, namespace `lsxcommon::step::frozen`
+- geometry: `libs/lsxcommon/src/step_moe_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-step5-nvfp4`, forge `--step`
 - vault `Step-5-Preview` (override `LSX_TEST_STEP_5_PREVIEW_ROOT`)
 - lifecycle TUs: `step_moe_model.cpp`, `step_moe_inference_pipeline.cu`
@@ -418,7 +452,8 @@ history live in `docs/model-reports/`; gate verdicts in
 ## xing4.0-29b-a4b
 
 - family `xing`
-- class `XingMoeModel`, passport `libs/lsxcommon/src/xing_moe_constants.h`, namespace `lsxcommon::xing::frozen`
+- class `XingMoeModel`, namespace `lsxcommon::xing::frozen`
+- geometry: `libs/lsxcommon/src/xing_moe_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--xing`
 - vault `Xing4.0-29B-A4B` (override `LSX_TEST_XING4_0_29B_A4B_ROOT`)
 - lifecycle TUs: `xing_moe_model.cpp`

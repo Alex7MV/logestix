@@ -804,8 +804,11 @@ def emit_model_section(m, baseline) -> str:
         f"## {m.model_type}",
         "",
         f"- family `{m.family}`" + (f", variant `{m.variant}`" if m.variant else ""),
-        f"- class `{m.model_class}`, passport `{m.passport}`, "
-        f"namespace `{m.ns}`",
+        # The passport IS the geometry source (constexpr under static_assert),
+        # so the line says so rather than leaving a reader to wonder whether the
+        # numbers were omitted by accident.
+        f"- class `{m.model_class}`, namespace `{m.ns}`",
+        f"- geometry: `{m.passport}` (frozen constants, static_assert-checked)",
     ]
     if m.format_tag or m.forge_flag:
         out.append(
