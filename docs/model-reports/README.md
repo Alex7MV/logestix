@@ -48,4 +48,5 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | Kimi-K3 | `2026-11-03-Kimi-K3.md` |
 | granite-4.2-30b | `2026-11-03-granite-4.2-30b.md` |
 | Qwen3.8-Flash-Next | `2026-11-04-Qwen3.8-Flash-Next.md` |
+| Mistral-Small-4-119B-2603-NVFP4 | `2026-11-06-Mistral-Small-4-119B-2603-NVFP4.md` |
 | Kimi-K3.1-Pro | `2026-11-05-Kimi-K3.1-Pro.md` |

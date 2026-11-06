@@ -470,15 +470,27 @@ procedure — `perf-tuning-a-model`.
   `mistral_moe_model.{h,cpp}`, `mistral_moe_tool_format.{h,cpp}` (native
   `[INST]`/`[TOOL_CALLS]name[ARGS]{json}` codec); format tag
   `logestix-mistral-nvfp4`; converted with `lsxforge --mistral`; knob
-  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt:
-  the consolidated source is not runnable by Transformers (`params.json`, no
-  `config.json`, no `model_type`), so no parity oracle can be captured, and the
+  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt: the
+  source is the Mistral "consolidated" layout (`params.json`, no `config.json`,
+  no `model_type`), so a source oracle needs a synthesized config and the
   goldens are deliberately not committed rather than shipped permanently red —
-  `docs/OPEN_TASKS.md` §T. The converted vault tree exists and the perf
-  baselines are recorded (`perf` 45.02 t/s at commit `cb60207`, `r3` 14.68,
-  RTX 5090/Linux, 2048-token protocol); `perf` carries an accepted -4.5% for
-  the overflow-proof TC SwiGLU quantizer (one extra launch per slot per layer),
-  `r3` is unaffected.
+  `docs/OPEN_TASKS.md` §T. **Re-ingested 2026-11-06** (§T.1) after the converted
+  tree had been lost: re-converted in 76 s (66 GB, 4608 experts, 222 vision
+  tensors stripped), and a real defect fixed — the index carried **no `vram`
+  block** and the family never overrode `VramRequirements()`, so the placement
+  plan and `lsxcli --info` silently saw an all-zero profile; the tree now
+  reports min 4 GiB / optimal 50 GiB / max 111 GiB at ctx 1048576. Real-weight
+  gates green: SelfCheck Paris ×3 bit-exact (`logits_hash cdfd7309bb141772`,
+  top-1 6993), native tool round-trip
+  `get_weather {"city":"Paris"}`, `--validate` loads in 1053 ms with
+  4 715 087 872 B resident and 1398/4608 expert slots. Perf rows re-seeded
+  through the harness: **perf 45.77 t/s / r3 49.82 t/s** at 2048 tokens, TTFT
+  525/509 ms (RTX 5090/Linux). The debt reason is now stale in one respect —
+  `transformers` 5.15.1 ships `Mistral4ForCausalLM` whose defaults match this
+  checkpoint exactly and a synthesized `config.json` loads all 13 shards; the
+  remaining blocker is the reference forward pass's rotary width, not the layout
+  (§T.1). Report:
+  `docs/model-reports/2026-11-06-Mistral-Small-4-119B-2603-NVFP4.md`.
   Mistral-Large-4-1T-A52B (variant `large4` of the `mistral` family, registry
   `mistral-large-4-1t`; 1T total / ~52B active): 72L / 6144H / 64 MLA heads
   with NO Q-LoRA (kv_lora 512, qk_nope 64 + qk_rope 64, v 128) / 128 routed
