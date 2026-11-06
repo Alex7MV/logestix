@@ -4687,6 +4687,16 @@ target_include_directories(test_xing_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENER
 target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_xing_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"xing4.0-29b-a4b\"")
 
+# ── Model manifest generator schema self-test (host-only, label fast) ─────
+# Mutates a live manifest and asserts each of the seven schema rules is
+# reported. Without it a validator that silently stops rejecting anything would
+# stay green.
+add_test(NAME test_manifest_generator_selftest
+         COMMAND "${LSX_PYTHON3}" "${PROJECT_SOURCE_DIR}/tools/gen_model_manifest.py"
+                 --self-test --root "${PROJECT_SOURCE_DIR}")
+set_tests_properties(test_manifest_generator_selftest PROPERTIES LABELS fast)
+set_tests_properties(test_manifest_generator_selftest PROPERTIES TIMEOUT 120)
+
 # ── Model manifest sync (the generated registries cannot drift) ───────────
 # models/<model_type>.json is the single source of truth; this target proves the
 # compiled table, the committed catalogue and the test-file ownership all agree

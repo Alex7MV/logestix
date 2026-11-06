@@ -918,41 +918,110 @@ def diff_cmake(manifests, baseline_path):
     return 0 if not problems else 1
 
 
-def self_test(fixtures: Path, root: Path):
-    valid = fixtures / "valid" / "flint.json"
-    manifests = [load_one(valid)]
-    errs, _warn = validate(manifests, root, partial=True)
+def self_test(root: Path):
+    """Every schema rule is reported, proven against a LIVE manifest.
+
+    The base is a real `models/*.json` row, mutated in memory. A checked-in copy
+    of one was the obvious first design and it went stale the first time the tree
+    moved (the deleted per-family gate files made the "valid" fixture invalid). A
+    mutation of the real base cannot drift: if the base changes shape, this fails
+    loudly.
+    """
+    base_path = root / "models" / "flint.json"
+    if not base_path.is_file():
+        print(f"error: {base_path} is missing (self-test needs a real base row)",
+              file=sys.stderr)
+        return 2
+    base = json.loads(base_path.read_text())
+
+    cases = []
+
+    def add(name, mutate, needle, cross_model=False):
+        cases.append((name, mutate, needle, cross_model))
+
+    def unknown_stage(d):
+        d["stages"]["mystery"] = ["test_x"]
+
+    add("unknown_stage", unknown_stage, "unknown stage")
+
+    def missing_passport(d):
+        d["passport"] = "libs/lsxcommon/src/nope.h"
+
+    add("missing_passport", missing_passport, "passport not found")
+
+    def ktype_mismatch(d):
+        d["model_class"] = "NotAFlintModel"
+
+    add("ktype_mismatch", ktype_mismatch, "model_class not found in src")
+
+    def orphan_target(d):
+        d["stages"]["model"].append("test_does_not_exist")
+
+    add("orphan_target", orphan_target, "no source for target")
+
+    def undeclared_gap(d):
+        d["stages"]["fsi"] = []
+        d.get("golden_debt", {}).pop("fsi", None)
+
+    add("undeclared_gap", undeclared_gap, "gap without debt")
+
+    def vault_env(d):
+        d["vault"]["env"] = "LSX_TEST_WRONG_ROOT"
+
+    add("vault_env", vault_env, "vault.env must be LSX_TEST_FLINT_ROOT")
+
+    def duplicate_vault(d):
+        d["vault"]["dir"] = "GLM-5.2"
+
+    # Cross-model rules only run with more than one manifest in play.
+    add("duplicate_vault", duplicate_vault, "already used by", cross_model=True)
+
+    def namespace_clash(d):
+        d["namespace"] = "lsxcommon::glm"
+
+    add("namespace_clash", namespace_clash, "already owned by", cross_model=True)
+
+    # The unmutated base must validate: that is the control, and it is what keeps
+    # this mode honest (a validator that rejected everything would still report
+    # "8/8").
+    errs, _warn = validate([load_one(base_path)], root, partial=True)
     if errs:
-        print("valid fixture FAILED validation:", file=sys.stderr)
+        print("error: the base manifest does not validate:", file=sys.stderr)
         for e in errs:
             print("  " + e, file=sys.stderr)
         return 1
-    expected = {
-        "unknown_stage": "unknown stage",
-        "missing_passport": "passport not found",
-        "ktype_mismatch": "model_class not found in src",
-        "orphan_target": "no source for target",
-        "undeclared_gap": "gap without debt",
-        "vault_env": "vault.env must be LSX_TEST_FLINT_ROOT",
-    }
+
+    peer_path = root / "models" / "glm-5.2.json"
+    peer = load_one(peer_path) if peer_path.is_file() else None
+    if peer is None:
+        print("error: self-test needs models/glm-5.2.json as the second model",
+              file=sys.stderr)
+        return 2
+
     ok = 0
-    for stem, needle in expected.items():
-        path = fixtures / "invalid" / f"{stem}.json"
+    for name, mutate, needle, cross_model in cases:
+        doc = json.loads(json.dumps(base))
+        mutate(doc)
+        tmp = root / "models" / f".self-test-{name}.json"
         try:
-            m = load_one(path)
-            errs, _warn = validate([m], root, partial=True)
+            tmp.write_text(json.dumps(doc))
+            m = load_one(tmp)
+            manifests = [m, peer] if cross_model else [m]
+            errs, _warn = validate(manifests, root, partial=not cross_model)
         except ManifestError as exc:
             errs = [str(exc)]
-        hit = any(needle in e for e in errs)
-        if hit:
+        finally:
+            tmp.unlink(missing_ok=True)
+        if any(needle in e for e in errs):
             ok += 1
         else:
-            print(f"{stem}: expected a message containing {needle!r}, got:",
+            print(f"{name}: expected a message containing {needle!r}, got:",
                   file=sys.stderr)
             for e in errs:
                 print("  " + e, file=sys.stderr)
-    print(f"{ok}/{len(expected)} schema violations reported")
-    return 0 if ok == len(expected) else 1
+    print(f"{ok}/{len(cases)} schema violations reported (base: "
+          f"{base_path.name}, live)")
+    return 0 if ok == len(cases) else 1
 
 
 def main(argv=None):
@@ -969,7 +1038,9 @@ def main(argv=None):
     ap.add_argument("--strict", action="store_true",
                     help="also fail on a test file no manifest claims "
                          "(run with --check once every model is manifested)")
-    ap.add_argument("--self-test", metavar="FIXTURES")
+    ap.add_argument("--self-test", action="store_true",
+                    help="mutate a live manifest and assert every schema rule "
+                         "is reported")
     ap.add_argument("--diff-cmake", metavar="BASELINE_JSON")
     ap.add_argument("--print-model-rows", action="store_true")
     ap.add_argument("--print-non-model-tests", action="store_true")
@@ -978,7 +1049,7 @@ def main(argv=None):
     root = Path(args.root).resolve()
 
     if args.self_test:
-        return self_test(Path(args.self_test), root)
+        return self_test(root)
 
     if args.print_non_model_tests:
         for name in non_model_tests(root):
