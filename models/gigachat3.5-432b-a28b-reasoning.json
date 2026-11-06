@@ -90,6 +90,21 @@
     "test_gigachat_moe_math": {
       "label": "fast",
       "skip": false
+    },
+    "test_gigachat_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_gigachat_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_gigachat_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_gigachat_moe_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": true,

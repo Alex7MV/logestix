@@ -80,19 +80,26 @@
     },
     "test_minimax_moe_selfcheck": {
       "timeout": 7200,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "selfcheck"
     },
     "test_minimax_moe_fsi_selfcheck": {
       "timeout": 7200,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "fsi"
     },
     "test_minimax_moe_code_selfcheck": {
       "timeout": 7200,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "code"
     },
     "test_minimax_moe_det_selfcheck": {
       "timeout": 7200,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "det"
     }
   },
   "tool_roundtrip": true,

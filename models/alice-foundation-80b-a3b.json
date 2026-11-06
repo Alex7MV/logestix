@@ -75,16 +75,23 @@
       "skip": false
     },
     "test_alice_moe_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "form": "selfcheck"
     },
     "test_alice_moe_fsi_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "form": "parity",
+      "kind": "fsi"
     },
     "test_alice_moe_code_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "form": "parity",
+      "kind": "code"
     },
     "test_alice_moe_det_selfcheck": {
-      "timeout": 1800
+      "timeout": 1800,
+      "form": "parity",
+      "kind": "det"
     }
   },
   "tool_roundtrip": true,

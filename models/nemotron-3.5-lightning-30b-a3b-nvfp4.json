@@ -70,6 +70,21 @@
     "test_nemotron_moe_math": {
       "label": "fast",
       "skip": false
+    },
+    "test_nemotron_moe_nvfp4_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_nemotron_moe_nvfp4_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_nemotron_moe_nvfp4_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_nemotron_moe_nvfp4_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": true,

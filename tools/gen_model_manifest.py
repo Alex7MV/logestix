@@ -351,6 +351,19 @@ def validate(manifests, root: Path, partial: bool = False,
                     add(m, "stages.perf", f"no source for target {t.name} "
                                           f"({PERF_BINARY}.cpp missing)")
                 continue
+            if t.form == "selfcheck":
+                if not (root / "tests" / "test_selfcheck_driver.cpp").is_file():
+                    add(m, f"stages.{t.stage}",
+                        f"no source for target {t.name}: "
+                        f"test_selfcheck_driver.cpp missing")
+                continue
+            if t.form == "parity":
+                # One shared driver TU serves every model's FSI/CODE/DET gate.
+                if not (root / "tests" / "test_parity_gate.cpp").is_file():
+                    add(m, f"stages.{t.stage}",
+                        f"no source for target {t.name}: test_parity_gate.cpp "
+                        f"missing")
+                continue
             if t.command != t.name or t.filter:
                 # A second Catch2 case over an existing binary (perf rows,
                 # "[tool]*" cases): the source is the command's, not its own.
@@ -444,6 +457,10 @@ def non_model_tests(root: Path):
 
 
 _NON_MODEL_TESTS = frozenset({
+    # Shared model-test drivers: one TU serving every model of a stage kind.
+    # They are named by the manifests' `form`, not by a stage list.
+    "test_parity_gate",
+    "test_selfcheck_driver",
     "test_absl_container_guard", "test_absl_format_guard", "test_anthropic_endpoint", "test_arrow_tree_integrity",
     "test_arrow_usage_guard", "test_arrow_validation", "test_blackwell_micro_gemm", "test_blackwell_perf_deepseek",
     "test_blackwell_perf_dense", "test_blackwell_perf_glm", "test_blackwell_perf_kimi", "test_blackwell_perf_moe",
@@ -605,6 +622,44 @@ def emit_cmake(manifests) -> str:
                 if t.env:
                     out.append(f"set_tests_properties({t.name} PROPERTIES "
                                f'ENVIRONMENT "{_env_list(t.env)}")')
+                out.append("")
+                continue
+
+            if t.form == "selfcheck":
+                out.append(f"add_test(NAME {t.name} COMMAND {t.name})")
+                props = []
+                if t.timeout:
+                    props.append(f"TIMEOUT {t.timeout}")
+                if t.skip:
+                    props.append("SKIP_RETURN_CODE 4")
+                if t.resource_lock:
+                    props.append(f'RESOURCE_LOCK "{t.resource_lock}"')
+                if props:
+                    out.append(f"set_tests_properties({t.name} PROPERTIES "
+                               + " ".join(props) + ")")
+                out.append(f"set_tests_properties({t.name} PROPERTIES "
+                           f"LABELS {t.label})")
+                out.append("")
+                continue
+
+            if t.form == "parity":
+                # One driver, one binary per (model, kind): the model and the
+                # gate kind are compile-time constants, everything else comes
+                # from the manifest row.
+                out.append(
+                    f"add_test(NAME {t.name} COMMAND {t.name})")
+                props = []
+                if t.timeout:
+                    props.append(f"TIMEOUT {t.timeout}")
+                if t.skip:
+                    props.append("SKIP_RETURN_CODE 4")
+                if t.resource_lock:
+                    props.append(f'RESOURCE_LOCK "{t.resource_lock}"')
+                if props:
+                    out.append(f"set_tests_properties({t.name} PROPERTIES "
+                               + " ".join(props) + ")")
+                out.append(f"set_tests_properties({t.name} PROPERTIES "
+                           f"LABELS {t.label})")
                 out.append("")
                 continue
 

@@ -58,6 +58,21 @@
     },
     "test_qwen_moe_kernels": {
       "resource_lock": "gpu"
+    },
+    "test_qwen_moe_36_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_qwen_moe_36_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_qwen_moe_36_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_qwen_moe_36_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": false,

@@ -169,23 +169,6 @@ target_link_libraries(test_alice_moe_kernels PRIVATE test_alice_cu lsxcommon Cat
 add_executable(test_alice_tool_framing test_alice_tool_framing.cpp)
 target_link_libraries(test_alice_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-add_executable(test_alice_moe_selfcheck test_alice_moe_selfcheck.cpp)
-target_link_libraries(test_alice_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-add_executable(test_alice_moe_fsi_selfcheck test_alice_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_alice_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_alice_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-add_executable(test_alice_moe_code_selfcheck test_alice_moe_code_selfcheck.cpp)
-target_compile_definitions(test_alice_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_alice_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-add_executable(test_alice_moe_det_selfcheck test_alice_moe_det_selfcheck.cpp)
-target_compile_definitions(test_alice_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_alice_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── ModelBase shared geometry-validator test (host-only) ────────────────
 add_executable(test_geometry_guard test_geometry_guard.cpp)
@@ -391,32 +374,8 @@ target_link_libraries(test_deepseek_moe_pro_kernels PRIVATE
     test_deepseek_moe_pro_kernels_cu lsxcommon Catch2::Catch2WithMain)
 
 # ── DeepSeek-V4-Pro-0813: SelfCheck (real model, SKIP 4) ─────────────────
-add_executable(test_deepseek_moe_pro_selfcheck
-               test_deepseek_moe_pro_selfcheck.cpp)
-target_link_libraries(test_deepseek_moe_pro_selfcheck PRIVATE lsxcommon
-                      Catch2::Catch2WithMain)
 
 # ── DeepSeek-V4-Pro-0813: FSI/CODE/DET parity (goldens, SKIP 4) ──────────
-add_executable(test_deepseek_moe_pro_fsi_selfcheck
-               test_deepseek_moe_pro_fsi_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_pro_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi")
-target_link_libraries(test_deepseek_moe_pro_fsi_selfcheck PRIVATE lsxcommon
-                      Catch2::Catch2WithMain)
-
-add_executable(test_deepseek_moe_pro_code_selfcheck
-               test_deepseek_moe_pro_code_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_pro_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code")
-target_link_libraries(test_deepseek_moe_pro_code_selfcheck PRIVATE lsxcommon
-                      Catch2::Catch2WithMain)
-
-add_executable(test_deepseek_moe_pro_det_selfcheck
-               test_deepseek_moe_pro_det_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_pro_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det")
-target_link_libraries(test_deepseek_moe_pro_det_selfcheck PRIVATE lsxcommon
-                      Catch2::Catch2WithMain)
 
 
 # ── DeepSeek-V4.1-Flash: dense dequant kernels (CUDA) ────────────────────
@@ -578,8 +537,6 @@ target_link_libraries(test_deepseek_moe_v41_actquant PRIVATE
 
 
 # ── DeepSeek-V4.1-Flash: real-model selfcheck (Paris, env opt-in) ────────
-add_executable(test_deepseek_moe_v41_selfcheck test_deepseek_moe_v41_selfcheck.cpp)
-target_link_libraries(test_deepseek_moe_v41_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── Shared pread pool (pinned expert staging, host-only, no GPU) ───────
 lsx_add_test(NAME test_pread_pool LINK lsxcommon)
@@ -802,19 +759,10 @@ target_compile_definitions(test_phi_cu PRIVATE
 lsx_copy_arrow_dlls(test_phi_dense_kernels)
 
 # ── Granite-4.2-30B SelfCheck (real weights; SKIP when absent) ──
-add_executable(test_granite_dense_selfcheck test_granite_dense_selfcheck.cpp)
-target_link_libraries(test_granite_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_dense_selfcheck)
 
 # ── Granite-Switch-4.1-30B SelfCheck (real weights; SKIP when absent) ──
-add_executable(test_granite_switch_selfcheck test_granite_switch_selfcheck.cpp)
-target_link_libraries(test_granite_switch_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_switch_selfcheck)
 
 # ── phi-4 SelfCheck (real weights; SKIP when absent) ──
-add_executable(test_phi_dense_selfcheck test_phi_dense_selfcheck.cpp)
-target_link_libraries(test_phi_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_phi_dense_selfcheck)
 
 # ── Qwen3.5-9B loader test (pinned upload, topology, layer dispatch) ────
 add_executable(test_qwen_dense_loader test_qwen_dense_loader.cpp)
@@ -1049,14 +997,6 @@ target_include_directories(test_mistral_moe_convert PRIVATE
 target_link_libraries(test_mistral_moe_convert PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
-# ── Guard: a parity selfcheck must name ITS OWN model ────────────────────
-# FSI/CODE/DET share one body, so a copied file keeps the sibling's TEST_CASE
-# name, Catch2 stage tag and SKIP message. That makes a clean SKIP lie about
-# which model was gated. Two-way registry inside (kKnownOffenders).
-lsx_add_test(NAME test_parity_selfcheck_naming_guard
-    SOURCES test_parity_selfcheck_naming_guard.cpp
-    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
-    LABEL fast)
 
 # ── Mistral-Small-4 parity-oracle tool guard (host-only source scan) ─────
 # Pins that tools/mistral_small4_oracle.py refuses a partially-random model and
@@ -1093,29 +1033,7 @@ target_link_libraries(test_mistral_moe_large4_loader PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
 # ── Mistral-Large-4 selfcheck + FSI/CODE/DET gates (SKIP 4 without vault) ──
-add_executable(test_mistral_moe_large4_selfcheck test_mistral_moe_large4_selfcheck.cpp)
-target_include_directories(test_mistral_moe_large4_selfcheck PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(test_mistral_moe_large4_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
-add_executable(test_mistral_moe_large4_fsi_selfcheck test_mistral_moe_large4_fsi_selfcheck.cpp)
-target_compile_definitions(test_mistral_moe_large4_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_mistral_moe_large4_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_mistral_moe_large4_code_selfcheck test_mistral_moe_large4_code_selfcheck.cpp)
-target_compile_definitions(test_mistral_moe_large4_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_mistral_moe_large4_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_mistral_moe_large4_det_selfcheck test_mistral_moe_large4_det_selfcheck.cpp)
-target_compile_definitions(test_mistral_moe_large4_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_mistral_moe_large4_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Mistral-Large-4 tool framing (host-only, step 4b) ─────────────────────
 add_executable(test_mistral_moe_large4_tool_framing
@@ -1235,40 +1153,9 @@ target_link_libraries(test_mistral_moe_kernels PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
 # ── MiniMax-M3.1-Flash selfcheck + FSI/CODE/DET gates (SKIP 4 w/o vault) ──
-add_executable(test_minimax_moe_flash_selfcheck
-    test_minimax_moe_flash_selfcheck.cpp)
-target_include_directories(test_minimax_moe_flash_selfcheck PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(test_minimax_moe_flash_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
-add_executable(test_minimax_moe_flash_fsi_selfcheck
-    test_minimax_moe_flash_fsi_selfcheck.cpp)
-target_compile_definitions(test_minimax_moe_flash_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_minimax_moe_flash_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_minimax_moe_flash_code_selfcheck
-    test_minimax_moe_flash_code_selfcheck.cpp)
-target_compile_definitions(test_minimax_moe_flash_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_minimax_moe_flash_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_minimax_moe_flash_det_selfcheck
-    test_minimax_moe_flash_det_selfcheck.cpp)
-target_compile_definitions(test_minimax_moe_flash_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_minimax_moe_flash_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── MiniMax-M3 selfcheck + FSI/CODE/DET golden parity gates (SKIP 4 w/o vault) ──
-add_executable(test_minimax_moe_selfcheck test_minimax_moe_selfcheck.cpp)
-target_include_directories(test_minimax_moe_selfcheck PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(test_minimax_moe_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 add_executable(test_minimax_moe_tokenizer_parity
     test_minimax_moe_tokenizer_parity.cpp)
@@ -1277,53 +1164,13 @@ target_compile_definitions(test_minimax_moe_tokenizer_parity PRIVATE
 target_link_libraries(test_minimax_moe_tokenizer_parity PRIVATE lsxcommon
     Catch2::Catch2WithMain arrow_shared)
 
-add_executable(test_minimax_moe_fsi_selfcheck test_minimax_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_minimax_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_minimax_moe_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_minimax_moe_code_selfcheck test_minimax_moe_code_selfcheck.cpp)
-target_compile_definitions(test_minimax_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_minimax_moe_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_minimax_moe_det_selfcheck test_minimax_moe_det_selfcheck.cpp)
-target_compile_definitions(test_minimax_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_minimax_moe_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Mistral-Small-4-119B selfcheck (real weights; SKIP 4 without vault) ──
-add_executable(test_mistral_moe_selfcheck test_mistral_moe_selfcheck.cpp)
-target_include_directories(test_mistral_moe_selfcheck PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(test_mistral_moe_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Mistral-Small-4-119B FSI/CODE/DET golden gates (SKIP 4 without vault) ──
-add_executable(test_mistral_moe_fsi_selfcheck test_mistral_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_mistral_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_mistral_moe_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
-add_executable(test_mistral_moe_code_selfcheck test_mistral_moe_code_selfcheck.cpp)
-target_compile_definitions(test_mistral_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_mistral_moe_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_mistral_moe_det_selfcheck test_mistral_moe_det_selfcheck.cpp)
-target_compile_definitions(test_mistral_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_mistral_moe_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Xing4.0-29B-A4B selfcheck + FSI/CODE/DET golden parity gates ──
-add_executable(test_xing_moe_selfcheck test_xing_moe_selfcheck.cpp)
-target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # Bit-exact parity across KV layouts. Registered here rather than folded into
 # test_xing_moe_selfcheck so a parity failure names the layout as the suspect.
@@ -1345,20 +1192,7 @@ target_link_libraries(test_xing_warmup_ramp PRIVATE lsxcommon Catch2::Catch2With
 # Written out rather than in a foreach(): test_model_suite_guard's
 # RegisteredTestNames() resolves add_test(NAME <literal>) and foreach argument
 # lists, but cannot expand a variable inside a target name.
-add_executable(test_xing_moe_fsi_selfcheck test_xing_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_xing_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_xing_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-add_executable(test_xing_moe_code_selfcheck test_xing_moe_code_selfcheck.cpp)
-target_compile_definitions(test_xing_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_xing_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-add_executable(test_xing_moe_det_selfcheck test_xing_moe_det_selfcheck.cpp)
-target_compile_definitions(test_xing_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_xing_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── Xing4.0-29B-A4B tool-calling codec (host-only, synthetic tokenizer) ──
 add_executable(test_xing_tool_framing test_xing_tool_framing.cpp)
@@ -1417,13 +1251,6 @@ lsx_copy_arrow_dlls(test_glm_moe_model)
 #    selfcheck on the real model, at least 3 stress cycles (3 runs are enough
 #    to apply the load; overridable with LSX_TEST_GLM_SELFCHECK_CYCLES),
 #    bit-exact determinism of final_logits, exit 0. SKIP without a checkpoint.
-add_executable(test_glm_moe_selfcheck test_glm_moe_selfcheck.cpp)
-target_compile_definitions(test_glm_moe_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_glm_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_glm_moe_selfcheck)
 
 
 # ── Blackwell audit Phase 0: GLM-5.2 perf baseline harness (reporting test,
@@ -1504,34 +1331,16 @@ lsx_copy_arrow_dlls(test_deepseek_moe_prompt_output)
 # ── DeepSeek-V4-Flash SelfCheck test (protocol step 8): incremental
 #    1->2-token selfcheck on the real model, at least 3 cycles, deterministic
 #    final_logits. SKIP without a checkpoint.
-add_executable(test_deepseek_moe_selfcheck test_deepseek_moe_selfcheck.cpp)
-target_link_libraries(test_deepseek_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_deepseek_moe_selfcheck)
 
 
 # ── Qwen3.5-9B SelfCheck test (protocol step 8): incremental 1→2-token
 #    selfcheck on the real model, at least 3 cycles, deterministic final_logits.
 #    SKIP without a checkpoint.
-add_executable(test_qwen_dense_selfcheck test_qwen_dense_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_qwen_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_qwen_dense_selfcheck)
 
 
 # ── Qwen3.8-27B SelfCheck (real model) ─────────────────────────────
 #    Selfcheck on the real model, at least 3 cycles, deterministic final_logits.
 #    SKIP without a checkpoint.
-add_executable(test_qwen_dense_27b_selfcheck test_qwen_dense_27b_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_27b_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_qwen_dense_27b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_qwen_dense_27b_selfcheck)
 
 
 # ── Model factory test ────────────────────────────────────────────────
@@ -1636,20 +1445,7 @@ target_include_directories(test_kimi_k3_model PRIVATE
 target_link_libraries(test_kimi_k3_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── Kimi-K3 FSI / CODE / DET parity gates (template-derived goldens) ───────
-add_executable(test_kimi_k3_fsi_selfcheck test_kimi_k3_fsi_selfcheck.cpp)
-target_compile_definitions(test_kimi_k3_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi")
-target_link_libraries(test_kimi_k3_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-add_executable(test_kimi_k3_code_selfcheck test_kimi_k3_code_selfcheck.cpp)
-target_compile_definitions(test_kimi_k3_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code")
-target_link_libraries(test_kimi_k3_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-add_executable(test_kimi_k3_det_selfcheck test_kimi_k3_det_selfcheck.cpp)
-target_compile_definitions(test_kimi_k3_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det")
-target_link_libraries(test_kimi_k3_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── Kimi-K3.1-Pro FSI / CODE / DET parity gates (template-derived goldens) ──
 # The budgets are MEASURED, not guessed: this variant decodes at ~0.125 t/s on
@@ -1659,34 +1455,18 @@ target_link_libraries(test_kimi_k3_det_selfcheck PRIVATE lsxcommon Catch2::Catch
 # below are seeded but not yet measured — `docs/OPEN_TASKS.md` §R17 records the
 # debt. A budget that cannot fit a real completion would turn the entry into a
 # guaranteed timeout-kill, i.e. a failure that is not a defect.
-add_executable(test_kimi_pro_fsi_selfcheck test_kimi_pro_fsi_selfcheck.cpp)
-target_compile_definitions(test_kimi_pro_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi")
-target_link_libraries(test_kimi_pro_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 # 3 prompts x 2048 tokens ~= 13.7 h + load = ~14.2 h.
 
-add_executable(test_kimi_pro_code_selfcheck test_kimi_pro_code_selfcheck.cpp)
-target_compile_definitions(test_kimi_pro_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code")
-target_link_libraries(test_kimi_pro_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 # 3 prompts x 512 tokens ~= 3.4 h + load = ~3.6 h.
 
-add_executable(test_kimi_pro_det_selfcheck test_kimi_pro_det_selfcheck.cpp)
-target_compile_definitions(test_kimi_pro_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det")
-target_link_libraries(test_kimi_pro_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 # 3 prompts x 3 stress runs x 512 tokens ~= 10.2 h + load = ~10.4 h.
 
 # ── Kimi-K3 SelfCheck (real weights; SKIP without a model) ─────────────────
-add_executable(test_kimi_k3_selfcheck test_kimi_k3_selfcheck.cpp)
-target_link_libraries(test_kimi_k3_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── Kimi-K3.1-Pro SelfCheck (real weights; SKIP without a model) ───────────
 # Two cases: Paris x3 cycles and the real-weight XTML tool round-trip. The
 # round-trip generates up to 256 tokens through the thinking channel, so the
 # budget covers both on a host-store-bound 2.8T model.
-add_executable(test_kimi_pro_selfcheck test_kimi_pro_selfcheck.cpp)
-target_link_libraries(test_kimi_pro_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── Kimi-K3 XTML chat/tool codec (host-only, synthetic tokenizer) ───────────
 add_executable(test_kimi_k3_tool_framing test_kimi_k3_tool_framing.cpp)
@@ -1809,46 +1589,15 @@ lsx_copy_arrow_dlls(test_gemma_dense_model)
 
 
 # ── Gemma-4-31B-it (dense) selfcheck test ─────────────────────────────────
-add_executable(test_gemma_dense_selfcheck test_gemma_dense_selfcheck.cpp)
-target_compile_definitions(test_gemma_dense_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_gemma_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_gemma_dense_selfcheck)
 
 
 # ── Gemma-4-31B-it (dense) fsi selfcheck test ──────────────────────────
-add_executable(test_gemma_dense_fsi_selfcheck test_gemma_dense_fsi_selfcheck.cpp)
-target_compile_definitions(test_gemma_dense_fsi_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-    LSX_FSI_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi"
-)
-target_link_libraries(test_gemma_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_gemma_dense_fsi_selfcheck)
 
 
 # ── Gemma-4-31B-it (dense) code selfcheck test ──────────────────────────
-add_executable(test_gemma_dense_code_selfcheck test_gemma_dense_code_selfcheck.cpp)
-target_compile_definitions(test_gemma_dense_code_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-    LSX_CODE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code"
-)
-target_link_libraries(test_gemma_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_gemma_dense_code_selfcheck)
 
 
 # ── Gemma-4-31B-it (dense) det selfcheck test ──────────────────────────
-add_executable(test_gemma_dense_det_selfcheck test_gemma_dense_det_selfcheck.cpp)
-target_compile_definitions(test_gemma_dense_det_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-    LSX_DET_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det"
-)
-target_link_libraries(test_gemma_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_gemma_dense_det_selfcheck)
 
 
 # ── Gemma-4-31B-it (dense) converter test ─────────────────────────────────
@@ -1887,13 +1636,6 @@ lsx_copy_arrow_dlls(test_gemma_moe_model)
 #    selfcheck on the real model, at least 3 stress cycles (overridable with
 #    LSX_TEST_GEMMA_SELFCHECK_CYCLES), bit-exact determinism of
 #    final_logits, exit 0. SKIP without a checkpoint.
-add_executable(test_gemma_moe_selfcheck test_gemma_moe_selfcheck.cpp)
-target_compile_definitions(test_gemma_moe_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_gemma_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_gemma_moe_selfcheck)
 
 
 # ── Gemma-4 kernel reference tests (norm / rotary) ──────────────────────────
@@ -2751,13 +2493,6 @@ lsx_copy_arrow_dlls(test_kimi_moe_model ARROW_ONLY)
 
 
 # ── Kimi SelfCheck test (real weights; SKIP without a model) ──────────────────
-add_executable(test_kimi_moe_selfcheck test_kimi_moe_selfcheck.cpp)
-target_compile_definitions(test_kimi_moe_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_kimi_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-lsx_copy_arrow_dlls(test_kimi_moe_selfcheck)
 
 
 # ── Kimi perf baseline test (real weights; SKIP without a model) ──────────────
@@ -2860,14 +2595,6 @@ target_compile_definitions(test_ornith_moe_model PRIVATE
 target_link_libraries(test_ornith_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 lsx_copy_arrow_dlls(test_ornith_moe_model ARROW_ONLY)
 
-add_executable(test_ornith_moe_selfcheck test_ornith_moe_selfcheck.cpp)
-target_include_directories(test_ornith_moe_selfcheck PRIVATE
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-target_compile_definitions(test_ornith_moe_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_ornith_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_ornith_moe_selfcheck ARROW_ONLY)
 
 # test_qwen_moe_kernels — MoE kernel tests (router top-k, routed FFN slot
 # chain, shared-expert combine, generation driver). Same OBJECT-lib pattern as
@@ -2982,322 +2709,18 @@ target_compile_definitions(test_qwen_moe_36_model PRIVATE
 target_link_libraries(test_qwen_moe_36_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 lsx_copy_arrow_dlls(test_qwen_moe_36_model ARROW_ONLY)
 
-add_executable(test_qwen_moe_36_selfcheck test_qwen_moe_36_selfcheck.cpp)
-target_include_directories(test_qwen_moe_36_selfcheck PRIVATE
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-target_compile_definitions(test_qwen_moe_36_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_qwen_moe_36_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_36_selfcheck ARROW_ONLY)
 
 # ── FSISelfCheck (separate from SelfCheck): golden parity per family ──────
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi" LSX_FSI_GOLDEN_DIR_FWD)
-add_executable(test_qwen_moe_36_fsi_selfcheck test_qwen_moe_36_fsi_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_36_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_36_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_36_fsi_selfcheck)
 
-add_executable(test_glm_moe_fsi_selfcheck test_glm_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_glm_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_glm_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_glm_moe_fsi_selfcheck)
-
-add_executable(test_glm_moe_flash_fsi_selfcheck test_glm_moe_flash_fsi_selfcheck.cpp)
-target_compile_definitions(test_glm_moe_flash_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_glm_moe_flash_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_glm_moe_flash_fsi_selfcheck)
-
-add_executable(test_deepseek_moe_fsi_selfcheck test_deepseek_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_deepseek_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_deepseek_moe_fsi_selfcheck)
-
-add_executable(test_deepseek_moe_v41_fsi_selfcheck test_deepseek_moe_v41_fsi_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_v41_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_deepseek_moe_v41_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_deepseek_moe_v41_fsi_selfcheck)
-
-add_executable(test_qwen_dense_fsi_selfcheck test_qwen_dense_fsi_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_dense_fsi_selfcheck)
-
-add_executable(test_qwen_dense_27b_fsi_selfcheck test_qwen_dense_27b_fsi_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_27b_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_dense_27b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_dense_27b_fsi_selfcheck)
-
-add_executable(test_qwen_moe_fsi_selfcheck test_qwen_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_fsi_selfcheck)
-
-add_executable(test_qwen_moe_exp_fsi_selfcheck test_qwen_moe_exp_fsi_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_exp_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_exp_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_exp_fsi_selfcheck)
-
-add_executable(test_gemma_moe_fsi_selfcheck test_gemma_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_gemma_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_gemma_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_gemma_moe_fsi_selfcheck)
-
-add_executable(test_kimi_moe_fsi_selfcheck test_kimi_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_kimi_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_kimi_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_kimi_moe_fsi_selfcheck)
-
-add_executable(test_nemotron_moe_fsi_selfcheck test_nemotron_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_nemotron_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_nemotron_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_nemotron_moe_fsi_selfcheck)
-
-add_executable(test_gigachat_moe_fsi_selfcheck test_gigachat_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_gigachat_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_gigachat_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_gigachat_moe_fsi_selfcheck)
-
-add_executable(test_ornith_moe_fsi_selfcheck test_ornith_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_ornith_moe_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_ornith_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_ornith_moe_fsi_selfcheck)
-
-add_executable(test_granite_dense_fsi_selfcheck test_granite_dense_fsi_selfcheck.cpp)
-target_compile_definitions(test_granite_dense_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_granite_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_dense_fsi_selfcheck)
-
-add_executable(test_granite_switch_fsi_selfcheck test_granite_switch_fsi_selfcheck.cpp)
-target_compile_definitions(test_granite_switch_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_granite_switch_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_switch_fsi_selfcheck)
-
-add_executable(test_phi_dense_fsi_selfcheck test_phi_dense_fsi_selfcheck.cpp)
-target_compile_definitions(test_phi_dense_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_phi_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_phi_dense_fsi_selfcheck)
 
 # ── CODESelfCheck (separate from SelfCheck/FSI): golden parity per family ──
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code" LSX_CODE_GOLDEN_DIR_FWD)
-add_executable(test_glm_moe_code_selfcheck test_glm_moe_code_selfcheck.cpp)
-target_compile_definitions(test_glm_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_glm_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_glm_moe_code_selfcheck)
 
-add_executable(test_glm_moe_flash_code_selfcheck test_glm_moe_flash_code_selfcheck.cpp)
-target_compile_definitions(test_glm_moe_flash_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_glm_moe_flash_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_glm_moe_flash_code_selfcheck)
-
-add_executable(test_deepseek_moe_code_selfcheck test_deepseek_moe_code_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_deepseek_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_deepseek_moe_code_selfcheck)
-
-add_executable(test_deepseek_moe_v41_code_selfcheck test_deepseek_moe_v41_code_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_v41_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_deepseek_moe_v41_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_deepseek_moe_v41_code_selfcheck)
-
-add_executable(test_qwen_dense_code_selfcheck test_qwen_dense_code_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_dense_code_selfcheck)
-
-add_executable(test_qwen_dense_27b_code_selfcheck test_qwen_dense_27b_code_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_27b_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_dense_27b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_dense_27b_code_selfcheck)
-
-add_executable(test_qwen_moe_code_selfcheck test_qwen_moe_code_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_code_selfcheck)
-
-add_executable(test_qwen_moe_36_code_selfcheck test_qwen_moe_36_code_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_36_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_36_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_36_code_selfcheck)
-
-add_executable(test_ornith_moe_code_selfcheck test_ornith_moe_code_selfcheck.cpp)
-target_compile_definitions(test_ornith_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_ornith_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_ornith_moe_code_selfcheck)
-
-add_executable(test_qwen_moe_exp_code_selfcheck test_qwen_moe_exp_code_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_exp_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_exp_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_exp_code_selfcheck)
-
-add_executable(test_gemma_moe_code_selfcheck test_gemma_moe_code_selfcheck.cpp)
-target_compile_definitions(test_gemma_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_gemma_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_gemma_moe_code_selfcheck)
-
-add_executable(test_kimi_moe_code_selfcheck test_kimi_moe_code_selfcheck.cpp)
-target_compile_definitions(test_kimi_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_kimi_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_kimi_moe_code_selfcheck)
-
-add_executable(test_nemotron_moe_code_selfcheck test_nemotron_moe_code_selfcheck.cpp)
-target_compile_definitions(test_nemotron_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_nemotron_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_nemotron_moe_code_selfcheck)
-
-add_executable(test_gigachat_moe_code_selfcheck test_gigachat_moe_code_selfcheck.cpp)
-target_compile_definitions(test_gigachat_moe_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_gigachat_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_gigachat_moe_code_selfcheck)
-
-add_executable(test_granite_dense_code_selfcheck test_granite_dense_code_selfcheck.cpp)
-target_compile_definitions(test_granite_dense_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_granite_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_dense_code_selfcheck)
-
-add_executable(test_granite_switch_code_selfcheck test_granite_switch_code_selfcheck.cpp)
-target_compile_definitions(test_granite_switch_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_granite_switch_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_switch_code_selfcheck)
-
-add_executable(test_phi_dense_code_selfcheck test_phi_dense_code_selfcheck.cpp)
-target_compile_definitions(test_phi_dense_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_phi_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_phi_dense_code_selfcheck)
 
 # ── DETSelfCheck (separate from SelfCheck/FSI/CODE): determinism golden parity per family ──
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det" LSX_DET_GOLDEN_DIR_FWD)
-add_executable(test_glm_moe_det_selfcheck test_glm_moe_det_selfcheck.cpp)
-target_compile_definitions(test_glm_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_glm_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_glm_moe_det_selfcheck)
-add_executable(test_glm_moe_flash_det_selfcheck test_glm_moe_flash_det_selfcheck.cpp)
-target_compile_definitions(test_glm_moe_flash_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_glm_moe_flash_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_glm_moe_flash_det_selfcheck)
-add_executable(test_deepseek_moe_det_selfcheck test_deepseek_moe_det_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_deepseek_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_deepseek_moe_det_selfcheck)
-add_executable(test_deepseek_moe_v41_det_selfcheck test_deepseek_moe_v41_det_selfcheck.cpp)
-target_compile_definitions(test_deepseek_moe_v41_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_deepseek_moe_v41_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_deepseek_moe_v41_det_selfcheck)
-add_executable(test_qwen_dense_det_selfcheck test_qwen_dense_det_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_dense_det_selfcheck)
-add_executable(test_qwen_dense_27b_det_selfcheck test_qwen_dense_27b_det_selfcheck.cpp)
-target_compile_definitions(test_qwen_dense_27b_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_dense_27b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_dense_27b_det_selfcheck)
-add_executable(test_qwen_moe_det_selfcheck test_qwen_moe_det_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_det_selfcheck)
-add_executable(test_qwen_moe_36_det_selfcheck test_qwen_moe_36_det_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_36_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_36_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_36_det_selfcheck)
-add_executable(test_ornith_moe_det_selfcheck test_ornith_moe_det_selfcheck.cpp)
-target_compile_definitions(test_ornith_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_ornith_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_ornith_moe_det_selfcheck)
-add_executable(test_qwen_moe_exp_det_selfcheck test_qwen_moe_exp_det_selfcheck.cpp)
-target_compile_definitions(test_qwen_moe_exp_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_qwen_moe_exp_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_exp_det_selfcheck)
-add_executable(test_gemma_moe_det_selfcheck test_gemma_moe_det_selfcheck.cpp)
-target_compile_definitions(test_gemma_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_gemma_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_gemma_moe_det_selfcheck)
-add_executable(test_kimi_moe_det_selfcheck test_kimi_moe_det_selfcheck.cpp)
-target_compile_definitions(test_kimi_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_kimi_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_kimi_moe_det_selfcheck)
-add_executable(test_nemotron_moe_det_selfcheck test_nemotron_moe_det_selfcheck.cpp)
-target_compile_definitions(test_nemotron_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_nemotron_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_nemotron_moe_det_selfcheck)
-add_executable(test_gigachat_moe_det_selfcheck test_gigachat_moe_det_selfcheck.cpp)
-target_compile_definitions(test_gigachat_moe_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_gigachat_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_gigachat_moe_det_selfcheck)
-add_executable(test_granite_dense_det_selfcheck test_granite_dense_det_selfcheck.cpp)
-target_compile_definitions(test_granite_dense_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_granite_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_dense_det_selfcheck)
 
-add_executable(test_granite_switch_det_selfcheck test_granite_switch_det_selfcheck.cpp)
-target_compile_definitions(test_granite_switch_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_granite_switch_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_granite_switch_det_selfcheck)
-
-add_executable(test_phi_dense_det_selfcheck test_phi_dense_det_selfcheck.cpp)
-target_compile_definitions(test_phi_dense_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_phi_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_phi_dense_det_selfcheck)
-
-
-add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
-target_include_directories(test_qwen_moe_selfcheck PRIVATE
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-target_compile_definitions(test_qwen_moe_selfcheck PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
-target_link_libraries(test_qwen_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_qwen_moe_selfcheck ARROW_ONLY)
 
 # ── Expert NVFP4 packing test (passthrough + GPU quantize contract) ───
 add_executable(test_nvfp4_pack test_nvfp4_pack.cpp)
@@ -3377,19 +2800,9 @@ target_link_libraries(test_mimo_moe_model PRIVATE lsxcommon Catch2::Catch2WithMa
 lsx_copy_arrow_dlls(test_mimo_moe_model)
 
 # MiMo SelfCheck (real weights; SKIP when absent).
-add_executable(test_mimo_moe_selfcheck test_mimo_moe_selfcheck.cpp)
-target_link_libraries(test_mimo_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-lsx_copy_arrow_dlls(test_mimo_moe_selfcheck)
 
 # MiMo FSI / CODE / DET golden-parity gates (real weights + golden; SKIP).
-add_executable(test_mimo_moe_fsi_selfcheck test_mimo_moe_fsi_selfcheck.cpp)
-target_link_libraries(test_mimo_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-add_executable(test_mimo_moe_code_selfcheck test_mimo_moe_code_selfcheck.cpp)
-target_link_libraries(test_mimo_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
-
-add_executable(test_mimo_moe_det_selfcheck test_mimo_moe_det_selfcheck.cpp)
-target_link_libraries(test_mimo_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 lsx_add_test(NAME test_code_naming_guard
@@ -3508,11 +2921,6 @@ target_link_libraries(test_gigachat_moe_model PRIVATE
 target_include_directories(test_gigachat_moe_model PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
-add_executable(test_gigachat_moe_selfcheck test_gigachat_moe_selfcheck.cpp)
-target_link_libraries(test_gigachat_moe_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
-target_include_directories(test_gigachat_moe_selfcheck PRIVATE
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
 add_executable(test_gigachat_moe_expert_cache test_gigachat_moe_expert_cache.cpp)
 target_link_libraries(test_gigachat_moe_expert_cache PRIVATE
@@ -3696,36 +3104,12 @@ lsx_copy_arrow_dlls(test_nemotron_moe_nvfp4_model)
 
 # test_nemotron_moe_nvfp4_selfcheck — real-weight Paris SelfCheck, SKIP 4 when
 # the converted tree is absent.
-add_executable(test_nemotron_moe_nvfp4_selfcheck
-               test_nemotron_moe_nvfp4_selfcheck.cpp)
-target_link_libraries(test_nemotron_moe_nvfp4_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
-target_include_directories(test_nemotron_moe_nvfp4_selfcheck PRIVATE
-    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
 # test_nemotron_moe_nvfp4_fsi_selfcheck — the FSI parity gate (SKIP 4).
-add_executable(test_nemotron_moe_nvfp4_fsi_selfcheck
-               test_nemotron_moe_nvfp4_fsi_selfcheck.cpp)
-target_compile_definitions(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE
-    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
-target_link_libraries(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
 
 # test_nemotron_moe_nvfp4_code_selfcheck — the CODE parity gate (SKIP 4).
-add_executable(test_nemotron_moe_nvfp4_code_selfcheck
-               test_nemotron_moe_nvfp4_code_selfcheck.cpp)
-target_compile_definitions(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE
-    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
-target_link_libraries(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
 
 # test_nemotron_moe_nvfp4_det_selfcheck — the DET parity gate (SKIP 4).
-add_executable(test_nemotron_moe_nvfp4_det_selfcheck
-               test_nemotron_moe_nvfp4_det_selfcheck.cpp)
-target_compile_definitions(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE
-    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
-target_link_libraries(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
 
 # test_nemotron_moe_tokenizer_parity — real-vault tokenizer gate (SKIP 4).
 # Shared by both sibling variants: they ship one byte-identical tokenizer.json,
@@ -3805,12 +3189,6 @@ target_link_libraries(test_nemotron_moe_kernels PRIVATE
 
 lsx_copy_arrow_dlls(test_nemotron_moe_kernels)
 
-
-add_executable(test_nemotron_moe_selfcheck test_nemotron_moe_selfcheck.cpp)
-target_link_libraries(test_nemotron_moe_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
-target_include_directories(test_nemotron_moe_selfcheck PRIVATE
-    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
 # ── Qwen3.8-Flash-Next tests (qwen4_exp MoE) ──────────────────────────────
 add_executable(test_qwen_moe_exp_convert test_qwen_moe_exp_convert.cpp)
@@ -3919,12 +3297,6 @@ target_include_directories(test_glm_moe_flash_model PRIVATE
 lsx_copy_arrow_dlls(test_glm_moe_flash_model ARROW_ONLY)
 # Synthetic-converted fixture: load-side gates open only under this env.
 
-add_executable(test_glm_moe_flash_selfcheck test_glm_moe_flash_selfcheck.cpp)
-target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
-target_include_directories(test_glm_moe_flash_selfcheck PRIVATE
-    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-lsx_copy_arrow_dlls(test_glm_moe_flash_selfcheck ARROW_ONLY)
 
 add_executable(test_qwen_moe_exp_model test_qwen_moe_exp_model.cpp)
 target_compile_definitions(test_qwen_moe_exp_model PRIVATE
@@ -3935,12 +3307,6 @@ target_include_directories(test_qwen_moe_exp_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 lsx_copy_arrow_dlls(test_qwen_moe_exp_model)
 
-add_executable(test_qwen_moe_exp_selfcheck test_qwen_moe_exp_selfcheck.cpp)
-target_link_libraries(test_qwen_moe_exp_selfcheck PRIVATE
-    lsxcommon Catch2::Catch2WithMain)
-target_include_directories(test_qwen_moe_exp_selfcheck PRIVATE
-    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-lsx_copy_arrow_dlls(test_qwen_moe_exp_selfcheck)
 
 # §E1c early-EOS gate. Its own executable on purpose: the gate is only a pure
 # function of its inputs in a fresh process (OPEN_TASKS §E1d).
@@ -4227,30 +3593,12 @@ target_link_libraries(test_beam_tokenizer_split PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
 # ── Ling selfcheck (real weights; SKIPs when the vault is absent) ──
-add_executable(test_ling_moe_selfcheck test_ling_moe_selfcheck.cpp)
-target_link_libraries(test_ling_moe_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Ling FSI parity gate (declared golden debt) ──
-add_executable(test_ling_moe_fsi_selfcheck test_ling_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_ling_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_ling_moe_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Ling CODE parity gate (declared golden debt) ──
-add_executable(test_ling_moe_code_selfcheck test_ling_moe_code_selfcheck.cpp)
-target_compile_definitions(test_ling_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_ling_moe_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Ling DET parity gate (declared golden debt) ──
-add_executable(test_ling_moe_det_selfcheck test_ling_moe_det_selfcheck.cpp)
-target_compile_definitions(test_ling_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_ling_moe_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Ling perf baseline (seeded through the harness) ──
 
@@ -4397,30 +3745,12 @@ target_link_libraries(test_flint_moe_kernels PRIVATE test_flint_cu lsxcommon
     Catch2::Catch2WithMain)
 
 # ── Flint SelfCheck (real weights; SKIPs when the vault is absent) ──
-add_executable(test_flint_moe_selfcheck test_flint_moe_selfcheck.cpp)
-target_link_libraries(test_flint_moe_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Flint FSI parity gate ──
-add_executable(test_flint_moe_fsi_selfcheck test_flint_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_flint_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_flint_moe_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Flint CODE parity gate ──
-add_executable(test_flint_moe_code_selfcheck test_flint_moe_code_selfcheck.cpp)
-target_compile_definitions(test_flint_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_flint_moe_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Flint DET parity gate ──
-add_executable(test_flint_moe_det_selfcheck test_flint_moe_det_selfcheck.cpp)
-target_compile_definitions(test_flint_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_flint_moe_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 
 # ── Beam model stage (synthetic converted tree) ──
@@ -4433,28 +3763,9 @@ target_link_libraries(test_beam_moe_model PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
 # ── Beam selfcheck (real weights; SKIPs when the vault is absent) ──
-add_executable(test_beam_moe_selfcheck test_beam_moe_selfcheck.cpp)
-target_link_libraries(test_beam_moe_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Beam FSI/CODE/DET parity gates (golden debt; SKIP when absent) ──
-add_executable(test_beam_moe_fsi_selfcheck test_beam_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_beam_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_beam_moe_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
-add_executable(test_beam_moe_code_selfcheck test_beam_moe_code_selfcheck.cpp)
-target_compile_definitions(test_beam_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_beam_moe_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_beam_moe_det_selfcheck test_beam_moe_det_selfcheck.cpp)
-target_compile_definitions(test_beam_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_beam_moe_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Beam native tool framing (host-only; synthetic tokenizer) ──
 add_executable(test_beam_tool_framing test_beam_tool_framing.cpp)
@@ -4493,57 +3804,15 @@ target_link_libraries(test_hy_moe_tokenizer_parity PRIVATE lsxcommon
     Catch2::Catch2WithMain arrow_shared)
 
 # ── Hy-Memory-30B-A3B SelfCheck (real weights; SKIPs when the vault is absent) ──
-add_executable(test_hy_moe_selfcheck test_hy_moe_selfcheck.cpp)
-target_link_libraries(test_hy_moe_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Hy-Memory-30B-A3B FSI parity gate ──
-add_executable(test_hy_moe_fsi_selfcheck test_hy_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_hy_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_hy_moe_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Hy-Memory-30B-A3B CODE parity gate ──
-add_executable(test_hy_moe_code_selfcheck test_hy_moe_code_selfcheck.cpp)
-target_compile_definitions(test_hy_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_hy_moe_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Hy-Memory-30B-A3B DET determinism gate ──
-add_executable(test_hy_moe_det_selfcheck test_hy_moe_det_selfcheck.cpp)
-target_compile_definitions(test_hy_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_hy_moe_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Hy-SimulMT-30B-A3B selfcheck + parity gates (same text backbone) ──
-add_executable(test_hy_moe_simulmt_selfcheck
-    test_hy_moe_simulmt_selfcheck.cpp)
-target_link_libraries(test_hy_moe_simulmt_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
-add_executable(test_hy_moe_simulmt_fsi_selfcheck
-    test_hy_moe_simulmt_fsi_selfcheck.cpp)
-target_compile_definitions(test_hy_moe_simulmt_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_hy_moe_simulmt_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_hy_moe_simulmt_code_selfcheck
-    test_hy_moe_simulmt_code_selfcheck.cpp)
-target_compile_definitions(test_hy_moe_simulmt_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_hy_moe_simulmt_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_hy_moe_simulmt_det_selfcheck
-    test_hy_moe_simulmt_det_selfcheck.cpp)
-target_compile_definitions(test_hy_moe_simulmt_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_hy_moe_simulmt_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Hy-Memory-30B-A3B perf baseline (canonical 2048-token protocol) ──
 
@@ -4626,30 +3895,9 @@ target_link_libraries(test_step_moe_tool_framing PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
 # ── Step-5-Preview selfcheck (Paris + determinism on the real vault tree) ──
-add_executable(test_step_moe_selfcheck test_step_moe_selfcheck.cpp)
-target_include_directories(test_step_moe_selfcheck PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(test_step_moe_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain arrow_shared)
 
 # ── Step-5-Preview FSI/CODE/DET parity gates (goldens = declared debt) ──
-add_executable(test_step_moe_fsi_selfcheck test_step_moe_fsi_selfcheck.cpp)
-target_compile_definitions(test_step_moe_fsi_selfcheck PRIVATE
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
-target_link_libraries(test_step_moe_fsi_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
-add_executable(test_step_moe_code_selfcheck test_step_moe_code_selfcheck.cpp)
-target_compile_definitions(test_step_moe_code_selfcheck PRIVATE
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
-target_link_libraries(test_step_moe_code_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
-
-add_executable(test_step_moe_det_selfcheck test_step_moe_det_selfcheck.cpp)
-target_compile_definitions(test_step_moe_det_selfcheck PRIVATE
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
-target_link_libraries(test_step_moe_det_selfcheck PRIVATE lsxcommon
-    Catch2::Catch2WithMain)
 
 # ── Step-5-Preview perf baseline (canonical 2048-token protocol) ──
 
@@ -4657,6 +3905,787 @@ target_link_libraries(test_step_moe_det_selfcheck PRIVATE lsxcommon
 add_executable(test_step_moe_tokenizer test_step_moe_tokenizer.cpp)
 target_link_libraries(test_step_moe_tokenizer PRIVATE lsxcommon
     Catch2::Catch2WithMain arrow_shared)
+
+# ── Parity gates (FSI / CODE / DET) — one driver, one target per model ─────
+# The 105 copied per-family files became one TU parameterised by two
+# compile-time constants; the model row and the SKIP text come from its
+# manifest. Build wiring is per target (it is per-target compile reality),
+# so it is emitted here by hand once instead of 105 times.
+add_executable(test_alice_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_alice_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_alice_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_alice_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"alice-foundation-80b-a3b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_alice_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_alice_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_alice_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_alice_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"alice-foundation-80b-a3b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_alice_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_alice_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_alice_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_alice_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"alice-foundation-80b-a3b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_beam_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_beam_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_beam_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_beam_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"beam\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_beam_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_beam_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_beam_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_beam_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"beam\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_beam_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_beam_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_beam_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_beam_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"beam\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_deepseek_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4-flash\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_deepseek_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4-flash\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_deepseek_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4-flash\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_deepseek_moe_pro_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_pro_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_pro_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_pro_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4-pro-0813\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_deepseek_moe_pro_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_pro_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_pro_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_pro_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4-pro-0813\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_deepseek_moe_pro_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_pro_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_pro_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_pro_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4-pro-0813\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_deepseek_moe_v41_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_v41_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4.1-flash\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_deepseek_moe_v41_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_v41_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4.1-flash\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_deepseek_moe_v41_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_v41_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4.1-flash\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_flint_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_flint_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_flint_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_flint_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"flint\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_flint_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_flint_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_flint_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_flint_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"flint\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_flint_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_flint_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_flint_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_flint_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"flint\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_gemma_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-26b-a4b-it\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_gemma_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-26b-a4b-it\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_gemma_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-26b-a4b-it\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_gemma_dense_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-31b-it\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_gemma_dense_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-31b-it\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_gemma_dense_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-31b-it\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_gigachat_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_gigachat_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_gigachat_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_glm_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_glm_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"glm-5.2\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_glm_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_glm_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"glm-5.2\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_glm_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_glm_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"glm-5.2\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_glm_moe_flash_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_glm_moe_flash_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_flash_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_flash_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"glm-5.3-flash\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_glm_moe_flash_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_glm_moe_flash_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_flash_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_flash_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"glm-5.3-flash\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_glm_moe_flash_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_glm_moe_flash_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_flash_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_flash_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"glm-5.3-flash\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_granite_dense_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_dense_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-4.2-30b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_granite_dense_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_dense_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-4.2-30b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_granite_dense_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_dense_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-4.2-30b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_granite_switch_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_switch_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-switch-4.1-30b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_granite_switch_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_switch_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-switch-4.1-30b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_granite_switch_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_switch_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-switch-4.1-30b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_hy_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy-memory-30b-a3b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_hy_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy-memory-30b-a3b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_hy_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy-memory-30b-a3b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_hy_moe_simulmt_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_simulmt_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_simulmt_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy-simulmt-30b-a3b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_hy_moe_simulmt_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_simulmt_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_simulmt_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy-simulmt-30b-a3b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_hy_moe_simulmt_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_simulmt_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_simulmt_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy-simulmt-30b-a3b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_kimi_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k2.7-code\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_kimi_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k2.7-code\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_kimi_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k2.7-code\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_kimi_pro_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_pro_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_pro_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_pro_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k3.1-pro\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_kimi_pro_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_pro_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_pro_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_pro_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k3.1-pro\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_kimi_pro_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_pro_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_pro_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_pro_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k3.1-pro\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_kimi_k3_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_k3_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_k3_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_k3_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k3\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_kimi_k3_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_k3_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_k3_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_k3_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k3\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_kimi_k3_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_kimi_k3_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_k3_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_k3_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"kimi-k3\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_ling_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_ling_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ling_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ling_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"ling\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_ling_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_ling_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ling_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ling_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"ling\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_ling_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_ling_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ling_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ling_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"ling\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_mimo_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mimo_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mimo_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mimo_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mimo-v2.6-flash-rl\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_mimo_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mimo_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mimo_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mimo_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mimo-v2.6-flash-rl\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_mimo_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mimo_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mimo_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mimo_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mimo-v2.6-flash-rl\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_minimax_moe_flash_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_minimax_moe_flash_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_flash_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_flash_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"minimax-m3.1-flash\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_minimax_moe_flash_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_minimax_moe_flash_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_flash_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_flash_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"minimax-m3.1-flash\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_minimax_moe_flash_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_minimax_moe_flash_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_flash_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_flash_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"minimax-m3.1-flash\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_minimax_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_minimax_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"minimax-m3\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_minimax_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_minimax_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"minimax-m3\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_minimax_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_minimax_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"minimax-m3\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_mistral_moe_large4_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mistral_moe_large4_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_large4_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_large4_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mistral-large-4-1t\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_mistral_moe_large4_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mistral_moe_large4_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_large4_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_large4_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mistral-large-4-1t\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_mistral_moe_large4_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mistral_moe_large4_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_large4_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_large4_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mistral-large-4-1t\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_mistral_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mistral_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mistral-small-4-119b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_mistral_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mistral_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mistral-small-4-119b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_mistral_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_mistral_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"mistral-small-4-119b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_nemotron_moe_nvfp4_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b-nvfp4\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_nemotron_moe_nvfp4_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b-nvfp4\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_nemotron_moe_nvfp4_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b-nvfp4\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_nemotron_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_nemotron_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_nemotron_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_ornith_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_ornith_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ornith_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ornith_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"ornith-1.5-35b-a3b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_ornith_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_ornith_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ornith_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ornith_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"ornith-1.5-35b-a3b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_ornith_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_ornith_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ornith_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ornith_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"ornith-1.5-35b-a3b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_phi_dense_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_phi_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_phi_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_phi_dense_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"phi-4\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_phi_dense_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_phi_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_phi_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_phi_dense_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"phi-4\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_phi_dense_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_phi_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_phi_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_phi_dense_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"phi-4\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_qwen_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.5-35b-a3b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_qwen_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.5-35b-a3b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_qwen_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.5-35b-a3b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_qwen_dense_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.5-9b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_qwen_dense_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.5-9b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_qwen_dense_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.5-9b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_qwen_moe_36_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_36_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_36_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_36_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.6-35b-a3b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_qwen_moe_36_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_36_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_36_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_36_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.6-35b-a3b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_qwen_moe_36_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_36_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_36_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_36_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.6-35b-a3b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_qwen_dense_27b_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_dense_27b_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_27b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_27b_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.8-27b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_qwen_dense_27b_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_dense_27b_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_27b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_27b_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.8-27b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_qwen_dense_27b_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_dense_27b_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_27b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_27b_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.8-27b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_qwen_moe_exp_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_exp_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_exp_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_exp_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.8-flash-next\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_qwen_moe_exp_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_exp_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_exp_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_exp_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.8-flash-next\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_qwen_moe_exp_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_qwen_moe_exp_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_exp_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_exp_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"qwen3.8-flash-next\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_step_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_step_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_step_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_step_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"step-5-preview\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_step_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_step_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_step_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_step_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"step-5-preview\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_step_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_step_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_step_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_step_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"step-5-preview\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_xing_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_xing_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_xing_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_xing_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"xing4.0-29b-a4b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_xing_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_xing_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_xing_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_xing_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"xing4.0-29b-a4b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_xing_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_xing_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_xing_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_xing_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"xing4.0-29b-a4b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+
+
+# ── SelfCheck (the "Paris" gate) — one driver, declared per-model hooks ──
+# paris_cycles always; tool_roundtrip / auto_path_determinism come from the
+# manifest row. A family case that is not a hook keeps its own file.
+add_executable(test_alice_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_alice_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_alice_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_alice_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"alice-foundation-80b-a3b\"")
+add_executable(test_beam_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_beam_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_beam_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_beam_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"beam\"")
+add_executable(test_deepseek_moe_pro_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_deepseek_moe_pro_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_pro_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_pro_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"deepseek-v4-pro-0813\"")
+add_executable(test_deepseek_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_deepseek_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"deepseek-v4-flash\"")
+add_executable(test_deepseek_moe_v41_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_deepseek_moe_v41_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"deepseek-v4.1-flash\"")
+add_executable(test_flint_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_flint_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_flint_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_flint_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"flint\"")
+add_executable(test_gemma_dense_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_gemma_dense_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gemma-4-31b-it\"")
+add_executable(test_gemma_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_gemma_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gemma-4-26b-a4b-it\"")
+add_executable(test_gigachat_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_gigachat_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gigachat3.5-432b-a28b-reasoning\"")
+add_executable(test_glm_moe_flash_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_glm_moe_flash_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_flash_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"glm-5.3-flash\"")
+add_executable(test_glm_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_glm_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"glm-5.2\"")
+add_executable(test_granite_dense_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_granite_dense_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_dense_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"granite-4.2-30b\"")
+add_executable(test_granite_switch_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_granite_switch_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"granite-switch-4.1-30b\"")
+add_executable(test_hy_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_hy_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"hy-memory-30b-a3b\"")
+add_executable(test_hy_moe_simulmt_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_hy_moe_simulmt_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_simulmt_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"hy-simulmt-30b-a3b\"")
+add_executable(test_kimi_k3_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_kimi_k3_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_k3_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_k3_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"kimi-k3\"")
+add_executable(test_kimi_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_kimi_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"kimi-k2.7-code\"")
+add_executable(test_kimi_pro_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_kimi_pro_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_pro_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_kimi_pro_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"kimi-k3.1-pro\"")
+add_executable(test_ling_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_ling_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ling_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ling_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"ling\"")
+add_executable(test_mimo_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_mimo_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mimo_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mimo_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"mimo-v2.6-flash-rl\"")
+add_executable(test_minimax_moe_flash_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_minimax_moe_flash_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_flash_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_flash_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"minimax-m3.1-flash\"")
+add_executable(test_minimax_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_minimax_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_minimax_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"minimax-m3\"")
+add_executable(test_mistral_moe_large4_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_mistral_moe_large4_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_large4_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_large4_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"mistral-large-4-1t\"")
+add_executable(test_mistral_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_mistral_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_mistral_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"mistral-small-4-119b\"")
+add_executable(test_nemotron_moe_nvfp4_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_nemotron_moe_nvfp4_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_nvfp4_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_nvfp4_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"nemotron-3.5-lightning-30b-a3b-nvfp4\"")
+add_executable(test_nemotron_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_nemotron_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"nemotron-3.5-lightning-30b-a3b\"")
+add_executable(test_ornith_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_ornith_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ornith_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ornith_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"ornith-1.5-35b-a3b\"")
+add_executable(test_phi_dense_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_phi_dense_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_phi_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_phi_dense_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"phi-4\"")
+add_executable(test_qwen_dense_27b_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_qwen_dense_27b_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_27b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_27b_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"qwen3.8-27b\"")
+add_executable(test_qwen_dense_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_qwen_dense_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_dense_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"qwen3.5-9b\"")
+add_executable(test_qwen_moe_36_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_qwen_moe_36_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_36_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_36_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"qwen3.6-35b-a3b\"")
+add_executable(test_qwen_moe_exp_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_qwen_moe_exp_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_exp_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_exp_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"qwen3.8-flash-next\"")
+add_executable(test_qwen_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_qwen_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"qwen3.5-35b-a3b\"")
+add_executable(test_step_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_step_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_step_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_step_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"step-5-preview\"")
+add_executable(test_xing_moe_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_xing_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_xing_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"xing4.0-29b-a4b\"")
 
 # ── Model manifest sync (the generated registries cannot drift) ───────────
 # models/<model_type>.json is the single source of truth; this target proves the

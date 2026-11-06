@@ -100,6 +100,21 @@
     },
     "test_deepseek_moe_moe": {
       "skip": false
+    },
+    "test_deepseek_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_deepseek_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_deepseek_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_deepseek_moe_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": true,

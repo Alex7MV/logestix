@@ -73,6 +73,21 @@
       "env": [
         "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
       ]
+    },
+    "test_xing_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_xing_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_xing_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_xing_moe_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": true,

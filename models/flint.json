@@ -87,19 +87,26 @@
     },
     "test_flint_moe_selfcheck": {
       "timeout": 1800,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "selfcheck"
     },
     "test_flint_moe_fsi_selfcheck": {
       "timeout": 1800,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "fsi"
     },
     "test_flint_moe_code_selfcheck": {
       "timeout": 1800,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "code"
     },
     "test_flint_moe_det_selfcheck": {
       "timeout": 1800,
-      "resource_lock": "gpu"
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "det"
     }
   },
   "tool_roundtrip": true,

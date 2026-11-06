@@ -58,10 +58,25 @@
     },
     "test_qwen_moe_kernels": {
       "resource_lock": "gpu"
+    },
+    "test_qwen_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_qwen_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_qwen_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_qwen_moe_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": false,
-  "auto_path_determinism": true,
+  "auto_path_determinism": false,
   "golden_debt": {},
   "report": "",
   "notes": ""

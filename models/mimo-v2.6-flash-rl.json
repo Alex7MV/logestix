@@ -80,6 +80,21 @@
     },
     "test_mimo_moe_dequant": {
       "skip": false
+    },
+    "test_mimo_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_mimo_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_mimo_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_mimo_moe_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": false,

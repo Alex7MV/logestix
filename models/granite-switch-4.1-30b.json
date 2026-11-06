@@ -86,6 +86,21 @@
     "test_dense_kernels": {
       "skip": false,
       "form": "helper"
+    },
+    "test_granite_switch_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_granite_switch_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_granite_switch_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_granite_switch_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": false,

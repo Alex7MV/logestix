@@ -66,6 +66,21 @@
     },
     "test_glm_moe_flash_kernels": {
       "resource_lock": "gpu"
+    },
+    "test_glm_moe_flash_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_glm_moe_flash_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_glm_moe_flash_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_glm_moe_flash_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": true,

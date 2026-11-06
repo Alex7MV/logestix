@@ -107,6 +107,21 @@
     },
     "test_kimi_moe_tc_batch": {
       "skip": false
+    },
+    "test_kimi_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_kimi_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_kimi_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_kimi_moe_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": false,

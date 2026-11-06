@@ -81,16 +81,23 @@
       "timeout": 300
     },
     "test_kimi_k3_selfcheck": {
-      "timeout": 5400
+      "timeout": 5400,
+      "form": "selfcheck"
     },
     "test_kimi_k3_fsi_selfcheck": {
-      "timeout": 7200
+      "timeout": 7200,
+      "form": "parity",
+      "kind": "fsi"
     },
     "test_kimi_k3_code_selfcheck": {
-      "timeout": 7200
+      "timeout": 7200,
+      "form": "parity",
+      "kind": "code"
     },
     "test_kimi_k3_det_selfcheck": {
-      "timeout": 7200
+      "timeout": 7200,
+      "form": "parity",
+      "kind": "det"
     },
     "test_perf_baseline_kimi_k3": {
       "env": []

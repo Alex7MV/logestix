@@ -82,16 +82,23 @@
       "skip": false
     },
     "test_mistral_moe_large4_selfcheck": {
-      "timeout": 3600
+      "timeout": 3600,
+      "form": "selfcheck"
     },
     "test_mistral_moe_large4_fsi_selfcheck": {
-      "timeout": 3600
+      "timeout": 3600,
+      "form": "parity",
+      "kind": "fsi"
     },
     "test_mistral_moe_large4_code_selfcheck": {
-      "timeout": 3600
+      "timeout": 3600,
+      "form": "parity",
+      "kind": "code"
     },
     "test_mistral_moe_large4_det_selfcheck": {
-      "timeout": 3600
+      "timeout": 3600,
+      "form": "parity",
+      "kind": "det"
     }
   },
   "tool_roundtrip": true,

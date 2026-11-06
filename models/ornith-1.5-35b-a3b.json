@@ -58,6 +58,21 @@
     },
     "test_ornith_moe_kernels": {
       "resource_lock": "gpu"
+    },
+    "test_ornith_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_ornith_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_ornith_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_ornith_moe_selfcheck": {
+      "form": "selfcheck"
     }
   },
   "tool_roundtrip": true,
