@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/vram_estimate.h"
+
 namespace lsxcommon {
 namespace mistral_moe {
 
@@ -41,6 +43,14 @@ struct MistralParsedTensor {
 // outside the text decoder is Unknown.
 MistralParsedTensor mistral_classify(const std::string &name);
 
+// Placement policy for the conversion-time VRAM estimate. The routed experts
+// (56 GiB) are streamed from the neutral host ExpertStore, so they are
+// VramTensorClass::RoutedExpert: min_bytes is the pinned dense graph only.
+// is_nvfp4 stays null on purpose - the checkpoint is ALREADY NVFP4 (compressed-
+// tensors), so a tensor's on-disk byte size IS its converted size and deriving
+// a 4-bit size again would halve it a second time.
+VramTensorPolicy MistralVramPolicy();
+
 // Topology of a converted Mistral model, derived from the source safetensors
 // index: every one of the 36 layers is MoE (first_k_dense_replace = 0).
 struct MistralTopology {
@@ -49,6 +59,9 @@ struct MistralTopology {
     std::vector<long long> moe_layers;
     std::vector<long long> dense_layers;
     std::string format;
+    // Conversion-time placement profile ("vram" block). Empty on a tree
+    // converted before the block became mandatory.
+    VramProfile vram;
     std::string error_msg;
 
     bool is_moe_layer(long long l) const

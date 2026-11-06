@@ -28,6 +28,10 @@ public:
     const std::string &Type() const override { return kType; }
     KvCacheLayout KvLayout() const override { return kv_cache_layout_; }
 
+    // Conversion-time placement profile ("vram" block of model.index.json).
+    // Empty on a tree converted before the block became mandatory.
+    const VramProfile &VramRequirements() const override { return vram_; }
+
     // Tool/function-calling bridge (step 4b): the checkpoint's own
     // [INST]/[TOOL_CALLS]name[ARGS]{json} framing.
     bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
@@ -48,6 +52,7 @@ private:
 
     mistral_moe::MistralPinnedWeights pw_;
     mistral_moe::MistralDims dims_;
+    VramProfile vram_;
     KvCacheLayout kv_cache_layout_ = KvCacheLayout::kPosMajor;
     std::unique_ptr<mistral_moe::MistralSession> session_;
     int expert_slots_ = 0;

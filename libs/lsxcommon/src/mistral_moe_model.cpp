@@ -121,6 +121,7 @@ bool MistralSmall4MoeModel::Load()
              "model.index.json")
                 .string());
     if (!ValidateGeometry(top)) return AbortLoad();
+    vram_ = top.vram;
 
     dims_ = mistral_moe::MistralDimsFromWeights(pw_);
     if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();

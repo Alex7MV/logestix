@@ -258,9 +258,22 @@ MistralParsedTensor mistral_classify(const std::string &name)
     return out;
 }
 
-MistralTopology mistral_load_topology(const std::string &index_json_path)
+VramTensorPolicy MistralVramPolicy()
 {
-    MistralTopology top;
+    VramTensorPolicy policy;
+    // Already-NVFP4 source: on-disk bytes == converted bytes (see the header).
+    policy.is_nvfp4 = nullptr;
+    policy.has_residual = nullptr;
+    policy.mem_class = +[](const std::string &name) {
+        return mistral_classify(name).kind == MistralTensorKind::RoutedExpert
+                   ? VramTensorClass::RoutedExpert
+                   : VramTensorClass::Resident;
+    };
+    return policy;
+}
+
+MistralTopology mistral_load_topology(const std::string &index_json_path)
+{    MistralTopology top;
     std::ifstream f(index_json_path);
     if (!f)
     {
@@ -296,6 +309,14 @@ MistralTopology mistral_load_topology(const std::string &index_json_path)
         scan_lists("dense_layers", top.dense_layers);
         std::sort(top.moe_layers.begin(), top.moe_layers.end());
         std::sort(top.dense_layers.begin(), top.dense_layers.end());
+        // Placement profile. Optional on a tree converted before the block
+        // became mandatory, so a malformed/missing block leaves the default
+        // empty profile instead of failing the load.
+        {
+            VramProfile vp;
+            std::string verr;
+            if (ParseVramBlock(text, vp, verr)) top.vram = vp;
+        }
         const size_t fp = text.find("\"format\"");
         if (fp != std::string::npos)
         {
@@ -461,6 +482,10 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
     absl::flat_hash_map<int, std::vector<TensorRecord>> expert_raw_by_layer;
     std::vector<TensorRecord> global_raw;
     std::vector<TensorRecord> skipped;
+    // What the converted tree actually holds: stripped ballast and the
+    // activation-only `input_global_scale` companions are excluded here, so the
+    // VRAM profile describes the artifact rather than the source checkpoint.
+    std::vector<VramTensorInfo> vram_inventory;
     std::map<std::pair<int, int>, ExpertSide> routed;
     std::map<int, ExpertSide> shared;
     absl::flat_hash_map<int, int> layer_tensor_count;
@@ -495,12 +520,14 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
                     global_raw.push_back(std::move(r));
                 else
                     raw_by_layer[p.layer].push_back(std::move(r));
+                vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
                 if (p.layer >= 0) ++layer_tensor_count[p.layer];
                 break;
             }
             case MistralTensorKind::RoutedExpert:
             {
                 if (p.companion == "input_global_scale") break;  // activation
+                vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
                 auto &side = routed[{p.layer, p.expert}];
                 QuantProjection *q = p.weight_id == 1   ? &side.w1
                                      : p.weight_id == 2 ? &side.w2
@@ -537,6 +564,7 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
             case MistralTensorKind::SharedExpert:
             {
                 if (p.companion == "input_global_scale") break;
+                vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
                 auto &side = shared[p.layer];
                 QuantProjection *q = p.weight_id == 1   ? &side.w1
                                      : p.weight_id == 2 ? &side.w2
@@ -648,6 +676,27 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
     std::vector<long long> moe_layers;
     for (int l = 0; l < observed_layers; ++l) moe_layers.push_back(l);
 
+    // Conversion-time placement profile (mandatory, see vram_estimate.h). The
+    // routed experts are streamed from the host store, so min_bytes is the
+    // pinned dense graph only and max_bytes adds the full routed pool. Context
+    // comes from params.json: the consolidated checkpoint has no config.json
+    // for ReadContextLength to read.
+    VramGeometry vg;
+    vg.hidden_dim = static_cast<int>(hidden);
+    // MLA caches the latent, not per-head K/V: kv_lora + rope per layer.
+    vg.kv_dim = static_cast<int>(kv_lora + qk_rope);
+    vg.num_attn_layers = observed_layers;
+    vg.num_moe_layers = observed_layers;
+    vg.experts_per_layer = static_cast<int>(num_experts);
+    vg.context_length = JsonInt(pt, "max_position_embeddings", 0);
+    const VramProfile vram = EstimateVram(vram_inventory, MistralVramPolicy(), vg);
+    lsxcommon::log::info(absl::StrFormat(
+        "VRAM profile: min=%s optimal=%s max=%s (ctx=%d)",
+        lsxcommon::FormatBytesHuman(vram.min_bytes),
+        lsxcommon::FormatBytesHuman(vram.optimal_bytes),
+        lsxcommon::FormatBytesHuman(vram.max_bytes),
+        static_cast<int>(vram.context_tokens)));
+
     std::ofstream f(base / "model.index.json");
     if (!f) return arrow::Status::IOError("cannot write model.index.json");
     f << "{\n";
@@ -685,7 +734,8 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
     f << "  \"skipped_tensors\": [";
     for (size_t i = 0; i < skipped.size(); ++i)
         f << (i ? ", " : "") << "\"" << skipped[i].name << "\"";
-    f << "]\n";
+    f << "],\n";
+    f << FormatVramJson(vram) << "\n";
     f << "}\n";
     f.close();
 
