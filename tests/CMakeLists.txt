@@ -1241,6 +1241,23 @@ set_tests_properties(test_mistral_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_mistral_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Guard: a parity selfcheck must name ITS OWN model ────────────────────
+# FSI/CODE/DET share one body, so a copied file keeps the sibling's TEST_CASE
+# name, Catch2 stage tag and SKIP message. That makes a clean SKIP lie about
+# which model was gated. Two-way registry inside (kKnownOffenders).
+lsx_add_test(NAME test_parity_selfcheck_naming_guard
+    SOURCES test_parity_selfcheck_naming_guard.cpp
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+    LABEL fast)
+
+# ── Mistral-Small-4 parity-oracle tool guard (host-only source scan) ─────
+# Pins that tools/mistral_small4_oracle.py refuses a partially-random model and
+# keeps the two load-bearing rope keys. Fast: no torch/transformers needed.
+lsx_add_test(NAME test_mistral_small4_oracle_tool
+    SOURCES test_mistral_small4_oracle_tool.cpp
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+    LABEL fast)
+
 # ── Mistral-Large-4 tokenizer parity (source-captured golden) ─────────────
 add_executable(test_mistral_moe_large4_tokenizer_parity
     test_mistral_moe_large4_tokenizer_parity.cpp)

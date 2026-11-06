@@ -56,6 +56,13 @@ OVERRIDES = {
     "mistral-small-4-119b": {
         "unrunnable": "consolidated layout (params.json, no config.json) + "
                       "NVFP4-packed experts",
+        # Frame exactly as the engine does (RenderText: BOS + [INST]...[/INST],
+        # no vendor system turn). The checkpoint's default system prompt tells
+        # the model to deflect every data-shaped request to "use tools", which
+        # suppresses all three answer gates regardless of the weights. Same
+        # override as tools/{code,det}_capture.py; without it the FSI capture
+        # measured 0/3 while the model was answering consistently.
+        "chat_template": "{%- for m in messages %}{%- if m.role == 'user' %}{{ bos_token }}[INST] {{ m.content }} [/INST]{%- endif %}{%- endfor %}",
     },
     # qwen3.8-27b is a Qwen3_5 VLM checkpoint; the text language model is
     # loaded directly (loader remaps the model.language_model prefix) and
@@ -502,6 +509,12 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
         if os.path.exists(jinja):
             with open(jinja, encoding="utf-8") as fh:
                 tok.chat_template = fh.read()
+    # Per-model framing override (engine-exact where the checkpoint's own
+    # template injects something the engine does not, e.g. a vendor system
+    # turn). tools/{code,det}_capture.py already apply this; without it here the
+    # override was silently ignored and the capture used the vendor template.
+    if opts.get("chat_template"):
+        tok.chat_template = opts["chat_template"]
     if template_only:
         return capture_from_template(tok, opts, prompts, model, model_type,
                                      out, max_new_tokens, transformers, torch)

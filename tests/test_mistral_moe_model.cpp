@@ -13,12 +13,15 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/vram_estimate.h"
 
 #include <cuda_runtime.h>
 
 #include <atomic>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -83,6 +86,33 @@ TEST_CASE("Mistral model runs a finite decode step", "[mistral][inference]")
         if (v != 0.0f) any_nonzero = true;
     }
     REQUIRE(any_nonzero);
+    model->Unload();
+}
+
+TEST_CASE("Mistral vram block reaches VramRequirements", "[mistral][inference]")
+{
+    if (!GpuAvailable()) std::exit(4);
+    EnsureModelRegistry();
+    const fs::path root = BuildConverted();
+
+    // The converted index carries the profile; the model must publish it, or
+    // the placement plan and lsxcli --info see an empty one.
+    std::ifstream f(root / "logestix" / "model.index.json");
+    const std::string json((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+    lsxcommon::VramProfile parsed;
+    std::string err;
+    REQUIRE(lsxcommon::ParseVramBlock(json, parsed, err));
+    REQUIRE(parsed.min_bytes > 0);
+
+    auto model = MakeModel(root);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+    const auto &vp = model->VramRequirements();
+    CHECK(vp.min_bytes == parsed.min_bytes);
+    CHECK(vp.optimal_bytes == parsed.optimal_bytes);
+    CHECK(vp.max_bytes == parsed.max_bytes);
+    CHECK(vp.context_tokens == parsed.context_tokens);
     model->Unload();
 }
 

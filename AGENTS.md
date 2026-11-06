@@ -470,15 +470,37 @@ procedure — `perf-tuning-a-model`.
   `mistral_moe_model.{h,cpp}`, `mistral_moe_tool_format.{h,cpp}` (native
   `[INST]`/`[TOOL_CALLS]name[ARGS]{json}` codec); format tag
   `logestix-mistral-nvfp4`; converted with `lsxforge --mistral`; knob
-  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt:
-  the consolidated source is not runnable by Transformers (`params.json`, no
-  `config.json`, no `model_type`), so no parity oracle can be captured, and the
-  goldens are deliberately not committed rather than shipped permanently red —
-  `docs/OPEN_TASKS.md` §T. The converted vault tree exists and the perf
-  baselines are recorded (`perf` 45.02 t/s at commit `cb60207`, `r3` 14.68,
-  RTX 5090/Linux, 2048-token protocol); `perf` carries an accepted -4.5% for
-  the overflow-proof TC SwiGLU quantizer (one extra launch per slot per layer),
-  `r3` is unaffected.
+  `LSX_MISTRAL_EXPERT_CACHE_SLOTS`. FSI/CODE/DET goldens are declared debt: the
+  source is the Mistral "consolidated" layout (`params.json`, no `config.json`,
+  no `model_type`) whose tensor names and per-expert layout do not match any HF
+  class, so a parity oracle needs a name+repack mapping and the goldens
+  are deliberately not committed rather than shipped permanently red —
+  `docs/OPEN_TASKS.md` §T. **Re-ingested 2026-11-06** (§T.1) after the converted
+  tree had been lost: re-converted in 76 s (66 GB, 4608 experts, 222 vision
+  tensors stripped), and a real defect fixed — the index carried **no `vram`
+  block** and the family never overrode `VramRequirements()`, so the placement
+  plan and `lsxcli --info` silently saw an all-zero profile; the tree now
+  reports min 4 GiB / optimal 50 GiB / max 111 GiB at ctx 1048576. Real-weight
+  gates green: SelfCheck Paris ×3 bit-exact (`logits_hash cdfd7309bb141772`,
+  top-1 6993), native tool round-trip
+  `get_weather {"city":"Paris"}`, `--validate` loads in 1053 ms with
+  4 715 087 872 B resident and 1398/4608 expert slots. Perf rows re-seeded
+  through the harness: **perf 45.77 t/s / r3 49.82 t/s** at 2048 tokens, TTFT
+  525/509 ms (RTX 5090/Linux). The three parity gates were **run**, not left as
+  unexamined SKIPs: **FSI 1/3, CODE 0/3, DET 0/3** with DET deterministic across
+  three byte-identical runs; they stay declared debt because a prompt-derived
+  expected value cannot establish parity. A source-faithful golden is blocked by
+  the checkpoint's tensor names and per-expert layout (50 missing / 3118
+  unexpected vs `Mistral4ForCausalLM`), **not** by its config — `transformers`
+  5.15.1's class defaults match this checkpoint and a synthesized `config.json`
+  loads all 13 shards; `tools/mistral_small4_oracle.py` carries the config
+  synthesis and refuses a partially-random model by construction. Two harness
+  defects were fixed on the way: `tools/fsi_capture.py` never applied its
+  `chat_template` override (the 0/3 it first measured was the checkpoint's vendor
+  system prompt, which the engine does not send), and this family's CODE/DET
+  targets still named `xing` — the class-wide fix is
+  `test_parity_selfcheck_naming_guard`. Report:
+  `docs/model-reports/2026-11-06-Mistral-Small-4-119B-2603-NVFP4.md`.
   Mistral-Large-4-1T-A52B (variant `large4` of the `mistral` family, registry
   `mistral-large-4-1t`; 1T total / ~52B active): 72L / 6144H / 64 MLA heads
   with NO Q-LoRA (kv_lora 512, qk_nope 64 + qk_rope 64, v 128) / 128 routed

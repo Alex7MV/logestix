@@ -18,6 +18,7 @@
 #include "test_mistral_moe_fixture.h"
 
 #include <lsxcommon/schema.h>
+#include <lsxcommon/vram_estimate.h>
 
 #include <absl/strings/str_cat.h>
 
@@ -147,6 +148,93 @@ TEST_CASE("Mistral synthetic convert emits logestix-mistral-nvfp4",
     REQUIRE(json.find("\"dense_layers\": []") != std::string::npos);
     // Vision ballast counted, not silently dropped.
     REQUIRE(json.find("vision_encoder.patch_conv.weight") != std::string::npos);
+}
+
+// The "vram" block is mandatory in model.index.json (vram_estimate.h): it is
+// what IModel::VramRequirements reports and what the placement plan reads. A
+// tree without it silently answers an empty profile, which is indistinguishable
+// from "this model needs nothing".
+TEST_CASE("Mistral converter writes the mandatory vram block", "[mistral][convert]")
+{
+    auto in = fs::temp_directory_path() / "mistral_conv_vram_fixture";
+    auto out = fs::temp_directory_path() / "mistral_conv_vram_out";
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+
+    mistraltest::WriteMistralParams(in);
+    auto tensors = mistraltest::BuildSyntheticMistralModel();
+    synthtest::WriteSafetensors(in, "consolidated-00001-of-00001.safetensors",
+                                tensors);
+
+    const auto st = lsxcommon::mistral_moe::ConvertMistralModel(in.string(), out);
+    INFO("converter status: " << st.ToString());
+    REQUIRE(st.ok());
+
+    std::ifstream f(out / "logestix" / "model.index.json");
+    const std::string json((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+    lsxcommon::VramProfile vram;
+    std::string err;
+    REQUIRE(lsxcommon::ParseVramBlock(json, vram, err));
+    INFO("vram parse error: " << err);
+
+    // Context comes from params.json (the consolidated checkpoint has no
+    // config.json for ReadContextLength to read).
+    CHECK(vram.context_tokens == 1048576);
+    CHECK(vram.min_bytes > 0);
+    CHECK(vram.optimal_bytes >= vram.min_bytes);
+    // The routed pool is streamed, never resident: max > optimal iff the
+    // estimate really classified them as RoutedExpert.
+    CHECK(vram.max_bytes > vram.optimal_bytes);
+
+    // Exact: min_bytes is the pinned dense graph only - every tensor the
+    // converted tree holds outside the routed store, at its on-disk byte size
+    // (the source is ALREADY NVFP4, so raw bytes are the converted bytes).
+    // Stripped ballast (vision tower) and the activation-only
+    // `input_global_scale` companions are not in the artifact, so neither is in
+    // the profile.
+    std::uint64_t resident_bytes = 0;
+    std::uint64_t routed_bytes = 0;
+    for (const auto &t : tensors)
+    {
+        const auto parsed = mistral_classify(t.name);
+        if (parsed.kind == K::Vision) continue;
+        if (parsed.companion == "input_global_scale") continue;
+        const std::uint64_t bytes = t.data.size();
+        if (parsed.kind == K::RoutedExpert) routed_bytes += bytes;
+        else resident_bytes += bytes;
+    }
+    CHECK(vram.min_bytes == resident_bytes);
+    REQUIRE(routed_bytes > 0);
+    CHECK(vram.max_bytes - vram.optimal_bytes == routed_bytes);
+}
+
+TEST_CASE("Mistral vram policy streams routed experts and stays verbatim",
+          "[mistral][convert]")
+{
+    const lsxcommon::VramTensorPolicy policy = lsxcommon::mistral_moe::MistralVramPolicy();
+    REQUIRE(policy.mem_class != nullptr);
+    // The source is already NVFP4: re-deriving a 4-bit size from an already
+    // packed tensor would halve it a second time, so the policy keeps raw
+    // bytes (is_nvfp4 stays null on purpose).
+    CHECK(policy.is_nvfp4 == nullptr);
+    CHECK(policy.has_residual == nullptr);
+
+    using lsxcommon::VramTensorClass;
+    CHECK(policy.mem_class("layers.5.experts.42.w1.weight_packed") ==
+          VramTensorClass::RoutedExpert);
+    CHECK(policy.mem_class("layers.5.experts.42.w2.weight_scale") ==
+          VramTensorClass::RoutedExpert);
+    CHECK(policy.mem_class("layers.5.experts.42.w3.weight_global_scale") ==
+          VramTensorClass::RoutedExpert);
+    // The shared expert is resident on every layer, not streamed.
+    CHECK(policy.mem_class("layers.5.shared_experts.w1.weight_packed") ==
+          VramTensorClass::Resident);
+    CHECK(policy.mem_class("layers.5.attention.wq_a.weight") ==
+          VramTensorClass::Resident);
+    CHECK(policy.mem_class("layers.5.gate.weight") == VramTensorClass::Resident);
+    CHECK(policy.mem_class("tok_embeddings.weight") == VramTensorClass::Resident);
 }
 
 TEST_CASE("Mistral converter passes already-quantized experts through verbatim",
