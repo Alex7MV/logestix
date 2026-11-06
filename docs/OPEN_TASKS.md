@@ -1847,3 +1847,35 @@ bottleneck is) lives only in `AGENTS.md`'s git history and in `docs/open-tasks/`
 sessions, not in a document a reader can be pointed at. `models/*.json:report`
 now carries a validation rule — a declared path must exist — so writing one is a
 one-line manifest change.
+
+### The ctest oracle is a dated snapshot, not a live target list
+
+`tools/dump_ctest_manifest.py` and `tests/fixtures/ctest/2026-11-06-baseline.json`
+(511 targets captured from the pre-migration `linux-debug` tree) are kept as the
+migration's evidence, **not** as a gate and not as documentation of the current
+target set.
+
+- **What they prove.** `python3 tools/gen_model_manifest.py --root . --diff-cmake
+  tests/fixtures/ctest/2026-11-06-baseline.json` compares the emitted model
+  registration against what CMake produced *before* the manifests existed: 421 of
+  the 511 targets are model targets (the other 90 are guard/kernel/infrastructure
+  tests). Today it prints `compared 421 targets, 0 difference(s)`, which is the
+  only record that the transcription into `models/*.json` was exact rather than
+  approximately exact.
+- **CI never runs it, and should not.** The snapshot describes the tree on
+  2026-11-06. The first model added after that date makes the check report
+  `manifest target absent from the baseline` and exit 1 — verified by deleting
+  one target from a copy of the baseline, which yields
+  `compared 420 targets, 1 difference(s)` and exit 1. That is expected growth,
+  not a regression, so the check cannot live in the suite.
+- **Do not re-capture it in place.** Re-dumping today yields 511 targets again, but
+  not the same ones: `test_parity_selfcheck_naming_guard` is gone and
+  `test_manifest_generator_selftest` (this migration's own self-test) is new.
+  The model-target projection happens to be identical (421, 0 differences), so
+  overwriting the file would look harmless and would silently destroy the only
+  record of the tree as it was *before* the manifests. A snapshot is meaningful
+  only as the "before" of a *future* migration, captured before its first edit.
+- **Live authority is elsewhere.** If a current registration check is ever
+  needed, it is the generated `model_targets.cmake` plus `test_manifest_sync`,
+  not this JSON. The fixture answers "did the migration lose a target or change
+  a label/timeout/env?", a question that has one date.

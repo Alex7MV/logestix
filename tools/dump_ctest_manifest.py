@@ -5,6 +5,16 @@ This is the coverage oracle for the model-manifest migration: it is captured
 before a single manifest exists, and every later phase diffs against it. A
 migration that silently drops a target, a label or a timeout shows up here.
 
+**The committed snapshot is dated, not live.** `tests/fixtures/ctest/
+2026-11-06-baseline.json` describes the tree as of 2026-11-06; re-capturing it
+today is not the same file (one guard removed, one self-test added), so
+overwriting it would destroy the only pre-manifest record. Because the diff also
+flags any emitted target the snapshot does not contain, the check starts failing
+on the first model added after that date — by design, as growth. It is migration
+evidence, not a suite gate (see `docs/OPEN_TASKS.md`, "Model manifest
+migration"). Use it as the "before" of a *future* migration: capture before the
+first edit.
+
 Reads the CMake-generated `CTestTestfile.cmake` files (the same source ctest
 itself parses), so it does not depend on the project's CMake text.
 
