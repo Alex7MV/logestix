@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -134,7 +135,11 @@ std::vector<LabelCall> ParseLabelCalls(const std::string& text)
     {
         static const std::regex helper_open(R"(lsx_add_(?:cuda_)?test\s*\()");
         static const std::regex helper_name(R"(NAME\s+([A-Za-z0-9_]+))");
-        static const std::regex helper_label(R"(LABEL\s+(\w+)\s*$)");
+        // `LABEL <cat>` may be followed by more keywords on the same line
+        // (TIMEOUT, SKIP, ENV, ...), which is how the generated fragment emits
+        // it. Requiring end-of-line made 336 of 440 generated targets invisible.
+        static const std::regex helper_label(
+            R"(\bLABEL\s+(fast|convert|inference|perf)\b)");
         std::smatch hm;
         auto hb = text.cbegin();
         while (std::regex_search(hb, text.cend(), hm, helper_open)) {
@@ -153,7 +158,13 @@ std::vector<LabelCall> ParseLabelCalls(const std::string& text)
         }
     }
     static const std::regex open_re(R"(set_tests_properties\s*\()");
-    static const std::regex label_re(R"(PROPERTIES\s+LABELS\s+(\w+)\s*$)");
+    // LABELS is not necessarily the last property (the generated fragment
+    // puts TIMEOUT/SKIP_RETURN_CODE/RESOURCE_LOCK after it on one line).
+    // ... and it may follow TIMEOUT/SKIP_RETURN_CODE on the same line, which is
+    // how a single-call registration reads. Requiring LABELS first hid
+    // test_deepseek_nvfp4_repack_tool's label entirely.
+    static const std::regex label_re(
+        R"(\bLABELS\s+(fast|convert|inference|perf)\b)");
     static const std::regex props_re(R"(PROPERTIES\s+LABELS)");
     std::smatch m;
     auto begin = text.cbegin();
@@ -208,12 +219,69 @@ std::vector<std::string> CheckLabelCoverage(
     return v;
 }
 
+// True when a registration helper call for `target` passes the bare SKIP
+// keyword. That keyword makes the CMake helper set SKIP_RETURN_CODE 4, so the
+// generated text never carries the literal property - a reader that only greps
+// for the property declares every generated perf target skip-less.
+bool HelperDeclaresSkip(const std::string& text, const std::string& target)
+{
+    for (std::size_t open = text.find("lsx_add_test(");
+         open != std::string::npos; open = text.find("lsx_add_test(", open + 1))
+    {
+        const std::size_t end = text.find(')', open);
+        if (end == std::string::npos) continue;
+        const std::string body = text.substr(open, end - open);
+        if (body.find("NAME " + target + " ") == std::string::npos &&
+            body.find("NAME " + target + ")") == std::string::npos)
+            continue;
+        for (std::size_t p = body.find("SKIP"); p != std::string::npos;
+             p = body.find("SKIP", p + 1))
+        {
+            const std::size_t after = p + 4;
+            if (after < body.size() &&
+                (std::isalnum(static_cast<unsigned char>(body[after])) ||
+                 body[after] == '_'))
+                continue;                      // SKIPPY, SKIP_RETURN_CODE, ...
+            return true;
+        }
+        return false;                          // this target's call, no SKIP
+    }
+    // CUDA registrations use the same argument shape.
+    for (std::size_t open = text.find("lsx_add_cuda_test(");
+         open != std::string::npos;
+         open = text.find("lsx_add_cuda_test(", open + 1))
+    {
+        const std::size_t end = text.find(')', open);
+        if (end == std::string::npos) continue;
+        const std::string body = text.substr(open, end - open);
+        if (body.find("NAME " + target + " ") == std::string::npos &&
+            body.find("NAME " + target + ")") == std::string::npos)
+            continue;
+        for (std::size_t p = body.find("SKIP"); p != std::string::npos;
+             p = body.find("SKIP", p + 1))
+        {
+            const std::size_t after = p + 4;
+            if (after < body.size() &&
+                (std::isalnum(static_cast<unsigned char>(body[after])) ||
+                 body[after] == '_'))
+                continue;
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
 std::vector<std::string> CheckPerfSkip(const std::vector<LabelCall>& calls,
                                        const std::string& text)
 {
     std::vector<std::string> v;
     static const std::regex re(
         R"(set_tests_properties\s*\(([^)]*?)SKIP_RETURN_CODE\s+4)");
+    // A target registered through lsx_add_test sets SKIP_RETURN_CODE 4 inside
+    // the CMake helper, so the text only carries the bare SKIP keyword. Reading
+    // only the literal property made every generated perf target look
+    // skip-less (test_xing_warmup_ramp was the first to be flagged).
     for (const auto& c : calls)
     {
         if (c.label != "perf")
@@ -237,6 +305,7 @@ std::vector<std::string> CheckPerfSkip(const std::vector<LabelCall>& calls,
                     break;
                 begin = m.suffix().first;
             }
+            if (!found) found = HelperDeclaresSkip(text, n);
             if (!found)
                 v.push_back("perf test without SKIP_RETURN_CODE 4: " + n);
         }
@@ -592,12 +661,65 @@ set_tests_properties(t_device PROPERTIES LABELS fast))";
     CHECK(CheckLabelCoverage(names2, calls2).empty());
 }
 
+TEST_CASE("ctest labels guard: the generated manifest fragment is in scope",
+          "[labels][guard]")
+{
+    // Model test targets are registered by the generator into
+    // ${CMAKE_BINARY_DIR}/generated/model_targets.cmake and included from
+    // tests/CMakeLists.txt. A target that lives in a file this guard does not
+    // read is a target whose label discipline is checked by nobody: the same
+    // blind spot `lsx_add_cuda_test` had until 2026-11-05.
+    const fs::path generated(LSX_MANIFEST_GENERATED_DIR "/model_targets.cmake");
+    const fs::path manifests(LSX_SOURCE_DIR "/models");
+    std::error_code ec;
+    bool have_manifests = false;
+    for (auto& e : fs::directory_iterator(manifests, ec))
+        if (e.path().extension() == ".json") have_manifests = true;
+
+    if (!have_manifests) {
+        SUCCEED("no manifests yet: the generated fragment is not in scope");
+        return;
+    }
+    INFO("configure first: " << generated);
+    REQUIRE(fs::exists(generated, ec));
+
+    const std::string text = ReadFileOrThrow(generated);
+    const auto names = RegisteredTestNames(text);
+    INFO("generated targets: " << names.size());
+    REQUIRE(names.size() > 100);   // 35 manifests x ~12 targets
+
+    // Every generated label is one of the four categories, and every generated
+    // target carries exactly one.
+    const auto calls = ParseLabelCalls(text);
+    std::string coverage;
+    for (const auto& problem : CheckLabelCoverage(names, calls))
+        coverage += problem + "\n";
+    INFO("generated label calls: " << calls.size() << "\n" << coverage);
+    CHECK(coverage.empty());
+
+    // A convert target without a bounded TIMEOUT used to mean a full-model
+    // conversion slipping into a sweep.
+    const auto skip_problems = CheckPerfSkip(calls, text);
+    std::string skips;
+    for (const auto& sp : skip_problems) skips += sp + "\n";
+    INFO(skips);
+    CHECK(skips.empty());
+}
+
 TEST_CASE("ctest labels guard: every test labeled exactly once",
           "[labels][guard]")
 {
     const fs::path root(LSX_SOURCE_DIR);
     std::vector<std::string> texts{
         ReadFileOrThrow(root / "tests" / "CMakeLists.txt")};
+    // Model test registration moved into the generated fragment, so the label
+    // corpus has to include it or the majority of the suite is unchecked.
+    {
+        const fs::path generated(LSX_MANIFEST_GENERATED_DIR "/model_targets.cmake");
+        std::error_code gec;
+        if (fs::exists(generated, gec))
+            texts.push_back(ReadFileOrThrow(generated));
+    }
     // App-side test registrations are under the same label discipline.
     const fs::path apps = root / "apps";
     std::error_code ec;

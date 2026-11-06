@@ -90,5 +90,5 @@
     "fsi": "declared debt (see docs/OPEN_TASKS.md)"
   },
   "report": "",
-  "notes": ""
+  "notes": "Perf baseline had never been measured before it got a ctest target (2026-10)."
 }

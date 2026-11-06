@@ -2,6 +2,7 @@
   "preset": "linux-debug",
   "tests": [
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_absl_container_guard",
       "depends": [],
       "environment": [],
@@ -15,6 +16,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_absl_format_guard",
       "depends": [],
       "environment": [],
@@ -28,6 +30,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -41,6 +44,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_convert",
       "depends": [],
       "environment": [
@@ -56,6 +60,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -69,6 +74,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -82,6 +88,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_kernels",
       "depends": [],
       "environment": [],
@@ -95,6 +102,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_loader",
       "depends": [],
       "environment": [
@@ -110,6 +118,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_model",
       "depends": [],
       "environment": [
@@ -125,6 +134,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -138,6 +148,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_tokenizer",
       "depends": [],
       "environment": [],
@@ -151,6 +162,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_alice_tool_framing",
       "depends": [],
       "environment": [],
@@ -164,6 +176,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_anthropic_endpoint",
       "depends": [],
       "environment": [],
@@ -177,6 +190,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_arrow_tree_integrity",
       "depends": [],
       "environment": [],
@@ -190,6 +204,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_arrow_usage_guard",
       "depends": [],
       "environment": [],
@@ -203,6 +218,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_arrow_validation",
       "depends": [],
       "environment": [],
@@ -216,6 +232,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -229,6 +246,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_convert",
       "depends": [],
       "environment": [
@@ -244,6 +262,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -257,6 +276,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -270,6 +290,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_kernels",
       "depends": [],
       "environment": [],
@@ -283,6 +304,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_loader",
       "depends": [],
       "environment": [
@@ -298,6 +320,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_model",
       "depends": [],
       "environment": [
@@ -313,6 +336,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -326,6 +350,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -339,6 +364,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_tokenizer_split",
       "depends": [],
       "environment": [],
@@ -352,6 +378,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_beam_tool_framing",
       "depends": [],
       "environment": [],
@@ -365,6 +392,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_micro_gemm",
       "depends": [],
       "environment": [],
@@ -378,6 +406,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_perf_deepseek",
       "depends": [],
       "environment": [],
@@ -391,6 +420,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_perf_dense",
       "depends": [],
       "environment": [],
@@ -404,6 +434,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_perf_glm",
       "depends": [],
       "environment": [],
@@ -417,6 +448,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_perf_kimi",
       "depends": [],
       "environment": [],
@@ -430,6 +462,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "[gemma26moe]"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_perf_moe",
       "depends": [],
       "environment": [],
@@ -443,6 +478,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "[qwen35moe]"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_perf_moe",
       "depends": [],
       "environment": [],
@@ -456,6 +494,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_blackwell_tc_mma",
       "depends": [],
       "environment": [],
@@ -469,6 +508,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_code_naming_guard",
       "depends": [],
       "environment": [],
@@ -482,6 +522,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -495,6 +536,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_converter_helpers",
       "depends": [],
       "environment": [],
@@ -508,6 +550,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_core",
       "depends": [],
       "environment": [],
@@ -521,6 +564,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ctest_labels_guard",
       "depends": [],
       "environment": [],
@@ -534,6 +578,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_cuda_event_wait",
       "depends": [],
       "environment": [],
@@ -547,6 +592,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_cuda_toolkit_guard",
       "depends": [],
       "environment": [],
@@ -560,6 +606,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_arena",
       "depends": [],
       "environment": [],
@@ -573,6 +620,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -586,6 +634,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_convert",
       "depends": [],
       "environment": [
@@ -601,6 +650,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -614,6 +664,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -627,6 +678,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_inference_kernels",
       "depends": [],
       "environment": [],
@@ -640,6 +692,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_load_fast",
       "depends": [],
       "environment": [],
@@ -653,6 +706,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_loader",
       "depends": [],
       "environment": [],
@@ -666,6 +720,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_model",
       "depends": [],
       "environment": [],
@@ -679,6 +734,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_moe",
       "depends": [],
       "environment": [],
@@ -692,6 +748,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_norm_kernels",
       "depends": [],
       "environment": [],
@@ -705,6 +762,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -718,6 +776,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_convert",
       "depends": [],
       "environment": [
@@ -733,6 +792,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -746,6 +806,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -759,6 +820,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_kernels",
       "depends": [],
       "environment": [],
@@ -772,6 +834,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_load_fast",
       "depends": [],
       "environment": [],
@@ -785,6 +848,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_loader",
       "depends": [],
       "environment": [],
@@ -798,6 +862,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_model",
       "depends": [],
       "environment": [],
@@ -811,6 +876,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_pro_selfcheck",
       "depends": [],
       "environment": [],
@@ -824,6 +890,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_prompt_output",
       "depends": [],
       "environment": [],
@@ -837,6 +904,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -850,6 +918,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_actquant",
       "depends": [],
       "environment": [],
@@ -863,6 +932,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -876,6 +946,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_convert",
       "depends": [],
       "environment": [
@@ -891,6 +962,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_dequant",
       "depends": [],
       "environment": [],
@@ -904,6 +976,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -917,6 +990,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -930,6 +1004,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_kernels",
       "depends": [],
       "environment": [],
@@ -943,6 +1018,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_load_fast",
       "depends": [],
       "environment": [],
@@ -956,6 +1032,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_loader",
       "depends": [],
       "environment": [],
@@ -969,6 +1046,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_model",
       "depends": [],
       "environment": [],
@@ -982,6 +1060,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_pipeline",
       "depends": [],
       "environment": [],
@@ -995,6 +1074,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_moe_v41_selfcheck",
       "depends": [],
       "environment": [],
@@ -1008,6 +1088,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_nvfp4_repack",
       "depends": [],
       "environment": [],
@@ -1021,6 +1102,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "[tool]*"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_nvfp4_repack",
       "depends": [],
       "environment": [],
@@ -1034,6 +1118,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_deepseek_tool_framing",
       "depends": [],
       "environment": [],
@@ -1047,6 +1132,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_dense_kernels",
       "depends": [],
       "environment": [],
@@ -1060,6 +1146,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -1073,6 +1160,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_diagnostics",
       "depends": [],
       "environment": [],
@@ -1086,6 +1174,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_expert_store",
       "depends": [],
       "environment": [],
@@ -1099,6 +1188,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_expert_store_guard",
       "depends": [],
       "environment": [],
@@ -1112,6 +1202,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_expert_store_stage",
       "depends": [],
       "environment": [],
@@ -1125,6 +1216,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/lsxfabric/tests/test_fabric_cli",
       "depends": [],
       "environment": [],
@@ -1138,6 +1230,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_fabric_client",
       "depends": [],
       "environment": [],
@@ -1151,6 +1244,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/lsxfabric/tests/test_fabric_server",
       "depends": [],
       "environment": [],
@@ -1164,6 +1258,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_fabric_wire",
       "depends": [],
       "environment": [],
@@ -1177,6 +1272,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_fast_load",
       "depends": [],
       "environment": [],
@@ -1190,6 +1286,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_fast_math_guard_cross_tu",
       "depends": [],
       "environment": [],
@@ -1203,6 +1300,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -1216,6 +1314,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_convert",
       "depends": [],
       "environment": [
@@ -1231,6 +1330,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -1244,6 +1344,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -1257,6 +1358,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_kernels",
       "depends": [],
       "environment": [],
@@ -1270,6 +1372,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_loader",
       "depends": [],
       "environment": [
@@ -1285,6 +1388,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_model",
       "depends": [],
       "environment": [
@@ -1300,6 +1404,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_pretokenizer",
       "depends": [],
       "environment": [],
@@ -1313,6 +1418,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -1326,6 +1432,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -1339,6 +1446,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_flint_moe_tool_framing",
       "depends": [],
       "environment": [],
@@ -1352,6 +1460,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -1365,6 +1474,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -1378,6 +1488,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_convert",
       "depends": [],
       "environment": [],
@@ -1391,6 +1502,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -1404,6 +1516,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -1417,6 +1530,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_kernels",
       "depends": [],
       "environment": [],
@@ -1430,6 +1544,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_loader",
       "depends": [],
       "environment": [
@@ -1445,6 +1560,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_model",
       "depends": [],
       "environment": [
@@ -1460,6 +1576,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_dense_selfcheck",
       "depends": [],
       "environment": [],
@@ -1473,6 +1590,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_attn",
       "depends": [],
       "environment": [],
@@ -1486,6 +1604,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -1499,6 +1618,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_convert",
       "depends": [],
       "environment": [],
@@ -1512,6 +1632,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -1525,6 +1646,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -1538,6 +1660,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_loader",
       "depends": [],
       "environment": [],
@@ -1551,6 +1674,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_model",
       "depends": [],
       "environment": [
@@ -1566,6 +1690,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_moe",
       "depends": [],
       "environment": [],
@@ -1579,6 +1704,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_norm",
       "depends": [],
       "environment": [],
@@ -1592,6 +1718,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_rotary",
       "depends": [],
       "environment": [],
@@ -1605,6 +1732,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -1618,6 +1746,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_prompt_framing",
       "depends": [],
       "environment": [],
@@ -1631,6 +1760,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gemma_tool_framing",
       "depends": [],
       "environment": [],
@@ -1644,6 +1774,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_generation_cli",
       "depends": [],
       "environment": [],
@@ -1657,6 +1788,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_generation_stream",
       "depends": [],
       "environment": [],
@@ -1670,6 +1802,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_geometry_guard",
       "depends": [],
       "environment": [],
@@ -1683,6 +1816,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_attn",
       "depends": [],
       "environment": [],
@@ -1696,6 +1830,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -1709,6 +1844,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_convert",
       "depends": [],
       "environment": [
@@ -1724,6 +1860,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -1737,6 +1874,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_devkernels",
       "depends": [],
       "environment": [],
@@ -1750,6 +1888,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_expert_cache",
       "depends": [],
       "environment": [],
@@ -1763,6 +1902,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -1776,6 +1916,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_kernels",
       "depends": [],
       "environment": [],
@@ -1789,6 +1930,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_load_fast",
       "depends": [],
       "environment": [
@@ -1804,6 +1946,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_loader",
       "depends": [],
       "environment": [],
@@ -1817,6 +1960,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_math",
       "depends": [],
       "environment": [],
@@ -1830,6 +1974,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_model",
       "depends": [],
       "environment": [
@@ -1845,6 +1990,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_parity",
       "depends": [],
       "environment": [],
@@ -1858,6 +2004,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -1871,6 +2018,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_moe_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -1884,6 +2032,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gigachat_tool_framing",
       "depends": [],
       "environment": [],
@@ -1897,6 +2046,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_flash_tool_framing",
       "depends": [],
       "environment": [],
@@ -1910,6 +2060,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_attention",
       "depends": [],
       "environment": [],
@@ -1923,6 +2074,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -1936,6 +2088,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_convert",
       "depends": [],
       "environment": [],
@@ -1949,6 +2102,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_dense_compute",
       "depends": [],
       "environment": [],
@@ -1962,6 +2116,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -1975,6 +2130,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_expert_cache",
       "depends": [],
       "environment": [],
@@ -1988,6 +2144,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_experts",
       "depends": [],
       "environment": [],
@@ -2001,6 +2158,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -2014,6 +2172,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_convert",
       "depends": [],
       "environment": [
@@ -2029,6 +2188,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -2042,6 +2202,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -2055,6 +2216,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_kernels",
       "depends": [],
       "environment": [],
@@ -2068,6 +2230,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_loader",
       "depends": [],
       "environment": [
@@ -2083,6 +2246,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_model",
       "depends": [],
       "environment": [
@@ -2098,6 +2262,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_flash_selfcheck",
       "depends": [],
       "environment": [],
@@ -2111,6 +2276,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -2124,6 +2290,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_full_compute",
       "depends": [],
       "environment": [],
@@ -2137,6 +2304,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_inference",
       "depends": [],
       "environment": [],
@@ -2150,6 +2318,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_layer_compute",
       "depends": [],
       "environment": [],
@@ -2163,6 +2332,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_load_fast",
       "depends": [],
       "environment": [],
@@ -2176,6 +2346,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_loader",
       "depends": [],
       "environment": [],
@@ -2189,6 +2360,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_model",
       "depends": [],
       "environment": [],
@@ -2202,6 +2374,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_model_lifecycle",
       "depends": [],
       "environment": [],
@@ -2215,6 +2388,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_moe_compute",
       "depends": [],
       "environment": [],
@@ -2228,6 +2402,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_moe_router",
       "depends": [],
       "environment": [],
@@ -2241,6 +2416,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_prefill_seqp",
       "depends": [],
       "environment": [],
@@ -2254,6 +2430,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_prompt_framing",
       "depends": [],
       "environment": [],
@@ -2267,6 +2444,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_prompt_output",
       "depends": [],
       "environment": [],
@@ -2280,6 +2458,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_glm_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -2293,6 +2472,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gpu_perf",
       "depends": [],
       "environment": [],
@@ -2306,6 +2486,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_gpu_power",
       "depends": [],
       "environment": [],
@@ -2319,6 +2500,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -2332,6 +2514,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_convert",
       "depends": [],
       "environment": [],
@@ -2345,6 +2528,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -2358,6 +2542,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -2371,6 +2556,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_kernels",
       "depends": [],
       "environment": [],
@@ -2384,6 +2570,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_loader",
       "depends": [],
       "environment": [],
@@ -2397,6 +2584,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_model",
       "depends": [],
       "environment": [
@@ -2412,6 +2600,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_dense_selfcheck",
       "depends": [],
       "environment": [],
@@ -2425,6 +2614,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_adapter_parity",
       "depends": [],
       "environment": [],
@@ -2438,6 +2628,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -2451,6 +2642,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_convert",
       "depends": [],
       "environment": [
@@ -2466,6 +2658,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -2479,6 +2672,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -2492,6 +2686,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_kernels",
       "depends": [],
       "environment": [],
@@ -2505,6 +2700,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_loader",
       "depends": [],
       "environment": [
@@ -2520,6 +2716,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_model",
       "depends": [],
       "environment": [
@@ -2535,6 +2732,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_prepare",
       "depends": [],
       "environment": [],
@@ -2548,6 +2746,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_selfcheck",
       "depends": [],
       "environment": [],
@@ -2561,6 +2760,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -2574,6 +2774,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_switch_tool_framing",
       "depends": [],
       "environment": [],
@@ -2587,6 +2788,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_granite_tool_framing",
       "depends": [],
       "environment": [],
@@ -2600,6 +2802,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hardware_profile",
       "depends": [],
       "environment": [],
@@ -2613,6 +2816,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_http_server",
       "depends": [],
       "environment": [],
@@ -2626,6 +2830,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_chat_framing",
       "depends": [],
       "environment": [],
@@ -2639,6 +2844,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -2652,6 +2858,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_convert",
       "depends": [],
       "environment": [
@@ -2667,6 +2874,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -2680,6 +2888,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -2693,6 +2902,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_kernels",
       "depends": [],
       "environment": [],
@@ -2706,6 +2916,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_loader",
       "depends": [],
       "environment": [
@@ -2721,6 +2932,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_model",
       "depends": [],
       "environment": [
@@ -2736,6 +2948,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -2749,6 +2962,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -2762,6 +2976,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_convert",
       "depends": [],
       "environment": [
@@ -2777,6 +2992,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -2790,6 +3006,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -2803,6 +3020,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_loader",
       "depends": [],
       "environment": [
@@ -2818,6 +3036,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_model",
       "depends": [],
       "environment": [
@@ -2833,6 +3052,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_selfcheck",
       "depends": [],
       "environment": [],
@@ -2846,6 +3066,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_simulmt_tool_framing",
       "depends": [],
       "environment": [],
@@ -2859,6 +3080,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -2872,6 +3094,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_hy_moe_tool_framing",
       "depends": [],
       "environment": [],
@@ -2885,6 +3108,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_incremental_detokenizer",
       "depends": [],
       "environment": [],
@@ -2898,6 +3122,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_infrastructure_guard",
       "depends": [],
       "environment": [],
@@ -2911,6 +3136,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_integrated_pipeline",
       "depends": [],
       "environment": [],
@@ -2924,6 +3150,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_json_escape",
       "depends": [],
       "environment": [],
@@ -2937,6 +3164,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -2950,6 +3178,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_constants",
       "depends": [],
       "environment": [],
@@ -2963,6 +3192,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_convert",
       "depends": [],
       "environment": [
@@ -2978,6 +3208,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -2991,6 +3222,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -3004,6 +3236,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_kernels",
       "depends": [],
       "environment": [],
@@ -3017,6 +3250,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_loader",
       "depends": [],
       "environment": [
@@ -3032,6 +3266,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_model",
       "depends": [],
       "environment": [
@@ -3047,6 +3282,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_selfcheck",
       "depends": [],
       "environment": [],
@@ -3060,6 +3296,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -3073,6 +3310,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_k3_tool_framing",
       "depends": [],
       "environment": [],
@@ -3086,6 +3324,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_attention",
       "depends": [],
       "environment": [],
@@ -3099,6 +3338,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -3112,6 +3352,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_convert",
       "depends": [],
       "environment": [
@@ -3127,6 +3368,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -3140,6 +3382,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_expert_cache",
       "depends": [],
       "environment": [],
@@ -3153,6 +3396,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_experts",
       "depends": [],
       "environment": [],
@@ -3166,6 +3410,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -3179,6 +3424,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_inference",
       "depends": [],
       "environment": [],
@@ -3192,6 +3438,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_int4_dequant",
       "depends": [],
       "environment": [],
@@ -3205,6 +3452,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_int4_real",
       "depends": [],
       "environment": [],
@@ -3218,6 +3466,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_loader",
       "depends": [],
       "environment": [
@@ -3233,6 +3482,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_mla_proj_real",
       "depends": [],
       "environment": [],
@@ -3246,6 +3496,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_model",
       "depends": [],
       "environment": [
@@ -3261,6 +3512,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_rope_parity",
       "depends": [],
       "environment": [],
@@ -3274,6 +3526,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_router",
       "depends": [],
       "environment": [],
@@ -3287,6 +3540,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -3300,6 +3554,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_tc_batch",
       "depends": [],
       "environment": [],
@@ -3313,6 +3568,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_tc_diag",
       "depends": [],
       "environment": [],
@@ -3326,6 +3582,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_tokenizer",
       "depends": [],
       "environment": [],
@@ -3339,6 +3596,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_moe_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -3352,6 +3610,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -3365,6 +3624,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_convert",
       "depends": [],
       "environment": [
@@ -3380,6 +3640,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -3393,6 +3654,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -3406,6 +3668,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_indexer",
       "depends": [],
       "environment": [],
@@ -3419,6 +3682,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_loader",
       "depends": [],
       "environment": [
@@ -3434,6 +3698,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_model",
       "depends": [],
       "environment": [
@@ -3449,6 +3714,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_pro_selfcheck",
       "depends": [],
       "environment": [],
@@ -3462,6 +3728,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kimi_tool_framing",
       "depends": [],
       "environment": [],
@@ -3475,6 +3742,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_kv_cache_layout",
       "depends": [],
       "environment": [],
@@ -3488,6 +3756,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_license_guard",
       "depends": [],
       "environment": [],
@@ -3501,6 +3770,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_lifecycle_plan",
       "depends": [],
       "environment": [],
@@ -3514,6 +3784,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -3527,6 +3798,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_convert",
       "depends": [],
       "environment": [
@@ -3542,6 +3814,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -3555,6 +3828,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -3568,6 +3842,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_kernels",
       "depends": [],
       "environment": [],
@@ -3581,6 +3856,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_loader",
       "depends": [],
       "environment": [
@@ -3596,6 +3872,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_model",
       "depends": [],
       "environment": [
@@ -3611,6 +3888,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -3624,6 +3902,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -3637,6 +3916,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ling_tool_framing",
       "depends": [],
       "environment": [],
@@ -3650,6 +3930,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_logging_guard",
       "depends": [],
       "environment": [],
@@ -3663,6 +3944,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/taskmosaic/tests/test_lsx_framer",
       "depends": [],
       "environment": [],
@@ -3676,6 +3958,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_lsx_gemv",
       "depends": [],
       "environment": [],
@@ -3689,6 +3972,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_lsx_kernels",
       "depends": [],
       "environment": [],
@@ -3702,6 +3986,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_lsx_nvfp4_dispatch",
       "depends": [],
       "environment": [],
@@ -3715,6 +4000,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/lsxbenchmark/tests/test_lsxbenchmark_cli",
       "depends": [],
       "environment": [],
@@ -3728,6 +4014,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/lsxcli/tests/test_lsxcli",
       "depends": [],
       "environment": [],
@@ -3741,6 +4028,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/lsxfabric/tests/test_lsxfabric",
       "depends": [],
       "environment": [],
@@ -3754,6 +4042,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/lsxforge/tests/test_lsxforge",
       "depends": [],
       "environment": [],
@@ -3767,6 +4056,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/lsxforge/tests/test_lsxforge_cli",
       "depends": [],
       "environment": [],
@@ -3780,6 +4070,21 @@
       "working_directory": null
     },
     {
+      "args": [],
+      "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_manifest_sync",
+      "depends": [],
+      "environment": [],
+      "labels": [
+        "fast"
+      ],
+      "name": "test_manifest_sync",
+      "resource_lock": null,
+      "skip_return_code": null,
+      "timeout": null,
+      "working_directory": null
+    },
+    {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -3793,6 +4098,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_convert",
       "depends": [],
       "environment": [
@@ -3808,6 +4114,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_dequant",
       "depends": [],
       "environment": [],
@@ -3821,6 +4128,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -3834,6 +4142,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_expert_cache",
       "depends": [],
       "environment": [],
@@ -3847,6 +4156,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -3860,6 +4170,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_geometry",
       "depends": [],
       "environment": [],
@@ -3873,6 +4184,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_kernels",
       "depends": [],
       "environment": [],
@@ -3886,6 +4198,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_loader",
       "depends": [],
       "environment": [
@@ -3901,6 +4214,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_model",
       "depends": [],
       "environment": [
@@ -3916,6 +4230,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -3929,6 +4244,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mimo_tool_framing",
       "depends": [],
       "environment": [],
@@ -3942,6 +4258,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -3955,6 +4272,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_convert",
       "depends": [],
       "environment": [
@@ -3970,6 +4288,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -3983,6 +4302,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -3996,6 +4316,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_convert",
       "depends": [],
       "environment": [
@@ -4011,6 +4332,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -4024,6 +4346,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -4037,6 +4360,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_loader",
       "depends": [],
       "environment": [
@@ -4052,6 +4376,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_model",
       "depends": [],
       "environment": [
@@ -4067,6 +4392,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_selfcheck",
       "depends": [],
       "environment": [],
@@ -4080,6 +4406,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_flash_tool_framing",
       "depends": [],
       "environment": [],
@@ -4093,6 +4420,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -4106,6 +4434,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_kernels",
       "depends": [],
       "environment": [],
@@ -4119,6 +4448,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_loader",
       "depends": [],
       "environment": [
@@ -4134,6 +4464,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_model",
       "depends": [],
       "environment": [
@@ -4149,6 +4480,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -4162,6 +4494,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -4175,6 +4508,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_minimax_moe_tool_framing",
       "depends": [],
       "environment": [],
@@ -4188,6 +4522,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -4201,6 +4536,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_convert",
       "depends": [],
       "environment": [
@@ -4216,6 +4552,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -4229,6 +4566,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -4242,6 +4580,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_kernels",
       "depends": [],
       "environment": [
@@ -4257,6 +4596,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -4270,6 +4610,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_convert",
       "depends": [],
       "environment": [
@@ -4285,6 +4626,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -4298,6 +4640,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -4311,6 +4654,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_kernels",
       "depends": [],
       "environment": [],
@@ -4324,6 +4668,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_loader",
       "depends": [],
       "environment": [
@@ -4339,6 +4684,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_model",
       "depends": [],
       "environment": [
@@ -4354,6 +4700,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_pretokenizer",
       "depends": [],
       "environment": [],
@@ -4367,6 +4714,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_selfcheck",
       "depends": [],
       "environment": [],
@@ -4380,6 +4728,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -4393,6 +4742,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_large4_tool_framing",
       "depends": [],
       "environment": [],
@@ -4406,6 +4756,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_loader",
       "depends": [],
       "environment": [
@@ -4421,6 +4772,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_model",
       "depends": [],
       "environment": [
@@ -4436,6 +4788,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -4449,6 +4802,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_moe_tool_framing",
       "depends": [],
       "environment": [],
@@ -4462,6 +4816,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mistral_small4_oracle_tool",
       "depends": [],
       "environment": [],
@@ -4475,6 +4830,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_model_engine",
       "depends": [],
       "environment": [],
@@ -4488,6 +4844,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_model_factory",
       "depends": [],
       "environment": [],
@@ -4501,6 +4858,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_model_independence_guard",
       "depends": [],
       "environment": [],
@@ -4514,6 +4872,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_model_integrity",
       "depends": [],
       "environment": [],
@@ -4527,6 +4886,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_model_runtime",
       "depends": [],
       "environment": [],
@@ -4540,6 +4900,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_model_suite_guard",
       "depends": [],
       "environment": [],
@@ -4553,6 +4914,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mosaic_frontend_route",
       "depends": [],
       "environment": [],
@@ -4566,6 +4928,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_mosaic_network",
       "depends": [],
       "environment": [],
@@ -4579,6 +4942,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -4592,6 +4956,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_convert",
       "depends": [],
       "environment": [
@@ -4607,6 +4972,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -4620,6 +4986,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_expert_cache",
       "depends": [],
       "environment": [],
@@ -4633,6 +5000,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -4646,6 +5014,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_kernels",
       "depends": [],
       "environment": [],
@@ -4659,6 +5028,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_loader",
       "depends": [],
       "environment": [],
@@ -4672,6 +5042,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_math",
       "depends": [],
       "environment": [],
@@ -4685,6 +5056,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_model",
       "depends": [],
       "environment": [],
@@ -4698,6 +5070,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_nvfp4_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -4711,6 +5084,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_nvfp4_convert",
       "depends": [],
       "environment": [
@@ -4726,6 +5100,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_nvfp4_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -4739,6 +5114,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_nvfp4_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -4752,6 +5128,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_nvfp4_loader",
       "depends": [],
       "environment": [],
@@ -4765,6 +5142,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_nvfp4_model",
       "depends": [],
       "environment": [
@@ -4780,6 +5158,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_nvfp4_selfcheck",
       "depends": [],
       "environment": [],
@@ -4793,6 +5172,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -4806,6 +5186,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_moe_tokenizer_parity",
       "depends": [],
       "environment": [],
@@ -4819,6 +5200,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nemotron_session",
       "depends": [],
       "environment": [],
@@ -4832,6 +5214,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nvfp4_pack",
       "depends": [],
       "environment": [],
@@ -4845,6 +5228,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_nvfp4_scale",
       "depends": [],
       "environment": [],
@@ -4858,6 +5242,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -4871,6 +5256,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_convert",
       "depends": [],
       "environment": [
@@ -4886,6 +5272,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -4899,6 +5286,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -4912,6 +5300,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_kernels",
       "depends": [],
       "environment": [],
@@ -4925,6 +5314,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_loader",
       "depends": [],
       "environment": [
@@ -4940,6 +5330,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_model",
       "depends": [],
       "environment": [
@@ -4955,6 +5346,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_ornith_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -4968,6 +5360,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_parity_selfcheck_naming_guard",
       "depends": [],
       "environment": [],
@@ -4981,6 +5374,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_path_registry",
       "depends": [],
       "environment": [],
@@ -4994,6 +5388,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: alice-foundation-80b-a3b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5009,6 +5406,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: beam"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5024,6 +5424,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: deepseek-v4.1-flash"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5039,6 +5442,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: deepseek-v4-flash"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5054,6 +5460,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: deepseek-v4-pro-0813"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5069,6 +5478,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: flint"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5084,6 +5496,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: gemma-4-26b-a4b-it"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5099,6 +5514,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: gemma-4-31b-it"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5114,6 +5532,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: gigachat3.5-432b-a28b-reasoning"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5129,6 +5550,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: glm-5.2"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5144,6 +5568,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: glm-5.3-flash"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5159,6 +5586,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: granite-4.2-30b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5174,6 +5604,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: granite-switch-4.1-30b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5189,6 +5622,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: hy-memory-30b-a3b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5204,6 +5640,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: hy-simulmt-30b-a3b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5219,6 +5658,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: kimi-k2.7-code"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5234,6 +5676,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: kimi-k3"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [],
@@ -5247,6 +5692,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: kimi-k3.1-pro"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [],
@@ -5260,6 +5708,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: ling"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5275,6 +5726,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline_logic",
       "depends": [],
       "environment": [],
@@ -5288,6 +5740,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: mimo-v2.6-flash-rl"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5303,6 +5758,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: minimax-m3"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5318,6 +5776,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: minimax-m3.1-flash"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5333,6 +5794,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: mistral-large-4-1t"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5348,6 +5812,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: mistral-small-4-119b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5363,6 +5830,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: nemotron-3.5-lightning-30b-a3b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5378,6 +5848,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: nemotron-3.5-lightning-30b-a3b-nvfp4"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5393,6 +5866,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: ornith-1.5-35b-a3b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5408,6 +5884,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: phi-4"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5423,6 +5902,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: qwen3.5-35b-a3b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5438,6 +5920,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: qwen3.5-9b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5453,6 +5938,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: qwen3.6-35b-a3b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5468,6 +5956,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: qwen3.8-27b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5483,6 +5974,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: qwen3.8-flash-next"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5498,6 +5992,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: step-5-preview"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5513,6 +6010,9 @@
       "working_directory": null
     },
     {
+      "args": [
+        "perf baseline: xing4.0-29b-a4b"
+      ],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_baseline",
       "depends": [],
       "environment": [
@@ -5528,6 +6028,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_perf_knobs_apply",
       "depends": [],
       "environment": [],
@@ -5541,6 +6042,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -5554,6 +6056,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_convert",
       "depends": [],
       "environment": [],
@@ -5567,6 +6070,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -5580,6 +6084,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -5593,6 +6098,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_kernels",
       "depends": [],
       "environment": [],
@@ -5606,6 +6112,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_loader",
       "depends": [],
       "environment": [],
@@ -5619,6 +6126,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_model",
       "depends": [],
       "environment": [
@@ -5634,6 +6142,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_dense_selfcheck",
       "depends": [],
       "environment": [],
@@ -5647,6 +6156,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_phi_tool_framing",
       "depends": [],
       "environment": [],
@@ -5660,6 +6170,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_pread_pool",
       "depends": [],
       "environment": [],
@@ -5673,6 +6184,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_prompt_bridge",
       "depends": [],
       "environment": [],
@@ -5686,6 +6198,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_27b_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -5699,6 +6212,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_27b_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -5712,6 +6226,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_27b_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -5725,6 +6240,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_27b_model",
       "depends": [],
       "environment": [
@@ -5740,6 +6256,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_27b_selfcheck",
       "depends": [],
       "environment": [],
@@ -5753,6 +6270,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -5766,6 +6284,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_convert",
       "depends": [],
       "environment": [],
@@ -5779,6 +6298,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_converter_integrity",
       "depends": [],
       "environment": [],
@@ -5792,6 +6312,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -5805,6 +6326,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -5818,6 +6340,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_full_attn",
       "depends": [],
       "environment": [],
@@ -5831,6 +6354,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_full_attn_parallel",
       "depends": [],
       "environment": [],
@@ -5844,6 +6368,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_fused_linear_attn",
       "depends": [],
       "environment": [],
@@ -5857,6 +6382,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_fused_mlp",
       "depends": [],
       "environment": [],
@@ -5870,6 +6396,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_kv_cache",
       "depends": [],
       "environment": [],
@@ -5883,6 +6410,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_kv_parity",
       "depends": [],
       "environment": [],
@@ -5896,6 +6424,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_linear_attn",
       "depends": [],
       "environment": [],
@@ -5909,6 +6438,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_loader",
       "depends": [],
       "environment": [],
@@ -5922,6 +6452,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_mlp",
       "depends": [],
       "environment": [],
@@ -5935,6 +6466,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_model",
       "depends": [],
       "environment": [
@@ -5950,6 +6482,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_norm",
       "depends": [],
       "environment": [],
@@ -5963,6 +6496,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_nvfp4",
       "depends": [],
       "environment": [],
@@ -5976,6 +6510,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_rotary",
       "depends": [],
       "environment": [],
@@ -5989,6 +6524,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_selfcheck",
       "depends": [],
       "environment": [],
@@ -6002,6 +6538,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_dense_shuffle_reduce",
       "depends": [],
       "environment": [],
@@ -6015,6 +6552,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_36_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -6028,6 +6566,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_36_convert",
       "depends": [],
       "environment": [
@@ -6043,6 +6582,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_36_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -6056,6 +6596,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_36_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -6069,6 +6610,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_36_model",
       "depends": [],
       "environment": [
@@ -6084,6 +6626,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_36_selfcheck",
       "depends": [],
       "environment": [],
@@ -6097,6 +6640,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -6110,6 +6654,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_convert",
       "depends": [],
       "environment": [
@@ -6125,6 +6670,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -6138,6 +6684,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -6151,6 +6698,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_convert",
       "depends": [],
       "environment": [
@@ -6166,6 +6714,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -6179,6 +6728,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_eos_selfcheck",
       "depends": [],
       "environment": [],
@@ -6192,6 +6742,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -6205,6 +6756,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_kernels",
       "depends": [],
       "environment": [],
@@ -6218,6 +6770,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_loader",
       "depends": [],
       "environment": [
@@ -6233,6 +6786,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_model",
       "depends": [],
       "environment": [
@@ -6248,6 +6802,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_exp_selfcheck",
       "depends": [],
       "environment": [],
@@ -6261,6 +6816,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -6274,6 +6830,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_kernels",
       "depends": [],
       "environment": [],
@@ -6287,6 +6844,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_loader",
       "depends": [],
       "environment": [
@@ -6302,6 +6860,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_model",
       "depends": [],
       "environment": [
@@ -6317,6 +6876,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -6330,6 +6890,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_nvfp4_gemv",
       "depends": [],
       "environment": [],
@@ -6343,6 +6904,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_nvfp4_tile_gemm",
       "depends": [],
       "environment": [],
@@ -6356,6 +6918,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_qwen_tool_framing",
       "depends": [],
       "environment": [],
@@ -6369,6 +6932,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_resource_governor",
       "depends": [],
       "environment": [],
@@ -6382,6 +6946,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_runtime_tuner",
       "depends": [],
       "environment": [],
@@ -6395,6 +6960,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_safetensors",
       "depends": [],
       "environment": [],
@@ -6408,6 +6974,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_sampling",
       "depends": [],
       "environment": [],
@@ -6421,6 +6988,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_schema_views",
       "depends": [],
       "environment": [],
@@ -6434,6 +7002,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -6447,6 +7016,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_convert",
       "depends": [],
       "environment": [
@@ -6462,6 +7032,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -6475,6 +7046,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -6488,6 +7060,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_kernels",
       "depends": [],
       "environment": [],
@@ -6501,6 +7074,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_loader",
       "depends": [],
       "environment": [
@@ -6516,6 +7090,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_model",
       "depends": [],
       "environment": [
@@ -6531,6 +7106,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -6544,6 +7120,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_tokenizer",
       "depends": [],
       "environment": [],
@@ -6557,6 +7134,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_step_moe_tool_framing",
       "depends": [],
       "environment": [],
@@ -6570,6 +7148,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_stream_read_ceiling",
       "depends": [],
       "environment": [],
@@ -6583,6 +7162,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_stream_scratch",
       "depends": [],
       "environment": [],
@@ -6596,6 +7176,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/taskmosaic/tests/test_taskmosaic_backend",
       "depends": [],
       "environment": [],
@@ -6609,6 +7190,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/taskmosaic/tests/test_taskmosaic_bridge",
       "depends": [],
       "environment": [],
@@ -6622,6 +7204,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/taskmosaic/tests/test_taskmosaic_cli",
       "depends": [],
       "environment": [],
@@ -6635,6 +7218,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/apps/taskmosaic/tests/test_taskmosaic_config",
       "depends": [],
       "environment": [],
@@ -6648,6 +7232,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_tokenizer",
       "depends": [],
       "environment": [],
@@ -6661,6 +7246,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_tokenizer_arrows",
       "depends": [],
       "environment": [],
@@ -6674,6 +7260,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_tokenizer_vocab_contract",
       "depends": [],
       "environment": [],
@@ -6687,6 +7274,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_tool_format",
       "depends": [],
       "environment": [],
@@ -6700,6 +7288,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_vram_estimate",
       "depends": [],
       "environment": [],
@@ -6713,6 +7302,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_kv_layout_parity",
       "depends": [],
       "environment": [
@@ -6728,6 +7318,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_code_selfcheck",
       "depends": [],
       "environment": [],
@@ -6741,6 +7332,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_convert",
       "depends": [],
       "environment": [
@@ -6756,6 +7348,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_det_selfcheck",
       "depends": [],
       "environment": [],
@@ -6769,6 +7362,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_fsi_selfcheck",
       "depends": [],
       "environment": [],
@@ -6782,6 +7376,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_kernels",
       "depends": [],
       "environment": [],
@@ -6795,6 +7390,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_loader",
       "depends": [],
       "environment": [
@@ -6810,6 +7406,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_model",
       "depends": [],
       "environment": [
@@ -6825,6 +7422,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_moe_selfcheck",
       "depends": [],
       "environment": [],
@@ -6838,6 +7436,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_tool_framing",
       "depends": [],
       "environment": [],
@@ -6851,6 +7450,7 @@
       "working_directory": null
     },
     {
+      "args": [],
       "command": "/mnt/fast_storage/projects/cuda/logestix/build/linux-debug/tests/test_xing_warmup_ramp",
       "depends": [],
       "environment": [

@@ -18,6 +18,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 45.88 t/s (r3, 2026-11-03)
 - debt: none
+- notes: Perf TEST_CASE had no add_test until 2026-10 (same silent-rot trap as xing).
 
 ## beam
 
@@ -216,6 +217,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 0.49 t/s (r3, 2026-11-06)
 - debt: none
+- notes: Host-store bound (~0.3 t/s: 27 GiB routed + 9.5 GiB streamed per token): the two 2048-token modes plus the probe need a long budget (21600 s).
 
 ## kimi-k3.1-pro
 
@@ -229,6 +231,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 0.51 t/s (r3, 2026-11-06)
 - debt: none
+- notes: Same host-store bound as kimi-k3; the Pro adds the tiny indexer set, which is resident. Measured basis ~0.125 t/s: 2 x 2048 tokens ~= 9.1 h, plus two 23 GB loads, cooldown and DRAM probe ~= 9.6 h (43200 s).
 
 ## ling
 
@@ -253,6 +256,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: not seeded
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- notes: Perf baseline had never been measured before it got a ctest target (2026-10).
 
 ## minimax-m3
 
@@ -436,4 +440,5 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 123.92 t/s (r3, 2026-10-23)
 - debt: none
+- notes: Perf TEST_CASE had no add_test until 2026-10: the baseline was only ever recorded by invoking the binary directly, so it looked maintained while having no ctest wiring. A baseline with no target is a baseline that silently rots.
 

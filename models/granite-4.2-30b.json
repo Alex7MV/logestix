@@ -70,7 +70,8 @@
       "skip": false
     },
     "test_dense_kernels": {
-      "skip": false
+      "skip": false,
+      "form": "helper"
     }
   },
   "tool_roundtrip": true,

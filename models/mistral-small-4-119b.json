@@ -58,7 +58,8 @@
     "test_mistral_small4_oracle_tool": {
       "label": "fast",
       "timeout": 0,
-      "env": []
+      "env": [],
+      "form": "helper"
     },
     "test_mistral_moe_loader": {
       "label": "fast"

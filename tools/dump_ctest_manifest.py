@@ -79,6 +79,9 @@ def scan_file(path: Path, tests: dict):
             tests.setdefault(name, {
                 "name": name,
                 "command": unquote(args[0]) if args else "",
+                # Everything after the executable: a Catch2 name/tag filter for
+                # a second test case over one binary (perf rows, [tool]* cases).
+                "args": [unquote(a) for a in args[1:]],
                 "labels": [],
                 "timeout": None,
                 "skip_return_code": None,
