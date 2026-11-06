@@ -346,6 +346,11 @@ def validate(manifests, root: Path, partial: bool = False,
                 f"model_class {m.model_class} declares kType {ktype!r} "
                 f"(via {ktype_from}), manifest says {m.model_type!r}")
 
+        # rule 13: a declared report must exist. docs/MODELS.md links it, so a
+        # typo would be a dead "see the report" for every reader.
+        if m.report and not (root / m.report).is_file():
+            add(m, "report", f"report not found: {m.report}")
+
         # rule 6: every stage target resolves to a source file
         for t in m.targets():
             if t.stage == "perf":
@@ -413,6 +418,7 @@ def validate(manifests, root: Path, partial: bool = False,
             check_orphans(manifests, root))
         (errors if strict_orphans else warnings).extend(
             check_matrix(manifests, root))
+        errors.extend(check_doc_budget(manifests))
     return errors, warnings
 
 
@@ -427,6 +433,36 @@ def claimed_targets(manifests):
                 for src in m.target_overrides.get(target, {}).get("sources", ()):
                     names.add(Path(src).stem)
     return names
+
+
+DOC_SECTION_BUDGET = 15      # lines
+DOC_SECTION_CHARS = 900      # and characters: 15 long lines are not a catalogue
+
+
+def check_doc_budget(manifests):
+    """One model's section must fit in DOC_SECTION_BUDGET lines.
+
+    docs/MODELS.md is a catalogue, not a second AGENTS.md: the whole point of
+    moving the narrative out of AGENTS.md was that a per-model essay grows without
+    bound. The budget is enforced on the EMITTED text, so a long `notes` or a long
+    debt reason fails generation instead of quietly inflating the file.
+    """
+    problems = []
+    for m in manifests:
+        section = emit_model_section(m, {}).rstrip("\n")
+        lines = len(section.splitlines())
+        if lines > DOC_SECTION_BUDGET:
+            problems.append(
+                f"{m.path}: docs/MODELS.md section is {lines} lines "
+                f"(budget {DOC_SECTION_BUDGET}) - shorten `notes`/`golden_debt`; "
+                f"the detail belongs in the model report")
+        elif len(section) > DOC_SECTION_CHARS:
+            # A single 600-char note is one line and an essay at once.
+            problems.append(
+                f"{m.path}: docs/MODELS.md section is {len(section)} characters "
+                f"(budget {DOC_SECTION_CHARS}) - shorten `notes`/`golden_debt`; "
+                f"the detail belongs in the model report")
+    return problems
 
 
 def check_orphans(manifests, root: Path):
@@ -752,6 +788,50 @@ def emit_registry(manifests) -> str:
     return "\n".join(lines)
 
 
+def emit_model_section(m, baseline) -> str:
+    """The catalogue block for one model. Kept separate so the line budget is
+    measured on the same text that gets written (see check_doc_budget)."""
+    gates = []
+    for stage in ("selfcheck", "fsi", "code", "det"):
+        names = m.stages.get(stage, [])
+        gates.append(
+            f"{stage}: "
+            f"{'debt' if stage in m.golden_debt else ('yes' if names else 'no')}")
+    perf = (baseline or {}).get(m.model_type, {})
+    perf_row = (f"{perf.get('tokens_per_sec')} t/s ({perf.get('mode')}, "
+                f"{perf.get('date')})" if perf else "not seeded")
+    out = [
+        f"## {m.model_type}",
+        "",
+        f"- family `{m.family}`" + (f", variant `{m.variant}`" if m.variant else ""),
+        f"- class `{m.model_class}`, passport `{m.passport}`, "
+        f"namespace `{m.ns}`",
+    ]
+    if m.format_tag or m.forge_flag:
+        out.append(
+            (f"- format `{m.format_tag}`" if m.format_tag else "- format not "
+             f"declared")
+            + (f", forge `{m.forge_flag}`" if m.forge_flag else ""))
+    if m.tokenizer_kind:
+        out.append(f"- tokenizer kind {m.tokenizer_kind}")
+    out.append(f"- vault `{m.vault_dir}` (override `{m.vault_env}`)")
+    out.append(f"- lifecycle TUs: "
+               f"{', '.join(f'`{t}`' for t in m.lifecycle_tu) or 'none declared'}")
+    out.append(f"- gates: {'; '.join(gates)}")
+    out.append(f"- perf: {perf_row}")
+    if m.golden_debt:
+        out.append("- debt: " + "; ".join(
+            f"{k} — {v}" for k, v in sorted(m.golden_debt.items())))
+    # Absence is stated, not silent: the report is Model Ingestion Protocol
+    # stage 9, and a catalogue that simply omits the line lets a missing one read
+    # as "not applicable".
+    out.append(f"- report: `{m.report}`" if m.report
+               else "- report: **not written** (stage-9 debt)")
+    if m.notes:
+        out.append(f"- notes: {m.notes}")
+    return "\n".join(out) + "\n"
+
+
 def emit_docs(manifests, baseline) -> str:
     lines = [
         "# Models — generated catalogue",
@@ -765,36 +845,7 @@ def emit_docs(manifests, baseline) -> str:
         "",
     ]
     for m in sorted(manifests, key=lambda x: (x.family, x.model_type)):
-        gates = []
-        for stage in ("selfcheck", "fsi", "code", "det"):
-            names = m.stages.get(stage, [])
-            gates.append(f"{stage}: {'debt' if stage in m.golden_debt else ('yes' if names else 'no')}")
-        perf = baseline.get(m.model_type, {})
-        perf_row = (f"{perf.get('tokens_per_sec')} t/s ({perf.get('mode')}, "
-                    f"{perf.get('date')})" if perf else "not seeded")
-        lines += [
-            f"## {m.model_type}",
-            "",
-            f"- family `{m.family}`" + (f", variant `{m.variant}`" if m.variant else ""),
-            f"- class `{m.model_class}`, passport `{m.passport}`, "
-            f"namespace `{m.ns}`",
-            *( [f"- format `{m.format_tag}`" + (f", forge `{m.forge_flag}`" if m.forge_flag else "")]
-               if m.format_tag else
-               [f"- forge `{m.forge_flag}`"] if m.forge_flag else [] ),
-            *([f"- tokenizer kind {m.tokenizer_kind}"] if m.tokenizer_kind else []),
-            *(["- format tag not declared in the manifest"]
-              if not m.format_tag else []),
-            f"- vault `{m.vault_dir}` (override `{m.vault_env}`)",
-            f"- lifecycle TUs: {', '.join(f'`{t}`' for t in m.lifecycle_tu) or 'none declared'}",
-            f"- gates: {'; '.join(gates)}",
-            f"- perf: {perf_row}",
-            f"- debt: " + ("; ".join(f"{k} — {v}" for k, v in sorted(m.golden_debt.items()))
-                           or "none"),
-        ]
-        if m.report:
-            lines.append(f"- report: `{m.report}`")
-        if m.notes:
-            lines.append(f"- notes: {m.notes}")
+        lines.append(emit_model_section(m, baseline).rstrip("\n"))
         lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -827,23 +878,6 @@ def check_matrix(manifests, root):
             for name in rows
             if name not in known and name not in ("model (passport)",)]
 
-
-def emit_matrix_rows(manifests) -> str:
-    out = ["| model (passport) | SelfCheck | FSI | CODE | DET |", "|---|---|---|---|---|"]
-    for m in sorted(manifests, key=lambda x: x.model_type):
-        cells = []
-        for stage in ("selfcheck", "fsi", "code", "det"):
-            if stage in m.golden_debt:
-                cells.append("debt")
-            elif m.stages.get(stage):
-                cells.append("?" if stage != "selfcheck" else "PASS")
-            else:
-                cells.append("—")
-        out.append(f"| {m.model_type} | " + " | ".join(cells) + " |")
-    return "\n".join(out) + "\n"
-
-
-# ── modes ─────────────────────────────────────────────────────────────────
 
 def load_manifests(root: Path, partial=False):
     mdir = root / "models"
@@ -1032,7 +1066,6 @@ def main(argv=None):
     ap.add_argument("--cmake")
     ap.add_argument("--registry")
     ap.add_argument("--docs")
-    ap.add_argument("--matrix")
     ap.add_argument("--check", action="store_true",
                     help="regenerate the committed docs and fail on drift")
     ap.add_argument("--strict", action="store_true",
@@ -1099,8 +1132,6 @@ def main(argv=None):
         write(args.registry, emit_registry(manifests))
     if args.docs:
         write(args.docs, emit_docs(manifests, perf_baseline(root)))
-    if args.matrix:
-        write(args.matrix, emit_matrix_rows(manifests))
 
     if args.check:
         rc = 0

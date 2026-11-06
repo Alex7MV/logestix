@@ -92,6 +92,6 @@
   "tool_roundtrip": true,
   "auto_path_determinism": false,
   "golden_debt": {},
-  "report": "",
+  "report": "docs/model-reports/2026-11-03-granite-4.2-30b.md",
   "notes": ""
 }

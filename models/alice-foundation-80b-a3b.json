@@ -97,7 +97,7 @@
   "tool_roundtrip": true,
   "auto_path_determinism": false,
   "golden_debt": {},
-  "report": "",
+  "report": "docs/model-reports/2026-11-03-AliceAI-Foundation-80B-A3B-Base.md",
   "notes": "Perf TEST_CASE had no add_test until 2026-10 (same silent-rot trap as xing).",
   "aliases": [
     "aliceai-foundation-80b-a3b-base"

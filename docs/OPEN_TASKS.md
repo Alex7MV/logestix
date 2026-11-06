@@ -1832,3 +1832,18 @@ Still open, by construction:
   names them and records debt; it cannot produce them.
 - **Approach C (family scaffolder) is not built.** Decided after this work, on
   the measure "lines a fresh family needs that are not converter/kernel logic".
+
+### Stage-9 reports missing for 20 models
+
+`docs/MODELS.md` links every model's report where one exists (15 of 35) and prints
+**not written** where it does not — the line is stated rather than omitted, so a
+missing report cannot read as "not applicable". The 20 without one:
+
+`deepseek-v4-flash`, `deepseek-v4-pro-0813`, `deepseek-v4.1-flash`, `flint`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it`, `glm-5.2`, `glm-5.3-flash`, `hy-memory-30b-a3b`, `kimi-k2.7-code`, `ling`, `mimo-v2.6-flash-rl`, `minimax-m3`, `nemotron-3.5-lightning-30b-a3b`, `ornith-1.5-35b-a3b`, `phi-4`, `qwen3.5-35b-a3b`, `qwen3.5-9b`, `qwen3.6-35b-a3b`, `xing4.0-29b-a4b`
+
+The gap is not cosmetic: for these models the per-model *reasoning* (why a family
+pins `FastMathMode::kOff`, why its residual plane exists, what the measured
+bottleneck is) lives only in `AGENTS.md`'s git history and in `docs/open-tasks/`
+sessions, not in a document a reader can be pointed at. `models/*.json:report`
+now carries a validation rule — a declared path must exist — so writing one is a
+one-line manifest change.

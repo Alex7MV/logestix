@@ -101,6 +101,6 @@
   "tool_roundtrip": true,
   "auto_path_determinism": false,
   "golden_debt": {},
-  "report": "",
+  "report": "docs/model-reports/2026-10-31-MiniMax-M3.1-Flash.md",
   "notes": ""
 }

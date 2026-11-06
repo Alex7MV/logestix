@@ -106,6 +106,6 @@
   "tool_roundtrip": false,
   "auto_path_determinism": false,
   "golden_debt": {},
-  "report": "",
+  "report": "docs/model-reports/2026-10-31-granite-switch-4.1-30b.md",
   "notes": ""
 }

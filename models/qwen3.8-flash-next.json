@@ -79,6 +79,6 @@
   "tool_roundtrip": true,
   "auto_path_determinism": false,
   "golden_debt": {},
-  "report": "",
+  "report": "docs/model-reports/2026-11-04-Qwen3.8-Flash-Next.md",
   "notes": ""
 }

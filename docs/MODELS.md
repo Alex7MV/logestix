@@ -11,13 +11,12 @@ history live in `docs/model-reports/`; gate verdicts in
 
 - family `alice`
 - class `AliceFoundation80BModel`, passport `libs/lsxcommon/src/alice_moe_constants.h`, namespace `lsxcommon::alice::frozen`
-- forge `--alice`
-- format tag not declared in the manifest
+- format not declared, forge `--alice`
 - vault `AliceAI-Foundation-80B-A3B-Base` (override `LSX_TEST_ALICE_FOUNDATION_80B_A3B_ROOT`)
 - lifecycle TUs: `alice_moe_model.cpp`, `alice_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 45.88 t/s (r3, 2026-11-03)
-- debt: none
+- report: `docs/model-reports/2026-11-03-AliceAI-Foundation-80B-A3B-Base.md`
 - notes: Perf TEST_CASE had no add_test until 2026-10 (same silent-rot trap as xing).
 
 ## beam
@@ -31,42 +30,41 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 1.6 t/s (r3, 2026-10-31)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: `docs/model-reports/2026-10-31-Beam-1.0-501B-A23B.md`
 
 ## deepseek-v4-flash
 
 - family `deepseek`
 - class `DeepSeekV4FlashModel`, passport `libs/lsxcommon/include/lsxcommon/deepseek_moe_constants.h`, namespace `lsxcommon::deepseek`
-- forge `--deepseek_nvfp4`
-- format tag not declared in the manifest
+- format not declared, forge `--deepseek_nvfp4`
 - vault `DeepSeek-V4-Flash` (override `LSX_TEST_DEEPSEEK_V4_FLASH_ROOT`)
 - lifecycle TUs: `deepseek_moe_model.cpp`, `deepseek_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 8.37 t/s (r3, 2026-09-15)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: **not written** (stage-9 debt)
 
 ## deepseek-v4-pro-0813
 
 - family `deepseek`
 - class `DeepSeekV4ProModel`, passport `libs/lsxcommon/src/deepseek_moe_pro_constants.h`, namespace `lsxcommon::deepseek_pro`
-- forge `--deepseek_pro`
-- format tag not declared in the manifest
+- format not declared, forge `--deepseek_pro`
 - vault `DeepSeek-V4-Pro-0813` (override `LSX_TEST_DEEPSEEK_V4_PRO_0813_ROOT`)
 - lifecycle TUs: `deepseek_moe_pro_model.cpp`, `deepseek_moe_pro_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 0.79 t/s (r3, 2026-10-26)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## deepseek-v4.1-flash
 
 - family `deepseek`
 - class `DeepSeekV41FlashModel`, passport `libs/lsxcommon/src/deepseek_moe_v41_constants.h`, namespace `lsxcommon::deepseek_v41`
-- forge `--deepseek_v41`
-- format tag not declared in the manifest
+- format not declared, forge `--deepseek_v41`
 - vault `DeepSeek-V4.1-Flash` (override `LSX_TEST_DEEPSEEK_V4_1_FLASH_ROOT`)
 - lifecycle TUs: `deepseek_moe_v41_model.cpp`, `deepseek_moe_v41_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 7.7 t/s (r3, 2026-09-23)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## flint
 
@@ -79,96 +77,91 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: not seeded
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: **not written** (stage-9 debt)
 
 ## gemma-4-26b-a4b-it
 
 - family `gemma`
 - class `Gemma4_26BA4BModel`, passport `libs/lsxcommon/include/lsxcommon/gemma_moe_load.h`, namespace `lsxcommon::gemma`
-- forge `--gemma4`
+- format not declared, forge `--gemma4`
 - tokenizer kind 11
-- format tag not declared in the manifest
 - vault `gemma-4-26B-A4B-it` (override `LSX_TEST_GEMMA_4_26B_A4B_IT_ROOT`)
 - lifecycle TUs: `gemma_base_model.cpp`, `gemma_moe_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 128.34 t/s (r3, 2026-10-24)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## gemma-4-31b-it
 
 - family `gemma`
 - class `Gemma4_31BDenseModel`, passport `libs/lsxcommon/include/lsxcommon/gemma_dense_constants.h`, namespace `lsxcommon::gemma_dense::frozen`
-- forge `--gemma4dense`
+- format not declared, forge `--gemma4dense`
 - tokenizer kind 11
-- format tag not declared in the manifest
 - vault `gemma-4-31B-it` (override `LSX_TEST_GEMMA_4_31B_IT_ROOT`)
 - lifecycle TUs: `gemma_dense_model.cpp`, `gemma_dense_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 47.63 t/s (r3, 2026-10-24)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## gigachat3.5-432b-a28b-reasoning
 
 - family `gigachat`
 - class `GigaChat35Model`, passport `libs/lsxcommon/src/gigachat_moe_constants.h`, namespace `lsxcommon::gigachat::frozen`
-- forge `--gigachat`
+- format not declared, forge `--gigachat`
 - tokenizer kind 3
-- format tag not declared in the manifest
 - vault `GigaChat3.5-432B-A28B-Reasoning` (override `LSX_TEST_GIGACHAT3_5_432B_A28B_REASONING_ROOT`)
 - lifecycle TUs: `gigachat_moe_model.cpp`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 11.1 t/s (r3, 2026-11-01)
-- debt: none
+- report: `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md`
 
 ## glm-5.2
 
 - family `glm`
 - class `GlmV5Model`, passport `libs/lsxcommon/include/lsxcommon/glm_moe_load.h`, namespace `lsxcommon::glm`
-- forge `--glm`
+- format not declared, forge `--glm`
 - tokenizer kind 8
-- format tag not declared in the manifest
 - vault `GLM-5.2` (override `LSX_TEST_GLM_5_2_ROOT`)
 - lifecycle TUs: `glm_moe_model.cpp`, `glm_moe_inference.cu`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: not seeded
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: **not written** (stage-9 debt)
 
 ## glm-5.3-flash
 
 - family `glm`
 - class `Glm5NextFlashModel`, passport `libs/lsxcommon/src/glm_moe_flash_constants.h`, namespace `lsxcommon::glm_moe_flash::frozen`
-- forge `--glmflash`
+- format not declared, forge `--glmflash`
 - tokenizer kind 8
-- format tag not declared in the manifest
 - vault `GLM-5.3-Flash` (override `LSX_TEST_GLM_5_3_FLASH_ROOT`)
 - lifecycle TUs: `glm_moe_flash_model.cpp`, `glm_moe_flash_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 12.27 t/s (r3, 2026-10-24)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## granite-4.2-30b
 
 - family `granite`
 - class `Granite42_30BModel`, passport `libs/lsxcommon/include/lsxcommon/granite_dense_constants.h`, namespace `lsxcommon::granite::frozen`
-- forge `--granite`
+- format not declared, forge `--granite`
 - tokenizer kind 10
-- format tag not declared in the manifest
 - vault `granite-4.2-30b` (override `LSX_TEST_GRANITE_4_2_30B_ROOT`)
 - lifecycle TUs: `granite_dense_model.cpp`, `granite_dense_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 76.47 t/s (r3, 2026-11-03)
-- debt: none
+- report: `docs/model-reports/2026-11-03-granite-4.2-30b.md`
 
 ## granite-switch-4.1-30b
 
 - family `granite`
 - class `GraniteSwitch41_30BModel`, passport `libs/lsxcommon/include/lsxcommon/granite_dense_switch_constants.h`, namespace `lsxcommon::granite_switch::frozen`
-- forge `--granite_switch`
-- format tag not declared in the manifest
+- format not declared, forge `--granite_switch`
 - vault `granite-switch-4.1-30b` (override `LSX_TEST_GRANITE_SWITCH_4_1_30B_ROOT`)
 - lifecycle TUs: `granite_dense_switch_model.cpp`, `granite_dense_switch_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 70.07 t/s (r3, 2026-10-31)
-- debt: none
+- report: `docs/model-reports/2026-10-31-granite-switch-4.1-30b.md`
 
 ## hy-memory-30b-a3b
 
@@ -179,58 +172,56 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `hy_moe_model.cpp`, `hy_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 76.11 t/s (r3, 2026-10-30)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## hy-simulmt-30b-a3b
 
 - family `hy`
 - class `HySimulMTModel`, passport `libs/lsxcommon/src/hy_moe_simulmt_constants.h`, namespace `lsxcommon::hy_simulmt::frozen`
-- forge `--hy_simulmt`
-- format tag not declared in the manifest
+- format not declared, forge `--hy_simulmt`
 - vault `Hy-SimulMT-30B-A3B` (override `LSX_TEST_HY_SIMULMT_30B_A3B_ROOT`)
 - lifecycle TUs: `hy_moe_simulmt_model.cpp`, `hy_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 74.85 t/s (r3, 2026-10-31)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: `docs/model-reports/2026-10-31-hy-simulmt-30b-a3b.md`
 
 ## kimi-k2.7-code
 
 - family `kimi`
 - class `KimiK27CodeModel`, passport `libs/lsxcommon/include/lsxcommon/kimi_moe_load.h`, namespace `lsxcommon::kimi`
-- forge `--kimi`
-- format tag not declared in the manifest
+- format not declared, forge `--kimi`
 - vault `Kimi-K2.7-Code` (override `LSX_TEST_KIMI_K2_7_CODE_ROOT`)
 - lifecycle TUs: `kimi_moe_model.cpp`, `kimi_moe_inference.cu`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 5.04 t/s (r3, 2026-11-06)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: **not written** (stage-9 debt)
 
 ## kimi-k3
 
 - family `kimi`
 - class `KimiK3Model`, passport `libs/lsxcommon/src/kimi_moe_k3_constants.h`, namespace `lsxcommon::kimi_k3::frozen`
-- forge `--kimi_k3`
+- format not declared, forge `--kimi_k3`
 - tokenizer kind 2
-- format tag not declared in the manifest
 - vault `Kimi-K3` (override `LSX_TEST_KIMI_K3_ROOT`)
 - lifecycle TUs: `kimi_moe_k3_model.cpp`, `kimi_moe_k3_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 0.49 t/s (r3, 2026-11-06)
-- debt: none
+- report: `docs/model-reports/2026-11-03-Kimi-K3.md`
 - notes: Host-store bound (~0.3 t/s: 27 GiB routed + 9.5 GiB streamed per token): the two 2048-token modes plus the probe need a long budget (21600 s).
 
 ## kimi-k3.1-pro
 
 - family `kimi`
 - class `KimiK31ProModel`, passport `libs/lsxcommon/src/kimi_moe_pro_constants.h`, namespace `lsxcommon::kimi_pro::frozen`
-- forge `--kimi_k31_pro`
+- format not declared, forge `--kimi_k31_pro`
 - tokenizer kind 2
-- format tag not declared in the manifest
 - vault `Kimi-K3.1-Pro` (override `LSX_TEST_KIMI_K3_1_PRO_ROOT`)
 - lifecycle TUs: `kimi_moe_pro_model.cpp`, `kimi_moe_k3_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 0.51 t/s (r3, 2026-11-06)
-- debt: none
+- report: `docs/model-reports/2026-11-05-Kimi-K3.1-Pro.md`
 - notes: Same host-store bound as kimi-k3; the Pro adds the tiny indexer set, which is resident. Measured basis ~0.125 t/s: 2 x 2048 tokens ~= 9.1 h, plus two 23 GB loads, cooldown and DRAM probe ~= 9.6 h (43200 s).
 
 ## ling
@@ -244,18 +235,19 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 2.41 t/s (r3, 2026-10-31)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: **not written** (stage-9 debt)
 
 ## mimo-v2.6-flash-rl
 
 - family `mimo`
 - class `MiMoV26FlashModel`, passport `libs/lsxcommon/src/mimo_moe_constants.h`, namespace `lsxcommon::mimo::frozen`
-- forge `--mimo`
-- format tag not declared in the manifest
+- format not declared, forge `--mimo`
 - vault `MiMo-V2.6-Flash-RL` (override `LSX_TEST_MIMO_V2_6_FLASH_RL_ROOT`)
 - lifecycle TUs: `mimo_moe_model.cpp`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: not seeded
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: **not written** (stage-9 debt)
 - notes: Perf baseline had never been measured before it got a ctest target (2026-10).
 
 ## minimax-m3
@@ -268,95 +260,91 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `minimax_moe_model.cpp`, `minimax_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 2.98 t/s (r3, 2026-10-28)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## minimax-m3.1-flash
 
 - family `minimax`
 - class `MiniMaxM31FlashModel`, passport `libs/lsxcommon/src/minimax_moe_flash_constants.h`, namespace `lsxcommon::minimax_flash::frozen`
-- forge `--minimax_flash`
-- format tag not declared in the manifest
+- format not declared, forge `--minimax_flash`
 - vault `MiniMax-M3.1-Flash` (override `LSX_TEST_MINIMAX_M3_1_FLASH_ROOT`)
 - lifecycle TUs: `minimax_moe_flash_model.cpp`, `minimax_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 6.18 t/s (r3, 2026-10-31)
-- debt: none
+- report: `docs/model-reports/2026-10-31-MiniMax-M3.1-Flash.md`
 
 ## mistral-large-4-1t
 
 - family `mistral`
 - class `MistralLarge4MoeModel`, passport `libs/lsxcommon/src/mistral_moe_large4_constants.h`, namespace `lsxcommon::mistral_large4::frozen`
-- forge `--mistral_large4`
-- format tag not declared in the manifest
+- format not declared, forge `--mistral_large4`
 - vault `Mistral-Large-4-1T-A52B` (override `LSX_TEST_MISTRAL_LARGE_4_1T_ROOT`)
 - lifecycle TUs: `mistral_moe_large4_model.cpp`, `mistral_moe_large4_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 1.03 t/s (r3, 2026-11-02)
-- debt: none
+- report: `docs/model-reports/2026-11-02-Mistral-Large-4-1T-A52B.md`
 
 ## mistral-small-4-119b
 
 - family `mistral`
 - class `MistralSmall4MoeModel`, passport `libs/lsxcommon/src/mistral_moe_constants.h`, namespace `lsxcommon::mistral_moe::frozen`
-- forge `--mistral`
+- format not declared, forge `--mistral`
 - tokenizer kind 9
-- format tag not declared in the manifest
 - vault `Mistral-Small-4-119B-2603-NVFP4` (override `LSX_TEST_MISTRAL_SMALL_4_119B_ROOT`)
 - lifecycle TUs: `mistral_moe_model.cpp`, `mistral_moe_inference.cu`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 45.77 t/s (perf, 2026-11-06)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: `docs/model-reports/2026-11-06-Mistral-Small-4-119B-2603-NVFP4.md`
 
 ## nemotron-3.5-lightning-30b-a3b
 
 - family `nemotron`
 - class `NemotronHModel`, passport `libs/lsxcommon/src/nemotron_moe_constants.h`, namespace `lsxcommon::nemotron_moe::frozen`
-- forge `--nemotron`
+- format not declared, forge `--nemotron`
 - tokenizer kind 9
-- format tag not declared in the manifest
 - vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_ROOT`)
 - lifecycle TUs: `nemotron_moe_model.cpp`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 24.07 t/s (r3, 2026-09-16)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: **not written** (stage-9 debt)
 
 ## nemotron-3.5-lightning-30b-a3b-nvfp4
 
 - family `nemotron`
 - class `NemotronNvfp4Model`, passport `libs/lsxcommon/src/nemotron_moe_nvfp4_constants.h`, namespace `lsxcommon::nemotron_nvfp4::frozen`
-- forge `--nemotron_nvfp4`
-- format tag not declared in the manifest
+- format not declared, forge `--nemotron_nvfp4`
 - vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_NVFP4_ROOT`)
 - lifecycle TUs: `nemotron_moe_nvfp4_model.cpp`, `nemotron_moe_model.cpp`
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 120.39 t/s (r3, 2026-11-01)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: `docs/model-reports/2026-11-01-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4.md`
 
 ## ornith-1.5-35b-a3b
 
 - family `ornith`
 - class `OrnithMoeModel`, passport `libs/lsxcommon/src/ornith_moe_constants.h`, namespace `lsxcommon::ornith::frozen`
-- forge `--ornith`
+- format not declared, forge `--ornith`
 - tokenizer kind 7
-- format tag not declared in the manifest
 - vault `Ornith-1.5-35B-A3B` (override `LSX_TEST_ORNITH_1_5_35B_A3B_ROOT`)
 - lifecycle TUs: `ornith_moe_model.cpp`, `ornith_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 72.48 t/s (r3, 2026-10-23)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## phi-4
 
 - family `phi`
 - class `Phi4Model`, passport `libs/lsxcommon/include/lsxcommon/phi_dense_constants.h`, namespace `lsxcommon::phi::frozen`
-- forge `--phi`
+- format not declared, forge `--phi`
 - tokenizer kind 8
-- format tag not declared in the manifest
 - vault `phi-4` (override `LSX_TEST_PHI_4_ROOT`)
 - lifecycle TUs: `phi_dense_model.cpp`, `phi_dense_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 71.29 t/s (r3, 2026-10-24)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## qwen3.5-35b-a3b
 
@@ -368,19 +356,18 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 77.56 t/s (r3, 2026-11-04)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## qwen3.5-9b
 
 - family `qwen`
 - class `Qwen3_5_9BModel`, passport `libs/lsxcommon/src/qwen_dense_model.h`, namespace `Qwen3_5_9BModel`
-- forge `--qwen`
-- format tag not declared in the manifest
+- format not declared, forge `--qwen`
 - vault `Qwen3.5-9B` (override `LSX_TEST_QWEN3_5_9B_ROOT`)
 - lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 170.0 t/s (r3, 2026-11-05)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## qwen3.6-35b-a3b
 
@@ -391,32 +378,30 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 73.39 t/s (r3, 2026-10-23)
-- debt: none
+- report: **not written** (stage-9 debt)
 
 ## qwen3.8-27b
 
 - family `qwen`
 - class `Qwen3_8_27BModel`, passport `libs/lsxcommon/src/qwen_dense_27b_model.h`, namespace `Qwen3_8_27BModel`
-- forge `--qwen`
-- format tag not declared in the manifest
+- format not declared, forge `--qwen`
 - vault `Qwen3.8-27B` (override `LSX_TEST_QWEN3_8_27B_ROOT`)
 - lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 60.15 t/s (r3, 2026-11-03)
-- debt: none
+- report: `docs/model-reports/2026-11-03-Qwen3.8-27B.md`
 
 ## qwen3.8-flash-next
 
 - family `qwen`
 - class `Qwen38FlashNextModel`, passport `libs/lsxcommon/src/qwen_moe_exp_constants.h`, namespace `lsxcommon::qwen_moe_exp::frozen`
-- forge `--qwen38flashnext`
+- format not declared, forge `--qwen38flashnext`
 - tokenizer kind 7
-- format tag not declared in the manifest
 - vault `Qwen3.8-Flash-Next` (override `LSX_TEST_QWEN3_8_FLASH_NEXT_ROOT`)
 - lifecycle TUs: `qwen_moe_exp_model.cpp`, `qwen_moe_exp_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 33.91 t/s (r3, 2026-11-04)
-- debt: none
+- report: `docs/model-reports/2026-11-04-Qwen3.8-Flash-Next.md`
 
 ## step-5-preview
 
@@ -428,17 +413,17 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: debt; code: debt; det: debt
 - perf: 1.83 t/s (r3, 2026-10-31)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- report: `docs/model-reports/2026-10-31-Step-5-Preview.md`
 
 ## xing4.0-29b-a4b
 
 - family `xing`
 - class `XingMoeModel`, passport `libs/lsxcommon/src/xing_moe_constants.h`, namespace `lsxcommon::xing::frozen`
-- forge `--xing`
-- format tag not declared in the manifest
+- format not declared, forge `--xing`
 - vault `Xing4.0-29B-A4B` (override `LSX_TEST_XING4_0_29B_A4B_ROOT`)
 - lifecycle TUs: `xing_moe_model.cpp`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 123.92 t/s (r3, 2026-10-23)
-- debt: none
+- report: **not written** (stage-9 debt)
 - notes: Perf TEST_CASE had no add_test until 2026-10: the baseline was only ever recorded by invoking the binary directly, so it looked maintained while having no ctest wiring. A baseline with no target is a baseline that silently rots.
 
