@@ -356,31 +356,29 @@ std::set<std::string> BaselineModels(const std::string &json)
     return out;
 }
 
-// model_type values named by a TEST_CASE in tests/test_perf_baseline.cpp.
+// model_type values named by a `perf baseline: <model_type>` TEST_CASE in
+// tests/test_perf_baseline.cpp.
+//
+// The model name is taken VERBATIM from the case title, not matched against a
+// hardcoded stem list with substring comparison. The list had two failures, both
+// silent: a model missing from it (kimi-k3, kimi-k3.1-pro) looked like an orphan
+// although its TEST_CASE and its ctest target existed, and the substring match
+// let `kimi-k3` be "covered" by the `kimi-k3.1-pro` case. Every entry in the
+// table uses the verbatim spelling, so exactness costs nothing.
 std::set<std::string> PerfCaseModels(const std::string &test_src)
 {
     std::set<std::string> out;
-    static const std::regex case_re(R"(TEST_CASE\(\s*"([^"]+))");
+    static const std::regex case_re(R"(TEST_CASE\(\s*"perf baseline: ([^"]+))");
     std::smatch m;
     auto begin = test_src.cbegin();
     while (std::regex_search(begin, test_src.cend(), m, case_re)) {
-        for (const auto &mid :
-             {std::string("glm-5.2"), std::string("glm-5.3-flash"),
-              std::string("deepseek-v4-flash"),
-              std::string("deepseek-v4.1-flash"),
-              std::string("deepseek-v4-pro-0813"), std::string("gemma-4"),
-              std::string("kimi-k2.7"), std::string("qwen3.5-9b"),
-              std::string("qwen3.8-27b"), std::string("qwen3.5-35b"),
-              std::string("qwen3.6-35b"), std::string("qwen3.8-flash-next"),
-              std::string("nemotron"), std::string("mimo"), std::string("gigachat"),
-              std::string("granite"), std::string("phi-4"), std::string("ornith"),
-              std::string("alice"), std::string("xing"),
-              std::string("mistral"), std::string("minimax"),
-              std::string("hy-memory"), std::string("hy-simulmt"),
-              std::string("ling"),
-              std::string("beam"), std::string("step-5-preview")}) {
-            if (m[1].str().find(mid) != std::string::npos) out.insert(mid);
-        }
+        std::string name = m[1].str();
+        // Drop a trailing test tag or argument the author left inside the
+        // string, and any leading/trailing space.
+        const auto cut = name.find_first_of(",");
+        if (cut != std::string::npos) name.resize(cut);
+        while (!name.empty() && name.back() == ' ') name.pop_back();
+        if (!name.empty()) out.insert(name);
         begin = m.suffix().first;
     }
     return out;
@@ -421,6 +419,36 @@ TEST_CASE("perf baseline file is exactly what the harness writes",
     }
 }
 
+TEST_CASE("perf registry: case coverage is exact, not prefix-matched",
+          "[perf_baseline][guard]")
+{
+    // The coverage check used a hardcoded list of model-name stems plus a
+    // substring match in both directions. Two consequences, both silent:
+    //   * a model whose stem was missing from the list looked like an orphan
+    //     even though its TEST_CASE and its ctest target existed — that is how
+    //     kimi-k3 and kimi-k3.1-pro failed the moment their rows were first
+    //     measured, and the list had simply never learned them;
+    //   * and it was LOOSE: `kimi-k3` is a substring of `kimi-k3.1-pro`, so the
+    //     Pro case alone would have "covered" the K3 row.
+    // A case is named `perf baseline: <model_type>` verbatim for every entry in
+    // the table (checked across all of them), so the match can be exact and the
+    // list can go.
+    const std::string src = R"(TEST_CASE("perf baseline: kimi-k3.1-pro", "[perf]")
+TEST_CASE("perf baseline: kimi-k3", "[perf]"))";
+    const auto models = PerfCaseModels(src);
+    CHECK(models.count("kimi-k3") == 1);
+    CHECK(models.count("kimi-k3.1-pro") == 1);
+    // The Pro case must not be the thing that covers K3.
+    CHECK(models.size() == 2);
+
+    // A family with no case at all is still an orphan.
+    CHECK(PerfCaseModels(R"()").empty());
+    // A display name that merely CONTAINS a model name is not that model's case.
+    const auto only_pro =
+        PerfCaseModels(R"(TEST_CASE("perf baseline: kimi-k3.1-pro", "[perf]"))");
+    CHECK(only_pro.count("kimi-k3") == 0);
+}
+
 TEST_CASE("perf registry: every baseline entry has a measuring TEST_CASE",
           "[perf_baseline][guard]")
 {
@@ -434,17 +462,11 @@ TEST_CASE("perf registry: every baseline entry has a measuring TEST_CASE",
         // The environment probe is a synthetic row (no model, no TEST_CASE);
         // it is maintained by test_perf_baseline's probe protocol instead.
         if (m == "__gpu_probe__") continue;
-        // The case names a display stem (e.g. "glm-5.3-flash"), which is a
-        // prefix-stable match: every model_type in the table appears verbatim
-        // inside some case name.
-        bool covered = false;
-        for (const auto &c : cases) {
-            const auto &[it, unused] = std::minmax(m, c);
-            (void)unused;
-            if (c.find(m) != std::string::npos || m.find(c) != std::string::npos)
-                covered = true;
-        }
-        if (!covered) orphans.push_back("baseline entry with no perf TEST_CASE: " + m);
+        // Exact: the case is titled `perf baseline: <model_type>`. A substring
+        // match would let `kimi-k3.1-pro` cover the `kimi-k3` row, and a
+        // hardcoded stem list would hide a model it had never learned.
+        if (cases.count(m) == 0)
+            orphans.push_back("baseline entry with no perf TEST_CASE: " + m);
     }
     std::string joined;
     for (const auto &x : orphans) joined += x + "\n";
