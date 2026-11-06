@@ -74,12 +74,12 @@ the box.
 - [x] 6.2 `docs/SELFCHECK_MATRIX.md` row for `mistral-small-4-119b`.
 - [x] 6.3 `docs/model-reports/2026-11-06-Mistral-Small-4-119B-2603-NVFP4.md`
       (publish-ready post + evidence), and the `README.md` index row.
-- [ ] 6.4 `AGENTS.md`: update the family's numbers only if a measured value
+- [x] 6.4 `AGENTS.md`: update the family's numbers only if a measured value
       changed.
 
 ## 7. Closing verification
 
 - [x] 7.1 `ctest --preset linux-debug` green (guards included).
 - [x] 7.2 The family's full suite green or SKIP-with-debt, documented.
-- [ ] 7.3 Commit(s) in `feat/...` prefix style; no golden or perf row rewritten
+- [x] 7.3 Commit(s) in `feat/...` prefix style; no golden or perf row rewritten
       by hand.
