@@ -193,11 +193,11 @@ one in a ctest summary, which is why the debt rows are called out below.
 - gemma-4-26b went green in this session (second NVFP4 plane on attn + dense
   MLP, routed experts left 4-bit): FSI/CODE/DET were 1/3, 2/3, 3/3 before.
 
-## 2. Converted tree present, **no golden** — declared debt (FSI/CODE/DET SKIP)
+## 2. Converted tree present, **no committed golden** — declared debt (FSI/CODE/DET SKIP or measured red)
 
 | model | SelfCheck | FSI | CODE | DET | why |
 |---|---|---|---|---|---|
-| mistral-small-4-119b | PASS | SKIP | SKIP | SKIP | the source is the Mistral "consolidated" layout (`params.json`, no `config.json`) AND its tensor names/layout do not match `Mistral4ForCausalLM` (50 missing / 3118 unexpected keys, experts stored per-expert rather than fused), so a plain HF load runs a randomly-initialized model and no valid oracle exists without a name+repack mapping — `docs/OPEN_TASKS.md` §T.1, tool `tools/mistral_small4_oracle.py` |
+| mistral-small-4-119b | PASS | 1/3 | 0/3 | 0/3 | the three gates were **run** on 2026-11-06 with prompt-derived goldens and measured, not SKIPped; they stay declared debt because a prompt-derived expected value cannot establish parity. The model is coherent but off-format (DET is deterministic across three runs). A source-faithful golden is blocked by the checkpoint's tensor names/expert layout (50 missing / 3118 unexpected vs `Mistral4ForCausalLM`), not by its config — `docs/OPEN_TASKS.md` §T.1, tool `tools/mistral_small4_oracle.py` |
 | flint | PASS | SKIP | SKIP | SKIP | source runs only on CPU (`tools/flint_oracle.py`, ~3-5 s/token); the capture set is hours long. The converted model is additionally parity-limited: the 4-bit routed-expert plane is the dominant residual error (an 8-bit expert set needs +21 GB, the card has ~9 GB free) — `docs/OPEN_TASKS.md` §R6 |
 | beam | PASS | SKIP | SKIP | SKIP | the 934 GB BF16 source (501B) exceeds this host's 750 GB RAM, so the reference cannot be loaded for a capture; kernel parity + SelfCheck are the instruments. Two real-weight defects (the lost `<|call|>` stop id and a reserved-id decode failure) were found and fixed — `docs/OPEN_TASKS.md` §R8 |
 | ling | PASS | SKIP | SKIP | SKIP | source is 560B BF16/FP8 with GPU-only FLA KDA kernels; no oracle runnable on one RTX 5090 (a CPU reference was used for single-token probes only). Per-expert global scales + the official SwiGLU clamps were required for a coherent answer — `docs/OPEN_TASKS.md` §R7 |

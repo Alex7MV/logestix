@@ -530,11 +530,39 @@ intact 66 GB source and ran the whole lifecycle.
   r3 **49.82 t/s** (was 41.57), TTFT 525/509 ms, DRAM probe 1532.73 GB/s
   recorded in the same run. `r3` moving up 20% is the strict path now
   benefiting from the same tree/commit; it is a measured row, not a claim.
-- **The FSI/CODE/DET debt reason has changed, and the investigation closed it
-  as still-debt for a precise reason.** When the debt was declared the source
-  was "unrunnable": `params.json`, no `config.json`, no `model_type`. That part
-  is now stale — `transformers` 5.15.1 ships `Mistral4ForCausalLM`, its defaults
-  match this checkpoint exactly, and a synthesized `config.json`
+- **The three gates were RUN on 2026-11-06 with template-derived goldens, and
+  measured.** They do not pass, and the measurement is now a fact rather than a
+  SKIP. Capture used `tools/{fsi,code,det}_capture.py --template-*` with the
+  engine-exact frame (`BOS + [INST]…[/INST]`, no vendor system turn):
+  **FSI 1/3, CODE 0/3, DET 0/3** (DET `deterministic=true tokens_ok=true` on all
+  three prompts — three byte-identical runs each). The model is coherent and
+  on-topic but off-format: FSI-03 returns exactly `Drawdown>Threshold`, FSI-01
+  answers `PV=CF*(1-exp(-r*n))` (the annuity-due form, missing the geometric
+  denominator), FSI-02 opens with prose. CODE opens every answer with an
+  intro line ("Here's a valid JSON schema…") and CODE-03 degenerates into a
+  repeated phrase. DET-02 reproduces the behaviour recorded for the ORIGINAL
+  ingestion — it reasons *to* the answer ("The word that starts with the
+  character 'C' and ends with the character 'C'") without emitting the token —
+  which is a reproducibility signal across both conversions.
+  **The goldens are still NOT committed**, for the reason the earlier decision
+  gave: with a template-derived (not source-captured) expected value they assert
+  nothing about parity that the Paris SelfCheck does not already cover, and
+  three permanently-red targets train people to ignore red. The rows stay in
+  `kGoldenDebt`; what changed is that the debt is now measured.
+- **Two capture-tool defects were found and fixed while running them.**
+  `tools/fsi_capture.py` had no `chat_template` override for this model (code
+  and det had it) AND never applied `opts["chat_template"]` at all — the first
+  FSI run therefore used the checkpoint's own template, which injects
+  `default_system_message` when no system turn is present, and all three prompts
+  answered "It seems like you're asking about a specific dates, you can use
+  tools to fetch…" (0/3, a pure framing artefact). With the override applied and
+  honoured the same three prompts answer on-topic, so the 0/3 was the harness,
+  not the model.
+- **Why no source-faithful golden: the reference stack cannot consume this
+  checkpoint.** When the debt was declared the source was "unrunnable"
+  (`params.json`, no `config.json`, no `model_type`). That part is now stale —
+  `transformers` 5.15.1 ships `Mistral4ForCausalLM`, its defaults match this
+  checkpoint exactly, and a synthesized `config.json`
   (`tools/mistral_small4_oracle.py::mistral_small4_config_dict`) makes
   `AutoConfig` construct and `from_pretrained` read all 13 shards. Two rope keys
   are load-bearing in that synthesis and each fails differently: without
