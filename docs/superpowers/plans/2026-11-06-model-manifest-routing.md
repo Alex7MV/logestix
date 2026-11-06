@@ -84,3 +84,23 @@ Rules applied:
   keeps its report.
 - Nothing routed to R is deleted without the destination existing; the phase
   commit adds the pointer lines to `docs/MODELS.md` in the same commit.
+
+## Update (2026-11-06, after the migration)
+
+The Windows `qwen|gemma` test restriction was **removed at the operator's
+request**, so the invariant that used to live in `AGENTS.md` and in the
+`test-lifecycle` skill no longer exists. Three places carried it:
+
+- `AGENTS.md` § invariants — the sentence is gone; nothing replaces it.
+- `.opencode/skills/test-lifecycle/SKILL.md` — the "WINDOWS-ONLY RESTRICTION"
+  bullet is gone, and the OS-profiles line now says a model test is not skipped
+  or filtered by OS.
+- `tools/test_router.cmake` — this was the only MECHANISM, not just prose: on
+  Windows it ran the `convert` and `inference` sweeps under
+  `-R "^(test_qwen|test_gemma)"`, which silently narrowed those sweeps to two
+  families on that OS. The `if(WIN32)` branch is deleted; every platform now runs
+  one label-filtered sweep.
+
+Dated plan documents under `docs/superpowers/plans/` (2026-08-25, 2026-08-27)
+still mention the restriction: they record what was true when they were written
+and are not rewritten.

@@ -104,7 +104,8 @@ ctest --preset linux-release-znver4-perf    # perf; Release-only
 ctest -L "^(fast|convert|inference|perf)$"  # full run
 ```
 
-Other OS profiles: `ctest --preset windows-debug` (fast). Preset names are built
+Other OS profiles: `ctest --preset windows-debug` (fast) — the same label
+filters as Linux; a model test is not skipped or filtered by OS. Preset names are built
 from the base (`linux-debug`, `linux-release`, `linux-release-znver4`,
 `windows-debug`, `windows-release`) plus a `-fast`/`-convert`/`-inference`/`-perf`
 suffix that maps to the label filter. The base test preset filters `^fast$`.
@@ -116,9 +117,6 @@ suffix that maps to the label filter. The base test preset filters `^fast$`.
 - **`SKIP_RETURN_CODE 4`** must be set on any target that can skip (real weights
   absent); otherwise CTest reports the skip as a failure. `test_ctest_labels_guard`
   enforces this for every target whose source calls `SKIP(`.
-- **WINDOWS-ONLY RESTRICTION**: on Windows run model tests only for Qwen3.5-9B
-  and gemma-4-26B-A4B-it — `ctest -R "qwen|gemma"`. Other model tests (GLM,
-  DeepSeek, …) must not run on that OS.
 
 ## Test router
 

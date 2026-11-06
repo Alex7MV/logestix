@@ -106,8 +106,7 @@ family's suite is complete and self-contained.
 - **Test registration:** use `cmake/LsxTestHelpers.cmake`
   (`lsx_add_test`/`lsx_add_cuda_test`); every target carries one label
   (`fast|convert|inference|perf`) and every skip-capable target sets
-  `SKIP_RETURN_CODE 4` (`test_ctest_labels_guard`). Windows runs only
-  `qwen|gemma` model tests.
+  `SKIP_RETURN_CODE 4` (`test_ctest_labels_guard`).
 - **NVIDIA documentation is not vendored** — load current docs from the
   `nvidia-cuda-docs` MCP before editing NVFP4/CUDA kernels
   (`docs/NVIDIA_DOCS.md`); if it is unavailable, stop and ask.

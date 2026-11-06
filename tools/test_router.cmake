@@ -119,31 +119,13 @@ endif()
 
 find_program(LSX_CTEST_EXE ctest REQUIRED)
 set(LSX_FAILED OFF)
-if(WIN32)
-    # Per-label sweeps: the qwen|gemma name filter (AGENTS.md OS restriction)
-    # must not shrink the fast run.
-    foreach(sweep IN ITEMS fast convert inference)
-        list(FIND LSX_LABELS "${sweep}" idx)
-        if(idx EQUAL -1)
-            continue()
-        endif()
-        if(sweep STREQUAL "fast")
-            set(name_filter "")
-        else()
-            set(name_filter -R "^(test_qwen|test_gemma)")
-        endif()
-        execute_process(COMMAND ${LSX_CTEST_EXE} --preset ${LSX_PRESET}
-            -L "^${sweep}$" ${name_filter} RESULT_VARIABLE rc)
-        if(NOT rc EQUAL 0)
-            set(LSX_FAILED ON)
-        endif()
-    endforeach()
-else()
-    execute_process(COMMAND ${LSX_CTEST_EXE} --preset ${LSX_PRESET}
-        -L "^(${LSX_LABEL_RE})$" RESULT_VARIABLE LSX_RC)
-    if(NOT LSX_RC EQUAL 0)
-        set(LSX_FAILED ON)
-    endif()
+# One sweep on every platform. Windows used to run the labels separately behind a
+# `-R "^(test_qwen|test_gemma)"` name filter, which silently narrowed the convert
+# and inference sweeps to two families on that OS.
+execute_process(COMMAND ${LSX_CTEST_EXE} --preset ${LSX_PRESET}
+    -L "^(${LSX_LABEL_RE})$" RESULT_VARIABLE LSX_RC)
+if(NOT LSX_RC EQUAL 0)
+    set(LSX_FAILED ON)
 endif()
 if(LSX_FAILED)
     message(FATAL_ERROR "test_router: ctest sweep failed")
