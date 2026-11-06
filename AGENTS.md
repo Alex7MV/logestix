@@ -761,20 +761,26 @@ procedure — `perf-tuning-a-model`.
   Real weights (1.5 TB MXFP4 source → 1.5 TB tree in 17 min: 23 GB pinned graph
   + 8.9 GB streamed latent/shared plane + 1.4 TB expert arrows): SelfCheck
   Paris ×3 bit-exact (`logits_hash 98ec1bbb372c9181`, top-1 40) and the native
-  XTML tool round-trip `get_weather {"city":"Paris"}` are green. Decode measures
-  **3.23–3.35 s/token (0.30–0.31 t/s)** at the shipped configuration — host-store
-  bound: 92 MoE layers × top-16 experts, 25.5 GiB of reads per token; the parent
-  K3 measures 2.96, so the indexer costs ~9–13 % — so the
-  FSI/CODE/DET and perf sweep (~14.7–15.3 h of
-  exclusive GPU) is **declared debt, not a pass**: those cells are `not run`.
+  XTML tool round-trip `get_weather {"city":"Paris"}` are green. Decode is a
+  harness row, not prose: **0.50 t/s (perf) / 0.51 (r3) at 2048 tokens = 2.00 /
+  1.96 s per token** (`tests/perf/perf_baselines.json`, seeded 2026-11-06) — still
+  host-store bound (92 MoE layers × top-16 experts, 25.5 GiB of reads per token),
+  and **faster than its parent** K3, which seeds at 0.47/0.49 t/s (2.13/2.04
+  s/token), so the DSA indexer is not a net cost at this length. That replaces the
+  earlier 3.23–3.35 estimate, which was log-derived. The FSI/CODE/DET sweep
+  (~7 h of exclusive GPU at the measured rate) is **declared debt, not a pass**:
+  those cells are `not run`.
   Open, and load-bearing for how the gates may be read — `docs/OPEN_TASKS.md`
   §R17 (P1: the indexer arithmetic is reconstructed, no modeling code ships;
   P2: the family's synthetic fixture is input-invariant, so no model-stage test
   can observe a wrong key set; P3: the sweep is debt; P4: its goldens are
   template-derived; P5: RESOLVED — the reported 4x gap was a prose baseline, and
   the defect it hid was the 512-slot expert window against a 1472-expert working
-  set, 6.95 → 2.98 (K3) / 3.23–3.35 (Pro) s/token; the eviction half of the
-  same loop is closed too — P5a, both archived).
+  set, 6.95 → 2.98 (K3) / 3.23–3.35 (Pro) s/token as measured then; the eviction
+  half of the same loop is closed too — P5a, both archived. **The window numbers
+  above are history, not the current rate**: the 2026-11-06 harness rows put K3 at
+  2.13/2.04 and Pro at 2.00/1.96 s/token, and the 2.98/3.23–3.35 figures were
+  log-derived prose. P3's perf half is closed; its FSI/CODE/DET half is not).
   Ling-3.1-flash (independent family `ling`: `BailingMoeV3ForCausalLM`,
   560B total / 25B active, 63 KDA (linear attention) + 9 gated-MLA layers
   (every 8th), 68 MoE layers × 512 routed experts top-8 (group-limited

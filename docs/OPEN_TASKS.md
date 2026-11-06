@@ -958,8 +958,8 @@ pinned + 8.9 GB streamed plane + 1.4 TB routed experts; RTX 5090, CUDA 13.4):
 | tokenizer parity | 23/23 against the checkpoint's `tiktoken.model` (`tokenizer_kind 2`) |
 | tool codec | byte-exact against `encoding_k3.py` frames (synthetic tokenizer) |
 | FSI / CODE / DET | goldens committed (template-derived); **not yet run** on real weights |
-| decode rate | **2.96–2.97 s/token** (0.34 t/s) measured 2026-11-05 at the shipped configuration (expert window 65 536, no eager warm), 64-token cycles, bit-exact throughout. It was 6.95 s/token at the old 512-slot window against a 1472-expert working set — see §R17 P5 and its archive entry `open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`, which also record that the `~2 s/token` this report first quoted was prose committed before the run it described |
-| perf row | **not seeded** — no `perf`/`r3` entry in `perf_baselines.json` for this tree |
+| decode rate | **2.13 s/token (perf) / 2.04 (r3)** — harness rows `0.47` / `0.49` t/s at 2048 tokens, seeded 2026-11-06. Earlier figures on this row were log-derived prose: 2.96–2.97 at the shipped configuration (expert window 65 536, no eager warm, 64-token cycles) and 6.95 at the old 512-slot window against a 1472-expert working set — see §R17 P5 and its archive entry `open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md` |
+| perf row | **seeded 2026-11-06**: `perf` 0.47 t/s, `r3` 0.49 t/s, 2048 tokens, TTFT 131.9 / 102.1 s |
 
 **Open, explicitly.**
 
@@ -1042,21 +1042,45 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   scale that keeps the residual from being dominated by a constant block) is the
   instrument this family is missing — `docs/OPEN_ENDEDNESS.md` §"which
   instrument is missing".
-- P3. **The real-weight FSI / CODE / DET and perf sweep was not run** (operator
-  ruling, 2026-11-05: record it as debt rather than spend the GPU time). The cost
-  is measured, not guessed, and it shrank by ~2.2x when P5's window defect was
-  fixed: at the shipped 3.2–3.35 s/token for this tree (window 65 536, no eager
-  warm — see P5; the figures below were first written at the pre-fix 0.14 t/s):
+- P3. **PERF HALF CLOSED (2026-11-06); the FSI / CODE / DET half is still debt.**
+  All three kimi families now have harness rows in `tests/perf/perf_baselines.json`,
+  recorded through `test_perf_baseline` (never by hand), 2048 tokens, the recorded
+  prompt, GPU-exclusive:
 
-  | target | generations × tokens | wall clock at 3.2–3.35 s/token |
+  | model | perf (kAuto) | r3 (kOff) | s/token (perf / r3) | TTFT (perf / r3) |
+  |---|---|---|---|---|
+  | `kimi-k2.7-code` | 5.05 t/s | 5.04 t/s | 0.20 / 0.20 | 1.0 s / 1.1 s |
+  | `kimi-k3` | 0.47 t/s | 0.49 t/s | 2.13 / 2.04 | 131.9 s / 102.1 s |
+  | `kimi-k3.1-pro` | 0.50 t/s | 0.51 t/s | 2.00 / 1.96 | 165.1 s / 92.3 s |
+
+  Two things this changed. (a) K3 and Pro had **no rows at all** before — every
+  number quoted for them until now was log-derived, and the entry said so. (b) The
+  prose figures they replace (2.96 s/token for K3, 3.23–3.35 for Pro, P5) are
+  ~1.5x apart from the harness rows on the same tree and the same binary; the
+  difference is cache state and TTFT accounting, which is why the rows are now
+  the quotable form and the prose is not. Also note **Pro measured faster than
+  K3** (2.00 vs 2.13 s/token), which removes the last trace of P5's premise: the
+  Pro is not the slower of the two.
+  The FSI / CODE / DET cells remain `not run` — that half of the sweep is
+  unchanged and still owes ~7 h of exclusive GPU at the measured rate. The cost
+  is measured, not guessed, and it shrank again when the rows above replaced the
+  prose rate: recomputed at the **harness-measured 2.0 s/token** for this tree
+  (window 65 536, no eager warm — see P5; the figures below were first written at
+  the pre-fix 0.14 t/s, then at 3.2–3.35):
+
+  | target | generations × tokens | wall clock at 2.0 s/token |
   |---|---|---|
-  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~5.5–5.7 h (+load) |
-  | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~1.4 h (+load) |
-  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~4.1–4.3 h (+load) |
-  | `test_perf_baseline_kimi_k31_pro` | 2 × 2048 (`ignore_eos`) | ~3.7–3.8 h (+2 loads) |
+  | `test_kimi_pro_fsi_selfcheck` | 3 × 2048 | ~3.4 h (+load) |
+  | `test_kimi_pro_code_selfcheck` | 3 × 512 | ~0.9 h (+load) |
+  | `test_kimi_pro_det_selfcheck` | 3 × 3 × 512 | ~2.6 h (+load) |
 
-  so the sweep is ~14.7–15.3 h of exclusive GPU on this host (it was ~32 h at the
-  pre-fix rate). FSI was actually started (release tree) and stopped 97 min in,
+  (`test_perf_baseline_kimi_k31_pro` used to be the fourth row of this table; it is
+  **done** — its two modes are in the table at the top of this entry.)
+
+  so that sweep is ~7 h of exclusive GPU on this host at the now-measured
+  2.0 s/token (it was ~32 h at the pre-fix rate, ~14.7–15.3 h when these figures
+  were first written as prose, and ~11 h at the 3.2–3.35 estimate). FSI was
+  actually started (release tree) and stopped 97 min in,
   still inside FSI-TEST-01; the interruption made the harness emit three empty
   generations, and **an in-flight kill is not a verdict** — the cells stay
   `not run`. The ctest budgets still describe the pre-fix worst case (FSI
@@ -1084,7 +1108,9 @@ round-trip** `get_weather {"city":"Paris"}` — both green in
   clamp up to the working-set floor plus a default of 65 536, and
   `warm_on_load = false` because the eager pre-parse walks experts in path order
   and cost 156 s for nothing — which is **6.95 → 2.96 (K3) / 3.23–3.35 (Pro)
-  s/token** at ~5 s load, bit-exact. P5a closed with it: an evicted slot is now
+  s/token** at ~5 s load, bit-exact *as measured then*; the 2026-11-06 harness
+  rows are the current rate (**K3 2.13/2.04**, **Pro 2.00/1.96** s/token — see
+  P3's table), so treat the figures in this bullet as history. P5a closed with it: an evicted slot is now
   retired with a CUDA event instead of `cudaStreamSynchronize` (**20.3 → 0.07 ms**
   per eviction; 6.95 → 6.26 at a 512-slot window). Full trail — the sweep table,
   the two prefetch designs measured and rejected, and the 6.6% mistral-small-4

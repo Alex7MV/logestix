@@ -57,7 +57,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
-| **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.8–1.9 h/case) | not run (debt) | not run (debt) |
+| **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 
 - SelfCheck **23/23 rows** (every row above), FSI **58/63**, CODE **62/63**,
   DET **62/63**. Counting rule: one case per prompt, three prompts per measured
@@ -72,17 +72,21 @@ one in a ctest summary, which is why the debt rows are called out below.
   23 GB pinned graph, 8.9 GB streamed latent/shared plane) and SelfCheck is green
   on the real weights — Paris ×3 bit-exact, plus the native XTML tool round-trip
   `get_weather {"city":"Paris"}` — so it earned its move out of §3. The three
-  parity cells are **not run, and that is a measurement, not a formality**: this
-  variant decodes at **3.23–3.35 s per token (0.30–0.31 t/s)** at the shipped
-  configuration (expert window 65 536, no eager warm), down from 6.95 s/token
-  when it first landed — the window was 512 against a 1472-expert working set, a
-  cyclic scan with a zero hit rate (`docs/open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`
-  has the sweep and the two prefetch designs that were measured and rejected), and the eviction path
-  in the same loop no longer stalls the host (P5a; both archived as
-  `open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md`). Its parent measures 2.96 in
-  the same build, so the DSA indexer costs ~9–13 %. Even at the fixed rate one
-  2048-token FSI case is ~1.8–1.9 h and the FSI+CODE+DET+perf sweep is ~14.7–15.3 h
-  of exclusive GPU. An FSI
+  parity cells are **not run, and that is a measurement, not a formality**. The
+  decode rate is now a harness row rather than prose: **0.50 t/s (perf) / 0.51
+  (r3) at 2048 tokens = 2.00 / 1.96 s per token**, seeded 2026-11-06 through
+  `test_perf_baseline` (the perf half of §R17 P3 is closed; FSI/CODE/DET remain
+  debt). That replaces the earlier 3.23–3.35 s/token estimate, which was
+  log-derived — and it also removes the last trace of P5's premise: **the Pro
+  measures faster than its parent** (`kimi-k3` seeds at 0.47/0.49 t/s = 2.13/2.04
+  s per token), so the indexer is not a net cost at this sequence length. The
+  history of the rate: 6.95 s/token when it first landed, when the window was 512
+  against a 1472-expert working set — a cyclic scan with a zero hit rate
+  (`docs/open-tasks/2026-11-05-kimi-k3-decode-window-and-eviction.md` has the
+  sweep and the two prefetch designs that were measured and rejected) — then the
+  eviction path in the same loop stopped stalling the host (P5a, archived in the
+  same file). At the measured rate the remaining FSI+CODE+DET sweep is ~7 h of
+  exclusive GPU, and one 2048-token FSI case is ~1.1 h. An FSI
   run was started and stopped 97 min in — the kill is not a verdict, hence `not run`
   rather than a red. Its goldens are **template-derived** and payload-identical
   to `kimi-k3`'s, so a future green row pins the converted path against the
