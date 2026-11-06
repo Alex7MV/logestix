@@ -112,5 +112,8 @@
     "fsi": "declared debt (see docs/OPEN_TASKS.md)"
   },
   "report": "",
-  "notes": ""
+  "notes": "",
+  "aliases": [
+    "ling-3.1-flash"
+  ]
 }

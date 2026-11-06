@@ -28,6 +28,9 @@
 #include <string>
 #include <vector>
 
+#include <lsxcommon/model.h>
+#include <lsxcommon/model_factory.h>
+
 #include "model_manifest.h"
 
 #ifndef LSX_SOURCE_DIR
@@ -152,6 +155,35 @@ TEST_CASE("manifest sync: --check reports no drift", "[manifest][fast]")
     INFO("regenerate docs/MODELS.md with: tools/gen_model_manifest.py --docs "
          "docs/MODELS.md --root .");
     REQUIRE(rc == 0);
+}
+
+TEST_CASE("manifest sync: the factory registers every manifest row",
+          "[manifest][fast]")
+{
+    // The registry TU used to be a hand-maintained list of 35 Register<T>() calls
+    // plus 3 vault-normalized aliases. A model added to the manifests but not to
+    // that list "does not exist" at runtime while every guard stays green, so the
+    // list is generated and this case proves it reaches every row.
+    lsxcommon::EnsureModelRegistry();
+    for (std::size_t i = 0; i < lsxmanifest::kModelCount; ++i)
+    {
+        const auto &row = lsxmanifest::kModels[i];
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_type = row.model_type;
+        cfg.model_path = "/nonexistent";   // construction must not need weights
+        INFO("model_type " << row.model_type);
+        REQUIRE(lsxcommon::LsxModelFactory::Create(cfg) != nullptr);
+    }
+
+    // Aliases resolve to the same class (that is their whole purpose).
+    const char *alias = std::getenv("LSX_TEST_ALIAS_PROBE");
+    if (alias)
+    {
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_type = alias;
+        cfg.model_path = "/nonexistent";
+        REQUIRE(lsxcommon::LsxModelFactory::Create(cfg) != nullptr);
+    }
 }
 
 TEST_CASE("manifest sync: no unclaimed model test file", "[manifest][fast]")
