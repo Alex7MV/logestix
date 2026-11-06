@@ -551,7 +551,14 @@ struct ExpertStore {
             entries[idx] = TEntry();
             return false;
         }
-        planes[idx] = *loc;
+        // Only when the caller sized the table. Load() sizes it; the
+        // pinned-store path (kimi_moe_load) pre-sizes entries/mmaps/batches
+        // itself and calls LoadParallelParse directly, so `planes` can be empty
+        // there — and an unchecked write into an empty vector is an
+        // out-of-bounds store inside a worker thread (it killed the
+        // kimi-k2.7-code perf test with SIGSEGV before one token was generated).
+        // Resizing here is NOT an option: ParseFile runs on N threads.
+        if (idx < planes.size()) planes[idx] = *loc;
 
         if (emit_diag && (idx == 0 || idx == 1 ||
                           idx == static_cast<size_t>(experts_per_layer))) {

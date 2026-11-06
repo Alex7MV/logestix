@@ -649,3 +649,40 @@ TEST_CASE("ExpertStore accepts an expert whose schema plane is empty",
     cudaStreamDestroy(stream);
     std::filesystem::remove_all(container);
 }
+
+TEST_CASE("ExpertStore survives LoadParallelParse without a prior Load",
+          "[expert_store][stage]")
+{
+    // The pinned-store path (kimi-k2.7-code) does NOT call Load(): it pre-sizes
+    // entries/mmaps/batches/paths itself and then calls LoadParallelParse, so a
+    // table that only Load() sizes is empty there. Recording plane locators
+    // through `planes[idx]` then wrote past an empty vector and the perf test
+    // died with SIGSEGV inside a worker thread — before generating a single
+    // token. The store must tolerate a caller that pre-sized only the tables
+    // Load() used to own.
+    Store s;
+    s.num_layers = 2;
+    s.experts_per_layer = 2;
+    s.max_open = 4;
+    const auto dir = MakeExpertDir();
+    // Mimic kimi_moe_load: same pre-sizing, built from the frame we would use.
+    const int total = s.num_layers * s.experts_per_layer;
+    s.entries.assign(static_cast<size_t>(total), FixtureEntry{});
+    s.mmaps.assign(static_cast<size_t>(total), nullptr);
+    s.batches.assign(static_cast<size_t>(total), nullptr);
+    s.paths.resize(static_cast<size_t>(total));
+    for (int layer = 0; layer < s.num_layers; ++layer)
+        for (int exp = 0; exp < s.experts_per_layer; ++exp)
+            s.paths[static_cast<size_t>(layer * 2 + exp)] =
+                (dir / "logestix" / "experts" /
+                 ("layer_" + std::to_string(layer)) /
+                 ("exp_" + std::to_string(exp) + ".arrow"))
+                    .string();
+    REQUIRE(s.planes.empty());          // exactly the state that crashed
+
+    REQUIRE(s.LoadParallelParse(2));    // must not write out of bounds
+    REQUIRE(s.entries[0].host_w1 != nullptr);
+    // Locators are only recorded when the caller sized the table; the
+    // important part is that nothing was corrupted.
+    CHECK(s.planes.empty());
+}

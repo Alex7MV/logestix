@@ -539,6 +539,11 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
         db.entries.assign(static_cast<size_t>(total), KimiExpertEntry());
         db.mmaps.assign(static_cast<size_t>(total), nullptr);
         db.batches.assign(static_cast<size_t>(total), nullptr);
+        // Same reason as the three tables above: this path does not call Load(),
+        // so every table Load() would size has to be sized here. Without this the
+        // per-plane file locators have nowhere to go and the staging ring can
+        // never be enabled for this family.
+        db.planes.assign(static_cast<size_t>(total), {});
         db.paths.resize(static_cast<size_t>(total));
         namespace fs = std::filesystem;
         fs::path exp_dir = fs::path(model_path) / "logestix" / "experts";
