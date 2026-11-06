@@ -148,9 +148,12 @@ Both halves are machine-bound, in **both** directions:
 `test_perf_baseline_logic` fails if a `perf_baselines.json` entry has no measuring
 `TEST_CASE` in `tests/test_perf_baseline.cpp` (an entry without a target is an
 unguarded baseline) **and** if a `TEST_CASE("perf baseline: ...")` has no
-`add_test(NAME test_perf_baseline_* COMMAND test_perf_baseline "<that case>")` in
-`tests/CMakeLists.txt`. Add the JSON entry, the case **and** the `add_test` in the
-same commit.
+`add_test(NAME test_perf_baseline_* COMMAND test_perf_baseline "<that case>")`
+anywhere in the ctest corpus (`tests/CMakeLists.txt` plus the generated
+`${CMAKE_BINARY_DIR}/generated/model_targets.cmake`). Add the JSON entry, the case
+**and** the manifest `perf` stage target in the same commit — the generator emits
+the `add_test` with the case string, the label, the timeout, the GPU lock and the
+`LSX_PERF_VAULT_SUBDIR`; you never write that call by hand.
 
 The second direction is not redundant. A `TEST_CASE` with no `add_test` looks like
 coverage when you read the source and like absence when you read ctest, and nothing

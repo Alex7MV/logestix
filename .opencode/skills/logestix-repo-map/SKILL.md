@@ -32,8 +32,8 @@ any skill — can be stale while the table cannot.
 - `test_code_naming_guard.cpp::SchemeRegex()` / `AllowedCommon()` — file-naming vocabulary.
 - `test_ctest_labels_guard.cpp` — every test target carries a label.
 
-Model ingestion itself (the 8-stage protocol, naming scheme, guard registries to
-extend) is the `ingesting-a-model` skill; build wiring is
+Model ingestion itself (the 8-stage protocol, the manifest schema, the naming
+scheme) is the `ingesting-a-model` skill; build wiring is
 `cuda-cmake-build-gotchas`; running/operating the engine (apps, vault paths,
 env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
 
