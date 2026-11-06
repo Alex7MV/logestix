@@ -43,8 +43,9 @@ Python 3 (generator only, build-time), git.
   `--check`.
 - `models/<model_type>.json` filenames sort stably; `model_type` equals the
   model class's `kType` and the `LsxModelFactory` key.
-- Windows: the preset must keep working; model tests there are limited to
-  `qwen|gemma`, and that filter is emitted once by the generator.
+- Windows: the preset must keep working. (The old `qwen|gemma` test restriction
+  was REMOVED at the operator's request during execution — see the amendment at
+  the end of this plan; do not emit a filter for it.)
 - One GPU workload at a time: run the inference/label sweeps sequentially.
 - Numeric behaviour of converters, kernels and models is **out of scope**: no
   golden, threshold or fast-math policy changes in this work.
@@ -508,17 +509,11 @@ Templates per kind, with values from the manifest:
 A model target that needs a define, env or timeout beyond the defaults is
 expressed in `target_overrides`; no other escape path exists.
 
-The fragment wraps the model loop in the platform filter the operator requires —
-emit it here, once:
-
-```cmake
-if(WIN32 AND NOT "${model}" MATCHES "^(qwen|gemma)")
-    return()   # or `continue()` inside the loop body
-endif()
-```
-
-so `ctest --preset windows-debug` runs only the qwen/gemma model tests, as
-`test-lifecycle` documents.
+~~The fragment wraps the model loop in the platform filter~~ — **do not do this.**
+The Windows `qwen|gemma` restriction was removed during execution (operator
+request), and the mechanism behind it (`test_router.cmake`'s `if(WIN32)` branch)
+is deleted. Every platform now runs one label-filtered sweep. See the amendment
+at the end of this plan.
 
 - [ ] **Step 3: Delete the hand blocks and diff against the oracle**
 
@@ -834,3 +829,37 @@ git commit -m "docs: point the skills at the manifest; record the migration's ga
 - Approach C (family scaffolder): decided after this plan lands, against the
   measure "how many lines a fresh family needs that are not converter/kernel
   logic".
+
+---
+
+## Amendment (2026-11-06, during execution)
+
+**The Windows `qwen|gemma` test restriction was removed at the operator's
+request.** Consequences for this plan:
+
+- Task 5 Step 2 no longer emits a `WIN32` name filter into the generated
+  fragment (struck out above). No platform conditional exists in
+  `model_targets.cmake`.
+- `test_router.cmake` lost its `if(WIN32)` branch. That branch was the only
+  MECHANISM: on Windows it narrowed the `convert` and `inference` sweeps with
+  `-R "^(test_qwen|test_gemma)"`, so those sweeps covered two families on that OS
+  while Linux covered all of them.
+- `AGENTS.md` and `.opencode/skills/test-lifecycle/SKILL.md` no longer state the
+  restriction.
+
+Other amendments made during execution (each is also in the commits):
+
+- **Task 5 scope:** the generator emits *registration* (`add_test` +
+  `set_tests_properties`) only. Build wiring (`add_executable`, the CUDA OBJECT
+  libraries, per-target includes/defines) stays hand-written, because only 10 of
+  421 targets follow a convention and the rest is per-target compile reality.
+- **Task 6/7:** the parity-gate driver and the selfcheck driver also own the
+  `selfcheck` stage, not just FSI/CODE/DET, because the vault directory and the
+  env var were the last per-family hardcodings.
+- **Task 3:** `format_tag` is filled only where a machine-readable source exists
+  (8 of 35); the rest print "not declared" in the catalogue rather than a guess.
+- **Task 9:** `docs/SELFCHECK_MATRIX.md` is checked, not generated — its cells are
+  measured verdicts.
+- **Task 1:** `--self-test` mutates a LIVE manifest (a checked-in fixture went
+  stale the moment the per-family gate files were deleted) and is registered as
+  `test_manifest_generator_selftest`.
