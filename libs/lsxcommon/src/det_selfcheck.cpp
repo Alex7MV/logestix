@@ -53,6 +53,37 @@ std::string Preprocess(std::string_view raw)
     return text;
 }
 
+// Model output is multi-line, and this verdict is ONE log record. Embedding bare
+// newlines in it silently breaks every line-oriented consumer: `grep 'raw=.*'`
+// returns the first line only, so a reader sees a prefix of the raw and believes
+// it is the whole thing. That is exactly how a real `BIT_ERO` answer looked like
+// a clean `BIT_ZERO` during the 2026-11-07 parity sweep — the extractor was
+// right and the *log* was truncated by the reader. Escaping `\n`/`\r`/`\t` and
+// other control bytes keeps the record on one line and honest.
+//
+// Bytes >= 0x80 are passed through: UTF-8 output is legitimate and escaping it
+// would make every non-English model log unreadable.
+std::string EscapeForLog(std::string_view in)
+{
+    std::string out;
+    out.reserve(in.size() + 16);
+    for (unsigned char c : in) {
+        switch (c) {
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            case '\0': out += "\\0"; break;
+            default:
+                if (c < 0x20 || c == 0x7f) {
+                    out += absl::StrFormat("\\x%02x", c);
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    return out;
+}
+
 bool IsWordChar(char c)
 {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
@@ -308,19 +339,30 @@ DetResult RunDetSelfCheck(IModel &model, const DetGolden &golden,
             static_cast<unsigned>(golden.cases.size()), runs,
             c.max_new_tokens));
         res.cases.push_back(RunDetCase(model, c, decode, stress_runs_override));
-        lsxcommon::log::info(absl::StrFormat(
-            "[det] %s done deterministic=%s tokens_ok=%s", c.id.c_str(),
-            res.cases.back().deterministic ? "true" : "false",
-            res.cases.back().error.empty() ? "true" : "false"));
+        // An inference failure is NOT a determinism failure: the runs never
+        // completed, so nothing was compared. Reporting it as
+        // `deterministic=false` sends the reader after a numeric-instability bug
+        // when the real cause is (measured 2026-11-07) a VRAM alloc under a
+        // concurrent GPU workload. Say which one it is, and name the error.
+        const DetCaseResult &last = res.cases.back();
+        if (!last.error.empty())
+            lsxcommon::log::info(absl::StrFormat(
+                "[det] %s done inference-error error='%s'", c.id.c_str(),
+                last.error.c_str()));
+        else
+            lsxcommon::log::info(absl::StrFormat(
+                "[det] %s done deterministic=%s", c.id.c_str(),
+                last.deterministic ? "true" : "false"));
     }
     res.all_passed = !res.cases.empty();
     for (const DetCaseResult &c : res.cases) {
         lsxcommon::log::info(absl::StrFormat(
             "[det] %s runs=%d deterministic=%s expected='%s' extracted='%s' "
-            "passed=%s raw='%s'",
+            "passed=%s error='%s' raw='%s'",
             c.id.c_str(), c.runs, c.deterministic ? "true" : "false",
             c.expected.c_str(), c.extracted.c_str(),
-            c.passed ? "true" : "false", c.raw.c_str()));
+            c.passed ? "true" : "false", c.error.c_str(),
+            EscapeForLog(c.raw).c_str()));
         if (!c.passed) res.all_passed = false;
     }
     return res;
