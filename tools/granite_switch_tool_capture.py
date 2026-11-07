@@ -41,7 +41,7 @@ def main():
     golden = {
         "format": "logestix-granite-switch-tool-golden",
         "version": 1,
-        "model_type": "granite-switch-4.1-30b",
+        "model_type": os.path.basename(os.path.normpath(args.model)),
         "source": args.model,
         "input_ids": ids[0].tolist(),
         "output_text": raw,

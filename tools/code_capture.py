@@ -54,6 +54,11 @@ OVERRIDES = {
     # mode for short exact-token answers. Its chat template lives in
     # chat_template.jinja (not tokenizer_config).
     "granite-switch-4.1-30b": {"loader": "granite_switch"},
+    # Same composed architecture as its 30B sibling and the same CPU-BF16
+    # oracle (transformers has no GraniteSwitchForCausalLM; the class ships
+    # in the granite-switch package). Base adapter: the gates compare the
+    # checkpoint's own continuation, not an adaptation.
+    "granite-switch-4.1-8b": {"loader": "granite_switch"},
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
     # qwen3.8-flash-next is an experimental "qwen4_exp" arch (same patches as
     # the FSI capture): layer-type allowlist + KV-cache mapping + PLE shards.

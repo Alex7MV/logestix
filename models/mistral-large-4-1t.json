@@ -1,0 +1,112 @@
+{
+  "model_type": "mistral-large-4-1t",
+  "display_name": "mistral-large-4-1t",
+  "family": "mistral",
+  "variant": null,
+  "model_class": "MistralLarge4MoeModel",
+  "model_header": "mistral_moe_large4_model.h",
+  "passport": "libs/lsxcommon/src/mistral_moe_large4_constants.h",
+  "namespace": "lsxcommon::mistral_large4::frozen",
+  "format_tag": "",
+  "forge_flag": "--mistral_large4",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "Mistral-Large-4-1T-A52B",
+    "env": "LSX_TEST_MISTRAL_LARGE_4_1T_ROOT"
+  },
+  "lifecycle_tu": [
+    "mistral_moe_large4_model.cpp",
+    "mistral_moe_large4_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_mistral_moe_large4_convert"
+    ],
+    "load": [
+      "test_mistral_moe_large4_loader",
+      "test_mistral_moe_large4_tokenizer_parity"
+    ],
+    "model": [
+      "test_mistral_moe_large4_model",
+      "test_mistral_moe_large4_tool_framing"
+    ],
+    "kernels": [
+      "test_mistral_moe_large4_kernels",
+      "test_mistral_moe_large4_pretokenizer"
+    ],
+    "selfcheck": [
+      "test_mistral_moe_large4_selfcheck"
+    ],
+    "fsi": [
+      "test_mistral_moe_large4_fsi_selfcheck"
+    ],
+    "code": [
+      "test_mistral_moe_large4_code_selfcheck"
+    ],
+    "det": [
+      "test_mistral_moe_large4_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_mistral_large4"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_mistral_large4",
+    "vault_subdir": "Mistral-Large-4-1T-A52B",
+    "timeout": 9600
+  },
+  "target_overrides": {
+    "test_mistral_moe_large4_convert": {
+      "timeout": 240
+    },
+    "test_mistral_moe_large4_loader": {
+      "timeout": 300
+    },
+    "test_mistral_moe_large4_tokenizer_parity": {
+      "env": []
+    },
+    "test_mistral_moe_large4_model": {
+      "timeout": 600,
+      "skip": true
+    },
+    "test_mistral_moe_large4_tool_framing": {
+      "label": "fast",
+      "skip": true,
+      "env": []
+    },
+    "test_mistral_moe_large4_kernels": {
+      "timeout": 300
+    },
+    "test_mistral_moe_large4_pretokenizer": {
+      "label": "fast",
+      "skip": false
+    },
+    "test_mistral_moe_large4_selfcheck": {
+      "timeout": 3600,
+      "form": "selfcheck"
+    },
+    "test_mistral_moe_large4_fsi_selfcheck": {
+      "timeout": 3600,
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_mistral_moe_large4_code_selfcheck": {
+      "timeout": 3600,
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_mistral_moe_large4_det_selfcheck": {
+      "timeout": 3600,
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-02-Mistral-Large-4-1T-A52B.md",
+  "notes": "",
+  "selfcheck_max_gen": 16,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
+}

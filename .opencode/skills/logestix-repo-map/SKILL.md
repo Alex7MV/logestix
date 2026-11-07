@@ -7,19 +7,33 @@ description: Use when locating logestix code — which file holds a model family
 
 Per-file inventory of `libs/`, `apps/` and `tests/`, grouped by family and
 subsystem. Brace globs like `{a,b}` or `_v41_*` denote a group of files that
-share one description; every other bullet names one file. The compact top-level
-map lives in AGENTS.md; this file is the detail.
+share one description; every other bullet names one file. `AGENTS.md` is a router
+(it names the question and the skill), this file is the code detail, and
+`docs/MODELS.md` is the per-model fact sheet.
 
 **Machine-checked equivalents — the source of truth when prose disagrees:**
 
-- `test_model_suite_guard.cpp::Suites()` — model → lifecycle stages → ctest targets.
-- `test_model_independence_guard.cpp::kPassports` — model → passport header → owning namespace.
-- `test_model_independence_guard.cpp::kLifecycle` — model → the TU(s) forming its generation path, each asserted to wire residency lock, streaming/abort, context teardown, a governor lease, `output_text`, `weight_resident_bytes`, and to mutate session state inside the lock.
+The registries are no longer hand-written: `models/<model_type>.json` holds one
+row per model and `${CMAKE_BINARY_DIR}/generated/model_manifest.h` is the
+compiled projection of it (`lsxmanifest::kModels` / `kTargets` / `kLifecycle` /
+`kDebt`). The guards below read that table, so a row here — and a paragraph in
+any skill — can be stale while the table cannot.
+
+- `models/*.json` + `test_manifest_sync.cpp` — model → vault directory, passport
+  header, owning namespace, format tag, tokenizer kind, lifecycle-stage targets,
+  declared golden debt. Per-model catalogue: `docs/MODELS.md` (generated).
+- `test_model_suite_guard.cpp::Suites()` — model → lifecycle stages → ctest
+  targets (projected from `kTargets`).
+- `test_model_independence_guard.cpp` — model → passport header → owning
+  namespace, and model → the TU(s) forming its generation path, each asserted to
+  wire residency lock, streaming/abort, context teardown, a governor lease,
+  `output_text`, `weight_resident_bytes`, and to mutate session state inside the
+  lock.
 - `test_code_naming_guard.cpp::SchemeRegex()` / `AllowedCommon()` — file-naming vocabulary.
 - `test_ctest_labels_guard.cpp` — every test target carries a label.
 
-Model ingestion itself (the 8-stage protocol, naming scheme, guard registries to
-extend) is the `ingesting-a-model` skill; build wiring is
+Model ingestion itself (the 8-stage protocol, the manifest schema, the naming
+scheme) is the `ingesting-a-model` skill; build wiring is
 `cuda-cmake-build-gotchas`; running/operating the engine (apps, vault paths,
 env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
 

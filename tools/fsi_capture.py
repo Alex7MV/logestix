@@ -43,6 +43,11 @@ OVERRIDES = {
     # wrong; low-effort thinking answers all three correctly. Its chat template
     # lives in chat_template.jinja (not tokenizer_config).
     "granite-switch-4.1-30b": {"loader": "granite_switch"},
+    # Same composed architecture as its 30B sibling and the same CPU-BF16
+    # oracle (transformers has no GraniteSwitchForCausalLM; the class ships
+    # in the granite-switch package). Base adapter: the gates compare the
+    # checkpoint's own continuation, not an adaptation.
+    "granite-switch-4.1-8b": {"loader": "granite_switch"},
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
     # Mistral-Small-4-119B ships the Mistral "consolidated" layout: params.json
     # (no config.json, no model_type) plus consolidated-*.safetensors with

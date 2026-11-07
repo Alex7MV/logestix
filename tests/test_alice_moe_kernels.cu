@@ -422,3 +422,15 @@ TEST_CASE("alice swiglu kernel matches silu(a)*b", "[alice][kernels]")
     }
     cudaFree(da); cudaFree(db); cudaFree(dout);
 }
+
+TEST_CASE("alice workspace allocator polarity", "[alice][fast]")
+{
+    // The pipeline's `A()` macro treats a TRUE result as "this allocation
+    // failed", and its `||` chain reads "any of these failed". cudaSuccess must
+    // therefore read as success: inverting it aborts the workspace on the first
+    // successful malloc, which is exactly what happened in 397ab361 — alice then
+    // decoded zero tokens while every gate still reported an allocation failure.
+    REQUIRE_FALSE(lsxcommon::alice::WsAllocFailed(cudaSuccess));
+    REQUIRE(lsxcommon::alice::WsAllocFailed(cudaErrorMemoryAllocation));
+    REQUIRE(lsxcommon::alice::WsAllocFailed(cudaErrorInvalidValue));
+}

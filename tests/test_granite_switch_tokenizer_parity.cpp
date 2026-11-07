@@ -19,9 +19,16 @@
 #ifndef LSX_GRANITE_SWITCH_FIXTURE_DIR
 #define LSX_GRANITE_SWITCH_FIXTURE_DIR "tests/fixtures/granite_switch"
 #endif
-#ifndef LSX_GRANITE_SWITCH_TOKENIZER_PATH
-#define LSX_GRANITE_SWITCH_TOKENIZER_PATH \
-    "/mnt/fast_storage/huggingface/granite-switch-4.1-30b/tokenizer.json"
+// The model under test (30B default, 8B via LSX_GSW_MODEL). The golden cases are
+// shared on purpose: the two checkpoints ship a byte-identical tokenizer
+// (tokenizer.json / merges.txt / vocab.json are md5-equal), so the expected ids
+// are the same question — only the converted tree they are checked against
+// differs.
+#ifndef LSX_GSW_MODEL
+#define LSX_GSW_MODEL "granite-switch-4.1-30b"
+#endif
+#ifndef LSX_GSW_ROOT_ENV
+#define LSX_GSW_ROOT_ENV "LSX_TEST_GRANITE_SWITCH_MODEL_PATH"
 #endif
 
 namespace {
@@ -69,14 +76,15 @@ std::vector<Case> LoadCases()
 TEST_CASE("granite-switch tokenizer reproduces the checkpoint ids",
           "[granite_switch][tokenizer]")
 {
-    const char *env = std::getenv("LSX_TEST_GRANITE_SWITCH_MODEL_PATH");
+    const char *env = std::getenv(LSX_GSW_ROOT_ENV);
     const std::filesystem::path root =
         env ? std::filesystem::path(env)
             : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                  "granite-switch-4.1-30b";
+                  LSX_GSW_MODEL;
     const auto pinned = root / "logestix" / "pinned";
     if (!std::filesystem::exists(pinned / "tokenizer_vocab.arrow"))
-        SKIP("granite-switch converted tokenizer absent");
+        SKIP(std::string(LSX_GSW_MODEL) +
+             " converted tokenizer absent");
 
     auto vf = arrow::io::MemoryMappedFile::Open(
         (pinned / "tokenizer_vocab.arrow").string(),

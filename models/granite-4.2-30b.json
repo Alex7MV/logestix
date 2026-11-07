@@ -1,0 +1,100 @@
+{
+  "model_type": "granite-4.2-30b",
+  "display_name": "granite-4.2-30b",
+  "family": "granite",
+  "variant": null,
+  "model_class": "Granite42_30BModel",
+  "model_header": "granite_dense_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/granite_dense_constants.h",
+  "namespace": "lsxcommon::granite::frozen",
+  "format_tag": "",
+  "forge_flag": "--granite",
+  "tokenizer_kind": 10,
+  "vault": {
+    "dir": "granite-4.2-30b",
+    "env": "LSX_TEST_GRANITE_4_2_30B_ROOT"
+  },
+  "lifecycle_tu": [
+    "granite_dense_model.cpp",
+    "granite_dense_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_granite_dense_convert"
+    ],
+    "load": [
+      "test_granite_dense_loader"
+    ],
+    "model": [
+      "test_granite_dense_model",
+      "test_granite_tool_framing"
+    ],
+    "kernels": [
+      "test_granite_dense_kernels",
+      "test_dense_kernels"
+    ],
+    "selfcheck": [
+      "test_granite_dense_selfcheck"
+    ],
+    "fsi": [
+      "test_granite_dense_fsi_selfcheck"
+    ],
+    "code": [
+      "test_granite_dense_code_selfcheck"
+    ],
+    "det": [
+      "test_granite_dense_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_granite_4_2_30b"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_granite_4_2_30b",
+    "vault_subdir": "granite-4.2-30b",
+    "timeout": 3000
+  },
+  "target_overrides": {
+    "test_granite_dense_convert": {
+      "env": []
+    },
+    "test_granite_dense_loader": {
+      "skip": false,
+      "env": []
+    },
+    "test_granite_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_granite_dense_kernels": {
+      "skip": false
+    },
+    "test_dense_kernels": {
+      "skip": false,
+      "form": "helper"
+    },
+    "test_granite_dense_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_granite_dense_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_granite_dense_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_granite_dense_selfcheck": {
+      "form": "selfcheck"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-03-granite-4.2-30b.md",
+  "notes": "",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
+}

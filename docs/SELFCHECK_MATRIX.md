@@ -4,7 +4,12 @@ Snapshot of **2026-10-24/25**, updated **2026-10-31** (GigaChat3.5-432B-A28B),
 re-verified **2026-11-03** (AliceAI-Foundation-80B-A3B re-ingestion), re-verified
 **2026-11-04** (Qwen3.8-Flash-Next full lifecycle; Qwen3.5-35B-A3B and
 DeepSeek-V4.1-Flash audited — both had been filed as "no converted tree" while
-their trees were in the vault),
+their trees were in the vault), re-verified **2026-11-06** (AliceAI-Foundation-80B-A3B
+after the inverted workspace predicate was fixed — its row had been unmeasured
+since 2026-11-03 19:33, when generation stopped producing tokens at all:
+`open-tasks/2026-11-06-alice-workspace-polarity.md`), extended **2026-11-07**
+(Granite-Switch 4.1 8B ingested as the sibling of the 30B — see
+`docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md`),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;
@@ -36,6 +41,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | model (passport) | SelfCheck | FSI | CODE | DET |
 |---|---|---|---|---|
 | alice-foundation-80b-a3b | PASS | 3/3 | 3/3 | 3/3 |
+| granite-switch-4.1-8b | PASS (x3, `930dd592ea5f5834`) | 3/3 | 3/3 | **2/3** (DET-02) |
 | glm-5.3-flash | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-26b-a4b-it** | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-31b-it** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
@@ -50,7 +56,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
 | **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
-| **deepseek-v4.1-flash** | PASS (x3, `0ab7077b529eaa3b`) ‡ | **1/3** | **2/3** | 3/3 |
+| **deepseek-v4.1-flash** | PASS (x3, `b759bc84b820b4de`) ‡ | **1/3** | **1/3** | **2/3** (DET-03) |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
@@ -59,14 +65,75 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 
-- SelfCheck **23/23 rows** (every row above), FSI **58/63**, CODE **62/63**,
-  DET **62/63**. Counting rule: one case per prompt, three prompts per measured
-  row, so the denominators are 3 × the rows that carry a measured cell (21 —
+- **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
+  was restored** (120 min, `-j1`, one GPU). The list is
+  `tools/gen_model_manifest.py --print-selfcheck-targets`, derived from the
+  manifests — the previous hand-typed filter covered 22 of 37, and an omitted gate
+  reads exactly like a passing one.
+  **"37 pass" was the wrong reading of that run, and the correction matters more
+  than the run:** ctest reported `Passed` for all 37, but only **27** had a
+  converted tree and therefore executed the Paris case; the other **10** (the
+  models in §4 and the vanished-tree rows) skipped every case that touches weights
+  and were green only because an *undeclared-hook* case `SUCCEED`ed in the same
+  binary. One non-failing case is enough to keep Catch2 from returning
+  `AllTestsSkippedExitCode`, so `SKIP_RETURN_CODE 4` never armed. Those branches
+  now `SKIP`, and the honest headline is **27 of 37 measured, 10 skipped with their
+  tree named** — `docs/OPEN_TASKS.md` §G6.
+  The rows below that carry a hash were checked against the values this run
+  produced, not against the previous capture.
+- **The SelfCheck probe is per-family, and it is now declared.** Unifying the 35
+  per-family selfcheck files into one driver silently flattened four knobs that
+  each file had chosen for itself: the prompt framing (17 files fed
+  `BuildPromptInputIds`, 18 fed raw BPE), the generation budget (2 for most;
+  16/24/32/64/192/256 for the rest), the math mode (14 pinned `FastMathMode::kOff`,
+  21 left the kAuto default), and — separately — whether the case also asserted the
+  raw greedy continuation (12 files did). All three numeric knobs feed the recorded
+  `logits_hash`, so a uniform driver re-baselined every hash in this table and made
+  the column unreproducible. They are now manifest fields (`selfcheck_frame_prompt`,
+  `selfcheck_max_gen`, `selfcheck_bit_exact`), transcribed from the deleted files
+  rather than guessed, and the extra continuation assertion was dropped because the
+  canonical contract is `SelfCheck`.
+  **Evidence, not intent:** the 2026-11-06 17:08 release binaries predate the
+  migration, and replaying four of them against the restored driver reproduces the
+  old hashes exactly — phi-4 `cf51b9bbd5c913dd`, ornith `c3fe24e9dbc55b1e`,
+  qwen3.5-9b `a2af669548e59c73`, xing `53e18f6dd77a64a2` (top-1 and token count
+  identical too). Two of those four were *red* under the uniform driver.
+
+- **A §1 row is a measurement, and three of them are no longer reproducible.**
+  Audited 2026-11-07 against the vault: `deepseek-v4-pro-0813`, `gigachat3.5-432b-a28b-reasoning`
+  and `mistral-large-4-1t` have **no `logestix/model.index.json`** any more, so
+  their three parity gates SKIP today (a SKIP, not a pass) while the row records
+  measured cells. The verdicts were real when taken; what is gone is the artifact.
+  Two causes, both recorded as open: gigachat was converted into
+  `/mnt/fast_storage/tmp/…` and the tmp tree was cleaned (`docs/OPEN_TASKS.md` §G4),
+  and the other two are 838 GB / 988 GB trees on a host at 94% disk. Re-running
+  those rows needs a re-conversion, not a code change — so the cells stay as
+  history and this note is the current state.
+- SelfCheck **24/24 rows** (every row above), FSI **61/66**, CODE **64/66**,
+  DET **63/66**. Counting rule: one case per prompt, three prompts per measured
+  row, so the denominators are 3 × the rows that carry a measured cell (22 —
   `kimi-k3` and `kimi-k3.1-pro` have no parity verdict yet); a `not run` cell is
   excluded rather than counted as a pass. The five FSI reds are gemma-4-31b
   FSI-01, deepseek-v4-pro FSI-02, minimax-m3 FSI-01 and deepseek-v4.1-flash
-  FSI-01/02; the CODE red is deepseek-v4.1-flash CODE-01; the DET red is
-  granite-switch DET-02.
+  FSI-01/02; the two CODE reds are deepseek-v4.1-flash CODE-01 and CODE-03; the
+  DET reds are granite-switch-4.1-30b DET-02,
+  granite-switch-4.1-8b DET-02 and deepseek-v4.1-flash DET-03. Both
+  granite-switch DET-02 cells are the *source's own* answer (`CRITICAL` where the
+  prompt template says `CATASTROPHIC`), so they are family behaviour, not engine
+  defects.
+
+  **DET-03 for deepseek-v4.1-flash was recorded as 3/3 until 2026-11-07** and is
+  actually 2/3: over three identical runs (deterministic, so not a flake) the
+  model answers `BIT_ERO` where the prompt's template says `BIT_ZERO` — it drops
+  the `Z`, and reasons its way to the drop (`...Final only BIT_ERO.</think>BIT_ERO`).
+  The earlier green was therefore either measured against a different converted
+  tree or mis-recorded; the value here is the measured one, from the 294 GB tree
+  currently in the vault. Two instrument notes came out of the same run: the DET
+  reporter used to fold an inference error into `deterministic=false`, and its
+  verdict line embedded the model's raw newlines, so a line-oriented reader
+  (`grep`) saw only a prefix of the raw and a real `BIT_ERO` answer looked like a
+  clean `BIT_ZERO`. Both fixed in `libs/lsxcommon/src/det_selfcheck.cpp`; the raw
+  is now escaped onto one line.
 - **kimi-k3.1-pro** added 2026-11-05 (branch `feat/kimi-k31-pro`): the 1.5 TB
   source converted in place to a **1.5 TB** tree (1.4 TB routed-expert arrows,
   23 GB pinned graph, 8.9 GB streamed latent/shared plane) and SelfCheck is green
@@ -103,13 +170,26 @@ one in a ctest summary, which is why the debt rows are called out below.
   5.6× below what the same binary does) — and the missing
   `qwen_moe.router.decode` budget for `rtx 5090` is now recorded —
   [`open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md`](open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md).
-- ‡ **deepseek-v4.1-flash**: the Paris SelfCheck case passes, but the *same
-  binary's* cooperative-cancel case fails (`mid-generation abort: compressor
-  state reset failed`) — a cancelled request never records its TTFT event and
-  leaves `cudaErrorInvalidResourceHandle` in the thread's last-error state, which
-  the **next** request then reports at an unrelated site. Root cause and fix
-  sketch: `docs/OPEN_TASKS.md` §A2. Its FSI/CODE reds are the 2026-10-07
-  measurements recorded in §Q of that file.
+- ‡ **deepseek-v4.1-flash**: the Paris SelfCheck case passes, and since
+  2026-11-07 so does the cooperative-cancel case in the same binary. That case
+  used to fail (`mid-generation abort: compressor state reset failed`) because a
+  cancelled request never recorded its TTFT event and left
+  `cudaErrorInvalidResourceHandle` in the thread's last-error state, which the
+  **next** request then reported at an unrelated site; root cause and fix:
+  `docs/OPEN_TASKS.md` §A2, which also records that the case had stopped running
+  at all when the selfcheck driver was unified (§G5).
+  Two further corrections, both measured 2026-11-07:
+  **CODE is 1/3, not 2/3.** CODE-01 answers with prose instead of the JSON
+  envelope (extracted empty) and CODE-03 appends a stray `?` to the regex. The
+  same two cases are red on the **pre-refactor** binary built 2026-11-06 17:08
+  (`/tmp/pre_refactor/`, string-checked to predate the shared driver), so this is
+  a matrix error, not a migration regression.
+  **The Paris hash is `b759bc84b820b4de`, not `0ab7077b529eaa3b`,** because of a
+  deliberate fix: `total_steps` was `prompt_len + max_gen`, which produced
+  `max_gen + 1` tokens (the streaming control run reported 25 for a 24 budget)
+  while every other family produces exactly the budget. Reverting just that line
+  reproduces `0ab7077b529eaa3b` bit-exactly, which is how the delta was attributed.
+  The FSI and DET grids are unchanged by it (both re-measured after the fix).
 - **Qwen3.8-Flash-Next** was re-verified end to end on 2026-11-04 (every stage,
   real weights): SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`,
   top-1 11751) plus the family's EOS and cross-instance gate, FSI/CODE/DET 3/3
@@ -203,6 +283,8 @@ one in a ctest summary, which is why the debt rows are called out below.
 | ling | PASS | SKIP | SKIP | SKIP | source is 560B BF16/FP8 with GPU-only FLA KDA kernels; no oracle runnable on one RTX 5090 (a CPU reference was used for single-token probes only). Per-expert global scales + the official SwiGLU clamps were required for a coherent answer — `docs/OPEN_TASKS.md` §R7 |
 | step-5-preview | PASS | SKIP | SKIP | SKIP | converted tree present (317 GB, Paris x3 bit-exact, native tool round-trip green); the 606 GB FP8 source oracle (reference `inference/` stack) needs 4x B300 / 8x H200 per the model card, so no source golden can be captured here. The DSA indexer is stored-not-applied (dense-equivalent at <=4096 tokens) — `docs/OPEN_TASKS.md` §R9 |
 | hy-simulmt-30b-a3b | PASS | SKIP | SKIP | SKIP | zh<->en simultaneous translator: the source summarises/translates the FSI/CODE/DET bodies instead of answering (two emit EOT immediately), so no source-faithful golden can be extracted; instruments are SelfCheck (translation direction) + a real-weight bidirectional translation test — `docs/OPEN_TASKS.md` §R11 |
+| deepseek-v4-flash | PASS | SKIP | SKIP | SKIP | the tree exists (so this is the §2 shape, not §4's "neither"); its three stages SKIP for a golden, not for a tree, and the goldens are declared debt. It was listed under §4 for a day — moved here 2026-11-07 by the vault audit, which is the third time the §4 heading has disagreed with the disk |
+| kimi-k2.7-code | PASS | SKIP | SKIP | SKIP | 542 GB tree, 23040 experts; SelfCheck passes on real weights (Paris, tok 17374, 3 cycles identical) and the per-layer reference oracle is green (relL2 0.0034 layer 0 / 0.1226 layer 60, cos ≥ 0.9925). FSI/CODE/DET are declared golden debt (`docs/OPEN_TASKS.md` §R2 K1): the 581 GB `compressed-tensors` source has not been run for a capture |
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | the source IS runnable now — `tools/nemotron_nvfp4_oracle.py` dequantizes the ModelOpt checkpoint (W4A16_NVFP4 experts + FP8 mixers) to a CPU BF16 `NemotronHForCausalLM` and it answers FSI 3/3 per the Expected Template — but the converted tree does not reproduce them (FSI-01 extracts `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`, FSI-02/03 emit fenced/repeated bodies), and CODE-TEST-01 / DET-TEST-01/02 make the SOURCE echo the prompt body, so no source-faithful CODE/DET golden can be extracted. Gates stay debt with these measurements; the FSI gap is the 4-bit body precision item in `docs/OPEN_TASKS.md` §R13 |
 
 Both are recorded in the golden-debt list (§K) rather than left to look green.
@@ -263,22 +345,32 @@ be read as a pass.
 
 ## 4. Neither — SKIP
 
-`glm-5.2`, `deepseek-v4-flash`, `nemotron-3.5-lightning-30b-a3b` (bf16 sibling),
-`mimo-v2.6-flash-rl`. Registered stages exist; converted trees and goldens do
-not. `gigachat3.5-432b-a28b-reasoning` moved out of this section on 2026-10-31
-(241 GB tree, all four gates measured). `deepseek-v4-pro-0813` moved out of
-this section on 2026-10-26: the 838 GB tree exists and SelfCheck passes on real
-weights (Paris x3, bit-exact logits) — its FSI/CODE/DET remain declared debt
-because the source oracle is the TP-4 FP8 runner (`docs/OPEN_TASKS.md` §R3).
+Re-audited 2026-11-07 against the vault (`<models_dir>/<vault dir>/logestix/model.index.json`
+for all 36 manifests: 26 trees, 24 of them in §1). Every entry here is now checked
+against the disk rather than inferred:
 
-`kimi-k2.7-code` moved out of this section on 2026-10-26: the tree now exists
-(542 GB, 23040 experts) and **SelfCheck passes on real weights** — Paris
-(tok 17374), 3 cycles, identical logits hash — with the per-layer reference
-oracle green (relL2 0.0034 at layer 0, 0.1226 at layer 60, cos ≥ 0.9925). FSI,
-CODE and DET remain **declared golden debt** (`docs/OPEN_TASKS.md` §R2 K1): the
-581 GB `compressed-tensors` source has not been run for a capture yet, so their
-three targets SKIP (tree present, golden absent) — the debt rows in
-`kGoldenDebt` are the honest state, and the capture must come from the source,
+| model | tree | goldens | note |
+|---|---|---|---|
+| `glm-5.2` | no | no | never converted on this host |
+| `mimo-v2.6-flash-rl` | no | no | never converted on this host |
+| `nemotron-3.5-lightning-30b-a3b` (bf16 sibling) | no | no | the NVFP4 sibling is the ingested one (§2) |
+
+`gigachat3.5-432b-a28b-reasoning` moved out of this section on 2026-10-31 (241 GB
+tree, all four gates measured) and its row in §1 still carries those verdicts —
+but the tree it was measured on **no longer exists** (it was converted under
+`/mnt/fast_storage/tmp/` and cleaned), so §1's reproducibility note applies.
+`deepseek-v4-pro-0813` moved out on 2026-10-26 (838 GB tree, SelfCheck Paris x3
+bit-exact) and is in the same position: the verdict is history, the tree is
+gone.
+
+`kimi-k2.7-code` and `deepseek-v4-flash` are in §2's table, not here: both have a
+converted tree and a passing SelfCheck, so "neither" was never true for them —
+their three parity stages SKIP for a **golden**, not for a tree, and those goldens
+are declared debt. Audit 2026-11-07 by checking
+`<models_dir>/<vault dir>/logestix/model.index.json` for all 36 manifests: 26 have
+a tree, 24 of those were in §1, and the six that were neither in §1 nor in §2 are
+what this section's rows had been hiding. The capture for kimi-k2.7-code must come
+from the source,
 never from the engine. Verification record:
 `docs/open-tasks/2026-10-26-kimi-audit-verification.md`.
 
@@ -301,12 +393,20 @@ ctest --test-dir build/linux-release-znver4-aocc -R \
   "glm_moe_selfcheck|mimo_moe_selfcheck|nemotron_moe_selfcheck"
 
 # 3b. tree present, golden absent (§2 shape): kimi-k2.7-code runs SelfCheck and
-#     SKIPs the three parity stages. deepseek-v4.1-flash runs only when its root
-#     is pointed at the vault — its default path is the retired
-#     /mnt/llm_models/models one, which is how its cancel defect stayed invisible
-LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash \
-  ctest --test-dir build/linux-release-znver4-aocc -R \
+#     SKIPs the three parity stages.
+ctest --test-dir build/linux-release-znver4-aocc -R \
   "kimi_moe_selfcheck|deepseek_moe_v41_selfcheck"
+
+# 3c. every SelfCheck in the §1 table. The vault path now comes from the manifest
+#     (`vault_env` + `lsx_model_models_dir()`), so no per-family override is
+#     needed — the old per-family files defaulted to the retired
+#     /mnt/llm_models/models path and SKIPped silently, which is how the
+#     deepseek-v4.1-flash cancel defect stayed invisible for weeks.
+#     `--print-selfcheck-targets` is derived from the manifests, not typed by hand:
+#     the 2026-11-07 audit found a hand-written filter that omitted 15 of the 37.
+timeout 9000 ctest --test-dir build/linux-debug -j1 -R \
+  "^($(python3 tools/gen_model_manifest.py --root . --print-selfcheck-targets \
+        | paste -sd'|'))$"
 
 # 4. the harness' own self-tests (no model): formula extraction/canonicalisation
 ctest --test-dir build/linux-release-znver4-aocc -R \

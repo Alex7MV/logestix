@@ -1,0 +1,113 @@
+{
+  "model_type": "kimi-k3.1-pro",
+  "display_name": "kimi-k3.1-pro",
+  "family": "kimi",
+  "variant": null,
+  "model_class": "KimiK31ProModel",
+  "model_header": "kimi_moe_pro_model.h",
+  "passport": "libs/lsxcommon/src/kimi_moe_pro_constants.h",
+  "namespace": "lsxcommon::kimi_pro::frozen",
+  "format_tag": "",
+  "forge_flag": "--kimi_k31_pro",
+  "tokenizer_kind": 2,
+  "vault": {
+    "dir": "Kimi-K3.1-Pro",
+    "env": "LSX_TEST_KIMI_K3_1_PRO_ROOT"
+  },
+  "lifecycle_tu": [
+    "kimi_moe_pro_model.cpp",
+    "kimi_moe_k3_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_kimi_pro_convert"
+    ],
+    "load": [
+      "test_kimi_pro_loader"
+    ],
+    "model": [
+      "test_kimi_pro_model",
+      "test_kimi_k3_tool_framing",
+      "test_kimi_k3_constants"
+    ],
+    "kernels": [
+      "test_kimi_pro_indexer",
+      "test_kimi_k3_kernels"
+    ],
+    "selfcheck": [
+      "test_kimi_pro_selfcheck"
+    ],
+    "fsi": [
+      "test_kimi_pro_fsi_selfcheck"
+    ],
+    "code": [
+      "test_kimi_pro_code_selfcheck"
+    ],
+    "det": [
+      "test_kimi_pro_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_kimi_k31_pro"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_kimi_k31_pro",
+    "timeout": 43200
+  },
+  "target_overrides": {
+    "test_kimi_pro_loader": {
+      "timeout": 300
+    },
+    "test_kimi_pro_model": {
+      "timeout": 600,
+      "skip": true
+    },
+    "test_kimi_k3_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_kimi_k3_constants": {
+      "label": "fast",
+      "env": [],
+      "sources": [
+        "test_kimi_pro_constants.cpp"
+      ]
+    },
+    "test_kimi_pro_indexer": {
+      "timeout": 300
+    },
+    "test_kimi_k3_kernels": {
+      "timeout": 300
+    },
+    "test_kimi_pro_selfcheck": {
+      "timeout": 7200,
+      "form": "selfcheck"
+    },
+    "test_kimi_pro_fsi_selfcheck": {
+      "timeout": 54000,
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_kimi_pro_code_selfcheck": {
+      "timeout": 18000,
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_kimi_pro_det_selfcheck": {
+      "timeout": 43200,
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_perf_baseline_kimi_k31_pro": {
+      "env": []
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": true,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-05-Kimi-K3.1-Pro.md",
+  "notes": "Same host-store bound as kimi-k3; the Pro adds the tiny indexer set, which is resident. Measured basis ~0.125 t/s: 2 x 2048 tokens ~= 9.1 h, plus two 23 GB loads, cooldown and DRAM probe ~= 9.6 h (43200 s).",
+  "selfcheck_max_gen": 64,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
+}

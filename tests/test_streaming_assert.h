@@ -33,6 +33,32 @@ inline void ExpectStreamMatchesTokens(lsxcommon::IModel &model,
     CHECK(seen == res.gen_tokens);
 }
 
+// The stream contract when the family RETAINS the EOS token in gen_tokens but
+// stops streaming at it. That asymmetry is deliberate and documented in the
+// shared truncation helper (`MoETruncateTokensAtEos` resizes to `i + 1`, keeping
+// the EOS token, while the emit loop breaks before it), so a strict
+// equality check reports a "dropped token" for a family that is behaving as
+// designed. This variant removes one trailing EOS from the expectation and then
+// requires exact equality, so invention, reordering and mid-stream drops are
+// still failures.
+inline void ExpectStreamIsTokensWithoutTrailingEos(
+    lsxcommon::IModel &model, const lsxcommon::ModelRequest &base)
+{
+    lsxcommon::ModelRequest req = base;
+    std::vector<std::int32_t> seen;
+    req.token_callback = [&](const lsxcommon::TokenChunk &c) {
+        seen.push_back(static_cast<std::int32_t>(c.token_id));
+    };
+    const auto res = model.Infer(req);
+    REQUIRE(res.ok);
+    std::vector<std::int32_t> want = res.gen_tokens;
+    int32_t eos = model.Tokenizer().eos_id;
+    if (!want.empty() && eos >= 0 && want.back() == eos) want.pop_back();
+    INFO("streamed " << seen.size() << " of " << res.gen_tokens.size()
+                     << " gen_tokens (eos=" << eos << ")");
+    REQUIRE(seen == want);
+}
+
 // Cooperative-cancel assertions (OPEN_TASKS §E1a).
 //
 // `lsxfabric --serve` cancels a request by setting `req.abort_flag` from the

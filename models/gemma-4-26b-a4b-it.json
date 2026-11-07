@@ -1,0 +1,112 @@
+{
+  "model_type": "gemma-4-26b-a4b-it",
+  "display_name": "gemma-4-26b-a4b-it",
+  "family": "gemma",
+  "variant": null,
+  "model_class": "Gemma4_26BA4BModel",
+  "model_header": "gemma_moe_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/gemma_moe_load.h",
+  "namespace": "lsxcommon::gemma",
+  "format_tag": "",
+  "forge_flag": "--gemma4",
+  "tokenizer_kind": 11,
+  "vault": {
+    "dir": "gemma-4-26B-A4B-it",
+    "env": "LSX_TEST_GEMMA_4_26B_A4B_IT_ROOT"
+  },
+  "lifecycle_tu": [
+    "gemma_base_model.cpp",
+    "gemma_moe_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_gemma_moe_convert"
+    ],
+    "load": [
+      "test_gemma_moe_loader"
+    ],
+    "model": [
+      "test_gemma_moe_model",
+      "test_gemma_prompt_framing",
+      "test_gemma_tool_framing"
+    ],
+    "kernels": [
+      "test_gemma_moe_norm",
+      "test_gemma_moe_rotary",
+      "test_gemma_moe_attn",
+      "test_gemma_moe_moe"
+    ],
+    "selfcheck": [
+      "test_gemma_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_gemma_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_gemma_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_gemma_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_gemma_4_26b_a4b_it"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_gemma_4_26b_a4b_it",
+    "vault_subdir": "gemma-4-26B-A4B-it",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_gemma_moe_convert": {
+      "env": []
+    },
+    "test_gemma_moe_loader": {
+      "skip": false,
+      "env": []
+    },
+    "test_gemma_prompt_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_gemma_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_gemma_moe_norm": {
+      "resource_lock": "gpu"
+    },
+    "test_gemma_moe_rotary": {
+      "skip": false
+    },
+    "test_gemma_moe_attn": {
+      "skip": false
+    },
+    "test_gemma_moe_moe": {
+      "resource_lock": "gpu"
+    },
+    "test_gemma_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_gemma_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_gemma_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_gemma_moe_selfcheck": {
+      "form": "selfcheck"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "",
+  "notes": "",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": true
+}

@@ -1,0 +1,140 @@
+{
+  "model_type": "qwen3.5-9b",
+  "display_name": "qwen3.5-9b",
+  "family": "qwen",
+  "variant": null,
+  "model_class": "Qwen3_5_9BModel",
+  "model_header": "qwen_dense_model.h",
+  "passport": "libs/lsxcommon/src/qwen_dense_model.h",
+  "namespace": "Qwen3_5_9BModel",
+  "format_tag": "",
+  "forge_flag": "--qwen",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "Qwen3.5-9B",
+    "env": "LSX_TEST_QWEN3_5_9B_ROOT"
+  },
+  "lifecycle_tu": [
+    "qwen_base_model.cpp",
+    "qwen_dense_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_qwen_dense_convert",
+      "test_qwen_dense_converter_integrity"
+    ],
+    "load": [
+      "test_qwen_dense_loader"
+    ],
+    "model": [
+      "test_qwen_dense_model",
+      "test_qwen_tool_framing"
+    ],
+    "kernels": [
+      "test_qwen_dense_mlp",
+      "test_qwen_dense_full_attn",
+      "test_qwen_dense_nvfp4",
+      "test_qwen_dense_norm",
+      "test_qwen_dense_rotary",
+      "test_qwen_dense_shuffle_reduce",
+      "test_qwen_dense_full_attn_parallel",
+      "test_qwen_dense_linear_attn",
+      "test_qwen_dense_fused_mlp",
+      "test_qwen_dense_fused_linear_attn",
+      "test_qwen_dense_kv_cache",
+      "test_qwen_dense_kv_parity"
+    ],
+    "selfcheck": [
+      "test_qwen_dense_selfcheck"
+    ],
+    "fsi": [
+      "test_qwen_dense_fsi_selfcheck"
+    ],
+    "code": [
+      "test_qwen_dense_code_selfcheck"
+    ],
+    "det": [
+      "test_qwen_dense_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_qwen3_5_9b"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_qwen3_5_9b",
+    "vault_subdir": "Qwen3.5-9B",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_qwen_dense_convert": {
+      "env": []
+    },
+    "test_qwen_dense_converter_integrity": {
+      "env": []
+    },
+    "test_qwen_dense_loader": {
+      "skip": false,
+      "env": []
+    },
+    "test_qwen_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_qwen_dense_mlp": {
+      "skip": false
+    },
+    "test_qwen_dense_full_attn": {
+      "skip": false
+    },
+    "test_qwen_dense_nvfp4": {
+      "skip": false
+    },
+    "test_qwen_dense_norm": {
+      "skip": false
+    },
+    "test_qwen_dense_rotary": {
+      "skip": false
+    },
+    "test_qwen_dense_shuffle_reduce": {
+      "skip": false
+    },
+    "test_qwen_dense_full_attn_parallel": {
+      "skip": false
+    },
+    "test_qwen_dense_linear_attn": {
+      "skip": false
+    },
+    "test_qwen_dense_fused_mlp": {
+      "skip": false
+    },
+    "test_qwen_dense_fused_linear_attn": {
+      "skip": false
+    },
+    "test_qwen_dense_kv_parity": {
+      "skip": false
+    },
+    "test_qwen_dense_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_qwen_dense_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_qwen_dense_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_qwen_dense_selfcheck": {
+      "form": "selfcheck"
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "",
+  "notes": "",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
+}

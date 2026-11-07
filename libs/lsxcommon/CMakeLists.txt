@@ -952,6 +952,12 @@ target_include_directories(lsxcommon
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
         "$<BUILD_INTERFACE:${CUDA_INCLUDE_DIR}>"
         "$<BUILD_INTERFACE:${LSX_CCCL_INCLUDE_DIR}>"
+    PRIVATE
+        # The generated model_registry.inc lives in the build tree and spells its
+        # includes the way the old hand-written list did (bare header names), so
+        # src/ must be on this target's include path as well.
+        "${LSX_MANIFEST_GENERATED_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 configure_file(

@@ -27,6 +27,71 @@ namespace granite_switch {
 
 namespace {
 
+// Which base projections carry the second NVFP4 plane.
+//
+// MEASURED, per the skill's step 4 ("Measure the placement; never assume it").
+// The 8B's FSI-01 forks after `PV=`: the source prefers `CF` by +6.9 logits and
+// the 4-bit body prefers `250` by -1.3. Four trees were converted from the same
+// checkpoint and probed at that fork (margin = logit(CF) - logit(250)):
+//
+//   none      +0.9 GB   -1.27   FSI-01 red
+//   attn      +0.9 GB   +1.58   FSI-01 green      <-- shipped
+//   mlp       +3.3 GB   +2.19   FSI-01 green
+//   attn+mlp  +4.2 GB   +7.14   FSI-01 green      (source margin +6.88)
+//
+// `attn` is the cheapest placement that clears the gate AND the one that leaves
+// the biggest tensors at 4 bits (the MLP is 79% of this layer's bytes), which is
+// the second half of the same rule. It is also the same split gemma-4-26b chose,
+// for the same reason — but do not read that as the reason it was picked here.
+// `kMlp`/`kAttnAndMlp` stay reachable so the next member can re-run the ablation
+// without editing code.
+enum class ResidualPlane { kNone, kAttn, kMlp, kAttnAndMlp };
+
+// Selected at CONVERT time (not a runtime speed knob): the placement is baked
+// into the artifact, so it is a property of the tree and a reader can tell which
+// one they have from the index. The env override exists for the ablation that
+// step 4 of the parity procedure requires — re-convert per candidate and probe
+// the fork — and the default is the value that ablation selected.
+inline ResidualPlane ParseResidualPlane(const char *v)
+{
+    if (v == nullptr || *v == '\0') return ResidualPlane::kAttn;
+    const std::string s(v);
+    if (s == "none") return ResidualPlane::kNone;
+    if (s == "attn") return ResidualPlane::kAttn;
+    if (s == "mlp") return ResidualPlane::kMlp;
+    if (s == "attn+mlp" || s == "all") return ResidualPlane::kAttnAndMlp;
+    return ResidualPlane::kAttn;
+}
+inline const ResidualPlane kResidualPlane =
+    ParseResidualPlane(std::getenv("LSX_GSW_RESIDUAL"));
+
+inline bool ResidualCovers(GraniteSwitchTensorKind k)
+{
+    const bool attn = k == GraniteSwitchTensorKind::AttnQkvBase ||
+                      k == GraniteSwitchTensorKind::AttnOBase;
+    const bool mlp = k == GraniteSwitchTensorKind::MlpGateUpBase ||
+                     k == GraniteSwitchTensorKind::MlpDownBase;
+    switch (kResidualPlane) {
+        case ResidualPlane::kNone: return false;
+        case ResidualPlane::kAttn: return attn;
+        case ResidualPlane::kMlp: return mlp;
+        case ResidualPlane::kAttnAndMlp: return attn || mlp;
+    }
+    return false;
+}
+
+const char *ResidualPlaneTag()
+{
+    switch (kResidualPlane) {
+        case ResidualPlane::kNone: return "none";
+        case ResidualPlane::kAttn: return "attn";
+        case ResidualPlane::kMlp: return "mlp";
+        case ResidualPlane::kAttnAndMlp: return "attn+mlp";
+    }
+    return "none";
+}
+
+
 using K = GraniteSwitchTensorKind;
 
 std::optional<ParsedGraniteSwitchTensor> match_layer(
@@ -119,6 +184,19 @@ bool granite_switch_tensor_is_nvfp4(GraniteSwitchTensorKind kind)
     }
 }
 
+// The checkpoint's own name, i.e. the last path element, tolerant of the
+// trailing separator a shell script or a copy-pasted path carries
+// (`fs::path(".../granite-switch-4.1-8b/").filename()` is EMPTY, which would
+// write an empty identity and make the tree unloadable in a way that looks like
+// a corrupt index rather than a truncated argument).
+std::string CheckpointName(const std::string &input_path)
+{
+    namespace fs = std::filesystem;
+    std::string p = input_path;
+    while (p.size() > 1 && (p.back() == '/' || p.back() == '\\')) p.pop_back();
+    return fs::path(p).filename().string();
+}
+
 GraniteSwitchTopology load_granite_switch_topology(
     const std::string &index_path)
 {
@@ -159,6 +237,11 @@ GraniteSwitchTopology load_granite_switch_topology(
         if (root[k].get_bool().get(v) != simdjson::SUCCESS) return dflt;
         return v;
     };
+    {
+        std::string_view name;
+        if (root["model"].get_string().get(name) == simdjson::SUCCESS)
+            top.model_name.assign(name);
+    }
     auto get_int_array = [&](const char *k, std::vector<int> &out) {
         out.clear();
         simdjson::ondemand::array arr;
@@ -245,8 +328,8 @@ arrow::Status WriteGraniteSwitchModelIndex(
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"logestix-granite-switch\",\n"
-      << "  \"model\": \"Granite-Switch-4.1-30B\",\n"
+      << "  \"format\": \"" << kFormatTag << "\",\n"
+      << "  \"model\": \"" << top.model_name << "\",\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"switch_cache_layers\": " << top.switch_cache_layers
       << ",\n  \"hidden_size\": " << top.hidden_size
@@ -263,6 +346,7 @@ arrow::Status WriteGraniteSwitchModelIndex(
       << ",\n  \"logits_scaling\": " << top.logits_scaling
       << ",\n  \"tie_word_embeddings\": "
       << (top.tie_word_embeddings ? "true" : "false")
+      << ",\n  \"residual\": \"" << ResidualPlaneTag() << "\""
       << ",\n  \"num_adapters\": " << top.num_adapters
       << ",\n  \"adapter_names\": " << str_array(top.adapter_names)
       << ",\n  \"adapter_ranks\": " << int_array(top.adapter_ranks)
@@ -477,6 +561,14 @@ arrow::Status ConvertGraniteSwitchModel(const std::string &input_path,
     if (!ReadSwitchConfig(cfg_path.string(), top))
         return arrow::Status::Invalid("failed to parse ", cfg_path.string());
 
+    // The identity is the checkpoint's own directory name (family convention:
+    // kimi_moe_convert.cpp does the same). A literal here is correct only while
+    // the family has one member.
+    top.model_name = CheckpointName(input_path);
+    if (top.model_name.empty())
+        return arrow::Status::Invalid("cannot derive the model identity from ",
+                                      input_path);
+
     int max_layer = -1;
     std::vector<std::string> present;
     absl::flat_hash_set<int> present_layers;
@@ -603,6 +695,31 @@ arrow::Status ConvertGraniteSwitchModel(const std::string &input_path,
                                           nullptr, t.shape, {}, r.packed,
                                           r.scales, r.global_scale))
                 return arrow::Status::IOError("quantize failed: ", t.name);
+            const bool want_residual = kResidualPlane != ResidualPlane::kNone &&
+                                       ResidualCovers(p.kind);
+            if (want_residual) {
+                // Second plane: w - dequant(base), decoded as one more GEMV with
+                // acc=true (~8 effective bits for 2x the bytes, no new codec).
+                // Measured motivation (2026-11-07): the 8B's FSI-01 forks on a
+                // template field the 4-bit body cannot hold — source margin
+                // +6.9 logits, converted -1.3, at a healthy relL2 0.094-0.095.
+                std::vector<uint8_t> rp, rs;
+                float rgs = 1.0f;
+                if (!gpu::quantize_residual_tensor_gpu(
+                        data.data(), t.numel(), t.dtype, t.shape, r.packed,
+                        r.scales, r.global_scale, rp, rs, rgs))
+                    return arrow::Status::IOError(
+                        "residual quantize failed: ", t.name);
+                DenseNvfp4Record rr;
+                rr.name = r.name + ".res";
+                rr.shape = t.shape;
+                rr.dtype = t.dtype;
+                rr.packed = std::move(rp);
+                rr.scales = std::move(rs);
+                rr.global_scale = rgs;
+                nv_by_layer[p.layer].push_back(std::move(rr));
+                total_pinned += 3;
+            }
             nv_by_layer[p.layer].push_back(std::move(r));
             ++total_pinned;
         }
@@ -714,7 +831,14 @@ arrow::Status ConvertGraniteSwitchModel(const std::string &input_path,
                  return granite_switch_tensor_is_nvfp4(
                      classify_granite_switch_tensor(n).kind);
              },
-             nullptr},
+             // The residual plane doubles exactly the tensors that carry one, so
+             // the profile must know the placement. Without this the 8B's attn
+             // build advertised the 4-bit-only min_bytes (5.51 GB) and the
+             // governor would have under-requested by the plane's ~0.9 GB.
+             nullptr,
+             +[](const std::string &n) {
+                 return ResidualCovers(classify_granite_switch_tensor(n).kind);
+             }},
             vg);
     }
 

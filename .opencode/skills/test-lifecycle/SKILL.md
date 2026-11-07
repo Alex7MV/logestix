@@ -82,14 +82,17 @@ against `lsxcommon`. Dependency include paths live only in `lsx_dep_includes`
 | `test_infrastructure_guard` | no `${CMAKE_BINARY_DIR}/_deps` include paths, exactly one definition of the shared converter helpers (`ReadTensorData`, `WriteBatch`, `WriteExpertArrow`, `ExpertArrowPath`, `QuantizeSlice`), `CUDA_ARCHITECTURES` only `${LSX_CUDA_ARCH}`/`OFF` |
 | `test_code_naming_guard.cpp` | model file-naming scheme (`SchemeRegex()` / `AllowedCommon()`) |
 | `test_model_independence_guard.cpp` | unique frozen-geometry passport per model, no cross-family borrowing, `LsxFastMathScope` in `Infer` (`kPassports`, `consumers`) |
-| `test_model_suite_guard.cpp` | the per-model suite is autonomous AND complete (`Suites()`): every lifecycle stage (convert → load → model → kernels → selfcheck → fsi → code → det → **perf**) has a registered ctest target; every family test target is claimed by a row (no orphans) and every row declares the full stage set; `SKIP_RETURN_CODE 4` on the selfcheck/fsi/code/det targets; **loader/model stage tests must run on synthetic fixtures** — no vault path, and no cross-family fixture borrowing (the synthetic primitives live only in `tests/test_synth_checkpoint.h`). One case also pairs every row against `tests/fixtures/{fsi,code,det}`: a parity golden that is missing **and not declared in `kGoldenDebt`** fails, and a `kGoldenDebt` row whose golden now exists fails too |
+| `test_manifest_sync.cpp` | `models/*.json` is the registry: the compiled table equals the manifests, `docs/MODELS.md` is current (`--check`), no `tests/test_*.{cpp,cu}` file is unclaimed (`--strict`), every row resolves through `LsxModelFactory`, and no `docs/SELFCHECK_MATRIX.md` row names a model with no manifest |
+| `test_manifest_generator_selftest` | the generator's own schema validator: mutates a live manifest and asserts all eight rules fire |
+| `test_model_suite_guard.cpp` | the per-model suite is autonomous AND complete (`Suites()`, projected from the generated `kTargets`): every lifecycle stage (convert → load → model → kernels → selfcheck → fsi → code → det → **perf**) has a registered ctest target; every family test target is claimed by a row (no orphans) and every row declares the full stage set; `SKIP_RETURN_CODE 4` on the selfcheck/fsi/code/det targets; **loader/model stage tests must run on synthetic fixtures** — no vault path, and no cross-family fixture borrowing (the synthetic primitives live only in `tests/test_synth_checkpoint.h`). One case also pairs every row against `tests/fixtures/{fsi,code,det}`: a parity golden that is missing **and not declared in `kGoldenDebt`** fails, and a `kGoldenDebt` row whose golden now exists fails too |
 | `test_ctest_labels_guard.cpp` | every test target carries a label; every skip-capable target (`SKIP(` in its source) has `SKIP_RETURN_CODE 4`; `test_perf_baseline.cpp` carries an NDEBUG Release guard (all in addition to the label/TIMEOUT/preset/router checks) |
 | `test_absl_format_guard.cpp` | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
 | `test_logging_guard.cpp` | host logging goes through spdlog / `lsxcommon::log`: no `std::cout`/`std::cerr`/`std::clog`, no `printf`/`fprintf`/`vprintf`/`vfprintf`/`puts`/`putchar`/`perror` in `libs/` and `apps/`; the exception allowlist is exact-trimmed-line and two-way (an undeclared call and a stale entry both fail) |
 | `test_cuda_toolkit_guard.cu` | CUDA runtime ≥13.2, header/runtime match, `cuda_fp4` E2M1 semantics, Blackwell-only GPUs |
 
-Extending a model means extending the relevant guard registry in the same commit —
-the registries are described in `ingesting-a-model` and `logestix-repo-map`.
+Extending a model means adding a `models/<model_type>.json` row — the registries
+those guards read are GENERATED from it at configure time, so there is no registry
+to hand-edit. What a manifest needs is skill `ingesting-a-model`.
 
 ## Running the suites
 
@@ -101,7 +104,8 @@ ctest --preset linux-release-znver4-perf    # perf; Release-only
 ctest -L "^(fast|convert|inference|perf)$"  # full run
 ```
 
-Other OS profiles: `ctest --preset windows-debug` (fast). Preset names are built
+Other OS profiles: `ctest --preset windows-debug` (fast) — the same label
+filters as Linux; a model test is not skipped or filtered by OS. Preset names are built
 from the base (`linux-debug`, `linux-release`, `linux-release-znver4`,
 `windows-debug`, `windows-release`) plus a `-fast`/`-convert`/`-inference`/`-perf`
 suffix that maps to the label filter. The base test preset filters `^fast$`.
@@ -113,9 +117,6 @@ suffix that maps to the label filter. The base test preset filters `^fast$`.
 - **`SKIP_RETURN_CODE 4`** must be set on any target that can skip (real weights
   absent); otherwise CTest reports the skip as a failure. `test_ctest_labels_guard`
   enforces this for every target whose source calls `SKIP(`.
-- **WINDOWS-ONLY RESTRICTION**: on Windows run model tests only for Qwen3.5-9B
-  and gemma-4-26B-A4B-it — `ctest -R "qwen|gemma"`. Other model tests (GLM,
-  DeepSeek, …) must not run on that OS.
 
 ## Test router
 
@@ -183,3 +184,25 @@ coverage, FP8 tiles) are the **Converter test rules** section of
   checkpoint (also a TIMEOUT waiting to happen).
 - Adding an inference-labelled test for a host-only change, or vice versa —
   check the router rule for the path.
+
+### A shared driver means a SHARED rebuild
+
+When many targets compile one source (`tests/test_selfcheck_driver.cpp` feeds 37
+targets via `LSX_SELFCHECK_MODEL`, `tests/test_parity_gate.cpp` feeds every
+FSI/CODE/DET cell), editing that source invalidates all of them at once. Rebuilding
+"just the ones I am looking at" leaves a tree where some binaries carry the old
+driver and some the new, and a sweep over it reports failures that belong to the
+build, not to the code. Two invalid conclusions in one session came from exactly
+this (2026-11-07: four targets red because they had not been rebuilt after the
+driver gained per-family probe fields; one of them had also been linked from a
+source file that was reverted without a rebuild).
+
+Rule: after touching a shared driver or a shared `.cu`, build the whole contour
+before measuring — `cmake --build --preset <preset>` (or the full target list), not
+a hand-picked subset. If you must build a subset, say so in the report and re-run
+the rest before quoting any verdict.
+
+A binary in a stale tree is also the best AVAILABLE oracle for "was this green
+before?" — release artifacts whose mtimes predate a refactor, plus a string check
+that they lack the new code's symbols, let you replay the old probe. Verify the
+strings; an mtime alone can be a relink of unchanged sources.

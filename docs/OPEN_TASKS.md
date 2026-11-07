@@ -36,8 +36,20 @@ code that produced it.
 
 ### A2. `deepseek-v4.1-flash`: a cancelled request poisons the **next** request
 
-- **Status: open, root-caused, fix not applied.** Measured 2026-11-04 on real
-  weights (294 GB tree in the vault):
+- **Status: fix applied 2026-11-07, verification pending on the real weights.**
+  The fix is in `deepseek_moe_v41_inference_pipeline.cu`: the first-token capture
+  now happens BEFORE the abort break (so `ev.ttft` is always recorded when there
+  is a token), `cudaEventElapsedTime` results are checked, and a request cancelled
+  before its first token reports `ttft_ms = 0` while CONSUMING any pending error
+  (not as an `error_msg` — `test_streaming_assert` requires `ok` for a cancel).
+  The other half of the item, `ModelRoot()` pointing at the retired
+  `/mnt/llm_models` path, is gone by construction: the shared driver resolves the
+  root through the manifest's `vault_env` + `lsx_model_models_dir()`, so the case
+  can no longer skip silently.
+  **This item was unobservable for a while**, which is why it sat: the shared
+  selfcheck driver dropped its cancel assertion during the manifest migration
+  (§G5). It is restored, and the case now runs.
+  Measured 2026-11-04 on real weights (294 GB tree in the vault):
   `LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash`
   `./tests/test_deepseek_moe_v41_selfcheck` — the Paris case passes (3 cycles
   bit-exact, `logits_hash 0ab7077b529eaa3b`, top-1 11111), then the
@@ -286,7 +298,7 @@ Residency note for the next operator: do NOT turn on
 reason, and the default (mmap + `LSX_DEEPSEEK_PRO_MAX_OPEN`, 4096) is the
 bounded path.
 
-## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
+## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; FSI 1/3, CODE 1/3 (2026-10-07, re-measured 2026-11-07)
 
 The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
 stack (target 2×80 GB) and cannot run locally, so FSI/CODE had always SKIPped.
@@ -300,13 +312,29 @@ passes").
 
 Both are RED on the E4M3FN NVFP4 conversion (`kOff`):
 
+- **Re-measured 2026-11-07 on binaries rebuilt AFTER the `total_steps` fix**
+  (`prompt_len - 1 + max_gen`, which removed an extra generated token): FSI **1/3**
+  (01 pass, 02/03 fail), CODE **1/3** (02 pass), DET **2/3** (03 fails). Identical
+  to the pre-fix grid, so the off-by-one changes the decode length and the Paris
+  hash (`b759bc84b820b4de`) but not the parity verdicts. Worth recording because
+  the *first* attempt at this measurement was taken on binaries built before the
+  fix and reported the same numbers — right answer, no evidence. Rebuilding the
+  three targets and re-running was the only way to tell.
 - **FSI 1/3** — FSI-01: the thinking CoT does not finish within the 512-token
   budget, so the first-anchor-line extractor latches onto the truncated prompt
   echo `PV=CF*(1-e`; FSI-02 yields the initial-state echo
   `Balance_Alpha=100000000`; FSI-03 passes.
-- **CODE 2/3** — CODE-01: the model's CoT declares the balanced template
+- **CODE 1/3, re-measured 2026-11-07** (this section said 2/3 and that
+  "CODE-02/03 pass"): CODE-01: the model's CoT declares the balanced template
   `{"root":{"nodes":{"leaf":true}}}` "invalid", miscounts the braces, and emits
-  an object missing its final `}` (extractor empty); CODE-02/03 pass.
+  an object missing its final `}` (extractor empty, `extracted=''`); CODE-02
+  passes; **CODE-03 also fails** — expected `\b[0-9A-F]{4}\b`, extracted
+  `\b[0-9A-F]{4}\b?`, one stray `?`. Confirmed on **both** binaries: the
+  pre-refactor release build of 2026-11-06 17:09 (no shared driver in it) and the
+  current debug build give the identical 1/3 with the identical two reds, so this
+  is a stale record and not a migration regression. The extra `?` is the kind of
+  near-miss a form-only extractor reports as a fail; it is not a truncation
+  artifact (it survives a 512..2048 budget sweep with `ignore_eos`).
 
 This is the `numeric-contract.md` §6 class (a reasoning/requantization divergence
 below the format error), not a discrete kernel defect — the same profile as the
@@ -523,9 +551,16 @@ intact 66 GB source and ran the whole lifecycle.
   `test_mistral_moe_selfcheck` PASS, Paris ×3 with byte-identical
   full-vocabulary logits (`logits_hash cdfd7309bb141772`, top-1 6993);
   native tool round-trip green (`get_weather{"city": "Paris"}` → parsed
-  `get_weather {"city": "Paris"}`); `lsxfabric --validate` loads in 1053 ms with
-  4 715 087 872 B resident and 1398/4608 expert slots; convert/loader/model/
-  kernels/tool_framing all green; fast suite 137/137.
+  `get_weather {"city": "Paris"}`); `lsxfabric --validate` loads in 1053 ms
+  (re-measured 2026-11-07: 1161 ms — ±10% run to run, so read it as "about a
+  second") with 4 715 087 872 B resident and 1398/4608 expert slots — both
+  re-measured identically; convert/loader/model/kernels/tool_framing all green
+  (`_model` is a synthetic fixture by design, so it pins wiring, not the
+  checkpoint); fast suite 138/138 (written as 137/137 here until 2026-11-07 —
+  `744f2c4c` added a guard target and updated the report's verdict but not this
+  line. The count is stable across the migration: the pre-migration ctest oracle
+  has 140 `fast` targets and today's tree has 140, with one swap — the naming
+  guard out, `test_manifest_generator_selftest` in).
 - **Perf re-seeded through the harness**: perf **45.77 t/s** (was 45.04),
   r3 **49.82 t/s** (was 41.57), TTFT 525/509 ms, DRAM probe 1532.73 GB/s
   recorded in the same run. `r3` moving up 20% is the strict path now
@@ -946,6 +981,422 @@ covers LINK/INCLUDE/DEFINE/LABEL/TIMEOUT/SKIP/ENV and the DLL copy; add a
 property to the helper only when a target genuinely needs one, e.g.
 `RESOURCE_LOCK`).
 
+## G1. `RESOURCE_LOCK "gpu"` does not serialise two ctest processes (2026-11-07)
+
+**Status: open — a documentation/process gap, not a code defect.**
+
+Every GPU target carries `RESOURCE_LOCK "gpu"`, and `AGENTS.md` states the rule
+"one GPU workload at a time". Both are true *inside one ctest invocation*: CTest
+implements a resource lock as a scheduler constraint among the tests of a single
+`ctest` run. Two concurrent `ctest` processes do not coordinate at all — there is
+no lock file, so both schedules believe they own the GPU.
+
+Measured on 2026-11-07: a background parity sweep (`glm_moe_flash`, `gigachat`,
+`deepseek_v41`, `minimax_moe_flash`, `mistral`, `deepseek`) was holding
+**30 272 MiB of 32 607** while a second ctest ran `test_granite_switch_*`. The
+DET gate then failed on DET-03 with `deterministic=false`, `extracted=''` — an
+inference error under allocation pressure, not a numeric divergence. Re-run with
+the card otherwise idle, DET-03 passed (`deterministic=true`,
+`extracted='BIT_ZERO'`).
+
+The failure mode is worse than a red test: the reporter said
+`deterministic=false`, which points at a numerics/instability bug, and the actual
+cause was VRAM exhaustion in a *different process*. That half is fixed — the DET
+reporter now prints `inference-error error='…'` when `Infer` returns not-ok,
+instead of folding it into the determinism verdict
+(`libs/lsxcommon/src/det_selfcheck.cpp`; FSI/CODE already carried the per-case
+error, and the shared gate driver now attaches per-case verdicts to its assertion
+too).
+
+What is **not** fixed, and is a decision rather than a patch:
+
+- A cross-process lock would have to be a file (`flock` on a path in
+  `lsx_cache_dir()`), taken by every GPU target before it allocates. That is a
+  real mechanism, but it also means a crashed test leaves a stale lock, and every
+  target would need to opt in — worth doing only if unattended parallel runs
+  become normal.
+- The cheap alternative is the one now written into `AGENTS.md`: a GPU-labelled
+  run starts only after `nvidia-smi --query-compute-apps` is empty. That needs no
+  code and no lock lifecycle, and it is what the human operator already does.
+
+Do not "fix" this by removing `RESOURCE_LOCK`: within one invocation it is
+load-bearing (the perf sweep would otherwise run concurrently with the gates in
+the same `ctest -j`).
+
+**Fixed on the same day, and the numbers that forced it.** The lock was not
+merely per-process, it was also mostly *absent*. `AGENTS.md` claimed "every perf
+target takes `RESOURCE_LOCK "gpu"`"; the configured tree said otherwise:
+
+| label | locked before | locked after | total |
+|---|---|---|---|
+| `inference` | 54 | **289** | 297 |
+| `perf` | 8 | **37** | 44 |
+| `convert` | 8 | 36 | 38 |
+| `fast` | 10 | 10 | 140 |
+
+`STAGE_LOCKS` in `tools/gen_model_manifest.py` was empty for every stage except
+where the hand-written CMake happened to set a property, so 263 of 279
+GPU-labelled targets ran unprotected. Every model stage allocates on the GPU
+(convert quantises there, load uploads, model/kernels/selfcheck/fsi/code/det/perf
+decode), so the table is now `"gpu"` for all nine stages, with one exception:
+`fast` means host-only by definition and keeps the lock off — otherwise a
+140-target fast sweep would serialise on a lock it never needed.
+
+Reproducing the change against the pre-migration oracle:
+`--diff-cmake` reports **292 differences, and every one of them is this field**
+(284 `resource_lock: null -> "gpu"` plus the 8 new `granite-switch-4.1-8b`
+targets that the 2026-11-06 snapshot predates). No label, timeout, skip code or
+environment moved. That is the check that this was a targeted change and not a
+registration drift.
+
+The 17 hand-written GPU targets that were also unprotected are now locked too
+(8 `perf`, 8 `inference`, 1 `convert`), so the configured tree reads:
+
+| label | locked | total |
+|---|---|---|
+| `inference` | 297 | 297 |
+| `perf` | 44 | 44 |
+| `convert` | 37 | 38 |
+| `fast` | 10 | 140 |
+
+The one unlocked `convert` target is `test_arrow_tree_integrity`, allowlisted as
+host-only **with a checkable reason** (0 occurrences of `cuda` in the file: it is
+an mmap walk over the Arrow vault). The guard requires a reason for every
+allowlist entry rather than a bare name, because "we think it is cheap" is how a
+device call gets added later without anyone revisiting the exception.
+
+**What the guard cannot see (open).** `test_ctest_labels_guard` parses literal
+`set_tests_properties(<name> ...)` and `lsx_add_*_test(...)` calls. Names that
+appear only inside a *group* list — `set_tests_properties(a b c PROPERTIES
+LABELS inference)` — or inside a `foreach(qt ...)` registration are invisible to
+that scan. That is exactly how the 8 `inference` targets above stayed both
+unlabelled-by-the-scan and unlocked: they are registered through
+`foreach(qt test_lsx_kernels)` / a group properties call. They are fixed, but the
+*detection* still has the hole, and a new target added the same way would be
+neither labelled nor locked with the guard's blessing. Closing it means reading
+the configured tree (`ctest --show-only=json-v1`) or generating a lock-audit
+manifest at configure time — a mechanism decision, not a patch.
+
+## G2. A sibling model can be "covered" by a test that verifies its parent (2026-11-07)
+
+**Status: open — one instance found and recorded, one instance fixed.**
+
+Found while ingesting `granite-switch-4.1-8b`, which is the first family member
+added *after* its sibling in the manifest era. A `models/*.json` row claims
+targets by name, and `test_model_suite_guard` checks that a claimed target
+EXISTS — not that it tests the model that claims it. So a source with a
+hard-coded model name can sit under two rows and verify only one of them, while
+every guard stays green. That is the shape of the migration's own recurring
+defect (a SKIP naming a neighbour), one level up.
+
+Measured: 25 test sources are claimed by more than one manifest. Four contain a
+literal `model_type` string:
+
+| source | claimed by | verdict |
+|---|---|---|
+| `test_granite_switch_adapter_parity.cpp` | 30b, 8b | **was a defect** — fixed: parameterized via `LSX_GSW_MODEL`, with the 30B as the `#ifndef` default and a separate 8B target |
+| `test_granite_switch_model.cpp` | 30b, 8b | **was a defect** — same fix (it also `dynamic_cast` to `GraniteSwitch41_30BModel`, which is how the 8B would have failed at runtime instead of at review) |
+| `test_granite_switch_tokenizer_parity.cpp` | 30b, 8b | **was a defect** — same fix; the golden cases stay shared because the two tokenizers are md5-identical |
+| `test_kimi_k3_constants.cpp` | kimi-k3, kimi-k3.1-pro | **open** — see below |
+
+Also in the capture tools, which is worse because a golden carries the mistake
+forward: `granite_switch_adapter_capture.py` and `granite_switch_tool_capture.py`
+wrote `"model_type": "granite-switch-4.1-30b"` as a literal. Both now derive it
+from the checkpoint directory (the same rule the C++ converter uses), and the
+parity test rejects a golden whose `model_type` is not its own — so a
+mis-attributed capture fails loudly instead of being compared as if it were
+right.
+
+### G2a. `kimi-k3.1-pro` claims a target named after its sibling — name, not coverage
+
+`kimi-k3.1-pro` lists `test_kimi_k3_constants` in its `model` stage. The name says
+`k3`, and `test_kimi_k3_constants.cpp` does assert `kModelType == "kimi-k3"`, so
+the first reading — recorded here earlier the same day — was "the Pro is covered by
+its parent's test". **That reading was wrong**, and refuting it is cheap:
+
+- `tests/CMakeLists.txt` compiles that binary from **two** sources,
+  `test_kimi_k3_constants.cpp` *and* `test_kimi_pro_constants.cpp`;
+- `--list-tests` shows 12 cases, six of them `kimi-k3.1-pro passport: …`
+  (registry/format identity, text tower geometry, Lightning Indexer, derived
+  scales, the DSA table = MLA table);
+- all 12 pass (615 assertions), and the Pro cases assert
+  `kModelType == "kimi-k3.1-pro"` / `kFormatTag == "logestix-kimi-k31-pro-nvfp4"`
+  from `kimi_moe_pro_constants.h`.
+
+So the coverage is real. What is genuinely wrong is the **name**: a target called
+`test_kimi_k3_constants` sitting in the Pro's row is exactly the shape that made
+three granite tests verify their parent, and the next reader will draw the same
+wrong conclusion this entry did — from the name alone, without `--list-tests`.
+
+**Not renamed here on purpose.** The honest split is one target per passport: the
+k3 cases belong to `test_kimi_k3_constants.cpp`, the Pro cases to
+`test_kimi_pro_constants.cpp`, each registered under its own model. That is a small
+refactor touching both manifests, `tests/CMakeLists.txt` and the generated
+fragment — mechanical, but it should be done deliberately rather than renamed into
+a second false impression.
+
+The lesson kept from this entry: **a target's name is not evidence about what it
+asserts.** Check `--list-tests` and the source list before recording a coverage gap.
+
+### G2b. The guard, written — and why it checks only the vault env
+
+`test_model_suite_guard` gained *"a shared test source cannot name a sibling as
+itself"* plus a non-vacuity case (`the sibling-identity rule bites`). It builds
+`source -> claiming models` from the generated registry (25 sources are claimed by
+more than one manifest) and flags a source that names a sibling's **vault
+environment variable**, or hard-codes a sibling as `cfg.model_type` /
+`kModelType`. A literal is accepted when it is the default arm of an
+`#ifndef`-guarded macro, i.e. the parameterised form a shared source is supposed to
+use (`test_granite_switch_model.cpp`).
+
+Two candidate signals were **rejected after measuring them**, and the reasons
+matter for whoever extends this:
+
+- **the `model_type` string**: a sibling test legitimately compares two passports —
+  `test_granite_switch_prepare.cpp` asserts that the 8B passport *rejects* a 30B
+  topology, so it names both on purpose;
+- **the vault directory name**: the same string is a natural name for a test
+  fixture directory. The first version of this guard flagged its own fixtures
+  (`test_granite_switch_convert.cpp` builds `/tmp/…/granite-switch-4.1-8b`), which
+  is how the signal was retired — a check that cannot tell identity from data
+  produces false positives and gets ignored.
+
+G2a is the case this guard deliberately does **not** catch: the target's *name*
+is misleading while the assertions are correct. That is a naming discipline, not a
+mechanical rule — the only mechanical check available would be "a source may only
+assert its own `kModelType`", which would forbid the two-source binary that is
+actually right.
+
+## G4. A converted tree can be built in `/tmp` and then vanish, leaving a green matrix row (2026-11-07)
+
+**Status: open — vault hygiene, found while re-running parity gates.**
+
+`gigachat3.5-432b-a28b-reasoning` is listed in `docs/SELFCHECK_MATRIX.md` §1 with
+SelfCheck/FSI/CODE/DET all green (measured 2026-10-31) and
+`docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md` exists. On
+2026-11-07 its three parity gates SKIP, and the SKIP is *correct*:
+`/mnt/fast_storage/huggingface/GigaChat3.5-432B-A28B-Reasoning/` contains the
+source checkpoint and a `lsxforge_runtime.1.log` whose writes all point at
+`/mnt/fast_storage/tmp/gigachat_reconvert/logestix/...` — the tree was converted
+**outside the vault**, and the tmp directory has since been cleaned. No
+`logestix/model.index.json` exists anywhere for it.
+
+So the row is not reproducible from the vault, and nothing in the tree records
+that. Two lessons, both cheap to act on:
+
+- **Convert into the vault, or record where the tree lives.** A conversion whose
+  output root is a temp directory produces a tree that passes gates today and
+  disappears tomorrow; the gates then SKIP, which reads as "not applicable"
+  rather than "the artifact is gone".
+- **The manifest cannot express this.** `golden_debt` is about goldens, and the
+  goldens *are* present for gigachat; what is missing is the converted tree, which
+  is vault state. `docs/OPEN_TASKS.md` is the only place that can say it, which is
+  why it is here.
+
+Re-converting GigaChat costs a 432B/28B-active pass over ~850 GB of source and
+needs the disk headroom the host currently does not have (94% full, 878 GB free).
+Treat it as a scheduling decision, not a bug fix.
+
+## G5. The manifest migration dropped the cooperative-cancel gate for 8 models and flattened the selfcheck probe (2026-11-07)
+
+**Status: closed — restored as a declared hook.** Recorded because it is the
+second coverage regression this refactor caused (the first is §G2), and because
+nothing in the suite could see it.
+
+Eight per-family selfchecks called `ExpectCooperativeCancelStops` — deepseek
+v4-flash / v4.1-flash / v4-pro, glm-5.2, glm-5.3-flash, ornith, qwen3.8-flash-next,
+xing — and v4.1 additionally called `ExpectStreamMatchesTokens`. The single
+shared driver (`tests/test_selfcheck_driver.cpp`) reproduced only the Paris case
+plus the two hooks it declared (`tool_roundtrip`, `auto_path_determinism`), so for
+those eight models **the cancel gate stopped running** while every target stayed
+green. A gate that no longer runs is indistinguishable from a gate that passes:
+the target still exists, still has its label, still reports Passed.
+
+This is what §A2 had been blocked on. §A2 records a real defect
+(`deepseek-v4.1-flash`: a cancelled request poisons the next one) whose *only*
+witness was that cancel case — and after the migration the failure could no longer
+be observed at all, which would have read as "fixed".
+
+**Fixed:** a third declared hook, `cooperative_cancel`, in the manifest and the
+driver. Enabled for the eight models that lost it plus both granite-switch
+members (whose decode loop polls the flag). A model that does not declare it gets
+`SUCCEED("cooperative_cancel hook not declared …")`, the same shape as the other
+two hooks, so opting out is explicit rather than silent.
+
+**The same migration flattened the probe itself (found next, same day).** The
+cancel hook was the visible loss; underneath it the driver also dropped four knobs
+each file had chosen for itself: the prompt framing (17 files fed
+`BuildPromptInputIds`, 18 fed raw BPE), the generation budget (2 for most,
+16/24/32/64/192/256 for the rest), the math mode (14 pinned `FastMathMode::kOff`,
+21 left the kAuto default), and the extra "raw greedy continuation" assertion
+(12 files had it). The first three feed the recorded `logits_hash`, so the uniform
+driver changed the hash for nearly every family — phi-4 went `cf51b9bbd5c913dd` →
+`c0955d0e9967e4af`, ornith `c3fe24e9dbc55b1e` → `8ea28e0ee80bc323` — and two
+families' *gates* went red (phi answered "The capital" instead of "Paris" under a
+framed probe; the driver's added continuation assertion is simply wrong for a
+framed family, ornith answers "The capital" and should). All four are now manifest
+fields — `selfcheck_frame_prompt`, `selfcheck_max_gen`, `selfcheck_bit_exact` —
+transcribed from the deleted files, and the continuation assertion was dropped
+because the canonical contract is `SelfCheck`.
+
+**The oracle that settles it:** the release tree's binaries are dated
+2026-11-06 17:08–17:09 and contain none of the new driver's strings, so they are
+pre-refactor. Replaying four of them against the restored driver reproduces the old
+hashes bit-exactly — phi-4 `cf51b9bbd5c913dd`, ornith `c3fe24e9dbc55b1e`,
+qwen3.5-9b `a2af669548e59c73`, xing `53e18f6dd77a64a2`, same top-1 and `n`. Two of
+the four were RED under the uniform driver. A hash mismatch is only actionable
+against such an oracle; without one, "the hash changed" and "the weights changed"
+are indistinguishable.
+
+**What this class teaches, again:** the migration's own tests check that a
+*declared* target exists and runs; they cannot see coverage that was never
+declared, and they cannot see a *parameter* that was never declared. The only
+defence is transcribing the old files line by line — assertions **and** their
+constants — which is what should have happened at the time. §G2 has the same shape
+one level up.
+
+## G6. A ctest target can report **Passed** for a gate that never loaded a weight (2026-11-07)
+
+**Status: fixed in the selfcheck driver; the general rule is worth keeping.**
+
+Catch2 returns `AllTestsSkippedExitCode` (4) only when **every** case in the binary
+skipped, and `SKIP_RETURN_CODE 4` is what turns that into ctest's `***Skipped`. The
+selfcheck driver's three "hook not declared" branches were `SUCCEED`, so for a model
+with no converted tree the binary reported:
+
+    test cases: 4 | 1 passed | 3 skipped
+
+The single "pass" was an undeclared hook — no weights, no vault, no model. The
+binary exited 0 and ctest printed **Passed**. A sweep over the 37 SelfCheck targets
+therefore reported 37 green when only 27 had executed the Paris case; the other 10
+(the models whose converted tree is absent — `beam`, `deepseek-v4-pro-0813`,
+`flint`, `gigachat`, `glm-5.2`, `ling`, `mimo`, `mistral-large-4-1t`,
+`nemotron-3.5-lightning-30b-a3b`, `step-5-preview`) had skipped everything that
+matters.
+
+**Why it is not visible from the guard side:** `test_ctest_labels_guard` enforces
+that a skip-capable target *sets* `SKIP_RETURN_CODE 4`; it cannot see that the
+binary's own bookkeeping keeps the skip from reaching the exit code. The property
+is per-BINARY, not per-test: one always-green case anywhere in the file defeats it.
+
+**Fix:** the three branches `SKIP` instead of `SUCCEED`, so a weight-less model
+exits 4 and ctest says `Skipped`. An undeclared hook was never a pass — it is "not
+applicable to this model", which is what a skip means. A model that DOES load
+weights still reports `Passed` with its hook cases skipped, which is correct: the
+Paris case ran.
+
+**The transferable rule:** in a Catch2 binary, "green" only means "nothing failed",
+and a case that opts out with `SUCCEED` is indistinguishable from a case that
+passed. Any driver with declared optional cases must use `SKIP` for them, or count
+its own cases explicitly.
+
+## G7. A relative fixture-dir fallback makes a gate SKIP while its golden sits in the tree (2026-11-07)
+
+**Status: fixed; guarded.**
+
+`tests/test_granite_switch_model.cpp` resolves its tool-round-trip golden with the
+macro `LSX_GRANITE_SWITCH_FIXTURE_DIR`, whose `#ifndef` fallback is the **relative**
+path `"tests/fixtures/granite_switch"`. `test_granite_switch_model` and
+`test_granite_switch_8b_model` never received that macro from CMake (the other
+granite-switch targets did), so under ctest — which runs the binary with CWD =
+`build/linux-debug` — the path resolved to a directory that does not exist there and
+the case reported
+
+    SKIPPED: granite-switch tool golden not captured
+
+while `tests/fixtures/granite_switch/tool_roundtrip.json` sat in the source tree.
+The lifecycle gate requires "a native tool round-trip", so for both members of this
+family that requirement was **not being verified at all** — and nothing was red. The
+8B's stage-9 report quotes the real-weight line (`pinned weights loaded: 40 layers
+(6088178432 bytes resident)`), which was captured by running the binary **by hand
+from the repository root**, where the relative path happens to work. Reproducible by
+accident of CWD is not reproducible.
+
+**Fix:** the absolute fixture dir is now passed to both targets. Verified by
+re-running through ctest: the case loads 40 layers (6 088 178 432 bytes) for the 8B
+and 64 layers (17 416 338 176 bytes) for the 30B, and both binaries report 6/6 cases
+with 136 assertions where they previously reported 5 passed + 1 skipped, 126.
+
+**The class, and why the guard is the fix rather than the two defines.** 13
+directory macros in the tree carried a relative fallback; 11 were correctly defined
+by CMake and 2 were not, and the failure mode is silent in every case. Two guards
+now make a repeat loud:
+
+- `infra guard: a fixture dir macro is never satisfied by its relative fallback`
+  scans every `#ifndef X / #define X "<relative>"` and requires each target that
+  compiles that source to pass `X`. It has non-vacuity assertions (>= 5 macros and
+  >= 100 `add_executable` blocks) because an empty scan passes everything — proven
+  by removing one define and watching it name `test_granite_switch_model compiles
+  test_granite_switch_model.cpp without defining LSX_GRANITE_SWITCH_FIXTURE_DIR`.
+- `tests/test_parity_gate.cpp` no longer has per-kind fallbacks at all: the three
+  `LSX_{FSI,CODE,DET}_GOLDEN_DIR` macros collapsed into one `LSX_GOLDEN_DIR`, with
+  `#error` when absent. The kind is a string and cannot be compared in `#if`, so
+  three per-kind macros forced three "define it or fall back" branches — the
+  fallback was the design's fault, not a reviewer's. The runtime env overrides keep
+  their documented per-kind names.
+
+**Why this is the third G-class item with the same shape:** G5 (a declared hook that
+stopped running), G6 (a case that skipped while the target said Passed) and G7 (a
+path that resolved differently under ctest) are all "the instrument reported absence
+as success". None of them was caught by a red target; all three were caught by
+asking what a green number actually measured.
+
+## G8. A DEGRADED `perf` verdict hid the `r3` verdict entirely (2026-11-07)
+
+**Status: fixed.** Found while re-checking the mistral-small-4 report, and it is the
+fourth item in this file with the same shape: an instrument reporting *absence* as
+if it were a result.
+
+`tests/test_perf_baseline.cpp` measures two numeric modes per model in one loop —
+`perf` (kAuto) and `r3` (kOff, bit-exact) — and judges each with
+`CheckAgainstBaseline`. The DEGRADED verdict used `FAIL(...)`. In Catch2 v3 `FAIL`
+is a **fatal** assertion (`ResultDisposition::Normal`), unlike `FAIL_CHECK`
+(`ContinueOnFailure`), so the first degraded mode aborted the test case and the
+second mode was **never measured**. Verified: `mistral-small-4-119b` printed one
+`weights loaded` line and one verdict; after the change it prints two of each and
+reports both (`perf` 95.9%, `r3` 96.3% of their references).
+
+The consequence while it lasted: any model whose `perf` mode regressed had an
+*unverified* `r3` row, and the report/catalogue quote both numbers as if measured.
+The test still fails after the fix — `FAIL_CHECK` records the failure and the run
+exits non-zero — it just finishes the pair first.
+
+**Why the guards did not catch it:** `test_perf_baseline_logic` tests `JudgePerf`
+and `JudgePerfLen`, i.e. the decision, not how many modes a failing decision lets
+reach the judge.
+
+### G8a. `mistral-small-4-119b` reads 95.9% / 96.3% of its recorded throughput (open)
+
+The other half of the same run: re-measuring the committed tree eleven days later
+gives 43.89-44.31 t/s (`perf`) and 47.99 t/s (`r3`) against references of 45.77 and
+49.82 — stable to under 1% over six runs and across both modes, so a systematic
+~4%, not noise. **Thermal and power throttling are ruled out by measurement**: a
+cold-card (45 °C start) run and an immediately-following hot-card run give the same
+verdict with 46/51 °C, 141-145 W mean against a 600 W cap, and the harness's own
+DRAM oracle reads 99.4% (1524 vs 1533 GB/s). Nothing in `mistral_moe_*` or the
+shared kernels changed since the reference was written. `granite-4.2-30b` shows the
+same shape (96.7%); `phi-4` passes.
+
+**The reference has deliberately NOT been re-seeded.** Two candidate causes, in the
+order they should be chased:
+
+1. **The reference is a ratcheted best-of sample.** The harness re-seeds on any
+   improvement, so a recorded row is the best observed run, not a median, and the
+   pass band is only 3%. This row replaced 45.04, and `r3` replaced 41.57 — a 20%
+   jump on the same tree, which is itself evidence that this measurement is
+   unstable. If that is the cause, the fix is in the harness's statistics (record a
+   median of N, or widen the band for a family whose spread is measured), not in
+   the model.
+2. **The capacity oracle is disabled for this entry.** `expert_cache_slots` is
+   present in 2 of 67 entries; `mistral-small-4-119b` is not one of them, so
+   `baseline_slots` is 0 and `AttributeDegrade` cannot return `kCapacity` for the
+   family most sensitive to it — 4 608 routed experts streamed through 1 398 device
+   slots, with the capacity derived from ambient free VRAM at load time. Backfilling
+   the field on a conforming run restores the oracle.
+
+Do not re-seed until one of those is settled; a wrong re-seed would erase the only
+evidence if the ~4% is real.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -953,6 +1404,8 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-11-07 | Granite-Switch 4.1 8B FSI-01: red on a form fork, closed with a MEASURED residual-plane placement | The 8B sibling's FSI-01 answered the formula evaluated (`PV=2500000*…`) where the source answers it symbolically — every constant correct, so a form fork rather than a corrupted computation. Teacher-forcing showed it was not a tie: source margin +6.88 logits for `CF`, converted −1.27, an 8.2-logit swing. Bug checklist first (head `global_scale` applied, `Free()` complete, records decode back at relL2 0.094–0.095 on layers 0/20/39) — so, 4-bit body error. Four trees were then converted and probed rather than assuming gemma's placement: none −1.27 (red), **attn +0.9 GB +1.58 (green, shipped)**, mlp +3.3 GB +2.19, attn+mlp +4.2 GB +7.14. `attn` is the cheapest that clears AND leaves the biggest tensors at 4 bits (MLP = 79% of the layer's bytes). Resident 5.14 → 6.09 GB, profile min 5.51 → 6.45 GB, index records `"residual": "attn"`, knob is convert-time (`LSX_GSW_RESIDUAL`). FSI 3/3, SelfCheck ×3 `b7c1aa453d83a86f` (re-measured 2026-11-07 as `930dd592ea5f5834` when the generation budget became a declared per-family value), DET 2/3 = the source's own `CRITICAL`. Two instrument defects recorded: the probe read `final_logits` (published after the decode loop, one position late) and reported the wrong winner, and the `det` verdict folded an inference error into `deterministic=false` while embedding raw newlines into a one-line record. Legacy 4-bit-only trees still load (`ad9b0c4940bb27a9`). — [`open-tasks/2026-11-07-granite-switch-fsi01-residual.md`](open-tasks/2026-11-07-granite-switch-fsi01-residual.md) |
+| 2026-11-06 | AliceAI-Foundation-80B-A3B: an inverted allocator predicate silently disabled generation for three days | All four gates were red with `alice workspace alloc failed` — and the pre-migration binary failed identically, so it was not the manifest work. The recorded `cudaError_t` and buffer identity showed `cudaMallocAsync -> cudaSuccess (0), free 27399 of 32202 MiB`: nothing had failed. 397ab361 rewrote the workspace macro's ternary arms from `cudaError_t` constants to `true`/`false` while clearing 42 `-Wint-in-bool-context` sites, inverting a chain that reads `if (A() || A() || …)`: the first *successful* malloc aborted the workspace, so alice decoded zero tokens from 2026-11-03 19:33. It stayed invisible because the message discarded the error and the free-VRAM number, because the gate driver's per-case `INFO` left scope before the aggregate `REQUIRE` (Catch2 printed `false` alone), and because the gates carry label `inference`, which no default sweep runs. Fixed with a named `WsAllocFailed()` predicate, a diagnostic naming buffer/bytes/error/free VRAM, and `ExplainCases()` in the gate driver; pinned by *"alice workspace allocator polarity"*, proven red by inverting the predicate. Post-fix SelfCheck Paris ×3 `logits_hash 0bf456024cc05255` (top-1 828), FSI/CODE/DET 3/3 at 230/221/183 s, tool round-trip green; the hash moved from `f900547d25be7914` (2026-11-03) at an unchanged top-1 id, unattributed between 397ab361's dropped `__restrict__` sites and the CUDA 13.5 bump. — [`open-tasks/2026-11-06-alice-workspace-polarity.md`](open-tasks/2026-11-06-alice-workspace-polarity.md) |
 | 2026-11-03 | Dense-trio consolidation, phase 1: granite / granite-switch / phi now run one neutral `lsxcommon::dense` kernel layer | The three dense families had drifted into three near-copies of the same decode kernels. Phase 1 moved RMSNorm, full-dim RoPE, causal GQA attention (with the split-KV flash-decode path), fused split-QKV and fused SwiGLU into `lsx_dense_inference.{h,cu}`; the algorithm is the one Granite-4.2 always ran, moved verbatim (`tools/dedup_provenance.py` proves it), and every family's layer driver stays family-named. No golden moved. — [`open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md`](open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md) |
 | 2026-11-03 | Warning backlog closed: a clean build is 246 lines, none of them ours | Scoping `-Wall -Wextra`/`-Wpedantic` to our own directories dropped a clean build from 51 408 warning lines to 484; this session cleared the remaining 238 across 170 sites / 83 files **without silencers**. The load-bearing find: 39 in-place activation/norm calls aliased `__restrict__` parameters, i.e. formal UB, fixed by dropping the qualifier. Plus fail-closed `SimpleAtoi`/simdjson config reads, a dangling test reference, `memcpy` into `__half`, 19 dead functions. — [`open-tasks/2026-11-03-warning-backlog-closed.md`](open-tasks/2026-11-03-warning-backlog-closed.md) |
 | 2026-11-03 | AliceAI-Foundation-80B-A3B re-ingested: two accounting defects closed | The converted tree had not survived on this host, so the whole lifecycle was re-run — which exposed two defects no consumer had exercised: the emitted VRAM profile counted the routed experts as BF16 **and** device-resident (`min_bytes` 162 GB, `max_bytes == optimal_bytes`), and `resident_bytes` under-reported the uploaded dense graph 8x (1 187 vs 4 231 MiB) — the number that drives the governor lease. Both fixed test-first. SelfCheck Paris ×3 bit-exact (`f900547d25be7914`), FSI/CODE/DET 3/3, tool round-trip, perf re-seeded 45.70/45.88 t/s. — [`open-tasks/2026-11-03-alice-reingest-closed.md`](open-tasks/2026-11-03-alice-reingest-closed.md) |
@@ -1809,3 +2262,73 @@ instrument, not an experiment.
   (3712 failed mmap opens, debug-logged) because `ExpertStore::Load` does not
   consult `moe_index_of_layer`. Harmless (entries stay empty, the compact
   device id map is correct) and ~30 ms per load; noted, not fixed.
+
+## Model manifest migration (2026-11-06) — what it did not cover
+
+The registry moved from six hand-maintained projections to `models/*.json`.
+Closed: the guard registries, the ctest registration, the factory list, the
+parity-gate and selfcheck test files, the `AGENTS.md` model narrative
+(1109 -> 164 lines) and the `README.md` inventory.
+
+Still open, by construction:
+
+- **Build wiring is still per model.** `add_executable`, the CUDA OBJECT
+  libraries and per-target includes/defines stay in `tests/CMakeLists.txt`: only
+  10 of 421 targets follow a convention, so a generated build graph would be a
+  worse copy of the same information. Revisit only if a re-architecture makes
+  the wiring conventional.
+- **`format_tag` is declared for 8 of 35 models.** The rest have no
+  machine-readable source (no `kFormatTag` constant; the tag lives inside a
+  converter's index writer). The catalogue prints "not declared" rather than a
+  guess. Closing it means exposing each converter's tag as a constant.
+- **Per-model goldens and perf rows are still captured by hand.** The manifest
+  names them and records debt; it cannot produce them.
+- **Approach C (family scaffolder) is not built.** Decided after this work, on
+  the measure "lines a fresh family needs that are not converter/kernel logic".
+
+### Stage-9 reports missing for 20 models
+
+`docs/MODELS.md` links every model's report where one exists (15 of 35) and prints
+**not written** where it does not — the line is stated rather than omitted, so a
+missing report cannot read as "not applicable". The 20 without one:
+
+`deepseek-v4-flash`, `deepseek-v4-pro-0813`, `deepseek-v4.1-flash`, `flint`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it`, `glm-5.2`, `glm-5.3-flash`, `hy-memory-30b-a3b`, `kimi-k2.7-code`, `ling`, `mimo-v2.6-flash-rl`, `minimax-m3`, `nemotron-3.5-lightning-30b-a3b`, `ornith-1.5-35b-a3b`, `phi-4`, `qwen3.5-35b-a3b`, `qwen3.5-9b`, `qwen3.6-35b-a3b`, `xing4.0-29b-a4b`
+
+The gap is not cosmetic: for these models the per-model *reasoning* (why a family
+pins `FastMathMode::kOff`, why its residual plane exists, what the measured
+bottleneck is) lives only in `AGENTS.md`'s git history and in `docs/open-tasks/`
+sessions, not in a document a reader can be pointed at. `models/*.json:report`
+now carries a validation rule — a declared path must exist — so writing one is a
+one-line manifest change.
+
+### The ctest oracle is a dated snapshot, not a live target list
+
+`tools/dump_ctest_manifest.py` and `tests/fixtures/ctest/2026-11-06-baseline.json`
+(511 targets captured from the pre-migration `linux-debug` tree) are kept as the
+migration's evidence, **not** as a gate and not as documentation of the current
+target set.
+
+- **What they prove.** `python3 tools/gen_model_manifest.py --root . --diff-cmake
+  tests/fixtures/ctest/2026-11-06-baseline.json` compares the emitted model
+  registration against what CMake produced *before* the manifests existed: 421 of
+  the 511 targets are model targets (the other 90 are guard/kernel/infrastructure
+  tests). Today it prints `compared 421 targets, 0 difference(s)`, which is the
+  only record that the transcription into `models/*.json` was exact rather than
+  approximately exact.
+- **CI never runs it, and should not.** The snapshot describes the tree on
+  2026-11-06. The first model added after that date makes the check report
+  `manifest target absent from the baseline` and exit 1 — verified by deleting
+  one target from a copy of the baseline, which yields
+  `compared 420 targets, 1 difference(s)` and exit 1. That is expected growth,
+  not a regression, so the check cannot live in the suite.
+- **Do not re-capture it in place.** Re-dumping today yields 511 targets again, but
+  not the same ones: `test_parity_selfcheck_naming_guard` is gone and
+  `test_manifest_generator_selftest` (this migration's own self-test) is new.
+  The model-target projection happens to be identical (421, 0 differences), so
+  overwriting the file would look harmless and would silently destroy the only
+  record of the tree as it was *before* the manifests. A snapshot is meaningful
+  only as the "before" of a *future* migration, captured before its first edit.
+- **Live authority is elsewhere.** If a current registration check is ever
+  needed, it is the generated `model_targets.cmake` plus `test_manifest_sync`,
+  not this JSON. The fixture answers "did the migration lose a target or change
+  a label/timeout/env?", a question that has one date.

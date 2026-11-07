@@ -1,0 +1,122 @@
+{
+  "model_type": "ling",
+  "display_name": "ling",
+  "family": "ling",
+  "variant": null,
+  "model_class": "LingMoeModel",
+  "model_header": "ling_moe_model.h",
+  "passport": "libs/lsxcommon/src/ling_moe_constants.h",
+  "namespace": "lsxcommon::ling::frozen",
+  "format_tag": "logestix-ling-nvfp4",
+  "forge_flag": "--ling",
+  "tokenizer_kind": 5,
+  "vault": {
+    "dir": "Ling-3.1-flash",
+    "env": "LSX_TEST_LING_ROOT"
+  },
+  "lifecycle_tu": [
+    "ling_moe_model.cpp",
+    "ling_moe_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_ling_moe_convert"
+    ],
+    "load": [
+      "test_ling_moe_loader",
+      "test_ling_tokenizer_parity"
+    ],
+    "model": [
+      "test_ling_moe_model",
+      "test_ling_tool_framing"
+    ],
+    "kernels": [
+      "test_ling_moe_kernels"
+    ],
+    "selfcheck": [
+      "test_ling_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_ling_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_ling_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_ling_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_ling"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_ling",
+    "vault_subdir": "Ling-3.1-flash",
+    "timeout": 7200,
+    "resource_lock": "gpu"
+  },
+  "target_overrides": {
+    "test_ling_moe_convert": {
+      "resource_lock": "gpu"
+    },
+    "test_ling_moe_loader": {
+      "label": "fast",
+      "resource_lock": "gpu"
+    },
+    "test_ling_tokenizer_parity": {
+      "label": "fast",
+      "env": []
+    },
+    "test_ling_moe_model": {
+      "timeout": 900,
+      "skip": true,
+      "resource_lock": "gpu"
+    },
+    "test_ling_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_ling_moe_kernels": {
+      "label": "fast",
+      "resource_lock": "gpu"
+    },
+    "test_ling_moe_selfcheck": {
+      "timeout": 7200,
+      "resource_lock": "gpu",
+      "form": "selfcheck"
+    },
+    "test_ling_moe_fsi_selfcheck": {
+      "timeout": 7200,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_ling_moe_code_selfcheck": {
+      "timeout": 7200,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_ling_moe_det_selfcheck": {
+      "timeout": 7200,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": true,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "",
+  "notes": "",
+  "aliases": [
+    "ling-3.1-flash"
+  ],
+  "selfcheck_max_gen": 256,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
+}

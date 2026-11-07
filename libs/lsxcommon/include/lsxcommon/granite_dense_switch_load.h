@@ -27,6 +27,10 @@ struct GraniteSwitchLora {
 
 struct GraniteSwitchProjection {
     lsx_nvfp4::LsxNvfp4Weight base;
+    // Second NVFP4 plane carrying `w - dequant(base)`; decoded as one more GEMV
+    // with acc=true after the base. Left null on a 4-bit-only (legacy) tree, so
+    // the decode skips the accumulate pass and old artifacts keep loading.
+    lsx_nvfp4::LsxNvfp4Weight res;
     // [adapter][slice]; a slice is one fused output region (qkv has 3,
     // gate_up has 2, o/down have 1). rank 0 means "adapter does not target
     // this slice".

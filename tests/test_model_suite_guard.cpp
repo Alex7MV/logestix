@@ -24,7 +24,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
+#include <absl/strings/str_split.h>
+#include <absl/strings/strip.h>
+
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <optional>
 #include <regex>
@@ -34,20 +40,29 @@
 #include <string>
 #include <vector>
 
+#include "test_manifest_query.h"
+
 namespace fs = std::filesystem;
 
 #ifndef LSX_SOURCE_DIR
 #define LSX_SOURCE_DIR "."
 #endif
+#ifndef LSX_MANIFEST_GENERATED_DIR
+#define LSX_MANIFEST_GENERATED_DIR ""
+#endif
 
 namespace {
 
+// The family vocabulary comes from models/*.json. The hand-written literal that
+// used to live here listed 15 of 20 families, so "no test may include another
+// family's fixture" silently passed for beam, hy, minimax, mistral and xing.
 const std::set<std::string> &FamilyStems()
 {
-    static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
-                                            "kimi", "nemotron", "gigachat",
-                                            "ornith", "granite", "mimo", "phi",
-                                            "alice", "flint", "ling", "step"};
+    static const std::set<std::string> v = [] {
+        std::set<std::string> out;
+        for (const auto &f : manifest_query::Families()) out.insert(f);
+        return out;
+    }();
     return v;
 }
 
@@ -71,6 +86,12 @@ struct StageSpec
     std::vector<const char *> targets;
 };
 
+// The lifecycle order the protocol defines; a stage outside it is a manifest
+// schema error, so this list only has to name them.
+constexpr const char *kStageOrder[] = {"convert", "load",    "model",
+                                       "kernels", "selfcheck", "fsi",
+                                       "code",    "det",     "perf"};
+
 struct SuiteSpec
 {
     const char *model;
@@ -83,441 +104,44 @@ struct SuiteSpec
 // that sharing is the registry row, in plain sight.
 const std::vector<SuiteSpec> &Suites()
 {
-    static const std::vector<SuiteSpec> v = {
-        {"glm-5.2",
-         {{"convert", {"test_glm_moe_convert"}},
-          {"load", {"test_glm_moe_loader", "test_glm_moe_load_fast",
-                    "test_glm_moe_expert_cache"}},
-          {"model",
-           {"test_glm_moe_model", "test_glm_moe_model_lifecycle",
-            "test_glm_moe_prompt_output", "test_glm_moe_prompt_framing"}},
-          {"kernels",
-           {"test_glm_moe_moe_compute", "test_glm_moe_attention",
-            "test_glm_moe_experts", "test_glm_moe_dense_compute",
-            "test_glm_moe_layer_compute", "test_glm_moe_moe_router",
-            "test_glm_moe_full_compute", "test_glm_moe_inference",
-            "test_glm_moe_prefill_seqp"}},
-          {"selfcheck", {"test_glm_moe_selfcheck"}},
-          {"fsi", {"test_glm_moe_fsi_selfcheck"}},
-          {"code", {"test_glm_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_glm_5_2"}},
-          {"det", {"test_glm_moe_det_selfcheck"}}}},
-        {"glm-5.3-flash",
-         {{"convert", {"test_glm_moe_flash_convert"}},
-          {"load", {"test_glm_moe_flash_loader"}},
-          {"model",
-           {"test_glm_moe_flash_model", "test_glm_flash_tool_framing"}},
-          {"kernels", {"test_glm_moe_flash_kernels"}},
-          {"selfcheck", {"test_glm_moe_flash_selfcheck"}},
-          {"fsi", {"test_glm_moe_flash_fsi_selfcheck"}},
-          {"code", {"test_glm_moe_flash_code_selfcheck"}}, {"perf", {"test_perf_baseline_glm_5_3_flash"}},
-          {"det", {"test_glm_moe_flash_det_selfcheck"}}}},
-        // No convert stage by design: DeepSeek-V4-Flash ingests a
-        // pre-converted logestix layout (no converter exists in the repo);
-        // classification/topology of that layout is the model stage.
-        {"deepseek-v4-flash",
-         {{"convert",
-           {"test_deepseek_moe_convert", "test_deepseek_nvfp4_repack",
-            "test_deepseek_nvfp4_repack_tool"}},
-          {"load", {"test_deepseek_moe_loader", "test_deepseek_moe_load_fast"}},
-          {"model",
-           {"test_deepseek_moe_model", "test_deepseek_moe_prompt_output",
-            "test_deepseek_tool_framing"}},
-          {"kernels",
-           {"test_deepseek_moe_inference_kernels", "test_deepseek_moe_arena",
-            "test_deepseek_moe_moe", "test_deepseek_moe_norm_kernels"}},
-          {"selfcheck", {"test_deepseek_moe_selfcheck"}},
-          {"fsi", {"test_deepseek_moe_fsi_selfcheck"}},
-          {"code", {"test_deepseek_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_deepseek_v4_flash"}},
-          {"det", {"test_deepseek_moe_det_selfcheck"}}}},
-        {"deepseek-v4.1-flash",
-         {{"convert", {"test_deepseek_moe_v41_convert"}},
-          {"load",
-           {"test_deepseek_moe_v41_loader", "test_deepseek_moe_v41_load_fast"}},
-          {"model",
-           {"test_deepseek_moe_v41_model", "test_deepseek_tool_framing"}},
-          {"kernels",
-           {"test_deepseek_moe_v41_dequant", "test_deepseek_moe_v41_kernels",
-            "test_deepseek_moe_v41_actquant",
-            "test_deepseek_moe_v41_pipeline"}},
-          {"selfcheck", {"test_deepseek_moe_v41_selfcheck"}},
-          {"fsi", {"test_deepseek_moe_v41_fsi_selfcheck"}},
-          {"code", {"test_deepseek_moe_v41_code_selfcheck"}}, {"perf", {"test_perf_baseline_deepseek_v41_flash"}},
-          {"det", {"test_deepseek_moe_v41_det_selfcheck"}}}},
-        {"deepseek-v4-pro-0813",
-         {{"convert", {"test_deepseek_moe_pro_convert"}},
-          {"load",
-           {"test_deepseek_moe_pro_loader", "test_deepseek_moe_pro_load_fast"}},
-          {"model", {"test_deepseek_moe_pro_model", "test_deepseek_tool_framing"}},
-          {"kernels", {"test_deepseek_moe_pro_kernels"}},
-          {"selfcheck", {"test_deepseek_moe_pro_selfcheck"}},
-          {"fsi", {"test_deepseek_moe_pro_fsi_selfcheck"}},
-          {"code", {"test_deepseek_moe_pro_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_deepseek_v4_pro"}},
-          {"det", {"test_deepseek_moe_pro_det_selfcheck"}}}},
-        {"qwen3.5-9b",
-         {{"convert",
-           {"test_qwen_dense_convert", "test_qwen_dense_converter_integrity"}},
-          {"load", {"test_qwen_dense_loader"}},
-          {"model", {"test_qwen_dense_model", "test_qwen_tool_framing"}},
-          {"kernels",
-           {"test_qwen_dense_mlp", "test_qwen_dense_full_attn",
-            "test_qwen_dense_nvfp4", "test_qwen_dense_norm",
-            "test_qwen_dense_rotary", "test_qwen_dense_shuffle_reduce",
-            "test_qwen_dense_full_attn_parallel",
-            "test_qwen_dense_linear_attn", "test_qwen_dense_fused_mlp",
-            "test_qwen_dense_fused_linear_attn", "test_qwen_dense_kv_cache",
-            "test_qwen_dense_kv_parity"}},
-          {"selfcheck", {"test_qwen_dense_selfcheck"}},
-          {"fsi", {"test_qwen_dense_fsi_selfcheck"}},
-          {"code", {"test_qwen_dense_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_5_9b"}},
-          {"det", {"test_qwen_dense_det_selfcheck"}}}},
-        // qwen3.8-27b shares the dense convert/load/kernels pipeline with
-        // qwen3.5-9b (QwenBaseModel); its own stages are model+selfcheck.
-        {"qwen3.8-27b",
-         {{"convert", {"test_qwen_dense_convert"}},
-          {"load", {"test_qwen_dense_loader"}},
-          {"model", {"test_qwen_dense_27b_model", "test_qwen_tool_framing"}},
-          {"kernels",
-           {"test_qwen_dense_nvfp4", "test_qwen_nvfp4_gemv",
-            "test_qwen_nvfp4_tile_gemm"}},
-          {"selfcheck", {"test_qwen_dense_27b_selfcheck"}},
-          {"fsi", {"test_qwen_dense_27b_fsi_selfcheck"}},
-          {"code", {"test_qwen_dense_27b_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_8_27b"}},
-          {"det", {"test_qwen_dense_27b_det_selfcheck"}}}},
-        {"qwen3.5-35b-a3b",
-         {{"convert", {"test_qwen_moe_convert"}},
-          {"load", {"test_qwen_moe_loader"}},
-          {"model", {"test_qwen_moe_model"}},
-          {"kernels", {"test_qwen_moe_kernels"}},
-          {"selfcheck", {"test_qwen_moe_selfcheck"}},
-          {"fsi", {"test_qwen_moe_fsi_selfcheck"}},
-          {"code", {"test_qwen_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_5_35b_a3b"}},
-          {"det", {"test_qwen_moe_det_selfcheck"}}}},
-        // qwen3.6 shares loader + kernels with qwen3.5-35b (QwenMoeModelBase).
-        {"qwen3.6-35b-a3b",
-         {{"convert", {"test_qwen_moe_36_convert"}},
-          {"load", {"test_qwen_moe_loader"}},
-          {"model", {"test_qwen_moe_36_model"}},
-          {"kernels", {"test_qwen_moe_kernels"}},
-          {"selfcheck", {"test_qwen_moe_36_selfcheck"}},
-          {"fsi", {"test_qwen_moe_36_fsi_selfcheck"}},
-          {"code", {"test_qwen_moe_36_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_6_35b_a3b"}},
-          {"det", {"test_qwen_moe_36_det_selfcheck"}}}},
-        {"ornith-1.5-35b-a3b",
-         {{"convert", {"test_ornith_moe_convert"}},
-          {"load", {"test_ornith_moe_loader"}},
-          {"model", {"test_ornith_moe_model"}},
-          {"kernels", {"test_ornith_moe_kernels"}},
-          {"selfcheck", {"test_ornith_moe_selfcheck"}},
-          {"fsi", {"test_ornith_moe_fsi_selfcheck"}},
-          {"code", {"test_ornith_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_ornith"}},
-          {"det", {"test_ornith_moe_det_selfcheck"}}}},
-        {"qwen3.8-flash-next",
-         {{"convert", {"test_qwen_moe_exp_convert"}},
-          {"load", {"test_qwen_moe_exp_loader"}},
-          {"model", {"test_qwen_moe_exp_model"}},
-          {"kernels", {"test_qwen_moe_exp_kernels"}},
-          {"selfcheck", {"test_qwen_moe_exp_selfcheck",
-                         "test_qwen_moe_exp_eos_selfcheck"}},
-          {"fsi", {"test_qwen_moe_exp_fsi_selfcheck"}},
-          {"code", {"test_qwen_moe_exp_code_selfcheck"}}, {"perf", {"test_perf_baseline_qwen3_8_flash_next"}},
-          {"det", {"test_qwen_moe_exp_det_selfcheck"}}}},
-        {"gemma-4-26b-a4b-it",
-         {{"convert", {"test_gemma_moe_convert"}},
-          {"load", {"test_gemma_moe_loader"}},
-          {"model",
-           {"test_gemma_moe_model", "test_gemma_prompt_framing",
-            "test_gemma_tool_framing"}},
-          {"kernels",
-           {"test_gemma_moe_norm", "test_gemma_moe_rotary",
-            "test_gemma_moe_attn", "test_gemma_moe_moe"}},
-          {"selfcheck", {"test_gemma_moe_selfcheck"}},
-          {"fsi", {"test_gemma_moe_fsi_selfcheck"}},
-          {"code", {"test_gemma_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_gemma_4_26b_a4b_it"}},
-          {"det", {"test_gemma_moe_det_selfcheck"}}}},
-        {"gemma-4-31b-it",
-         {{"convert", {"test_gemma_dense_convert"}},
-          {"load", {"test_gemma_dense_loader"}},
-          {"model", {"test_gemma_dense_model"}},
-          {"kernels", {"test_gemma_dense_kernels"}},
-          {"selfcheck", {"test_gemma_dense_selfcheck"}},
-          {"fsi", {"test_gemma_dense_fsi_selfcheck"}},
-          {"code", {"test_gemma_dense_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_gemma_4_31b_it"}},
-          {"det", {"test_gemma_dense_det_selfcheck"}}}},
-        {"kimi-k2.7-code",
-         {{"convert", {"test_kimi_moe_convert"}},
-          {"load",
-           {"test_kimi_moe_loader", "test_kimi_moe_expert_cache",
-            "test_kimi_moe_tokenizer", "test_kimi_moe_tokenizer_parity"}},
-          {"model", {"test_kimi_moe_model", "test_kimi_tool_framing"}},
-          {"kernels",
-           {"test_kimi_moe_router", "test_kimi_moe_attention",
-            "test_kimi_moe_rope_parity", "test_kimi_moe_experts",
-            "test_kimi_moe_int4_dequant", "test_kimi_moe_inference",
-            "test_kimi_moe_int4_real", "test_kimi_moe_mla_proj_real",
-            "test_kimi_moe_tc_batch",
-            "test_kimi_moe_tc_diag"}},
-          {"selfcheck", {"test_kimi_moe_selfcheck"}},
-          {"fsi", {"test_kimi_moe_fsi_selfcheck"}},
-          {"code", {"test_kimi_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_kimi_k2_7_code"}},
-          {"det", {"test_kimi_moe_det_selfcheck"}}}},
-        {"nemotron-3.5-lightning-30b-a3b",
-         {{"convert", {"test_nemotron_moe_convert"}},
-          {"load",
-           {"test_nemotron_moe_loader", "test_nemotron_moe_expert_cache",
-            "test_nemotron_moe_tokenizer_parity"}},
-          {"model", {"test_nemotron_moe_model"}},
-          {"kernels",
-           {"test_nemotron_moe_kernels", "test_nemotron_moe_math",
-            "test_nemotron_session"}},
-          {"selfcheck", {"test_nemotron_moe_selfcheck"}},
-          {"fsi", {"test_nemotron_moe_fsi_selfcheck"}},
-          {"code", {"test_nemotron_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_nemotron"}},
-          {"det", {"test_nemotron_moe_det_selfcheck"}}}},
-        // Pre-quantized ModelOpt sibling: same kernels/model contour as
-        // nemotron-3.5-lightning-30b-a3b, its own converter + frozen passport.
-        {"nemotron-3.5-lightning-30b-a3b-nvfp4",
-         {{"convert", {"test_nemotron_moe_nvfp4_convert"}},
-          {"load",
-           {"test_nemotron_moe_nvfp4_loader",
-            "test_nemotron_moe_tokenizer_parity"}},
-          {"model", {"test_nemotron_moe_nvfp4_model"}},
-          {"kernels",
-           {"test_nemotron_moe_kernels", "test_nemotron_moe_math",
-            "test_nemotron_session"}},
-          {"selfcheck", {"test_nemotron_moe_nvfp4_selfcheck"}},
-          {"fsi", {"test_nemotron_moe_nvfp4_fsi_selfcheck"}},
-          {"code", {"test_nemotron_moe_nvfp4_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_nemotron_nvfp4"}},
-          {"det", {"test_nemotron_moe_nvfp4_det_selfcheck"}}}},
-        {"gigachat3.5-432b-a28b-reasoning",
-         {{"convert", {"test_gigachat_moe_convert"}},
-          {"load",
-           {"test_gigachat_moe_loader", "test_gigachat_moe_expert_cache",
-            "test_gigachat_moe_load_fast",
-            "test_gigachat_moe_tokenizer_parity"}},
-          {"model",
-           {"test_gigachat_moe_model", "test_gigachat_tool_framing"}},
-          {"kernels",
-           {"test_gigachat_moe_kernels", "test_gigachat_moe_attn",
-            "test_gigachat_moe_devkernels", "test_gigachat_moe_parity",
-            "test_gigachat_moe_math"}},
-          {"selfcheck", {"test_gigachat_moe_selfcheck"}},
-          {"fsi", {"test_gigachat_moe_fsi_selfcheck"}},
-          {"code", {"test_gigachat_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_gigachat"}},
-          {"det", {"test_gigachat_moe_det_selfcheck"}}}},
-        {"granite-4.2-30b",
-         {{"convert", {"test_granite_dense_convert"}},
-          {"load", {"test_granite_dense_loader"}},
-          {"model", {"test_granite_dense_model",
-                     "test_granite_tool_framing"}},
-          {"kernels", {"test_granite_dense_kernels", "test_dense_kernels"}},
-          {"selfcheck", {"test_granite_dense_selfcheck"}},
-          {"fsi", {"test_granite_dense_fsi_selfcheck"}},
-          {"code", {"test_granite_dense_code_selfcheck"}}, {"perf", {"test_perf_baseline_granite_4_2_30b"}},
-          {"det", {"test_granite_dense_det_selfcheck"}}}},
-        {"granite-switch-4.1-30b",
-         {{"convert", {"test_granite_switch_convert"}},
-          {"load", {"test_granite_switch_loader"}},
-          {"model",
-           {"test_granite_switch_model", "test_granite_switch_tool_framing",
-            "test_granite_switch_adapter_parity",
-            "test_granite_switch_tokenizer_parity"}},
-          {"kernels", {"test_granite_switch_kernels", "test_granite_switch_prepare",
-                       "test_dense_kernels"}},
-          {"selfcheck", {"test_granite_switch_selfcheck"}},
-          {"fsi", {"test_granite_switch_fsi_selfcheck"}},
-          {"code", {"test_granite_switch_code_selfcheck"}},
-          {"det", {"test_granite_switch_det_selfcheck"}},
-          {"perf",
-           {"test_perf_baseline_granite_switch_4_1_30b"}}}},
-        {"mimo-v2.6-flash-rl",
-         {{"convert", {"test_mimo_moe_convert"}},
-          {"load",
-           {"test_mimo_moe_loader", "test_mimo_moe_expert_cache",
-            "test_mimo_moe_geometry"}},
-          {"model", {"test_mimo_moe_model", "test_mimo_tool_framing"}},
-          {"kernels", {"test_mimo_moe_kernels", "test_mimo_moe_dequant"}},
-          {"selfcheck", {"test_mimo_moe_selfcheck"}},
-          {"fsi", {"test_mimo_moe_fsi_selfcheck"}},
-          {"code", {"test_mimo_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_mimo_v2_6_flash_rl"}},
-          {"det", {"test_mimo_moe_det_selfcheck"}}}},
-        {"phi-4",
-         {{"convert", {"test_phi_dense_convert"}},
-          {"load", {"test_phi_dense_loader"}},
-          {"model", {"test_phi_dense_model", "test_phi_tool_framing"}},
-          {"kernels", {"test_phi_dense_kernels", "test_dense_kernels"}},
-          {"selfcheck", {"test_phi_dense_selfcheck"}},
-          {"fsi", {"test_phi_dense_fsi_selfcheck"}},
-          {"code", {"test_phi_dense_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_phi_4"}},
-          {"det", {"test_phi_dense_det_selfcheck"}}}},
-        {"xing4.0-29b-a4b",
-         {{"convert", {"test_xing_moe_convert"}},
-          {"load", {"test_xing_moe_loader"}},
-          {"model", {"test_xing_moe_model", "test_xing_tool_framing"}},
-          {"kernels", {"test_xing_moe_kernels", "test_xing_kv_layout_parity"}},
-          {"selfcheck", {"test_xing_moe_selfcheck"}},
-          {"fsi", {"test_xing_moe_fsi_selfcheck"}},
-          {"code", {"test_xing_moe_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_xing_4_0_29b_a4b"}},
-          {"det", {"test_xing_moe_det_selfcheck"}}}},
-        {"alice-foundation-80b-a3b",
-         {{"convert", {"test_alice_moe_convert"}},
-          {"load", {"test_alice_moe_loader", "test_alice_tokenizer"}},
-          {"model", {"test_alice_moe_model", "test_alice_tool_framing"}},
-          {"kernels", {"test_alice_moe_kernels"}},
-          {"selfcheck", {"test_alice_moe_selfcheck"}},
-          {"fsi", {"test_alice_moe_fsi_selfcheck"}},
-          {"code", {"test_alice_moe_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_alice_foundation_80b_a3b"}},
-          {"det", {"test_alice_moe_det_selfcheck"}}}},
-        {"mistral-small-4-119b",
-         {{"convert", {"test_mistral_moe_convert"}},
-          {"load", {"test_mistral_moe_loader"}},
-          {"model", {"test_mistral_moe_model", "test_mistral_moe_tool_framing"}},
-          {"kernels", {"test_mistral_moe_kernels"}},
-          {"selfcheck", {"test_mistral_moe_selfcheck"}},
-          {"fsi", {"test_mistral_moe_fsi_selfcheck"}},
-          {"code", {"test_mistral_moe_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_mistral_small_4"}},
-          {"det", {"test_mistral_moe_det_selfcheck"}}}},
-        {"mistral-large-4-1t",
-         {{"convert", {"test_mistral_moe_large4_convert"}},
-          {"load", {"test_mistral_moe_large4_loader"}},
-          {"model", {"test_mistral_moe_large4_model",
-                     "test_mistral_moe_large4_tool_framing"}},
-          {"kernels", {"test_mistral_moe_large4_kernels",
-                       "test_mistral_moe_large4_pretokenizer"}},
-          {"selfcheck", {"test_mistral_moe_large4_selfcheck"}},
-          {"fsi", {"test_mistral_moe_large4_fsi_selfcheck"}},
-          {"code", {"test_mistral_moe_large4_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_mistral_large4"}},
-          {"det", {"test_mistral_moe_large4_det_selfcheck"}}}},
-        {"minimax-m3",
-         {{"convert", {"test_minimax_moe_convert"}},
-          {"load", {"test_minimax_moe_loader"}},
-          {"model", {"test_minimax_moe_model", "test_minimax_moe_tool_framing"}},
-          {"kernels", {"test_minimax_moe_kernels"}},
-          {"selfcheck", {"test_minimax_moe_selfcheck"}},
-          {"fsi", {"test_minimax_moe_fsi_selfcheck"}},
-          {"code", {"test_minimax_moe_code_selfcheck"}},
-          {"perf", {"test_perf_baseline_minimax_m3"}},
-          {"det", {"test_minimax_moe_det_selfcheck"}}}},
-        // MiniMax-M3.1-Flash is a sibling of minimax-m3 (same backbone, MSA
-        // on every layer, pre-quantized source): it owns its convert/load/
-        // model/tool/parity stages and SHARES the parent's routed-MoE kernels
-        // and generation pipeline.
-        {"minimax-m3.1-flash",
-         {{"convert", {"test_minimax_moe_flash_convert"}},
-          {"load", {"test_minimax_moe_flash_loader"}},
-          {"model", {"test_minimax_moe_flash_model",
-                     "test_minimax_moe_flash_tool_framing"}},
-          {"kernels", {"test_minimax_moe_kernels"}},
-          {"selfcheck", {"test_minimax_moe_flash_selfcheck"}},
-          {"fsi", {"test_minimax_moe_flash_fsi_selfcheck"}},
-          {"code", {"test_minimax_moe_flash_code_selfcheck"}},
-          {"det", {"test_minimax_moe_flash_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_minimax_m31_flash"}}}},
-        {"hy-memory-30b-a3b",
-         {{"convert", {"test_hy_moe_convert"}},
-          {"load", {"test_hy_moe_loader"}},
-          {"model", {"test_hy_moe_model", "test_hy_moe_tool_framing"}},
-          {"kernels", {"test_hy_moe_kernels"}},
-          {"selfcheck", {"test_hy_moe_selfcheck"}},
-          {"fsi", {"test_hy_moe_fsi_selfcheck"}},
-          {"code", {"test_hy_moe_code_selfcheck"}},
-          {"det", {"test_hy_moe_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_hy_memory_30b_a3b"}}}},
-        // Hy-SimulMT is the same hy_v3 text backbone (audio tower stripped):
-        // it owns its convert/load/model/parity stages and shares the parent's
-        // routed-MoE kernels and generation pipeline.
-        {"hy-simulmt-30b-a3b",
-         {{"convert", {"test_hy_moe_simulmt_convert"}},
-          {"load", {"test_hy_moe_simulmt_loader"}},
-          {"model", {"test_hy_moe_simulmt_model",
-                     "test_hy_moe_simulmt_tool_framing"}},
-          {"kernels", {"test_hy_moe_kernels"}},
-          {"selfcheck", {"test_hy_moe_simulmt_selfcheck"}},
-          {"fsi", {"test_hy_moe_simulmt_fsi_selfcheck"}},
-          {"code", {"test_hy_moe_simulmt_code_selfcheck"}},
-          {"det", {"test_hy_moe_simulmt_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_hy_simulmt_30b_a3b"}}}},
-        {"flint",
-         {{"convert", {"test_flint_moe_convert"}},
-          {"load", {"test_flint_moe_loader", "test_flint_moe_pretokenizer",
-                    "test_flint_moe_tokenizer_parity"}},
-          {"model", {"test_flint_moe_model", "test_flint_moe_tool_framing"}},
-          {"kernels", {"test_flint_moe_kernels"}},
-          {"selfcheck", {"test_flint_moe_selfcheck"}},
-          {"fsi", {"test_flint_moe_fsi_selfcheck"}},
-          {"code", {"test_flint_moe_code_selfcheck"}},
-          {"det", {"test_flint_moe_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_flint"}}}},
-        {"beam",
-         {{"convert", {"test_beam_moe_convert"}},
-          {"load", {"test_beam_moe_loader", "test_beam_tokenizer_split",
-                    "test_beam_tokenizer_parity"}},
-          {"model", {"test_beam_moe_model", "test_beam_tool_framing"}},
-          {"kernels", {"test_beam_moe_kernels"}},
-          {"selfcheck", {"test_beam_moe_selfcheck"}},
-          {"fsi", {"test_beam_moe_fsi_selfcheck"}},
-          {"code", {"test_beam_moe_code_selfcheck"}},
-          {"det", {"test_beam_moe_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_beam"}}}},
-        {"step-5-preview",
-         {{"convert", {"test_step_moe_convert"}},
-          {"load", {"test_step_moe_loader", "test_step_moe_tokenizer"}},
-          {"model", {"test_step_moe_model", "test_step_moe_tool_framing"}},
-          {"kernels", {"test_step_moe_kernels"}},
-          {"selfcheck", {"test_step_moe_selfcheck"}},
-          {"fsi", {"test_step_moe_fsi_selfcheck"}},
-          {"code", {"test_step_moe_code_selfcheck"}},
-          {"det", {"test_step_moe_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_step_5_preview"}}}},
-        {"kimi-k3",
-         {{"convert", {"test_kimi_k3_convert"}},
-          {"load", {"test_kimi_k3_loader", "test_kimi_k3_tokenizer_parity"}},
-          {"model",
-           {"test_kimi_k3_model", "test_kimi_k3_tool_framing",
-            "test_kimi_k3_constants"}},
-          {"kernels", {"test_kimi_k3_kernels"}},
-          {"selfcheck", {"test_kimi_k3_selfcheck"}},
-          {"fsi", {"test_kimi_k3_fsi_selfcheck"}},
-          {"code", {"test_kimi_k3_code_selfcheck"}},
-          {"det", {"test_kimi_k3_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_kimi_k3"}}}},
-        // Kimi-K3.1-Pro is a SIBLING of kimi-k3: it owns its frozen passport,
-        // convert entry, loader variant gate and model, and SHARES the K3
-        // converter body, kernels, generation pipeline, XTML tool codec, the
-        // tokenizer-parity stage (its `tiktoken.model` is byte-identical to
-        // K3's, so that target stays claimed by the kimi-k3 row) and the
-        // family constants gate. The new machinery is exactly the Gated DSA
-        // Lightning Indexer on the 24 full-attention layers.
-        {"kimi-k3.1-pro",
-         {{"convert", {"test_kimi_pro_convert"}},
-          {"load", {"test_kimi_pro_loader"}},
-          {"model", {"test_kimi_pro_model", "test_kimi_k3_tool_framing",
-                     "test_kimi_k3_constants"}},
-          {"kernels", {"test_kimi_pro_indexer", "test_kimi_k3_kernels"}},
-          {"selfcheck", {"test_kimi_pro_selfcheck"}},
-          {"fsi", {"test_kimi_pro_fsi_selfcheck"}},
-          {"code", {"test_kimi_pro_code_selfcheck"}},
-          {"det", {"test_kimi_pro_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_kimi_k31_pro"}}}},
-        {"ling",
-         {{"convert", {"test_ling_moe_convert"}},
-          {"load", {"test_ling_moe_loader", "test_ling_tokenizer_parity"}},
-          {"model", {"test_ling_moe_model", "test_ling_tool_framing"}},
-          {"kernels", {"test_ling_moe_kernels"}},
-          {"selfcheck", {"test_ling_moe_selfcheck"}},
-          {"fsi", {"test_ling_moe_fsi_selfcheck"}},
-          {"code", {"test_ling_moe_code_selfcheck"}},
-          {"det", {"test_ling_moe_det_selfcheck"}},
-          {"perf", {"test_perf_baseline_ling"}}}},
-
-    };
+    // `SuiteSpec` holds `const char*`, so the builder needs storage that
+    // outlives it: a reserved vector keeps the addresses stable for the process
+    // lifetime (a local std::string's c_str() here is a dangling pointer).
+    static std::vector<std::string> names;
+    names.reserve(1024);
+    // One row per model, stages in lifecycle order, targets from the manifest.
+    // The hand-written table this replaces had to be extended by hand in every
+    // ingest commit; the generated one cannot fall behind the registrations
+    // because both come from the same source.
+    static const std::vector<SuiteSpec> v = [] {
+        std::vector<SuiteSpec> out;
+        for (std::size_t i = 0; i < lsxmanifest::kModelCount; ++i)
+        {
+            const std::string model = lsxmanifest::kModels[i].model_type;
+            names.push_back(model);
+            SuiteSpec row;
+            row.model = names.back().c_str();
+            for (const char *stage : kStageOrder)
+            {
+                std::vector<const char *> targets;
+                for (const auto *t : manifest_query::TargetsOf(model, stage))
+                {
+                    names.emplace_back(t->target);
+                    targets.push_back(names.back().c_str());
+                }
+                if (!targets.empty())
+                {
+                    StageSpec s;
+                    names.push_back(stage);
+                    s.stage = names.back().c_str();
+                    s.targets = std::move(targets);
+                    row.stages.push_back(std::move(s));
+                }
+            }
+            out.push_back(std::move(row));
+        }
+        return out;
+    }();
     return v;
 }
 
@@ -529,6 +153,22 @@ std::string ReadFileOrThrow(const fs::path &p)
     std::ostringstream ss;
     ss << in.rdbuf();
     return ss.str();
+}
+
+// The CMake text this guard scans: the hand-written registrations plus the
+// manifest-generated fragment, which now owns every model target's add_test and
+// properties. Reading only one of the two made the guard report 90 of 511
+// registrations after the registration move.
+std::string CmakeCorpus(const fs::path &root)
+{
+    std::string text = ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+    const fs::path generated(LSX_MANIFEST_GENERATED_DIR "/model_targets.cmake");
+    std::error_code ec;
+    // The separator matters: without it the last line of CMakeLists.txt and the
+    // first add_test of the fragment merge into one unparseable line.
+    if (fs::exists(generated, ec))
+        text += "\n" + ReadFileOrThrow(generated);
+    return text;
 }
 
 std::vector<std::string> RegisteredTestNames(const std::string &text)
@@ -791,7 +431,7 @@ TEST_CASE("suite guard: every model suite covers the full lifecycle",
 {
     const fs::path root(LSX_SOURCE_DIR);
     const std::string cmake_text =
-        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+        CmakeCorpus(root);
     const auto registered = [&] {
         std::set<std::string> s;
         for (const auto &n : RegisteredTestNames(cmake_text)) s.insert(n);
@@ -811,7 +451,7 @@ TEST_CASE("suite guard: selfcheck, fsi, code and det targets declare "
 {
     const fs::path root(LSX_SOURCE_DIR);
     const std::string cmake_text =
-        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+        CmakeCorpus(root);
     auto v = CheckSelfcheckSkip(cmake_text);
     std::string joined;
     for (const auto &s : v) joined += s + "\n";
@@ -843,28 +483,179 @@ TEST_CASE("suite guard: no cross-family fixture borrowing", "[suite][guard]")
     REQUIRE(v.empty());
 }
 
-TEST_CASE("suite guard: loader tests never load the model vault",
-          "[suite][guard]")
+// A test source claimed by two manifests may not carry the OTHER model's
+// identity. This is the defect class the 8B ingestion exposed: three granite
+// stage tests were hard-coded to the 30B while the 8B row claimed them, and every
+// guard stayed green because they check that a claimed target EXISTS, not that it
+// tests the model claiming it (docs/OPEN_TASKS.md G2).
+//
+// What counts as identity, and why exactly one shape: the vault ENVIRONMENT
+// VARIABLE. It is unique per model and a shared source has no reason to name a
+// sibling's — a test that wants a model's tree reaches it through its own env
+// name, so a sibling's name there means the source is looking at the wrong tree.
+//
+// Two neighbouring shapes are deliberately NOT violations:
+//   * a bare `model_type` string — a sibling test legitimately compares two
+//     passports (test_granite_switch_prepare asserts the 8B passport rejects a
+//     30B topology, so it names both as data);
+//   * the vault DIRECTORY name — the same string is a natural name for a test
+//     fixture directory (test_granite_switch_convert builds
+//     `/tmp/.../granite-switch-4.1-8b`), so it cannot distinguish identity from
+//     data. This one bit during development: the check flagged its own fixtures.
+// A literal is accepted when it is the default arm of an `#ifndef`-guarded macro:
+// that is the parameterised form a shared source is supposed to use.
+struct Claim {
+    std::string model;
+    std::string vault_env;
+    std::string vault_dir;
+};
+
+std::string JoinNames(const std::vector<Claim> &rows)
 {
-    const fs::path root(LSX_SOURCE_DIR);
-    auto v = CheckLoaderSyntheticDiscipline(root / "tests");
-    std::string joined;
-    for (const auto &s : v) joined += s + "\n";
-    INFO("loader discipline violations:\n" << joined);
-    REQUIRE(v.empty());
+    std::set<std::string> uniq;
+    for (const auto &r : rows) uniq.insert(r.model);
+    std::string out;
+    for (const auto &n : uniq) {
+        if (!out.empty()) out += ", ";
+        out += n;
+    }
+    return out;
 }
 
-// The lifecycle check above only proves that a registered target EXISTS. The
-// reverse direction is what was missing: a family test target that runs on
-// every CI sweep but sits in no Suites() row is invisible to the completeness
-// report, so its breakage never surfaces as "incomplete suite". Every
-// family-prefixed target must be claimed by exactly one model row.
+std::vector<std::string> CheckSiblingIdentity(
+    const fs::path &tests_dir,
+    const std::map<std::string, std::vector<Claim>> &claims)
+{
+    std::vector<std::string> v;
+    for (const auto &kv : claims) {
+        const std::string &source = kv.first;
+        const std::vector<Claim> &rows = kv.second;
+        if (rows.size() < 2) continue;
+        const fs::path path = tests_dir / source;
+        if (!fs::exists(path)) continue;
+        const std::string text = ReadFileOrThrow(path);
+
+        std::vector<std::string> ls;
+        {
+            std::istringstream in(text);
+            std::string line;
+            while (std::getline(in, line)) ls.push_back(line);
+        }
+
+        for (const Claim &c : rows) {
+            const std::string lits[1] = {c.vault_env};
+            for (const std::string &lit : lits) {
+                if (lit.empty()) continue;
+                const std::string needle = "\"" + lit + "\"";
+                for (std::size_t i = 0; i < ls.size(); ++i) {
+                    if (ls[i].find(needle) == std::string::npos) continue;
+                    // Accepted only as the default arm of an #ifndef guard.
+                    bool guarded = false;
+                    const std::size_t def = ls[i].find("#define");
+                    if (def != std::string::npos && i >= 1) {
+                        std::string name = ls[i].substr(def + 7);
+                        const std::size_t b = name.find_first_not_of(" \t");
+                        name = (b == std::string::npos) ? "" : name.substr(b);
+                        const std::size_t e = name.find_first_of(" \t");
+                        if (e != std::string::npos) name = name.substr(0, e);
+                        guarded = !name.empty() &&
+                                  ls[i - 1].find("#ifndef " + name) !=
+                                      std::string::npos;
+                    }
+                    if (!guarded) {
+                        v.push_back(source + ":" + std::to_string(i + 1) +
+                                    " names " + c.model + "'s identity ('" + lit +
+                                    "') while claimed by " + JoinNames(rows) +
+                                    " — parameterise it with a macro default, as "
+                                    "test_granite_switch_model.cpp does");
+                    }
+                }
+            }
+            // The two spellings that made the model UNDER TEST the wrong model.
+            const std::string pats[2] = {
+                "model_type = \"" + c.model + "\"",
+                "kModelType = \"" + c.model + "\""};
+            for (const std::string &pat : pats) {
+                if (text.find(pat) != std::string::npos)
+                    v.push_back(source + " hard-codes " + c.model +
+                                " as the model under test ('" + pat + "')");
+            }
+        }
+    }
+    return v;
+}
+
+TEST_CASE("suite guard: a shared test source cannot name a sibling as itself",
+          "[suite][guard]")
+{
+    // Build source -> claiming models from the manifests themselves, so the
+    // check follows the registry instead of a hand-written list (the reason five
+    // families once fell out of a similar check unnoticed).
+    std::map<std::string, std::vector<Claim>> claims;
+    for (std::size_t i = 0; i < lsxmanifest::kModelCount; ++i) {
+        const auto &m = lsxmanifest::kModels[i];
+        for (std::size_t j = 0; j < lsxmanifest::kTargetCount; ++j) {
+            const auto &t = lsxmanifest::kTargets[j];
+            if (std::string_view(t.model_type) != m.model_type) continue;
+            const std::string src =
+                t.source ? std::string(t.source) : std::string(t.target) + ".cpp";
+            claims[src].push_back({m.model_type, m.vault_env, m.vault_dir});
+        }
+    }
+    std::size_t shared = 0;
+    for (const auto &[src, rows] : claims) if (rows.size() > 1) ++shared;
+    INFO("test sources claimed by more than one manifest: " << shared);
+    REQUIRE(shared > 5);          // the registry really does share sources
+
+    auto v = CheckSiblingIdentity(fs::path(LSX_SOURCE_DIR) / "tests", claims);
+    std::string joined;
+    for (const auto &s : v) joined += s + "\n";
+    INFO("sibling-identity violations:\n" << joined);
+    CHECK(v.empty());
+}
+
+TEST_CASE("suite guard: the sibling-identity rule bites", "[suite][guard]")
+{
+    // Non-vacuity: an unguarded literal is a violation, the same literal behind
+    // an #ifndef default is not (that is the parameterised form), and a
+    // `cfg.model_type = "<sibling>"` hard-code is reported by its own pattern.
+    const fs::path dir = fs::temp_directory_path() / "lsx_sibling_identity";
+    fs::create_directories(dir);
+    {
+        std::ofstream f(dir / "bad_unguarded.cpp");
+        f << "const char *env = \"LSX_TEST_SIBLING_ROOT\";\n";
+    }
+    {
+        std::ofstream f(dir / "bad_hardcode.cpp");
+        f << "cfg.model_type = \"sibling-8b\";\n";
+    }
+    {
+        std::ofstream f(dir / "good_parameterised.cpp");
+        f << "#ifndef LSX_X_MODEL\n#define LSX_X_MODEL \"sibling-8b\"\n#endif\n"
+             "#ifndef LSX_X_ROOT_ENV\n#define LSX_X_ROOT_ENV \"LSX_TEST_SIBLING_ROOT\"\n#endif\n"
+             "cfg.model_type = LSX_X_MODEL;\n";
+    }
+    const std::map<std::string, std::vector<Claim>> claims = {
+        {"bad_unguarded.cpp", {{"mine", "LSX_TEST_MINE_ROOT", "mine"}, {"sibling-8b", "LSX_TEST_SIBLING_ROOT", "sibling-8b"}}},
+        {"bad_hardcode.cpp", {{"mine", "LSX_TEST_MINE_ROOT", "mine"}, {"sibling-8b", "LSX_TEST_SIBLING_ROOT", "sibling-8b"}}},
+        {"good_parameterised.cpp", {{"mine", "LSX_TEST_MINE_ROOT", "mine"}, {"sibling-8b", "LSX_TEST_SIBLING_ROOT", "sibling-8b"}}},
+    };
+    const auto v = CheckSiblingIdentity(dir, claims);
+    std::string joined;
+    for (const auto &s : v) joined += s + "\n";
+    INFO(joined);
+    CHECK(joined.find("bad_unguarded.cpp") != std::string::npos);
+    CHECK(joined.find("bad_hardcode.cpp") != std::string::npos);
+    CHECK(joined.find("good_parameterised.cpp") == std::string::npos);
+    fs::remove_all(dir);
+}
+
 TEST_CASE("suite guard: every family test target is claimed by a suite row",
           "[suite][guard]")
 {
     const fs::path root(LSX_SOURCE_DIR);
     const std::string cmake_text =
-        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+        CmakeCorpus(root);
     const auto registered = [&] {
         std::set<std::string> s;
         for (const auto &n : RegisteredTestNames(cmake_text)) s.insert(n);
@@ -957,6 +748,11 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"phi-4", {"test_phi_tool_framing"}},
         {"granite-4.2-30b", {}},
         {"granite-switch-4.1-30b", {"test_granite_switch_tool_framing"}},
+        // The 8B ships a byte-identical chat template and tokenizer
+        // (md5-equal to the 30B), so it carries the same verdict: the
+        // family framing test covers both, and the runtime parse is the
+        // generic bare-JSON fallback.
+        {"granite-switch-4.1-8b", {"test_granite_switch_tool_framing"}},
         // nemotron keeps its tool case inside the model target rather than in
         // a dedicated one; naming the target that actually carries it is what
         // the guard checks.
@@ -995,7 +791,7 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
     const std::set<std::string> registered = [] {
         std::set<std::string> names;
         for (const auto &n : RegisteredTestNames(
-                 ReadFileOrThrow(fs::path(LSX_SOURCE_DIR) / "tests" / "CMakeLists.txt")))
+                 CmakeCorpus(fs::path(LSX_SOURCE_DIR))))
             names.insert(n);
         return names;
     }();
@@ -1093,73 +889,13 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
     // Declared debt, as "<model>:<stage>". Every entry is a real gap; keeping the
     // list here rather than inferring it means the test output names what is
     // missing instead of merely counting what is present.
-    static const std::set<std::string> kGoldenDebt = {
-        // Flint: captured from a CPU reference built on the source BF16 tree
-        // (tools/flint_oracle.py); removed as each stage goes green.
-        "flint:code",
-        "flint:det",
-        "flint:fsi",
-        // Ling: the 560B source oracle (BF16/FP8 + FLA Triton KDA) cannot run
-        // on this card, so no source golden can be captured.
-        "ling:code",
-        "ling:det",
-        "ling:fsi",
-        // Beam: the 934 GB BF16 source (501B) cannot be loaded in 750 GB of
-        // host RAM, so no source-oracle golden can be captured on this host.
-        // The instruments are the per-layer CPU oracle and SelfCheck.
-        "beam:code",
-        "beam:det",
-        "beam:fsi",
-        // Step-5-Preview: the 606 GB FP8 source oracle needs the reference
-        // inference stack on 4x B300 / 8x H200 (README deployment table), so no
-        // source golden can be captured on this card. The instruments are
-        // SelfCheck on the real converted weights + the kernel host references.
-        "step-5-preview:code",
-        "step-5-preview:det",
-        "step-5-preview:fsi",
-        "deepseek-v4-flash:code",
-        "deepseek-v4-flash:det",
-        "deepseek-v4-flash:fsi",
-        "glm-5.2:code",
-        "glm-5.2:det",
-        "glm-5.2:fsi",
-        "kimi-k2.7-code:code",
-        "kimi-k2.7-code:det",
-        "kimi-k2.7-code:fsi",
-        "mimo-v2.6-flash-rl:code",
-        "mimo-v2.6-flash-rl:det",
-        "mimo-v2.6-flash-rl:fsi",
-        "nemotron-3.5-lightning-30b-a3b:code",
-        "nemotron-3.5-lightning-30b-a3b:det",
-        "nemotron-3.5-lightning-30b-a3b:fsi",
-        // FSI/CODE/DET: the source IS runnable now (tools/nemotron_nvfp4_oracle.py
-        // dequantizes the ModelOpt checkpoint to BF16 on CPU). FSI answers all
-        // three templates exactly, so the golden is capturable, but the
-        // converted NVFP4 tree does not reproduce them (FSI-01 appends an
-        // extra *exp(r) factor, FSI-02/03 emit fenced/repeated bodies), and
-        // CODE-TEST-01 / DET-TEST-01/02 make the SOURCE echo the prompt. All
-        // three stay debt with those measurements on 2026-11-01; the FSI gap is
-        // the 4-bit parity item in docs/OPEN_TASKS.md.
-        "nemotron-3.5-lightning-30b-a3b-nvfp4:code",
-        "nemotron-3.5-lightning-30b-a3b-nvfp4:det",
-        "nemotron-3.5-lightning-30b-a3b-nvfp4:fsi",
-        // Mistral-Small-4 FSI/CODE/DET goldens are captured from the source
-        // safetensors model, which is not yet converted here; declared debt.
-        "mistral-small-4-119b:code",
-        "mistral-small-4-119b:det",
-        "mistral-small-4-119b:fsi",
-        // Hy-SimulMT is a zh<->en simultaneous translator, not a QA model.
-        // Measured on the CPU BF16 source oracle (2026-10-31): given the
-        // FSI/CODE/DET bodies (with or without the checkpoint's serving
-        // directive) it summarises/translates them instead of answering --
-        // FSI-TEST-02 and DET-TEST-01 emit EOT immediately, CODE emits a
-        // prose summary, FSI-TEST-01 loses the required exact expression.
-        // The instruments are SelfCheck (translation direction) and the
-        // bidirectional real-weight serving test; see docs/OPEN_TASKS.md §R11.
-        "hy-simulmt-30b-a3b:code",
-        "hy-simulmt-30b-a3b:det",
-        "hy-simulmt-30b-a3b:fsi",
-    };
+    // From models/*.json: a gap without a declared reason is a manifest error
+    // (validation rule 2), so this set and the registry cannot disagree.
+    std::set<std::string> kGoldenDebt;
+    for (std::size_t i = 0; i < lsxmanifest::kDebtCount; ++i)
+        kGoldenDebt.insert(std::string(lsxmanifest::kDebt[i].model_type) + ":" +
+                           lsxmanifest::kDebt[i].stage);
+
 
     const fs::path root(LSX_SOURCE_DIR);
     const std::vector<SuiteSpec> suites = Suites();

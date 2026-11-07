@@ -1,0 +1,108 @@
+{
+  "model_type": "alice-foundation-80b-a3b",
+  "display_name": "alice-foundation-80b-a3b",
+  "family": "alice",
+  "variant": null,
+  "model_class": "AliceFoundation80BModel",
+  "model_header": "alice_moe_model.h",
+  "passport": "libs/lsxcommon/src/alice_moe_constants.h",
+  "namespace": "lsxcommon::alice::frozen",
+  "format_tag": "",
+  "forge_flag": "--alice",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "AliceAI-Foundation-80B-A3B-Base",
+    "env": "LSX_TEST_ALICE_FOUNDATION_80B_A3B_ROOT"
+  },
+  "lifecycle_tu": [
+    "alice_moe_model.cpp",
+    "alice_moe_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_alice_moe_convert"
+    ],
+    "load": [
+      "test_alice_moe_loader",
+      "test_alice_tokenizer"
+    ],
+    "model": [
+      "test_alice_moe_model",
+      "test_alice_tool_framing"
+    ],
+    "kernels": [
+      "test_alice_moe_kernels"
+    ],
+    "selfcheck": [
+      "test_alice_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_alice_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_alice_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_alice_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_alice_foundation_80b_a3b"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_alice_foundation_80b_a3b",
+    "vault_subdir": "AliceAI-Foundation-80B-A3B-Base",
+    "timeout": 3000
+  },
+  "target_overrides": {
+    "test_alice_moe_loader": {
+      "timeout": 120
+    },
+    "test_alice_tokenizer": {
+      "label": "fast",
+      "env": []
+    },
+    "test_alice_moe_model": {
+      "timeout": 300,
+      "skip": true
+    },
+    "test_alice_tool_framing": {
+      "label": "fast",
+      "skip": true,
+      "env": []
+    },
+    "test_alice_moe_kernels": {
+      "skip": false
+    },
+    "test_alice_moe_selfcheck": {
+      "timeout": 1800,
+      "form": "selfcheck"
+    },
+    "test_alice_moe_fsi_selfcheck": {
+      "timeout": 1800,
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_alice_moe_code_selfcheck": {
+      "timeout": 1800,
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_alice_moe_det_selfcheck": {
+      "timeout": 1800,
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-03-AliceAI-Foundation-80B-A3B-Base.md",
+  "notes": "Perf TEST_CASE had no add_test until 2026-10 (same silent-rot trap as xing).",
+  "aliases": [
+    "aliceai-foundation-80b-a3b-base"
+  ],
+  "selfcheck_max_gen": 24,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
+}

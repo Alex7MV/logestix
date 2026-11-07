@@ -444,6 +444,22 @@ cudaError_t ApplyLoraSlice(cudaStream_t stream, const __half *x,
                                          64, target);
 }
 
+// Base dot, then (when the tree carries one) the residual plane as a second dot
+// accumulated into the same buffer. The arithmetic is "base rounds to FP16, then
+// the residual dot adds and rounds once more" — the phi/gemma residual path —
+// and it is skipped entirely on a legacy 4-bit-only tree (res.d_packed == null).
+static inline cudaError_t GemmWithResidual(cudaStream_t stream, const __half *x,
+                                           const lsx_nvfp4::LsxNvfp4Weight &base,
+                                           const lsx_nvfp4::LsxNvfp4Weight &res,
+                                           __half *y, int seq, int K, int N)
+{
+    cudaError_t e = RunLsxNvfp4Gemm(stream, x, base.d_packed, base.d_scales,
+                                    base.global_scale, y, seq, K, N);
+    if (e != cudaSuccess || res.d_packed == nullptr) return e;
+    return RunLsxNvfp4Gemm(stream, x, res.d_packed, res.d_scales,
+                           res.global_scale, y, seq, K, N, /*acc=*/true);
+}
+
 cudaError_t RunLayerSwitch(cudaStream_t stream,
                            const GraniteSwitchPinnedWeights &pw,
                            const GraniteSwitchLayerWeights &lw, int seq,
@@ -466,9 +482,8 @@ cudaError_t RunLayerSwitch(cudaStream_t stream,
                                          static_cast<float>(top.rms_norm_eps));
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.norm, lw.qkv.base.d_packed,
-                        lw.qkv.base.d_scales, lw.qkv.base.global_scale, ws.qkv,
-                        seq, H, qn + 2 * kn);
+    e = GemmWithResidual(stream, ws.norm, lw.qkv.base, lw.qkv.res, ws.qkv,
+                         seq, H, qn + 2 * kn);
     if (e != cudaSuccess) return e;
 
     {
@@ -506,9 +521,8 @@ cudaError_t RunLayerSwitch(cudaStream_t stream,
                                kv_base);
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.attn, lw.o.base.d_packed,
-                        lw.o.base.d_scales, lw.o.base.global_scale, ws.proj, seq,
-                        qn, H);
+    e = GemmWithResidual(stream, ws.attn, lw.o.base, lw.o.res, ws.proj, seq,
+                     qn, H);
     if (e != cudaSuccess) return e;
     for (int a = 0; a < num_adapters; ++a)
         if (!lw.o.lora[a].empty()) {
@@ -525,9 +539,8 @@ cudaError_t RunLayerSwitch(cudaStream_t stream,
                              static_cast<float>(top.rms_norm_eps));
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.norm, lw.gate_up.base.d_packed,
-                        lw.gate_up.base.d_scales,
-                        lw.gate_up.base.global_scale, ws.gate_up, seq, H, 2 * I);
+    e = GemmWithResidual(stream, ws.norm, lw.gate_up.base, lw.gate_up.res,
+                         ws.gate_up, seq, H, 2 * I);
     if (e != cudaSuccess) return e;
     for (int a = 0; a < num_adapters; ++a)
         for (int sl = 0;
@@ -542,9 +555,8 @@ cudaError_t RunLayerSwitch(cudaStream_t stream,
                             static_cast<int64_t>(seq) * I);
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.act, lw.down.base.d_packed,
-                        lw.down.base.d_scales, lw.down.base.global_scale,
-                        ws.down, seq, I, H);
+    e = GemmWithResidual(stream, ws.act, lw.down.base, lw.down.res, ws.down,
+                     seq, I, H);
     if (e != cudaSuccess) return e;
     for (int a = 0; a < num_adapters; ++a)
         if (!lw.down.lora[a].empty()) {

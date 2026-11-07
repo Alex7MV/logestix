@@ -5,6 +5,16 @@ description: Use when capturing, adding, running or debugging CODESelfCheck in l
 
 # CODESelfCheck (compiler-syntactic-strictness parity gate)
 
+
+> **Registration (2026-11-06):** the real-model target is still named
+> `test_<family>_{fsi,code,det}_selfcheck` and still runs one per (model, stage),
+> but its SOURCE is now the shared `tests/test_parity_gate.cpp`, compiled with
+> `LSX_GATE_MODEL` / `LSX_GATE_KIND`. Do **not** create a per-family gate file:
+> 105 of them were deleted because three shipped a SKIP naming a neighbour model,
+> and the model row (vault dir, SKIP text, declared debt) now comes from
+> `models/<model_type>.json`. See skill `ingesting-a-model` § "The manifest is the
+> only registry you write by hand".
+
 ## Overview
 
 CODESelfCheck is a **model-defined parity gate** and a first-class stage of the

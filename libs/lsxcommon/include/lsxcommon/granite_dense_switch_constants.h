@@ -24,6 +24,12 @@
 namespace lsxcommon {
 namespace granite_switch {
 
+// The converted-tree format tag. It is written by the index writer and read by
+// models/*.json:format_tag, so the catalogue states the format instead of
+// guessing it (the reason `format_tag` is empty for most of the tree is that the
+// tag lives inside each converter's writer, with no constant to point at).
+inline constexpr const char *kFormatTag = "logestix-granite-switch";
+
 // Loaded/converted topology of a Granite-Switch checkpoint (geometry +
 // special tokens + adapter metadata + the mandatory VRAM profile).
 struct GraniteSwitchTopology {
@@ -54,8 +60,44 @@ struct GraniteSwitchTopology {
 
     int total_pinned_tensors = 0;
     VramProfile vram;      // conversion-time VRAM requirements (mandatory)
+    // Identity written by the converter (the checkpoint directory name) and read
+    // back by the factory. ONE converter serves every family member, so this is
+    // the only field that tells a 30B tree from an 8B tree without guessing from
+    // the geometry.
+    std::string model_name;
     std::string error_msg; // non-empty when index.json is invalid
 };
+
+// What one model's frozen passport asserts about a converted tree. Shared by
+// every member of the family so the comparison below has one implementation:
+// a sibling with its own copy of the checker is a sibling whose checker drifts.
+struct GraniteSwitchFrozen {
+    const char *model_type = "";
+    int num_layers = 0;
+    int hidden_size = 0;
+    int num_attention_heads = 0;
+    int num_key_value_heads = 0;
+    int head_dim = 0;
+    int intermediate_size = 0;
+    int vocab_size = 0;
+    int num_adapters = 0;
+    double rms_norm_eps = 0.0;
+    double rope_theta = 0.0;
+    double attention_multiplier = 0.0;
+    double embedding_multiplier = 0.0;
+    double residual_multiplier = 0.0;
+    double logits_scaling = 0.0;
+    const int *adapter_ranks = nullptr;
+    const int32_t *control_token_ids = nullptr;
+    const int32_t *substitute_token_ids = nullptr;
+};
+
+// Empty when `top` is the tree `f` describes; otherwise every difference on its
+// own line (not just the first: a re-converted tree that is wrong twice must not
+// need two runs to discover). Declared here rather than in a model TU so a
+// host-only unit test can exercise it without a GPU or a converted checkpoint.
+std::string GraniteSwitchGeometryMismatch(const GraniteSwitchFrozen &f,
+                                          const GraniteSwitchTopology &top);
 
 namespace frozen {
 
@@ -103,6 +145,32 @@ static_assert(kNumLayers > 0 && kIntermediateSize > 0 && kVocabSize > 0,
 static_assert(kNumAdapters == 2, "this passport pins exactly two adapters");
 static_assert(sizeof(kAdapterRanks) / sizeof(kAdapterRanks[0]) == kNumAdapters,
               "adapter rank table must cover every adapter");
+
+// The expectations a converted 30B tree must satisfy. Consumed by
+// GraniteSwitchGeometryMismatch() and by the model class.
+inline GraniteSwitchFrozen Frozen()
+{
+    GraniteSwitchFrozen f{};
+    f.model_type = "granite-switch-4.1-30b";
+    f.num_layers = kNumLayers;
+    f.hidden_size = kHiddenSize;
+    f.num_attention_heads = kNumHeads;
+    f.num_key_value_heads = kNumKVHeads;
+    f.head_dim = kHeadDim;
+    f.intermediate_size = kIntermediateSize;
+    f.vocab_size = kVocabSize;
+    f.num_adapters = kNumAdapters;
+    f.rms_norm_eps = kRmsNormEps;
+    f.rope_theta = kRopeTheta;
+    f.attention_multiplier = kAttentionMultiplier;
+    f.embedding_multiplier = kEmbeddingMultiplier;
+    f.residual_multiplier = kResidualMultiplier;
+    f.logits_scaling = kLogitsScaling;
+    f.adapter_ranks = kAdapterRanks;
+    f.control_token_ids = kControlTokenIds;
+    f.substitute_token_ids = kSubstituteTokenIds;
+    return f;
+}
 
 } // namespace frozen
 } // namespace granite_switch

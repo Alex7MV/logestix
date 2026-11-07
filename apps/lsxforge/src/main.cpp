@@ -95,7 +95,7 @@ ABSL_FLAG(bool, glmflash, false,
 ABSL_FLAG(bool, granite, false,
           "Granite-4.2-30B (dense) conversion pipeline");
 ABSL_FLAG(bool, granite_switch, false,
-          "Granite-Switch-4.1-30B (dense + aLoRA adapters) conversion pipeline");
+          "Granite-Switch 4.1 (dense + aLoRA adapters) conversion pipeline");
 ABSL_FLAG(bool, phi, false, "phi-4 (dense) conversion pipeline");
 ABSL_FLAG(bool, mimo, false,
           "MiMo-V2.6-Flash-RL (hybrid SWA/full sparse MoE) conversion pipeline");
@@ -636,7 +636,7 @@ int main(int argc, char* argv[]) {
 
     case lsxforge::Pipeline::kGraniteSwitch: {
         lsxcommon::log::info(
-            "Granite-Switch-4.1-30B pipeline (logestix-granite-switch layout)");
+            "Granite-Switch 4.1 pipeline (logestix-granite-switch layout)");
         auto st = lsxcommon::granite_switch::ConvertGraniteSwitchModel(
             input_path, output_path);
         if (!st.ok()) {
