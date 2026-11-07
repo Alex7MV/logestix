@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Model | `granite-switch-4.1-8b`, `model_type = "granite_switch"`, `GraniteSwitchForCausalLM` |
+| Model | `granite-switch-4.1-8b` (`model_type`, i.e. `kType`), class `GraniteSwitch41_8BModel`, source arch `GraniteSwitchForCausalLM` |
 | Layout | `logestix-granite-switch` (NVFP4 base, FP16 aLoRA planes, FP16 tied embed/head) |
 | Source | 17.55 GB BF16, 4 shards, 804 tensors |
 | Converted | 5.7 GB on disk; **6.09 GB** device-resident (`6 088 178 432` bytes) |
@@ -89,7 +89,7 @@ base `The` (791), guardian-core `{"` (5018), decision `A` (32).
 | FSI | **3/3** |
 | CODE | **3/3** |
 | DET | **2/3** — DET-02, the source's own answer (see below) |
-| Decode rate at 2048 tokens | **149.01 t/s** (`perf`), **148.51 t/s** (`r3`), TTFT 78.5 / 71.8 ms, 508.6 / 520.0 W avg — seeded 2026-11-07 at the canonical protocol (`max_gen` 2048, `The capital of France is`), `tests/perf/perf_baselines.json` |
+| Decode rate at 2048 tokens | **151.18 t/s** (`perf`), **153.85 t/s** (`r3`), TTFT 126.1 / 71.4 ms — seeded 2026-11-07 at the canonical protocol (`max_gen` 2048, `The capital of France is`), `tests/perf/perf_baselines.json` |
 
 #### FSI-01: red on the first conversion, green after a measured precision change
 
@@ -144,14 +144,23 @@ loader, so old artifacts are not invalidated).
 
 **Cost, stated honestly:** device-resident 5.14 → 6.09 GB, tree 4.8 → 5.7 GB, and
 the attention projections now read twice the bytes per token. The decode-rate
-measurement is **149.01 t/s** at 2048 tokens, against the two family members that
+measurement is **151.18 t/s** at 2048 tokens, against the two family members that
 have a row: `granite-switch-4.1-30b` 69.28 t/s and `granite-4.2-30b` 76.79 t/s. The
 8B is 2.2× the 30B sibling's rate on a quarter of the resident bytes, so it is in
-the expected band; there is no pre-change 8B number to compare against (this is the
-model's first row), so the residual-plane cost is bounded analytically rather than
-measured: the attention share of the per-token read is 21% of the quantized weights,
-and the family is weight-streaming bound rather than compute bound — a doubling of
-that 21% cannot account for a large fraction of a t/s figure driven by the other 79%.
+the expected band. Two caveats a reader re-running this will hit, both recorded
+rather than smoothed over:
+
+- **Repeated runs of the same binary spread ~3%** (`perf` 149.01 → 151.18,
+  `r3` 148.51 → 153.85 across four invocations), and the harness re-seeds the
+  reference on any improvement, so the recorded row is the best-observed sample, not
+  a median. A later run 3% below it reads as `DEGRADED` on variance alone. This is
+  the harness's existing policy for every model, not a property of the 8B.
+- **There is no pre-change 8B number to compare against** — this is the model's
+  first row — so the residual plane's cost is bounded analytically rather than
+  measured: the attention share of the per-token read is 21% of the quantized
+  weights, and the family is weight-streaming bound rather than compute bound, so a
+  doubling of that 21% cannot account for a large fraction of a figure driven by
+  the other 79%.
 
 #### DET-02: red because the source is red
 
@@ -198,18 +207,25 @@ for the wrong reason, and a reason not to grade fidelity by that cell alone.
 - Manifest: `models/granite-switch-4.1-8b.json`; catalogue row in
   `docs/MODELS.md`; matrix row in `docs/SELFCHECK_MATRIX.md` §1.
 - Gates, 2026-11-07, one test at a time, GPU exclusive
-  (`linux-debug`, RTX 5090):
+  (`linux-debug`, RTX 5090, the full target set from the manifest `stages`):
 
   ```
-  test_granite_switch_8b_adapter_parity .....   Passed    2.37 sec
-  test_granite_switch_8b_model ..............   Passed    0.70 sec
+  test_dense_kernels ........................   Passed    0.41 sec
+  test_granite_switch_convert ...............   Passed    0.61 sec
+  test_granite_switch_loader ................   Passed    0.36 sec
+  test_granite_switch_tool_framing ..........   Passed    0.01 sec
+  test_granite_switch_kernels ...............   Passed    0.27 sec
+  test_granite_switch_prepare ...............   Passed    0.01 sec
+  test_granite_switch_8b_adapter_parity .....   Passed    3.02 sec
+  test_granite_switch_8b_model ..............   Passed    2.47 sec
   test_granite_switch_8b_tokenizer_parity ...   Passed    0.04 sec
-  test_granite_switch_8b_selfcheck ..........   Passed    7.77 sec
-  test_granite_switch_8b_fsi_selfcheck ......   Passed    2.65 sec
-  test_granite_switch_8b_code_selfcheck .....   Passed    2.29 sec
-  test_granite_switch_8b_det_selfcheck ......***Failed    4.12 sec  (DET-02, source red too)
-  test_perf_baseline_granite_switch_4_1_8b ..***Skipped  0.11 sec  (Release-gated)
+  test_granite_switch_8b_selfcheck ..........   Passed    2.94 sec
+  test_granite_switch_8b_fsi_selfcheck ......   Passed    3.03 sec
+  test_granite_switch_8b_code_selfcheck .....   Passed    2.67 sec
+  test_granite_switch_8b_det_selfcheck ......***Failed    4.50 sec  (DET-02, source red too)
   ```
+  `test_perf_baseline_granite_switch_4_1_8b` is Release-gated and was run from
+  `linux-release-znver4-aocc`: `Passed 47.14 sec`.
 
   `test_granite_switch_8b_model` includes the real-weight native tool round-trip:
   `pinned weights loaded: 40 layers (6088178432 bytes resident)`, framing ids
@@ -234,10 +250,21 @@ for the wrong reason, and a reason not to grade fidelity by that cell alone.
 - Converted index (`logestix/model.index.json`): `format logestix-granite-switch`,
   `model granite-switch-4.1-8b`, `num_layers 40`, `intermediate_size 12800`,
   `rope_theta 10000000.0`, `residual_multiplier 0.22`, `num_adapters 2`,
-  `adapter_ranks [16, 64]`, `residual "attn"`, `total_pinned_tensors 803`.
+  `adapter_ranks [16, 64]`, `residual "attn"`, `total_pinned_tensors 1043`.
+  (`1043`, not `803`: the residual plane adds 80 records — 40 layers ×
+  `qkv_proj.weight.res` and `o_proj.weight.res` — and the converter counts each as
+  `total_pinned += 3` plus the base tensor's `+1`, so `803 + 80×3 = 1043`. `803`
+  was captured from the 4-bit-only tree and left in place when the plane shipped,
+  which made one sentence claim `residual "attn"` and a pre-residual tensor count
+  at once. Found by re-reading the report against the tree on 2026-11-07.)
 - Goldens, all captured from the 8B source (never copied from the 30B):
   `tests/fixtures/{fsi,code,det}/granite-switch-4.1-8b.json` and
   `tests/fixtures/adapters/granite-switch-4.1-8b.json`.
-- Declared gaps: perf row not seeded (Release build not rebuilt). The FSI-01
+- Declared gaps: **none for the lifecycle gate** — all six requirements
+  (SelfCheck, FSI, CODE, DET, native tool round-trip, seeded perf row) are
+  measured on real weights, and DET's single red case is the source's own answer
+  rather than a gap. Two limits are outside that gate and named here: the Windows
+  build has not been run (no machine), and the residual plane's throughput cost has
+  no pre-change 8B baseline to compare against (see the cost paragraph). The FSI-01
   residual-plane work is closed and archived:
   `docs/open-tasks/2026-11-07-granite-switch-fsi01-residual.md`.
