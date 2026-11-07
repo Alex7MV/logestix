@@ -1162,6 +1162,38 @@ Re-converting GigaChat costs a 432B/28B-active pass over ~850 GB of source and
 needs the disk headroom the host currently does not have (94% full, 878 GB free).
 Treat it as a scheduling decision, not a bug fix.
 
+## G5. The manifest migration silently dropped the cooperative-cancel gate for 8 models (2026-11-07)
+
+**Status: closed — restored as a declared hook.** Recorded because it is the
+second coverage regression this refactor caused (the first is §G2), and because
+nothing in the suite could see it.
+
+Eight per-family selfchecks called `ExpectCooperativeCancelStops` — deepseek
+v4-flash / v4.1-flash / v4-pro, glm-5.2, glm-5.3-flash, ornith, qwen3.8-flash-next,
+xing — and v4.1 additionally called `ExpectStreamMatchesTokens`. The single
+shared driver (`tests/test_selfcheck_driver.cpp`) reproduced only the Paris case
+plus the two hooks it declared (`tool_roundtrip`, `auto_path_determinism`), so for
+those eight models **the cancel gate stopped running** while every target stayed
+green. A gate that no longer runs is indistinguishable from a gate that passes:
+the target still exists, still has its label, still reports Passed.
+
+This is what §A2 had been blocked on. §A2 records a real defect
+(`deepseek-v4.1-flash`: a cancelled request poisons the next one) whose *only*
+witness was that cancel case — and after the migration the failure could no longer
+be observed at all, which would have read as "fixed".
+
+**Fixed:** a third declared hook, `cooperative_cancel`, in the manifest and the
+driver. Enabled for the eight models that lost it plus both granite-switch
+members (whose decode loop polls the flag). A model that does not declare it gets
+`SUCCEED("cooperative_cancel hook not declared …")`, the same shape as the other
+two hooks, so opting out is explicit rather than silent.
+
+**What this class teaches, again:** the migration's own tests check that a
+*declared* target exists and runs; they cannot see coverage that was never
+declared. The only defence is transcribing the old files' assertions one by one,
+which is what should have happened at the time — §G2 has the same shape one level
+up.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

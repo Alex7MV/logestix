@@ -9,6 +9,14 @@
 //   paris_cycles           always: Paris + >= 3 bit-exact final_logits cycles
 //   tool_roundtrip         manifest `tool_roundtrip: true`
 //   auto_path_determinism  manifest `auto_path_determinism: true`
+//   cooperative_cancel     manifest `cooperative_cancel: true`
+//
+// `cooperative_cancel` exists because THIS REFACTOR DROPPED IT: eight per-family
+// selfchecks called ExpectCooperativeCancelStops (and, for v4.1, the streaming
+// order assert) and the single driver reproduced only the Paris case, so the
+// cancel gate silently stopped running for eight models while every target stayed
+// green. Found 2026-11-07 by auditing docs/OPEN_TASKS.md §A2, whose fix had been
+// blocked on a failure that could no longer even be observed.
 //
 // A family case that is not one of those (qwen_moe_exp's EOS/KV-growth gate)
 // keeps its own file and its own target - opting out needs no manifest change.
@@ -25,6 +33,7 @@
 
 #include "test_manifest_query.h"
 #include "test_manifest_query_root.h"
+#include "test_streaming_assert.h"
 #include "test_tool_roundtrip.h"
 
 #ifndef LSX_SELFCHECK_MODEL
@@ -182,3 +191,35 @@ TEST_CASE("selfcheck is deterministic on the auto (ids-streaming) path",
                       a.final_logits.size() * sizeof(float)) == 0);
     model->Unload();
 }
+
+TEST_CASE("selfcheck streams and stops on a cooperative cancel",
+          "[selfcheck][streaming][real-model]")
+{
+    // OPEN_TASKS §E1a: a cancelled request must not run to budget, and the token
+    // callback must observe exactly the produced tokens in order. Both are
+    // declared per model because a family that polls the flag only before the
+    // first token passes every other test.
+    const lsxmanifest::ModelRow *row = manifest_query::FindModel(kModel);
+    REQUIRE(row != nullptr);
+    if (!row->cooperative_cancel)
+    {
+        SUCCEED("cooperative_cancel hook not declared for " << row->model_type);
+        return;
+    }
+    const std::filesystem::path root = manifest_query::ModelRoot(*row);
+    RequireVault(*row, root);
+
+    lsxcommon::EnsureModelRegistry();
+    auto model = Load(*row, root, lsxcommon::FastMathMode::kOff);
+
+    std::vector<int32_t> ids;
+    REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
+                                       "The capital of France is", ids));
+    lsxcommon::ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = 2;
+    ExpectStreamMatchesTokens(*model, req);
+    ExpectCooperativeCancelStops(*model, req);
+    model->Unload();
+}
+

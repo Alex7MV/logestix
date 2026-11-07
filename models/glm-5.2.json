@@ -133,5 +133,6 @@
     "fsi": "declared debt (see docs/OPEN_TASKS.md)"
   },
   "report": "",
-  "notes": ""
+  "notes": "",
+  "cooperative_cancel": true
 }

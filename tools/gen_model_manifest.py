@@ -78,7 +78,8 @@ PERF_BINARY = "test_perf_baseline"
 MODEL_FIELDS = ("model_type", "family", "variant", "model_class",
                 "model_header", "passport", "namespace", "format_tag",
                 "vault_dir", "vault_env", "tokenizer_kind",
-                "tool_roundtrip", "auto_path_determinism")
+                "tool_roundtrip", "auto_path_determinism",
+                "cooperative_cancel")
 
 
 class ManifestError(Exception):
@@ -129,6 +130,7 @@ class Manifest:
     perf: dict
     tool_roundtrip: bool
     auto_path_determinism: bool
+    cooperative_cancel: bool
     resource_lock: str
     aliases: list
     report: str
@@ -256,6 +258,7 @@ def load_one(path: Path) -> Manifest:
         resource_lock=doc.get("resource_lock", ""),
         aliases=list(doc.get("aliases", [])),
         auto_path_determinism=bool(doc.get("auto_path_determinism", False)),
+        cooperative_cancel=bool(doc.get("cooperative_cancel", False)),
         report=doc.get("report", ""),
         notes=doc.get("notes", ""),
         path=path.name,
@@ -558,13 +561,14 @@ def emit_header(manifests) -> str:
     rows = []
     for m in models:
         rows.append(
-            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s},"
+            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s},"
             % (cstr(m.model_type), cstr(m.family), cstr(m.variant),
                cstr(m.model_class), cstr(m.model_header), cstr(m.passport),
                cstr(m.ns), cstr(m.format_tag), cstr(m.vault_dir),
                cstr(m.vault_env), m.tokenizer_kind,
                "true" if m.tool_roundtrip else "false",
-               "true" if m.auto_path_determinism else "false"))
+               "true" if m.auto_path_determinism else "false",
+               "true" if m.cooperative_cancel else "false"))
     targets = []
     for m in models:
         for t in sorted(m.targets(), key=lambda x: (x.stage, x.name)):
@@ -595,7 +599,7 @@ struct ModelRow {{
     const char *model_class; const char *model_header; const char *passport;
     const char *ns; const char *format_tag; const char *vault_dir;
     const char *vault_env; int tokenizer_kind; bool tool_roundtrip;
-    bool auto_path_determinism;
+    bool auto_path_determinism; bool cooperative_cancel;
 }};
 struct TargetRow {{
     const char *model_type; const char *stage; const char *target;
@@ -1145,7 +1149,8 @@ def main(argv=None):
                                       m.ns, m.format_tag, m.vault_dir,
                                       m.vault_env, m.tokenizer_kind,
                                       int(m.tool_roundtrip),
-                                      int(m.auto_path_determinism))))
+                                      int(m.auto_path_determinism),
+                                      int(m.cooperative_cancel))))
         return 0
 
     if args.header:

@@ -108,5 +108,6 @@
   "auto_path_determinism": false,
   "golden_debt": {},
   "report": "docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md",
-  "notes": "Sibling of the 30B: 40 layers, FFN 12800, theta 1e7, residual 0.22"
+  "notes": "Sibling of the 30B: 40 layers, FFN 12800, theta 1e7, residual 0.22",
+  "cooperative_cancel": true
 }

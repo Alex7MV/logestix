@@ -85,7 +85,8 @@ std::string RowKey(const lsxmanifest::ModelRow &r)
                         r.format_tag, "\t", r.vault_dir, "\t", r.vault_env,
                         "\t", r.tokenizer_kind, "\t",
                         r.tool_roundtrip ? 1 : 0, "\t",
-                        r.auto_path_determinism ? 1 : 0);
+                        r.auto_path_determinism ? 1 : 0, "\t",
+                        r.cooperative_cancel ? 1 : 0);
 }
 
 std::string Escaped(const std::string &s)
