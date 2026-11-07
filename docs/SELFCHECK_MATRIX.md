@@ -65,8 +65,18 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 
+- **A §1 row is a measurement, and three of them are no longer reproducible.**
+  Audited 2026-11-07 against the vault: `deepseek-v4-pro-0813`, `gigachat3.5-432b-a28b-reasoning`
+  and `mistral-large-4-1t` have **no `logestix/model.index.json`** any more, so
+  their three parity gates SKIP today (a SKIP, not a pass) while the row records
+  measured cells. The verdicts were real when taken; what is gone is the artifact.
+  Two causes, both recorded as open: gigachat was converted into
+  `/mnt/fast_storage/tmp/…` and the tmp tree was cleaned (`docs/OPEN_TASKS.md` §G4),
+  and the other two are 838 GB / 988 GB trees on a host at 94% disk. Re-running
+  those rows needs a re-conversion, not a code change — so the cells stay as
+  history and this note is the current state.
 - SelfCheck **24/24 rows** (every row above), FSI **61/66**, CODE **65/66**,
-  DET **64/66**. Counting rule: one case per prompt, three prompts per measured
+  DET **63/66**. Counting rule: one case per prompt, three prompts per measured
   row, so the denominators are 3 × the rows that carry a measured cell (22 —
   `kimi-k3` and `kimi-k3.1-pro` have no parity verdict yet); a `not run` cell is
   excluded rather than counted as a pass. The five FSI reds are gemma-4-31b
@@ -286,13 +296,22 @@ be read as a pass.
 
 ## 4. Neither — SKIP
 
-`glm-5.2`, `deepseek-v4-flash`, `nemotron-3.5-lightning-30b-a3b` (bf16 sibling),
-`mimo-v2.6-flash-rl`. Registered stages exist; converted trees and goldens do
-not. `gigachat3.5-432b-a28b-reasoning` moved out of this section on 2026-10-31
-(241 GB tree, all four gates measured). `deepseek-v4-pro-0813` moved out of
-this section on 2026-10-26: the 838 GB tree exists and SelfCheck passes on real
-weights (Paris x3, bit-exact logits) — its FSI/CODE/DET remain declared debt
-because the source oracle is the TP-4 FP8 runner (`docs/OPEN_TASKS.md` §R3).
+Re-audited 2026-11-07 against the vault, because two entries here had drifted:
+
+| model | tree | goldens | note |
+|---|---|---|---|
+| `glm-5.2` | no | no | never converted on this host |
+| `mimo-v2.6-flash-rl` | no | no | never converted on this host |
+| `nemotron-3.5-lightning-30b-a3b` (bf16 sibling) | no | no | the NVFP4 sibling is the ingested one (§2) |
+| `deepseek-v4-flash` | **yes** | no | **moved here from §4's prose**: the tree exists, so this is the §2 shape (goldens are declared debt) — its three stages SKIP for a golden, not for a tree |
+
+`gigachat3.5-432b-a28b-reasoning` moved out of this section on 2026-10-31 (241 GB
+tree, all four gates measured) and its row in §1 still carries those verdicts —
+but the tree it was measured on **no longer exists** (it was converted under
+`/mnt/fast_storage/tmp/` and cleaned), so §1's reproducibility note applies.
+`deepseek-v4-pro-0813` moved out on 2026-10-26 (838 GB tree, SelfCheck Paris x3
+bit-exact) and is in the same position: the verdict is history, the tree is
+gone.
 
 `kimi-k2.7-code` moved out of this section on 2026-10-26: the tree now exists
 (542 GB, 23040 experts) and **SelfCheck passes on real weights** — Paris
