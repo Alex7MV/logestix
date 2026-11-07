@@ -31,14 +31,21 @@
 #ifndef LSX_GATE_KIND
 #error "LSX_GATE_KIND must be defined (fsi, code or det)"
 #endif
-#ifndef LSX_FSI_GOLDEN_DIR
-#define LSX_FSI_GOLDEN_DIR "tests/fixtures/fsi"
-#endif
-#ifndef LSX_CODE_GOLDEN_DIR
-#define LSX_CODE_GOLDEN_DIR "tests/fixtures/code"
-#endif
-#ifndef LSX_DET_GOLDEN_DIR
-#define LSX_DET_GOLDEN_DIR "tests/fixtures/det"
+#include <lsxcommon/path_registry.h>
+// The golden directory MUST come from CMake, and a missing define is a BUILD
+// ERROR rather than a relative fallback. A fallback like "tests/fixtures/fsi" is
+// resolved against the process CWD, and ctest runs from the build dir, so the gate
+// found no golden, SKIPped, and reported a skip that reads as "not applicable"
+// while the golden sat in the source tree. The same mistake made both
+// granite-switch model targets skip their real-weight tool round-trip
+// (docs/OPEN_TASKS.md G7).
+//
+// ONE macro, not one per kind: the kind is a string and cannot be compared in
+// `#if`, so three per-kind macros forced three "define it or fall back" branches
+// here — which is what made the fallback tempting in the first place. CMake knows
+// the directories and passes the right one.
+#ifndef LSX_GOLDEN_DIR
+#error "LSX_GOLDEN_DIR must be defined by CMake (absolute path to fixtures/<kind>)"
 #endif
 
 namespace {
@@ -50,14 +57,14 @@ static_assert(kKind == "fsi" || kKind == "code" || kKind == "det",
 
 std::filesystem::path GoldenDir()
 {
+    // The env override keeps its per-kind name: it is a documented ad-hoc knob
+    // (see the fsi/code/det skills) and a caller setting it expects that spelling.
     if (const char *env = std::getenv(
             kKind == "fsi" ? "LSX_FSI_GOLDEN_DIR"
                            : kKind == "code" ? "LSX_CODE_GOLDEN_DIR"
                                              : "LSX_DET_GOLDEN_DIR"))
         return std::filesystem::path(env);
-    if (kKind == "fsi") return std::filesystem::path(LSX_FSI_GOLDEN_DIR);
-    if (kKind == "code") return std::filesystem::path(LSX_CODE_GOLDEN_DIR);
-    return std::filesystem::path(LSX_DET_GOLDEN_DIR);
+    return std::filesystem::path(LSX_GOLDEN_DIR);
 }
 
 std::filesystem::path GoldenPath()

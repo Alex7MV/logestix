@@ -1283,6 +1283,57 @@ and a case that opts out with `SUCCEED` is indistinguishable from a case that
 passed. Any driver with declared optional cases must use `SKIP` for them, or count
 its own cases explicitly.
 
+## G7. A relative fixture-dir fallback makes a gate SKIP while its golden sits in the tree (2026-11-07)
+
+**Status: fixed; guarded.**
+
+`tests/test_granite_switch_model.cpp` resolves its tool-round-trip golden with the
+macro `LSX_GRANITE_SWITCH_FIXTURE_DIR`, whose `#ifndef` fallback is the **relative**
+path `"tests/fixtures/granite_switch"`. `test_granite_switch_model` and
+`test_granite_switch_8b_model` never received that macro from CMake (the other
+granite-switch targets did), so under ctest — which runs the binary with CWD =
+`build/linux-debug` — the path resolved to a directory that does not exist there and
+the case reported
+
+    SKIPPED: granite-switch tool golden not captured
+
+while `tests/fixtures/granite_switch/tool_roundtrip.json` sat in the source tree.
+The lifecycle gate requires "a native tool round-trip", so for both members of this
+family that requirement was **not being verified at all** — and nothing was red. The
+8B's stage-9 report quotes the real-weight line (`pinned weights loaded: 40 layers
+(6088178432 bytes resident)`), which was captured by running the binary **by hand
+from the repository root**, where the relative path happens to work. Reproducible by
+accident of CWD is not reproducible.
+
+**Fix:** the absolute fixture dir is now passed to both targets. Verified by
+re-running through ctest: the case loads 40 layers (6 088 178 432 bytes) for the 8B
+and 64 layers (17 416 338 176 bytes) for the 30B, and both binaries report 6/6 cases
+with 136 assertions where they previously reported 5 passed + 1 skipped, 126.
+
+**The class, and why the guard is the fix rather than the two defines.** 13
+directory macros in the tree carried a relative fallback; 11 were correctly defined
+by CMake and 2 were not, and the failure mode is silent in every case. Two guards
+now make a repeat loud:
+
+- `infra guard: a fixture dir macro is never satisfied by its relative fallback`
+  scans every `#ifndef X / #define X "<relative>"` and requires each target that
+  compiles that source to pass `X`. It has non-vacuity assertions (>= 5 macros and
+  >= 100 `add_executable` blocks) because an empty scan passes everything — proven
+  by removing one define and watching it name `test_granite_switch_model compiles
+  test_granite_switch_model.cpp without defining LSX_GRANITE_SWITCH_FIXTURE_DIR`.
+- `tests/test_parity_gate.cpp` no longer has per-kind fallbacks at all: the three
+  `LSX_{FSI,CODE,DET}_GOLDEN_DIR` macros collapsed into one `LSX_GOLDEN_DIR`, with
+  `#error` when absent. The kind is a string and cannot be compared in `#if`, so
+  three per-kind macros forced three "define it or fall back" branches — the
+  fallback was the design's fault, not a reviewer's. The runtime env overrides keep
+  their documented per-kind names.
+
+**Why this is the third G-class item with the same shape:** G5 (a declared hook that
+stopped running), G6 (a case that skipped while the target said Passed) and G7 (a
+path that resolved differently under ctest) are all "the instrument reported absence
+as success". None of them was caught by a red target; all three were caught by
+asking what a green number actually measured.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

@@ -4,8 +4,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -308,6 +310,80 @@ TEST_CASE("infra guard: no dependency build paths in CMake", "[guard][infra]")
             bad.push_back(Rel(root, p) + ":" + std::to_string(line));
     INFO("dependency path hits (" << bad.size() << "):\n" << JoinHits(bad));
     REQUIRE(bad.empty());
+}
+
+// A fixture/golden directory macro that falls back to a RELATIVE path is resolved
+// against the process CWD, and ctest runs from the build dir — so the test finds no
+// fixture, SKIPs, and the skip reads as "not applicable" while the file sits in the
+// source tree. That is how both granite-switch model targets lost their real-weight
+// tool round-trip without a single red target (docs/OPEN_TASKS.md G7).
+//
+// The rule: if a .cpp has `#ifndef X / #define X "<relative>"` for a directory
+// macro, every target that compiles that source must pass X from CMake with an
+// absolute path. Fallbacks are still useful (a developer can compile a single
+// target), they just must not be the one that ships.
+TEST_CASE("infra guard: a fixture dir macro is never satisfied by its relative "
+          "fallback", "[guard][infra]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    const fs::path tests = root / "tests";
+
+    // Macro name -> sources carrying a relative fallback for it.
+    const std::regex fallback(
+        R"RE(#ifndef (LSX_[A-Z0-9_]*_DIR)\s*\n#define \1 "([a-z][^"]*)")RE");
+    std::map<std::string, std::vector<std::string>> by_macro;
+    for (const auto &p : fs::directory_iterator(tests)) {
+        if (p.path().extension() != ".cpp") continue;
+        const std::string text = ReadFile(p.path());
+        for (std::sregex_iterator it(text.begin(), text.end(), fallback), end;
+             it != end; ++it)
+            by_macro[(*it)[1].str()].push_back(p.path().filename().string());
+    }
+    // The parity gate is the exception by construction: it #errors when
+    // LSX_GOLDEN_DIR is absent rather than falling back, so it has no entry here.
+    REQUIRE(by_macro.find("LSX_GOLDEN_DIR") == by_macro.end());
+    // Non-vacuity: a scan that finds nothing would pass every assertion below.
+    // Ten directory macros carried a relative fallback when this rule was
+    // written; the floor is 5 so removing one deliberately does not force an edit.
+    INFO("macros with a relative fallback: " << by_macro.size());
+    REQUIRE(by_macro.size() >= 5);
+
+    const std::string cmake = ReadFile(tests / "CMakeLists.txt");
+    // Every add_executable block, up to the next one.
+    const std::regex exe(R"(add_executable\((\w+)\s+([\w.]+))");
+    std::vector<std::pair<std::string, std::string>> targets;   // name, source
+    std::vector<std::size_t> starts;
+    for (std::sregex_iterator it(cmake.begin(), cmake.end(), exe), end; it != end;
+         ++it) {
+        targets.emplace_back((*it)[1].str(), (*it)[2].str());
+        starts.push_back(static_cast<std::size_t>((*it).position()));
+    }
+    starts.push_back(cmake.size());
+
+    INFO("add_executable blocks scanned: " << targets.size());
+    REQUIRE(targets.size() >= 100);      // likewise: an empty scan proves nothing
+
+    std::vector<std::string> gaps;
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        const auto &[name, src] = targets[i];
+        const auto found = by_macro.end();
+        for (auto m = by_macro.begin(); m != by_macro.end(); ++m) {
+            if (std::find(m->second.begin(), m->second.end(), src) == m->second.end())
+                continue;
+            const std::string body = cmake.substr(starts[i], starts[i + 1] - starts[i]);
+            if (body.find(m->first) == std::string::npos)
+                gaps.push_back(name + " compiles " + src + " without defining " +
+                               m->first);
+        }
+        (void)found;
+    }
+    INFO("targets relying on a relative fixture fallback (" << gaps.size() << "):\n"
+         << [&] {
+                std::string j;
+                for (const auto &g : gaps) j += "  " + g + "\n";
+                return j;
+            }());
+    REQUIRE(gaps.empty());
 }
 
 TEST_CASE("infra guard: shared converter helpers have one definition",

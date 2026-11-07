@@ -213,7 +213,14 @@ for the wrong reason, and a reason not to grade fidelity by that cell alone.
 
   `test_granite_switch_8b_model` includes the real-weight native tool round-trip:
   `pinned weights loaded: 40 layers (6088178432 bytes resident)`, framing ids
-  identical to the captured golden.
+  identical to the captured golden. **Re-verified 2026-11-07 through ctest**, which
+  is not how it was first measured: the target never received
+  `LSX_GRANITE_SWITCH_FIXTURE_DIR`, so the source's relative fallback resolved
+  against the build dir and the case skipped as "golden not captured" while the
+  golden sat in the tree. The line above came from running the binary by hand from
+  the repository root. Both targets now get the absolute path and the binary reports
+  6/6 cases with 136 assertions (was 5 passed + 1 skipped, 126) — `docs/OPEN_TASKS.md`
+  §G7.
 - SelfCheck detail: `logits_hash=930dd592ea5f5834 n=100355 tok=12366`,
   three cycles identical. (The 4-bit-only tree measured `ad9b0c4940bb27a9`; the
   hash changed because the weights did, which is the expected direction and the

@@ -610,6 +610,11 @@ target_link_libraries(test_granite_switch_prepare PRIVATE lsxcommon Catch2::Catc
 # ── Granite-Switch-4.1-30B model test ──
 add_executable(test_granite_switch_model test_granite_switch_model.cpp)
 target_compile_definitions(test_granite_switch_model PRIVATE
+    # Absolute, because ctest runs with CWD = the build dir and the source's own
+    # fallback is the relative "tests/fixtures/granite_switch": without this the
+    # real-weight tool round-trip reads a path that does not exist from there and
+    # SKIPs as "golden not captured" while the golden sits in the source tree.
+    LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_granite_switch_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 lsx_copy_arrow_dlls(test_granite_switch_model)
@@ -2748,15 +2753,12 @@ lsx_copy_arrow_dlls(test_qwen_moe_36_model ARROW_ONLY)
 
 
 # ── FSISelfCheck (separate from SelfCheck): golden parity per family ──────
-file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi" LSX_FSI_GOLDEN_DIR_FWD)
 
 
 # ── CODESelfCheck (separate from SelfCheck/FSI): golden parity per family ──
-file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code" LSX_CODE_GOLDEN_DIR_FWD)
 
 
 # ── DETSelfCheck (separate from SelfCheck/FSI/CODE): determinism golden parity per family ──
-file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det" LSX_DET_GOLDEN_DIR_FWD)
 
 
 # ── Expert NVFP4 packing test (passthrough + GPU quantize contract) ───
@@ -3958,235 +3960,235 @@ target_include_directories(test_alice_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_
 target_link_libraries(test_alice_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_alice_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"alice-foundation-80b-a3b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_alice_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_alice_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_alice_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_alice_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"alice-foundation-80b-a3b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_alice_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_alice_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_alice_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_alice_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"alice-foundation-80b-a3b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_beam_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_beam_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_beam_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_beam_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"beam\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_beam_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_beam_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_beam_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_beam_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"beam\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_beam_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_beam_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_beam_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_beam_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"beam\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_deepseek_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4-flash\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_deepseek_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4-flash\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_deepseek_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4-flash\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_deepseek_moe_pro_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_pro_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_pro_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_pro_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4-pro-0813\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_deepseek_moe_pro_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_pro_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_pro_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_pro_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4-pro-0813\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_deepseek_moe_pro_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_pro_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_pro_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_pro_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4-pro-0813\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_deepseek_moe_v41_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_v41_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_v41_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_v41_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4.1-flash\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_deepseek_moe_v41_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_v41_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_v41_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_v41_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4.1-flash\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_deepseek_moe_v41_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_deepseek_moe_v41_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_v41_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_v41_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4.1-flash\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_flint_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_flint_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_flint_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_flint_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"flint\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_flint_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_flint_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_flint_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_flint_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"flint\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_flint_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_flint_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_flint_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_flint_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"flint\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_gemma_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gemma_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gemma_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gemma-4-26b-a4b-it\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_gemma_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gemma_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gemma_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gemma-4-26b-a4b-it\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_gemma_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gemma_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gemma_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gemma-4-26b-a4b-it\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_gemma_dense_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gemma_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gemma_dense_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gemma-4-31b-it\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_gemma_dense_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gemma_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gemma_dense_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gemma-4-31b-it\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_gemma_dense_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gemma_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gemma_dense_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gemma-4-31b-it\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_gigachat_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gigachat_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gigachat_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gigachat_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_gigachat_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gigachat_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gigachat_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gigachat_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_gigachat_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gigachat_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gigachat_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gigachat_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_glm_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_glm_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"glm-5.2\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_glm_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_glm_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"glm-5.2\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_glm_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_glm_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"glm-5.2\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_glm_moe_flash_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_flash_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_flash_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_glm_moe_flash_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"glm-5.3-flash\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_glm_moe_flash_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_flash_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_flash_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_glm_moe_flash_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"glm-5.3-flash\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_glm_moe_flash_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_flash_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_flash_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_glm_moe_flash_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"glm-5.3-flash\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_granite_dense_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_dense_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-4.2-30b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_granite_dense_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_dense_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-4.2-30b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_granite_dense_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_dense_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-4.2-30b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_granite_switch_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_switch_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_switch_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-switch-4.1-30b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_granite_switch_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_switch_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_switch_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-switch-4.1-30b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_granite_switch_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_switch_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_switch_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-switch-4.1-30b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 # The 8B is a sibling of the same architecture with its own frozen passport
 # (40 layers, 12800 FFN, theta 1e7, residual 0.22). Same driver, own model in
 # LSX_GATE_MODEL, own goldens captured from its own source checkpoint.
@@ -4195,415 +4197,415 @@ target_include_directories(test_granite_switch_8b_fsi_selfcheck PRIVATE "${LSX_M
 target_link_libraries(test_granite_switch_8b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_8b_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-switch-4.1-8b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_granite_switch_8b_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_switch_8b_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_switch_8b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_8b_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-switch-4.1-8b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_granite_switch_8b_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_granite_switch_8b_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_switch_8b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_8b_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-switch-4.1-8b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_hy_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_hy_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_hy_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"hy-memory-30b-a3b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_hy_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_hy_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_hy_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"hy-memory-30b-a3b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_hy_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_hy_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_hy_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"hy-memory-30b-a3b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_hy_moe_simulmt_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_hy_moe_simulmt_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_simulmt_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_hy_moe_simulmt_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"hy-simulmt-30b-a3b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_hy_moe_simulmt_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_hy_moe_simulmt_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_simulmt_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_hy_moe_simulmt_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"hy-simulmt-30b-a3b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_hy_moe_simulmt_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_hy_moe_simulmt_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_simulmt_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_hy_moe_simulmt_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"hy-simulmt-30b-a3b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_kimi_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k2.7-code\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_kimi_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k2.7-code\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_kimi_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k2.7-code\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_kimi_pro_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_pro_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_pro_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_pro_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k3.1-pro\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_kimi_pro_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_pro_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_pro_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_pro_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k3.1-pro\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_kimi_pro_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_pro_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_pro_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_pro_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k3.1-pro\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_kimi_k3_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_k3_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_k3_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_k3_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k3\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_kimi_k3_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_k3_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_k3_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_k3_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k3\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_kimi_k3_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_kimi_k3_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_kimi_k3_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_kimi_k3_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"kimi-k3\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_ling_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_ling_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_ling_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_ling_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"ling\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_ling_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_ling_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_ling_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_ling_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"ling\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_ling_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_ling_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_ling_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_ling_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"ling\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_mimo_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mimo_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mimo_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mimo_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mimo-v2.6-flash-rl\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_mimo_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mimo_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mimo_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mimo_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mimo-v2.6-flash-rl\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_mimo_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mimo_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mimo_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mimo_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mimo-v2.6-flash-rl\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_minimax_moe_flash_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_minimax_moe_flash_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_flash_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_minimax_moe_flash_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"minimax-m3.1-flash\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_minimax_moe_flash_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_minimax_moe_flash_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_flash_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_minimax_moe_flash_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"minimax-m3.1-flash\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_minimax_moe_flash_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_minimax_moe_flash_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_flash_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_minimax_moe_flash_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"minimax-m3.1-flash\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_minimax_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_minimax_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_minimax_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"minimax-m3\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_minimax_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_minimax_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_minimax_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"minimax-m3\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_minimax_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_minimax_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_minimax_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_minimax_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"minimax-m3\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_mistral_moe_large4_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mistral_moe_large4_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mistral_moe_large4_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mistral_moe_large4_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mistral-large-4-1t\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_mistral_moe_large4_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mistral_moe_large4_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mistral_moe_large4_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mistral_moe_large4_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mistral-large-4-1t\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_mistral_moe_large4_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mistral_moe_large4_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mistral_moe_large4_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mistral_moe_large4_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mistral-large-4-1t\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_mistral_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mistral_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mistral_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mistral_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mistral-small-4-119b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_mistral_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mistral_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mistral_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mistral_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mistral-small-4-119b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_mistral_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_mistral_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_mistral_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_mistral_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"mistral-small-4-119b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_nemotron_moe_nvfp4_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b-nvfp4\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_nemotron_moe_nvfp4_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b-nvfp4\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_nemotron_moe_nvfp4_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b-nvfp4\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_nemotron_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_nemotron_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_nemotron_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_nemotron_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_nemotron_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_nemotron_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_nemotron_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_nemotron_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_nemotron_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_nemotron_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_nemotron_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_nemotron_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"nemotron-3.5-lightning-30b-a3b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_ornith_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_ornith_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_ornith_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_ornith_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"ornith-1.5-35b-a3b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_ornith_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_ornith_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_ornith_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_ornith_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"ornith-1.5-35b-a3b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_ornith_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_ornith_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_ornith_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_ornith_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"ornith-1.5-35b-a3b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_phi_dense_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_phi_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_phi_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_phi_dense_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"phi-4\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_phi_dense_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_phi_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_phi_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_phi_dense_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"phi-4\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_phi_dense_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_phi_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_phi_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_phi_dense_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"phi-4\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_qwen_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.5-35b-a3b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_qwen_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.5-35b-a3b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_qwen_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.5-35b-a3b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_qwen_dense_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_dense_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.5-9b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_qwen_dense_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_dense_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.5-9b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_qwen_dense_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_dense_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.5-9b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_qwen_moe_36_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_36_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_36_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_36_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.6-35b-a3b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_qwen_moe_36_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_36_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_36_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_36_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.6-35b-a3b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_qwen_moe_36_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_36_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_36_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_36_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.6-35b-a3b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_qwen_dense_27b_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_dense_27b_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_dense_27b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_dense_27b_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.8-27b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_qwen_dense_27b_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_dense_27b_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_dense_27b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_dense_27b_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.8-27b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_qwen_dense_27b_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_dense_27b_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_dense_27b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_dense_27b_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.8-27b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_qwen_moe_exp_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_exp_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_exp_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_exp_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.8-flash-next\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_qwen_moe_exp_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_exp_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_exp_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_exp_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.8-flash-next\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_qwen_moe_exp_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_exp_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_exp_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_qwen_moe_exp_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"qwen3.8-flash-next\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_step_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_step_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_step_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_step_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"step-5-preview\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_step_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_step_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_step_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_step_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"step-5-preview\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_step_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_step_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_step_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_step_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"step-5-preview\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_xing_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_xing_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_xing_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_xing_moe_fsi_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"xing4.0-29b-a4b\"" "LSX_GATE_KIND=\"fsi\""
-    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
 add_executable(test_xing_moe_code_selfcheck test_parity_gate.cpp)
 target_include_directories(test_xing_moe_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_xing_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_xing_moe_code_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"xing4.0-29b-a4b\"" "LSX_GATE_KIND=\"code\""
-    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
 add_executable(test_xing_moe_det_selfcheck test_parity_gate.cpp)
 target_include_directories(test_xing_moe_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_xing_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_xing_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"xing4.0-29b-a4b\"" "LSX_GATE_KIND=\"det\""
-    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 
 
 # ── SelfCheck (the "Paris" gate) — one driver, declared per-model hooks ──
@@ -4666,6 +4668,9 @@ add_executable(test_granite_switch_8b_model test_granite_switch_model.cpp)
 target_include_directories(test_granite_switch_8b_model PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_switch_8b_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_8b_model PRIVATE
+    # Same absolute fixture dir as the 30B: the sibling's real-weight tool
+    # round-trip was SKIPping for the identical reason (see the 30B above).
+    LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
     "LSX_GSW_MODEL=\"granite-switch-4.1-8b\""
     "LSX_GSW_ROOT_ENV=\"LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT\""
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
