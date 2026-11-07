@@ -298,7 +298,7 @@ Residency note for the next operator: do NOT turn on
 reason, and the default (mmap + `LSX_DEEPSEEK_PRO_MAX_OPEN`, 4096) is the
 bounded path.
 
-## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; both RED (2026-10-07)
+## Q. DeepSeek-V4.1-Flash FSI/CODE goldens committed model-defined; FSI 1/3, CODE 1/3 (2026-10-07, re-measured 2026-11-07)
 
 The DeepSeek-V4.1-Flash source ships its own FP8/FP4 tilelang tensor-parallel
 stack (target 2×80 GB) and cannot run locally, so FSI/CODE had always SKIPped.
@@ -316,9 +316,17 @@ Both are RED on the E4M3FN NVFP4 conversion (`kOff`):
   budget, so the first-anchor-line extractor latches onto the truncated prompt
   echo `PV=CF*(1-e`; FSI-02 yields the initial-state echo
   `Balance_Alpha=100000000`; FSI-03 passes.
-- **CODE 2/3** — CODE-01: the model's CoT declares the balanced template
+- **CODE 1/3, re-measured 2026-11-07** (this section said 2/3 and that
+  "CODE-02/03 pass"): CODE-01: the model's CoT declares the balanced template
   `{"root":{"nodes":{"leaf":true}}}` "invalid", miscounts the braces, and emits
-  an object missing its final `}` (extractor empty); CODE-02/03 pass.
+  an object missing its final `}` (extractor empty, `extracted=''`); CODE-02
+  passes; **CODE-03 also fails** — expected `\b[0-9A-F]{4}\b`, extracted
+  `\b[0-9A-F]{4}\b?`, one stray `?`. Confirmed on **both** binaries: the
+  pre-refactor release build of 2026-11-06 17:09 (no shared driver in it) and the
+  current debug build give the identical 1/3 with the identical two reds, so this
+  is a stale record and not a migration regression. The extra `?` is the kind of
+  near-miss a form-only extractor reports as a fail; it is not a truncation
+  artifact (it survives a 512..2048 budget sweep with `ignore_eos`).
 
 This is the `numeric-contract.md` §6 class (a reasoning/requantization divergence
 below the format error), not a discrete kernel defect — the same profile as the

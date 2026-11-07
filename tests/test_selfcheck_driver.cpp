@@ -11,6 +11,13 @@
 //   auto_path_determinism  manifest `auto_path_determinism: true`
 //   cooperative_cancel     manifest `cooperative_cancel: true`
 //
+// The PARIS CASE ITSELF is parameterised, because "the same case" was never the
+// same probe: `selfcheck_frame_prompt` (raw BPE vs BuildPromptInputIds),
+// `selfcheck_max_gen` (2 for most families, up to 256) and `selfcheck_bit_exact`
+// (kOff vs kAuto) were three different constants in three different files, and all
+// three move the recorded logits_hash. See docs/OPEN_TASKS.md §G5 — a uniform
+// driver re-baselined every family's hash and turned two families' gates red.
+//
 // `cooperative_cancel` exists because THIS REFACTOR DROPPED IT: eight per-family
 // selfchecks called ExpectCooperativeCancelStops (and, for v4.1, the streaming
 // order assert) and the single driver reproduced only the Paris case, so the
@@ -30,11 +37,10 @@
 
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
+#include <lsxcommon/tokenizer.h>
 
 #include "test_manifest_query.h"
 #include "test_manifest_query_root.h"
-#include <lsxcommon/tokenizer.h>
-
 #include "test_streaming_assert.h"
 #include "test_tool_roundtrip.h"
 
@@ -85,17 +91,6 @@ void RequireVault(const lsxmanifest::ModelRow &row,
         SKIP(manifest_query::SkipMessage(row, "converted model"));
 }
 
-// The canonical SelfCheck probe's ids.
-//
-// `arrow_tokenizer_encode` is PURE BPE — the raw sentence, no chat framing — and
-// that is what every per-family selfcheck used before the shared driver existed.
-// The driver first used BuildPromptInputIds for all models, which silently
-// changed the probe for every family WITH a chat template: phi-4 then answered
-// "The capital of France is Paris" (it continues the fragment) instead of
-// "Paris", and its gate went red for a reason nothing recorded. Framing is
-// therefore DECLARED per model (`selfcheck_frame_prompt`), because one family
-// genuinely needs it: DeepSeek-V4.1's old file asked RunParisSelfCheck to rebuild
-// the ids through the template.
 // The math mode the family's own selfcheck ran in.
 //
 // Fourteen per-family files pinned `FastMathMode::kOff`; the other twenty-one
@@ -112,6 +107,17 @@ lsxcommon::FastMathMode SelfCheckMathMode(const lsxmanifest::ModelRow &row)
                                    : lsxcommon::FastMathMode::kAuto;
 }
 
+// The canonical SelfCheck probe's ids.
+//
+// `arrow_tokenizer_encode` is PURE BPE — the raw sentence, no chat framing — and
+// that is what eighteen per-family selfchecks used before the shared driver
+// existed. The driver first framed with BuildPromptInputIds for all models, which
+// silently changed the probe for every family WITH a chat template: phi-4 then
+// answered "The capital of France is Paris" (it continues the fragment) instead of
+// "Paris", and its gate went red for a reason nothing recorded. Framing is
+// therefore DECLARED per model (`selfcheck_frame_prompt`) — seventeen families
+// genuinely need it, and the declaration is transcribed from the deleted files,
+// not chosen.
 std::vector<int32_t> BuildSelfCheckIds(const lsxmanifest::ModelRow &row,
                                        lsxcommon::IModel &model)
 {
