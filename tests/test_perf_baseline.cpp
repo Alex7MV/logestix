@@ -111,6 +111,9 @@ const PerfModel kGranite = {
 const PerfModel kGraniteSwitch = {
     "granite-switch-4.1-30b", "granite-switch-4.1-30b",
     "The capital of France is", 2048};
+const PerfModel kGraniteSwitch8B = {
+    "granite-switch-4.1-8b", "granite-switch-4.1-8b",
+    "The capital of France is", 2048};
 const PerfModel kMiMo = {
     "mimo-v2.6-flash-rl", "MiMo-V2.6-Flash-RL", "The capital of France is",
     2048};
@@ -619,6 +622,11 @@ TEST_CASE("perf baseline: granite-4.2-30b", "[perf]")
 TEST_CASE("perf baseline: granite-switch-4.1-30b", "[perf]")
 {
     RunPerfModel(kGraniteSwitch);
+}
+
+TEST_CASE("perf baseline: granite-switch-4.1-8b", "[perf]")
+{
+    RunPerfModel(kGraniteSwitch8B);
 }
 
 TEST_CASE("perf baseline: mimo-v2.6-flash-rl", "[perf]")

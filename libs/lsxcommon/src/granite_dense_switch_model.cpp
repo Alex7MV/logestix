@@ -16,13 +16,29 @@ namespace lsxcommon {
 
 const std::string GraniteSwitch41_30BModel::kType =
     "granite-switch-4.1-30b";
+const std::string GraniteSwitch41_8BModel::kType =
+    "granite-switch-4.1-8b";
 
 GraniteSwitch41_30BModel::GraniteSwitch41_30BModel(ModelInitConfig cfg)
-    : ModelBase(std::move(cfg)) {}
+    : GraniteSwitchDenseModel(std::move(cfg), granite_switch::frozen::Frozen())
+{
+}
 
 GraniteSwitch41_30BModel::~GraniteSwitch41_30BModel() { Unload(); }
 
-void GraniteSwitch41_30BModel::TeardownWeights()
+GraniteSwitch41_8BModel::GraniteSwitch41_8BModel(ModelInitConfig cfg)
+    : GraniteSwitchDenseModel(std::move(cfg),
+                              granite_switch_8b::Frozen())
+{
+}
+
+GraniteSwitch41_8BModel::~GraniteSwitch41_8BModel() { Unload(); }
+
+GraniteSwitchDenseModel::GraniteSwitchDenseModel(
+    ModelInitConfig cfg, granite_switch::GraniteSwitchFrozen frozen)
+    : ModelBase(std::move(cfg)), frozen_(frozen) {}
+
+void GraniteSwitchDenseModel::TeardownWeights()
 {
     pw_.Free();
     weights_loaded_ = false;
@@ -31,7 +47,7 @@ void GraniteSwitch41_30BModel::TeardownWeights()
     TeardownContext();
 }
 
-bool GraniteSwitch41_30BModel::Load()
+bool GraniteSwitchDenseModel::Load()
 {
     Unload();
     tokenizer_optional_ = false;
@@ -70,54 +86,24 @@ bool GraniteSwitch41_30BModel::Load()
     return true;
 }
 
-bool GraniteSwitch41_30BModel::ValidateGeometry(
+bool GraniteSwitchDenseModel::ValidateGeometry(
     const granite_switch::GraniteSwitchTopology &top) const
 {
     if (SyntheticGeometryAllowed()) return true;
-    const GeoFieldCheck fields[] = {
-        {"hidden_size", kHiddenSize, top.hidden_size},
-        {"num_layers", kNumLayers, top.num_layers},
-        {"num_attention_heads", kNumHeads, top.num_attention_heads},
-        {"num_key_value_heads", kNumKVHeads, top.num_key_value_heads},
-        {"head_dim", kHeadDim, top.head_dim},
-        {"intermediate_size", kIntermediateSize, top.intermediate_size},
-        {"vocab_size", kVocabSize, top.vocab_size},
-        {"num_adapters", granite_switch::frozen::kNumAdapters,
-         top.num_adapters},
-    };
-    if (!CheckGeometryFields("granite-switch-4.1-30b", fields,
-                             sizeof(fields) / sizeof(fields[0])))
-        return false;
-    auto close = [](double a, double b) {
-        return std::abs(a - b) <= 1e-6 * std::max(1.0, std::abs(b));
-    };
-    if (!close(top.embedding_multiplier,
-               granite_switch::frozen::kEmbeddingMultiplier) ||
-        !close(top.residual_multiplier,
-               granite_switch::frozen::kResidualMultiplier) ||
-        !close(top.logits_scaling, granite_switch::frozen::kLogitsScaling) ||
-        !close(top.attention_multiplier,
-               granite_switch::frozen::kAttentionMultiplier)) {
-        lsxcommon::log::error("[granite-switch-model] numeric multipliers differ "
-                              "from the frozen passport");
-        return false;
-    }
-    for (int a = 0; a < top.num_adapters; ++a) {
-        if (top.adapter_ranks[a] !=
-                granite_switch::frozen::kAdapterRanks[a] ||
-            top.adapter_token_ids[a] !=
-                granite_switch::frozen::kControlTokenIds[a] ||
-            top.adapter_substitute_token_ids[a] !=
-                granite_switch::frozen::kSubstituteTokenIds[a]) {
-            lsxcommon::log::error(
-                "[granite-switch-model] adapter metadata differs from passport");
-            return false;
-        }
-    }
-    return true;
+    // One checker for every member: the expectations arrive as data, so adding a
+    // sibling cannot silently inherit the parent's numbers. The message names the
+    // class's own model_type and every differing field, and the caller logs the
+    // tree it tried to load.
+    const std::string why =
+        granite_switch::GraniteSwitchGeometryMismatch(frozen_, top);
+    if (why.empty()) return true;
+    lsxcommon::log::error(absl::StrCat(
+        "[granite-switch-model] ", frozen_.model_type,
+        " geometry mismatch (converted tree at ", cfg_.model_path, "):\n", why));
+    return false;
 }
 
-gpu::InferenceResult GraniteSwitch41_30BModel::Infer(const ModelRequest &req)
+gpu::InferenceResult GraniteSwitchDenseModel::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
@@ -195,13 +181,13 @@ gpu::InferenceResult GraniteSwitch41_30BModel::Infer(const ModelRequest &req)
     });
 }
 
-gpu::InferenceResult GraniteSwitch41_30BModel::SelfCheck(
+gpu::InferenceResult GraniteSwitchDenseModel::SelfCheck(
     const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-bool GraniteSwitch41_30BModel::BuildConversationInputIds(
+bool GraniteSwitchDenseModel::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const
 {
@@ -212,7 +198,7 @@ bool GraniteSwitch41_30BModel::BuildConversationInputIds(
     return true;
 }
 
-bool GraniteSwitch41_30BModel::ParseToolCalls(
+bool GraniteSwitchDenseModel::ParseToolCalls(
     const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
     std::vector<ToolCall> &out_calls) const
 {

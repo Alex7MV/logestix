@@ -588,6 +588,10 @@ add_executable(test_granite_switch_convert test_granite_switch_convert.cpp)
 target_compile_definitions(test_granite_switch_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
+# The residual cases decode the written NVFP4 records with the canonical
+# block-scale codec (nvfp4_scale.h), like test_phi_dense_convert.
+target_include_directories(test_granite_switch_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_granite_switch_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 lsx_copy_arrow_dlls(test_granite_switch_convert)
 
@@ -629,6 +633,28 @@ target_include_directories(test_granite_switch_adapter_parity PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_granite_switch_adapter_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
 lsx_copy_arrow_dlls(test_granite_switch_adapter_parity)
+
+# The 8B sibling of the two stage-model checks that name a model explicitly.
+# Both binaries are the family source compiled for the other checkpoint, because
+# a hard-coded model name there would make this target verify the 30B while the
+# manifest believes the 8B is covered.
+add_executable(test_granite_switch_8b_adapter_parity test_granite_switch_adapter_parity.cpp)
+target_compile_definitions(test_granite_switch_8b_adapter_parity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    LSX_ADAPTER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/adapters"
+    "LSX_GSW_MODEL=\"granite-switch-4.1-8b\""
+    "LSX_GSW_ROOT_ENV=\"LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT\"")
+target_include_directories(test_granite_switch_8b_adapter_parity PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_granite_switch_8b_adapter_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_granite_switch_8b_adapter_parity)
+
+add_executable(test_granite_switch_8b_tokenizer_parity test_granite_switch_tokenizer_parity.cpp)
+target_compile_definitions(test_granite_switch_8b_tokenizer_parity PRIVATE
+    LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
+    "LSX_GSW_MODEL=\"granite-switch-4.1-8b\""
+    "LSX_GSW_ROOT_ENV=\"LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT\"")
+target_link_libraries(test_granite_switch_8b_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── phi-4 converter test (classifier + index + arrow layout) ──
 add_executable(test_phi_dense_convert test_phi_dense_convert.cpp)
@@ -1262,6 +1288,7 @@ lsx_copy_arrow_dlls(test_blackwell_perf_glm)
 
 add_test(NAME test_blackwell_perf_glm COMMAND test_blackwell_perf_glm)
 set_tests_properties(test_blackwell_perf_glm PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_blackwell_perf_glm PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Blackwell audit Phase 0: dense perf baseline harness (Qwen3.5-9B).
 add_executable(test_blackwell_perf_dense test_blackwell_perf_dense.cpp)
@@ -1271,6 +1298,7 @@ lsx_copy_arrow_dlls(test_blackwell_perf_dense)
 
 add_test(NAME test_blackwell_perf_dense COMMAND test_blackwell_perf_dense)
 set_tests_properties(test_blackwell_perf_dense PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_blackwell_perf_dense PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── MoE perf baseline harnesses: Qwen3.5-35B-A3B, gemma-4-26B-A4B-it.
 add_executable(test_blackwell_perf_moe test_blackwell_perf_moe.cpp)
@@ -1285,7 +1313,9 @@ add_test(NAME test_blackwell_perf_moe_qwen
 add_test(NAME test_blackwell_perf_moe_gemma
          COMMAND test_blackwell_perf_moe "[gemma26moe]")
 set_tests_properties(test_blackwell_perf_moe_qwen PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_blackwell_perf_moe_qwen PROPERTIES RESOURCE_LOCK "gpu")
 set_tests_properties(test_blackwell_perf_moe_gemma PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_blackwell_perf_moe_gemma PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Blackwell audit Phase 0: DeepSeek-V4-Flash perf baseline harness.
 add_executable(test_blackwell_perf_deepseek test_blackwell_perf_deepseek.cpp)
@@ -1295,6 +1325,7 @@ lsx_copy_arrow_dlls(test_blackwell_perf_deepseek)
 
 add_test(NAME test_blackwell_perf_deepseek COMMAND test_blackwell_perf_deepseek)
 set_tests_properties(test_blackwell_perf_deepseek PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_blackwell_perf_deepseek PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── GLM-5.2 seq-P prefill parity test: MoE layers 3..77 must keep
 #    block_rows = P (the full prompt length), each prompt token occupies one
@@ -1878,7 +1909,12 @@ add_executable(test_tokenizer_vocab_contract test_tokenizer_vocab_contract.cpp)
 target_link_libraries(test_tokenizer_vocab_contract PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_tokenizer_vocab_contract COMMAND test_tokenizer_vocab_contract)
-set_tests_properties(test_tokenizer_vocab_contract PROPERTIES LABELS inference)
+set_tests_properties(test_tokenizer_vocab_contract PROPERTIES LABELS inference RESOURCE_LOCK "gpu")
+# Host-only (vocabulary contract), but it asserts on the tokenizer that the
+# GPU stages also use, and it is ~0.1 s: locking it costs nothing and keeps
+# the rule uniform. Listed here rather than allowlisted because the cost of
+# being wrong in the other direction (a device call added later) is a
+# concurrent-GPU flake nobody would attribute to this file.
 set_tests_properties(test_tokenizer_vocab_contract PROPERTIES TIMEOUT 300)
 set_tests_properties(test_tokenizer_vocab_contract PROPERTIES SKIP_RETURN_CODE 4)
 
@@ -1931,7 +1967,7 @@ set_target_properties(test_stream_read_ceiling PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_stream_read_ceiling PRIVATE
     test_stream_read_ceiling_cu lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_stream_read_ceiling COMMAND test_stream_read_ceiling)
-set_tests_properties(test_stream_read_ceiling PROPERTIES LABELS perf)
+set_tests_properties(test_stream_read_ceiling PROPERTIES LABELS perf RESOURCE_LOCK "gpu")
 set_tests_properties(test_stream_read_ceiling PROPERTIES TIMEOUT 600)
 # Skip-capable (no CUDA device -> SKIP in the test), so it needs the code, per
 # test_ctest_labels_guard.
@@ -2506,6 +2542,7 @@ lsx_copy_arrow_dlls(test_blackwell_perf_kimi ARROW_ONLY)
 
 add_test(NAME test_blackwell_perf_kimi COMMAND test_blackwell_perf_kimi)
 set_tests_properties(test_blackwell_perf_kimi PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_blackwell_perf_kimi PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Kimi full inference test (real weights; SKIP without a model) ─────────────
 add_executable(test_kimi_moe_inference test_kimi_moe_inference.cpp)
@@ -2730,6 +2767,7 @@ lsx_copy_arrow_dlls(test_nvfp4_pack ARROW_ONLY)
 
 add_test(NAME test_nvfp4_pack COMMAND test_nvfp4_pack)
 set_tests_properties(test_nvfp4_pack PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_nvfp4_pack PROPERTIES RESOURCE_LOCK "gpu")
 
 # MiMo-V2.6-Flash-RL frozen geometry passport (host-only).
 add_executable(test_mimo_moe_geometry test_mimo_moe_geometry.cpp)
@@ -3424,6 +3462,10 @@ set_tests_properties(
     test_nvfp4_pack
     PROPERTIES LABELS convert)
 
+# Every one of these executes device kernels, so the group takes the GPU lock
+# with the label. Registering them in a group is also why the label guard could
+# not see them: it reads literal `set_tests_properties(<name> ...)` calls, and a
+# name inside a group list is invisible to that scan (see OPEN_TASKS §G1).
 set_tests_properties(
     test_sampling
     test_lsx_nvfp4_dispatch
@@ -3432,7 +3474,7 @@ set_tests_properties(
     test_blackwell_tc_mma
     test_lsx_kernels
     test_blackwell_micro_gemm
-    PROPERTIES LABELS inference)
+    PROPERTIES LABELS inference RESOURCE_LOCK "gpu")
 
 set_tests_properties(
     test_blackwell_perf_glm
@@ -4145,6 +4187,27 @@ target_link_libraries(test_granite_switch_det_selfcheck PRIVATE lsxcommon Catch2
 target_compile_definitions(test_granite_switch_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"granite-switch-4.1-30b\"" "LSX_GATE_KIND=\"det\""
     "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+# The 8B is a sibling of the same architecture with its own frozen passport
+# (40 layers, 12800 FFN, theta 1e7, residual 0.22). Same driver, own model in
+# LSX_GATE_MODEL, own goldens captured from its own source checkpoint.
+add_executable(test_granite_switch_8b_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_switch_8b_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_8b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_8b_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-switch-4.1-8b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_granite_switch_8b_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_switch_8b_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_8b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_8b_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-switch-4.1-8b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_granite_switch_8b_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_granite_switch_8b_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_8b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_8b_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"granite-switch-4.1-8b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_hy_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_hy_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -4598,6 +4661,18 @@ add_executable(test_granite_switch_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_granite_switch_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_granite_switch_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_granite_switch_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"granite-switch-4.1-30b\"")
+# Same source, the 8B checkpoint and passport (see LSX_GSW_MODEL in the file).
+add_executable(test_granite_switch_8b_model test_granite_switch_model.cpp)
+target_include_directories(test_granite_switch_8b_model PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_8b_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_8b_model PRIVATE
+    "LSX_GSW_MODEL=\"granite-switch-4.1-8b\""
+    "LSX_GSW_ROOT_ENV=\"LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT\""
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+add_executable(test_granite_switch_8b_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_granite_switch_8b_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_8b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_switch_8b_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"granite-switch-4.1-8b\"")
 add_executable(test_hy_moe_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_hy_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_hy_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)

@@ -56,3 +56,7 @@ imgui.ini
 # Python bytecode (capture scripts import each other)
 __pycache__/
 *.pyc
+
+# Stage-0/8 capture venvs (tools/granite_switch_oracle.py documents .venv-gs;
+# a checkpoint oracle needs packages transformers cannot pin for the host).
+.venv-gs/

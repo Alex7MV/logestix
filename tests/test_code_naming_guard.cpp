@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing|mistral|minimax|hy|flint|ling|beam|step)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3)";
+    const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -43,7 +43,13 @@ std::regex SchemeRegex()
         "|norm_kernels"
         "|fp8"
         "|constants)";
-    return std::regex("^" + fam + "_" + type + "(?:_" + var + ")?" + "(?:_exp)?" + "_" + tail + "$");
+    // Two optional variant slots, not one: granite-switch needs an architecture
+    // marker (`switch`) AND a size marker (`8b`) to distinguish it from the
+    // plain dense `granite_dense_*` files, e.g.
+    // granite_dense_switch_8b_constants.h. Both slots draw from the same
+    // vocabulary, so this widens the grammar without widening the vocabulary.
+    return std::regex("^" + fam + "_" + type + "(?:_" + var + ")?(?:_" + var + ")?" +
+                      "(?:_exp)?" + "_" + tail + "$");
 }
 
 const std::vector<std::string>& FamilyStems()

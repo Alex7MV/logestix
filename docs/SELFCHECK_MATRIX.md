@@ -4,7 +4,12 @@ Snapshot of **2026-10-24/25**, updated **2026-10-31** (GigaChat3.5-432B-A28B),
 re-verified **2026-11-03** (AliceAI-Foundation-80B-A3B re-ingestion), re-verified
 **2026-11-04** (Qwen3.8-Flash-Next full lifecycle; Qwen3.5-35B-A3B and
 DeepSeek-V4.1-Flash audited — both had been filed as "no converted tree" while
-their trees were in the vault),
+their trees were in the vault), re-verified **2026-11-06** (AliceAI-Foundation-80B-A3B
+after the inverted workspace predicate was fixed — its row had been unmeasured
+since 2026-11-03 19:33, when generation stopped producing tokens at all:
+`open-tasks/2026-11-06-alice-workspace-polarity.md`), extended **2026-11-07**
+(Granite-Switch 4.1 8B ingested as the sibling of the 30B — see
+`docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md`),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;
@@ -36,6 +41,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | model (passport) | SelfCheck | FSI | CODE | DET |
 |---|---|---|---|---|
 | alice-foundation-80b-a3b | PASS | 3/3 | 3/3 | 3/3 |
+| granite-switch-4.1-8b | PASS (x3, `b7c1aa453d83a86f`) | 3/3 | 3/3 | **2/3** (DET-02) |
 | glm-5.3-flash | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-26b-a4b-it** | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-31b-it** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
@@ -50,7 +56,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
 | **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
-| **deepseek-v4.1-flash** | PASS (x3, `0ab7077b529eaa3b`) ‡ | **1/3** | **2/3** | 3/3 |
+| **deepseek-v4.1-flash** | PASS (x3, `0ab7077b529eaa3b`) ‡ | **1/3** | **2/3** | **2/3** (DET-03) |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
@@ -59,14 +65,31 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 
-- SelfCheck **23/23 rows** (every row above), FSI **58/63**, CODE **62/63**,
-  DET **62/63**. Counting rule: one case per prompt, three prompts per measured
-  row, so the denominators are 3 × the rows that carry a measured cell (21 —
+- SelfCheck **24/24 rows** (every row above), FSI **61/66**, CODE **65/66**,
+  DET **64/66**. Counting rule: one case per prompt, three prompts per measured
+  row, so the denominators are 3 × the rows that carry a measured cell (22 —
   `kimi-k3` and `kimi-k3.1-pro` have no parity verdict yet); a `not run` cell is
   excluded rather than counted as a pass. The five FSI reds are gemma-4-31b
   FSI-01, deepseek-v4-pro FSI-02, minimax-m3 FSI-01 and deepseek-v4.1-flash
-  FSI-01/02; the CODE red is deepseek-v4.1-flash CODE-01; the DET red is
-  granite-switch DET-02.
+  FSI-01/02; the CODE red is
+  deepseek-v4.1-flash CODE-01; the DET reds are granite-switch-4.1-30b DET-02,
+  granite-switch-4.1-8b DET-02 and deepseek-v4.1-flash DET-03. Both
+  granite-switch DET-02 cells are the *source's own* answer (`CRITICAL` where the
+  prompt template says `CATASTROPHIC`), so they are family behaviour, not engine
+  defects.
+
+  **DET-03 for deepseek-v4.1-flash was recorded as 3/3 until 2026-11-07** and is
+  actually 2/3: over three identical runs (deterministic, so not a flake) the
+  model answers `BIT_ERO` where the prompt's template says `BIT_ZERO` — it drops
+  the `Z`, and reasons its way to the drop (`...Final only BIT_ERO.</think>BIT_ERO`).
+  The earlier green was therefore either measured against a different converted
+  tree or mis-recorded; the value here is the measured one, from the 294 GB tree
+  currently in the vault. Two instrument notes came out of the same run: the DET
+  reporter used to fold an inference error into `deterministic=false`, and its
+  verdict line embedded the model's raw newlines, so a line-oriented reader
+  (`grep`) saw only a prefix of the raw and a real `BIT_ERO` answer looked like a
+  clean `BIT_ZERO`. Both fixed in `libs/lsxcommon/src/det_selfcheck.cpp`; the raw
+  is now escaped onto one line.
 - **kimi-k3.1-pro** added 2026-11-05 (branch `feat/kimi-k31-pro`): the 1.5 TB
   source converted in place to a **1.5 TB** tree (1.4 TB routed-expert arrows,
   23 GB pinned graph, 8.9 GB streamed latent/shared plane) and SelfCheck is green

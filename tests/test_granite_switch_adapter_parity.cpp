@@ -20,10 +20,21 @@
 #ifndef LSX_ADAPTER_GOLDEN_DIR
 #define LSX_ADAPTER_GOLDEN_DIR "tests/fixtures/adapters"
 #endif
+// The model under test. ONE source, two targets (30B default, 8B via
+// LSX_GSW_MODEL): the family shares the converter, kernels and lifecycle, so the
+// adapter semantics are the same question for both members — but the checkpoint,
+// its passport and its golden are not. Hard-coding the 30B name here is exactly
+// how a sibling target ends up green while testing its parent.
+#ifndef LSX_GSW_MODEL
+#define LSX_GSW_MODEL "granite-switch-4.1-30b"
+#endif
+#ifndef LSX_GSW_ROOT_ENV
+#define LSX_GSW_ROOT_ENV "LSX_TEST_GRANITE_SWITCH_MODEL_PATH"
+#endif
 
 namespace {
 
-constexpr const char *kModelType = "granite-switch-4.1-30b";
+constexpr const char *kModelType = LSX_GSW_MODEL;
 
 struct Case {
     std::string id;
@@ -36,10 +47,10 @@ struct Case {
 
 std::filesystem::path ModelRoot()
 {
-    if (const char *env = std::getenv("LSX_TEST_GRANITE_SWITCH_MODEL_PATH"))
+    if (const char *env = std::getenv(LSX_GSW_ROOT_ENV))
         return std::filesystem::path(env);
     return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           "granite-switch-4.1-30b";
+           kModelType;
 }
 
 std::filesystem::path GoldenPath()
@@ -59,6 +70,12 @@ std::vector<Case> LoadCases(const std::filesystem::path &path)
     simdjson::dom::element doc;
     REQUIRE(parser.parse(simdjson::padded_string(json)).get(doc) ==
             simdjson::SUCCESS);
+    // A golden captured from the wrong checkpoint would otherwise be compared
+    // against this one's ids and look like a template regression.
+    std::string_view golden_model;
+    REQUIRE(doc["model_type"].get_string().get(golden_model) == simdjson::SUCCESS);
+    INFO("golden was captured for " << golden_model);
+    REQUIRE(std::string(golden_model) == kModelType);
     std::vector<Case> out;
     for (auto c : doc["cases"].get_array()) {
         Case k;
@@ -171,8 +188,7 @@ TEST_CASE("granite-switch adapter parity against the source oracle",
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     REQUIRE(model->Load());
-    auto *sw =
-        dynamic_cast<lsxcommon::GraniteSwitch41_30BModel *>(model.get());
+    auto *sw = dynamic_cast<lsxcommon::GraniteSwitchDenseModel *>(model.get());
     REQUIRE(sw != nullptr);
 
     for (const Case &c : cases) {

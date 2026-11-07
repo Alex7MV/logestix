@@ -7,7 +7,7 @@
   "model_header": "granite_dense_switch_model.h",
   "passport": "libs/lsxcommon/include/lsxcommon/granite_dense_switch_constants.h",
   "namespace": "lsxcommon::granite_switch::frozen",
-  "format_tag": "",
+  "format_tag": "logestix-granite-switch",
   "forge_flag": "--granite_switch",
   "tokenizer_kind": 0,
   "vault": {

@@ -591,6 +591,11 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"phi-4", {"test_phi_tool_framing"}},
         {"granite-4.2-30b", {}},
         {"granite-switch-4.1-30b", {"test_granite_switch_tool_framing"}},
+        // The 8B ships a byte-identical chat template and tokenizer
+        // (md5-equal to the 30B), so it carries the same verdict: the
+        // family framing test covers both, and the runtime parse is the
+        // generic bare-JSON fallback.
+        {"granite-switch-4.1-8b", {"test_granite_switch_tool_framing"}},
         // nemotron keeps its tool case inside the model target rather than in
         // a dedicated one; naming the target that actually carries it is what
         // the guard checks.

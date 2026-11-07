@@ -11,16 +11,102 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 
 #include "fast_load_internal.h"
 
 namespace lsxcommon {
+
+namespace {
+
+// detect_model_type (deepseek_moe_load.cu) folds "Granite-Switch-4.1-30B" to
+// "granite-switch-4.1-30b" before it becomes a factory key, so the comparison
+// here must use the same fold or the check would disagree with the factory about
+// which model a tree is.
+std::string FoldModelId(const std::string &raw)
+{
+    std::string s = raw;
+    for (char &c : s) {
+        if (c == ' ') c = '-';
+        else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return s;
+}
+
+std::string Num(double v)
+{
+    // 1e7 / 0.22 / 1e-5 must not print as 10000000.000000 and bury the delta.
+    return absl::StrFormat("%g", v);
+}
+
+} // namespace
+
 namespace granite_switch {
+
+std::string GraniteSwitchGeometryMismatch(const GraniteSwitchFrozen &f,
+                                          const GraniteSwitchTopology &top)
+{
+    std::string why;
+    auto add = [&why](const std::string &line) {
+        if (!why.empty()) why += "\n";
+        why += "  " + line;
+    };
+    const std::string want = f.model_type;
+    const std::string got = top.model_name.empty() ? "<absent>"
+                                                   : FoldModelId(top.model_name);
+    if (got != want)
+        add("model identity: this class is '" + want + "', the converted tree is '" +
+            got + "'");
+
+    const double eps = 1e-9;
+    auto close = [eps](double a, double b) {
+        return std::abs(a - b) <= 1e-6 * std::max(1.0, std::abs(b)) + eps;
+    };
+    auto ints = [&add](const char *name, long long want_v, long long got_v) {
+        if (want_v != got_v)
+            add(absl::StrCat(name, ": expected ", want_v, ", got ", got_v));
+    };
+    ints("num_layers", f.num_layers, top.num_layers);
+    ints("hidden_size", f.hidden_size, top.hidden_size);
+    ints("num_attention_heads", f.num_attention_heads, top.num_attention_heads);
+    ints("num_key_value_heads", f.num_key_value_heads, top.num_key_value_heads);
+    ints("head_dim", f.head_dim, top.head_dim);
+    ints("intermediate_size", f.intermediate_size, top.intermediate_size);
+    ints("vocab_size", f.vocab_size, top.vocab_size);
+    ints("num_adapters", f.num_adapters, top.num_adapters);
+    auto dbl = [&add, &close](const char *name, double want_v, double got_v) {
+        if (!close(want_v, got_v))
+            add(absl::StrCat(name, ": expected ", Num(want_v), ", got ",
+                             Num(got_v)));
+    };
+    dbl("rms_norm_eps", f.rms_norm_eps, top.rms_norm_eps);
+    dbl("rope_theta", f.rope_theta, top.rope_theta);
+    dbl("attention_multiplier", f.attention_multiplier,
+        top.attention_multiplier);
+    dbl("embedding_multiplier", f.embedding_multiplier,
+        top.embedding_multiplier);
+    dbl("residual_multiplier", f.residual_multiplier, top.residual_multiplier);
+    dbl("logits_scaling", f.logits_scaling, top.logits_scaling);
+
+    // Adapter metadata is per-adapter, and a mismatch here is silent at runtime:
+    // the wrong rank reads a valid but different slice of the LoRA plane.
+    const int n = std::min<int>(f.num_adapters,
+                                static_cast<int>(top.adapter_ranks.size()));
+    for (int a = 0; a < n; ++a) {
+        ints("adapter_ranks", f.adapter_ranks[a], top.adapter_ranks[a]);
+        ints("adapter_token_ids", f.control_token_ids[a], top.adapter_token_ids[a]);
+        ints("adapter_substitute_token_ids", f.substitute_token_ids[a],
+             top.adapter_substitute_token_ids[a]);
+    }
+    return why;
+}
+
 
 namespace {
 
@@ -54,9 +140,13 @@ void ClearLoraAliases(GraniteSwitchProjection &p)
 void GraniteSwitchLayerWeights::Free()
 {
     qkv.base.Free();
+    qkv.res.Free();
     o.base.Free();
+    o.res.Free();
     gate_up.base.Free();
+    gate_up.res.Free();
     down.base.Free();
+    down.res.Free();
     if (d_arena) {
         cudaFree(d_arena);
         d_arena = nullptr;
@@ -173,20 +263,31 @@ bool LoadLayer(const TensorBatchViews &raw, const TensorBatchViews *adapters,
                                   nullptr);
     if (e != cudaSuccess) return false;
 
-    e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.qkv_proj.weight"),
-                          lw.qkv.base, stream, ring, bytes_acc, nullptr);
-    if (e == cudaSuccess)
-        e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.o_proj.weight"),
-                              lw.o.base, stream, ring, bytes_acc, nullptr);
-    if (e == cudaSuccess)
-        e = UploadNvfp4Weight(
-            FindNvfp4Suffix(nv, "shared_mlp.gate_up_proj.weight"),
-            lw.gate_up.base, stream, ring, bytes_acc, nullptr);
-    if (e == cudaSuccess)
-        e = UploadNvfp4Weight(
-            FindNvfp4Suffix(nv, "shared_mlp.down_proj.weight"), lw.down.base,
-            stream, ring, bytes_acc, nullptr);
-    if (e != cudaSuccess) return false;
+    struct Plane {
+        const char *suffix;
+        GraniteSwitchProjection *proj;
+    };
+    const Plane planes[] = {
+        {"self_attn.qkv_proj.weight", &lw.qkv},
+        {"self_attn.o_proj.weight", &lw.o},
+        {"shared_mlp.gate_up_proj.weight", &lw.gate_up},
+        {"shared_mlp.down_proj.weight", &lw.down},
+    };
+    for (const Plane &pl : planes) {
+        e = UploadNvfp4Weight(FindNvfp4Suffix(nv, pl.suffix), pl.proj->base,
+                              stream, ring, bytes_acc, nullptr);
+        if (e != cudaSuccess) return false;
+        // FindNvfp4Suffix matches by SUFFIX, and "<name>.res" ends with
+        // "<name>" only if the search string omits nothing — so the residual is
+        // looked up with its own suffix rather than reusing the base's.
+        const std::string res_suffix = std::string(pl.suffix) + ".res";
+        const auto *res = FindNvfp4Suffix(nv, res_suffix);
+        if (res != nullptr) {
+            e = UploadNvfp4Weight(res, pl.proj->res, stream, ring, bytes_acc,
+                                  nullptr);
+            if (e != cudaSuccess) return false;
+        }
+    }
 
     lw.loaded = lw.d_input_norm && lw.d_post_norm && lw.qkv.base.d_packed &&
                 lw.o.base.d_packed && lw.gate_up.base.d_packed &&

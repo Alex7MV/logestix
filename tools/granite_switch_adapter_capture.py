@@ -36,6 +36,17 @@ DECISION_Q = (
     "Reply with exactly one option label."
 )
 
+def model_id(model_path):
+    """The checkpoint's own name, i.e. the last path element.
+
+    Same rule as the C++ converter (granite_dense_switch_convert.cpp): one tool
+    serves every family member, so a literal `model_type` is wrong the moment a
+    second member exists — and the golden is then rejected by the parity test
+    that reads this field.
+    """
+    return os.path.basename(os.path.normpath(model_path))
+
+
 CASES = [
     ("base-paris", None, [{"role": "user", "content": "The capital of France is"}]),
     ("guardian-risk", "guardian-core",
@@ -78,7 +89,7 @@ def main():
     golden = {
         "format": "logestix-granite-switch-adapter-golden",
         "version": 1,
-        "model_type": "granite-switch-4.1-30b",
+        "model_type": model_id(args.model),
         "source": args.model,
         "runtime": "transformers/granite-switch CPU BF16",
         "cases": cases,
