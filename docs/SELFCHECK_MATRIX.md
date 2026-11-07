@@ -65,6 +65,12 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 
+- **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
+  was restored, and all 37 pass** (120 min, `-j1`, one GPU). The list is
+  `tools/gen_model_manifest.py --print-selfcheck-targets`, derived from the
+  manifests — the previous hand-typed filter covered 22 of 37, and an omitted gate
+  reads exactly like a passing one. The rows below that carry a hash were checked
+  against the values this run produced, not against the previous capture.
 - **The SelfCheck probe is per-family, and it is now declared.** Unifying the 35
   per-family selfcheck files into one driver silently flattened four knobs that
   each file had chosen for itself: the prompt framing (17 files fed
@@ -374,12 +380,20 @@ ctest --test-dir build/linux-release-znver4-aocc -R \
   "glm_moe_selfcheck|mimo_moe_selfcheck|nemotron_moe_selfcheck"
 
 # 3b. tree present, golden absent (§2 shape): kimi-k2.7-code runs SelfCheck and
-#     SKIPs the three parity stages. deepseek-v4.1-flash runs only when its root
-#     is pointed at the vault — its default path is the retired
-#     /mnt/llm_models/models one, which is how its cancel defect stayed invisible
-LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash \
-  ctest --test-dir build/linux-release-znver4-aocc -R \
+#     SKIPs the three parity stages.
+ctest --test-dir build/linux-release-znver4-aocc -R \
   "kimi_moe_selfcheck|deepseek_moe_v41_selfcheck"
+
+# 3c. every SelfCheck in the §1 table. The vault path now comes from the manifest
+#     (`vault_env` + `lsx_model_models_dir()`), so no per-family override is
+#     needed — the old per-family files defaulted to the retired
+#     /mnt/llm_models/models path and SKIPped silently, which is how the
+#     deepseek-v4.1-flash cancel defect stayed invisible for weeks.
+#     `--print-selfcheck-targets` is derived from the manifests, not typed by hand:
+#     the 2026-11-07 audit found a hand-written filter that omitted 15 of the 37.
+timeout 9000 ctest --test-dir build/linux-debug -j1 -R \
+  "^($(python3 tools/gen_model_manifest.py --root . --print-selfcheck-targets \
+        | paste -sd'|'))$"
 
 # 4. the harness' own self-tests (no model): formula extraction/canonicalisation
 ctest --test-dir build/linux-release-znver4-aocc -R \

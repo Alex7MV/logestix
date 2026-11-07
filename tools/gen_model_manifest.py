@@ -15,6 +15,7 @@ markdown is, and `--check` makes hand-editing it impossible.
 
 Proof modes:
     --self-test <dir>   every schema violation is reported (used by ctest)
+    --print-selfcheck-targets  one Paris SelfCheck target per line (serial sweep)
     --diff-cmake <base.json>  compare the emitted target set with a captured
                               ctest oracle, so a 35-row transcription cannot
                               drift silently
@@ -1141,6 +1142,8 @@ def main(argv=None):
     ap.add_argument("--diff-cmake", metavar="BASELINE_JSON")
     ap.add_argument("--print-model-rows", action="store_true")
     ap.add_argument("--print-non-model-tests", action="store_true")
+    ap.add_argument("--print-selfcheck-targets", action="store_true",
+                    help="one Paris SelfCheck target per line, for a serial sweep")
     args = ap.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -1176,6 +1179,16 @@ def main(argv=None):
         for e in errors:
             print("  " + e, file=sys.stderr)
         return 2
+
+    if args.print_selfcheck_targets:
+        # Exists so a sweep is derived from the manifests instead of a hand-typed
+        # regex: the 2026-11-07 audit found a hand-written filter that silently
+        # omitted 15 of the 37 SelfCheck targets, and an omitted gate reads exactly
+        # like a passing one. Sorted by model_type so a diff is stable.
+        for m in sorted(manifests, key=lambda x: x.model_type):
+            for t in m.stages.get("selfcheck", []):
+                print(t)
+        return 0
 
     if args.print_model_rows:
         for m in sorted(manifests, key=lambda x: x.model_type):
