@@ -369,6 +369,17 @@ def validate(manifests, root: Path, partial: bool = False,
                 f"model_class {m.model_class} declares kType {ktype!r} "
                 f"(via {ktype_from}), manifest says {m.model_type!r}")
 
+        # rule 14: the declared selfcheck probe must be a probe.
+        # These three fields decide the recorded logits_hash (final_logits is the
+        # LAST decode step, the math mode decides its bits, framing decides the
+        # ids), so a typo in one is a silent re-baseline of the one number the
+        # matrix calls bit-exact evidence. `selfcheck_max_gen` is range-checked
+        # because 0 would generate nothing and 100000 would need an hour.
+        if not 2 <= m.selfcheck_max_gen <= 4096:
+            add(m, "selfcheck_max_gen",
+                f"selfcheck_max_gen={m.selfcheck_max_gen} outside 2..4096 "
+                f"(a probe needs at least one token after the first)")
+
         # rule 13: a declared report must exist. docs/MODELS.md links it, so a
         # typo would be a dead "see the report" for every reader.
         if m.report and not (root / m.report).is_file():
@@ -1054,6 +1065,19 @@ def self_test(root: Path):
         d["namespace"] = "lsxcommon::glm"
 
     add("namespace_clash", namespace_clash, "already owned by", cross_model=True)
+
+    # The selfcheck probe fields decide the recorded logits_hash, so a typo in one
+    # is a silent re-baseline. Only the integer needs range-checking; the three
+    # booleans are coerced by load_one and cannot be out of range.
+    def probe_budget_zero(d):
+        d["selfcheck_max_gen"] = 0
+
+    add("probe_budget_zero", probe_budget_zero, "outside 2..4096")
+
+    def probe_budget_huge(d):
+        d["selfcheck_max_gen"] = 100000
+
+    add("probe_budget_huge", probe_budget_huge, "outside 2..4096")
 
     # The unmutated base must validate: that is the control, and it is what keeps
     # this mode honest (a validator that rejected everything would still report
