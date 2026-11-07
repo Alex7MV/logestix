@@ -24,7 +24,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
+#include <absl/strings/str_split.h>
+#include <absl/strings/strip.h>
+
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <optional>
 #include <regex>
@@ -477,22 +483,173 @@ TEST_CASE("suite guard: no cross-family fixture borrowing", "[suite][guard]")
     REQUIRE(v.empty());
 }
 
-TEST_CASE("suite guard: loader tests never load the model vault",
-          "[suite][guard]")
+// A test source claimed by two manifests may not carry the OTHER model's
+// identity. This is the defect class the 8B ingestion exposed: three granite
+// stage tests were hard-coded to the 30B while the 8B row claimed them, and every
+// guard stayed green because they check that a claimed target EXISTS, not that it
+// tests the model claiming it (docs/OPEN_TASKS.md G2).
+//
+// What counts as identity, and why exactly one shape: the vault ENVIRONMENT
+// VARIABLE. It is unique per model and a shared source has no reason to name a
+// sibling's — a test that wants a model's tree reaches it through its own env
+// name, so a sibling's name there means the source is looking at the wrong tree.
+//
+// Two neighbouring shapes are deliberately NOT violations:
+//   * a bare `model_type` string — a sibling test legitimately compares two
+//     passports (test_granite_switch_prepare asserts the 8B passport rejects a
+//     30B topology, so it names both as data);
+//   * the vault DIRECTORY name — the same string is a natural name for a test
+//     fixture directory (test_granite_switch_convert builds
+//     `/tmp/.../granite-switch-4.1-8b`), so it cannot distinguish identity from
+//     data. This one bit during development: the check flagged its own fixtures.
+// A literal is accepted when it is the default arm of an `#ifndef`-guarded macro:
+// that is the parameterised form a shared source is supposed to use.
+struct Claim {
+    std::string model;
+    std::string vault_env;
+    std::string vault_dir;
+};
+
+std::string JoinNames(const std::vector<Claim> &rows)
 {
-    const fs::path root(LSX_SOURCE_DIR);
-    auto v = CheckLoaderSyntheticDiscipline(root / "tests");
-    std::string joined;
-    for (const auto &s : v) joined += s + "\n";
-    INFO("loader discipline violations:\n" << joined);
-    REQUIRE(v.empty());
+    std::set<std::string> uniq;
+    for (const auto &r : rows) uniq.insert(r.model);
+    std::string out;
+    for (const auto &n : uniq) {
+        if (!out.empty()) out += ", ";
+        out += n;
+    }
+    return out;
 }
 
-// The lifecycle check above only proves that a registered target EXISTS. The
-// reverse direction is what was missing: a family test target that runs on
-// every CI sweep but sits in no Suites() row is invisible to the completeness
-// report, so its breakage never surfaces as "incomplete suite". Every
-// family-prefixed target must be claimed by exactly one model row.
+std::vector<std::string> CheckSiblingIdentity(
+    const fs::path &tests_dir,
+    const std::map<std::string, std::vector<Claim>> &claims)
+{
+    std::vector<std::string> v;
+    for (const auto &kv : claims) {
+        const std::string &source = kv.first;
+        const std::vector<Claim> &rows = kv.second;
+        if (rows.size() < 2) continue;
+        const fs::path path = tests_dir / source;
+        if (!fs::exists(path)) continue;
+        const std::string text = ReadFileOrThrow(path);
+
+        std::vector<std::string> ls;
+        {
+            std::istringstream in(text);
+            std::string line;
+            while (std::getline(in, line)) ls.push_back(line);
+        }
+
+        for (const Claim &c : rows) {
+            const std::string lits[1] = {c.vault_env};
+            for (const std::string &lit : lits) {
+                if (lit.empty()) continue;
+                const std::string needle = "\"" + lit + "\"";
+                for (std::size_t i = 0; i < ls.size(); ++i) {
+                    if (ls[i].find(needle) == std::string::npos) continue;
+                    // Accepted only as the default arm of an #ifndef guard.
+                    bool guarded = false;
+                    const std::size_t def = ls[i].find("#define");
+                    if (def != std::string::npos && i >= 1) {
+                        std::string name = ls[i].substr(def + 7);
+                        const std::size_t b = name.find_first_not_of(" \t");
+                        name = (b == std::string::npos) ? "" : name.substr(b);
+                        const std::size_t e = name.find_first_of(" \t");
+                        if (e != std::string::npos) name = name.substr(0, e);
+                        guarded = !name.empty() &&
+                                  ls[i - 1].find("#ifndef " + name) !=
+                                      std::string::npos;
+                    }
+                    if (!guarded) {
+                        v.push_back(source + ":" + std::to_string(i + 1) +
+                                    " names " + c.model + "'s identity ('" + lit +
+                                    "') while claimed by " + JoinNames(rows) +
+                                    " — parameterise it with a macro default, as "
+                                    "test_granite_switch_model.cpp does");
+                    }
+                }
+            }
+            // The two spellings that made the model UNDER TEST the wrong model.
+            const std::string pats[2] = {
+                "model_type = \"" + c.model + "\"",
+                "kModelType = \"" + c.model + "\""};
+            for (const std::string &pat : pats) {
+                if (text.find(pat) != std::string::npos)
+                    v.push_back(source + " hard-codes " + c.model +
+                                " as the model under test ('" + pat + "')");
+            }
+        }
+    }
+    return v;
+}
+
+TEST_CASE("suite guard: a shared test source cannot name a sibling as itself",
+          "[suite][guard]")
+{
+    // Build source -> claiming models from the manifests themselves, so the
+    // check follows the registry instead of a hand-written list (the reason five
+    // families once fell out of a similar check unnoticed).
+    std::map<std::string, std::vector<Claim>> claims;
+    for (std::size_t i = 0; i < lsxmanifest::kModelCount; ++i) {
+        const auto &m = lsxmanifest::kModels[i];
+        for (std::size_t j = 0; j < lsxmanifest::kTargetCount; ++j) {
+            const auto &t = lsxmanifest::kTargets[j];
+            if (std::string_view(t.model_type) != m.model_type) continue;
+            const std::string src =
+                t.source ? std::string(t.source) : std::string(t.target) + ".cpp";
+            claims[src].push_back({m.model_type, m.vault_env, m.vault_dir});
+        }
+    }
+    std::size_t shared = 0;
+    for (const auto &[src, rows] : claims) if (rows.size() > 1) ++shared;
+    INFO("test sources claimed by more than one manifest: " << shared);
+    REQUIRE(shared > 5);          // the registry really does share sources
+
+    auto v = CheckSiblingIdentity(fs::path(LSX_SOURCE_DIR) / "tests", claims);
+    std::string joined;
+    for (const auto &s : v) joined += s + "\n";
+    INFO("sibling-identity violations:\n" << joined);
+    CHECK(v.empty());
+}
+
+TEST_CASE("suite guard: the sibling-identity rule bites", "[suite][guard]")
+{
+    // Non-vacuity: an unguarded literal is a violation, the same literal behind
+    // an #ifndef default is not (that is the parameterised form), and a
+    // `cfg.model_type = "<sibling>"` hard-code is reported by its own pattern.
+    const fs::path dir = fs::temp_directory_path() / "lsx_sibling_identity";
+    fs::create_directories(dir);
+    {
+        std::ofstream f(dir / "bad_unguarded.cpp");
+        f << "const char *env = \"LSX_TEST_SIBLING_ROOT\";\n";
+    }
+    {
+        std::ofstream f(dir / "bad_hardcode.cpp");
+        f << "cfg.model_type = \"sibling-8b\";\n";
+    }
+    {
+        std::ofstream f(dir / "good_parameterised.cpp");
+        f << "#ifndef LSX_X_MODEL\n#define LSX_X_MODEL \"sibling-8b\"\n#endif\n"
+             "#ifndef LSX_X_ROOT_ENV\n#define LSX_X_ROOT_ENV \"LSX_TEST_SIBLING_ROOT\"\n#endif\n"
+             "cfg.model_type = LSX_X_MODEL;\n";
+    }
+    const std::map<std::string, std::vector<Claim>> claims = {
+        {"bad_unguarded.cpp", {{"mine", "LSX_TEST_MINE_ROOT", "mine"}, {"sibling-8b", "LSX_TEST_SIBLING_ROOT", "sibling-8b"}}},
+        {"bad_hardcode.cpp", {{"mine", "LSX_TEST_MINE_ROOT", "mine"}, {"sibling-8b", "LSX_TEST_SIBLING_ROOT", "sibling-8b"}}},
+        {"good_parameterised.cpp", {{"mine", "LSX_TEST_MINE_ROOT", "mine"}, {"sibling-8b", "LSX_TEST_SIBLING_ROOT", "sibling-8b"}}},
+    };
+    const auto v = CheckSiblingIdentity(dir, claims);
+    std::string joined;
+    for (const auto &s : v) joined += s + "\n";
+    INFO(joined);
+    CHECK(joined.find("bad_unguarded.cpp") != std::string::npos);
+    CHECK(joined.find("bad_hardcode.cpp") != std::string::npos);
+    CHECK(joined.find("good_parameterised.cpp") == std::string::npos);
+    fs::remove_all(dir);
+}
+
 TEST_CASE("suite guard: every family test target is claimed by a suite row",
           "[suite][guard]")
 {

@@ -946,6 +946,222 @@ covers LINK/INCLUDE/DEFINE/LABEL/TIMEOUT/SKIP/ENV and the DLL copy; add a
 property to the helper only when a target genuinely needs one, e.g.
 `RESOURCE_LOCK`).
 
+## G1. `RESOURCE_LOCK "gpu"` does not serialise two ctest processes (2026-11-07)
+
+**Status: open — a documentation/process gap, not a code defect.**
+
+Every GPU target carries `RESOURCE_LOCK "gpu"`, and `AGENTS.md` states the rule
+"one GPU workload at a time". Both are true *inside one ctest invocation*: CTest
+implements a resource lock as a scheduler constraint among the tests of a single
+`ctest` run. Two concurrent `ctest` processes do not coordinate at all — there is
+no lock file, so both schedules believe they own the GPU.
+
+Measured on 2026-11-07: a background parity sweep (`glm_moe_flash`, `gigachat`,
+`deepseek_v41`, `minimax_moe_flash`, `mistral`, `deepseek`) was holding
+**30 272 MiB of 32 607** while a second ctest ran `test_granite_switch_*`. The
+DET gate then failed on DET-03 with `deterministic=false`, `extracted=''` — an
+inference error under allocation pressure, not a numeric divergence. Re-run with
+the card otherwise idle, DET-03 passed (`deterministic=true`,
+`extracted='BIT_ZERO'`).
+
+The failure mode is worse than a red test: the reporter said
+`deterministic=false`, which points at a numerics/instability bug, and the actual
+cause was VRAM exhaustion in a *different process*. That half is fixed — the DET
+reporter now prints `inference-error error='…'` when `Infer` returns not-ok,
+instead of folding it into the determinism verdict
+(`libs/lsxcommon/src/det_selfcheck.cpp`; FSI/CODE already carried the per-case
+error, and the shared gate driver now attaches per-case verdicts to its assertion
+too).
+
+What is **not** fixed, and is a decision rather than a patch:
+
+- A cross-process lock would have to be a file (`flock` on a path in
+  `lsx_cache_dir()`), taken by every GPU target before it allocates. That is a
+  real mechanism, but it also means a crashed test leaves a stale lock, and every
+  target would need to opt in — worth doing only if unattended parallel runs
+  become normal.
+- The cheap alternative is the one now written into `AGENTS.md`: a GPU-labelled
+  run starts only after `nvidia-smi --query-compute-apps` is empty. That needs no
+  code and no lock lifecycle, and it is what the human operator already does.
+
+Do not "fix" this by removing `RESOURCE_LOCK`: within one invocation it is
+load-bearing (the perf sweep would otherwise run concurrently with the gates in
+the same `ctest -j`).
+
+**Fixed on the same day, and the numbers that forced it.** The lock was not
+merely per-process, it was also mostly *absent*. `AGENTS.md` claimed "every perf
+target takes `RESOURCE_LOCK "gpu"`"; the configured tree said otherwise:
+
+| label | locked before | locked after | total |
+|---|---|---|---|
+| `inference` | 54 | **289** | 297 |
+| `perf` | 8 | **37** | 44 |
+| `convert` | 8 | 36 | 38 |
+| `fast` | 10 | 10 | 140 |
+
+`STAGE_LOCKS` in `tools/gen_model_manifest.py` was empty for every stage except
+where the hand-written CMake happened to set a property, so 263 of 279
+GPU-labelled targets ran unprotected. Every model stage allocates on the GPU
+(convert quantises there, load uploads, model/kernels/selfcheck/fsi/code/det/perf
+decode), so the table is now `"gpu"` for all nine stages, with one exception:
+`fast` means host-only by definition and keeps the lock off — otherwise a
+140-target fast sweep would serialise on a lock it never needed.
+
+Reproducing the change against the pre-migration oracle:
+`--diff-cmake` reports **292 differences, and every one of them is this field**
+(284 `resource_lock: null -> "gpu"` plus the 8 new `granite-switch-4.1-8b`
+targets that the 2026-11-06 snapshot predates). No label, timeout, skip code or
+environment moved. That is the check that this was a targeted change and not a
+registration drift.
+
+The 17 hand-written GPU targets that were also unprotected are now locked too
+(8 `perf`, 8 `inference`, 1 `convert`), so the configured tree reads:
+
+| label | locked | total |
+|---|---|---|
+| `inference` | 297 | 297 |
+| `perf` | 44 | 44 |
+| `convert` | 37 | 38 |
+| `fast` | 10 | 140 |
+
+The one unlocked `convert` target is `test_arrow_tree_integrity`, allowlisted as
+host-only **with a checkable reason** (0 occurrences of `cuda` in the file: it is
+an mmap walk over the Arrow vault). The guard requires a reason for every
+allowlist entry rather than a bare name, because "we think it is cheap" is how a
+device call gets added later without anyone revisiting the exception.
+
+**What the guard cannot see (open).** `test_ctest_labels_guard` parses literal
+`set_tests_properties(<name> ...)` and `lsx_add_*_test(...)` calls. Names that
+appear only inside a *group* list — `set_tests_properties(a b c PROPERTIES
+LABELS inference)` — or inside a `foreach(qt ...)` registration are invisible to
+that scan. That is exactly how the 8 `inference` targets above stayed both
+unlabelled-by-the-scan and unlocked: they are registered through
+`foreach(qt test_lsx_kernels)` / a group properties call. They are fixed, but the
+*detection* still has the hole, and a new target added the same way would be
+neither labelled nor locked with the guard's blessing. Closing it means reading
+the configured tree (`ctest --show-only=json-v1`) or generating a lock-audit
+manifest at configure time — a mechanism decision, not a patch.
+
+## G2. A sibling model can be "covered" by a test that verifies its parent (2026-11-07)
+
+**Status: open — one instance found and recorded, one instance fixed.**
+
+Found while ingesting `granite-switch-4.1-8b`, which is the first family member
+added *after* its sibling in the manifest era. A `models/*.json` row claims
+targets by name, and `test_model_suite_guard` checks that a claimed target
+EXISTS — not that it tests the model that claims it. So a source with a
+hard-coded model name can sit under two rows and verify only one of them, while
+every guard stays green. That is the shape of the migration's own recurring
+defect (a SKIP naming a neighbour), one level up.
+
+Measured: 25 test sources are claimed by more than one manifest. Four contain a
+literal `model_type` string:
+
+| source | claimed by | verdict |
+|---|---|---|
+| `test_granite_switch_adapter_parity.cpp` | 30b, 8b | **was a defect** — fixed: parameterized via `LSX_GSW_MODEL`, with the 30B as the `#ifndef` default and a separate 8B target |
+| `test_granite_switch_model.cpp` | 30b, 8b | **was a defect** — same fix (it also `dynamic_cast` to `GraniteSwitch41_30BModel`, which is how the 8B would have failed at runtime instead of at review) |
+| `test_granite_switch_tokenizer_parity.cpp` | 30b, 8b | **was a defect** — same fix; the golden cases stay shared because the two tokenizers are md5-identical |
+| `test_kimi_k3_constants.cpp` | kimi-k3, kimi-k3.1-pro | **open** — see below |
+
+Also in the capture tools, which is worse because a golden carries the mistake
+forward: `granite_switch_adapter_capture.py` and `granite_switch_tool_capture.py`
+wrote `"model_type": "granite-switch-4.1-30b"` as a literal. Both now derive it
+from the checkpoint directory (the same rule the C++ converter uses), and the
+parity test rejects a golden whose `model_type` is not its own — so a
+mis-attributed capture fails loudly instead of being compared as if it were
+right.
+
+### G2a. `kimi-k3.1-pro` claims a target named after its sibling — name, not coverage
+
+`kimi-k3.1-pro` lists `test_kimi_k3_constants` in its `model` stage. The name says
+`k3`, and `test_kimi_k3_constants.cpp` does assert `kModelType == "kimi-k3"`, so
+the first reading — recorded here earlier the same day — was "the Pro is covered by
+its parent's test". **That reading was wrong**, and refuting it is cheap:
+
+- `tests/CMakeLists.txt` compiles that binary from **two** sources,
+  `test_kimi_k3_constants.cpp` *and* `test_kimi_pro_constants.cpp`;
+- `--list-tests` shows 12 cases, six of them `kimi-k3.1-pro passport: …`
+  (registry/format identity, text tower geometry, Lightning Indexer, derived
+  scales, the DSA table = MLA table);
+- all 12 pass (615 assertions), and the Pro cases assert
+  `kModelType == "kimi-k3.1-pro"` / `kFormatTag == "logestix-kimi-k31-pro-nvfp4"`
+  from `kimi_moe_pro_constants.h`.
+
+So the coverage is real. What is genuinely wrong is the **name**: a target called
+`test_kimi_k3_constants` sitting in the Pro's row is exactly the shape that made
+three granite tests verify their parent, and the next reader will draw the same
+wrong conclusion this entry did — from the name alone, without `--list-tests`.
+
+**Not renamed here on purpose.** The honest split is one target per passport: the
+k3 cases belong to `test_kimi_k3_constants.cpp`, the Pro cases to
+`test_kimi_pro_constants.cpp`, each registered under its own model. That is a small
+refactor touching both manifests, `tests/CMakeLists.txt` and the generated
+fragment — mechanical, but it should be done deliberately rather than renamed into
+a second false impression.
+
+The lesson kept from this entry: **a target's name is not evidence about what it
+asserts.** Check `--list-tests` and the source list before recording a coverage gap.
+
+### G2b. The guard, written — and why it checks only the vault env
+
+`test_model_suite_guard` gained *"a shared test source cannot name a sibling as
+itself"* plus a non-vacuity case (`the sibling-identity rule bites`). It builds
+`source -> claiming models` from the generated registry (25 sources are claimed by
+more than one manifest) and flags a source that names a sibling's **vault
+environment variable**, or hard-codes a sibling as `cfg.model_type` /
+`kModelType`. A literal is accepted when it is the default arm of an
+`#ifndef`-guarded macro, i.e. the parameterised form a shared source is supposed to
+use (`test_granite_switch_model.cpp`).
+
+Two candidate signals were **rejected after measuring them**, and the reasons
+matter for whoever extends this:
+
+- **the `model_type` string**: a sibling test legitimately compares two passports —
+  `test_granite_switch_prepare.cpp` asserts that the 8B passport *rejects* a 30B
+  topology, so it names both on purpose;
+- **the vault directory name**: the same string is a natural name for a test
+  fixture directory. The first version of this guard flagged its own fixtures
+  (`test_granite_switch_convert.cpp` builds `/tmp/…/granite-switch-4.1-8b`), which
+  is how the signal was retired — a check that cannot tell identity from data
+  produces false positives and gets ignored.
+
+G2a is the case this guard deliberately does **not** catch: the target's *name*
+is misleading while the assertions are correct. That is a naming discipline, not a
+mechanical rule — the only mechanical check available would be "a source may only
+assert its own `kModelType`", which would forbid the two-source binary that is
+actually right.
+
+## G4. A converted tree can be built in `/tmp` and then vanish, leaving a green matrix row (2026-11-07)
+
+**Status: open — vault hygiene, found while re-running parity gates.**
+
+`gigachat3.5-432b-a28b-reasoning` is listed in `docs/SELFCHECK_MATRIX.md` §1 with
+SelfCheck/FSI/CODE/DET all green (measured 2026-10-31) and
+`docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md` exists. On
+2026-11-07 its three parity gates SKIP, and the SKIP is *correct*:
+`/mnt/fast_storage/huggingface/GigaChat3.5-432B-A28B-Reasoning/` contains the
+source checkpoint and a `lsxforge_runtime.1.log` whose writes all point at
+`/mnt/fast_storage/tmp/gigachat_reconvert/logestix/...` — the tree was converted
+**outside the vault**, and the tmp directory has since been cleaned. No
+`logestix/model.index.json` exists anywhere for it.
+
+So the row is not reproducible from the vault, and nothing in the tree records
+that. Two lessons, both cheap to act on:
+
+- **Convert into the vault, or record where the tree lives.** A conversion whose
+  output root is a temp directory produces a tree that passes gates today and
+  disappears tomorrow; the gates then SKIP, which reads as "not applicable"
+  rather than "the artifact is gone".
+- **The manifest cannot express this.** `golden_debt` is about goldens, and the
+  goldens *are* present for gigachat; what is missing is the converted tree, which
+  is vault state. `docs/OPEN_TASKS.md` is the only place that can say it, which is
+  why it is here.
+
+Re-converting GigaChat costs a 432B/28B-active pass over ~850 GB of source and
+needs the disk headroom the host currently does not have (94% full, 878 GB free).
+Treat it as a scheduling decision, not a bug fix.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -953,6 +1169,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-11-07 | Granite-Switch 4.1 8B FSI-01: red on a form fork, closed with a MEASURED residual-plane placement | The 8B sibling's FSI-01 answered the formula evaluated (`PV=2500000*…`) where the source answers it symbolically — every constant correct, so a form fork rather than a corrupted computation. Teacher-forcing showed it was not a tie: source margin +6.88 logits for `CF`, converted −1.27, an 8.2-logit swing. Bug checklist first (head `global_scale` applied, `Free()` complete, records decode back at relL2 0.094–0.095 on layers 0/20/39) — so, 4-bit body error. Four trees were then converted and probed rather than assuming gemma's placement: none −1.27 (red), **attn +0.9 GB +1.58 (green, shipped)**, mlp +3.3 GB +2.19, attn+mlp +4.2 GB +7.14. `attn` is the cheapest that clears AND leaves the biggest tensors at 4 bits (MLP = 79% of the layer's bytes). Resident 5.14 → 6.09 GB, profile min 5.51 → 6.45 GB, index records `"residual": "attn"`, knob is convert-time (`LSX_GSW_RESIDUAL`). FSI 3/3, SelfCheck ×3 `b7c1aa453d83a86f`, DET 2/3 = the source's own `CRITICAL`. Two instrument defects recorded: the probe read `final_logits` (published after the decode loop, one position late) and reported the wrong winner, and the `det` verdict folded an inference error into `deterministic=false` while embedding raw newlines into a one-line record. Legacy 4-bit-only trees still load (`ad9b0c4940bb27a9`). — [`open-tasks/2026-11-07-granite-switch-fsi01-residual.md`](open-tasks/2026-11-07-granite-switch-fsi01-residual.md) |
 | 2026-11-06 | AliceAI-Foundation-80B-A3B: an inverted allocator predicate silently disabled generation for three days | All four gates were red with `alice workspace alloc failed` — and the pre-migration binary failed identically, so it was not the manifest work. The recorded `cudaError_t` and buffer identity showed `cudaMallocAsync -> cudaSuccess (0), free 27399 of 32202 MiB`: nothing had failed. 397ab361 rewrote the workspace macro's ternary arms from `cudaError_t` constants to `true`/`false` while clearing 42 `-Wint-in-bool-context` sites, inverting a chain that reads `if (A() || A() || …)`: the first *successful* malloc aborted the workspace, so alice decoded zero tokens from 2026-11-03 19:33. It stayed invisible because the message discarded the error and the free-VRAM number, because the gate driver's per-case `INFO` left scope before the aggregate `REQUIRE` (Catch2 printed `false` alone), and because the gates carry label `inference`, which no default sweep runs. Fixed with a named `WsAllocFailed()` predicate, a diagnostic naming buffer/bytes/error/free VRAM, and `ExplainCases()` in the gate driver; pinned by *"alice workspace allocator polarity"*, proven red by inverting the predicate. Post-fix SelfCheck Paris ×3 `logits_hash 0bf456024cc05255` (top-1 828), FSI/CODE/DET 3/3 at 230/221/183 s, tool round-trip green; the hash moved from `f900547d25be7914` (2026-11-03) at an unchanged top-1 id, unattributed between 397ab361's dropped `__restrict__` sites and the CUDA 13.5 bump. — [`open-tasks/2026-11-06-alice-workspace-polarity.md`](open-tasks/2026-11-06-alice-workspace-polarity.md) |
 | 2026-11-03 | Dense-trio consolidation, phase 1: granite / granite-switch / phi now run one neutral `lsxcommon::dense` kernel layer | The three dense families had drifted into three near-copies of the same decode kernels. Phase 1 moved RMSNorm, full-dim RoPE, causal GQA attention (with the split-KV flash-decode path), fused split-QKV and fused SwiGLU into `lsx_dense_inference.{h,cu}`; the algorithm is the one Granite-4.2 always ran, moved verbatim (`tools/dedup_provenance.py` proves it), and every family's layer driver stays family-named. No golden moved. — [`open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md`](open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md) |
 | 2026-11-03 | Warning backlog closed: a clean build is 246 lines, none of them ours | Scoping `-Wall -Wextra`/`-Wpedantic` to our own directories dropped a clean build from 51 408 warning lines to 484; this session cleared the remaining 238 across 170 sites / 83 files **without silencers**. The load-bearing find: 39 in-place activation/norm calls aliased `__restrict__` parameters, i.e. formal UB, fixed by dropping the qualifier. Plus fail-closed `SimpleAtoi`/simdjson config reads, a dangling test reference, `memcpy` into `__half`, 19 dead functions. — [`open-tasks/2026-11-03-warning-backlog-closed.md`](open-tasks/2026-11-03-warning-backlog-closed.md) |
