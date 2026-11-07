@@ -27,6 +27,16 @@
 //
 // A family case that is not one of those (qwen_moe_exp's EOS/KV-growth gate)
 // keeps its own file and its own target - opting out needs no manifest change.
+//
+// An undeclared hook SKIPs, and that is deliberate rather than cosmetic. Catch2
+// returns 4 (AllTestsSkippedExitCode) only when EVERY case in the binary skipped,
+// and SKIP_RETURN_CODE 4 is what makes ctest report a skip instead of a pass. While
+// these branches were SUCCEED, a model with no converted tree produced
+// "4 cases: 1 passed, 3 skipped" — the one "pass" being an undeclared hook — so the
+// binary exited 0 and ctest printed **Passed** for a gate that never loaded a
+// weight. A target-level green on an absent model is the exact failure AGENTS.md
+// calls out ("a gate that SKIPs is not a pass"); the case-level SUCCEED was hiding
+// it.
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
@@ -194,7 +204,7 @@ TEST_CASE("selfcheck tool round-trip on the converted weights",
     REQUIRE(row != nullptr);
     if (!row->tool_roundtrip)
     {
-        SUCCEED("tool_roundtrip hook not declared for " << row->model_type);
+        SKIP("tool_roundtrip hook not declared for " << row->model_type);
         return;
     }
     const std::filesystem::path root = manifest_query::ModelRoot(*row);
@@ -217,7 +227,7 @@ TEST_CASE("selfcheck is deterministic on the auto (ids-streaming) path",
     REQUIRE(row != nullptr);
     if (!row->auto_path_determinism)
     {
-        SUCCEED("auto_path_determinism hook not declared for " << row->model_type);
+        SKIP("auto_path_determinism hook not declared for " << row->model_type);
         return;
     }
     const std::filesystem::path root = manifest_query::ModelRoot(*row);
@@ -259,7 +269,7 @@ TEST_CASE("selfcheck streams and stops on a cooperative cancel",
     REQUIRE(row != nullptr);
     if (!row->cooperative_cancel)
     {
-        SUCCEED("cooperative_cancel hook not declared for " << row->model_type);
+        SKIP("cooperative_cancel hook not declared for " << row->model_type);
         return;
     }
     const std::filesystem::path root = manifest_query::ModelRoot(*row);

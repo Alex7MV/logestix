@@ -66,11 +66,21 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
-  was restored, and all 37 pass** (120 min, `-j1`, one GPU). The list is
+  was restored** (120 min, `-j1`, one GPU). The list is
   `tools/gen_model_manifest.py --print-selfcheck-targets`, derived from the
   manifests — the previous hand-typed filter covered 22 of 37, and an omitted gate
-  reads exactly like a passing one. The rows below that carry a hash were checked
-  against the values this run produced, not against the previous capture.
+  reads exactly like a passing one.
+  **"37 pass" was the wrong reading of that run, and the correction matters more
+  than the run:** ctest reported `Passed` for all 37, but only **27** had a
+  converted tree and therefore executed the Paris case; the other **10** (the
+  models in §4 and the vanished-tree rows) skipped every case that touches weights
+  and were green only because an *undeclared-hook* case `SUCCEED`ed in the same
+  binary. One non-failing case is enough to keep Catch2 from returning
+  `AllTestsSkippedExitCode`, so `SKIP_RETURN_CODE 4` never armed. Those branches
+  now `SKIP`, and the honest headline is **27 of 37 measured, 10 skipped with their
+  tree named** — `docs/OPEN_TASKS.md` §G6.
+  The rows below that carry a hash were checked against the values this run
+  produced, not against the previous capture.
 - **The SelfCheck probe is per-family, and it is now declared.** Unifying the 35
   per-family selfcheck files into one driver silently flattened four knobs that
   each file had chosen for itself: the prompt framing (17 files fed
@@ -273,6 +283,8 @@ one in a ctest summary, which is why the debt rows are called out below.
 | ling | PASS | SKIP | SKIP | SKIP | source is 560B BF16/FP8 with GPU-only FLA KDA kernels; no oracle runnable on one RTX 5090 (a CPU reference was used for single-token probes only). Per-expert global scales + the official SwiGLU clamps were required for a coherent answer — `docs/OPEN_TASKS.md` §R7 |
 | step-5-preview | PASS | SKIP | SKIP | SKIP | converted tree present (317 GB, Paris x3 bit-exact, native tool round-trip green); the 606 GB FP8 source oracle (reference `inference/` stack) needs 4x B300 / 8x H200 per the model card, so no source golden can be captured here. The DSA indexer is stored-not-applied (dense-equivalent at <=4096 tokens) — `docs/OPEN_TASKS.md` §R9 |
 | hy-simulmt-30b-a3b | PASS | SKIP | SKIP | SKIP | zh<->en simultaneous translator: the source summarises/translates the FSI/CODE/DET bodies instead of answering (two emit EOT immediately), so no source-faithful golden can be extracted; instruments are SelfCheck (translation direction) + a real-weight bidirectional translation test — `docs/OPEN_TASKS.md` §R11 |
+| deepseek-v4-flash | PASS | SKIP | SKIP | SKIP | the tree exists (so this is the §2 shape, not §4's "neither"); its three stages SKIP for a golden, not for a tree, and the goldens are declared debt. It was listed under §4 for a day — moved here 2026-11-07 by the vault audit, which is the third time the §4 heading has disagreed with the disk |
+| kimi-k2.7-code | PASS | SKIP | SKIP | SKIP | 542 GB tree, 23040 experts; SelfCheck passes on real weights (Paris, tok 17374, 3 cycles identical) and the per-layer reference oracle is green (relL2 0.0034 layer 0 / 0.1226 layer 60, cos ≥ 0.9925). FSI/CODE/DET are declared golden debt (`docs/OPEN_TASKS.md` §R2 K1): the 581 GB `compressed-tensors` source has not been run for a capture |
 | nemotron-3.5-lightning-30b-a3b-nvfp4 | PASS | SKIP | SKIP | SKIP | the source IS runnable now — `tools/nemotron_nvfp4_oracle.py` dequantizes the ModelOpt checkpoint (W4A16_NVFP4 experts + FP8 mixers) to a CPU BF16 `NemotronHForCausalLM` and it answers FSI 3/3 per the Expected Template — but the converted tree does not reproduce them (FSI-01 extracts `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)`, FSI-02/03 emit fenced/repeated bodies), and CODE-TEST-01 / DET-TEST-01/02 make the SOURCE echo the prompt body, so no source-faithful CODE/DET golden can be extracted. Gates stay debt with these measurements; the FSI gap is the 4-bit body precision item in `docs/OPEN_TASKS.md` §R13 |
 
 Both are recorded in the golden-debt list (§K) rather than left to look green.
@@ -333,14 +345,15 @@ be read as a pass.
 
 ## 4. Neither — SKIP
 
-Re-audited 2026-11-07 against the vault, because two entries here had drifted:
+Re-audited 2026-11-07 against the vault (`<models_dir>/<vault dir>/logestix/model.index.json`
+for all 36 manifests: 26 trees, 24 of them in §1). Every entry here is now checked
+against the disk rather than inferred:
 
 | model | tree | goldens | note |
 |---|---|---|---|
 | `glm-5.2` | no | no | never converted on this host |
 | `mimo-v2.6-flash-rl` | no | no | never converted on this host |
 | `nemotron-3.5-lightning-30b-a3b` (bf16 sibling) | no | no | the NVFP4 sibling is the ingested one (§2) |
-| `deepseek-v4-flash` | **yes** | no | **moved here from §4's prose**: the tree exists, so this is the §2 shape (goldens are declared debt) — its three stages SKIP for a golden, not for a tree |
 
 `gigachat3.5-432b-a28b-reasoning` moved out of this section on 2026-10-31 (241 GB
 tree, all four gates measured) and its row in §1 still carries those verdicts —
@@ -350,14 +363,14 @@ but the tree it was measured on **no longer exists** (it was converted under
 bit-exact) and is in the same position: the verdict is history, the tree is
 gone.
 
-`kimi-k2.7-code` moved out of this section on 2026-10-26: the tree now exists
-(542 GB, 23040 experts) and **SelfCheck passes on real weights** — Paris
-(tok 17374), 3 cycles, identical logits hash — with the per-layer reference
-oracle green (relL2 0.0034 at layer 0, 0.1226 at layer 60, cos ≥ 0.9925). FSI,
-CODE and DET remain **declared golden debt** (`docs/OPEN_TASKS.md` §R2 K1): the
-581 GB `compressed-tensors` source has not been run for a capture yet, so their
-three targets SKIP (tree present, golden absent) — the debt rows in
-`kGoldenDebt` are the honest state, and the capture must come from the source,
+`kimi-k2.7-code` and `deepseek-v4-flash` are in §2's table, not here: both have a
+converted tree and a passing SelfCheck, so "neither" was never true for them —
+their three parity stages SKIP for a **golden**, not for a tree, and those goldens
+are declared debt. Audit 2026-11-07 by checking
+`<models_dir>/<vault dir>/logestix/model.index.json` for all 36 manifests: 26 have
+a tree, 24 of those were in §1, and the six that were neither in §1 nor in §2 are
+what this section's rows had been hiding. The capture for kimi-k2.7-code must come
+from the source,
 never from the engine. Verification record:
 `docs/open-tasks/2026-10-26-kimi-audit-verification.md`.
 

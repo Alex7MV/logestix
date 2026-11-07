@@ -1248,6 +1248,41 @@ defence is transcribing the old files line by line — assertions **and** their
 constants — which is what should have happened at the time. §G2 has the same shape
 one level up.
 
+## G6. A ctest target can report **Passed** for a gate that never loaded a weight (2026-11-07)
+
+**Status: fixed in the selfcheck driver; the general rule is worth keeping.**
+
+Catch2 returns `AllTestsSkippedExitCode` (4) only when **every** case in the binary
+skipped, and `SKIP_RETURN_CODE 4` is what turns that into ctest's `***Skipped`. The
+selfcheck driver's three "hook not declared" branches were `SUCCEED`, so for a model
+with no converted tree the binary reported:
+
+    test cases: 4 | 1 passed | 3 skipped
+
+The single "pass" was an undeclared hook — no weights, no vault, no model. The
+binary exited 0 and ctest printed **Passed**. A sweep over the 37 SelfCheck targets
+therefore reported 37 green when only 27 had executed the Paris case; the other 10
+(the models whose converted tree is absent — `beam`, `deepseek-v4-pro-0813`,
+`flint`, `gigachat`, `glm-5.2`, `ling`, `mimo`, `mistral-large-4-1t`,
+`nemotron-3.5-lightning-30b-a3b`, `step-5-preview`) had skipped everything that
+matters.
+
+**Why it is not visible from the guard side:** `test_ctest_labels_guard` enforces
+that a skip-capable target *sets* `SKIP_RETURN_CODE 4`; it cannot see that the
+binary's own bookkeeping keeps the skip from reaching the exit code. The property
+is per-BINARY, not per-test: one always-green case anywhere in the file defeats it.
+
+**Fix:** the three branches `SKIP` instead of `SUCCEED`, so a weight-less model
+exits 4 and ctest says `Skipped`. An undeclared hook was never a pass — it is "not
+applicable to this model", which is what a skip means. A model that DOES load
+weights still reports `Passed` with its hook cases skipped, which is correct: the
+Paris case ran.
+
+**The transferable rule:** in a Catch2 binary, "green" only means "nothing failed",
+and a case that opts out with `SUCCEED` is indistinguishable from a case that
+passed. Any driver with declared optional cases must use `SKIP` for them, or count
+its own cases explicitly.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
