@@ -312,6 +312,14 @@ passes").
 
 Both are RED on the E4M3FN NVFP4 conversion (`kOff`):
 
+- **Re-measured 2026-11-07 on binaries rebuilt AFTER the `total_steps` fix**
+  (`prompt_len - 1 + max_gen`, which removed an extra generated token): FSI **1/3**
+  (01 pass, 02/03 fail), CODE **1/3** (02 pass), DET **2/3** (03 fails). Identical
+  to the pre-fix grid, so the off-by-one changes the decode length and the Paris
+  hash (`b759bc84b820b4de`) but not the parity verdicts. Worth recording because
+  the *first* attempt at this measurement was taken on binaries built before the
+  fix and reported the same numbers — right answer, no evidence. Rebuilding the
+  three targets and re-running was the only way to tell.
 - **FSI 1/3** — FSI-01: the thinking CoT does not finish within the 512-token
   budget, so the first-anchor-line extractor latches onto the truncated prompt
   echo `PV=CF*(1-e`; FSI-02 yields the initial-state echo
