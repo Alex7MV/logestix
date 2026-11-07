@@ -588,6 +588,10 @@ reproduced with zero differences is the standard this registry was migrated at.
   "perf": { "vault_subdir": "flint", "timeout": 3000, "resource_lock": "gpu" },
   "target_overrides": { "test_x": { "label": "inference", "timeout": 1800 } },
   "tool_roundtrip": true, "auto_path_determinism": true,
+  "cooperative_cancel": true,        // the decode loop polls req.abort_flag
+  "selfcheck_frame_prompt": false,   // Paris probe via BuildPromptInputIds
+  "selfcheck_max_gen": 2,            // the family's own decode budget
+  "selfcheck_bit_exact": true,       // FastMathMode::kOff, not kAuto
   "golden_debt": { "fsi": "why no source golden can exist" },
   "aliases": ["flint-1.0"],           // must be the lower-cased vault dir
   "report": "docs/model-reports/....md", "notes": "one line"
@@ -609,9 +613,21 @@ are shared drivers parameterised by the manifest:
   per-family gate file: it is how three files came to SKIP with a neighbour's
   model name.
 - SelfCheck → `tests/test_selfcheck_driver.cpp` with declared hooks
-  (`paris_cycles` always, `tool_roundtrip` / `auto_path_determinism` per flag).
-  A family case that is not one of those hooks keeps its own file and target
-  (`test_qwen_moe_exp_eos_selfcheck` is the precedent).
+  (`paris_cycles` always; `tool_roundtrip`, `auto_path_determinism`,
+  `cooperative_cancel`, `selfcheck_frame_prompt`, `selfcheck_max_gen`,
+  `selfcheck_bit_exact` per flag). A family case that is not one of those hooks
+  keeps its own file and target (`test_qwen_moe_exp_eos_selfcheck` is the
+  precedent).
+
+  **The probe is data, not a constant.** `selfcheck_frame_prompt`,
+  `selfcheck_max_gen` and `selfcheck_bit_exact` are not decoration: `final_logits`
+  is the LAST decode step, so `selfcheck_max_gen` alone decides the recorded
+  `logits_hash`, and the math mode decides it too. Declare all three from
+  measurement of the SOURCE family — never copy a sibling's numbers, and never
+  "normalise" them, which is exactly how 35 families' hashes were silently
+  re-baselined in the 2026-11-06 migration (`docs/OPEN_TASKS.md` §G5). Prove a
+  probe change by replaying a binary built BEFORE it: same top-1, same `n`, same
+  hash.
 
 ### Guards you still run (their data is generated, their rules are not)
 
