@@ -76,12 +76,31 @@ SYNTHETIC_STAGES = ("convert", "load", "model")
 PERF_CASE_FMT = "perf baseline: {}"
 PERF_BINARY = "test_perf_baseline"
 
-MODEL_FIELDS = ("model_type", "family", "variant", "model_class",
+# Every key a manifest may carry. An unknown key is an ERROR, not something to
+# skip: `"selfcheck_frame_promt": true` reads as a declaration and behaves as
+# `false`, which is precisely the silent-rebaseline class that docs/OPEN_TASKS.md
+# G5 records. This tuple was declared but never consulted until 2026-11-07.
+MODEL_FIELDS = ("model_type", "display_name", "family", "variant", "model_class",
                 "model_header", "passport", "namespace", "format_tag",
-                "vault_dir", "vault_env", "tokenizer_kind",
-                "tool_roundtrip", "auto_path_determinism",
-                "cooperative_cancel", "selfcheck_frame_prompt",
-                "selfcheck_max_gen", "selfcheck_bit_exact")
+                "forge_flag", "tokenizer_kind", "vault", "lifecycle_tu",
+                "stages", "golden_debt", "target_overrides", "perf", "aliases",
+                "resource_lock", "report", "notes",
+                "tool_roundtrip", "auto_path_determinism", "cooperative_cancel",
+                "selfcheck_frame_prompt", "selfcheck_max_gen",
+                "selfcheck_bit_exact")
+
+# The subset that `--print-model-rows` and the compiled ModelRow carry, named by
+# MANIFEST key. It is the emitter's field order, not a copy of it: `row_values`
+# below is indexed by this tuple, so a field added here appears in the output and a
+# field removed here disappears from it. `namespace` is carried in Python as `ns`
+# (the manifest key is the user-facing name, the attribute predates the manifest).
+# test_manifest_sync is what catches a field added to the C++ RowKey and not here,
+# or the reverse.
+ROW_FIELDS = ("model_type", "family", "variant", "model_class", "model_header",
+              "passport", "namespace", "format_tag", "vault_dir", "vault_env",
+              "tokenizer_kind", "tool_roundtrip", "auto_path_determinism",
+              "cooperative_cancel", "selfcheck_frame_prompt",
+              "selfcheck_max_gen", "selfcheck_bit_exact")
 
 
 class ManifestError(Exception):
@@ -213,11 +232,41 @@ def _req(doc, key, path, kind=None):
     return value
 
 
+def row_values(m) -> dict:
+    """Manifest -> {manifest key: emitted value}, for ROW_FIELDS ordering."""
+    return {
+        "model_type": m.model_type,
+        "family": m.family,
+        "variant": m.variant,
+        "model_class": m.model_class,
+        "model_header": m.model_header,
+        "passport": m.passport,
+        "namespace": m.ns,
+        "format_tag": m.format_tag,
+        "vault_dir": m.vault_dir,
+        "vault_env": m.vault_env,
+        "tokenizer_kind": m.tokenizer_kind,
+        "tool_roundtrip": int(m.tool_roundtrip),
+        "auto_path_determinism": int(m.auto_path_determinism),
+        "cooperative_cancel": int(m.cooperative_cancel),
+        "selfcheck_frame_prompt": int(m.selfcheck_frame_prompt),
+        "selfcheck_max_gen": m.selfcheck_max_gen,
+        "selfcheck_bit_exact": int(m.selfcheck_bit_exact),
+    }
+
+
 def load_one(path: Path) -> Manifest:
     try:
         doc = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         raise ManifestError(path.name, f"line {exc.lineno}", f"invalid JSON: {exc.msg}")
+
+    unknown_keys = sorted(set(doc) - set(MODEL_FIELDS))
+    if unknown_keys:
+        raise ManifestError(
+            path.name, unknown_keys[0],
+            f"unknown field(s) {unknown_keys}; a misspelled declaration is "
+            f"silently ignored, so this is an error. known: {list(MODEL_FIELDS)}")
 
     stages = _req(doc, "stages", path.name, dict)
     unknown = set(stages) - set(STAGES)
@@ -1070,6 +1119,11 @@ def self_test(root: Path):
     # The selfcheck probe fields decide the recorded logits_hash, so a typo in one
     # is a silent re-baseline. Only the integer needs range-checking; the three
     # booleans are coerced by load_one and cannot be out of range.
+    def misspelled_field(d):
+        d["selfcheck_frame_promt"] = True       # one letter short
+
+    add("misspelled_field", misspelled_field, "unknown field")
+
     def probe_budget_zero(d):
         d["selfcheck_max_gen"] = 0
 
@@ -1192,17 +1246,9 @@ def main(argv=None):
 
     if args.print_model_rows:
         for m in sorted(manifests, key=lambda x: x.model_type):
-            print("\t".join(str(v) if v is not None else ""
-                            for v in (m.model_type, m.family, m.variant,
-                                      m.model_class, m.model_header, m.passport,
-                                      m.ns, m.format_tag, m.vault_dir,
-                                      m.vault_env, m.tokenizer_kind,
-                                      int(m.tool_roundtrip),
-                                      int(m.auto_path_determinism),
-                                      int(m.cooperative_cancel),
-                                      int(m.selfcheck_frame_prompt),
-                                      m.selfcheck_max_gen,
-                                      int(m.selfcheck_bit_exact))))
+            values = row_values(m)
+            print("\t".join(str(values[f]) if values[f] is not None else ""
+                            for f in ROW_FIELDS))
         return 0
 
     if args.header:
