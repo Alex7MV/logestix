@@ -89,7 +89,7 @@ base `The` (791), guardian-core `{"` (5018), decision `A` (32).
 | FSI | **3/3** |
 | CODE | **3/3** |
 | DET | **2/3** — DET-02, the source's own answer (see below) |
-| Decode rate at 2048 tokens | **not measured** — the perf harness is Release-gated and the Release tree was not rebuilt in this session |
+| Decode rate at 2048 tokens | **149.01 t/s** (`perf`), **148.51 t/s** (`r3`), TTFT 78.5 / 71.8 ms, 508.6 / 520.0 W avg — seeded 2026-11-07 at the canonical protocol (`max_gen` 2048, `The capital of France is`), `tests/perf/perf_baselines.json` |
 
 #### FSI-01: red on the first conversion, green after a measured precision change
 
@@ -144,9 +144,14 @@ loader, so old artifacts are not invalidated).
 
 **Cost, stated honestly:** device-resident 5.14 → 6.09 GB, tree 4.8 → 5.7 GB, and
 the attention projections now read twice the bytes per token. The decode-rate
-consequence is **not measured** (see the perf note above); it is bounded by the
-attention share of the per-token read, which is 21% of this model's quantized
-weights, and the family is weight-streaming bound rather than compute bound.
+measurement is **149.01 t/s** at 2048 tokens, against the two family members that
+have a row: `granite-switch-4.1-30b` 69.28 t/s and `granite-4.2-30b` 76.79 t/s. The
+8B is 2.2× the 30B sibling's rate on a quarter of the resident bytes, so it is in
+the expected band; there is no pre-change 8B number to compare against (this is the
+model's first row), so the residual-plane cost is bounded analytically rather than
+measured: the attention share of the per-token read is 21% of the quantized weights,
+and the family is weight-streaming bound rather than compute bound — a doubling of
+that 21% cannot account for a large fraction of a t/s figure driven by the other 79%.
 
 #### DET-02: red because the source is red
 

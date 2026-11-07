@@ -185,7 +185,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - vault `granite-switch-4.1-8b` (override `LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT`)
 - lifecycle TUs: `granite_dense_switch_model.cpp`, `granite_dense_switch_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: not seeded
+- perf: 148.51 t/s (r3, 2026-11-07)
 - report: `docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md`
 - notes: Sibling of the 30B: 40 layers, FFN 12800, theta 1e7, residual 0.22
 
