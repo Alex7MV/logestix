@@ -551,9 +551,16 @@ intact 66 GB source and ran the whole lifecycle.
   `test_mistral_moe_selfcheck` PASS, Paris ×3 with byte-identical
   full-vocabulary logits (`logits_hash cdfd7309bb141772`, top-1 6993);
   native tool round-trip green (`get_weather{"city": "Paris"}` → parsed
-  `get_weather {"city": "Paris"}`); `lsxfabric --validate` loads in 1053 ms with
-  4 715 087 872 B resident and 1398/4608 expert slots; convert/loader/model/
-  kernels/tool_framing all green; fast suite 137/137.
+  `get_weather {"city": "Paris"}`); `lsxfabric --validate` loads in 1053 ms
+  (re-measured 2026-11-07: 1161 ms — ±10% run to run, so read it as "about a
+  second") with 4 715 087 872 B resident and 1398/4608 expert slots — both
+  re-measured identically; convert/loader/model/kernels/tool_framing all green
+  (`_model` is a synthetic fixture by design, so it pins wiring, not the
+  checkpoint); fast suite 138/138 (written as 137/137 here until 2026-11-07 —
+  `744f2c4c` added a guard target and updated the report's verdict but not this
+  line. The count is stable across the migration: the pre-migration ctest oracle
+  has 140 `fast` targets and today's tree has 140, with one swap — the naming
+  guard out, `test_manifest_generator_selftest` in).
 - **Perf re-seeded through the harness**: perf **45.77 t/s** (was 45.04),
   r3 **49.82 t/s** (was 41.57), TTFT 525/509 ms, DRAM probe 1532.73 GB/s
   recorded in the same run. `r3` moving up 20% is the strict path now
@@ -1333,6 +1340,62 @@ stopped running), G6 (a case that skipped while the target said Passed) and G7 (
 path that resolved differently under ctest) are all "the instrument reported absence
 as success". None of them was caught by a red target; all three were caught by
 asking what a green number actually measured.
+
+## G8. A DEGRADED `perf` verdict hid the `r3` verdict entirely (2026-11-07)
+
+**Status: fixed.** Found while re-checking the mistral-small-4 report, and it is the
+fourth item in this file with the same shape: an instrument reporting *absence* as
+if it were a result.
+
+`tests/test_perf_baseline.cpp` measures two numeric modes per model in one loop —
+`perf` (kAuto) and `r3` (kOff, bit-exact) — and judges each with
+`CheckAgainstBaseline`. The DEGRADED verdict used `FAIL(...)`. In Catch2 v3 `FAIL`
+is a **fatal** assertion (`ResultDisposition::Normal`), unlike `FAIL_CHECK`
+(`ContinueOnFailure`), so the first degraded mode aborted the test case and the
+second mode was **never measured**. Verified: `mistral-small-4-119b` printed one
+`weights loaded` line and one verdict; after the change it prints two of each and
+reports both (`perf` 95.9%, `r3` 96.3% of their references).
+
+The consequence while it lasted: any model whose `perf` mode regressed had an
+*unverified* `r3` row, and the report/catalogue quote both numbers as if measured.
+The test still fails after the fix — `FAIL_CHECK` records the failure and the run
+exits non-zero — it just finishes the pair first.
+
+**Why the guards did not catch it:** `test_perf_baseline_logic` tests `JudgePerf`
+and `JudgePerfLen`, i.e. the decision, not how many modes a failing decision lets
+reach the judge.
+
+### G8a. `mistral-small-4-119b` reads 95.9% / 96.3% of its recorded throughput (open)
+
+The other half of the same run: re-measuring the committed tree eleven days later
+gives 43.89-44.31 t/s (`perf`) and 47.99 t/s (`r3`) against references of 45.77 and
+49.82 — stable to under 1% over six runs and across both modes, so a systematic
+~4%, not noise. **Thermal and power throttling are ruled out by measurement**: a
+cold-card (45 °C start) run and an immediately-following hot-card run give the same
+verdict with 46/51 °C, 141-145 W mean against a 600 W cap, and the harness's own
+DRAM oracle reads 99.4% (1524 vs 1533 GB/s). Nothing in `mistral_moe_*` or the
+shared kernels changed since the reference was written. `granite-4.2-30b` shows the
+same shape (96.7%); `phi-4` passes.
+
+**The reference has deliberately NOT been re-seeded.** Two candidate causes, in the
+order they should be chased:
+
+1. **The reference is a ratcheted best-of sample.** The harness re-seeds on any
+   improvement, so a recorded row is the best observed run, not a median, and the
+   pass band is only 3%. This row replaced 45.04, and `r3` replaced 41.57 — a 20%
+   jump on the same tree, which is itself evidence that this measurement is
+   unstable. If that is the cause, the fix is in the harness's statistics (record a
+   median of N, or widen the band for a family whose spread is measured), not in
+   the model.
+2. **The capacity oracle is disabled for this entry.** `expert_cache_slots` is
+   present in 2 of 67 entries; `mistral-small-4-119b` is not one of them, so
+   `baseline_slots` is 0 and `AttributeDegrade` cannot return `kCapacity` for the
+   family most sensitive to it — 4 608 routed experts streamed through 1 398 device
+   slots, with the capacity derived from ambient free VRAM at load time. Backfilling
+   the field on a conforming run restores the oracle.
+
+Do not re-seed until one of those is settled; a wrong re-seed would erase the only
+evidence if the ~4% is real.
 
 ## Archive
 

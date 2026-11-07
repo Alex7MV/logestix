@@ -391,7 +391,13 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
                     "power/thermal state; re-run when the probe is nominal.");
             break;
         }
-        FAIL(m.model_type << " [" << gpu_key << "/" << kThisOs
+        // FAIL_CHECK, not FAIL: Catch2's FAIL is a FATAL assertion, so a degraded
+        // "perf" mode aborted the test case and the "r3" mode was never measured —
+        // one red mode hid the other's verdict entirely. The test still fails
+        // (FAIL_CHECK records the failure); it just finishes the pair first, so a
+        // reader gets both numbers. Same shape as OPEN_TASKS §G6: an instrument
+        // reporting absence as if it were a result.
+        FAIL_CHECK(m.model_type << " [" << gpu_key << "/" << kThisOs
                           << "]: DEGRADED baseline=" << *baseline
                           << " t/s, actual=" << actual
                           << " t/s (" << (100.0 * actual / *baseline)
