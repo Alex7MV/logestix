@@ -184,3 +184,25 @@ coverage, FP8 tiles) are the **Converter test rules** section of
   checkpoint (also a TIMEOUT waiting to happen).
 - Adding an inference-labelled test for a host-only change, or vice versa —
   check the router rule for the path.
+
+### A shared driver means a SHARED rebuild
+
+When many targets compile one source (`tests/test_selfcheck_driver.cpp` feeds 37
+targets via `LSX_SELFCHECK_MODEL`, `tests/test_parity_gate.cpp` feeds every
+FSI/CODE/DET cell), editing that source invalidates all of them at once. Rebuilding
+"just the ones I am looking at" leaves a tree where some binaries carry the old
+driver and some the new, and a sweep over it reports failures that belong to the
+build, not to the code. Two invalid conclusions in one session came from exactly
+this (2026-11-07: four targets red because they had not been rebuilt after the
+driver gained per-family probe fields; one of them had also been linked from a
+source file that was reverted without a rebuild).
+
+Rule: after touching a shared driver or a shared `.cu`, build the whole contour
+before measuring — `cmake --build --preset <preset>` (or the full target list), not
+a hand-picked subset. If you must build a subset, say so in the report and re-run
+the rest before quoting any verdict.
+
+A binary in a stale tree is also the best AVAILABLE oracle for "was this green
+before?" — release artifacts whose mtimes predate a refactor, plus a string check
+that they lack the new code's symbols, let you replay the old probe. Verify the
+strings; an mtime alone can be a relink of unchanged sources.
