@@ -36,8 +36,20 @@ code that produced it.
 
 ### A2. `deepseek-v4.1-flash`: a cancelled request poisons the **next** request
 
-- **Status: open, root-caused, fix not applied.** Measured 2026-11-04 on real
-  weights (294 GB tree in the vault):
+- **Status: fix applied 2026-11-07, verification pending on the real weights.**
+  The fix is in `deepseek_moe_v41_inference_pipeline.cu`: the first-token capture
+  now happens BEFORE the abort break (so `ev.ttft` is always recorded when there
+  is a token), `cudaEventElapsedTime` results are checked, and a request cancelled
+  before its first token reports `ttft_ms = 0` while CONSUMING any pending error
+  (not as an `error_msg` — `test_streaming_assert` requires `ok` for a cancel).
+  The other half of the item, `ModelRoot()` pointing at the retired
+  `/mnt/llm_models` path, is gone by construction: the shared driver resolves the
+  root through the manifest's `vault_env` + `lsx_model_models_dir()`, so the case
+  can no longer skip silently.
+  **This item was unobservable for a while**, which is why it sat: the shared
+  selfcheck driver dropped its cancel assertion during the manifest migration
+  (§G5). It is restored, and the case now runs.
+  Measured 2026-11-04 on real weights (294 GB tree in the vault):
   `LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash`
   `./tests/test_deepseek_moe_v41_selfcheck` — the Paris case passes (3 cycles
   bit-exact, `logits_hash 0ab7077b529eaa3b`, top-1 11111), then the

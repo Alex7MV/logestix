@@ -866,14 +866,17 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                       " maxv=" + std::to_string(maxv));
         }
         gen.push_back(next_tok);
-        if (gs) {
-            const int idx = static_cast<int>(gen.size()) - 1;
-            const int first_gen = prompt_len - 1;
-            if (idx >= first_gen)
-                gs->Emit(static_cast<std::uint32_t>(next_tok),
-                         static_cast<std::uint32_t>(idx - first_gen));
-            if (gs->Aborted()) break;
-        }
+        const int idx = static_cast<int>(gen.size()) - 1;
+        const int first_gen = prompt_len - 1;
+        if (gs && idx >= first_gen)
+            gs->Emit(static_cast<std::uint32_t>(next_tok),
+                     static_cast<std::uint32_t>(idx - first_gen));
+        // Record the first generated token BEFORE the abort check. A pre-set or
+        // immediately-raised cancel used to `break` here first, so ev.ttft was
+        // never recorded; cudaEventElapsedTime(ev.start, ev.ttft) then returned
+        // cudaErrorInvalidResourceHandle, which is unchecked and therefore
+        // poisoned the NEXT request in the same thread at an unrelated site
+        // ("compressor state reset failed"). See OPEN_TASKS §A2.
         if (!first_gen_captured && step == prompt_len - 1) {
             result.first_gen_tok_id = next_tok;
             result.first_gen_maxv = maxv;
@@ -882,6 +885,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             cudaEventRecord(ev.ttft, stream);
             first_gen_captured = true;
         }
+        if (gs && gs->Aborted()) break;
         if (!ignore_eos && tok_db && next_tok == tok_db->eos_id &&
             step >= prompt_len) {
             result.eos_terminated = true;
@@ -911,8 +915,26 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     result.weight_resident_bytes = pw.resident_bytes;
     float total_ms = 0.0f, ttft_ms = 0.0f;
     cudaStreamSynchronize(stream);
-    cudaEventElapsedTime(&total_ms, ev.start, ev.stop);
-    cudaEventElapsedTime(&ttft_ms, ev.start, ev.ttft);
+    // Both results are CHECKED. An unchecked failure here leaves a stale error in
+    // the thread's last-error state, and the next request reads it at an unrelated
+    // site — the §A2 failure mode. A request that never produced a first token has
+    // no TTFT to report: see the branch below, which reports 0 and consumes the
+    // pending error instead of letting cudaEventElapsedTime poison the caller.
+    if (cudaEventElapsedTime(&total_ms, ev.start, ev.stop) != cudaSuccess)
+        result.error_msg = "total-time event failed";
+    if (!first_gen_captured) {
+        // Cancelled before the first emission: TTFT is undefined, so report 0 and
+        // CONSUME any pending error — an unchecked cudaEventElapsedTime here is
+        // what left cudaErrorInvalidResourceHandle in the thread's last-error
+        // state for the next request (§A2). Deliberately not an error_msg: a
+        // cancelled request is a successful request that stopped early, and
+        // test_streaming_assert requires ok.
+        (void)cudaGetLastError();
+        ttft_ms = 0.0f;
+    } else if (cudaEventElapsedTime(&ttft_ms, ev.start, ev.ttft) != cudaSuccess) {
+        result.error_msg = "ttft event failed";
+        ttft_ms = 0.0f;
+    }
     result.total_time_ms = static_cast<double>(total_ms);
     result.ttft_ms = static_cast<double>(ttft_ms);
     result.tokens_per_sec = (total_ms > 0.0f)
