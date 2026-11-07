@@ -95,8 +95,16 @@ family's suite is complete and self-contained.
   numeric run flag is `--bit-exact` (`FastMathMode::kOff`). A family that pins
   `kOff` does it because the NVFP4 tensor-core path overflows on its
   activations, and says so in its manifest/report.
-- **One GPU workload at a time.** `lsxbenchmark` and every perf target take
-  `RESOURCE_LOCK "gpu"`; run the perf sweep last.
+- **One GPU workload at a time.** Every target whose label implies device work
+  (`convert|load|model|kernels|selfcheck|fsi|code|det|perf|inference`) declares
+  `RESOURCE_LOCK "gpu"`, and `test_ctest_labels_guard` fails a target that does
+  not; the single host-only exception carries a reason in that guard. `fast`
+  targets stay unlocked so the 140-target fast sweep still parallelises.
+  **The lock is per ctest process, not per machine** — two concurrent `ctest`
+  invocations both acquire it and share the GPU, which is how a gate came back
+  red on 2026-11-07 while a background sweep held 30 GB; never start a
+  GPU-labelled run while another is in flight, check
+  `nvidia-smi --query-compute-apps` first.
 - **Dependency include paths live only in `lsx_dep_includes`.** Never spell
   `${CMAKE_BINARY_DIR}/_deps/...` in a target (`test_infrastructure_guard`).
 - **Device codegen comes from `LSX_CUDA_ARCH`** via

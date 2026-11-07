@@ -50,6 +50,11 @@ OVERRIDES = {
     # the answer is the short direct continuation.
     "ornith-1.5-35b-a3b": {"system": "You are a helpful assistant."},
     "granite-switch-4.1-30b": {"loader": "granite_switch"},
+    # Same composed architecture as its 30B sibling and the same CPU-BF16
+    # oracle (transformers has no GraniteSwitchForCausalLM; the class ships
+    # in the granite-switch package). Base adapter: the gates compare the
+    # checkpoint's own continuation, not an adaptation.
+    "granite-switch-4.1-8b": {"loader": "granite_switch"},
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
     "qwen3.8-flash-next": {"loader": "qwen4_exp"},
     # qwen3.8-27b is a Qwen3_5 VLM checkpoint; the text language model is

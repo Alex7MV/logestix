@@ -3,6 +3,8 @@
 // docs/superpowers/specs/2026-09-10-test-categories-design.md
 #include <catch2/catch_test_macros.hpp>
 
+#include <absl/strings/str_join.h>
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -574,6 +576,77 @@ std::vector<std::string> CheckConvertTimeout(
 
 } // namespace
 
+// ── GPU exclusivity ───────────────────────────────────────────────────────
+//
+// `AGENTS.md` has always stated "one GPU workload at a time" and, until
+// 2026-11-07, nothing checked it: 263 of 279 GPU-labelled targets ran without a
+// lock, including 36 of 44 `perf` targets. A rule that only lives in prose rots
+// the moment a new target is registered (which is exactly what happened — the
+// generator had no opinion and the hand-written CMake set the property wherever
+// the author remembered).
+//
+// The rule enforced here:
+//   * every model stage (convert/load/model/kernels/selfcheck/fsi/code/det/perf)
+//     allocates on the GPU, so every target on those labels MUST declare
+//     `RESOURCE_LOCK <gpu>`;
+//   * `fast` is host-only by contract, so a `fast` target must NOT hold the GPU
+//     lock — 140 fast targets serialising on one lock is a slow suite, and a
+//     slow suite is a suite people stop running.
+std::set<std::string> LocksDeclared(const std::string& text)
+{
+    std::set<std::string> out;
+    static const std::regex re(
+        R"(set_tests_properties\(([^)]*?)\s+PROPERTIES[^)]*RESOURCE_LOCK\s+\"?([A-Za-z0-9_]+))");
+    auto begin = text.cbegin();
+    std::smatch m;
+    while (std::regex_search(begin, text.cend(), m, re)) {
+        std::istringstream names(m[1]);
+        std::string n;
+        while (names >> n) out.insert(n);
+        begin = m.suffix().first;
+    }
+    return out;
+}
+
+// Targets that carry a GPU-ish label but provably do no device work. Each entry
+// carries the reason, and the reason must be checkable: a file scan that never
+// includes a CUDA header, not "we think it is cheap".
+const std::map<std::string, std::string>& HostOnlyDespiteLabel()
+{
+    static const std::map<std::string, std::string> v = {
+        // Label `convert` (the sweep that quantises on the GPU), but the test is
+        // a mmap walk over the Arrow vault: 0 occurrences of `cuda` in the file.
+        {"test_arrow_tree_integrity", "host-only Arrow/vault integrity scan"},
+    };
+    return v;
+}
+
+std::vector<std::string> CheckGpuExclusivity(
+    const std::set<std::string>& gpu_labels,
+    const std::map<std::string, std::string>& label_of,
+    const std::set<std::string>& locked)
+{
+    // ONE direction: a target that allocates on the GPU must hold the lock. The
+    // opposite direction ("a fast target must not hold it") was tried and is
+    // wrong: six model loaders are labelled `fast` AND declare the lock
+    // explicitly in their manifests because they upload weights
+    // (beam/flint/hy/hy-simulmt/ling/minimax/step). Their label is a separate
+    // question from their lock, and overriding an explicit manifest declaration
+    // from a guard would make the manifest lie.
+    std::vector<std::string> v;
+    const auto& host_only = HostOnlyDespiteLabel();
+    for (const auto& [name, label] : label_of) {
+        if (gpu_labels.count(label) == 0) continue;
+        if (locked.count(name) != 0) continue;
+        if (host_only.count(name) != 0) continue;
+        v.push_back(name + ": label " + label +
+                    " runs on the GPU but declares no RESOURCE_LOCK "
+                    "(add it, or prove the target is host-only and add it to "
+                    "HostOnlyDespiteLabel with the reason)");
+    }
+    return v;
+}
+
 TEST_CASE("ctest labels guard parser: synthetic fixtures",
           "[labels][guard][unit]")
 {
@@ -746,6 +819,79 @@ TEST_CASE("ctest labels guard: every test labeled exactly once",
         joined += s + "\n";
     INFO("label violations:\n" << joined);
     REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: GPU targets declare RESOURCE_LOCK",
+          "[labels][guard]")
+{
+    // Checked over BOTH sources: the generated fragment (427 model targets) and
+    // the hand-written tests/CMakeLists.txt (the rest). Reading only one of them
+    // is how the property went missing in the first place.
+    const fs::path root(LSX_SOURCE_DIR);
+    const fs::path generated(LSX_MANIFEST_GENERATED_DIR "/model_targets.cmake");
+
+    static const std::set<std::string> kGpuLabels = {
+        "convert", "load", "model", "kernels",
+        "selfcheck", "fsi", "code", "det", "perf"};
+    // Every label a model target can carry in the generated fragment is covered
+    // by kGpuLabels except `fast`; the hand-written file also uses `inference`
+    // and `perf` directly.
+    std::map<std::string, std::string> label_of;
+    std::set<std::string> locked;
+
+    const std::string hand =
+        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+    for (const auto& c : ParseLabelCalls(hand))
+        for (const auto& n : c.names) label_of[n] = c.label;
+    for (const auto& n : LocksDeclared(hand)) locked.insert(n);
+
+    std::error_code ec;
+    if (fs::exists(generated, ec)) {
+        const std::string frag = ReadFileOrThrow(generated);
+        for (const auto& c : ParseLabelCalls(frag))
+            for (const auto& n : c.names) label_of[n] = c.label;
+        for (const auto& n : LocksDeclared(frag)) locked.insert(n);
+    }
+
+    INFO("targets with a label: " << label_of.size()
+                                  << ", declaring a lock: " << locked.size());
+    REQUIRE(label_of.size() > 200);
+
+    auto v = CheckGpuExclusivity(kGpuLabels, label_of, locked);
+    std::string joined;
+    for (const auto& s : v) joined += s + "\n";
+    INFO("gpu exclusivity violations (" << v.size() << "):\n" << joined);
+    CHECK(v.empty());
+}
+
+TEST_CASE("ctest labels guard: the GPU-lock rule bites", "[labels][guard]")
+{
+    // Non-vacuity: the predicate must flag a GPU-labelled target with no lock and
+    // a `fast` target that holds one. Without this the check above would pass on
+    // an empty input set and read as coverage.
+    static const std::set<std::string> kGpuLabels = {"inference", "perf"};
+    const std::map<std::string, std::string> label_of = {
+        {"gate_no_lock", "inference"},
+        {"gate_ok", "inference"},
+        {"fast_with_lock", "fast"},
+        {"fast_clean", "fast"},
+        // The allowlisted host-only target must not be reported even though its
+        // label implies GPU work: this is the real entry, so the allowlist is
+        // exercised rather than assumed.
+        {"test_arrow_tree_integrity", "perf"},
+    };
+    const std::set<std::string> locked = {"gate_ok", "fast_with_lock"};
+    const auto v = CheckGpuExclusivity(kGpuLabels, label_of, locked);
+    // Only the unlocked GPU target is a violation. `fast_with_lock` is a
+    // deliberate manifest declaration (six loaders do it), and `fast_clean` is
+    // the normal case.
+    REQUIRE(v.size() == 1);
+    const std::string joined = absl::StrJoin(v, "\n");
+    INFO(joined);
+    CHECK(joined.find("gate_no_lock") != std::string::npos);
+    CHECK(joined.find("gate_ok") == std::string::npos);
+    CHECK(joined.find("fast_with_lock") == std::string::npos);
+    CHECK(joined.find("fast_clean") == std::string::npos);
 }
 
 TEST_CASE("ctest labels guard: perf tests declare SKIP_RETURN_CODE 4",
