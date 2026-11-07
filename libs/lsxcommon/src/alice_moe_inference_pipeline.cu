@@ -7,6 +7,9 @@
 #include "lsxcommon/alice_moe_kernels.h"
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_attn_inference.h"
+#include "lsxcommon/log.h"
+
+#include <absl/strings/str_format.h>
 
 #include <cstdio>
 #include <chrono>
@@ -235,11 +238,6 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
 
     // Device buffers (owned by ws_free: freed on every exit path).
     WorkspaceGuard ws_free;
-#define A(ptr, n)                                                              \
-    (cudaMallocAsync(reinterpret_cast<void **>(&(ptr)), (n) * sizeof(*(ptr)),  \
-                     stream) == cudaSuccess                                    \
-         ? (ws_free.track(ptr), true)                                          \
-         : false)
     __half *x=nullptr,*mixed=nullptr,*partial=nullptr,*src=nullptr,*completed=nullptr;
     __half *qg=nullptr,*attn=nullptr,*attn_out=nullptr,*kcache=nullptr,*vcache=nullptr;
     __half *kq=nullptr,*kk=nullptr,*kv=nullptr,*kfa=nullptr,*kga=nullptr,*kb=nullptr;
@@ -251,25 +249,52 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
     int32_t *idx=nullptr,*posb=nullptr;
     uint8_t *stage_p=nullptr,*stage_s=nullptr;
     cudaError_t e = cudaSuccess;
+    // A bare "alloc failed" was unactionable: it named neither the buffer nor the
+    // cudaError, so an OOM and a bad API call read the same. Record both.
+    const char *failed_buf = nullptr;
+    size_t failed_bytes = 0;
     auto fail = [&](const char *why) {
         result.ok = false;
         result.error_msg = why;
         return cudaErrorInvalidValue;
     };
-    if (A(x,HID)||A(mixed,HID)||A(partial,HID)||A(attn,attn_len)||A(attn_out,HID)||
-        A(src,kMaxBlocks*HID)||A(completed,kMaxBlocks*HID)||A(qg,2*attn_len)||
-        A(kq,kdim)||A(kk,kdim)||A(kv,vdim)||A(kfa,VD)||A(kga,VD)||A(kb,KDAH)||
-        A(alpha,kdim)||A(gate,vdim)||A(convq,kdim)||A(convk,kdim)||A(convv,vdim)||
-        A(kout,vdim)||A(mgate,MI)||A(mup,MI)||A(mact,MI)||A(mdown,HID)||
-        A(sgate,SI)||A(sup,SI)||A(sact,SI)||A(sdown,HID)||A(acc,HID)||
-        A(cosb,ROT)||A(sinb,ROT)||A(logits,VOCAB)||
-        A(kcache,(size_t)(L/4)*max_total*KVH*HD)||A(vcache,(size_t)(L/4)*max_total*KVH*HD)||
-        A(state,(size_t)L*KDAH*KD*VD)||A(hist,(size_t)L*3*(2*kdim+vdim))||
-        A(router_logits,E)||A(wts,TOPK)||A(idx,TOPK)||A(posb,1)||
-        A(stage_p,(size_t)MI*HID/2+16)||A(stage_s,(size_t)MI*HID/16+16)) {
+    // `A` yields true when the allocation FAILED, so the `||` chain below reads
+    // "any of these failed". The polarity lives in WsAllocFailed(), not in the
+    // ternary arms: it was expressed as cudaError_t constants until 397ab361
+    // rewrote them as `true`/`false` to silence -Wint-in-bool-context, which
+    // inverted the meaning while leaving this chain untouched — the first
+    // *successful* allocation then satisfied the `||` and aborted the workspace.
+#define A(ptr, n)                                                              \
+    ((e = cudaMallocAsync(reinterpret_cast<void **>(&(ptr)),                    \
+                          (n) * sizeof(*(ptr)), stream)),                       \
+     WsAllocFailed(e) ? (failed_buf = #ptr,                                     \
+                         failed_bytes = (n) * sizeof(*(ptr)), true)            \
+                      : (ws_free.track(ptr), false))
+    const bool ws_ok =
+        !(A(x,HID)||A(mixed,HID)||A(partial,HID)||A(attn,attn_len)||A(attn_out,HID)||
+          A(src,kMaxBlocks*HID)||A(completed,kMaxBlocks*HID)||A(qg,2*attn_len)||
+          A(kq,kdim)||A(kk,kdim)||A(kv,vdim)||A(kfa,VD)||A(kga,VD)||A(kb,KDAH)||
+          A(alpha,kdim)||A(gate,vdim)||A(convq,kdim)||A(convk,kdim)||A(convv,vdim)||
+          A(kout,vdim)||A(mgate,MI)||A(mup,MI)||A(mact,MI)||A(mdown,HID)||
+          A(sgate,SI)||A(sup,SI)||A(sact,SI)||A(sdown,HID)||A(acc,HID)||
+          A(cosb,ROT)||A(sinb,ROT)||A(logits,VOCAB)||
+          A(kcache,(size_t)(L/4)*max_total*KVH*HD)||A(vcache,(size_t)(L/4)*max_total*KVH*HD)||
+          A(state,(size_t)L*KDAH*KD*VD)||A(hist,(size_t)L*3*(2*kdim+vdim))||
+          A(router_logits,E)||A(wts,TOPK)||A(idx,TOPK)||A(posb,1)||
+          A(stage_p,(size_t)MI*HID/2+16)||A(stage_s,(size_t)MI*HID/16+16));
+#undef A
+    if (!ws_ok) {
+        cudaError_t err = e;
+        size_t free_b = 0, total_b = 0;
+        (void)cudaMemGetInfo(&free_b, &total_b);
+        log::error(absl::StrFormat(
+            "[alice] workspace alloc failed: %s needs %u MiB, cudaMallocAsync "
+            "-> %s (%d), free %u of %u MiB",
+            failed_buf ? failed_buf : "?", static_cast<unsigned>(failed_bytes >> 20),
+            cudaGetErrorName(err), static_cast<int>(err),
+            static_cast<unsigned>(free_b >> 20), static_cast<unsigned>(total_b >> 20)));
         return fail("alice workspace alloc failed");
     }
-#undef A
 
     std::string stage = "start";
     ExpertCache ec;

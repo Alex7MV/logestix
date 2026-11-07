@@ -80,6 +80,21 @@ std::unique_ptr<lsxcommon::IModel> LoadModel(const lsxmanifest::ModelRow &row,
     return model;
 }
 
+// A failing gate must say WHAT failed. `INFO` inside the case loop is out of
+// scope by the time the aggregate `REQUIRE` runs, so Catch2 printed nothing and a
+// wrong answer, an empty generation and an inference error all looked the same
+// ("all_passed == false"). Collect the per-case verdicts and attach them at the
+// assertion instead.
+template <typename Cases>
+std::string ExplainCases(const Cases &cases)
+{
+    std::string why;
+    for (const auto &c : cases)
+        why += "\n  " + c.id + " expected='" + c.expected + "' extracted='" +
+               c.extracted + "' error='" + c.error + "'";
+    return why;
+}
+
 } // namespace
 
 TEST_CASE("parity gate: golden answers match", "[parity][real-model]")
@@ -109,10 +124,7 @@ TEST_CASE("parity gate: golden answers match", "[parity][real-model]")
         REQUIRE(lsxcommon::fsi::LoadFsiGoldenFile(golden_path.string(), golden, &err));
         REQUIRE(golden.model_type == kModel);
         const auto result = lsxcommon::fsi::RunFsiSelfCheck(*model, golden);
-        for (const auto &c : result.cases)
-            INFO("case " << c.id << " expected='" << c.expected
-                         << "' extracted='" << c.extracted << "' error='"
-                         << c.error << "'");
+        INFO(ExplainCases(result.cases));
         REQUIRE(result.all_passed);
     }
     else if constexpr (std::string_view(LSX_GATE_KIND) == "code")
@@ -122,10 +134,7 @@ TEST_CASE("parity gate: golden answers match", "[parity][real-model]")
         REQUIRE(lsxcommon::code::LoadCodeGoldenFile(golden_path.string(), golden, &err));
         REQUIRE(golden.model_type == kModel);
         const auto result = lsxcommon::code::RunCodeSelfCheck(*model, golden);
-        for (const auto &c : result.cases)
-            INFO("case " << c.id << " expected='" << c.expected
-                         << "' extracted='" << c.extracted << "' error='"
-                         << c.error << "'");
+        INFO(ExplainCases(result.cases));
         REQUIRE(result.all_passed);
     }
     else
@@ -135,10 +144,7 @@ TEST_CASE("parity gate: golden answers match", "[parity][real-model]")
         REQUIRE(lsxcommon::det::LoadDetGoldenFile(golden_path.string(), golden, &err));
         REQUIRE(golden.model_type == kModel);
         const auto result = lsxcommon::det::RunDetSelfCheck(*model, golden);
-        for (const auto &c : result.cases)
-            INFO("case " << c.id << " expected='" << c.expected
-                         << "' extracted='" << c.extracted << "' error='"
-                         << c.error << "'");
+        INFO(ExplainCases(result.cases));
         REQUIRE(result.all_passed);
     }
 
