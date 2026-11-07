@@ -95,5 +95,8 @@
   "golden_debt": {},
   "report": "",
   "notes": "Perf TEST_CASE had no add_test until 2026-10: the baseline was only ever recorded by invoking the binary directly, so it looked maintained while having no ctest wiring. A baseline with no target is a baseline that silently rots.",
-  "cooperative_cancel": true
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 16,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
 }

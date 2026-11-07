@@ -72,7 +72,9 @@ in the session that did this, which is recorded as a gap rather than estimated.
 
 ## Result
 
-FSI 3/3, CODE 3/3, SelfCheck bit-exact ×3 (`b7c1aa453d83a86f`), adapter parity 3/3,
+FSI 3/3, CODE 3/3, SelfCheck bit-exact ×3 (`b7c1aa453d83a86f`, re-measured
+2026-11-07 as `930dd592ea5f5834` once the generation budget became a declared
+per-family value; the budget was 256 here and is 2 canonically), adapter parity 3/3,
 tokenizer parity, native tool round-trip green. DET 2/3 on DET-02, where the
 **source itself** answers `CRITICAL` against the template's `CATASTROPHIC` — the
 same cell the 30B records.

@@ -109,5 +109,7 @@
   "golden_debt": {},
   "report": "docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md",
   "notes": "Sibling of the 30B: 40 layers, FFN 12800, theta 1e7, residual 0.22",
-  "cooperative_cancel": true
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": true
 }

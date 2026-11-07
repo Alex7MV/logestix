@@ -101,5 +101,8 @@
   "notes": "Perf TEST_CASE had no add_test until 2026-10 (same silent-rot trap as xing).",
   "aliases": [
     "aliceai-foundation-80b-a3b-base"
-  ]
+  ],
+  "selfcheck_max_gen": 24,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
 }

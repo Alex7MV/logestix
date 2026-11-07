@@ -110,5 +110,8 @@
     "fsi": "declared debt (see docs/OPEN_TASKS.md)"
   },
   "report": "docs/model-reports/2026-10-31-Step-5-Preview.md",
-  "notes": ""
+  "notes": "",
+  "selfcheck_max_gen": 32,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
 }

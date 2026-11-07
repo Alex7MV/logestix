@@ -115,5 +115,8 @@
   "notes": "",
   "aliases": [
     "ling-3.1-flash"
-  ]
+  ],
+  "selfcheck_max_gen": 256,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
 }

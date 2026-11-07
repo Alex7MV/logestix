@@ -81,5 +81,8 @@
   "golden_debt": {},
   "report": "docs/model-reports/2026-11-04-Qwen3.8-Flash-Next.md",
   "notes": "",
-  "cooperative_cancel": true
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
 }

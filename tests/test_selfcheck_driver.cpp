@@ -33,6 +33,8 @@
 
 #include "test_manifest_query.h"
 #include "test_manifest_query_root.h"
+#include <lsxcommon/tokenizer.h>
+
 #include "test_streaming_assert.h"
 #include "test_tool_roundtrip.h"
 
@@ -83,6 +85,51 @@ void RequireVault(const lsxmanifest::ModelRow &row,
         SKIP(manifest_query::SkipMessage(row, "converted model"));
 }
 
+// The canonical SelfCheck probe's ids.
+//
+// `arrow_tokenizer_encode` is PURE BPE — the raw sentence, no chat framing — and
+// that is what every per-family selfcheck used before the shared driver existed.
+// The driver first used BuildPromptInputIds for all models, which silently
+// changed the probe for every family WITH a chat template: phi-4 then answered
+// "The capital of France is Paris" (it continues the fragment) instead of
+// "Paris", and its gate went red for a reason nothing recorded. Framing is
+// therefore DECLARED per model (`selfcheck_frame_prompt`), because one family
+// genuinely needs it: DeepSeek-V4.1's old file asked RunParisSelfCheck to rebuild
+// the ids through the template.
+// The math mode the family's own selfcheck ran in.
+//
+// Fourteen per-family files pinned `FastMathMode::kOff`; the other twenty-one
+// left `ModelInitConfig` at its kAuto default. That is not a detail either: the
+// mode is what makes `final_logits` reproducible, and the recorded logits_hash in
+// docs/SELFCHECK_MATRIX.md was captured under the family's own setting. Forcing
+// kOff everywhere kept the top-1 token identical and changed the hash for every
+// kAuto family, which would have re-baselined the whole matrix. Transcribed as
+// `selfcheck_bit_exact`, defaulting to true (the gate's preference) for models
+// with no predecessor file.
+lsxcommon::FastMathMode SelfCheckMathMode(const lsxmanifest::ModelRow &row)
+{
+    return row.selfcheck_bit_exact ? lsxcommon::FastMathMode::kOff
+                                   : lsxcommon::FastMathMode::kAuto;
+}
+
+std::vector<int32_t> BuildSelfCheckIds(const lsxmanifest::ModelRow &row,
+                                       lsxcommon::IModel &model)
+{
+    const char *kPrompt = "The capital of France is";
+    std::vector<int32_t> ids;
+    if (row.selfcheck_frame_prompt) {
+        REQUIRE(model.BuildPromptInputIds(model.Tokenizer(), kPrompt, ids));
+        return ids;
+    }
+    ids.assign(std::strlen(kPrompt) + 64, 0);
+    size_t cap = ids.size();
+    const int32_t n = lsxcommon::arrow_tokenizer_encode(
+        model.Tokenizer(), kPrompt, std::strlen(kPrompt), ids.data(), &cap);
+    REQUIRE(n > 0);
+    ids.resize(static_cast<size_t>(n));
+    return ids;
+}
+
 } // namespace
 
 TEST_CASE("selfcheck answers Paris with bit-exact cycles", "[selfcheck][inference]")
@@ -93,25 +140,28 @@ TEST_CASE("selfcheck answers Paris with bit-exact cycles", "[selfcheck][inferenc
     RequireVault(*row, root);
 
     lsxcommon::EnsureModelRegistry();
-    auto model = Load(*row, root, lsxcommon::FastMathMode::kOff);
+    auto model = Load(*row, root, SelfCheckMathMode(*row));
 
-    const auto &tok = model->Tokenizer();
-    std::vector<int32_t> ids;
-    REQUIRE(model->BuildPromptInputIds(tok, "The capital of France is", ids));
+    std::vector<int32_t> ids = BuildSelfCheckIds(*row, *model);
     REQUIRE(!ids.empty());
 
     lsxcommon::ModelRequest req;
     req.input_ids = ids;
-    req.max_gen_tokens = 256;
-    const auto r = model->Infer(req);
-    INFO(r.error_msg);
-    REQUIRE(r.ok);
-    REQUIRE(!r.gen_tokens.empty());
-    std::string gen_ids;
-    for (int32_t t : r.gen_tokens) gen_ids += std::to_string(t) + " ";
-    INFO("gen_tokens: [" << gen_ids << "] output: '" << r.output_text << "'");
-    REQUIRE(r.output_text.find("Paris") != std::string::npos);
-
+    // The family's own budget, transcribed from the per-family file this driver
+    // replaced (2 for most; 16/24/32/64/192/256 for a handful). It is not
+    // cosmetic: final_logits is the LAST decode step's logits, so the recorded
+    // logits_hash — the bit-exactness evidence in docs/SELFCHECK_MATRIX.md — is a
+    // function of this number. A uniform 256 silently re-baselined every family's
+    // hash and made the matrix unreproducible.
+    req.max_gen_tokens = row->selfcheck_max_gen;
+    // No raw `Infer` here. Twelve per-family files additionally asserted the
+    // greedy continuation ("The capital of France is" -> "Paris") and twelve did
+    // not; enforcing it everywhere was a requirement the gate never had, and for a
+    // FRAMED family it is not even the same probe — ornith, given the framed ids
+    // and a 2-token budget, answers "The capital" and is correct to do so.
+    // The canonical contract is `SelfCheck`: for the non-framed families it is
+    // exactly that strict first-token comparison, and for the framed ones it is
+    // the declared answer-window variant. `selfcheck_passed` is the assertion.
     const int cycles = Cycles(*row);
     const auto sc0 = model->SelfCheck(req);
     INFO("selfcheck error: '" << sc0.error_msg << "'");
@@ -145,7 +195,7 @@ TEST_CASE("selfcheck tool round-trip on the converted weights",
     RequireVault(*row, root);
 
     lsxcommon::EnsureModelRegistry();
-    auto model = Load(*row, root, lsxcommon::FastMathMode::kOff);
+    auto model = Load(*row, root, SelfCheckMathMode(*row));
 
     std::vector<int32_t> gen_tokens;
     const auto calls = RunToolRoundTrip(*model, 512, &gen_tokens);
@@ -210,15 +260,13 @@ TEST_CASE("selfcheck streams and stops on a cooperative cancel",
     RequireVault(*row, root);
 
     lsxcommon::EnsureModelRegistry();
-    auto model = Load(*row, root, lsxcommon::FastMathMode::kOff);
+    auto model = Load(*row, root, SelfCheckMathMode(*row));
 
-    std::vector<int32_t> ids;
-    REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
-                                       "The capital of France is", ids));
+    std::vector<int32_t> ids = BuildSelfCheckIds(*row, *model);
     lsxcommon::ModelRequest req;
     req.input_ids = ids;
-    req.max_gen_tokens = 2;
-    ExpectStreamMatchesTokens(*model, req);
+    req.max_gen_tokens = row->selfcheck_max_gen;
+    ExpectStreamIsTokensWithoutTrailingEos(*model, req);
     ExpectCooperativeCancelStops(*model, req);
     model->Unload();
 }

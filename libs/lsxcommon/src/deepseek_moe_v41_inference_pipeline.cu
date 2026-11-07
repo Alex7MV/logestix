@@ -157,7 +157,14 @@ gpu::InferenceResult RunDeepSeekV41Inference(
 
     const int prompt_len = static_cast<int>(input_ids.size());
     int max_gen = std::min(max_gen_tokens, 4096);
-    const int total_steps = prompt_len + max_gen;
+    // The FIRST generated token is sampled while processing the LAST prompt
+    // token (step == prompt_len - 1), so the step count that yields exactly
+    // `max_gen` generated tokens is prompt_len - 1 + max_gen. The old
+    // `prompt_len + max_gen` returned max_gen + 1, which every other family does
+    // not: test_streaming_assert's control run asserts
+    // `gen_tokens.size() == budget` and this family reported 25 for 24. It was
+    // invisible because the same test's earlier abort path failed first (§A2).
+    const int total_steps = prompt_len - 1 + max_gen;
     const int max_seq = std::min(kCompressCap, total_steps + 2);
 
     DevSet dev;

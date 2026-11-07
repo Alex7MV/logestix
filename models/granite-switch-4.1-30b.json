@@ -108,5 +108,8 @@
   "golden_debt": {},
   "report": "docs/model-reports/2026-10-31-granite-switch-4.1-30b.md",
   "notes": "",
-  "cooperative_cancel": true
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
 }

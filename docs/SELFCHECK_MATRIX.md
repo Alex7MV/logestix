@@ -41,7 +41,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | model (passport) | SelfCheck | FSI | CODE | DET |
 |---|---|---|---|---|
 | alice-foundation-80b-a3b | PASS | 3/3 | 3/3 | 3/3 |
-| granite-switch-4.1-8b | PASS (x3, `b7c1aa453d83a86f`) | 3/3 | 3/3 | **2/3** (DET-02) |
+| granite-switch-4.1-8b | PASS (x3, `930dd592ea5f5834`) | 3/3 | 3/3 | **2/3** (DET-02) |
 | glm-5.3-flash | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-26b-a4b-it** | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-31b-it** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
@@ -56,7 +56,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
 | **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
-| **deepseek-v4.1-flash** | PASS (x3, `0ab7077b529eaa3b`) ‡ | **1/3** | **2/3** | **2/3** (DET-03) |
+| **deepseek-v4.1-flash** | PASS (x3, `b759bc84b820b4de`) ‡ | **1/3** | **1/3** | **2/3** (DET-03) |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
@@ -64,6 +64,24 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
+
+- **The SelfCheck probe is per-family, and it is now declared.** Unifying the 35
+  per-family selfcheck files into one driver silently flattened four knobs that
+  each file had chosen for itself: the prompt framing (17 files fed
+  `BuildPromptInputIds`, 18 fed raw BPE), the generation budget (2 for most;
+  16/24/32/64/192/256 for the rest), the math mode (14 pinned `FastMathMode::kOff`,
+  21 left the kAuto default), and — separately — whether the case also asserted the
+  raw greedy continuation (12 files did). All three numeric knobs feed the recorded
+  `logits_hash`, so a uniform driver re-baselined every hash in this table and made
+  the column unreproducible. They are now manifest fields (`selfcheck_frame_prompt`,
+  `selfcheck_max_gen`, `selfcheck_bit_exact`), transcribed from the deleted files
+  rather than guessed, and the extra continuation assertion was dropped because the
+  canonical contract is `SelfCheck`.
+  **Evidence, not intent:** the 2026-11-06 17:08 release binaries predate the
+  migration, and replaying four of them against the restored driver reproduces the
+  old hashes exactly — phi-4 `cf51b9bbd5c913dd`, ornith `c3fe24e9dbc55b1e`,
+  qwen3.5-9b `a2af669548e59c73`, xing `53e18f6dd77a64a2` (top-1 and token count
+  identical too). Two of those four were *red* under the uniform driver.
 
 - **A §1 row is a measurement, and three of them are no longer reproducible.**
   Audited 2026-11-07 against the vault: `deepseek-v4-pro-0813`, `gigachat3.5-432b-a28b-reasoning`
@@ -75,14 +93,14 @@ one in a ctest summary, which is why the debt rows are called out below.
   and the other two are 838 GB / 988 GB trees on a host at 94% disk. Re-running
   those rows needs a re-conversion, not a code change — so the cells stay as
   history and this note is the current state.
-- SelfCheck **24/24 rows** (every row above), FSI **61/66**, CODE **65/66**,
+- SelfCheck **24/24 rows** (every row above), FSI **61/66**, CODE **64/66**,
   DET **63/66**. Counting rule: one case per prompt, three prompts per measured
   row, so the denominators are 3 × the rows that carry a measured cell (22 —
   `kimi-k3` and `kimi-k3.1-pro` have no parity verdict yet); a `not run` cell is
   excluded rather than counted as a pass. The five FSI reds are gemma-4-31b
   FSI-01, deepseek-v4-pro FSI-02, minimax-m3 FSI-01 and deepseek-v4.1-flash
-  FSI-01/02; the CODE red is
-  deepseek-v4.1-flash CODE-01; the DET reds are granite-switch-4.1-30b DET-02,
+  FSI-01/02; the two CODE reds are deepseek-v4.1-flash CODE-01 and CODE-03; the
+  DET reds are granite-switch-4.1-30b DET-02,
   granite-switch-4.1-8b DET-02 and deepseek-v4.1-flash DET-03. Both
   granite-switch DET-02 cells are the *source's own* answer (`CRITICAL` where the
   prompt template says `CATASTROPHIC`), so they are family behaviour, not engine
@@ -136,13 +154,26 @@ one in a ctest summary, which is why the debt rows are called out below.
   5.6× below what the same binary does) — and the missing
   `qwen_moe.router.decode` budget for `rtx 5090` is now recorded —
   [`open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md`](open-tasks/2026-11-04-qwen35-parity-and-open-tasks-hygiene.md).
-- ‡ **deepseek-v4.1-flash**: the Paris SelfCheck case passes, but the *same
-  binary's* cooperative-cancel case fails (`mid-generation abort: compressor
-  state reset failed`) — a cancelled request never records its TTFT event and
-  leaves `cudaErrorInvalidResourceHandle` in the thread's last-error state, which
-  the **next** request then reports at an unrelated site. Root cause and fix
-  sketch: `docs/OPEN_TASKS.md` §A2. Its FSI/CODE reds are the 2026-10-07
-  measurements recorded in §Q of that file.
+- ‡ **deepseek-v4.1-flash**: the Paris SelfCheck case passes, and since
+  2026-11-07 so does the cooperative-cancel case in the same binary. That case
+  used to fail (`mid-generation abort: compressor state reset failed`) because a
+  cancelled request never recorded its TTFT event and left
+  `cudaErrorInvalidResourceHandle` in the thread's last-error state, which the
+  **next** request then reported at an unrelated site; root cause and fix:
+  `docs/OPEN_TASKS.md` §A2, which also records that the case had stopped running
+  at all when the selfcheck driver was unified (§G5).
+  Two further corrections, both measured 2026-11-07:
+  **CODE is 1/3, not 2/3.** CODE-01 answers with prose instead of the JSON
+  envelope (extracted empty) and CODE-03 appends a stray `?` to the regex. The
+  same two cases are red on the **pre-refactor** binary built 2026-11-06 17:08
+  (`/tmp/pre_refactor/`, string-checked to predate the shared driver), so this is
+  a matrix error, not a migration regression.
+  **The Paris hash is `b759bc84b820b4de`, not `0ab7077b529eaa3b`,** because of a
+  deliberate fix: `total_steps` was `prompt_len + max_gen`, which produced
+  `max_gen + 1` tokens (the streaming control run reported 25 for a 24 budget)
+  while every other family produces exactly the budget. Reverting just that line
+  reproduces `0ab7077b529eaa3b` bit-exactly, which is how the delta was attributed.
+  The FSI and DET grids are unchanged by it (both re-measured after the fix).
 - **Qwen3.8-Flash-Next** was re-verified end to end on 2026-11-04 (every stage,
   real weights): SelfCheck Paris ×3 bit-exact (`logits_hash 2e3bcd090441ad65`,
   top-1 11751) plus the family's EOS and cross-instance gate, FSI/CODE/DET 3/3

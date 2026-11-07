@@ -106,5 +106,8 @@
     "fsi": "declared debt (see docs/OPEN_TASKS.md)"
   },
   "report": "docs/model-reports/2026-10-31-hy-simulmt-30b-a3b.md",
-  "notes": ""
+  "notes": "",
+  "selfcheck_max_gen": 16,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": false
 }

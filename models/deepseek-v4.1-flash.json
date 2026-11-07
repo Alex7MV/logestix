@@ -108,5 +108,8 @@
   "golden_debt": {},
   "report": "",
   "notes": "",
-  "cooperative_cancel": true
+  "cooperative_cancel": true,
+  "selfcheck_frame_prompt": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false
 }

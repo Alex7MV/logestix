@@ -82,5 +82,8 @@
   "auto_path_determinism": false,
   "golden_debt": {},
   "report": "",
-  "notes": ""
+  "notes": "",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
 }

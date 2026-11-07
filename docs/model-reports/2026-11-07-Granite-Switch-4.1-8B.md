@@ -82,7 +82,7 @@ base `The` (791), guardian-core `{"` (5018), decision `A` (32).
 
 | check | result |
 |---|---|
-| SelfCheck ("Paris"), 3 cycles | **PASS**, bit-identical, `logits_hash = b7c1aa453d83a86f`, top-1 `12366` ("Paris"), `n = 100 355` |
+| SelfCheck ("Paris"), 3 cycles | **PASS**, bit-identical, `logits_hash = 930dd592ea5f5834`, top-1 `12366` ("Paris"), `n = 100 355` |
 | Native chat framing → input ids | **exact match** with the source oracle (real weights) |
 | aLoRA adapter parity (base / guardian-core / decision) | **3/3**, first token identical to the source |
 | Tokenizer (converted arrows vs checkpoint) | **PASS** over the shared corpus |
@@ -138,7 +138,7 @@ can re-run the ablation without editing code and the choice is visible in the
 index as `"residual": "attn"`.
 
 **Verified after the change:** FSI 3/3, SelfCheck still bit-exact over three cycles
-(`b7c1aa453d83a86f`), CODE 3/3, adapter parity 3/3, tool round-trip green, and a
+(`930dd592ea5f5834`), CODE 3/3, adapter parity 3/3, tool round-trip green, and a
 legacy 4-bit-only tree still loads and decodes (the plane is optional in the
 loader, so old artifacts are not invalidated).
 
@@ -209,10 +209,16 @@ for the wrong reason, and a reason not to grade fidelity by that cell alone.
   `test_granite_switch_8b_model` includes the real-weight native tool round-trip:
   `pinned weights loaded: 40 layers (6088178432 bytes resident)`, framing ids
   identical to the captured golden.
-- SelfCheck detail: `logits_hash=b7c1aa453d83a86f n=100355 tok=12366`,
+- SelfCheck detail: `logits_hash=930dd592ea5f5834 n=100355 tok=12366`,
   three cycles identical. (The 4-bit-only tree measured `ad9b0c4940bb27a9`; the
   hash changed because the weights did, which is the expected direction and the
-  reason a hash is not a contract.)
+  reason a hash is not a contract.) This hash was **re-measured 2026-11-07** after
+  the selfcheck driver's generation budget became a declared per-family value: the
+  first capture ran a uniform 256-token budget and reported `b7c1aa453d83a86f`,
+  and the token count is what makes the difference — `final_logits` is the *last*
+  decode step, so any change to the budget changes the hash without changing the
+  model. The budget here is `2`, matching the 30B sibling and the rest of the
+  catalogue; the top-1 token and `n` are unchanged.
 - Converted index (`logestix/model.index.json`): `format logestix-granite-switch`,
   `model granite-switch-4.1-8b`, `num_layers 40`, `intermediate_size 12800`,
   `rope_theta 10000000.0`, `residual_multiplier 0.22`, `num_adapters 2`,

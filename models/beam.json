@@ -120,5 +120,8 @@
   "notes": "",
   "aliases": [
     "beam-1.0-501b-a23b"
-  ]
+  ],
+  "selfcheck_max_gen": 256,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
 }

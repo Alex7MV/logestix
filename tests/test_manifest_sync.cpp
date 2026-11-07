@@ -86,7 +86,10 @@ std::string RowKey(const lsxmanifest::ModelRow &r)
                         "\t", r.tokenizer_kind, "\t",
                         r.tool_roundtrip ? 1 : 0, "\t",
                         r.auto_path_determinism ? 1 : 0, "\t",
-                        r.cooperative_cancel ? 1 : 0);
+                        r.cooperative_cancel ? 1 : 0, "\t",
+                        r.selfcheck_frame_prompt ? 1 : 0, "\t",
+                        r.selfcheck_max_gen, "\t",
+                        r.selfcheck_bit_exact ? 1 : 0);
 }
 
 std::string Escaped(const std::string &s)

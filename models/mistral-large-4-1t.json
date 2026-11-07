@@ -105,5 +105,8 @@
   "auto_path_determinism": false,
   "golden_debt": {},
   "report": "docs/model-reports/2026-11-02-Mistral-Large-4-1T-A52B.md",
-  "notes": ""
+  "notes": "",
+  "selfcheck_max_gen": 16,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
 }

@@ -107,5 +107,8 @@
   "auto_path_determinism": false,
   "golden_debt": {},
   "report": "docs/model-reports/2026-11-03-Kimi-K3.md",
-  "notes": "Host-store bound (~0.3 t/s: 27 GiB routed + 9.5 GiB streamed per token): the two 2048-token modes plus the probe need a long budget (21600 s)."
+  "notes": "Host-store bound (~0.3 t/s: 27 GiB routed + 9.5 GiB streamed per token): the two 2048-token modes plus the probe need a long budget (21600 s).",
+  "selfcheck_max_gen": 64,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
 }

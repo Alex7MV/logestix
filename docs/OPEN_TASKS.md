@@ -1174,7 +1174,7 @@ Re-converting GigaChat costs a 432B/28B-active pass over ~850 GB of source and
 needs the disk headroom the host currently does not have (94% full, 878 GB free).
 Treat it as a scheduling decision, not a bug fix.
 
-## G5. The manifest migration silently dropped the cooperative-cancel gate for 8 models (2026-11-07)
+## G5. The manifest migration dropped the cooperative-cancel gate for 8 models and flattened the selfcheck probe (2026-11-07)
 
 **Status: closed — restored as a declared hook.** Recorded because it is the
 second coverage regression this refactor caused (the first is §G2), and because
@@ -1200,11 +1200,37 @@ members (whose decode loop polls the flag). A model that does not declare it get
 `SUCCEED("cooperative_cancel hook not declared …")`, the same shape as the other
 two hooks, so opting out is explicit rather than silent.
 
+**The same migration flattened the probe itself (found next, same day).** The
+cancel hook was the visible loss; underneath it the driver also dropped four knobs
+each file had chosen for itself: the prompt framing (17 files fed
+`BuildPromptInputIds`, 18 fed raw BPE), the generation budget (2 for most,
+16/24/32/64/192/256 for the rest), the math mode (14 pinned `FastMathMode::kOff`,
+21 left the kAuto default), and the extra "raw greedy continuation" assertion
+(12 files had it). The first three feed the recorded `logits_hash`, so the uniform
+driver changed the hash for nearly every family — phi-4 went `cf51b9bbd5c913dd` →
+`c0955d0e9967e4af`, ornith `c3fe24e9dbc55b1e` → `8ea28e0ee80bc323` — and two
+families' *gates* went red (phi answered "The capital" instead of "Paris" under a
+framed probe; the driver's added continuation assertion is simply wrong for a
+framed family, ornith answers "The capital" and should). All four are now manifest
+fields — `selfcheck_frame_prompt`, `selfcheck_max_gen`, `selfcheck_bit_exact` —
+transcribed from the deleted files, and the continuation assertion was dropped
+because the canonical contract is `SelfCheck`.
+
+**The oracle that settles it:** the release tree's binaries are dated
+2026-11-06 17:08–17:09 and contain none of the new driver's strings, so they are
+pre-refactor. Replaying four of them against the restored driver reproduces the old
+hashes bit-exactly — phi-4 `cf51b9bbd5c913dd`, ornith `c3fe24e9dbc55b1e`,
+qwen3.5-9b `a2af669548e59c73`, xing `53e18f6dd77a64a2`, same top-1 and `n`. Two of
+the four were RED under the uniform driver. A hash mismatch is only actionable
+against such an oracle; without one, "the hash changed" and "the weights changed"
+are indistinguishable.
+
 **What this class teaches, again:** the migration's own tests check that a
 *declared* target exists and runs; they cannot see coverage that was never
-declared. The only defence is transcribing the old files' assertions one by one,
-which is what should have happened at the time — §G2 has the same shape one level
-up.
+declared, and they cannot see a *parameter* that was never declared. The only
+defence is transcribing the old files line by line — assertions **and** their
+constants — which is what should have happened at the time. §G2 has the same shape
+one level up.
 
 ## Archive
 
@@ -1213,7 +1239,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
-| 2026-11-07 | Granite-Switch 4.1 8B FSI-01: red on a form fork, closed with a MEASURED residual-plane placement | The 8B sibling's FSI-01 answered the formula evaluated (`PV=2500000*…`) where the source answers it symbolically — every constant correct, so a form fork rather than a corrupted computation. Teacher-forcing showed it was not a tie: source margin +6.88 logits for `CF`, converted −1.27, an 8.2-logit swing. Bug checklist first (head `global_scale` applied, `Free()` complete, records decode back at relL2 0.094–0.095 on layers 0/20/39) — so, 4-bit body error. Four trees were then converted and probed rather than assuming gemma's placement: none −1.27 (red), **attn +0.9 GB +1.58 (green, shipped)**, mlp +3.3 GB +2.19, attn+mlp +4.2 GB +7.14. `attn` is the cheapest that clears AND leaves the biggest tensors at 4 bits (MLP = 79% of the layer's bytes). Resident 5.14 → 6.09 GB, profile min 5.51 → 6.45 GB, index records `"residual": "attn"`, knob is convert-time (`LSX_GSW_RESIDUAL`). FSI 3/3, SelfCheck ×3 `b7c1aa453d83a86f`, DET 2/3 = the source's own `CRITICAL`. Two instrument defects recorded: the probe read `final_logits` (published after the decode loop, one position late) and reported the wrong winner, and the `det` verdict folded an inference error into `deterministic=false` while embedding raw newlines into a one-line record. Legacy 4-bit-only trees still load (`ad9b0c4940bb27a9`). — [`open-tasks/2026-11-07-granite-switch-fsi01-residual.md`](open-tasks/2026-11-07-granite-switch-fsi01-residual.md) |
+| 2026-11-07 | Granite-Switch 4.1 8B FSI-01: red on a form fork, closed with a MEASURED residual-plane placement | The 8B sibling's FSI-01 answered the formula evaluated (`PV=2500000*…`) where the source answers it symbolically — every constant correct, so a form fork rather than a corrupted computation. Teacher-forcing showed it was not a tie: source margin +6.88 logits for `CF`, converted −1.27, an 8.2-logit swing. Bug checklist first (head `global_scale` applied, `Free()` complete, records decode back at relL2 0.094–0.095 on layers 0/20/39) — so, 4-bit body error. Four trees were then converted and probed rather than assuming gemma's placement: none −1.27 (red), **attn +0.9 GB +1.58 (green, shipped)**, mlp +3.3 GB +2.19, attn+mlp +4.2 GB +7.14. `attn` is the cheapest that clears AND leaves the biggest tensors at 4 bits (MLP = 79% of the layer's bytes). Resident 5.14 → 6.09 GB, profile min 5.51 → 6.45 GB, index records `"residual": "attn"`, knob is convert-time (`LSX_GSW_RESIDUAL`). FSI 3/3, SelfCheck ×3 `b7c1aa453d83a86f` (re-measured 2026-11-07 as `930dd592ea5f5834` when the generation budget became a declared per-family value), DET 2/3 = the source's own `CRITICAL`. Two instrument defects recorded: the probe read `final_logits` (published after the decode loop, one position late) and reported the wrong winner, and the `det` verdict folded an inference error into `deterministic=false` while embedding raw newlines into a one-line record. Legacy 4-bit-only trees still load (`ad9b0c4940bb27a9`). — [`open-tasks/2026-11-07-granite-switch-fsi01-residual.md`](open-tasks/2026-11-07-granite-switch-fsi01-residual.md) |
 | 2026-11-06 | AliceAI-Foundation-80B-A3B: an inverted allocator predicate silently disabled generation for three days | All four gates were red with `alice workspace alloc failed` — and the pre-migration binary failed identically, so it was not the manifest work. The recorded `cudaError_t` and buffer identity showed `cudaMallocAsync -> cudaSuccess (0), free 27399 of 32202 MiB`: nothing had failed. 397ab361 rewrote the workspace macro's ternary arms from `cudaError_t` constants to `true`/`false` while clearing 42 `-Wint-in-bool-context` sites, inverting a chain that reads `if (A() || A() || …)`: the first *successful* malloc aborted the workspace, so alice decoded zero tokens from 2026-11-03 19:33. It stayed invisible because the message discarded the error and the free-VRAM number, because the gate driver's per-case `INFO` left scope before the aggregate `REQUIRE` (Catch2 printed `false` alone), and because the gates carry label `inference`, which no default sweep runs. Fixed with a named `WsAllocFailed()` predicate, a diagnostic naming buffer/bytes/error/free VRAM, and `ExplainCases()` in the gate driver; pinned by *"alice workspace allocator polarity"*, proven red by inverting the predicate. Post-fix SelfCheck Paris ×3 `logits_hash 0bf456024cc05255` (top-1 828), FSI/CODE/DET 3/3 at 230/221/183 s, tool round-trip green; the hash moved from `f900547d25be7914` (2026-11-03) at an unchanged top-1 id, unattributed between 397ab361's dropped `__restrict__` sites and the CUDA 13.5 bump. — [`open-tasks/2026-11-06-alice-workspace-polarity.md`](open-tasks/2026-11-06-alice-workspace-polarity.md) |
 | 2026-11-03 | Dense-trio consolidation, phase 1: granite / granite-switch / phi now run one neutral `lsxcommon::dense` kernel layer | The three dense families had drifted into three near-copies of the same decode kernels. Phase 1 moved RMSNorm, full-dim RoPE, causal GQA attention (with the split-KV flash-decode path), fused split-QKV and fused SwiGLU into `lsx_dense_inference.{h,cu}`; the algorithm is the one Granite-4.2 always ran, moved verbatim (`tools/dedup_provenance.py` proves it), and every family's layer driver stays family-named. No golden moved. — [`open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md`](open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md) |
 | 2026-11-03 | Warning backlog closed: a clean build is 246 lines, none of them ours | Scoping `-Wall -Wextra`/`-Wpedantic` to our own directories dropped a clean build from 51 408 warning lines to 484; this session cleared the remaining 238 across 170 sites / 83 files **without silencers**. The load-bearing find: 39 in-place activation/norm calls aliased `__restrict__` parameters, i.e. formal UB, fixed by dropping the qualifier. Plus fail-closed `SimpleAtoi`/simdjson config reads, a dangling test reference, `memcpy` into `__half`, 19 dead functions. — [`open-tasks/2026-11-03-warning-backlog-closed.md`](open-tasks/2026-11-03-warning-backlog-closed.md) |

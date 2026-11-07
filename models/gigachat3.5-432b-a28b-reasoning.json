@@ -111,5 +111,8 @@
   "auto_path_determinism": false,
   "golden_debt": {},
   "report": "docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md",
-  "notes": ""
+  "notes": "",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
 }

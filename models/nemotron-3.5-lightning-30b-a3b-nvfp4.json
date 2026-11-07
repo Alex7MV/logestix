@@ -95,5 +95,8 @@
     "fsi": "declared debt (see docs/OPEN_TASKS.md)"
   },
   "report": "docs/model-reports/2026-11-01-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4.md",
-  "notes": ""
+  "notes": "",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
 }

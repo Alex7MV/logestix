@@ -79,7 +79,8 @@ MODEL_FIELDS = ("model_type", "family", "variant", "model_class",
                 "model_header", "passport", "namespace", "format_tag",
                 "vault_dir", "vault_env", "tokenizer_kind",
                 "tool_roundtrip", "auto_path_determinism",
-                "cooperative_cancel")
+                "cooperative_cancel", "selfcheck_frame_prompt",
+                "selfcheck_max_gen", "selfcheck_bit_exact")
 
 
 class ManifestError(Exception):
@@ -131,6 +132,9 @@ class Manifest:
     tool_roundtrip: bool
     auto_path_determinism: bool
     cooperative_cancel: bool
+    selfcheck_frame_prompt: bool
+    selfcheck_max_gen: int
+    selfcheck_bit_exact: bool
     resource_lock: str
     aliases: list
     report: str
@@ -259,6 +263,9 @@ def load_one(path: Path) -> Manifest:
         aliases=list(doc.get("aliases", [])),
         auto_path_determinism=bool(doc.get("auto_path_determinism", False)),
         cooperative_cancel=bool(doc.get("cooperative_cancel", False)),
+        selfcheck_frame_prompt=bool(doc.get("selfcheck_frame_prompt", False)),
+        selfcheck_max_gen=int(doc.get("selfcheck_max_gen", 2)),
+        selfcheck_bit_exact=bool(doc.get("selfcheck_bit_exact", True)),
         report=doc.get("report", ""),
         notes=doc.get("notes", ""),
         path=path.name,
@@ -561,14 +568,17 @@ def emit_header(manifests) -> str:
     rows = []
     for m in models:
         rows.append(
-            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s},"
+            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s, %s, %d, %s},"
             % (cstr(m.model_type), cstr(m.family), cstr(m.variant),
                cstr(m.model_class), cstr(m.model_header), cstr(m.passport),
                cstr(m.ns), cstr(m.format_tag), cstr(m.vault_dir),
                cstr(m.vault_env), m.tokenizer_kind,
                "true" if m.tool_roundtrip else "false",
                "true" if m.auto_path_determinism else "false",
-               "true" if m.cooperative_cancel else "false"))
+               "true" if m.cooperative_cancel else "false",
+               "true" if m.selfcheck_frame_prompt else "false",
+               m.selfcheck_max_gen,
+               "true" if m.selfcheck_bit_exact else "false"))
     targets = []
     for m in models:
         for t in sorted(m.targets(), key=lambda x: (x.stage, x.name)):
@@ -600,6 +610,8 @@ struct ModelRow {{
     const char *ns; const char *format_tag; const char *vault_dir;
     const char *vault_env; int tokenizer_kind; bool tool_roundtrip;
     bool auto_path_determinism; bool cooperative_cancel;
+    bool selfcheck_frame_prompt; int selfcheck_max_gen;
+    bool selfcheck_bit_exact;
 }};
 struct TargetRow {{
     const char *model_type; const char *stage; const char *target;
@@ -1150,7 +1162,10 @@ def main(argv=None):
                                       m.vault_env, m.tokenizer_kind,
                                       int(m.tool_roundtrip),
                                       int(m.auto_path_determinism),
-                                      int(m.cooperative_cancel))))
+                                      int(m.cooperative_cancel),
+                                      int(m.selfcheck_frame_prompt),
+                                      m.selfcheck_max_gen,
+                                      int(m.selfcheck_bit_exact))))
         return 0
 
     if args.header:
