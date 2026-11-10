@@ -38,6 +38,10 @@ add_library(lsxcommon STATIC
     src/phi_dense_convert.cpp
     src/phi_dense_load.cpp
     src/phi_dense_model.cpp
+    src/dory_dense_convert.cpp
+    src/dory_dense_load.cpp
+    src/dory_dense_model.cpp
+    src/dory_tool_format.cpp
     src/gemma_base_model.cpp
     src/gemma_moe_model.cpp
     src/gemma_dense_model.cpp
@@ -666,6 +670,33 @@ target_link_libraries(lsxcommon_granite_cu
     lsx_dep_includes
 )
 
+# Dory1.0-4B (looped nGPT) runtime: family-local nGPT normalizations
+# (justnorm / slerp-alpha / qk-norm / gated-attention-norm / Suv-SwiGLU-norm)
+# and the sliding-window causal GQA attention the neutral dense layer cannot
+# express. No -fmad=false: every arithmetic op is an explicit *_rn intrinsic or
+# a shuffle-tree reduction, so the kernels are fmad-flag independent.
+add_library(lsxcommon_dory_cu OBJECT
+    src/dory_dense_inference.cu
+)
+set_target_properties(lsxcommon_dory_cu PROPERTIES
+    CUDA_ARCHITECTURES OFF
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_dory_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(lsxcommon_dory_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+)
+target_include_directories(lsxcommon_dory_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_dory_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_dory_cu
+    "${CUDA_CUDART_LIBRARY}"
+    lsx_dep_includes
+)
+
 # phi-4 dense runtime: family-local RoPE + causal GQA attention,
 # shared lsx_kernels_*.cuh primitives, neutral NVFP4 GEMM. No -fmad=false is
 # required (all shared arithmetic uses explicit *_rn intrinsics).
@@ -767,6 +798,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_dense_cu
     lsxcommon_granite_cu
     lsxcommon_phi_cu
+    lsxcommon_dory_cu
     lsxcommon_alice_cu
     lsxcommon_kimi_k3_cu
     lsxcommon_xing_cu

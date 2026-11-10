@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing|mistral|minimax|hy|flint|ling|beam|step)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|dory|alice|xing|mistral|minimax|hy|flint|ling|beam|step)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -56,8 +56,8 @@ const std::vector<std::string>& FamilyStems()
 {
     static const std::vector<std::string> v =
         {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat",
-         "ornith", "granite", "mimo", "phi", "alice", "xing", "mistral",
-         "minimax", "hy", "flint", "ling", "beam", "step"};
+         "ornith", "granite", "mimo", "phi", "dory", "alice", "xing",
+         "mistral", "minimax", "hy", "flint", "ling", "beam", "step"};
     return v;
 }
 
@@ -74,6 +74,7 @@ bool AllowedCommon(const std::string& stem)
         "gemma_base_model",
         "deepseek_moe_tool_format", "kimi_moe_tool_format",  // V4/V4.1 DSML codec shared by both
         "qwen_tool_format",          // ChatML codec shared by dense + MoE
+        "dory_tool_format",          // Nemotron-v3 ChatML + XML tool codec
         "gemma_tool_format",         // Gemma-4 tool codec
         "granite_tool_format",       // Granite-4.2 ChatML tool codec
         "gigachat_tool_format",      // GigaChat chatml-v5 GCML codec

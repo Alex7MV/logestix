@@ -42,6 +42,7 @@
 #include "lsxcommon/granite_dense_convert.h"
 #include "lsxcommon/granite_dense_switch_convert.h"
 #include "lsxcommon/phi_dense_convert.h"
+#include "lsxcommon/dory_dense_convert.h"
 #include "lsxcommon/deepseek_moe_repack.h"
 #include "lsxcommon/deepseek_moe_v41_convert.h"
 #include "lsxcommon/deepseek_moe_pro_convert.h"
@@ -97,6 +98,9 @@ ABSL_FLAG(bool, granite, false,
 ABSL_FLAG(bool, granite_switch, false,
           "Granite-Switch 4.1 (dense + aLoRA adapters) conversion pipeline");
 ABSL_FLAG(bool, phi, false, "phi-4 (dense) conversion pipeline");
+ABSL_FLAG(bool, dory, false,
+          "NVIDIA-Nemotron-Labs-Dory1.0-4B (looped nGPT) conversion "
+          "pipeline");
 ABSL_FLAG(bool, mimo, false,
           "MiMo-V2.6-Flash-RL (hybrid SWA/full sparse MoE) conversion pipeline");
 ABSL_FLAG(bool, kimi_k3, false,
@@ -195,6 +199,7 @@ int main(int argc, char* argv[]) {
     bool granite = absl::GetFlag(FLAGS_granite);
     bool granite_switch = absl::GetFlag(FLAGS_granite_switch);
     bool phi = absl::GetFlag(FLAGS_phi);
+    bool dory = absl::GetFlag(FLAGS_dory);
     bool mimo = absl::GetFlag(FLAGS_mimo);
     bool kimi_k3 = absl::GetFlag(FLAGS_kimi_k3);
     bool kimi_k31_pro = absl::GetFlag(FLAGS_kimi_k31_pro);
@@ -273,6 +278,7 @@ int main(int argc, char* argv[]) {
     flags.granite = granite;
     flags.granite_switch = granite_switch;
     flags.phi = phi;
+    flags.dory = dory;
     flags.mimo = mimo;
     flags.kimi_k3 = kimi_k3;
     flags.kimi_k31_pro = kimi_k31_pro;
@@ -350,6 +356,8 @@ int main(int argc, char* argv[]) {
             st = lsxcommon::qwen::RecomputeQwenVram(input_path, output_path);
         else if (json.find("logestix-phi") != std::string::npos)
             st = lsxcommon::phi::RecomputePhiVram(input_path, output_path);
+        else if (json.find("logestix-dory") != std::string::npos)
+            st = lsxcommon::dory::RecomputeDoryVram(input_path, output_path);
         else
             st = lsxcommon::RecomputeVramBlock(input_path, output_path);
         if (!st.ok()) {
@@ -540,7 +548,8 @@ int main(int argc, char* argv[]) {
             // standalone contraction. tokenizer_kind 8.
             tok_policy.pretokenizer = 6;
         }
-        if (flags.mistral || flags.nemotron || flags.nemotron_nvfp4) {
+        if (flags.mistral || flags.nemotron || flags.nemotron_nvfp4 ||
+            flags.dory) {
             // Mistral-Small-4 / Nemotron: o200k case runs WITHOUT a
             // contraction suffix, one digit, [\r\n/]* after punctuation.
             // tokenizer_kind 9.
@@ -661,6 +670,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("phi conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kDory: {
+        lsxcommon::log::info(
+            "NVIDIA-Nemotron-Labs-Dory1.0-4B pipeline (logestix-dory-nvfp4 "
+            "layout)");
+        auto st = lsxcommon::dory::ConvertDoryModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("dory conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("dory conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

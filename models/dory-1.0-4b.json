@@ -1,0 +1,92 @@
+{
+  "model_type": "dory-1.0-4b",
+  "display_name": "dory-1.0-4b",
+  "family": "dory",
+  "variant": null,
+  "model_class": "DoryDenseModel",
+  "model_header": "dory_dense_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/dory_dense_constants.h",
+  "namespace": "lsxcommon::dory::frozen",
+  "format_tag": "logestix-dory-nvfp4",
+  "forge_flag": "--dory",
+  "tokenizer_kind": 9,
+  "vault": {
+    "dir": "NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
+    "env": "LSX_TEST_DORY_1_0_4B_ROOT"
+  },
+  "lifecycle_tu": [
+    "dory_dense_model.cpp",
+    "dory_dense_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_dory_dense_convert"
+    ],
+    "load": [
+      "test_dory_dense_loader"
+    ],
+    "model": [
+      "test_dory_dense_model",
+      "test_dory_tool_framing"
+    ],
+    "kernels": [
+      "test_dory_dense_kernels"
+    ],
+    "selfcheck": [
+      "test_dory_dense_selfcheck"
+    ],
+    "fsi": [
+      "test_dory_dense_fsi_selfcheck"
+    ],
+    "code": [
+      "test_dory_dense_code_selfcheck"
+    ],
+    "det": [
+      "test_dory_dense_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_dory_1_0_4b"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_dory_1_0_4b",
+    "vault_subdir": "NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
+    "timeout": 3000
+  },
+  "target_overrides": {
+    "test_dory_dense_loader": {
+      "skip": false
+    },
+    "test_dory_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_dory_dense_kernels": {
+      "skip": false
+    },
+    "test_dory_dense_selfcheck": {
+      "form": "selfcheck"
+    },
+    "test_dory_dense_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_dory_dense_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_dory_dense_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": true,
+  "cooperative_cancel": true,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-10-NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16.md",
+  "notes": "looped nGPT: 16+40*2+16 mixers/token, per_loop KV, 2 loops",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": false
+}

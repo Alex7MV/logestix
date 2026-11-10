@@ -789,6 +789,65 @@ target_compile_definitions(test_phi_cu PRIVATE
     LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 lsx_copy_arrow_dlls(test_phi_dense_kernels)
 
+# ── Dory1.0-4B converter test (classifier + index + fused/residual layout) ──
+add_executable(test_dory_dense_convert test_dory_dense_convert.cpp)
+target_compile_definitions(test_dory_dense_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_include_directories(test_dory_dense_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_dory_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_dory_dense_convert)
+
+# ── Dory1.0-4B loader test (pinned upload, edges, nGPT vector pre-scaling) ──
+add_executable(test_dory_dense_loader test_dory_dense_loader.cpp)
+target_compile_definitions(test_dory_dense_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_dory_dense_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_dory_dense_loader)
+
+# ── Dory1.0-4B model test (registration + synthetic Load/Infer) ──
+add_executable(test_dory_dense_model test_dory_dense_model.cpp)
+target_compile_definitions(test_dory_dense_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_dory_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_dory_dense_model)
+
+# ── Dory nGPT kernel parity tests (.cu, stand-alone OBJECT lib) ──
+add_library(test_dory_cu OBJECT
+    test_dory_dense_kernels.cu
+)
+set_target_properties(test_dory_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_dory_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_dory_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_dory_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_dory_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_dory_dense_kernels)
+set_target_properties(test_dory_dense_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_dory_dense_kernels PRIVATE test_dory_cu lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_dory_dense_kernels)
+
+# ── Dory1.0-4B ChatML/tool framing (host-only, synthetic tokenizer) ──
+add_executable(test_dory_tool_framing test_dory_tool_framing.cpp)
+target_include_directories(test_dory_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_dory_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_dory_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_dory_tool_framing ARROW_ONLY)
+
 # ── Granite-4.2-30B SelfCheck (real weights; SKIP when absent) ──
 
 # ── Granite-Switch-4.1-30B SelfCheck (real weights; SKIP when absent) ──
@@ -4480,6 +4539,24 @@ target_link_libraries(test_phi_dense_det_selfcheck PRIVATE lsxcommon Catch2::Cat
 target_compile_definitions(test_phi_dense_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"phi-4\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_dory_dense_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_dory_dense_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_dory_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_dory_dense_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"dory-1.0-4b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_dory_dense_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_dory_dense_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_dory_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_dory_dense_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"dory-1.0-4b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_dory_dense_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_dory_dense_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_dory_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_dory_dense_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"dory-1.0-4b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_qwen_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_qwen_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -4738,6 +4815,10 @@ add_executable(test_phi_dense_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_phi_dense_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_phi_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_phi_dense_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"phi-4\"")
+add_executable(test_dory_dense_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_dory_dense_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_dory_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_dory_dense_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"dory-1.0-4b\"")
 add_executable(test_qwen_dense_27b_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_qwen_dense_27b_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_qwen_dense_27b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
