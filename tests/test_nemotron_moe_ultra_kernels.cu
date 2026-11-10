@@ -101,6 +101,48 @@ TEST_CASE("ultra kernels: grouped router matches the reference selection on the 
     }
 }
 
+TEST_CASE("ultra kernels: the production routing shape (n_group 1) matches the reference",
+          "[ultra][kernels]")
+{
+    // THIS checkpoint's routing geometry: n_group 1 / topk_group 1 over 512
+    // experts with top-22. The group stage is then the identity (one group holds
+    // all experts), which is a DIFFERENT code path from the grouped cases below:
+    // a mask that wrongly excludes the single group would select nothing.
+    constexpr int E = 512, k = 22, n_group = 1, topk_group = 1;
+    for (std::uint32_t seed = 1; seed <= 20; ++seed) {
+        const auto logits = Rand(E, seed * 3571u);
+        const auto bias = Rand(E, seed * 6151u);
+
+        float w_ref[k];
+        int i_ref[k];
+        ref::RouterTopKGrouped(logits.data(), bias.data(), E, k, n_group, topk_group,
+                               5.0f, w_ref, i_ref);
+
+        Dev<float> d_logits(E), d_bias(E), d_w(k);
+        Dev<int> d_i(k);
+        d_logits.Put(logits);
+        d_bias.Put(bias);
+        RunUltraRouter(d_logits.p, d_bias.p, E, k, n_group, topk_group, 5.0f, d_w.p,
+                       d_i.p, nullptr);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        std::vector<float> w(k);
+        std::vector<int> idx(k);
+        d_w.Get(w);
+        d_i.Get(idx);
+
+        std::vector<int> a(idx), b(i_ref, i_ref + k);
+        std::sort(a.begin(), a.end());
+        std::sort(b.begin(), b.end());
+        INFO("seed " << seed);
+        CHECK(a == b);
+        // The 22 weights must be the normalized, scaled sigmoid scores: a null
+        // selection would give an all -inf / NaN vector and sum to garbage.
+        float sum = 0.0f;
+        for (float v : w) sum += v;
+        CHECK(sum == Approx(5.0f).margin(1e-3));
+    }
+}
+
 TEST_CASE("ultra kernels: grouped router keeps only the winning group", "[ultra][kernels]")
 {
     // Group 0 holds the best single expert, group 2 wins on the top-2 sum.

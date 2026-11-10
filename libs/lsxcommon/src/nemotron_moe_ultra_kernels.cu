@@ -12,6 +12,18 @@ namespace lsxcommon::nemotron_ultra {
 
 namespace {
 
+// Compile-time MAXIMUM number of routing groups the kernel supports. This is NOT
+// `frozen::kRouterGroups`: the group count is a runtime argument (the index
+// carries it, and the fixtures exercise 1, 4 and 8), so sizing the shared arrays
+// from the passport would silently overflow shared memory the moment a caller
+// passes more groups than this checkpoint happens to use. That is exactly what
+// happened when the passport moved from 8 to 1: the grouped cases started
+// scribbling past gscore[]/gkeep[].
+inline constexpr int kMaxRouterGroups = 64;
+static_assert(frozen::kRouterGroups <= kMaxRouterGroups,
+              "the passport's n_group must fit the kernel's shared arrays");
+static_assert(frozen::kNumRouted <= 1024, "router shared arrays are sized to 1024");
+
 __device__ __forceinline__ float silu_f(float x) { return x / (1.0f + expf(-x)); }
 
 __global__ void conv_step_kernel(const float *__restrict__ xBC,
@@ -124,8 +136,8 @@ __global__ void router_kernel(const float *__restrict__ logits,
     __shared__ float s[frozen::kNumRouted];
     __shared__ float ch[frozen::kNumRouted];
     __shared__ int sel[frozen::kNumRouted];
-    __shared__ float gscore[frozen::kRouterGroups];
-    __shared__ int gkeep[frozen::kRouterGroups];
+    __shared__ float gscore[kMaxRouterGroups];
+    __shared__ int gkeep[kMaxRouterGroups];
     __shared__ float rv[1024];
     __shared__ int ri[1024];
 
