@@ -117,5 +117,8 @@
   "notes": "separate lineage from nemotron-3.5-lightning: grouped router, latent MoE, 108 layers",
   "selfcheck_max_gen": 2,
   "selfcheck_bit_exact": false,
-  "selfcheck_frame_prompt": false
+  "selfcheck_frame_prompt": false,
+  "aliases": [
+    "nvidia-nemotron-3-ultra-550b-a55b-bf16"
+  ]
 }

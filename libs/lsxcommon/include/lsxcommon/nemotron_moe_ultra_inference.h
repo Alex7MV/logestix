@@ -59,6 +59,12 @@ struct UltraSession {
     int *topk_i = nullptr;             // [topk]
     float *moe_acc = nullptr;          // [max(H, moe_latent)]
     float *head_logits = nullptr;      // [vocab]
+    // Latent-bridge input. MUST be its own buffer: the routed up-projection
+    // writes topk*I halfs into proj16 while the GEMV is still READING the latent
+    // vector, so aliasing the two lets the first chunk clobber its own input
+    // (I = 5120 > latent = 2048). The 30B sibling cannot hit this because it has
+    // no latent bridge: its expert input is `normed`, a different buffer.
+    __half *latent16 = nullptr;        // [moe_latent]
     __half *proj16 = nullptr;          // NVFP4 GEMV output scratch
     __half *out16 = nullptr;           // NVFP4 GEMV output scratch
 

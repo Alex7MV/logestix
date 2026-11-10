@@ -106,9 +106,10 @@ __global__ void kv_store_kernel(float *__restrict__ cache,
 
 inline int Grid1D(int n, int threads) { return (n + threads - 1) / threads; }
 
-// Diagnostic (LSX_NEMOTRON_ULTRA_DUMP_LAYERS=<file> plus
+// Diagnostic (LSX_NEMOTRON_ULTRA_DUMP_LAYERS=<file>, optional
 // LSX_NEMOTRON_ULTRA_DUMP_POS=<position>): append one line per layer holding the
-// residual stream's L2 norm and its leading dims at the requested position.
+// residual stream's L2 norm and its leading dims. Without DUMP_POS every position
+// is recorded, which is how a norm profile is read for a whole prompt.
 //
 // This is the engine side of the slice-oracle gate
 // (tests/test_nemotron_ultra_layers.cpp): the oracle records the same summary
@@ -120,8 +121,7 @@ void DumpLayerRow(const __half *h, int n, int layer, int pos, cudaStream_t strea
     const char *path = std::getenv("LSX_NEMOTRON_ULTRA_DUMP_LAYERS");
     if (!path || !*path) return;
     const char *pos_env = std::getenv("LSX_NEMOTRON_ULTRA_DUMP_POS");
-    if (!pos_env) return;
-    if (pos != std::atoi(pos_env)) return;
+    if (pos_env && *pos_env && pos != std::atoi(pos_env)) return;
 
     // 64 leading dims: the gate's cosine runs over these. 8 is too few to be a
     // meaningful direction estimate (0.98 over 8 dims can still be a 3e-4 L2
@@ -179,7 +179,7 @@ void UltraSession::Free()
     free_f(router_logits); free_f(topk_w);
     if (topk_i) { cudaFree(topk_i); topk_i = nullptr; }
     free_f(moe_acc); free_f(head_logits);
-    free_h(proj16); free_h(out16);
+    free_h(latent16); free_h(proj16); free_h(out16);
 }
 
 bool AllocUltraSession(const UltraIndex &idx, int max_seq, UltraSession &s,
@@ -265,6 +265,11 @@ bool AllocUltraSession(const UltraIndex &idx, int max_seq, UltraSession &s,
         !alloc_h(s.out16, std::max({s.H, s.topk * latent, attn_hd_total,
                                    s.kv_heads * s.attn_head_dim}))) {
         error = "session scratch alloc failed";
+        s.Free();
+        return false;
+    }
+    if (s.moe_latent > 0 && !alloc_h(s.latent16, s.moe_latent)) {
+        error = "session latent scratch alloc failed";
         s.Free();
         return false;
     }
@@ -438,12 +443,13 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
             // experts (and therefore the batched GEMV's K) run at L, not at H.
             const __half *expert_in = s.normed;
             if (s.moe_latent > 0) {
+                // Own buffer, NOT proj16: see UltraSession::latent16.
                 e = RunLsxNvfp4Gemm(stream, s.normed, lw.latent_up.d_packed,
                                     lw.latent_up.d_scales,
-                                    lw.latent_up.global_scale, s.proj16, 1, H,
+                                    lw.latent_up.global_scale, s.latent16, 1, H,
                                     lw.latent_up.rows);
                 if (e != cudaSuccess) return e;
-                expert_in = s.proj16;
+                expert_in = s.latent16;
             }
 
             // Routed experts, batched per projection. The batch entry point
@@ -504,6 +510,19 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
         DumpLayerRow(s.h, H, l, pos, stream);
     }
 
+    // Diagnostic: the final un-normalised residual, so the head can be checked
+    // independently of the layer walk (write once per run, last token wins).
+    if (const char *hp = std::getenv("LSX_NEMOTRON_ULTRA_DUMP_HIDDEN"); hp && *hp) {
+        std::vector<__half> hh(static_cast<std::size_t>(H));
+        if (cudaMemcpyAsync(hh.data(), s.h, hh.size() * sizeof(__half),
+                            cudaMemcpyDeviceToHost, stream) == cudaSuccess &&
+            cudaStreamSynchronize(stream) == cudaSuccess) {
+            if (FILE *f = std::fopen(hp, "wb")) {
+                std::fwrite(hh.data(), sizeof(__half), hh.size(), f);
+                std::fclose(f);
+            }
+        }
+    }
     rmsnorm_half_kernel<<<1, 256, 0, stream>>>(s.h, w.d_final_norm, H, eps,
                                               s.normed);
     return gemv::RunLxGemmVec(stream, w.d_head, s.normed, 1, idx.vocab_size, H,
