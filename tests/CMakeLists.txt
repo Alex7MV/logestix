@@ -2996,6 +2996,15 @@ target_include_directories(test_nemotron_moe_ultra_loader PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 lsx_copy_arrow_dlls(test_nemotron_moe_ultra_loader)
 
+# ── Nemotron-3-Ultra-550B routed-expert store + device slot LRU ──────────
+add_executable(test_nemotron_moe_ultra_expert_cache
+    test_nemotron_moe_ultra_expert_cache.cpp)
+target_link_libraries(test_nemotron_moe_ultra_expert_cache PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_expert_cache PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_moe_ultra_expert_cache)
+
 # ── Nemotron-3-Ultra-550B device kernels (GPU parity vs the host reference) ─
 add_library(test_nemotron_moe_ultra_kernels_cu OBJECT
     test_nemotron_moe_ultra_kernels.cu)
