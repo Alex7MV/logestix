@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "nemotron_moe_ultra_constants.h"
+#include "test_nemotron_moe_ultra_fixture.h"
 
 using namespace lsxcommon::nemotron_ultra;
 
@@ -60,6 +61,19 @@ TEST_CASE("ultra passport: attention and MoE geometry")
     REQUIRE(frozen::kRoutedScale == 5.0f);
     REQUIRE(frozen::kVocab == 131072);
     REQUIRE(frozen::kRmsEps == 1e-5);
+}
+
+TEST_CASE("ultra synthetic fixture: geometry is internally consistent")
+{
+    REQUIRE(ultratest::kTMambaIn == ultratest::kTMH * ultratest::kTMHD +
+                                        ultratest::kTConvDim + ultratest::kTMH);
+    REQUIRE(ultratest::kTExperts % ultratest::kTGroup == 0);
+    // The fixture must not be a copy of the 30B one: a shared value would let a
+    // cross-family copy pass both suites.
+    REQUIRE(ultratest::kTExperts != 4);
+    REQUIRE(ultratest::kTGroup != 1);
+    REQUIRE(ultratest::kTLatent > 0);
+    REQUIRE(ultratest::kTAH * ultratest::kTAHD == ultratest::kTH);
 }
 
 TEST_CASE("ultra passport: geometry is distinct from the 30B sibling")

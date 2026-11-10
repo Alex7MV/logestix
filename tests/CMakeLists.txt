@@ -2977,13 +2977,17 @@ target_link_libraries(test_nemotron_moe_math PRIVATE Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_math PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
-# ── Nemotron-3-Ultra-550B frozen passport (header-only, no CUDA) ──────────
+# ── Nemotron-3-Ultra-550B frozen passport (host-only, no CUDA) ──────────
+# Links lsxcommon only so the shared synthetic fixture (which pulls the
+# neutral safetensors/Arrow primitives) can be included; the passport itself
+# is header-only.
 add_executable(test_nemotron_moe_ultra_constants
     test_nemotron_moe_ultra_constants.cpp)
 target_link_libraries(test_nemotron_moe_ultra_constants
-    PRIVATE Catch2::Catch2WithMain)
+    PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_ultra_constants PRIVATE
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
 
 # ── GigaChat3.5 host reference math (header-only, no CUDA) ────────────────
 add_executable(test_gigachat_moe_math test_gigachat_moe_math.cpp)
