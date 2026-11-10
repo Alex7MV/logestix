@@ -163,10 +163,16 @@ using lsxcommon::ModelInitConfig;
 using lsxcommon::ModelRequest;
 using lsxcommon::NemotronUltra550BModel;
 
-// NOTE: the factory-resolution case for this model lives in the manifest commit:
-// LsxModelFactory is generated from models/*.json, so until the row exists the
-// lookup legitimately returns nullptr. Load/Infer are exercised here by
-// constructing the leaf directly, which is the same object the factory builds.
+TEST_CASE("ultra factory resolves nemotron-ultra-550b-a55b", "[ultra][model]")
+{
+    lsxcommon::EnsureModelRegistry();
+    ModelInitConfig cfg;
+    cfg.model_type = NemotronUltra550BModel::kType;
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    CHECK(model->Type() == NemotronUltra550BModel::kType);
+}
+
 TEST_CASE("ultra Load+Infer on the synthetic tree generate two tokens",
           "[ultra][model]")
 {

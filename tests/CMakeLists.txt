@@ -3004,6 +3004,61 @@ target_include_directories(test_nemotron_moe_ultra_model PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 lsx_copy_arrow_dlls(test_nemotron_moe_ultra_model)
 
+# ── Nemotron-3-Ultra-550B tokenizer parity + per-layer oracle gate ───────
+add_executable(test_nemotron_ultra_tokenizer_parity
+    test_nemotron_ultra_tokenizer_parity.cpp)
+target_compile_definitions(test_nemotron_ultra_tokenizer_parity PRIVATE
+    LSX_NEMOTRON_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron")
+target_link_libraries(test_nemotron_ultra_tokenizer_parity PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_ultra_tokenizer_parity PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+add_executable(test_nemotron_ultra_layers test_nemotron_ultra_layers.cpp)
+target_compile_definitions(test_nemotron_ultra_layers PRIVATE
+    LSX_NEMOTRON_ULTRA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron_ultra")
+target_link_libraries(test_nemotron_ultra_layers PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_ultra_layers PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_ultra_layers)
+
+# ── Nemotron-3-Ultra-550B lifecycle gates (shared drivers) ───────────────
+add_executable(test_nemotron_ultra_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_nemotron_ultra_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_selfcheck PRIVATE
+    "LSX_SELFCHECK_MODEL=\"nemotron-ultra-550b-a55b\"")
+
+add_executable(test_nemotron_ultra_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_ultra_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_fsi_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-ultra-550b-a55b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+
+add_executable(test_nemotron_ultra_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_ultra_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_code_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-ultra-550b-a55b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+
+add_executable(test_nemotron_ultra_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_ultra_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_det_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-ultra-550b-a55b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+
 # ── Nemotron-3-Ultra-550B conversation codec (host-only) ─────────────────
 add_executable(test_nemotron_ultra_tool_framing
     test_nemotron_ultra_tool_framing.cpp)

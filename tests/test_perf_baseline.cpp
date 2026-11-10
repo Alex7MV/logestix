@@ -100,6 +100,9 @@ const PerfModel kNemotronNvfp4 = {
     "nemotron-3.5-lightning-30b-a3b-nvfp4",
     "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "The capital of France is",
     2048};
+const PerfModel kNemotronUltra = {
+    "nemotron-ultra-550b-a55b", "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "The capital of France is", 2048};
 const PerfModel kGigachat = {
     "gigachat3.5-432b-a28b-reasoning", "GigaChat3.5-432B-A28B-Reasoning",
     "The capital of France is", 2048};
@@ -598,6 +601,16 @@ TEST_CASE("perf baseline: nemotron-3.5-lightning-30b-a3b", "[perf]")
 TEST_CASE("perf baseline: nemotron-3.5-lightning-30b-a3b-nvfp4", "[perf]")
 {
     RunPerfModel(kNemotronNvfp4);
+}
+
+TEST_CASE("perf baseline: nemotron-ultra-550b-a55b", "[perf]")
+{
+    // 550 B over a 32 GB card: the dense graph is ~22.5 GB and 1 056 experts per
+    // token stream from NVMe, so this row is expected in the 0.5-1.5 t/s band
+    // (mistral-large-4-1t is 1.04 t/s on the same card). A row far below that
+    // band is a regression; a row far above it means something stopped being
+    // read, which is worse.
+    RunPerfModel(kNemotronUltra);
 }
 
 TEST_CASE("perf baseline: qwen3.8-27b", "[perf]")
