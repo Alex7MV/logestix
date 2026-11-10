@@ -2977,6 +2977,14 @@ target_link_libraries(test_nemotron_moe_math PRIVATE Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_math PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
+# ── Nemotron-3-Ultra-550B frozen passport (header-only, no CUDA) ──────────
+add_executable(test_nemotron_moe_ultra_constants
+    test_nemotron_moe_ultra_constants.cpp)
+target_link_libraries(test_nemotron_moe_ultra_constants
+    PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_constants PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
 # ── GigaChat3.5 host reference math (header-only, no CUDA) ────────────────
 add_executable(test_gigachat_moe_math test_gigachat_moe_math.cpp)
 target_link_libraries(test_gigachat_moe_math PRIVATE Catch2::Catch2WithMain)
