@@ -20,6 +20,9 @@
 #include "lsxcommon/nemotron_moe_ultra_convert.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <simdjson.h>
+
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -31,14 +34,75 @@ using namespace lsxcommon::nemotron_ultra;
 
 namespace {
 
+// The index must be STRICT JSON, not merely contain the right substrings: a
+// duplicated `"vram":` key (caught on the first real-weight probe, not by any
+// substring assertion) makes every downstream reader fail. simdjson is already
+// linked, so validate for real.
+void REQUIRE_STRICT_JSON(const std::string &json)
+{
+    namespace sj = simdjson;
+    sj::ondemand::parser parser;
+    sj::padded_string pad(json.data(), json.size());
+    sj::ondemand::document doc;
+    const auto rc = parser.iterate(pad).get(doc);
+    INFO("index is not strict JSON (error " << static_cast<int>(rc) << "):\n"
+                                            << json);
+    REQUIRE(rc == sj::SUCCESS);
+
+    // simdjson TOLERATES a duplicated key, Python's json does not, and the
+    // readers would disagree about which one wins - so uniqueness is asserted
+    // explicitly. The generated index puts every top-level key on its own line
+    // beginning with two spaces, which is what this scans.
+    std::vector<std::string> keys;
+    std::size_t pos = 0;
+    while ((pos = json.find("\n  \"", pos)) != std::string::npos) {
+        const std::size_t begin = pos + 4;
+        const std::size_t end = json.find('\"', begin);
+        REQUIRE(end != std::string::npos);
+        keys.push_back(json.substr(begin, end - begin));
+        pos = end;
+    }
+    // A duplicated key may sit on ONE line (`"vram":   "vram": {`), so counting
+    // occurrences of `"<key>":` in the whole document is the check that sees it;
+    // a line-start scan alone does not.
+    for (const auto &k : keys) {
+        const std::string pat = "\"" + k + "\":";
+        std::size_t n = 0;
+        for (std::size_t at = json.find(pat); at != std::string::npos;
+             at = json.find(pat, at + 1))
+            ++n;
+        INFO("key '" << k << "' appears " << n << " times");
+        CHECK(n == 1);
+    }
+    std::sort(keys.begin(), keys.end());
+    const auto dup = std::adjacent_find(keys.begin(), keys.end());
+    if (dup != keys.end()) INFO("duplicated top-level key: " << *dup);
+    CHECK(dup == keys.end());
+}
+
 std::string ReadIndexJson(const fs::path &dst)
 {
     std::ifstream in(dst / "logestix" / "model.index.json");
     REQUIRE(in.good());
     std::stringstream ss;
     ss << in.rdbuf();
-    return ss.str();
+    const std::string json = ss.str();
+    REQUIRE_STRICT_JSON(json);
+    return json;
 }
+
+// Synthetic geometry bypass for the whole binary (ctest also sets it): a fixture
+// has tiny widths, and every production path keeps the gate closed.
+struct EnableSyntheticGeometry {
+    EnableSyntheticGeometry()
+    {
+#ifdef _WIN32
+        _putenv_s("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+#else
+        setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+#endif
+    }
+} g_enable_synthetic;
 
 fs::path MakeSource(const std::string &tag)
 {

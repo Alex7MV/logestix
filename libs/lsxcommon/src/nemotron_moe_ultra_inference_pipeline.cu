@@ -24,6 +24,9 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -98,6 +101,44 @@ __global__ void kv_store_kernel(float *__restrict__ cache,
 }
 
 inline int Grid1D(int n, int threads) { return (n + threads - 1) / threads; }
+
+// Diagnostic (LSX_NEMOTRON_ULTRA_DUMP_LAYERS=<file> plus
+// LSX_NEMOTRON_ULTRA_DUMP_POS=<position>): append one line per layer holding the
+// residual stream's L2 norm and its leading dims at the requested position.
+//
+// This is the engine side of the slice-oracle gate
+// (tests/test_nemotron_ultra_layers.cpp): the oracle records the same summary
+// from the reference `NemotronHBlock` output, so the two can be compared
+// directly. Off unless both env vars are set, and it synchronizes, so it is a
+// measurement instrument and never a run-path feature.
+void DumpLayerRow(const __half *h, int n, int layer, int pos, cudaStream_t stream)
+{
+    const char *path = std::getenv("LSX_NEMOTRON_ULTRA_DUMP_LAYERS");
+    if (!path || !*path) return;
+    const char *pos_env = std::getenv("LSX_NEMOTRON_ULTRA_DUMP_POS");
+    if (!pos_env) return;
+    if (pos != std::atoi(pos_env)) return;
+
+    const int kDims = 8;
+    std::vector<__half> host(static_cast<std::size_t>(n));
+    if (cudaMemcpyAsync(host.data(), h, host.size() * sizeof(__half),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return;
+    if (cudaStreamSynchronize(stream) != cudaSuccess) return;
+    double ss = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double v = __half2float(host[static_cast<std::size_t>(i)]);
+        ss += v * v;
+    }
+    const double l2 = std::sqrt(ss);
+    FILE *f = std::fopen(path, "a");
+    if (!f) return;
+    std::fprintf(f, "layer %d pos %d l2 %.6f", layer, pos, l2);
+    for (int i = 0; i < kDims && i < n; ++i)
+        std::fprintf(f, " %.6f", __half2float(host[static_cast<std::size_t>(i)]));
+    std::fprintf(f, "\n");
+    std::fclose(f);
+}
 
 void HalfToFloat(const __half *src, int n, float *dst, cudaStream_t s)
 {
@@ -431,6 +472,7 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
             FloatToHalf(s.moe_acc, H, s.sub, stream);
             residual_add_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.sub, H);
         }
+        DumpLayerRow(s.h, H, l, pos, stream);
     }
 
     rmsnorm_half_kernel<<<1, 256, 0, stream>>>(s.h, w.d_final_norm, H, eps,

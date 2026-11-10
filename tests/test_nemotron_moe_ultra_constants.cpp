@@ -53,7 +53,13 @@ TEST_CASE("ultra passport: attention and MoE geometry")
     REQUIRE(frozen::kTopK == 22);
     REQUIRE(frozen::kNumRouted == 512);
     REQUIRE(frozen::kNumRouted % frozen::kRouterGroups == 0);
-    REQUIRE(frozen::kNumRouted / frozen::kRouterGroups == 64);
+    // Routing n_group is 1 for this checkpoint: ONE group over all 512 experts,
+    // so the group stage is the identity. (The SSM field of the same-looking
+    // name is kSsmGroups = 8; conflating them was a real bug the real-weight
+    // probe caught before conversion.)
+    REQUIRE(frozen::kRouterGroups == 1);
+    REQUIRE(frozen::kNumRouted / frozen::kRouterGroups == 512);
+    REQUIRE(frozen::kSsmGroups == 8);
     REQUIRE(frozen::kRouterTopkGroup == 1);
     REQUIRE(frozen::kTopK <= frozen::kNumRouted);
     REQUIRE(frozen::kMoeLatent == 2048);

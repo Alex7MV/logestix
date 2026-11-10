@@ -351,16 +351,26 @@ UltraTopology ParseUltraConfig(const std::string &input_dir)
         }
     }
 
-    if (top.hidden_size <= 0 || top.num_layers <= 0 || top.num_experts <= 0 ||
-        top.num_experts_per_tok <= 0 || top.moe_intermediate_size <= 0 ||
-        top.layer_types.empty()) {
-        top.error_msg = "config.json missing required NemotronH fields";
+    // Depth. This checkpoint does NOT carry `num_hidden_layers`: the reference
+    // `NemotronHConfig` derives it from `layers_block_type`, and so must the
+    // converter. When the field IS present (older siblings, fixtures) it has to
+    // agree with the list rather than silently win.
+    if (top.layer_types.empty()) {
+        top.error_msg =
+            "config.json missing required NemotronH fields (layers_block_type)";
         return top;
     }
-    if (static_cast<int>(top.layer_types.size()) != top.num_layers) {
-        top.error_msg = absl::StrCat("layers_block_type size ",
-                                     top.layer_types.size(),
-                                     " != num_hidden_layers ", top.num_layers);
+    if (top.num_layers > 0 &&
+        static_cast<int>(top.layer_types.size()) != top.num_layers) {
+        top.error_msg = absl::StrCat("num_hidden_layers ", top.num_layers,
+                                     " != len(layers_block_type) ",
+                                     top.layer_types.size());
+        return top;
+    }
+    top.num_layers = static_cast<int>(top.layer_types.size());
+    if (top.hidden_size <= 0 || top.num_experts <= 0 ||
+        top.num_experts_per_tok <= 0 || top.moe_intermediate_size <= 0) {
+        top.error_msg = "config.json missing required NemotronH fields";
         return top;
     }
     // Grouped routing geometry: the reference splits the scores into n_group
@@ -759,9 +769,8 @@ arrow::Status ConvertNemotronUltraModel(const std::string &input_dir,
         }
         j << "],\n  \"peak_expert_records\": " << peak_expert_records
           << ",\n  \"tokenizer\": \"" << (tokenizer_ok ? "binary" : "fixture")
-          << "\",\n  \"vram\": " << FormatVramJson(top.vram)
-          << ",\n  \"deferred\": {\"mtp\": \"cut\", \"mtp_tensors\": " << mtp_cut
-          << "}"
+          << "\",\n" << FormatVramJson(top.vram)
+          << ",\n  \"deferred\": {\"mtp\": \"cut\"}"
           << ",\n  \"total_pinned_tensors\": " << total_pinned
           << ",\n  \"total_experts\": " << total_experts << "\n}";
         std::ofstream out(base / "model.index.json");

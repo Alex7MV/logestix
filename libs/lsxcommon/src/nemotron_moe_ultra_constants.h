@@ -66,7 +66,12 @@ inline constexpr int kTopK = 22;
 inline constexpr int kMoeIntermediate = 5120;  // per-expert I, at the latent width
 inline constexpr int kMoeLatent = 2048;        // moe_latent_size (fc1/fc2 bridge)
 inline constexpr int kSharedIntermediate = 10240;
-inline constexpr int kRouterGroups = 8;    // n_group (state groups are separate)
+// Routing groups. NOTE the two "n_group" spellings in this checkpoint's config:
+// `n_group` (= 1 here) groups the EXPERTS for the router, while `n_groups`
+// (= 8, below) groups the Mamba-2 SSM state. With n_group == 1 the reference's
+// group stage is the identity over all 512 experts - the same shape the 30B
+// sibling has - and `kNumRouted / kRouterGroups == kNumRouted`.
+inline constexpr int kRouterGroups = 1;     // n_group (routing, NOT n_groups)
 inline constexpr int kRouterTopkGroup = 1;  // topk_group
 inline constexpr float kRoutedScale = 5.0f;
 
