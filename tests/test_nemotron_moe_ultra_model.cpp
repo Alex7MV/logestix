@@ -13,11 +13,15 @@
 #include "lsxcommon/nemotron_moe_ultra_expert_cache.h"
 #include "lsxcommon/nemotron_moe_ultra_inference.h"
 #include "lsxcommon/nemotron_moe_ultra_load.h"
+#include "nemotron_moe_ultra_model.h"
+
+#include "lsxcommon/model_factory.h"
 
 #include <cuda_runtime.h>
 
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -152,4 +156,40 @@ TEST_CASE("ultra pipeline: one token through 108-layer-shaped walk yields finite
     FreeUltraSession(s);
     FreeUltraExpertCache(cache);
     w.Free();
+}
+
+using lsxcommon::LsxModelFactory;
+using lsxcommon::ModelInitConfig;
+using lsxcommon::ModelRequest;
+using lsxcommon::NemotronUltra550BModel;
+
+// NOTE: the factory-resolution case for this model lives in the manifest commit:
+// LsxModelFactory is generated from models/*.json, so until the row exists the
+// lookup legitimately returns nullptr. Load/Infer are exercised here by
+// constructing the leaf directly, which is the same object the factory builds.
+TEST_CASE("ultra Load+Infer on the synthetic tree generate two tokens",
+          "[ultra][model]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+    const auto tree = ConvertedFixture("nu_infer");
+    ModelInitConfig cfg;
+    cfg.model_path = tree.string();
+    cfg.model_type = NemotronUltra550BModel::kType;
+    auto model = std::make_unique<NemotronUltra550BModel>(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+    CHECK(model->Type() == NemotronUltra550BModel::kType);
+
+    ModelRequest req;
+    req.input_ids = {1, 2, 3};
+    req.max_gen_tokens = 2;
+    req.ignore_eos = true;
+    const auto r = model->Infer(req);
+    INFO("infer error: " << r.error_msg);
+    REQUIRE(r.ok);
+    CHECK(r.num_tokens == 2);
+    CHECK(r.gen_tokens.size() == 2);
+    // Logits are the fixture's vocab, taken from the index rather than assumed.
+    CHECK(r.final_logits.size() == static_cast<std::size_t>(ultratest::kTVocab));
+    model->Unload();
 }
