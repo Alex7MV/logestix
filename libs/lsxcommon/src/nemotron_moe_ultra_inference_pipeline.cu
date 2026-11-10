@@ -17,6 +17,10 @@
 
 #include "nemotron_moe_ultra_kernels.h"
 
+#include "lsxcommon/log.h"
+
+#include <absl/strings/str_format.h>
+
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/nemotron_moe_ultra_expert_cache.h"
@@ -119,7 +123,10 @@ void DumpLayerRow(const __half *h, int n, int layer, int pos, cudaStream_t strea
     if (!pos_env) return;
     if (pos != std::atoi(pos_env)) return;
 
-    const int kDims = 8;
+    // 64 leading dims: the gate's cosine runs over these. 8 is too few to be a
+    // meaningful direction estimate (0.98 over 8 dims can still be a 3e-4 L2
+    // match, which is what the first version of this gate showed).
+    const int kDims = 64;
     std::vector<__half> host(static_cast<std::size_t>(n));
     if (cudaMemcpyAsync(host.data(), h, host.size() * sizeof(__half),
                         cudaMemcpyDeviceToHost, stream) != cudaSuccess)
@@ -403,7 +410,14 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
             std::string res_err;
             e = ResolveUltraExperts(experts, l, ti.data(), s.topk, stream, ev.data(),
                                     res_err);
-            if (e != cudaSuccess) return e;
+            if (e != cudaSuccess) {
+                // A silent return here reads as "the forward failed" with no way
+                // to tell a wrong slot id from an unreadable expert file.
+                lsxcommon::log::error(absl::StrFormat(
+                    "[nemotron-ultra] expert resolve failed at layer %d: %s", l,
+                    res_err));
+                return e;
+            }
             std::vector<const uint8_t *> up_p(static_cast<std::size_t>(s.topk)),
                 up_s(static_cast<std::size_t>(s.topk)),
                 dn_p(static_cast<std::size_t>(s.topk)),
@@ -432,16 +446,31 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
                 expert_in = s.proj16;
             }
 
-            // Routed experts in two batched launches (one per projection).
-            e = RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                stream, expert_in, up_p.data(), up_s.data(), up_g.data(), s.topk,
-                /*x_stride=*/0, s.proj16, LAT, I, false);
-            if (e != cudaSuccess) return e;
+            // Routed experts, batched per projection. The batch entry point
+            // accepts at most kMaxExpertsPerBatch experts per launch (its own
+            // contract), and THIS model routes to top-22 — the 30B sibling's
+            // top-6 fits in one launch, so a straight copy of its call fails
+            // with cudaErrorInvalidValue here. Chunking keeps the [count, N]
+            // layout: chunk c writes rows [c*kChunk, ...) of the same buffer.
+            constexpr int kMaxExpertsPerBatch = 8;
+            for (int c = 0; c < s.topk; c += kMaxExpertsPerBatch) {
+                const int cnt = std::min(kMaxExpertsPerBatch, s.topk - c);
+                e = RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                    stream, expert_in, up_p.data() + c, up_s.data() + c,
+                    up_g.data() + c, cnt, /*x_stride=*/0,
+                    s.proj16 + static_cast<std::size_t>(c) * I, LAT, I, false);
+                if (e != cudaSuccess) return e;
+            }
             RunUltraRelu2Half(s.proj16, s.topk * I, stream);
-            e = RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                stream, s.proj16, dn_p.data(), dn_s.data(), dn_g.data(), s.topk,
-                /*x_stride=*/I, s.out16, I, LAT, false);
-            if (e != cudaSuccess) return e;
+            for (int c = 0; c < s.topk; c += kMaxExpertsPerBatch) {
+                const int cnt = std::min(kMaxExpertsPerBatch, s.topk - c);
+                e = RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                    stream, s.proj16 + static_cast<std::size_t>(c) * I,
+                    dn_p.data() + c, dn_s.data() + c, dn_g.data() + c, cnt,
+                    /*x_stride=*/I, s.out16 + static_cast<std::size_t>(c) * LAT, I,
+                    LAT, false);
+                if (e != cudaSuccess) return e;
+            }
             RunUltraMoeWeightedSum(s.out16, s.topk_w, s.topk, LAT, s.moe_acc,
                                    /*add=*/false, stream);
 

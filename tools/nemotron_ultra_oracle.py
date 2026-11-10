@@ -179,6 +179,78 @@ def load_sliced_weights(model, checkpoint, layers, sliced):
     return model
 
 
+E4M3_LEVELS = None
+
+
+def nvfp4_roundtrip(w, block=16):
+    """Applies the NVFP4 codec (E2M1 + per-16 E4M3 block scale) to a 2-D weight.
+
+    This is the same encoding the converter applies (docs/NVIDIA_DOCS §1): block
+    amax -> scale = amax/6, scale stored as E4M3, elements as E2M1 levels
+    {0,.5,1,1.5,2,3,4,6} (sign-magnitude). The GLOBAL scale is folded into the
+    block scales here because it is a power-of-two-free float that cancels in the
+    round trip; the point of this function is the RESOLUTION loss, which is what
+    separates a runtime defect from 4-bit noise.
+    """
+    import torch
+
+    orig = w.detach().to(torch.float32)
+    out_shape = orig.shape
+    flat = orig.reshape(-1, orig.shape[-1])
+    rows, cols = flat.shape
+    pad = (-cols) % block
+    if pad:
+        flat = torch.nn.functional.pad(flat, (0, pad))
+    blocks = flat.reshape(rows, -1, block)
+    amax = blocks.abs().amax(dim=-1, keepdim=True).clamp_min(1e-12)
+    scale = amax / 6.0
+    # E4M3 round-trip of the block scale: 3 mantissa bits, exponent bias 7.
+    import math
+    e = torch.floor(torch.log2(scale))
+    e = torch.clamp(e, min=-6.0, max=8.0)
+    base = torch.pow(2.0, e)
+    mant = torch.round((scale / base - 1.0) * 8.0) / 8.0
+    mant = torch.clamp(mant, min=0.0, max=1.875)
+    scale_q = base * (1.0 + mant)
+    # E2M1 levels.
+    norm = blocks / scale_q
+    levels = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
+    mag = norm.abs().clamp(max=6.0)
+    idx = torch.bucketize(mag, (levels[1:] + levels[:-1]) / 2.0)
+    q = levels[idx] * torch.sign(norm)
+    deq = q * scale_q
+    deq = deq.reshape(rows, -1)[:, :cols]
+    return deq.reshape(out_shape).to(w.dtype)
+
+
+def quantize_like_converter(model, block_types_selected):
+    """NVFP4-quantizes every weight the converter stores as NVFP4.
+
+    Mirrors `ultra_tensor_is_nvfp4`: mixer in/out projections, attention q/k/v/o,
+    the latent bridge, the shared expert, and the routed experts. Norms, biases,
+    A_log/D/dt_bias, conv1d, the router gate and embed/head stay raw — quantizing
+    them here would make the reference disagree with the engine for reasons the
+    engine never does.
+    """
+    import torch
+
+    n = 0
+    for name, p in list(model.named_parameters()):
+        if not name.startswith("model.layers."):
+            continue
+        tail = name.split(".", 3)[-1]
+        if not tail.endswith(".weight"):
+            continue
+        if any(k in tail for k in ("in_proj", "out_proj", "q_proj", "k_proj",
+                                   "v_proj", "o_proj", "fc1_latent_proj",
+                                   "fc2_latent_proj", "shared_experts.up_proj",
+                                   "shared_experts.down_proj", "experts.")):
+            with torch.no_grad():
+                p.copy_(nvfp4_roundtrip(p.data))
+            n += 1
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -191,6 +263,10 @@ def main():
                                        "instead of encoding --prompt")
     ap.add_argument("--dims", type=int, default=8,
                     help="leading hidden dimensions recorded per layer (default 8)")
+    ap.add_argument("--quantize-nvfp4", action="store_true",
+                    help="apply the engine's NVFP4 codec to the reference's own "
+                         "weights before running, so the comparison isolates "
+                         "runtime error from 4-bit quantization noise")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -199,6 +275,10 @@ def main():
     model, raw, sliced = build_sliced_model(args.checkpoint, layers, dtype)
     model = load_sliced_weights(model, args.checkpoint, layers, sliced)
     model.eval()
+
+    if args.quantize_nvfp4:
+        n = quantize_like_converter(model, sliced)
+        print(f"NVFP4 round-trip applied to {n} weight tensors", file=sys.stderr)
 
     # Tokenize with the checkpoint's own tokenizer.json (the family golden is
     # captured from it too, so ids match the engine's bridge).
@@ -240,6 +320,7 @@ def main():
     logits = out.logits[0, -1].float()
     record = {
         "checkpoint": os.path.basename(args.checkpoint.rstrip("/")),
+        "nvfp4_reference": bool(args.quantize_nvfp4),
         "num_layers": raw["layers_block_type"].__len__(),
         "layers": layers,
         "layer_types": sliced,

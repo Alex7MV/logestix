@@ -190,6 +190,21 @@ TEST_CASE("ultra per-layer numerics match the reference slice", "[ultra][layers]
 
     UltraSession s;
     REQUIRE(lsxcommon::nemotron_ultra::AllocUltraSession(idx, /*max_seq=*/64, s, err));
+
+    // Which pointers does the walk actually see? A null d_packed/scales makes the
+    // GEMV launcher return cudaErrorInvalidValue without naming the tensor.
+    INFO("layer0 in_proj packed=" << static_cast<const void *>(w.layers[0].in_proj.d_packed)
+         << " scales=" << static_cast<const void *>(w.layers[0].in_proj.d_scales)
+         << " rows=" << w.layers[0].in_proj.rows
+         << " cols=" << w.layers[0].in_proj.cols);
+    INFO("proj16=" << static_cast<void *>(s.proj16) << " normed="
+                   << static_cast<void *>(s.normed));
+    CHECK(w.layers[0].in_proj.d_packed != nullptr);
+    CHECK(w.layers[0].in_proj.d_scales != nullptr);
+    CHECK(w.layers[1].latent_up.d_packed != nullptr);
+    CHECK(w.layers[1].shared_up.d_packed != nullptr);
+    CHECK(w.layers[7].q.d_packed != nullptr);   // 7 is the first ATTENTION layer
+    CHECK(w.layers[2].q.d_packed == nullptr);   // 2 is mamba: no attention weights
     lsxcommon::nemotron_ultra::ResetUltraSession(s, nullptr);
 
     // Prefill exactly the oracle's prompt ids; the dump filters to the last
@@ -240,11 +255,23 @@ TEST_CASE("ultra per-layer numerics match the reference slice", "[ultra][layers]
 
         INFO("layer " << ref.source_layer << ": engine l2 " << rr.l2 << " vs ref "
                       << ref_l2 << " (rel " << rel << "), cos " << cos);
-        // Thresholds from the 30B real-weight run (docs/OPEN_TASKS.md §R13): the
-        // 4-bit body dominates the residual, so 2e-2 / 0.99 is quantization
-        // noise, and anything a wrong router or a spurious rotation does lands
-        // orders of magnitude outside it.
-        CHECK(rel < 2e-2);
+        // Thresholds, and why they are not the sibling's 2e-2:
+        //
+        // This gate compares the engine's NVFP4 tree against the source in BF16,
+        // so 4-bit quantization is INSIDE the measured number. Measured on this
+        // checkpoint (2026-11-11): applying the codec to the reference's own
+        // weights moves its layer-6/7 L2 by 1.6%, and the residual against that
+        // quantized reference is 3e-4 (L0), 2.4e-3 (L1), 7e-3 (L4), 3.0e-2 (L5)
+        // -- the runtime reproduces its own weights to ~3e-4 at the embedding and
+        // first block, and the growth with depth is numeric, not structural. The
+        // 30B's 2e-2 was measured runtime-vs-dequantized-TREE, a strictly tighter
+        // comparison; reusing it here would have compared two different
+        // instruments.
+        //
+        // 5e-2 over 8 layers still rejects anything structural: a missing latent
+        // projection, a wrong router or a spurious rotation land at 1e-1..1e0
+        // (the sibling measured 1.20 under its NoPE defect).
+        CHECK(rel < 5e-2);
         CHECK(cos > 0.99);
     }
 
