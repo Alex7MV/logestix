@@ -80,7 +80,11 @@ struct UltraTopology {
     int n_group = 0, topk_group = 0;
     float routed_scaling_factor = 0.0f;
     bool norm_topk_prob = false;
+    // config.json declares a bare int; generation_config.json carries the
+    // real stop set ([2, 11] for this checkpoint). Both are read, the list
+    // wins, and the scalar is its first element.
     int eos_token_id = -1, bos_token_id = -1, pad_token_id = -1;
+    std::vector<int> eos_token_ids;
     int total_pinned_tensors = 0;
     VramProfile vram;       // conversion-time VRAM requirements
     std::string error_msg;  // non-empty when config is invalid

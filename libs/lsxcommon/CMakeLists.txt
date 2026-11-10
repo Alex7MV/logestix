@@ -53,6 +53,7 @@ add_library(lsxcommon STATIC
     src/nemotron_moe_model.cpp
     src/nemotron_moe_nvfp4_model.cpp
     src/nemotron_moe_ultra_convert.cpp
+    src/nemotron_moe_ultra_load.cpp
     src/gigachat_moe_convert.cpp
     src/gigachat_moe_load.cpp
     src/gigachat_moe_model.cpp

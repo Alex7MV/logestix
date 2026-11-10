@@ -334,9 +334,13 @@ UltraTopology ParseUltraConfig(const std::string &input_dir)
     top.routed_scaling_factor =
         static_cast<float>(get_d(root, "routed_scaling_factor", 1.0));
     top.norm_topk_prob = get_b(root, "norm_topk_prob", false);
-    top.eos_token_id = get_i(root, "eos_token_id", -1);
     top.bos_token_id = get_i(root, "bos_token_id", -1);
     top.pad_token_id = get_i(root, "pad_token_id", -1);
+    // eos_token_id: config.json declares a bare int here, generation_config.json
+    // the real stop set. Read the config's spelling for the scalar and prefer the
+    // generation config's list when it exists (below).
+    top.eos_token_id = get_i(root, "eos_token_id", -1);
+    if (top.eos_token_id >= 0) top.eos_token_ids.push_back(top.eos_token_id);
 
     if (auto lt = root["layers_block_type"].get_array();
         lt.error() == simdjson::SUCCESS) {
@@ -383,6 +387,46 @@ UltraTopology ParseUltraConfig(const std::string &input_dir)
         if (t != "mamba" && t != "moe" && t != "attention") {
             top.error_msg = "unknown layer type in layers_block_type: " + t;
             return top;
+        }
+    }
+
+    // generation_config.json carries the authoritative stop set. Reading it
+    // matters: this checkpoint stops on 2 AND 11, and a reader that keeps only 2
+    // generates past the model's own turn end.
+    {
+        const fs::path gen_path = fs::path(input_dir) / "generation_config.json";
+        if (fs::exists(gen_path, ec)) {
+            std::ifstream gf(gen_path, std::ios::binary);
+            std::stringstream gs;
+            gs << gf.rdbuf();
+            std::string gjson = gs.str();
+            simdjson::ondemand::parser gp;
+            simdjson::padded_string gpad(gjson.data(), gjson.size());
+            simdjson::ondemand::document gdoc;
+            simdjson::ondemand::object groot;
+            if (gp.iterate(gpad).get(gdoc) == simdjson::SUCCESS &&
+                gdoc.get_object().get(groot) == simdjson::SUCCESS) {
+                std::vector<int> stops;
+                simdjson::ondemand::value eos;
+                if (groot["eos_token_id"].get(eos) == simdjson::SUCCESS) {
+                    if (auto arr = eos.get_array();
+                        arr.error() == simdjson::SUCCESS) {
+                        for (auto e : arr.value()) {
+                            int64_t v;
+                            if (e.get_int64().get(v) == simdjson::SUCCESS)
+                                stops.push_back(static_cast<int>(v));
+                        }
+                    } else {
+                        int64_t v;
+                        if (eos.get_int64().get(v) == simdjson::SUCCESS)
+                            stops.push_back(static_cast<int>(v));
+                    }
+                }
+                if (!stops.empty()) {
+                    top.eos_token_ids = std::move(stops);
+                    top.eos_token_id = top.eos_token_ids.front();
+                }
+            }
         }
     }
     return top;
@@ -699,7 +743,12 @@ arrow::Status ConvertNemotronUltraModel(const std::string &input_dir,
           << ",\n  \"norm_topk_prob\": " << (top.norm_topk_prob ? "true" : "false")
           << ",\n  \"experts_no_gate\": true"
           << ",\n  \"bos_token_id\": " << top.bos_token_id
-          << ",\n  \"eos_token_id\": " << top.eos_token_id
+          << ",\n  \"eos_token_id\": [";
+        for (std::size_t i = 0; i < top.eos_token_ids.size(); ++i) {
+            if (i) j << ",";
+            j << top.eos_token_ids[i];
+        }
+        j << "]"
           << ",\n  \"pad_token_id\": " << top.pad_token_id
           << ",\n  \"mtp_tensors\": " << mtp_cut
           << ",\n  \"partial\": " << (partial ? "true" : "false")
