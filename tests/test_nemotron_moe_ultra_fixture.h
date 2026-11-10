@@ -74,11 +74,10 @@ inline std::vector<std::string> LayerTypes() { return {"mamba", "moe", "attentio
 
 // Writes `<dir>/config.json` + `<dir>/model.safetensors` (one shard, BF16/F32
 // payloads, tensor names byte-identical to the real checkpoint's).
-inline void WriteUltraCheckpoint(const std::filesystem::path &dir)
+inline void WriteUltraConfig(const std::filesystem::path &dir)
 {
-    {
-        std::ofstream f(dir / "config.json");
-        f << R"({
+    std::ofstream f(dir / "config.json");
+    f << R"({
   "architectures": ["NemotronHForCausalLM"],
   "model_type": "nemotron_h",
   "hidden_size": )" << kTH << R"(,
@@ -111,8 +110,12 @@ inline void WriteUltraCheckpoint(const std::filesystem::path &dir)
   "num_nextn_predict_layers": 1,
   "layers_block_type": ["mamba", "moe", "attention"]
 })";
-    }
+}
 
+// The full tensor inventory the fixture writes. Exposed so a negative case can
+// drop or mutate exactly one entry instead of hand-writing a shard.
+inline std::vector<FakeTensor> MakeUltraTensors()
+{
     std::vector<FakeTensor> ts;
     auto bf16 = [](const std::string &n, std::vector<int64_t> shape) {
         int64_t n_elem = 1;
@@ -171,8 +174,13 @@ inline void WriteUltraCheckpoint(const std::filesystem::path &dir)
     ts.push_back(bf16("mtp.layers.0.norm.weight", {kTH}));
     ts.push_back(bf16("mtp.layers.0.mixer.q_proj.weight", {kTAH * kTAHD, kTH}));
     ts.push_back(bf16("mtp.layers.0.mixer.k_proj.weight", {kTKVH * kTAHD, kTH}));
+    return ts;
+}
 
-    WriteSafetensors(dir, "model.safetensors", ts);
+inline void WriteUltraCheckpoint(const std::filesystem::path &dir)
+{
+    WriteUltraConfig(dir);
+    WriteSafetensors(dir, "model.safetensors", MakeUltraTensors());
 }
 
 // Overrides for the converted index so the loader's negative cases can be

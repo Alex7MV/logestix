@@ -2977,6 +2977,17 @@ target_link_libraries(test_nemotron_moe_math PRIVATE Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_math PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
+# ── Nemotron-3-Ultra-550B converter (synthetic checkpoint only) ───────────
+add_executable(test_nemotron_moe_ultra_convert
+    test_nemotron_moe_ultra_convert.cpp)
+target_compile_definitions(test_nemotron_moe_ultra_convert PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_nemotron_moe_ultra_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_moe_ultra_convert)
+
 # ── Nemotron-3-Ultra-550B frozen passport (host-only, no CUDA) ──────────
 # Links lsxcommon only so the shared synthetic fixture (which pulls the
 # neutral safetensors/Arrow primitives) can be included; the passport itself
