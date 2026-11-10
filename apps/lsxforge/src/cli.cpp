@@ -83,6 +83,8 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--nemotron_nvfp4",
              {Pipeline::kNemotronNvfp4, flags.nemotron_nvfp4}},
             {"--nemotron", {Pipeline::kNemotron, flags.nemotron}},
+            {"--nemotron_ultra",
+             {Pipeline::kNemotronUltra, flags.nemotron_ultra}},
             {"--gigachat", {Pipeline::kGigachat, flags.gigachat}},
             {"--mimo", {Pipeline::kMimo, flags.mimo}},
             {"--qwen38flashnext",
@@ -112,6 +114,35 @@ Resolution ResolvePipeline(const Flags &flags)
     if (chosen) return {pipeline, {}};
 
     return {Pipeline::kGeneric, {}};
+}
+
+bool ParseLayerWindow(const std::string &layers, int &first, int &last,
+                      std::string &error)
+{
+    first = 0;
+    last = -1;  // "to the end"
+    if (layers.empty()) return true;
+    const auto colon = layers.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= layers.size()) {
+        error = "--layers expects \"first:last\", got \"" + layers + "\"";
+        return false;
+    }
+    const auto digits = [](const std::string &s) {
+        return s.find_first_not_of("0123456789") == std::string::npos;
+    };
+    const std::string a = layers.substr(0, colon);
+    const std::string b = layers.substr(colon + 1);
+    if (!digits(a) || !digits(b)) {
+        error = "--layers expects two non-negative integers, got \"" + layers + "\"";
+        return false;
+    }
+    first = std::atoi(a.c_str());
+    last = std::atoi(b.c_str());
+    if (last < first) {
+        error = "--layers window [" + a + "," + b + "] is inverted";
+        return false;
+    }
+    return true;
 }
 
 }  // namespace lsxforge
