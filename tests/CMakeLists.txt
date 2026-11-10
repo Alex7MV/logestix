@@ -2996,6 +2996,27 @@ target_include_directories(test_nemotron_moe_ultra_loader PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 lsx_copy_arrow_dlls(test_nemotron_moe_ultra_loader)
 
+# ── Nemotron-3-Ultra-550B device kernels (GPU parity vs the host reference) ─
+add_library(test_nemotron_moe_ultra_kernels_cu OBJECT
+    test_nemotron_moe_ultra_kernels.cu)
+set_target_properties(test_nemotron_moe_ultra_kernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_nemotron_moe_ultra_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_nemotron_moe_ultra_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_nemotron_moe_ultra_kernels_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_nemotron_moe_ultra_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_nemotron_moe_ultra_kernels)
+set_target_properties(test_nemotron_moe_ultra_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_nemotron_moe_ultra_kernels PRIVATE
+    test_nemotron_moe_ultra_kernels_cu lsxcommon Catch2::Catch2WithMain)
+
 # ── Nemotron-3-Ultra-550B host reference math (header-only, no CUDA) ─────
 add_executable(test_nemotron_moe_ultra_math test_nemotron_moe_ultra_math.cpp)
 target_link_libraries(test_nemotron_moe_ultra_math PRIVATE Catch2::Catch2WithMain)
