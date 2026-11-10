@@ -104,11 +104,20 @@ inline void WriteUltraConfig(const std::filesystem::path &dir)
   "moe_shared_expert_intermediate_size": )" << kTShared << R"(,
   "mlp_hidden_act": "relu2",
   "mamba_hidden_act": "silu",
-  "eos_token_id": [2, 11],
+  "eos_token_id": 2,
   "bos_token_id": 1,
   "pad_token_id": 0,
   "num_nextn_predict_layers": 1,
   "layers_block_type": ["mamba", "moe", "attention"]
+})";
+    // The real checkpoint splits the stop set across the two files: config.json
+    // carries a scalar, generation_config.json the authoritative list.
+    std::ofstream g(dir / "generation_config.json");
+    g << R"({
+  "_from_model_config": true,
+  "bos_token_id": 1,
+  "eos_token_id": [2, 11],
+  "pad_token_id": 0
 })";
 }
 
@@ -117,10 +126,17 @@ inline void WriteUltraConfig(const std::filesystem::path &dir)
 inline std::vector<FakeTensor> MakeUltraTensors()
 {
     std::vector<FakeTensor> ts;
+    // Values, not raw bit patterns: `MakeBf16` writes i % 65536, which are BF16
+    // subnormals that underflow to zero once uploaded as FP16 — fine for a
+    // structural fixture, useless for a forward pass. This pattern stays inside
+    // a plausible weight range and never lands on exact zero.
     auto bf16 = [](const std::string &n, std::vector<int64_t> shape) {
         int64_t n_elem = 1;
         for (auto d : shape) n_elem *= d;
-        return FakeTensor{n, "BF16", std::move(shape), MakeBf16(n_elem)};
+        return FakeTensor{n, "BF16", std::move(shape),
+                          synthtest::MakeBf16Values(n_elem, [](int64_t i) {
+                              return 0.05f * static_cast<float>(i % 17) - 0.4f;
+                          })};
     };
 
     // Globals (untied embeddings + head).
@@ -146,7 +162,9 @@ inline std::vector<FakeTensor> MakeUltraTensors()
     ts.push_back(bf16("backbone.layers.1.mixer.gate.weight", {kTExperts, kTH}));
     ts.push_back(FakeTensor{
         "backbone.layers.1.mixer.gate.e_score_correction_bias", "F32", {kTExperts},
-        MakeF32Values(kTExperts, [](int64_t) { return 0.0f; })});
+        MakeF32Values(kTExperts, [](int64_t i) {
+            return 0.01f * static_cast<float>(i % 5);
+        })});
     ts.push_back(bf16("backbone.layers.1.mixer.fc1_latent_proj.weight", {kTLatent, kTH}));
     ts.push_back(bf16("backbone.layers.1.mixer.fc2_latent_proj.weight", {kTH, kTLatent}));
     ts.push_back(

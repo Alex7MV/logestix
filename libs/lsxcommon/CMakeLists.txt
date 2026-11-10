@@ -845,6 +845,7 @@ target_link_libraries(lsxcommon_nemotron_cu
 # -fmad=false: bit-exact against the host reference (protocol invariant).
 add_library(lsxcommon_nemotron_ultra_cu OBJECT
     src/nemotron_moe_ultra_kernels.cu
+    src/nemotron_moe_ultra_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_nemotron_ultra_cu PROPERTIES
     CUDA_ARCHITECTURES OFF
