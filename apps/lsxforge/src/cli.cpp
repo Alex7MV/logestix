@@ -18,7 +18,7 @@ Resolution ResolvePipeline(const Flags &flags)
         flags.ornith || flags.qwen38flashnext || flags.gemma4 ||
         flags.gemma4dense ||
         flags.nemotron || flags.nemotron_nvfp4 || flags.gigachat ||
-        flags.glmflash || flags.granite || flags.phi || flags.mimo ||
+        flags.glmflash || flags.granite || flags.phi || flags.dory || flags.mimo ||
         flags.alice || flags.minimax || flags.minimax_flash || flags.hy ||
         flags.hy_simulmt ||
         flags.flint ||
@@ -63,6 +63,7 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--granite_switch",
              {Pipeline::kGraniteSwitch, flags.granite_switch}},
             {"--phi", {Pipeline::kPhi, flags.phi}},
+            {"--dory", {Pipeline::kDory, flags.dory}},
             {"--alice", {Pipeline::kAlice, flags.alice}},
             {"--xing", {Pipeline::kXing, flags.xing}},
             {"--mistral", {Pipeline::kMistral, flags.mistral}},

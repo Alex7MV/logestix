@@ -1397,6 +1397,108 @@ order they should be chased:
 Do not re-seed until one of those is settled; a wrong re-seed would erase the only
 evidence if the ~4% is real.
 
+## R18. Dory1.0-4B (4B, looped nGPT) — ingestion landed, one engine lesson on
+direction-carrying residuals (2026-11-10)
+
+Branch `feat/dory1-4b`. New family (`model_type: dory`, kType `dory-1.0-4b`):
+a **looped latent-recurrent normalized-GPT** decoder, not a transformer with
+pre-norms. All nine lifecycle stages ran on the real 7.95 GB checkpoint and are
+green: SelfCheck Paris ×3 bit-exact (`f100088895adb12d`, top-1 6993), FSI 3/3,
+CODE 3/3, DET 3/3, native tool round-trip, perf seeded through the harness at
+**94.2 t/s** (`r3`) / 93.1 (`perf`) 2048 tokens, 4.83 GiB resident. Report:
+`docs/model-reports/2026-11-10-NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16.md`.
+
+### R18a. The auto (TC fast-math) policy silently produces non-source tokens
+
+**Status: fixed by pinning `FastMathMode::kOff` in `DoryDenseModel::Infer`**, the
+same remedy granite-4.2 and granite-switch already carry.
+
+Symptom: the converted model answered `# Prompt\n\nWrite a short story about a
+man who is a professional photographer…` to "The capital of France is" framed as
+a chat, while the strict path answers `The user is asking a simple factual
+question … Paris` — fluent, plausible, and unlike anything the source produces.
+The SelfCheck does not see it because it runs at `kOff`; the FSI/CODE/DET gates
+do not see it because they also pin `kOff`. Only a `RunCliGeneration` /
+`lsxfabric --testprompt` invocation at the production policy exposes it, which is
+the same blind spot `granite-4.2-30b` had.
+
+Root cause, measured with a scratch GEMV harness (deleted after use): the
+Blackwell W4A4 `mxf4nvf4` path is **tolerance-class per GEMM** — relL2 against
+the scalar reference is 0.062 at `seq=1`, 0.113 at 3, 0.182 at 8, 0.192 at 16,
+0.199 at 32 (K=2560, N=6144). For a magnitude-carrying transformer that is
+invisible. For Dory it is not, because **every mixer output is L2-normalized
+onto the unit sphere**: a few percent of relative error in a projection becomes
+a *direction* error of the residual stream at the very next layer, and the
+2 × 40 recurrent passes compound it. The residual NVFP4 plane plus the strict
+scalar route is what makes the 4-bit body track the source (first 64 tokens of a
+long-form prompt agree with the source oracle for 43, then one near-tie forks).
+
+The general lesson, worth applying before the next ingestion: "auto policy" is
+safe for a family whose residual stream carries magnitude, and unsafe for one
+whose residual stream carries direction. Check what the architecture normalizes
+before accepting a tolerance-class kernel route.
+
+Pinned by `test_dory_dense_model.cpp::"dory pins the strict routing (TC
+fast-math cannot change the output)"`, which drives the process-global routing to
+the TC path before `Infer` and requires the strict token stream bit-for-bit.
+
+### R18b. A reasoning-always model needs the mode named per gate
+
+The checkpoint's template defaults to `enable_thinking=true` and both vendor
+serving recipes enable a reasoning parser. Two of the three parity probes are
+mode-sensitive:
+
+- DET-TEST-02 (letter match) answers `CRITICAL` with reasoning off and
+  `CATASTROPHIC` with it on — the latter is the correct answer, so the DET golden
+  is captured in reasoning mode (2048-token budget, which is what lets all three
+  probes close their `<think>` block);
+- FSI and CODE are captured with reasoning off: this model's trace on those
+  prompts is long and self-repeating and does not close the block inside 2048
+  tokens, so the extraction would fall back inside the reasoning text.
+
+The engine frames with reasoning ON by default (the served mode). Both capture
+modes are named in the capture scripts' `OVERRIDES` comments and in
+`docs/SELFCHECK_MATRIX.md`; this is a recorded deviation, not a silent one.
+
+## G9. `test_gpu_perf`'"'"'s bandwidth-probe case is flaky under a PARALLEL fast
+sweep (2026-11-10)
+
+**Status: open. Pre-existing, not caused by any model branch** — reproduced with
+every `dory` target excluded from the run.
+
+`tests/test_gpu_perf.cpp` case *"memory-bandwidth probe releases its device
+buffers"* (added in `d56305d3`) asserts
+
+```
+free_before >= free_after        // after MeasureMemoryBandwidthGbs()
+```
+
+to prove the probe does not leak its 2 × 512 MiB working set. The assertion is a
+*cross-process* comparison: `cudaMemGetInfo` reports the whole device, so any
+other process that releases memory during the probe window makes `free_after`
+larger than `free_before` and the case fails while proving nothing. Measured on
+`linux-debug`, `-j 24`, three consecutive sweeps of the 140 non-dory fast
+targets: **fail, pass, fail**. Isolated (5 consecutive single-process runs):
+5/5 pass, and the underlying probe is fine — the failure message shows
+`free before 29543 MiB, after 29843 MiB`, i.e. free memory went UP by 300 MiB.
+
+Two candidate fixes, in order of preference:
+
+1. **Assert the leak, not the delta.** The probe's contract is "no 512 MiB
+   buffer survives". Measuring that needs the process's own held bytes, not the
+   device's free bytes — e.g. `cudaDeviceGetLimit`/a pool snapshot, or a
+   `cudaMemGetInfo` pair taken around alloc/free of a same-sized sentinel buffer
+   inside the case. Attribute the slack to the sentinel, not to the world.
+2. Give the case `RESOURCE_LOCK "gpu"` so it never shares the card with another
+   target of the same ctest. This hides the cross-process window without making
+   it measurable — and it costs a lock on a label that deliberately stays
+   parallel (`test_ctest_labels_guard` exempts `fast` for exactly that reason),
+   so it would just move the problem to whatever runs next.
+
+Do not "fix" it by widening `kSlack`: 300 MiB of foreign churn would still fail,
+and a slack large enough to absorb it also hides the 1 GiB leak the case exists
+to catch.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

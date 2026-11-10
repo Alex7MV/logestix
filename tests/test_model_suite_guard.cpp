@@ -746,6 +746,10 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"kimi-k2.7-code", {"test_kimi_tool_framing"}},
         {"ornith-1.5-35b-a3b", {"test_qwen_tool_framing"}},
         {"phi-4", {"test_phi_tool_framing"}},
+        // Dory's native renderer + the shared Qwen3-Coder XML parser, verified
+        // against the checkpoint's chat_template.jinja in the host test; the
+        // real-weight round-trip rides the selfcheck target's tool hook.
+        {"dory-1.0-4b", {"test_dory_tool_framing", "test_dory_dense_selfcheck"}},
         {"granite-4.2-30b", {}},
         {"granite-switch-4.1-30b", {"test_granite_switch_tool_framing"}},
         // The 8B ships a byte-identical chat template and tokenizer

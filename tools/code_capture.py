@@ -529,8 +529,11 @@ def template_golden(model, model_type, out, max_new_tokens):
     opts["max_new_tokens"] = max_new_tokens
     prompts = load_prompts()
 
-    tok = AutoTokenizer.from_pretrained(
-        model, trust_remote_code=opts["trust_remote_code"])
+    if opts.get("tokenizer") == "fast":
+        tok = _load_dory_tokenizer(model)
+    else:
+        tok = AutoTokenizer.from_pretrained(
+            model, trust_remote_code=opts["trust_remote_code"])
     if not getattr(tok, "chat_template", None):
         jinja = os.path.join(model, "chat_template.jinja")
         if os.path.exists(jinja):
@@ -570,6 +573,35 @@ def template_golden(model, model_type, out, max_new_tokens):
     print("wrote", out)
 
 
+# dory-1.0-4b (NVIDIA-Nemotron-Labs-Dory1.0-4B): `model_type: dory` has no
+# transformers config class, so AutoTokenizer cannot even build the tokenizer
+# (config validation raises before the tokenizer is touched) and
+# AutoModelForCausalLM has no class at all. tools/dory_oracle.py builds a
+# PreTrainedTokenizerFast from tokenizer.json and reimplements the nGPT looped
+# forward exactly as the vendor reference (vllm-project/vllm#60149) does.
+# Thinking OFF for these probes: the model answers the FSI arithmetic and
+# CODE JSON/regex probes directly and canonically, while its reasoning trace
+# is long and self-repeating (it does not close the think block inside 2048
+# tokens on FSI-01/02 and CODE-01/03, which makes the answer extraction fall
+# back inside the reasoning text). The DET gate captures in reasoning mode
+# instead - its letter-match probe needs it.
+OVERRIDES["dory-1.0-4b"] = {"loader": "dory", "tokenizer": "fast",
+                            "enable_thinking": False}
+
+def _load_dory_tokenizer(model):
+    """PreTrainedTokenizerFast from tokenizer.json (no AutoTokenizer: the
+    checkpoint's config has no transformers class)."""
+    from transformers import PreTrainedTokenizerFast
+    tok = PreTrainedTokenizerFast(
+        tokenizer_file=os.path.join(model, "tokenizer.json"),
+        bos_token="<s>", eos_token="<|im_end|>", pad_token="<|im_end|>",
+        unk_token="<unk>")
+    jinja = os.path.join(model, "chat_template.jinja")
+    if os.path.exists(jinja):
+        with open(jinja, encoding="utf-8") as fh:
+            tok.chat_template = fh.read()
+    return tok
+
 def capture(model, model_type, out, max_new_tokens, device_map=None):
     import torch
     import transformers
@@ -582,8 +614,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         opts["device_map"] = device_map
     prompts = load_prompts()
 
-    tok = AutoTokenizer.from_pretrained(
-        model, trust_remote_code=opts["trust_remote_code"])
+    if opts.get("tokenizer") == "fast":
+        tok = _load_dory_tokenizer(model)
+    else:
+        tok = AutoTokenizer.from_pretrained(
+            model, trust_remote_code=opts["trust_remote_code"])
     if not getattr(tok, "chat_template", None):
         jinja = os.path.join(model, "chat_template.jinja")
         if os.path.exists(jinja):
@@ -603,6 +638,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import granite_switch_oracle
         tok, lm = granite_switch_oracle.load(model, opts.get("adapter_name"))
+        print("device:", next(lm.parameters()).device)
+    elif opts.get("loader") == "dory":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import dory_oracle
+        lm = dory_oracle.load(model, opts.get("device_map"))
         print("device:", next(lm.parameters()).device)
     elif opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)

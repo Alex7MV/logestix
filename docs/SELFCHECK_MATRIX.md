@@ -9,7 +9,10 @@ after the inverted workspace predicate was fixed — its row had been unmeasured
 since 2026-11-03 19:33, when generation stopped producing tokens at all:
 `open-tasks/2026-11-06-alice-workspace-polarity.md`), extended **2026-11-07**
 (Granite-Switch 4.1 8B ingested as the sibling of the 30B — see
-`docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md`),
+`docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md`), extended
+**2026-11-10** (NVIDIA-Nemotron-Labs-Dory1.0-4B, looped nGPT — its DET row is
+captured in reasoning mode: the letter-match probe answers CRITICAL without a
+reasoning trace and CATASTROPHIC with it),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;
@@ -48,6 +51,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | granite-4.2-30b | PASS | 3/3 | 3/3 | 3/3 |
 | ornith-1.5-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
 | phi-4 | PASS | 3/3 | 3/3 | 3/3 |
+| **dory-1.0-4b** | PASS (x3, `f100088895adb12d`) | 3/3 | 3/3 | 3/3 (reasoning mode) |
 | qwen3.5-9b | PASS | 3/3 | 3/3 | 3/3 |
 | **qwen3.5-35b-a3b** | PASS (x3, `f4c91be5f2206d56`) | 3/3 | 3/3 | 3/3 |
 | qwen3.6-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |

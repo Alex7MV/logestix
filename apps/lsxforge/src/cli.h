@@ -42,6 +42,7 @@ enum class Pipeline {
     kGranite,
     kGraniteSwitch,
     kPhi,
+    kDory,
     kMimo,
     kAlice,
     kXing,
@@ -90,6 +91,7 @@ struct Flags {
     bool granite = false;
     bool granite_switch = false;
     bool phi = false;
+    bool dory = false;
     bool mimo = false;
     bool alice = false;
     bool xing = false;

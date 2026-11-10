@@ -119,6 +119,11 @@ const PerfModel kMiMo = {
     2048};
 const PerfModel kPhi = {
     "phi-4", "phi-4", "The capital of France is", 2048};
+// Dory1.0-4B: looped nGPT, 112 mixer passes per token at 2 loops. The
+// canonical protocol prompt keeps the comparison with the rest of the matrix.
+const PerfModel kDory = {
+    "dory-1.0-4b", "NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
+    "The capital of France is", 2048};
 const PerfModel kXing = {
     "xing4.0-29b-a4b", "Xing4.0-29B-A4B", "The capital of France is", 2048};
 const PerfModel kAlice = {
@@ -643,6 +648,11 @@ TEST_CASE("perf baseline: mimo-v2.6-flash-rl", "[perf]")
 TEST_CASE("perf baseline: phi-4", "[perf]")
 {
     RunPerfModel(kPhi);
+}
+
+TEST_CASE("perf baseline: dory-1.0-4b", "[perf]")
+{
+    RunPerfModel(kDory);
 }
 
 TEST_CASE("perf baseline: alice-foundation-80b-a3b", "[perf]")
