@@ -2988,6 +2988,20 @@ target_include_directories(test_nemotron_moe_ultra_convert PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 lsx_copy_arrow_dlls(test_nemotron_moe_ultra_convert)
 
+# ── Nemotron-3-Ultra-550B index loader + device weight graph ─────────────
+add_executable(test_nemotron_moe_ultra_loader test_nemotron_moe_ultra_loader.cpp)
+target_link_libraries(test_nemotron_moe_ultra_loader PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_moe_ultra_loader)
+
+# ── Nemotron-3-Ultra-550B host reference math (header-only, no CUDA) ─────
+add_executable(test_nemotron_moe_ultra_math test_nemotron_moe_ultra_math.cpp)
+target_link_libraries(test_nemotron_moe_ultra_math PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_math PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
 # ── Nemotron-3-Ultra-550B frozen passport (host-only, no CUDA) ──────────
 # Links lsxcommon only so the shared synthetic fixture (which pulls the
 # neutral safetensors/Arrow primitives) can be included; the passport itself
