@@ -13,7 +13,7 @@
 | Lineage | **separate** from `nemotron-3.5-lightning-30b-a3b`: own passport, converter, loader, expert cache, kernels, pipeline and tool codec. No file of the 30B lineage was edited. |
 
 **Verdict at a glance.** A 550 B hybrid Mamba-2/MoE/attention model ports to a
-single 32 GB card at **1.77 t/s** because 290 GB of routed experts stream from
+single 32 GB card at **1.77-1.78 t/s** because 290 GB of routed experts stream from
 NVMe while a 22.5 GB dense graph stays resident. On the real weights it is
 correct and deterministic — Paris ×3 bit-identical, the native tool round-trip
 green, CODE 3/3 and DET 3/3 — with one measured generation error (FSI-01, below)
@@ -30,7 +30,7 @@ We brought NVIDIA's 550 B hybrid into our own C++/CUDA engine (no PyTorch at
 runtime), converting the 1.1 TB BF16 release in place to a 292 GB NVFP4 tree.
 The dense backbone pins at 22.5 GB and the 24 576 routed experts stream from
 host mmap through ~660 device slots, so the model runs on one consumer card at
-1.77 t/s. The reference modeling code is clear, and four things about this
+1.77-1.78 t/s. The reference modeling code is clear, and four things about this
 architecture are load-bearing.
 
 **The architecture that matters.** 108 layers, of which 48 are Mamba-2, 48 are
@@ -81,7 +81,7 @@ is wrong".
 **Measured.** Determinism: Paris ×3, bit-identical final logits,
 `logits_hash bd82916c6550a2df`, top-1 6993. Tool round-trip:
 `get_weather {"city":"Paris"}` through the native `<tool_call><function=…>` codec.
-CODE 3/3, DET 3/3 (three byte-identical runs), FSI 2/3. Throughput **1.77 t/s**
+CODE 3/3, DET 3/3 (three byte-identical runs), FSI 2/3. Throughput **1.77-1.78 t/s**
 (r3 1.75) at the canonical 2 048-token protocol, TTFT 13.4 s, 139 W average —
 memory-bound on the expert store, not on the GPU.
 
@@ -116,8 +116,9 @@ identical to the reference chunk scan).
   - `test_nemotron_ultra_det_selfcheck` — 3/3, deterministic.
   - `test_nemotron_ultra_tokenizer_parity` — 22/22 against `tokenizer.json`
     (md5 `e7f0d67f…`, byte-identical to the two 30B siblings and Dory1.0).
-  - `test_perf_baseline_nemotron_ultra` — 1.77 t/s / r3 1.75, TTFT 13 352 /
-    13 470 ms, 139 / 128 W.
+  - `test_perf_baseline_nemotron_ultra` — 1.78 t/s / r3 1.75 (seeded at 1.77,
+    re-seeded by the verification run: the harness updates the reference when a
+    measurement is higher), TTFT 13 220 / 13 457 ms, 139 / 128 W.
 - Host-side suite (no weights): `test_nemotron_moe_ultra_constants` (6 cases),
   `_convert` (9), `_loader` (7), `_math` (8), `_expert_cache` (4), `_model` (4),
   `_kernels` (10 cases / 6 920 assertions), `test_nemotron_ultra_tool_framing` (9).

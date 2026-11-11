@@ -387,7 +387,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 1.75 t/s (r3, 2026-11-11)
 - report: `docs/model-reports/2026-11-11-NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16.md`
-- notes: separate lineage; 1.77 t/s (r3 1.75)
+- notes: separate lineage; 1.78 t/s (r3 1.75)
 
 ## ornith-1.5-35b-a3b
 
