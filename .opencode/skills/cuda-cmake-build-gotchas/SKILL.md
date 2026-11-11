@@ -161,6 +161,9 @@ two of them are machine-enforced.
    only on LTS tags — a non-LTS pin fails to compile by design), so a bump
    without updating it either fails to compile or fails the test. `flatbuffers`,
    `libzmq` and the system cuBLAS are **not** guarded — check those by hand.
+   The same goes for **NCCL** (`libnccl2`/`libnccl-dev`, 2.32.6 as of
+   2026-11-11): it is a system package nothing links, so an upgrade is verified
+   by hand, not by the suite (see "System packages nothing links" below).
 3. **The documentation tables** — both `AGENTS.md` and `README.md` carry a
    dependency table; update them here too. They have drifted before: the CCCL row
    read "3.3 (latest)" while the pin was already at 3.4.2 (CCCL is now
@@ -187,6 +190,37 @@ the build no longer needs it). The spdlog/fmt patch's own comment still says
 Finally, rebuild on **both** toolchains (MSVC and GCC/AOCC) because most of these
 patches fire on only one of them, then run `ctest -L fast` for the guard.
 
+## System packages nothing links (NCCL, and the check that generalises)
+
+`libnccl2` / `libnccl-dev` are installed but **no target includes `nccl.h` or
+links `nccl`** — the suite therefore cannot notice an upgrade, and "it built" is
+not evidence. cuBLAS is the same situation. The verification is a standalone
+probe outside the tree, because a package upgrade cannot break a build it is not
+part of:
+
+```bash
+# /mnt/fast_storage/tmp is the fast scratch disk here
+printf '#include <nccl.h>\nint main(){int v=0;ncclGetVersion(&v);return v>0?0:1;}\n' > p.cu
+nvcc -std=c++20 -arch=sm_120 p.cu -o p -lnccl && ./p        # prints nothing, exit 0
+```
+
+What actually needs checking after a NCCL bump, measured on 2.32.3 → 2.32.6
+(2026-11-11):
+
+| check | result / how |
+|---|---|
+| header vs runtime skew (like CCCL) | `nccl.h` reports `NCCL_VERSION_CODE` **of the dev package**, not the toolkit — pin nothing, but keep `libnccl2` and `libnccl-dev` on the same version (`apt` moves both) |
+| does `nccl.h` compile under the project's warning policy | clean under `g++-15 -Wall -Wextra -Wpedantic -Werror`; clean under AOCC clang 17 |
+| does a device TU still build for Blackwell | `nvcc -arch=sm_120` **and** `sm_121`, GCC 15 and `-ccbin` AOCC clang++: all four build and link. Only the `sm_120` pair can be *run* here (the box is CC 12.0), and both return the right sum from a 1-rank `ncclAllReduce` — the `sm_121` cubin never executes on this device, so "it ran" would prove nothing about the 12.1 path |
+| runtime on the 13.4 driver | works. `ldd libnccl.so.2` shows only `libpthread/librt/libdl/libstdc++/libm/libc` — no `libcuda` link at all (NCCL loads it at runtime), and the 1-rank `ncclAllReduce` above completed on driver API 13040, so minor-version compatibility covers NCCL too |
+| is it reachable twice (a second, older copy shadowing it) | Python envs ship their own `nvidia/nccl/lib/libnccl.so.2` (vllm 2.28.9, `~/.local` 2.29.7). They are **not** on `ldconfig`/`LD_LIBRARY_PATH`, so the system 2.32.6 wins — never add those dirs to the path to "fix" a version mismatch |
+| CMake plumbing if ever linked | the package ships **no** `nccl-config.cmake` / `nccl.pc`: use `find_library(NCCL_LIBRARY nccl)` + `find_path(NCCL_INCLUDE_DIR nccl.h)` in `lsx_dep_includes`, and remember `nccl.h` includes `cuda_runtime.h`, so the CUDA include dir must be there too |
+
+The general rule this encodes: when a bump touches a package that is **not** in
+the dependency graph, the answer to "must the code be adapted?" is a compile +
+link + run probe on both host toolchains and both arch targets — not a source
+grep that finds nothing.
+
 ## Diagnosing by symptom
 
 | Symptom | Cause |
@@ -207,6 +241,8 @@ patches fire on only one of them, then run `ctest -L fast` for the guard.
 | Every device target suddenly compiles for `compute_75` (a `sm_75` note in `cuobjdump`, no warning anywhere) | the arch list was handed to `CUDA_ARCHITECTURES` with a CUDA family suffix (`120f`) or as a spec CMake does not parse; CMake 4.2.3 silently replaces the whole list. Keep the value in `LSX_CUDA_ARCH` + `lsx_cuda_gencode_flags()` |
 | `cc: error: unrecognized command-line option '-Qunused-arguments'` inside uriparser/zstd/Arrow | the host preset pinned `CMAKE_CXX_COMPILER` (clang) but not `CMAKE_C_COMPILER`, so C sources of dependencies went to gcc with clang flags — pin both |
 | `-flto=thin` unsupported under AOCC clang, falling back to `-flto=full` | harmless; AOCC's clang does not implement thin LTO. `LSX_LTO=ON` therefore costs build time only |
+| `libnccl.so.2` resolves to 2.28/2.29 instead of the system 2.32.6 | someone put `site-packages/nvidia/nccl/lib` or a Python venv's copy on `LD_LIBRARY_PATH`; the system package must win |
+| `fatal error: cuda_runtime.h: No such file` from a host TU that only includes `nccl.h` | `nccl.h` pulls in `cuda_runtime.h` / `cuda_fp16.h` / `cuda_bf16.h` / `cuda_fp8.h`, so the CUDA include dir must be on that TU's path |
 
 ## Verification
 

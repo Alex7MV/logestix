@@ -16,6 +16,24 @@ headers and absent from `libcuda.so` at runtime
 `cuMemsetBatchAsync`, `cuFabricCpyBatchAsync`). `test_cuda_toolkit_guard` prints
 that skew and fails only on a major mismatch.
 
+**NCCL is installed, not linked.** `libnccl2` / `libnccl-dev` 2.32.6 (Debian
+build for `+cuda13.5`) sit in `/usr/lib/x86_64-linux-gnu`
+(`libnccl.so.2.32.6` + `libnccl_static.a` + the device-API `libnccl_device.bc` /
+`.ltoir`). Nothing in the tree includes `nccl.h` or links it — same story as
+cuBLAS, and there is no collective to run on a single-GPU box. Do not assume an
+upgrade needs code work: it is a package to keep in step with the toolkit, not a
+build dependency. Measured 2026-11-11 on the 2.32.6 upgrade — a 1-rank
+`ncclAllReduce` compiled by nvcc 13.5 for `sm_120` (GCC 15 *and* AOCC clang 17
+host compilers, `nccl.h` clean under `-Wall -Wextra -Wpedantic -Werror`) runs
+correctly on the 13.4 driver, so minor-version compatibility covers NCCL too.
+Two facts for whoever wires it later: the package exports **no**
+`nccl-config.cmake` / `nccl.pc`, so it is a `find_library` in `lsx_dep_includes`;
+and `nccl.h` pulls in `cuda_runtime.h` / `cuda_fp16.h` / `cuda_bf16.h` /
+`cuda_fp8.h`, so any TU that includes it needs the CUDA include path. Older
+copies exist inside Python environments (vllm 2.28.9, `~/.local` 2.29.7) but are
+not on `ldconfig` or `LD_LIBRARY_PATH`, so `libnccl.so.2` resolves to the system
+2.32.6 — do not "fix" a future mismatch by putting one of those on the path.
+
 ## Where things are
 
 | question | answer |
