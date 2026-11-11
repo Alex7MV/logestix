@@ -765,6 +765,11 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // verbatim; its model target carries the same tool case.
         {"nemotron-3.5-lightning-30b-a3b-nvfp4",
          {"test_nemotron_moe_nvfp4_model"}},
+        // Ultra renders with its OWN codec (its chat template differs from the
+        // 30B sibling's): the framing target proves render+parse, and the
+        // real-weight round-trip rides the selfcheck target's tool hook.
+        {"nemotron-ultra-550b-a55b",
+         {"test_nemotron_ultra_tool_framing", "test_nemotron_ultra_selfcheck"}},
         {"gigachat3.5-432b-a28b-reasoning", {"test_gigachat_tool_framing"}},
         {"mimo-v2.6-flash-rl", {"test_mimo_tool_framing"}},
         {"alice-foundation-80b-a3b", {"test_alice_tool_framing"}},

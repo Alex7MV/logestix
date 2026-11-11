@@ -52,6 +52,11 @@ add_library(lsxcommon STATIC
     src/nemotron_moe_expert_cache.cpp
     src/nemotron_moe_model.cpp
     src/nemotron_moe_nvfp4_model.cpp
+    src/nemotron_moe_ultra_convert.cpp
+    src/nemotron_moe_ultra_load.cpp
+    src/nemotron_moe_ultra_expert_cache.cpp
+    src/nemotron_moe_ultra_model.cpp
+    src/nemotron_ultra_tool_format.cpp
     src/gigachat_moe_convert.cpp
     src/gigachat_moe_load.cpp
     src/gigachat_moe_model.cpp
@@ -792,6 +797,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_deepseek_v41_cu
     lsxcommon_deepseek_pro_cu
     lsxcommon_nemotron_cu
+    lsxcommon_nemotron_ultra_cu
     lsxcommon_gigachat_cu
     lsxcommon_mimo_cu
     lsxcommon_ornith_cu
@@ -833,6 +839,30 @@ target_compile_options(lsxcommon_nemotron_cu PRIVATE
 target_include_directories(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_nemotron_cu
+    "${CUDA_CUDART_LIBRARY}"
+    lsx_dep_includes
+)
+
+# Nemotron-3-Ultra-550B kernels (grouped router, latent-width expert path).
+# -fmad=false: bit-exact against the host reference (protocol invariant).
+add_library(lsxcommon_nemotron_ultra_cu OBJECT
+    src/nemotron_moe_ultra_kernels.cu
+    src/nemotron_moe_ultra_inference_pipeline.cu
+)
+set_target_properties(lsxcommon_nemotron_ultra_cu PROPERTIES
+    CUDA_ARCHITECTURES OFF
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_nemotron_ultra_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(lsxcommon_nemotron_ultra_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_nemotron_ultra_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_nemotron_ultra_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_nemotron_ultra_cu
     "${CUDA_CUDART_LIBRARY}"
     lsx_dep_includes
 )

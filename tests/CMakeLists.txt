@@ -2977,6 +2977,144 @@ target_link_libraries(test_nemotron_moe_math PRIVATE Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_math PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
+# ── Nemotron-3-Ultra-550B converter (synthetic checkpoint only) ───────────
+add_executable(test_nemotron_moe_ultra_convert
+    test_nemotron_moe_ultra_convert.cpp)
+target_compile_definitions(test_nemotron_moe_ultra_convert PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_nemotron_moe_ultra_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_moe_ultra_convert)
+
+# ── Nemotron-3-Ultra-550B index loader + device weight graph ─────────────
+add_executable(test_nemotron_moe_ultra_loader test_nemotron_moe_ultra_loader.cpp)
+target_link_libraries(test_nemotron_moe_ultra_loader PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_moe_ultra_loader)
+
+# ── Nemotron-3-Ultra-550B model leaf (session, factory, load, generation) ─
+add_executable(test_nemotron_moe_ultra_model test_nemotron_moe_ultra_model.cpp)
+target_link_libraries(test_nemotron_moe_ultra_model PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_moe_ultra_model)
+
+# ── Nemotron-3-Ultra-550B tokenizer parity + per-layer oracle gate ───────
+add_executable(test_nemotron_ultra_tokenizer_parity
+    test_nemotron_ultra_tokenizer_parity.cpp)
+target_compile_definitions(test_nemotron_ultra_tokenizer_parity PRIVATE
+    LSX_NEMOTRON_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron")
+target_link_libraries(test_nemotron_ultra_tokenizer_parity PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_ultra_tokenizer_parity PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+add_executable(test_nemotron_ultra_layers test_nemotron_ultra_layers.cpp)
+target_compile_definitions(test_nemotron_ultra_layers PRIVATE
+    LSX_NEMOTRON_ULTRA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron_ultra")
+target_link_libraries(test_nemotron_ultra_layers PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_ultra_layers PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_ultra_layers)
+
+# ── Nemotron-3-Ultra-550B lifecycle gates (shared drivers) ───────────────
+add_executable(test_nemotron_ultra_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_nemotron_ultra_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_selfcheck PRIVATE
+    "LSX_SELFCHECK_MODEL=\"nemotron-ultra-550b-a55b\"")
+
+add_executable(test_nemotron_ultra_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_ultra_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_fsi_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-ultra-550b-a55b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+
+add_executable(test_nemotron_ultra_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_ultra_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_code_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-ultra-550b-a55b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+
+add_executable(test_nemotron_ultra_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_nemotron_ultra_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_det_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_ultra_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"nemotron-ultra-550b-a55b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+
+# ── Nemotron-3-Ultra-550B conversation codec (host-only) ─────────────────
+add_executable(test_nemotron_ultra_tool_framing
+    test_nemotron_ultra_tool_framing.cpp)
+target_link_libraries(test_nemotron_ultra_tool_framing PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_ultra_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+# ── Nemotron-3-Ultra-550B routed-expert store + device slot LRU ──────────
+add_executable(test_nemotron_moe_ultra_expert_cache
+    test_nemotron_moe_ultra_expert_cache.cpp)
+target_link_libraries(test_nemotron_moe_ultra_expert_cache PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_expert_cache PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_nemotron_moe_ultra_expert_cache)
+
+# ── Nemotron-3-Ultra-550B device kernels (GPU parity vs the host reference) ─
+add_library(test_nemotron_moe_ultra_kernels_cu OBJECT
+    test_nemotron_moe_ultra_kernels.cu)
+set_target_properties(test_nemotron_moe_ultra_kernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_nemotron_moe_ultra_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_nemotron_moe_ultra_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_nemotron_moe_ultra_kernels_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_nemotron_moe_ultra_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_nemotron_moe_ultra_kernels)
+set_target_properties(test_nemotron_moe_ultra_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_nemotron_moe_ultra_kernels PRIVATE
+    test_nemotron_moe_ultra_kernels_cu lsxcommon Catch2::Catch2WithMain)
+
+# ── Nemotron-3-Ultra-550B host reference math (header-only, no CUDA) ─────
+add_executable(test_nemotron_moe_ultra_math test_nemotron_moe_ultra_math.cpp)
+target_link_libraries(test_nemotron_moe_ultra_math PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_math PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+# ── Nemotron-3-Ultra-550B frozen passport (host-only, no CUDA) ──────────
+# Links lsxcommon only so the shared synthetic fixture (which pulls the
+# neutral safetensors/Arrow primitives) can be included; the passport itself
+# is header-only.
+add_executable(test_nemotron_moe_ultra_constants
+    test_nemotron_moe_ultra_constants.cpp)
+target_link_libraries(test_nemotron_moe_ultra_constants
+    PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_ultra_constants PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
+
 # ── GigaChat3.5 host reference math (header-only, no CUDA) ────────────────
 add_executable(test_gigachat_moe_math test_gigachat_moe_math.cpp)
 target_link_libraries(test_gigachat_moe_math PRIVATE Catch2::Catch2WithMain)

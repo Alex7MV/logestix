@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|dory|alice|xing|mistral|minimax|hy|flint|ling|beam|step)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3)";
+    const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -89,6 +89,7 @@ bool AllowedCommon(const std::string& stem)
         "beam_moe_tool_format",       // Beam Harmony-XML codec
         "step_moe_tool_format",       // Step-5 ChatML + <tool_call> XML codec
         "kimi_moe_k3_tool_format",    // Kimi-K3 XTML chat/tool codec
+        "nemotron_ultra_tool_format", // Nemotron-Ultra ChatML + <function=> codec
         "granite_switch_tool_format", // Granite-4.1 role markers + aLoRA codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();

@@ -32,6 +32,7 @@
 #include "lsxcommon/mimo_moe_convert.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/nemotron_moe_nvfp4_convert.h"
+#include "lsxcommon/nemotron_moe_ultra_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "lsxcommon/qwen_moe_36_convert.h"
 #include "lsxcommon/ornith_moe_convert.h"
@@ -86,6 +87,12 @@ ABSL_FLAG(bool, gemma4dense, false,
           "Gemma-4-31B-it (dense) conversion pipeline");
 ABSL_FLAG(bool, nemotron, false,
           "Nemotron-3.5-Lightning-30B-A3B (NemotronH hybrid) conversion pipeline");
+ABSL_FLAG(std::string, layers, "",
+          "Layer window for resumable conversion, \"first:last\" (inclusive). "
+          "Only the --nemotron_ultra pipeline uses it.");
+ABSL_FLAG(bool, nemotron_ultra, false,
+          "NVIDIA-Nemotron-3-Ultra-550B-A55B pipeline (BF16 source -> unified "
+          "logestix layout, logestix-nemotron-ultra-nvfp4)");
 ABSL_FLAG(bool, nemotron_nvfp4, false,
           "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 (pre-quantized "
           "ModelOpt W4A16_NVFP4 source) conversion pipeline");
@@ -194,6 +201,8 @@ int main(int argc, char* argv[]) {
     bool gemma4dense = absl::GetFlag(FLAGS_gemma4dense);
     bool nemotron = absl::GetFlag(FLAGS_nemotron);
     bool nemotron_nvfp4 = absl::GetFlag(FLAGS_nemotron_nvfp4);
+    bool nemotron_ultra = absl::GetFlag(FLAGS_nemotron_ultra);
+    const std::string layers = absl::GetFlag(FLAGS_layers);
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     bool granite = absl::GetFlag(FLAGS_granite);
@@ -273,6 +282,13 @@ int main(int argc, char* argv[]) {
     flags.gemma4dense = gemma4dense;
     flags.nemotron = nemotron;
     flags.nemotron_nvfp4 = nemotron_nvfp4;
+    flags.nemotron_ultra = nemotron_ultra;
+    if (!layers.empty() && !nemotron_ultra) {
+        lsxcommon::log::error(
+            "--layers is only meaningful with --nemotron_ultra (a partial tree "
+            "from another converter would be unloadable)");
+        return 2;
+    }
     flags.gigachat = gigachat;
     flags.glmflash = glmflash;
     flags.granite = granite;
@@ -948,6 +964,35 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Nemotron conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kNemotronUltra: {
+        lsxcommon::log::info(
+            "NVIDIA-Nemotron-3-Ultra-550B-A55B pipeline (unified logestix "
+            "layout; grouped router, latent MoE)");
+        // --layers a:b converts a slice and marks the tree partial, so a killed
+        // 275 GB run resumes at the next layer instead of from zero.
+        lsxcommon::nemotron_ultra::ConversionWindow window;
+        {
+            std::string range_err;
+            if (!lsxforge::ParseLayerWindow(layers, window.first_layer,
+                                            window.last_layer, range_err)) {
+                lsxcommon::log::error(range_err);
+                lsxcommon::Core::Shutdown();
+                return 1;
+            }
+        }
+        auto st = lsxcommon::nemotron_ultra::ConvertNemotronUltraModel(
+            input_path, output_path, window);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "Nemotron-Ultra conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Nemotron-Ultra conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

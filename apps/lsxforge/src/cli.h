@@ -37,6 +37,7 @@ enum class Pipeline {
     kGemma4Dense,
     kNemotron,
     kNemotronNvfp4,
+    kNemotronUltra,
     kGigachat,
     kGlmFlash,
     kGranite,
@@ -86,6 +87,7 @@ struct Flags {
     bool gemma4dense = false;
     bool nemotron = false;
     bool nemotron_nvfp4 = false;
+    bool nemotron_ultra = false;
     bool gigachat = false;
     bool glmflash = false;
     bool granite = false;
@@ -106,6 +108,12 @@ struct Flags {
     bool beam = false;
     bool step = false;
 };
+
+// Parses the "--layers first:last" conversion window (inclusive, both bounds
+// required). Returns false and fills `error` on a malformed or inverted range;
+// an empty string means "no window" (convert every layer).
+bool ParseLayerWindow(const std::string &layers, int &first, int &last,
+                      std::string &error);
 
 struct Resolution {
     Pipeline pipeline = Pipeline::kGeneric;

@@ -70,6 +70,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         {"gemma4dense", Pipeline::kGemma4Dense},
         {"nemotron", Pipeline::kNemotron},
         {"nemotron_nvfp4", Pipeline::kNemotronNvfp4},
+        {"nemotron_ultra", Pipeline::kNemotronUltra},
         {"gigachat", Pipeline::kGigachat},
         {"glmflash", Pipeline::kGlmFlash},
         {"granite", Pipeline::kGranite},
@@ -98,6 +99,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         else if (std::string(name) == "gemma4dense") f.gemma4dense = true;
         else if (std::string(name) == "nemotron") f.nemotron = true;
         else if (std::string(name) == "nemotron_nvfp4") f.nemotron_nvfp4 = true;
+        else if (std::string(name) == "nemotron_ultra") f.nemotron_ultra = true;
         else if (std::string(name) == "gigachat") f.gigachat = true;
         else if (std::string(name) == "glmflash") f.glmflash = true;
         else if (std::string(name) == "granite") f.granite = true;
@@ -231,4 +233,31 @@ TEST_CASE("forge cli: the precedence order is version < generate < side paths "
     i.tokenizer = "/src/tok";
     i.alice = true;
     CHECK(ResolvePipeline(i).pipeline == Pipeline::kTokenizer);
+}
+
+TEST_CASE("--layers parses a resumable conversion window", "[lsxforge][cli]")
+{
+    int first = -1, last = -2;
+    std::string err;
+    REQUIRE(lsxforge::ParseLayerWindow("40:41", first, last, err));
+    CHECK(first == 40);
+    CHECK(last == 41);
+
+    // Empty means "every layer": no window, not a zero-width one.
+    REQUIRE(lsxforge::ParseLayerWindow("", first, last, err));
+    CHECK(first == 0);
+    CHECK(last == -1);
+
+    // Malformed and inverted ranges are refused rather than half-parsed: a
+    // silently accepted window is a partially converted tree.
+    CHECK_FALSE(lsxforge::ParseLayerWindow("40", first, last, err));
+    CHECK(err.find("first:last") != std::string::npos);
+    err.clear();
+    CHECK_FALSE(lsxforge::ParseLayerWindow("a:b", first, last, err));
+    CHECK_FALSE(err.empty());
+    err.clear();
+    CHECK_FALSE(lsxforge::ParseLayerWindow("41:40", first, last, err));
+    CHECK(err.find("inverted") != std::string::npos);
+    err.clear();
+    CHECK_FALSE(lsxforge::ParseLayerWindow(":5", first, last, err));
 }
