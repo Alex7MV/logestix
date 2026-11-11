@@ -215,7 +215,7 @@ else byte-identical.
 - [ ] **Step 3: Create `qwen_moe_generation.cu`**
 
 ```bash
-cd /home/alexmv2025/projects/cuda/logestix
+cd /mnt/fast_storage/projects/cuda/logestix
 git mv libs/lsxcommon/src/qwen_moe_inference.cu \
        libs/lsxcommon/src/qwen_moe_generation.cu
 ```

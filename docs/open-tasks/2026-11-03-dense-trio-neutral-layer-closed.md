@@ -91,10 +91,10 @@ missing in target: 0  unexpected in target: 0
 ## Что осталось открытым
 
 - **perf-строки не измерены.** `test_perf_baseline` требует Release-сборки
-  (`NDEBUG`) — в Debug он SKIP'ается, а существующие `build/linux-release*`
-  привязаны к старому пути `/home/alexmv2025/projects/cuda/logestix` и
-  непригодны после переезда дерева на `/mnt/fast_storage`. Команда для
-  закрытия:
+  (`NDEBUG`) — в Debug он SKIP'ается, а существовавшие `build/linux-release*`
+  были сконфигурированы против до-переездного пути дерева и после переезда на
+  `/mnt/fast_storage` не годились; эти деревья удалены 2026-11-11. Команда для
+  закрытия (из текущего каталога дерева):
   `cmake --preset linux-release && cmake --build --preset linux-release --target test_perf_baseline && ctest --preset linux-release-perf -R "test_perf_baseline_(granite_4_2_30b|granite_switch_4_1_30b|phi_4)"`.
   Код при этом доказанно идентичен (уровень 0), поэтому ожидание — t/s в
   пределах шума; но это ожидание, а не измерение, и записано оно здесь
