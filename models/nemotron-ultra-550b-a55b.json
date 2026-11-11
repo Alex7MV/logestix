@@ -108,13 +108,8 @@
   },
   "tool_roundtrip": true,
   "auto_path_determinism": false,
-  "golden_debt": {
-    "code": "declared debt (see docs/OPEN_TASKS.md)",
-    "det": "declared debt (see docs/OPEN_TASKS.md)",
-    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
-  },
-  "report": "",
-  "notes": "separate lineage from nemotron-3.5-lightning: grouped router, latent MoE, 108 layers",
+  "report": "docs/model-reports/2026-11-11-NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16.md",
+  "notes": "separate lineage; 1.77 t/s (r3 1.75)",
   "selfcheck_max_gen": 2,
   "selfcheck_bit_exact": false,
   "selfcheck_frame_prompt": false,

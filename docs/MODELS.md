@@ -384,11 +384,10 @@ history live in `docs/model-reports/`; gate verdicts in
 - tokenizer kind 9
 - vault `NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16` (override `LSX_TEST_NEMOTRON_ULTRA_550B_A55B_ROOT`)
 - lifecycle TUs: `nemotron_moe_ultra_model.cpp`, `nemotron_moe_ultra_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt
-- perf: not seeded
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
-- report: **not written** (stage-9 debt)
-- notes: separate lineage from nemotron-3.5-lightning: grouped router, latent MoE, 108 layers
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
+- perf: 1.75 t/s (r3, 2026-11-11)
+- report: `docs/model-reports/2026-11-11-NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16.md`
+- notes: separate lineage; 1.77 t/s (r3 1.75)
 
 ## ornith-1.5-35b-a3b
 

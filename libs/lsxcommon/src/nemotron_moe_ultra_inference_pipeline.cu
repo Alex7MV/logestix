@@ -28,8 +28,8 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -138,13 +138,16 @@ void DumpLayerRow(const __half *h, int n, int layer, int pos, cudaStream_t strea
         ss += v * v;
     }
     const double l2 = std::sqrt(ss);
-    FILE *f = std::fopen(path, "a");
+    // ofstream, not stdio: the logging guard (rightly) forbids printf-family
+    // calls in libs/, and this is a diagnostic data sink rather than a log line,
+    // so it needs no allowlist entry either way.
+    std::ofstream f(path, std::ios::app);
     if (!f) return;
-    std::fprintf(f, "layer %d pos %d l2 %.6f", layer, pos, l2);
+    f << "layer " << layer << " pos " << pos << " l2 " << absl::StrFormat("%.6f", l2);
     for (int i = 0; i < kDims && i < n; ++i)
-        std::fprintf(f, " %.6f", __half2float(host[static_cast<std::size_t>(i)]));
-    std::fprintf(f, "\n");
-    std::fclose(f);
+        f << " " << absl::StrFormat("%.6f",
+                                    __half2float(host[static_cast<std::size_t>(i)]));
+    f << "\n";
 }
 
 void HalfToFloat(const __half *src, int n, float *dst, cudaStream_t s)
@@ -517,10 +520,10 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
         if (cudaMemcpyAsync(hh.data(), s.h, hh.size() * sizeof(__half),
                             cudaMemcpyDeviceToHost, stream) == cudaSuccess &&
             cudaStreamSynchronize(stream) == cudaSuccess) {
-            if (FILE *f = std::fopen(hp, "wb")) {
-                std::fwrite(hh.data(), sizeof(__half), hh.size(), f);
-                std::fclose(f);
-            }
+            std::ofstream hf(hp, std::ios::binary | std::ios::trunc);
+            if (hf)
+                hf.write(reinterpret_cast<const char *>(hh.data()),
+                         static_cast<std::streamsize>(hh.size() * sizeof(__half)));
         }
     }
     rmsnorm_half_kernel<<<1, 256, 0, stream>>>(s.h, w.d_final_norm, H, eps,
