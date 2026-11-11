@@ -63,8 +63,10 @@ void RunUltraRouter(const float *logits, const float *e_score_bias, int E, int k
                     int n_group, int topk_group, float scale, float *weights,
                     int *indices, cudaStream_t stream);
 
-// relu2 activation: out[i] = max(x[i],0)^2.
-void RunUltraRelu2(const float *x, int n, float *out, cudaStream_t stream);
+// NOTE: there is no F32 relu2 launcher here on purpose. The routed and shared
+// experts are relu2'd in place on their FP16 GEMV output (RunUltraRelu2Half),
+// so an F32 variant would be dead surface — the 30B sibling carries one and only
+// its kernel test ever calls it.
 
 // In-place FP16 relu2 (applied to NVFP4 GEMV outputs to skip the F32 round-trip).
 // Bit-identical to float relu2 then round-to-half.

@@ -259,15 +259,6 @@ __global__ void attn_decode_kernel(const float *__restrict__ q,
     out[h * head_dim + d] = o / l;
 }
 
-__global__ void relu2_kernel(const float *__restrict__ x, int n,
-                             float *__restrict__ out)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    const float r = x[i] > 0.0f ? x[i] : 0.0f;
-    out[i] = r * r;
-}
-
 __global__ void relu2_half_kernel(__half *__restrict__ x, int n)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -356,12 +347,6 @@ void RunUltraRouter(const float *logits, const float *e_score_bias, int E, int k
     while (threads < E) threads <<= 1;  // power-of-two reduction width
     router_kernel<<<1, threads, 0, stream>>>(logits, e_score_bias, E, k, n_group,
                                              topk_group, scale, weights, indices);
-}
-
-void RunUltraRelu2(const float *x, int n, float *out, cudaStream_t stream)
-{
-    const int threads = 256;
-    relu2_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(x, n, out);
 }
 
 void RunUltraRelu2Half(__half *x, int n, cudaStream_t stream)
