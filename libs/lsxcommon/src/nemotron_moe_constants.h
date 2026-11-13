@@ -14,6 +14,14 @@ namespace frozen {
 
 inline constexpr const char *kType = "nemotron-3.5-lightning-30b-a3b";
 
+// The `model` string this distribution writes into model.index.json. Both
+// siblings emit the `logestix-nemotron-nvfp4` format tag, so this is the only
+// thing that tells their trees apart - and they carry separate parity goldens,
+// so a mixed-up tree must fail Load rather than verify against the wrong set
+// (the NVFP4 leaf has enforced this since ingestion; the BF16 leaf did not
+// until 2026-11-13).
+inline constexpr const char *kModelName = "Nemotron-3.5-Lightning-30B-A3B";
+
 inline constexpr int kHidden = 2688;
 inline constexpr int kLayers = 52;
 inline constexpr int kVocab = 131072;

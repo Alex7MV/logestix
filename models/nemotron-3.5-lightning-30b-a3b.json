@@ -7,7 +7,7 @@
   "model_header": "nemotron_moe_model.h",
   "passport": "libs/lsxcommon/src/nemotron_moe_constants.h",
   "namespace": "lsxcommon::nemotron_moe::frozen",
-  "format_tag": "",
+  "format_tag": "logestix-nemotron-nvfp4",
   "forge_flag": "--nemotron",
   "tokenizer_kind": 9,
   "vault": {
@@ -96,16 +96,14 @@
       "form": "selfcheck"
     }
   },
-  "tool_roundtrip": false,
+  "tool_roundtrip": true,
   "auto_path_determinism": false,
-  "golden_debt": {
-    "code": "declared debt (see docs/OPEN_TASKS.md)",
-    "det": "declared debt (see docs/OPEN_TASKS.md)",
-    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
-  },
-  "report": "",
-  "notes": "",
+  "report": "docs/model-reports/2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md",
+  "notes": "BF16: 127.06 t/s (r3 120.38); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13",
   "selfcheck_max_gen": 2,
   "selfcheck_bit_exact": false,
-  "selfcheck_frame_prompt": false
+  "selfcheck_frame_prompt": false,
+  "aliases": [
+    "nvidia-nemotron-3.5-lightning-30b-a3b-bf16"
+  ]
 }

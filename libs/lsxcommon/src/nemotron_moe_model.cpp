@@ -38,6 +38,18 @@ bool NemotronHModel::LoadAndValidateIndex(std::string &error)
 {
     if (!nemotron_moe::LoadNemotronIndex(cfg_.model_path, idx_, error))
         return false;
+    // Both distributions emit `logestix-nemotron-nvfp4`, so the format tag
+    // alone cannot tell them apart. The `model` field can - and it has to,
+    // because the two carry separate FSI/CODE/DET goldens and a mixed-up tree
+    // would silently verify against the wrong one.
+    using namespace nemotron_moe::frozen;
+    if (idx_.model != kModelName) {
+        error = absl::StrCat("model.index.json declares model '", idx_.model,
+                             "' but this loader serves '", kModelName,
+                             "' - the other distribution's tree is a different "
+                             "model");
+        return false;
+    }
     if (!nemotron_moe::ValidateNemotronGeometry(idx_, error)) {
         log::error(absl::StrFormat(
             "[nemotron] frozen geometry mismatch: %s", error));

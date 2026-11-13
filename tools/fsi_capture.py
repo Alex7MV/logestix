@@ -20,6 +20,15 @@ PROMPTS = os.path.join(HERE, "fsi_prompts.json")
 # `device`: "cuda" / "cpu" / None (auto: cuda when the full checkpoint fits in
 # free VRAM, else cpu). `dtype`: torch dtype name or None (checkpoint default).
 OVERRIDES = {
+    # nemotron-3.5-lightning-30b-a3b: the engine's frame for this checkpoint
+    # opens `<|im_start|>assistant\n<think>\n` (chat_template.jinja defaults
+    # enable_thinking=True and NemotronModelBase::RenderNemotronConversation
+    # hardcodes it). The tool default (False) renders `<think></think>` - a
+    # different prompt - and would capture a frame the served model never sees.
+    # Pinned by tests/test_nemotron_moe_model.cpp "FSI-capture frame equals the
+    # served frame" against tests/fixtures/nemotron/fsi01_frame.txt.
+    "nemotron-3.5-lightning-30b-a3b": {"enable_thinking": True},
+
     # Hy-Memory-30B-A3B publishes the per-expert layout (mlp.experts.E.gate_proj
     # etc.) plus a vestigial `moe_intermediate_size`; tools/hy_v3_oracle.py
     # assembles the fused tensors the installed HYV3ForCausalLM expects. The

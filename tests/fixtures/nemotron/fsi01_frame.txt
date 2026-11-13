@@ -1,0 +1,11 @@
+<|im_start|>system
+<|im_end|>
+<|im_start|>user
+[CONTEXT]: FSI-Validation-Core-01 // Financial Structure
+Define the mathematical execution block for the Present Value (PV) of an annuity-due asset under continuous compounding.
+Parameters: CF = 2500000; n = 7; r = 0.0835.
+Task: Format the target PV calculation strictly as a single-line Python-compatible expression using exp() and the exact variable names provided.
+Output Specification: Output ONLY the raw formula string. Do not use markdown blocks, do not include spaces inside the formula, and do not emit explanatory text.
+Expected Template: PV=CF*((1-exp(-r*n))/(1-exp(-r)))<|im_end|>
+<|im_start|>assistant
+<think>

@@ -5,18 +5,22 @@
 #include "test_streaming_assert.h"
 
 #include "nemotron_moe_model.h"
+#include "nemotron_moe_constants.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tokenizer_arrows.h"
 
+#include <simdjson.h>
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 
 using namespace lsxcommon;
 
@@ -29,6 +33,34 @@ void SetEnv(const char *k, const char *v)
 #else
     setenv(k, v, 1);
 #endif
+}
+
+// The body of one prompt from tools/fsi_prompts.json - the same file the
+// capture tool reads, so the frame test and the capture cannot diverge on the
+// prompt text (only on the framing around it, which is what it pins).
+std::string FsiPromptBody(const std::string &id)
+{
+    const std::filesystem::path path =
+        std::filesystem::path(LSX_SOURCE_DIR) / "tools" / "fsi_prompts.json";
+    REQUIRE(std::filesystem::exists(path));
+    std::ifstream in(path, std::ios::binary);
+    const std::string json((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    simdjson::dom::parser parser;
+    simdjson::dom::element doc;
+    REQUIRE(parser.parse(json).get(doc) == simdjson::SUCCESS);
+    simdjson::dom::array prompts;
+    REQUIRE(doc["prompts"].get_array().get(prompts) == simdjson::SUCCESS);
+    for (auto p : prompts) {
+        std::string_view pid;
+        if (p["id"].get_string().get(pid) == simdjson::SUCCESS && pid == id) {
+            std::string_view body;
+            REQUIRE(p["body"].get_string().get(body) == simdjson::SUCCESS);
+            return std::string(body);
+        }
+    }
+    FAIL("prompt " << id << " not found in fsi_prompts.json");
+    return {};
 }
 
 } // namespace
@@ -60,6 +92,53 @@ TEST_CASE("nemotron Load accepts a synthetic converted model", "[nemotron][model
     REQUIRE(model->Load());
     CHECK(model->Type() == NemotronHModel::kType);
     model->Unload();
+}
+
+TEST_CASE("nemotron Load rejects a tree built for the other distribution",
+          "[nemotron][fast][model]")
+{
+    // Both distributions emit the SAME `logestix-nemotron-nvfp4` format tag, so
+    // only the index's `model` field separates their trees - and each carries
+    // its own FSI/CODE/DET goldens. NemotronNvfp4Model has refused a foreign
+    // tree since ingestion; the BF16 leaf did not, so the NVFP4 tree loaded as
+    // `nemotron-3.5-lightning-30b-a3b` and would have verified against the
+    // wrong golden set. (Found 2026-11-13 while giving this model its own.)
+    SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    const auto src = nemotrontest::MakeTempDir("nm_dist_src");
+    const auto dst = nemotrontest::MakeTempDir("nm_dist_dst");
+    nemotrontest::WriteNemotronCheckpoint(src);
+    auto st = nemotron_moe::ConvertNemotronModel(src.string(), dst.string());
+    REQUIRE(st.ok());
+
+    const auto idx = dst / "logestix" / "model.index.json";
+    {
+        std::ifstream in(idx);
+        const std::string json((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        REQUIRE(json.find("\"model\": \"" +
+                          std::string(nemotron_moe::frozen::kModelName) + "\"") !=
+                std::string::npos);
+        const std::string other =
+            "\"model\": \"Nemotron-3.5-Lightning-30B-A3B-NVFP4\"";
+        std::string rewritten = json;
+        static constexpr std::string_view kKey = "\"model\": \"";
+        const auto at = rewritten.find(kKey);
+        REQUIRE(at != std::string::npos);
+        // Skip the OPENING quote of the value, then find the closing one.
+        const auto end = rewritten.find('"', at + kKey.size());
+        REQUIRE(end != std::string::npos);
+        rewritten.replace(at, end + 1 - at, other);
+        std::ofstream out(idx, std::ios::trunc);
+        out << rewritten;
+    }
+
+    ModelInitConfig cfg;
+    cfg.model_path = dst.string();
+    cfg.model_type = NemotronHModel::kType;
+    NemotronHModel model(cfg);
+    CHECK_FALSE(model.Load());
+    // A failed Load must not become a success on retry (partial state).
+    CHECK_FALSE(model.Load());
 }
 
 TEST_CASE("nemotron Infer runs the hybrid pipeline end-to-end on a tiny model",
@@ -237,6 +316,40 @@ TEST_CASE("nemotron single-prompt framing uses the native chat template",
     std::vector<int32_t> bare;
     REQUIRE(prompt::EncodeRawPrompt(db, kPrompt, bare));
     REQUIRE(runtime::DecodeGeneratedText(db, bare) == kPrompt);
+}
+
+TEST_CASE("nemotron FSI-capture frame equals the served frame",
+          "[nemotron][fast][prompt_framing]")
+{
+    // The parity gates feed the SOURCE a prompt built by tools/*_capture.py
+    // through the checkpoint's chat_template.jinja, and then feed the ENGINE
+    // the same captured ids. If those two frames ever differ, every parity
+    // golden describes a prompt the served model never sees - and the gate
+    // still goes green, because it compares the engine against a capture taken
+    // from the same wrong frame.
+    //
+    // This checkpoint's generation prompt opens `<think>` (thinking ON by
+    // default). The capture tools default to enable_thinking=False, which
+    // renders `<think></think>` - a DIFFERENT frame. The fixture records what
+    // the capture actually sent; this case pins the renderer to it.
+    const std::filesystem::path frame_path =
+        std::filesystem::path(LSX_SOURCE_DIR) /
+        "tests/fixtures/nemotron/fsi01_frame.txt";
+    REQUIRE(std::filesystem::exists(frame_path));
+    std::ifstream frame_in(frame_path, std::ios::binary);
+    const std::string expected((std::istreambuf_iterator<char>(frame_in)),
+                               std::istreambuf_iterator<char>());
+    REQUIRE_FALSE(expected.empty());
+
+    // One user turn, no tools: exactly what tools/fsi_capture.py frames, with
+    // the prompt body read from the same prompt set the capture reads.
+    ChatConversation conv;
+    conv.messages.push_back({"user", FsiPromptBody("FSI-TEST-01"), "", {}});
+    std::string rendered;
+    REQUIRE(NemotronHModel::RenderNemotronConversation(conv, rendered));
+    INFO("rendered: [" << rendered << "]");
+    INFO("captured: [" << expected << "]");
+    REQUIRE(rendered == expected);
 }
 
 TEST_CASE("nemotron tool framing renders the XML declaration block",
