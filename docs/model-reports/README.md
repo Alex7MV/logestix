@@ -52,3 +52,4 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | Kimi-K3.1-Pro | `2026-11-05-Kimi-K3.1-Pro.md` |
 | NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16 | `2026-11-10-NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16.md` |
 | NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 | `2026-11-11-NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16.md` |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | `2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md` |

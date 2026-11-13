@@ -353,14 +353,14 @@ history live in `docs/model-reports/`; gate verdicts in
 - family `nemotron`
 - class `NemotronHModel`, namespace `lsxcommon::nemotron_moe::frozen`
 - geometry: `libs/lsxcommon/src/nemotron_moe_constants.h` (frozen constants, static_assert-checked)
-- format not declared, forge `--nemotron`
+- format `logestix-nemotron-nvfp4`, forge `--nemotron`
 - tokenizer kind 9
 - vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_ROOT`)
 - lifecycle TUs: `nemotron_moe_model.cpp`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt
-- perf: 24.07 t/s (r3, 2026-09-16)
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
-- report: **not written** (stage-9 debt)
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
+- perf: 120.38 t/s (r3, 2026-11-13)
+- report: `docs/model-reports/2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md`
+- notes: BF16: 127.00 t/s (r3 120.32); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13
 
 ## nemotron-3.5-lightning-30b-a3b-nvfp4
 
