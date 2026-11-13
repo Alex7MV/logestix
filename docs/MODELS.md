@@ -358,9 +358,9 @@ history live in `docs/model-reports/`; gate verdicts in
 - vault `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (override `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_ROOT`)
 - lifecycle TUs: `nemotron_moe_model.cpp`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: 120.38 t/s (r3, 2026-11-13)
+- perf: 121.16 t/s (r3, 2026-11-13)
 - report: `docs/model-reports/2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md`
-- notes: BF16: 127.06 t/s (r3 120.38); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13
+- notes: BF16: 127.31 t/s (r3 121.16); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13
 
 ## nemotron-3.5-lightning-30b-a3b-nvfp4
 
