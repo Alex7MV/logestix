@@ -5,6 +5,7 @@
 #include "test_streaming_assert.h"
 
 #include "nemotron_moe_model.h"
+#include "nemotron_moe_constants.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/nemotron_moe_convert.h"
@@ -17,6 +18,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 
 using namespace lsxcommon;
 
@@ -60,6 +63,53 @@ TEST_CASE("nemotron Load accepts a synthetic converted model", "[nemotron][model
     REQUIRE(model->Load());
     CHECK(model->Type() == NemotronHModel::kType);
     model->Unload();
+}
+
+TEST_CASE("nemotron Load rejects a tree built for the other distribution",
+          "[nemotron][fast][model]")
+{
+    // Both distributions emit the SAME `logestix-nemotron-nvfp4` format tag, so
+    // only the index's `model` field separates their trees - and each carries
+    // its own FSI/CODE/DET goldens. NemotronNvfp4Model has refused a foreign
+    // tree since ingestion; the BF16 leaf did not, so the NVFP4 tree loaded as
+    // `nemotron-3.5-lightning-30b-a3b` and would have verified against the
+    // wrong golden set. (Found 2026-11-13 while giving this model its own.)
+    SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    const auto src = nemotrontest::MakeTempDir("nm_dist_src");
+    const auto dst = nemotrontest::MakeTempDir("nm_dist_dst");
+    nemotrontest::WriteNemotronCheckpoint(src);
+    auto st = nemotron_moe::ConvertNemotronModel(src.string(), dst.string());
+    REQUIRE(st.ok());
+
+    const auto idx = dst / "logestix" / "model.index.json";
+    {
+        std::ifstream in(idx);
+        const std::string json((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        REQUIRE(json.find("\"model\": \"" +
+                          std::string(nemotron_moe::frozen::kModelName) + "\"") !=
+                std::string::npos);
+        const std::string other =
+            "\"model\": \"Nemotron-3.5-Lightning-30B-A3B-NVFP4\"";
+        std::string rewritten = json;
+        static constexpr std::string_view kKey = "\"model\": \"";
+        const auto at = rewritten.find(kKey);
+        REQUIRE(at != std::string::npos);
+        // Skip the OPENING quote of the value, then find the closing one.
+        const auto end = rewritten.find('"', at + kKey.size());
+        REQUIRE(end != std::string::npos);
+        rewritten.replace(at, end + 1 - at, other);
+        std::ofstream out(idx, std::ios::trunc);
+        out << rewritten;
+    }
+
+    ModelInitConfig cfg;
+    cfg.model_path = dst.string();
+    cfg.model_type = NemotronHModel::kType;
+    NemotronHModel model(cfg);
+    CHECK_FALSE(model.Load());
+    // A failed Load must not become a success on retry (partial state).
+    CHECK_FALSE(model.Load());
 }
 
 TEST_CASE("nemotron Infer runs the hybrid pipeline end-to-end on a tiny model",

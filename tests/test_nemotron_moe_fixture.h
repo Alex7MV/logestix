@@ -170,7 +170,7 @@ inline void WriteNemotronIndex(
     const auto types = RealLayerTypes();
     std::ofstream f(model_root / "logestix" / "model.index.json");
     f << "{\n  \"format\": \"" << format_tag << "\",\n"
-      << "  \"model\": \"NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\",\n"
+      << "  \"model\": \"Nemotron-3.5-Lightning-30B-A3B\",\n"
       << "  \"num_layers\": 52,\n  \"layer_types\": [";
     for (size_t i = 0; i < types.size(); ++i) {
         if (i) f << ",";
