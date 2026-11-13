@@ -93,8 +93,8 @@ SelfCheck: `Paris` ×3 with byte-identical `final_logits` (`logits_hash
 **What was not measured, and why.** The three parity gates are only partly
 green and should be read as such: the goldens are genuinely source-captured and
 the source answers 9/9, but the converted tree's answers are only extractable on
-5 of 9 (FSI 2/3, CODE 2/3, DET 1/3) because it does not emit an end-of-sequence
-token after the answer and repeats `</think><answer>` to the budget. Whether the
+5 of 9 (FSI 2/3, CODE 2/3, DET 1/3) because it does not stop after the answer and
+repeats `</think><answer>` to the budget. Whether the
 cause is only 4-bit body noise or something in the decode path is **not
 established**; what is established is that the two other generation paths this
 build exercises (the tool round-trip and the Paris probe) terminate normally, and
@@ -184,8 +184,13 @@ was verified to fail it.
 
 ### Measured parity mechanism (not a hypothesis)
 
-- Across the FSI, CODE and DET runs the converted tree emitted **0** `<|im_end|>`
-  tokens, while the source terminates on every case.
+- Every parity case ran to its **token budget**: the decoded raw ends
+  mid-repetition at the truncation point, and each case consumed the full
+  budget in wall time (e.g. FSI-02 at 2048 took 38 s of decode). The source, on
+  the same prompts, stops at 363–1358 tokens. (An "eos was never emitted" claim
+  cannot be made from a decoded raw here: `arrow_tokenizer_decode` drops special
+  tokens, so a clean `<|im_end|>` stop is also invisible in the text — the
+  repetition-to-the-cap is the observable, not the missing marker.)
 - Where the answer is reached it is reached *correctly* and then repeated:
   FSI-02 logs 15 copies of `</think>Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`;
   CODE-02 logs `</think>m=l+((h-l)/2)` repeatedly.

@@ -2495,9 +2495,10 @@ no bos — `add_bos_token = false`). `tests/test_nemotron_moe_model.cpp` "FSI-ca
 frame equals the served frame" fails if the renderer and the template drift (a
 thinking-off mutation was verified to fail it).
 
-**The measured mechanism (why 02/03 are red).** Across the three parity runs the
-converted tree emitted **0** `<|im_end|>` tokens while the source terminates on
-every case. Where it reaches the answer it reaches it *correctly* and then
+**The measured mechanism (why 02/03 are red).** Across the three parity runs every
+case ran to its **token budget** — the decoded raw ends mid-repetition at the
+truncation point and the wall time matches a full-budget decode (FSI-02 at 2048
+took 38 s) — while the source stops at 363/734/1358 tokens. Where it reaches the answer it reaches it *correctly* and then
 repeats it: FSI-02 logs 15 copies of
 `</think>Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`,
 CODE-02 logs `</think>m=l+((h-l)/2)` repeatedly. The extractor's last-line
@@ -2508,6 +2509,13 @@ why the row is debt and not a pass. Two other generation paths in the same build
 (the tool round-trip and the Paris probe) terminate normally, so "the decode loop
 never advances" is not supported; whether the non-termination is only 4-bit body
 noise on the `</think>` vs `<|im_end|>` argmax is **not established**.
+
+**The instrument that cannot see what it is asked (keep this).** A grep for
+`<|im_end|>` in a decoded raw can never prove that a model failed to emit eos:
+`arrow_tokenizer_decode` drops special tokens, so a clean stop is invisible in
+the text as well. The observable that does work is the repetition running to the
+budget boundary, plus the wall time. The one prompt where the answer alone was
+ambiguous (`FSI-01`) is also the one that passes — do not generalise from it.
 
 **Open, explicitly.**
 - N1. The residual-plane lever (`gemma-4-26b` recipe: attn + Mamba projections at
