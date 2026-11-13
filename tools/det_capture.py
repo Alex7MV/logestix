@@ -17,6 +17,12 @@ PROMPTS = os.path.join(HERE, "det_prompts.json")
 
 # Per-model capture overrides keyed by model type. Absent -> generic defaults.
 OVERRIDES = {
+    # nemotron-3.5-lightning-30b-a3b: served with `<|im_start|>assistant\n<think>\n`
+    # (chat_template.jinja defaults enable_thinking=True and the engine's
+    # RenderNemotronConversation hardcodes it). The tool default (False) renders
+    # `<think></think>` - a different prompt than the engine consumes.
+    "nemotron-3.5-lightning-30b-a3b": {"enable_thinking": True},
+
     # Hy-Memory-30B-A3B publishes the per-expert layout (mlp.experts.E.gate_proj
     # etc.) plus a vestigial `moe_intermediate_size`; tools/hy_v3_oracle.py
     # assembles the fused tensors the installed HYV3ForCausalLM expects. The
