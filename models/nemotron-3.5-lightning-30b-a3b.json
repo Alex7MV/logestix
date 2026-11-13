@@ -99,7 +99,7 @@
   "tool_roundtrip": true,
   "auto_path_determinism": false,
   "report": "docs/model-reports/2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md",
-  "notes": "BF16: 127.00 t/s (r3 120.32); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13",
+  "notes": "BF16: 127.06 t/s (r3 120.38); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13",
   "selfcheck_max_gen": 2,
   "selfcheck_bit_exact": false,
   "selfcheck_frame_prompt": false,

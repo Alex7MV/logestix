@@ -360,7 +360,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 120.38 t/s (r3, 2026-11-13)
 - report: `docs/model-reports/2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md`
-- notes: BF16: 127.00 t/s (r3 120.32); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13
+- notes: BF16: 127.06 t/s (r3 120.38); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13
 
 ## nemotron-3.5-lightning-30b-a3b-nvfp4
 
