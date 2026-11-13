@@ -12,7 +12,7 @@
 | Reference | `transformers` 5.15.1 `NemotronHForCausalLM` running **the checkpoint itself** on CPU (bf16) — the source is its own oracle |
 
 **Verdict at a glance:** the model converts, loads and runs correctly at
-**127.00 t/s** (r3 120.32) at the canonical 2048-token protocol, with Paris
+**127.06 t/s** (r3 120.38) at the canonical 2048-token protocol, with Paris
 answered three times bit-exactly, a green tokenizer parity (22/22) and a green
 real-weight tool round-trip. Its three parity gates are **red in part** — FSI
 2/3, CODE 2/3, DET 1/3 with determinism 3/3 — and the mechanism is measured
@@ -87,8 +87,8 @@ float block scale measures 9.37–9.39 % on the same tensors, so the codec sits 
 the 4-bit grid bound and the E4M3 block-scale rounding costs about 1 % relative.
 SelfCheck: `Paris` ×3 with byte-identical `final_logits` (`logits_hash
 0dba89277c5d1250`, top-1 6993). Tokenizer parity 22/22. Tool round-trip:
-`get_weather {"city":"Paris"}`. Perf at 2048 generated tokens: 127.00 t/s
-(TTFT 85 ms, 250 W mean, 352 W peak); bit-exact mode 120.32 t/s.
+`get_weather {"city":"Paris"}`. Perf at 2048 generated tokens: 127.06 t/s
+(TTFT 86 ms, 249 W mean, 351 W peak); bit-exact mode 120.38 t/s.
 
 **What was not measured, and why.** The three parity gates are only partly
 green and should be read as such: the goldens are genuinely source-captured and
@@ -140,7 +140,7 @@ eos 2 with generation also stopping at 11, pad 0, `tie_word_embeddings = false`)
 | FSI | `test_nemotron_moe_fsi_selfcheck` | **2/3** — 01 PASS, 02 FAIL, 03 PASS |
 | CODE | `test_nemotron_moe_code_selfcheck` | **2/3** — 01 PASS, 02 FAIL, 03 PASS |
 | DET | `test_nemotron_moe_det_selfcheck` | **1/3** answer parity, **determinism 3/3** |
-| perf | `test_perf_baseline_nemotron` | PASS — 127.00 / 120.32 t/s |
+| perf | `test_perf_baseline_nemotron` | PASS — 127.06 / 120.38 t/s (harness-written; re-run after the docs commit) |
 
 ### Index and tree
 
@@ -204,8 +204,8 @@ distributions incomparable.
 ### Perf rows
 
 ```
-perf (kAuto) 127.00 t/s  TTFT 85.42 ms  avg 249.80 W  peak 351.59 W  804 samples
-r3   (kOff)  120.32 t/s  TTFT 89.03 ms  avg 250.71 W  peak 337.44 W  849 samples
+perf (kAuto) 127.06 t/s  TTFT 85.52 ms  avg 248.85 W  peak 350.51 W  803 samples
+r3   (kOff)  120.38 t/s  TTFT 89.06 ms  avg 249.28 W  peak 344.10 W  848 samples
 ```
 
 Both at `max_gen 2048`, replaced 2026-09-16 rows (98.24 / r3 24.07) that predated
