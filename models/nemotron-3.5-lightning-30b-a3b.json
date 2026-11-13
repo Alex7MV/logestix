@@ -96,7 +96,7 @@
       "form": "selfcheck"
     }
   },
-  "tool_roundtrip": false,
+  "tool_roundtrip": true,
   "auto_path_determinism": false,
   "golden_debt": {
     "code": "declared debt (see docs/OPEN_TASKS.md)",

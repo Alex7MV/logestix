@@ -12,6 +12,7 @@
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tokenizer_arrows.h"
 
+#include <simdjson.h>
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
@@ -32,6 +33,34 @@ void SetEnv(const char *k, const char *v)
 #else
     setenv(k, v, 1);
 #endif
+}
+
+// The body of one prompt from tools/fsi_prompts.json - the same file the
+// capture tool reads, so the frame test and the capture cannot diverge on the
+// prompt text (only on the framing around it, which is what it pins).
+std::string FsiPromptBody(const std::string &id)
+{
+    const std::filesystem::path path =
+        std::filesystem::path(LSX_SOURCE_DIR) / "tools" / "fsi_prompts.json";
+    REQUIRE(std::filesystem::exists(path));
+    std::ifstream in(path, std::ios::binary);
+    const std::string json((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    simdjson::dom::parser parser;
+    simdjson::dom::element doc;
+    REQUIRE(parser.parse(json).get(doc) == simdjson::SUCCESS);
+    simdjson::dom::array prompts;
+    REQUIRE(doc["prompts"].get_array().get(prompts) == simdjson::SUCCESS);
+    for (auto p : prompts) {
+        std::string_view pid;
+        if (p["id"].get_string().get(pid) == simdjson::SUCCESS && pid == id) {
+            std::string_view body;
+            REQUIRE(p["body"].get_string().get(body) == simdjson::SUCCESS);
+            return std::string(body);
+        }
+    }
+    FAIL("prompt " << id << " not found in fsi_prompts.json");
+    return {};
 }
 
 } // namespace
@@ -287,6 +316,40 @@ TEST_CASE("nemotron single-prompt framing uses the native chat template",
     std::vector<int32_t> bare;
     REQUIRE(prompt::EncodeRawPrompt(db, kPrompt, bare));
     REQUIRE(runtime::DecodeGeneratedText(db, bare) == kPrompt);
+}
+
+TEST_CASE("nemotron FSI-capture frame equals the served frame",
+          "[nemotron][fast][prompt_framing]")
+{
+    // The parity gates feed the SOURCE a prompt built by tools/*_capture.py
+    // through the checkpoint's chat_template.jinja, and then feed the ENGINE
+    // the same captured ids. If those two frames ever differ, every parity
+    // golden describes a prompt the served model never sees - and the gate
+    // still goes green, because it compares the engine against a capture taken
+    // from the same wrong frame.
+    //
+    // This checkpoint's generation prompt opens `<think>` (thinking ON by
+    // default). The capture tools default to enable_thinking=False, which
+    // renders `<think></think>` - a DIFFERENT frame. The fixture records what
+    // the capture actually sent; this case pins the renderer to it.
+    const std::filesystem::path frame_path =
+        std::filesystem::path(LSX_SOURCE_DIR) /
+        "tests/fixtures/nemotron/fsi01_frame.txt";
+    REQUIRE(std::filesystem::exists(frame_path));
+    std::ifstream frame_in(frame_path, std::ios::binary);
+    const std::string expected((std::istreambuf_iterator<char>(frame_in)),
+                               std::istreambuf_iterator<char>());
+    REQUIRE_FALSE(expected.empty());
+
+    // One user turn, no tools: exactly what tools/fsi_capture.py frames, with
+    // the prompt body read from the same prompt set the capture reads.
+    ChatConversation conv;
+    conv.messages.push_back({"user", FsiPromptBody("FSI-TEST-01"), "", {}});
+    std::string rendered;
+    REQUIRE(NemotronHModel::RenderNemotronConversation(conv, rendered));
+    INFO("rendered: [" << rendered << "]");
+    INFO("captured: [" << expected << "]");
+    REQUIRE(rendered == expected);
 }
 
 TEST_CASE("nemotron tool framing renders the XML declaration block",

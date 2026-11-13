@@ -3383,7 +3383,11 @@ target_link_libraries(test_nemotron_moe_model PRIVATE
 target_include_directories(test_nemotron_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_compile_definitions(test_nemotron_moe_model PRIVATE
-    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    # The frame-alignment case reads tests/fixtures/nemotron/fsi01_frame.txt
+    # and tools/fsi_prompts.json from the source tree (ctest runs in the build
+    # dir), so it needs the source root the way test_perf_baseline_logic does.
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
 # test_nemotron_moe_kernels — Mamba-2 mixer kernels. Same OBJECT-lib pattern as
 # test_qwen_moe_kernels (standalone .cu object + link lsxcommon at the exe).
