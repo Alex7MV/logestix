@@ -217,6 +217,20 @@ bool UploadDenseNvfp4(const DenseNvfp4View &r, lsx_nvfp4::LsxNvfp4Weight &w,
     return true;
 }
 
+// BF16 -> F32. NOT `__ushort_as_half`: BF16 and FP16 share a width but not an
+// exponent bias (127 vs 15), so reinterpreting the bits turns every weight into
+// a value near 1-2 (BF16 1.0 = 0x3F80 reads as FP16 1.875). That single mistake
+// corrupted every norm, clip scale and conv tap and made the real-weight output
+// garbage while the synthetic fixtures (whose BF16 payload the test also wrote
+// through the same path) stayed self-consistent.
+inline float Bf16BitsToFloat(uint16_t b)
+{
+    const uint32_t u = static_cast<uint32_t>(b) << 16;
+    float v;
+    std::memcpy(&v, &u, 4);
+    return v;
+}
+
 // BF16 (or F32) host view -> FP16 device tensor.
 __half *UploadHalf(const TensorView &t, cudaStream_t s)
 {
@@ -229,7 +243,7 @@ __half *UploadHalf(const TensorView &t, cudaStream_t s)
         for (size_t i = 0; i < n; ++i) {
             const uint16_t b =
                 static_cast<uint16_t>(t.data[2 * i] | (t.data[2 * i + 1] << 8));
-            h[i] = __float2half(__ushort_as_half(b));
+            h[i] = __float2half(Bf16BitsToFloat(b));
         }
     }
     void *d = nullptr;
@@ -248,7 +262,7 @@ float *UploadF32(const TensorView &t, cudaStream_t s)
         std::memcpy(h.data(), t.data, n * 4);
     } else {
         const uint16_t *b = reinterpret_cast<const uint16_t *>(t.data);
-        for (size_t i = 0; i < n; ++i) h[i] = __half2float(__ushort_as_half(b[i]));
+        for (size_t i = 0; i < n; ++i) h[i] = Bf16BitsToFloat(b[i]);
     }
     void *d = nullptr;
     if (cudaMalloc(&d, n * sizeof(float)) != cudaSuccess) return nullptr;
@@ -483,7 +497,7 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
             } else {
                 const uint16_t *b = reinterpret_cast<const uint16_t *>(t->data);
                 for (size_t i = 0; i < n; ++i)
-                    tmp[i] = __half2float(__ushort_as_half(b[i]));
+                    tmp[i] = Bf16BitsToFloat(b[i]);
             }
             all_q.insert(all_q.end(), tmp.begin(), tmp.end());
         }
@@ -523,7 +537,7 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
             } else {
                 const uint16_t *b = reinterpret_cast<const uint16_t *>(t->data);
                 for (size_t i = 0; i < n; ++i)
-                    tmp[i] = __half2float(__ushort_as_half(b[i]));
+                    tmp[i] = Bf16BitsToFloat(b[i]);
             }
             all_m.insert(all_m.end(), tmp.begin(), tmp.end());
         }

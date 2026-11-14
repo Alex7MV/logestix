@@ -41,6 +41,12 @@ public:
                         const std::vector<int32_t> &gen_tokens,
                         std::vector<ToolCall> &out_calls) const override;
 
+    // Parity diagnostic: runs ONE token from position 0 and writes the residual
+    // stream after every layer to `path` as raw little-endian FP32
+    // ([num_layers+1][hidden], row 0 = post-embed_norm). See
+    // RunInklingForwardTrace in inkling_moe_inference_pipeline.h.
+    bool TraceForward(int32_t token_id, const std::string &path);
+
     const std::string &Type() const override { return kType; }
 
 protected:

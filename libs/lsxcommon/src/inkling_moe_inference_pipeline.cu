@@ -34,6 +34,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace lsxcommon::inkling {
@@ -379,7 +381,9 @@ cudaError_t StageExperts(InklingExpertDb &db, int layer, const int32_t *ids,
 cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
                     InklingExpertDb &experts, InklingSession &session,
                     InklingScratch &ws, int32_t tok, int pos,
-                    float logit_softcap, int unpadded_vocab, std::string &stage_err)
+                    float logit_softcap, int unpadded_vocab,
+                    std::string &stage_err,
+                    std::vector<float> *trace = nullptr)
 {
     const InklingTopology &top = pw.top;
     const int H = top.hidden;
@@ -417,6 +421,18 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
     e = RunInklingNormF32In(stream, ws.x_f, pw.embed_norm, ws.x_h, 1, H, eps);
     if (e != cudaSuccess) return fail("embed_norm", e);
 
+
+    if (trace != nullptr) {
+        // The kernels run on a non-default stream, so every trace copy must be
+        // ordered after them; a bare cudaMemcpy here reads a stale row (the
+        // first attempt reported layer 1 identical to layer 0 for this reason).
+        cudaStreamSynchronize(stream);
+        trace->assign(static_cast<size_t>(top.num_layers + 1) * H, 0.0f);
+        std::vector<__half> row(static_cast<size_t>(H));
+        cudaMemcpy(row.data(), ws.x_h, row.size() * sizeof(__half),
+                   cudaMemcpyDeviceToHost);
+        for (int i = 0; i < H; ++i) (*trace)[static_cast<size_t>(i)] = __half2float(row[i]);
+    }
 
     int n_blocks = 0;
     for (int l = 0; l < top.num_layers; ++l) {
@@ -678,6 +694,15 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
         if (e != cudaSuccess) return fail("mlp residual add", e);
         e = RunInklingScaleToHalf(stream, ws.conv_f, ws.x_h, H, 1.0f);
         if (e != cudaSuccess) return fail("layer output store", e);
+        if (trace != nullptr) {
+            cudaStreamSynchronize(stream);
+            std::vector<__half> row(static_cast<size_t>(H));
+            cudaMemcpy(row.data(), ws.x_h, row.size() * sizeof(__half),
+                       cudaMemcpyDeviceToHost);
+            float *dst = trace->data() +
+                         static_cast<size_t>(l + 1) * static_cast<size_t>(H);
+            for (int i = 0; i < H; ++i) dst[i] = __half2float(row[i]);
+        }
     }
 
     // ── head: final mixture -> norm -> unembed -> softcap -> slice ─────────
@@ -705,6 +730,29 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
 }
 
 }  // namespace
+
+cudaError_t RunInklingForwardTrace(cudaStream_t stream, InklingPinnedWeights &pw,
+                                   InklingExpertDb &experts,
+                                   InklingSession &session, InklingScratch &scratch,
+                                   int32_t tok, int pos, float logit_softcap,
+                                   int unpadded_vocab,
+                                   std::vector<float> &out_states)
+{
+    const InklingTopology &top = pw.top;
+    cudaError_t e = session.EnsureCapacity(top, static_cast<int64_t>(pos) + 1, stream);
+    if (e != cudaSuccess) return e;
+    if (scratch.arena == nullptr &&
+        !scratch.Allocate(top, session.capacity, stream))
+        return cudaErrorMemoryAllocation;
+    session.Reset();
+    for (auto &lw : pw.layers)
+        if (lw.conv_state != nullptr && lw.conv_state_bytes > 0)
+            cudaMemsetAsync(lw.conv_state, 0,
+                            static_cast<size_t>(lw.conv_state_bytes), stream);
+    std::string err;
+    return Forward(stream, pw, experts, session, scratch, tok, pos, logit_softcap,
+                   unpadded_vocab, err, &out_states);
+}
 
 cudaError_t RunInklingGeneration(cudaStream_t stream,
                                  InklingPinnedWeights &pw,

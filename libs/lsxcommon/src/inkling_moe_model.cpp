@@ -11,6 +11,7 @@
 #include <absl/strings/str_format.h>
 
 #include <cstdlib>
+#include <fstream>
 #include <utility>
 
 namespace lsxcommon {
@@ -252,6 +253,26 @@ bool InklingMoeModel::ParseToolCalls(const ArrowTokenizerDb &tok,
         i = j;
     }
     return true;
+}
+
+bool InklingMoeModel::TraceForward(int32_t token_id, const std::string &path)
+{
+    if (!weights_loaded_ || !experts_) return false;
+    if (!EnsureContext()) return false;
+    std::vector<float> states;
+    const auto ec = inkling::RunInklingForwardTrace(
+        stream(), pw_, *experts_, session_, scratch_, token_id, /*pos=*/0,
+        static_cast<float>(top_.final_logit_softcap), top_.unpadded_vocab, states);
+    if (ec != cudaSuccess) {
+        log::error(absl::StrFormat("[inkling] trace failed (cuda %d)",
+                                   static_cast<int>(ec)));
+        return false;
+    }
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(reinterpret_cast<const char *>(states.data()),
+              static_cast<std::streamsize>(states.size() * sizeof(float)));
+    return out.good();
 }
 
 void InklingMoeModel::TeardownWeights()

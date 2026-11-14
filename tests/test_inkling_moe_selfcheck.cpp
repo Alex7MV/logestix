@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "inkling_moe_model.h"
+#include "lsxcommon/inkling_moe_inference_pipeline.h"
+#include "lsxcommon/inkling_moe_tool_format.h"
 #include "lsxcommon/model_factory.h"
 
 namespace fs = std::filesystem;
@@ -58,6 +60,32 @@ uint64_t Fnv1a(const std::vector<float> &v)
 }
 
 }  // namespace
+
+// Parity diagnostic (see the ingest record): dumps the residual stream after
+// every layer for ONE fixed token so a host reference can name the layer where
+// the engine diverges. Enabled by LSX_INKLING_TRACE=<path>; the token id comes
+// from LSX_INKLING_TRACE_TOK (default 1000).
+TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
+{
+    const char *path = std::getenv("LSX_INKLING_TRACE");
+    if (path == nullptr) SKIP("LSX_INKLING_TRACE not set");
+    const fs::path root = VaultRoot();
+    if (!fs::exists(root / "logestix" / "model.index.json"))
+        SKIP("converted Inkling-2-Small tree absent: " + root.string());
+
+    static bool once = [] {
+        lsxcommon::LsxModelFactory::Register<lsxcommon::InklingMoeModel>();
+        return true;
+    }();
+    (void)once;
+    auto model = lsxcommon::LsxModelFactory::Create(Cfg(root.string()));
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+    auto *m = dynamic_cast<lsxcommon::InklingMoeModel *>(model.get());
+    REQUIRE(m != nullptr);
+    REQUIRE(m->TraceForward(EnvIntOr("LSX_INKLING_TRACE_TOK", 1000), path));
+    model->Unload();
+}
 
 TEST_CASE("inkling SelfCheck: the capital of France is Paris", "[inkling][selfcheck]")
 {
@@ -101,6 +129,12 @@ TEST_CASE("inkling SelfCheck: the capital of France is Paris", "[inkling][selfch
         REQUIRE_FALSE(r.gen_tokens.empty());
 
         if (cycle == 0) {
+            std::string ids;
+            for (std::size_t i = 0; i < r.gen_tokens.size() && i < 12; ++i)
+                ids += std::to_string(r.gen_tokens[i]) + " ";
+            WARN("inkling selfcheck: first ids: " << ids
+                 << "| eos=" << r.eos_terminated
+                 << "| prompt_len=" << req.input_ids.size());
             first_logits = r.final_logits;
             first_tokens = r.gen_tokens;
             first_hash = Fnv1a(first_logits);

@@ -129,6 +129,25 @@ cudaError_t RunInklingGeneration(cudaStream_t stream,
                                  InklingGenerationResult &out,
                                  const GenerationStream *gs);
 
+// ── parity diagnostic ──────────────────────────────────────────────────────
+// Runs ONE token through the stack and copies the residual stream after each
+// layer into `out_states`: (num_layers + 1) rows of `hidden` FP32 values, where
+// row 0 is the post-`embed_norm` embedding and row l+1 follows layer l.
+//
+// This exists for the parity investigation recorded in
+// docs/open-tasks/2026-11-14-inkling-2-small-ingest.md (the real-weight
+// SelfCheck is red): without per-layer states the only observable is the decoded
+// text, and the defect could be anywhere in 48 layers. The caller compares the
+// rows against a host reference computed from the same converted artifact, so a
+// divergence names the layer. Not used by the decode path.
+cudaError_t RunInklingForwardTrace(cudaStream_t stream,
+                                   InklingPinnedWeights &pw,
+                                   InklingExpertDb &experts,
+                                   InklingSession &session, InklingScratch &scratch,
+                                   int32_t tok, int pos, float logit_softcap,
+                                   int unpadded_vocab,
+                                   std::vector<float> &out_states);
+
 // The engine's position-dependent log-scaling factor (1.0 on the sliding
 // layers, where it is never applied).
 float InklingLogScaleTau(const InklingTopology &top, int pos);

@@ -164,56 +164,82 @@ the 4-bit rounding on those layers flipping an answer. The measurement to
 record: relL2 of the requantized layer-40..47 experts against their dequantized
 FP8 source (to be taken when the engine can decode them).
 
-## Real-weight status: the engine runs, parity is RED (2026-11-14)
+## Real-weight status: root-cause bug fixed, parity still RED (2026-11-14)
 
-`test_inkling_moe_selfcheck` loads the converted 594B tree on the RTX 5090,
-frames `"The capital of France is"` through the checkpoint's own chat template,
-decodes and returns. It does **not** answer Paris:
+`test_inkling_moe_selfcheck` runs the engine on the converted 594B tree, frames
+`"The capital of France is"` through the checkpoint's own chat template, decodes
+and returns. It does **not** answer Paris: the model emits token 220 (a single
+space) over and over. The gate is in the tree and **fails when run** — it is a
+red gate, not a pass.
 
-```
-cycle 0 text: aterinagjernaterinaskar悆inversheavFactor prison𨯂挦 fem sifat
-```
+### What was fixed (decisive)
 
-Incoherent multibyte output means the forward pass is wrong somewhere, not that
-the weights are unusable. This is the "answers, but not the model's answers"
-class the ingestion protocol warns about, and it is recorded as a **red gate**,
-not a pass. The gate itself is in the tree and fails when run.
+**BF16 tensors were being read as FP16 bit patterns.** `UploadHalf`/`UploadF32`
+used `__ushort_as_half`, which reinterprets the 16 bits as IEEE half instead of
+BF16. The two formats share a width but not an exponent bias (127 vs 15), so
+every BF16 value collapsed into ~1-2: BF16 `1.0` (0x3F80) reads as FP16
+`1.875`, BF16 `0.02` reads as `1.16`. That corrupted **every** norm weight, L2
+clip scale, conv tap, attention sink, relative-position bank, router weight and
+router bias. Before the fix the output was incoherent multibyte garbage; after
+it the per-layer arithmetic verifies (below). The synthetic fixtures could not
+catch it because they write their BF16 payload and read it back through the same
+mistaken path, so they stayed self-consistent.
 
-Two real defects were found and fixed on the way to this point (both recorded in
-the source where they bite):
+Three further defects, all real-weight visible, were fixed on the way:
 
-1. **Relative-position states aliased onto the convolution scratch.** `w_r` was
-   projected into `ws.conv_out`, which the k/v short convolutions then
-   overwrite, so the position bias read a convolution result. Fixed: the
-   relative states have their own buffer.
-2. **The recurrent conv state was never reset between requests**, so a second
-   identical request decoded differently. Fixed: every request starts with all
-   four convolutions per layer zeroed.
+- the relative-position states were projected into `ws.conv_out`, the same
+  scratch buffer the k/v short convolutions overwrite, so the position bias read
+  a convolution result;
+- the recurrent conv state was never reset between requests, so a second
+  identical request decoded differently;
+- the post-MLP conv state used offset `3*k*kv_dim`, overlapping the
+  post-attention state whenever `kv_dim < hidden` (correct base is
+  `2*k*kv_dim + k*hidden`), and a static-conv layer passing its taps for both
+  the `w` and `dyn_taps` arguments silently ran the lag convention on every
+  sliding layer.
 
-Also fixed while building the layer body: the post-MLP conv state used offset
-`3*k*kv_dim`, overlapping the post-attention state whenever `kv_dim < hidden`
-(correct base is `2*k*kv_dim + k*hidden`); and a static-conv layer passing its
-taps for both the `w` and `dyn_taps` arguments silently ran the lag convention
-on every sliding layer (the kernel picks the order from `dyn_taps == nullptr`).
+### What is now VERIFIED against an independent reference
 
-**Next checks, in the order of "cheapest to falsify" — none of them done yet:**
+`tools/inkling_layer_ref.py` is a float64 host reference that reads the same
+converted artifact and shares no code with the kernels; `RunInklingForwardTrace`
+(exposed as `InklingMoeModel::TraceForward`) dumps the residual stream after
+every layer for one token. Replaying **each layer from the engine's own state**
+(so a comparison is not polluted by earlier fp16 rounding) gives:
 
-- N1. Teacher-force a 2-token prefix and compare the engine's `final_logits`
-  against a `transformers` 5.23 reference run on the same ids. This is the only
-  way to localize the defect to a layer instead of guessing at the whole stack.
-- N2. Zero all routed experts and compare: if the output becomes *partly*
-  coherent the expert path is at fault; if it stays garbage the defect is
-  upstream of the MoE.
-- N3. Repeat with only layer 0 executed (early exit after one layer, comparing
-  hidden states against the reference) — the per-layer plumbing is already
-  exercised by the synthetic model test, so a divergence there points at the
-  weight plane rather than the code.
-- N4. Re-verify the two codec invariants on the real artifact: decode one
-  expert record on the host and compare against the source safetensors slice
-  (`base relL2` ~0.09 for NVFP4 is expected), and check the per-expert global
-  scale is applied exactly once in the batch GEMV.
-- N5. The `mlp.gate.bias` tensor: the reference adds it to the sigmoid score for
-  SELECTION only. Verify the shipped values are not being added to the weights.
+| check | result |
+|---|---|
+| seed (post-`embed_norm`) | relL2 1.6e-4 (fp16 store) |
+| layer 0, sliding, replay | relL2 6.2e-4 |
+| layer 4, sliding, replay | relL2 2.8e-4 |
+| layer 5, full (3-stream mixture + dynamic conv) | relL2 0.36 before the seed was right — see below |
+| MoE seeded with the engine's own `mlp_norm` output | **ids identical**, coeffs to 1e-8, `\|moe_acc\|` 100.757 vs 100.754 |
+| head (unembed row dot + softcap) | host recompute matches the engine to 8 digits |
+| attention output → gate → o_proj → post-attn conv → residual | matches |
+
+A **sequential** host run is NOT a valid oracle: the engine rounds to FP16 each
+layer, top-8 selection flips on those differences, and once one selection flips
+the two runs diverge permanently (layer 2 showed 0.068, layers 3-4 ~0.03). The
+per-layer replay is the correct instrument, and by it every stage checked so far
+agrees.
+
+### What remains — one unverified region
+
+Every check above is at **position 0**. The multi-position path is the only part
+of the engine with no reference behind it, and it is where the remaining defect
+must be:
+
+- the four recurrent conv rings after the first push (only the pos-0 state was
+  ever compared);
+- the sliding-window bound with `kv_len > window`;
+- the KV append plus attention over more than one cached key;
+- the AttnRes block stack carried across positions.
+
+**Next step (bounded):** extend `tools/inkling_layer_ref.py` to two positions —
+token A at pos 0, token B at pos 1 — with a non-zero conv history and two cached
+keys, and compare layer 0 at pos 1 (layer 0 has no mixture, so the stack is not
+needed). That single comparison either clears the conv/attention path or names
+the defect. `tools/inkling_layer_ref.py --variant {single_stream,no_dyn_taps,no_conv}`
+already exists for bisecting the full-layer path the same way.
 
 ## Registry status: PENDING ingestion (no manifest row yet)
 
@@ -252,6 +278,7 @@ Current state, machine-enforced from both directions:
 | 5 | weight upload (`inkling_moe_load.cpp`) + `inkling_moe_inference_pipeline.cu` | `test_inkling_moe_model` (model) | **done, green** (439 assertions): the pinned plane, the neutral expert store, the KV session, the decode scratch arena and the full 12-step layer body with the 8-expert staging and 3 batch GEMVs per layer |
 | 6 | `inkling_moe_tool_format.cpp` (stage 4b, native `chat_template.jinja`) | `test_inkling_moe_tool_framing` (fast) | **done, green** (49 assertions) |
 | 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **RED on real weights** (see below); FSI/CODE/DET not written |
+| 7b | parity instrumentation + independent host reference | `tools/inkling_layer_ref.py` + `TraceForward` | **done**: names the layer, and cleared every pos-0 stage |
 | 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **open** (declared debt) |
 | 9 | report | `docs/model-reports/2026-11-14-Inkling-2-Small.md` | **open** — the stage-0/1/2 evidence is in this file and in `docs/OPEN_TASKS.md` §R19 |
 
