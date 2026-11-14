@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "lsxcommon/inkling_moe_inference_pipeline.h"
+#include "lsxcommon/inkling_moe_load.h"
 #include "lsxcommon/model_base.h"
 
 namespace lsxcommon {
@@ -27,6 +29,11 @@ public:
 protected:
     void TeardownWeights() override;
 
+    inkling::InklingTopology top_;
+    inkling::InklingPinnedWeights pw_;
+    std::unique_ptr<inkling::InklingExpertDb> experts_;
+    inkling::InklingSession session_;
+    inkling::InklingScratch scratch_;
     bool weights_loaded_ = false;
 };
 

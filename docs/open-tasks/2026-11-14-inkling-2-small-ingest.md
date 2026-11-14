@@ -164,6 +164,32 @@ the 4-bit rounding on those layers flipping an answer. The measurement to
 record: relL2 of the requantized layer-40..47 experts against their dequantized
 FP8 source (to be taken when the engine can decode them).
 
+## Registry status: PENDING ingestion (no manifest row yet)
+
+`models/inkling-2-small.json` was written when the row looked complete and was
+then **withdrawn**, because `test_model_suite_guard` forbids a suite row whose
+nine stages do not all exist and the engine-dependent four
+(`selfcheck`/`fsi`/`code`/`det`) cannot exist before the decode engine does.
+The repo's sanctioned intermediate state for a multi-stage ingestion is the
+opposite order: register the targets, declare them in
+`test_model_suite_guard.cpp::kPendingSuiteTargets`, and add the manifest row in
+the commit that completes the last stage.
+
+Current state, machine-enforced from both directions:
+
+- `tests/CMakeLists.txt` registers the four targets by hand (labels `fast`,
+  `convert`, `inference` x2; bounded `TIMEOUT`s; `RESOURCE_LOCK "gpu"`;
+  `SKIP_RETURN_CODE 4` where a vault may be absent).
+- `test_model_suite_guard` lists `test_inkling_moe_{convert,loader,kernels}` in
+  `kPendingSuiteTargets`; the guard fails if a pending name stops being a
+  registered unclaimed target **or** if a suite row claims it — so the entry
+  cannot outlive the problem.
+- `tools/gen_model_manifest.py::_NON_MODEL_TESTS` claims the four test files so
+  the `--strict` orphan scan stays clean, with the same delete-on-row comment.
+- Because there is no row, `LsxModelFactory` cannot resolve `inkling-2-small`
+  and `docs/MODELS.md` (38 rows) does not list it. That is correct: the model is
+  not servable.
+
 ## Plan (TDD, one stage per commit)
 
 | # | deliverable | test (label) | state |
@@ -173,6 +199,7 @@ FP8 source (to be taken when the engine can decode them).
 | 3 | topology reader + artifact layout (`inkling_moe_load.*`) | `test_inkling_moe_loader` (load, synthetic + real index) | **done, green** (topology half); the weight upload half is stage 5 work |
 | 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) | **done, green** (1524 assertions, 14 host-reference cases) |
 | 5 | weight upload (`inkling_moe_load.cpp`) + `inkling_moe_inference_pipeline.cu` | `test_inkling_moe_model` (model) | **partly**: the pinned plane, the neutral expert store, the KV session and the decode scratch arena are landed; the per-layer forward pass is NOT written, so `Load` refuses the model and `RunInklingGeneration` returns `cudaErrorNotSupported` |
+| 5b | finish `Forward()` + the expert staging + the sampling loop | `test_inkling_moe_model` (model) | **open — the one blocking item** |
 | 6 | `inkling_moe_tool_format.cpp` (stage 4b, native template) | `test_inkling_moe_tool_framing` (fast) | **open** |
 | 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **open** (declared debt) |
 | 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **open** (declared debt) |

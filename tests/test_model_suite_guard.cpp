@@ -670,7 +670,14 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     // declared here. The declaration is checked in both directions - it must
     // name a registered, UNCLAIMED target, and it fails as soon as the owning
     // row appears - so it cannot outlive the problem or hide an orphan.
-    static const std::set<std::string> kPendingSuiteTargets = {};
+    static const std::set<std::string> kPendingSuiteTargets = {
+        // Inkling-2-Small: the passport, converter, kernels and the
+        // load/topology tests have landed; the decode engine (stage 5) is not
+        // written, so the suite row cannot be complete yet. Delete these three
+        // the moment the row lands.
+        "test_inkling_moe_convert", "test_inkling_moe_loader",
+        "test_inkling_moe_kernels",
+    };
 
     std::set<std::string> claimed;
     for (const auto &s : Suites())

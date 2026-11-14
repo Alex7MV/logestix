@@ -1,7 +1,7 @@
 #include "inkling_moe_model.h"
 
-#include "lsxcommon/inkling_moe_load.h"
 #include "lsxcommon/inkling_moe_inference_pipeline.h"
+#include "lsxcommon/inkling_moe_load.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
@@ -27,14 +27,13 @@ bool InklingMoeModel::Load()
     tokenizer_optional_ = SyntheticGeometryAllowed();
     if (!BeginLoad(cfg_.model_path)) return AbortLoad();
 
-    inkling::InklingTopology top;
-    auto st = inkling::LoadInklingTopology(cfg_.model_path, top);
+    auto st = inkling::LoadInklingTopology(cfg_.model_path, top_);
     if (!st.ok()) {
         log::error(absl::StrFormat("[inkling] topology load failed: %s",
                                    st.ToString()));
         return AbortLoad();
     }
-    if (!inkling::InklingTopologyMatchesFrozen(top)) {
+    if (!inkling::InklingTopologyMatchesFrozen(top_)) {
         log::error("[inkling] frozen geometry mismatch");
         return AbortLoad();
     }
@@ -57,7 +56,62 @@ gpu::InferenceResult InklingMoeModel::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
-    r.error_msg = "inkling-2-small decode pipeline not implemented";
+    if (!weights_loaded_) {
+        r.error_msg = "inkling-2-small weights not loaded";
+        return r;
+    }
+
+    // Model independence: this model's own kernel-routing policy.
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
+
+    if (!EnsureContext()) {
+        r.error_msg = "cuda init failed";
+        return r;
+    }
+    const int eos_id =
+        (req.ignore_eos || !tok_db_) ? kIgnoreEosTokenId : tok_db_->eos_id;
+
+    // Streaming + cooperative cancellation: the whole decode runs inside the
+    // residency lock, and the generation stream carries the per-token callback
+    // and the abort flag (enforced by test_model_independence_guard).
+    lsxcommon::GenerationStream gs;
+    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.abort_flag = req.abort_flag;
+
+    sample::ISampler &sampler = sample::SamplerFor(req.sampling);
+    inkling::InklingGenerationResult gen;
+    const auto ec = this->RunUnderResidencyLock([&]() {
+        return inkling::RunInklingGeneration(
+            stream(), pw_, *experts_, session_, scratch_, req.input_ids,
+            req.max_gen_tokens, std::vector<int32_t>{eos_id},
+            static_cast<float>(top_.final_logit_softcap), top_.unpadded_vocab,
+            sampler, gen, &gs);
+    });
+    if (ec != cudaSuccess || !gen.ok) {
+        r.error_msg = gen.error_msg.empty() ? "inkling-2-small cuda error"
+                                            : gen.error_msg;
+        return r;
+    }
+    r.ok = true;
+    r.num_layers = top_.num_layers;
+    r.gen_tokens = gen.tokens;
+    r.num_tokens = static_cast<int>(gen.tokens.size());
+    r.first_gen_tok_id = gen.first_token;
+    r.weight_resident_bytes = resident_bytes_;
+    r.final_logits = gen.final_logits;
+    r.eos_terminated = gen.eos_terminated;
+    r.ttft_ms = gen.ttft_ms;
+    r.total_time_ms = gen.total_ms;
+    if (gen.total_ms > 0.0)
+        r.tokens_per_sec =
+            static_cast<double>(gen.tokens.size()) / (gen.total_ms / 1000.0);
+    if (tok_db_ && !gen.tokens.empty()) {
+        std::size_t cap = gen.tokens.size() * 16 + 64;
+        std::string text(cap, '\0');
+        if (arrow_tokenizer_decode(*tok_db_, gen.tokens.data(),
+                                   gen.tokens.size(), text.data(), &cap) == 0)
+            r.output_text.assign(text.data(), cap);
+    }
     return r;
 }
 
@@ -72,7 +126,16 @@ gpu::InferenceResult InklingMoeModel::SelfCheck(const ModelRequest &req)
 
 void InklingMoeModel::TeardownWeights()
 {
-    if (weights_loaded_) weights_loaded_ = false;
+    scratch_.Free();
+    session_.Free();
+    if (experts_) {
+        inkling::FreeInklingExpertIndex(*experts_);
+        experts_.reset();
+    }
+    if (weights_loaded_) {
+        inkling::FreeInklingPinnedWeights(pw_);
+        weights_loaded_ = false;
+    }
     TeardownContext();
 }
 

@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "../libs/lsxcommon/src/nvfp4_scale.h"
 #include "test_inkling_fixture.h"
 
 namespace fs = std::filesystem;
@@ -57,13 +58,9 @@ bool DenseHasName(const fs::path &path, const std::string &name)
     return false;
 }
 
-float E4m3(uint8_t b)
-{
-    const int e = (b >> 3) & 0xF;
-    const int m = b & 0x7;
-    if (e == 0) return static_cast<float>(m) * (1.0f / 512.0f);
-    return std::ldexp(1.0f + static_cast<float>(m) / 8.0f, e - 7);
-}
+// The canonical codec, never a local replica: tests/test_nvfp4_scale.cpp
+// fails any TU that hand-copies the E4M3 exponent field.
+float E4m3(uint8_t b) { return lsxcommon::nvfp4::E4m3ToFloat(b); }
 
 }  // namespace
 

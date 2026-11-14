@@ -38,7 +38,8 @@ std::string VaultRoot()
 TEST_CASE("inkling topology reader reads a converted tree",
           "[inkling][load]")
 {
-    REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
+    if (std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") == nullptr)
+        SKIP("synthetic-geometry fixture not enabled");
     const fs::path in = fs::temp_directory_path() / "inkling_load_in";
     const fs::path out = fs::temp_directory_path() / "inkling_load_out";
     fs::remove_all(in);

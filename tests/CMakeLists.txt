@@ -86,17 +86,48 @@ add_executable(test_kimi_pro_convert test_kimi_pro_convert.cpp)
 target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
-# ── Inkling-2-Small synthetic converter (mixed NVFP4/MXFP8 expert source) ───
-# Same synthetic-checkpoint discipline; the gate is the per-layer expert codec
-# split and the AttnRes query renaming (source index = layer-1).
+# ── Inkling-2-Small (PENDING ingestion: no manifest row until the decode
+# engine exists; the targets are declared in test_model_suite_guard's
+# kPendingSuiteTargets and move to models/inkling-2-small.json when stage 5
+# lands). Labels/timeouts/skip codes are set by hand here because the generated
+# model_targets.cmake fragment only covers manifest-claimed targets. ──
+add_executable(test_inkling_moe_constants test_inkling_moe_constants.cpp)
+target_link_libraries(test_inkling_moe_constants PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_constants COMMAND test_inkling_moe_constants)
+set_tests_properties(test_inkling_moe_constants PROPERTIES LABELS fast)
 add_executable(test_inkling_moe_convert test_inkling_moe_convert.cpp)
 target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_convert COMMAND test_inkling_moe_convert)
+set_tests_properties(test_inkling_moe_convert PROPERTIES TIMEOUT 600)
+set_tests_properties(test_inkling_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
+set_tests_properties(test_inkling_moe_convert PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_inkling_moe_convert PROPERTIES LABELS convert)
 
-# ── Inkling-2-Small topology + artifact layout (synthetic + real index) ─────
 add_executable(test_inkling_moe_loader test_inkling_moe_loader.cpp)
 target_link_libraries(test_inkling_moe_loader PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_loader COMMAND test_inkling_moe_loader)
+set_tests_properties(test_inkling_moe_loader PROPERTIES TIMEOUT 300)
+set_tests_properties(test_inkling_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_inkling_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
+set_tests_properties(test_inkling_moe_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_inkling_moe_loader PROPERTIES LABELS inference)
+
+# The kernel executable is created next to its CUDA object library below
+# (test_inkling_cu); only the ctest registration lives here.
+add_test(NAME test_inkling_moe_kernels COMMAND test_inkling_moe_kernels)
+set_tests_properties(test_inkling_moe_kernels PROPERTIES TIMEOUT 300)
+set_tests_properties(test_inkling_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_inkling_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
+set_tests_properties(test_inkling_moe_kernels PROPERTIES LABELS inference)
+
+# ── Inkling-2-Small synthetic converter (mixed NVFP4/MXFP8 expert source) ───
+# Same synthetic-checkpoint discipline; the gate is the per-layer expert codec
+# split and the AttnRes query renaming (source index = layer-1).
+target_link_libraries(test_inkling_moe_convert PRIVATE simdjson::simdjson
+    Catch2::Catch2WithMain)
 
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
@@ -1598,9 +1629,8 @@ add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp
                                       test_kimi_pro_constants.cpp)
 target_link_libraries(test_kimi_k3_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-# ── Inkling-2-Small frozen passport (host-only) ──────────────────────────
-add_executable(test_inkling_moe_constants test_inkling_moe_constants.cpp)
-target_link_libraries(test_inkling_moe_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
+# (Inkling-2-Small targets are declared together above, in the pending-ingestion
+# block, because no manifest emits them yet.)
 # ── phi-4 ChatML token bridge test (host-only, synthetic tokenizer) ──
 add_executable(test_phi_tool_framing test_phi_tool_framing.cpp)
 target_include_directories(test_phi_tool_framing PRIVATE
@@ -4029,6 +4059,7 @@ add_executable(test_inkling_moe_kernels)
 set_target_properties(test_inkling_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_inkling_moe_kernels PRIVATE test_inkling_cu lsxcommon
     Catch2::Catch2WithMain)
+
 
 # ── Flint SelfCheck (real weights; SKIPs when the vault is absent) ──
 

@@ -612,6 +612,14 @@ _NON_MODEL_TESTS = frozenset({
     "test_resource_governor", "test_runtime_tuner", "test_safetensors", "test_sampling",
     "test_schema_views", "test_stream_read_ceiling", "test_stream_scratch", "test_tokenizer",
     "test_tokenizer_arrows", "test_tokenizer_vocab_contract", "test_tool_format", "test_vram_estimate",
+    # Inkling-2-Small is a PENDING ingestion: the passport, the converter, the
+    # kernels and the load/topology tests are in the tree, but the decode engine
+    # (stage 5) is not written, so no manifest row exists yet - the suite guard
+    # forbids an incomplete row, and these targets are declared in its
+    # kPendingSuiteTargets. Delete these four entries in the commit that adds
+    # models/inkling-2-small.json.
+    "test_inkling_moe_constants", "test_inkling_moe_convert",
+    "test_inkling_moe_loader", "test_inkling_moe_kernels",
 })
 
 
