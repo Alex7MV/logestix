@@ -141,7 +141,11 @@ struct InklingLayerWeights {
     float *router_bias = nullptr;   // [experts] FP32 selection bias
     // Recurrent conv state, FOUR convolutions per layer (k/v + post-attn +
     // post-MLP), laid out back to back: [k][kv_dim] x2 then [k][hidden] x2.
+    // It is PER-SEQUENCE state: every request starts with it zeroed, or a second
+    // request inherits the first one's history (measured: two identical requests
+    // produced {101,3,110,110} and then {16,110,126,110}).
     float *conv_state = nullptr;
+    int64_t conv_state_bytes = 0;
 };
 
 struct InklingPinnedWeights {

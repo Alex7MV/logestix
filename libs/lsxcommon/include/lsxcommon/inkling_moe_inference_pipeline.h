@@ -115,8 +115,10 @@ struct InklingGenerationResult {
 // Decodes `input_ids` and then up to `max_gen_tokens` tokens. `forbidden_id`
 // (when >= 0) is masked out of the first step's logits, which is how the FSI /
 // CODE prompt sets pin a frame the model must not answer with.
+// `pw` is mutable: the four per-layer short-convolution states are recurrent
+// sequence state and are reset at the start of every request.
 cudaError_t RunInklingGeneration(cudaStream_t stream,
-                                 const InklingPinnedWeights &pw,
+                                 InklingPinnedWeights &pw,
                                  InklingExpertDb &experts,
                                  InklingSession &session, InklingScratch &scratch,
                                  const std::vector<int32_t> &input_ids,

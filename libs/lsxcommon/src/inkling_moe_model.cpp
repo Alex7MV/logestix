@@ -8,11 +8,23 @@
 
 #include <absl/strings/str_format.h>
 
+#include <cstdlib>
 #include <utility>
 
 namespace lsxcommon {
 
 const std::string InklingMoeModel::kType = "inkling-2-small";
+
+namespace {
+
+int EnvInt(const char *name, int dflt)
+{
+    if (const char *v = std::getenv(name))
+        if (const int parsed = std::atoi(v); parsed > 0) return parsed;
+    return dflt;
+}
+
+}  // namespace
 
 InklingMoeModel::InklingMoeModel(ModelInitConfig cfg)
     : ModelBase(std::move(cfg))
@@ -41,15 +53,43 @@ bool InklingMoeModel::Load()
         log::error("[inkling] cuda context init failed");
         return AbortLoad();
     }
-    // The weights, the expert store and the KV session are all in place, but the
-    // per-layer forward pass (stage 5) is not written yet. Refuse the load: a
-    // model that loads and then cannot decode is worse than one that says so,
-    // because `lsxfabric --serve` would advertise a session it can never
-    // answer. `InklingMoeModel::Infer` reports the same error.
-    log::error(
-        "[inkling] the decode pipeline is not implemented yet (stage 5); "
-        "see docs/open-tasks/2026-11-14-inkling-2-small-ingest.md");
-    return AbortLoad();
+    cudaStreamSynchronize(stream());
+
+    // The loader sizes every plane from `pw.top`, so the topology must be in
+    // place before it runs (it was the one field the first cut set too late:
+    // the layer vector came back empty and Forward indexed into nothing).
+    pw_.top = top_;
+    // The dense plane is device-resident for the whole session; the 594B routed
+    // set is only ever an mmap view of the neutral ExpertStore.
+    if (!inkling::LoadInklingPinnedWeights(cfg_.model_path, pw_, stream())) {
+        log::error("[inkling] pinned weight load failed");
+        return AbortLoad();
+    }
+    cudaStreamSynchronize(stream());
+    experts_ = std::make_unique<inkling::InklingExpertDb>(
+        inkling::LoadInklingExpertIndex(
+            cfg_.model_path, top_.num_layers, top_.num_experts,
+            inkling::InklingResolveExpertWindow(
+                top_, EnvInt("LSX_INKLING_MAX_OPEN", 4096)),
+            /*warm_on_load=*/false));
+
+    // Decode scratch is fixed-size; allocating it here means a card that cannot
+    // hold the working set fails Load instead of failing the first request.
+    if (!scratch_.Allocate(top_, inkling::kMaxContext, stream())) {
+        log::error("[inkling] decode scratch allocation failed");
+        return AbortLoad();
+    }
+
+    weights_loaded_ = true;
+    resident_bytes_ = pw_.resident_bytes + static_cast<std::uint64_t>(
+                                               scratch_.arena_bytes +
+                                               scratch_.expert_stage_bytes);
+
+    // Governor accounting: the pinned dense plane plus the decode scratch are
+    // the permanent lease; the routed stores are host mmaps.
+    if (!AcquirePermanentWeights(resident_bytes_)) return AbortLoad();
+    FinishLoad();
+    return true;
 }
 
 gpu::InferenceResult InklingMoeModel::Infer(const ModelRequest &req)

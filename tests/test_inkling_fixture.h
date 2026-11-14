@@ -10,7 +10,9 @@
 // converter relaxes its frozen cross-check under
 // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 and reads the *parsed* geometry.
 
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -91,12 +93,19 @@ inline std::vector<uint8_t> ScalesE4m3(int64_t bytes, uint8_t seed)
     return out;
 }
 
-// MXFP8 plane: E4M3 weights + ue8m0 scales (0x7F == 1.0).
+// MXFP8 plane: E4M3 weights + ue8m0 scales (0x7F == 1.0). The weights stay in
+// the 2^-10..2^-7 band on purpose: the converted NVFP4 expert planes of the
+// other layers carry a per-expert global scale of amax/2688 ~ 3e-5, and a
+// fixture whose MXFP8 layers were ~1e4 times larger than the NVFP4 ones pushed
+// the residual stream past the FP16 range within a few tokens (measured: the
+// layer-5 residual reached 2.9e4 and the next add overflowed). Expert
+// magnitudes have to be comparable across the two codecs for the mixed-codec
+// tree to decode at all.
 inline std::vector<uint8_t> E4m3Bytes(int64_t bytes, uint8_t seed)
 {
     std::vector<uint8_t> out(static_cast<size_t>(bytes));
     for (size_t i = 0; i < out.size(); ++i)
-        out[i] = static_cast<uint8_t>(0x30 + ((i * 7 + seed) % 0x20));
+        out[i] = static_cast<uint8_t>(0x18 + ((i * 7 + seed) % 8));
     return out;
 }
 
@@ -223,6 +232,53 @@ inline std::vector<synthtest::FakeTensor> MakeLayerTensors(int layer)
     return t;
 }
 
+// The shared byte-pattern fixture (`MakeBf16`) writes `i % 65536` reinterpreted
+// as BF16. Two properties of that make it unusable for a numeric test: the
+// values span 1e-38..3.4e38 (after `rmsnorm * weight` the hidden state is ~1e38
+// and every unembed dot saturates), and EACH ROW carries its own magnitude, so
+// a row whose values are ~1e-40 quantizes to all-zero blocks and its vocabulary
+// entry contributes nothing. Both were observed as a decode that emitted token 0
+// with an all-zero logits row.
+//
+// A test that wants to watch the engine carry its input into the output needs a
+// smooth, bounded, per-element-varying field. `RenderSaneValues` replaces every
+// BF16 / F32 element with one (the packed expert nibbles and the per-expert
+// amax / outer-scale-denominator are left alone: the first is a pass-through
+// codec, the others are scales whose value the converter depends on).
+inline void RenderSaneValues(std::vector<synthtest::FakeTensor> &ts)
+{
+    for (auto &t : ts) {
+        if (t.name.find("amax") != std::string::npos ||
+            t.name.find("denominator") != std::string::npos)
+            continue;
+        const bool bf16 = (t.dtype == "BF16");
+        const bool f32 = (t.dtype == "F32");
+        if (!bf16 && !f32) continue;
+        const size_t elem = bf16 ? 2 : 4;
+        const size_t n = t.data.size() / elem;
+        // The OUTPUT projections set the per-layer residual gain. An untrained
+        // net with unit-ish gain diverges: the residual stream is FP16, and
+        // `x += w_o * attn` with |w_o| ~ 0.05 compounds past 65504 within a few
+        // tokens (observed: non-finite from the third position). Scaling the
+        // attention output projection down by 40x keeps the fixture stable for
+        // the handful of tokens a unit test decodes, which is all this fixture
+        // is for -- it pins the plumbing, not the numerics.
+        const float gain = (t.name.find("wo_ud") != std::string::npos) ? 0.025f : 1.0f;
+        for (size_t i = 0; i < n; ++i) {
+            const float v = gain *
+                            (0.05f * std::sin(0.7f * static_cast<float>(i)) +
+                             0.02f * std::cos(0.11f * static_cast<float>(i)));
+            if (bf16) {
+                const uint16_t b = synthtest::FloatToBf16(v);
+                t.data[i * 2] = static_cast<uint8_t>(b & 0xff);
+                t.data[i * 2 + 1] = static_cast<uint8_t>(b >> 8);
+            } else {
+                std::memcpy(t.data.data() + i * 4, &v, 4);
+            }
+        }
+    }
+}
+
 inline void WriteConfig(const std::filesystem::path &dir)
 {
     std::string local;
@@ -292,7 +348,9 @@ inline void WriteQuantConfig(const std::filesystem::path &dir)
 }
 
 // Writes the whole synthetic checkpoint into `dir`.
-inline void WriteCheckpoint(const std::filesystem::path &dir)
+// `sane` renders a bounded field (see RenderSaneValues); the artifact-layout tests
+// keep the raw byte pattern so their exact NVFP4 pass-through bytes stay pinned.
+inline void WriteCheckpoint(const std::filesystem::path &dir, bool sane = false)
 {
     WriteConfig(dir);
     WriteQuantConfig(dir);
@@ -339,6 +397,7 @@ inline void WriteCheckpoint(const std::filesystem::path &dir)
         auto plane = MakeExpertPlane(l);
         t.insert(t.end(), plane.tensors.begin(), plane.tensors.end());
     }
+    if (sane) RenderSaneValues(t);
     synthtest::WriteSafetensors(dir, Shard0(), t);
 }
 

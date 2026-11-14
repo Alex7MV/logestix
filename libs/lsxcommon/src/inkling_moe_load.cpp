@@ -638,6 +638,7 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
         if (cudaMemsetAsync(state, 0, floats * sizeof(float), stream) != cudaSuccess)
             return false;
         lw.conv_state = state;
+        lw.conv_state_bytes = static_cast<int64_t>(floats * sizeof(float));
         resident += floats * sizeof(float);
 
     }

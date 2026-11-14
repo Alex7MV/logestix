@@ -115,6 +115,18 @@ set_tests_properties(test_inkling_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
 set_tests_properties(test_inkling_moe_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_inkling_moe_loader PROPERTIES LABELS inference)
 
+add_executable(test_inkling_moe_model test_inkling_moe_model.cpp)
+target_include_directories(test_inkling_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_model PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_model COMMAND test_inkling_moe_model)
+set_tests_properties(test_inkling_moe_model PROPERTIES TIMEOUT 600)
+set_tests_properties(test_inkling_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_inkling_moe_model PROPERTIES RESOURCE_LOCK "gpu")
+set_tests_properties(test_inkling_moe_model PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_inkling_moe_model PROPERTIES LABELS inference)
+
 # The kernel executable is created next to its CUDA object library below
 # (test_inkling_cu); only the ctest registration lives here.
 add_test(NAME test_inkling_moe_kernels COMMAND test_inkling_moe_kernels)

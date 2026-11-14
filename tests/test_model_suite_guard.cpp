@@ -676,7 +676,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
         // written, so the suite row cannot be complete yet. Delete these three
         // the moment the row lands.
         "test_inkling_moe_convert", "test_inkling_moe_loader",
-        "test_inkling_moe_kernels",
+        "test_inkling_moe_kernels", "test_inkling_moe_model",
     };
 
     std::set<std::string> claimed;

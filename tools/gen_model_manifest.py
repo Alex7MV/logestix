@@ -620,6 +620,7 @@ _NON_MODEL_TESTS = frozenset({
     # models/inkling-2-small.json.
     "test_inkling_moe_constants", "test_inkling_moe_convert",
     "test_inkling_moe_loader", "test_inkling_moe_kernels",
+    "test_inkling_moe_model",
 })
 
 
