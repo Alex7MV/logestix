@@ -83,7 +83,87 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
     REQUIRE(model->Load());
     auto *m = dynamic_cast<lsxcommon::InklingMoeModel *>(model.get());
     REQUIRE(m != nullptr);
-    REQUIRE(m->TraceForward(EnvIntOr("LSX_INKLING_TRACE_TOK", 1000), path));
+    // A SECOND token can be appended so the trace exercises the multi-position
+    // path (conv rings after the first push, two cached keys).
+    std::vector<int32_t> toks{EnvIntOr("LSX_INKLING_TRACE_TOK", 1000)};
+    for (const char *name : {"LSX_INKLING_TRACE_TOK2", "LSX_INKLING_TRACE_TOK3",
+                             "LSX_INKLING_TRACE_TOK4"})
+        if (const char *v = std::getenv(name)) toks.push_back(std::atoi(v));
+    // What does the head actually predict for the REAL framed prompt? Printed
+    // here because "the model emits a space forever" is only actionable once we
+    // know whether the top-1 is the assistant role marker.
+    {
+        lsxcommon::ModelRequest r;
+        REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
+                                           "The capital of France is",
+                                           r.input_ids));
+        r.max_gen_tokens = 1;
+        r.ignore_eos = true;
+        const auto res = model->Infer(r);
+        REQUIRE(res.ok);
+        std::vector<std::size_t> top(5, 0);
+        std::vector<float> tv(5, -1e30f);
+        for (std::size_t i = 0; i < res.final_logits.size(); ++i)
+            for (int s2 = 0; s2 < 5; ++s2)
+                if (res.final_logits[i] > tv[s2]) {
+                    for (int m2 = 4; m2 > s2; --m2) { tv[m2] = tv[m2-1]; top[m2] = top[m2-1]; }
+                    tv[s2] = res.final_logits[i]; top[s2] = i;
+                    break;
+                }
+        std::string dump;
+        for (int s2 = 0; s2 < 5; ++s2) {
+            std::string txt(64, '\0');
+            std::size_t cap = txt.size();
+            arrow_tokenizer_decode(model->Tokenizer(),
+                                   reinterpret_cast<const int32_t *>(&top[s2]), 0,
+                                   txt.data(), &cap);
+            dump += " " + std::to_string(top[s2]) + "(" +
+                    std::to_string(tv[s2]) + ")";
+        }
+        WARN("inkling head top5 at the framed prompt:" << dump);
+        {
+            std::string t(4096, '\0');
+            std::size_t cap = t.size();
+            if (arrow_tokenizer_decode(model->Tokenizer(), r.input_ids.data(),
+                                       r.input_ids.size(), t.data(), &cap) == 0) {
+                t.resize(cap);
+                WARN("inkling prompt decodes to: [" << t << "]");
+            }
+            // Prefix probes: the model must predict the NEXT token of its own
+            // template. If the first few prefixes are right and later ones are
+            // not, the defect is positional; if none are right, it is not.
+            const std::vector<int32_t> full = {
+                200002, 200004, 34182, 279, 154554, 150628, 25, 220, 15, 13,
+                24, 200010, 200000, 200004, 371, 151451, 149879, 151194,
+                149884, 200010};
+            for (std::size_t cut = 1; cut <= full.size(); ++cut) {
+                lsxcommon::ModelRequest pr;
+                pr.input_ids.assign(full.begin(), full.begin() + cut);
+                pr.max_gen_tokens = 1;
+                pr.ignore_eos = true;
+                const auto pc = model->Infer(pr);
+                if (!pc.ok) { WARN("prefix " << cut << " failed: " << pc.error_msg); continue; }
+                std::size_t best = 0;
+                for (std::size_t i = 1; i < pc.final_logits.size(); ++i)
+                    if (pc.final_logits[i] > pc.final_logits[best]) best = i;
+                const std::string want =
+                    cut < full.size() ? std::to_string(full[cut]) : "-";
+                WARN("prefix " << cut << ": top1=" << best << " ("
+                               << pc.final_logits[best] << ") next=" << want
+                               << (cut < full.size() && static_cast<int32_t>(best) == full[cut] ? "  MATCH" : ""));
+            }
+            std::string g(512, '\0');
+            cap = g.size();
+            if (arrow_tokenizer_decode(model->Tokenizer(), res.gen_tokens.data(),
+                                       res.gen_tokens.size(), g.data(), &cap) == 0) {
+                g.resize(cap);
+                WARN("inkling first token decodes to: [" << g << "]");
+            }
+        }
+    }
+    // TraceForward LAST: its stage dump (when enabled) must not be overwritten
+    // by the diagnostic Infer above, which runs a DIFFERENT sequence.
+    REQUIRE(m->TraceForward(toks, path));
     model->Unload();
 }
 

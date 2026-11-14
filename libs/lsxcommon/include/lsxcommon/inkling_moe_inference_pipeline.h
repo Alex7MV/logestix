@@ -140,12 +140,15 @@ cudaError_t RunInklingGeneration(cudaStream_t stream,
 // text, and the defect could be anywhere in 48 layers. The caller compares the
 // rows against a host reference computed from the same converted artifact, so a
 // divergence names the layer. Not used by the decode path.
+// `tokens` are run at positions 0..n-1 in order and the states are dumped at the
+// LAST position, so the four conv rings and the KV cache are populated exactly
+// as they are during a real decode. With n == 1 this is the position-0 trace.
 cudaError_t RunInklingForwardTrace(cudaStream_t stream,
                                    InklingPinnedWeights &pw,
                                    InklingExpertDb &experts,
                                    InklingSession &session, InklingScratch &scratch,
-                                   int32_t tok, int pos, float logit_softcap,
-                                   int unpadded_vocab,
+                                   const std::vector<int32_t> &tokens,
+                                   float logit_softcap, int unpadded_vocab,
                                    std::vector<float> &out_states);
 
 // The engine's position-dependent log-scaling factor (1.0 on the sliding

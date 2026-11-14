@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "lsxcommon/inkling_moe_inference_pipeline.h"
 #include "lsxcommon/inkling_moe_load.h"
@@ -45,7 +46,8 @@ public:
     // stream after every layer to `path` as raw little-endian FP32
     // ([num_layers+1][hidden], row 0 = post-embed_norm). See
     // RunInklingForwardTrace in inkling_moe_inference_pipeline.h.
-    bool TraceForward(int32_t token_id, const std::string &path);
+    bool TraceForward(const std::vector<int32_t> &tokens,
+                     const std::string &path);
 
     const std::string &Type() const override { return kType; }
 

@@ -172,74 +172,95 @@ and returns. It does **not** answer Paris: the model emits token 220 (a single
 space) over and over. The gate is in the tree and **fails when run** — it is a
 red gate, not a pass.
 
-### What was fixed (decisive)
+### What was fixed (five real defects, all real-weight visible)
 
-**BF16 tensors were being read as FP16 bit patterns.** `UploadHalf`/`UploadF32`
-used `__ushort_as_half`, which reinterprets the 16 bits as IEEE half instead of
-BF16. The two formats share a width but not an exponent bias (127 vs 15), so
-every BF16 value collapsed into ~1-2: BF16 `1.0` (0x3F80) reads as FP16
-`1.875`, BF16 `0.02` reads as `1.16`. That corrupted **every** norm weight, L2
-clip scale, conv tap, attention sink, relative-position bank, router weight and
-router bias. Before the fix the output was incoherent multibyte garbage; after
-it the per-layer arithmetic verifies (below). The synthetic fixtures could not
-catch it because they write their BF16 payload and read it back through the same
-mistaken path, so they stayed self-consistent.
+1. **BF16 tensors were read as FP16 bit patterns.** `UploadHalf`/`UploadF32`
+   used `__ushort_as_half`, which reinterprets the 16 bits as IEEE half. The two
+   formats share a width but not an exponent bias (127 vs 15), so every BF16
+   value collapsed into ~1-2 (BF16 1.0 = 0x3F80 reads as FP16 1.875), corrupting
+   **every** norm weight, L2 clip scale, conv tap, attention sink,
+   relative-position bank, router weight and router bias. The synthetic fixtures
+   could not catch it because they write their BF16 payload and read it back
+   through the same mistaken path, so they stayed self-consistent. This was the
+   cause of the incoherent multibyte output.
+2. **A scratch-arena overlap corrupted the AttnRes block stack.** `o_taps` and
+   `o_proj` reserved room for ONE array while the code derives a second pointer
+   at `base + size` (`taps_v`, `proj_v`). Only the FULL layers use the second
+   array, so `taps_v` wrote ~16 KiB into the block stack on exactly those layers.
+   That is why full layers and block-boundary layers disagreed with the host
+   reference while sliding non-boundary layers matched — a signature that named
+   the bug before the bisect confirmed it.
+3. **The relative-position states were projected into the same scratch buffer
+   the k/v short convolutions overwrite**, so the position bias read a
+   convolution result.
+4. **The recurrent conv state was never reset between requests**, so a second
+   identical request decoded differently.
+5. **The post-MLP conv state overlapped the post-attention one** whenever
+   `kv_dim < hidden` (offset `3*k*kv_dim` instead of `2*k*kv_dim + k*hidden`),
+   and a static-conv layer passing its taps for both the `w` and `dyn_taps`
+   arguments silently ran the lag convention on every sliding layer (the kernel
+   picks the order from `dyn_taps == nullptr`).
 
-Three further defects, all real-weight visible, were fixed on the way:
+### What is now VERIFIED against independent references
 
-- the relative-position states were projected into `ws.conv_out`, the same
-  scratch buffer the k/v short convolutions overwrite, so the position bias read
-  a convolution result;
-- the recurrent conv state was never reset between requests, so a second
-  identical request decoded differently;
-- the post-MLP conv state used offset `3*k*kv_dim`, overlapping the
-  post-attention state whenever `kv_dim < hidden` (correct base is
-  `2*k*kv_dim + k*hidden`), and a static-conv layer passing its taps for both
-  the `w` and `dyn_taps` arguments silently ran the lag convention on every
-  sliding layer.
+Two instruments, both kept in the tree:
 
-### What is now VERIFIED against an independent reference
+- **`tools/inkling_layer_ref.py`** — a float64 host reference that reads the same
+  converted artifact and shares no code with the kernels. It can replay one
+  layer from the engine's own state, run a single layer across N positions, probe
+  the MoE in isolation, and take deliberately-wrong full-layer variants.
+- **`InklingMoeModel::TraceForward`** (`RunInklingForwardTrace`) — dumps the
+  residual stream after every layer for one token, or at the last of N tokens.
 
-`tools/inkling_layer_ref.py` is a float64 host reference that reads the same
-converted artifact and shares no code with the kernels; `RunInklingForwardTrace`
-(exposed as `InklingMoeModel::TraceForward`) dumps the residual stream after
-every layer for one token. Replaying **each layer from the engine's own state**
-(so a comparison is not polluted by earlier fp16 rounding) gives:
+A **sequential** host run is NOT a valid oracle: the engine rounds to FP16 at
+every layer, the top-8 router selection flips on those differences, and the two
+runs then diverge permanently (layer 2 shows 0.068 and it never recovers). Every
+comparison below therefore replays a layer from the engine's own state.
 
 | check | result |
 |---|---|
-| seed (post-`embed_norm`) | relL2 1.6e-4 (fp16 store) |
-| layer 0, sliding, replay | relL2 6.2e-4 |
-| layer 4, sliding, replay | relL2 2.8e-4 |
-| layer 5, full (3-stream mixture + dynamic conv) | relL2 0.36 before the seed was right — see below |
-| MoE seeded with the engine's own `mlp_norm` output | **ids identical**, coeffs to 1e-8, `\|moe_acc\|` 100.757 vs 100.754 |
-| head (unembed row dot + softcap) | host recompute matches the engine to 8 digits |
-| attention output → gate → o_proj → post-attn conv → residual | matches |
+| seed (post-`embed_norm`) | relL2 1.6e-4 (FP16 store) |
+| **position 0, end to end** (48 layers + head + unembed + softcap) | **identical top-5 ids and values**, whole-row relL2 **1.7e-4** |
+| per-layer replay, pos 0: layers 0-47 | **3e-4 .. 7e-4** (FP16 storage) |
+| full layer (5) across positions 0,1,2,3 | 3.1e-4 / 3.2e-4 / 3.8e-4 / 3.5e-4 |
+| sliding layer (20) across positions 0,1,2,3 | 5.9e-4 / 4.8e-4 / 5.6e-4 / 5.4e-4 |
+| boundary layer (6) across positions 0,1 | 7.3e-4 / 7.3e-4 |
+| MoE seeded with the engine's own `mlp_norm` output | **identically the same 8 expert ids**, coefficients to 1e-8, `\|moe_acc\|` 100.757 vs 100.754 |
+| head recomputed from the source BF16 `unembed` | same top-5 |
+| converted dense projections vs the source safetensors | relL2 **0.095** (the documented NVFP4 base error) |
+| converted routed expert vs the source NVFP4 record | relL2 **0.000000** (byte-verbatim) |
+| prompt ids vs `transformers` `apply_chat_template` on the checkpoint's own tokenizer | **identical, all 20 ids** |
 
-A **sequential** host run is NOT a valid oracle: the engine rounds to FP16 each
-layer, top-8 selection flips on those differences, and once one selection flips
-the two runs diverge permanently (layer 2 showed 0.068, layers 3-4 ~0.03). The
-per-layer replay is the correct instrument, and by it every stage checked so far
-agrees.
+### What remains
 
-### What remains — one unverified region
+The gate is still RED: the model emits `" 0.9.0.9.0.0.0..."` (token 220, a
+space, repeatedly), and the logit distribution is flat — the top five are within
+~3 logit units of each other at every prompt prefix, and `<|message_model|>`
+never ranks. In other words it behaves as if it is still inside the
+`Thinking effort level: 0.9` line rather than starting an assistant turn.
 
-Every check above is at **position 0**. The multi-position path is the only part
-of the engine with no reference behind it, and it is where the remaining defect
-must be:
+Everything measurable about the engine, the conversion and the prompt now checks
+out against an independent reference, so the remaining difference is between my
+artifact-plus-engine and the source model as a whole. Ranked next steps:
 
-- the four recurrent conv rings after the first push (only the pos-0 state was
-  ever compared);
-- the sliding-window bound with `kv_len > window`;
-- the KV append plus attention over more than one cached key;
-- the AttnRes block stack carried across positions.
-
-**Next step (bounded):** extend `tools/inkling_layer_ref.py` to two positions —
-token A at pos 0, token B at pos 1 — with a non-zero conv history and two cached
-keys, and compare layer 0 at pos 1 (layer 0 has no mixture, so the stack is not
-needed). That single comparison either clears the conv/attention path or names
-the defect. `tools/inkling_layer_ref.py --variant {single_stream,no_dyn_taps,no_conv}`
-already exists for bisecting the full-layer path the same way.
+- N1. **Feed the same prompt through a second, independent runtime.** The
+  checkpoint ships SGLang / vLLM recipes; even a 4-bit CPU/offloaded run of one
+  layer would settle whether the source model answers "Paris" with this exact
+  20-token frame. This is the only way to tell "my engine is wrong" from "this
+  frame is wrong for this model" — the one question the host reference
+  structurally cannot answer, because it reads the same artifact.
+- N2. **Try precision in the two places the source keeps above 4 bits**, in this
+  order: `embed` (the source stores it BF16; a 4-bit table adds a 4.6 deg
+  direction error to *every* token vector at the input), then the attention
+  projections (3-9% per projection; measured clip-state flips: 0, so this is the
+  cheaper bet to defer). `unembed` is already cleared: BF16 gives the same top-5.
+- N3. **Check the `mlp.gate.bias` semantic against a second source**, since it is
+  the one tensor whose role (selection-only correction versus a weight-side bias)
+  changes the expert set for every token. The port says selection-only and that
+  is what the engine does.
+- N4. Rule out a **frame/stop-token mismatch** by generating with
+  `max_gen=1` from a prompt that ends in an explicit assistant turn rendered by
+  the template, and comparing against N1.
 
 ## Registry status: PENDING ingestion (no manifest row yet)
 
@@ -278,7 +299,7 @@ Current state, machine-enforced from both directions:
 | 5 | weight upload (`inkling_moe_load.cpp`) + `inkling_moe_inference_pipeline.cu` | `test_inkling_moe_model` (model) | **done, green** (439 assertions): the pinned plane, the neutral expert store, the KV session, the decode scratch arena and the full 12-step layer body with the 8-expert staging and 3 batch GEMVs per layer |
 | 6 | `inkling_moe_tool_format.cpp` (stage 4b, native `chat_template.jinja`) | `test_inkling_moe_tool_framing` (fast) | **done, green** (49 assertions) |
 | 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **RED on real weights** (see below); FSI/CODE/DET not written |
-| 7b | parity instrumentation + independent host reference | `tools/inkling_layer_ref.py` + `TraceForward` | **done**: names the layer, and cleared every pos-0 stage |
+| 7b | parity instrumentation + independent host reference | `tools/inkling_layer_ref.py` + `TraceForward` | **done**: five defects found and fixed; engine now clears every position-0 stage end to end |
 | 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **open** (declared debt) |
 | 9 | report | `docs/model-reports/2026-11-14-Inkling-2-Small.md` | **open** — the stage-0/1/2 evidence is in this file and in `docs/OPEN_TASKS.md` §R19 |
 

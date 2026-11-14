@@ -219,8 +219,14 @@ bool InklingScratch::Allocate(const InklingTopology &top, int64_t capacity,
     // lazily and the bias gather must never outrun this buffer.
     const int64_t o_bias = take(int64_t(top.num_heads) * kMaxContext * 4);
     (void)capacity;
-    const int64_t o_taps = take(int64_t(kv_dim) * k * 4);
-    const int64_t o_proj = take(int64_t(top.num_kv_heads) * k * 4);
+    // TWO arrays each: `taps_k`/`taps_v` and `proj_k`/`proj_v` are derived as
+    // `base + one_array`, so the region must hold both. Reserving one and
+    // deriving the second silently placed `taps_v` past the end — it wrote
+    // 16 KiB into the AttnRes block stack on every FULL layer, which is what
+    // made exactly the full and boundary layers disagree with the host
+    // reference while the sliding non-boundary ones matched.
+    const int64_t o_taps = take(2 * int64_t(kv_dim) * k * 4);
+    const int64_t o_proj = take(2 * int64_t(top.num_kv_heads) * k * 4);
     const int64_t o_stack = take(int64_t(frozen::kAttnResMaxSources) * H * 4);
     const int64_t o_mg = take(int64_t(topk) * I * 2);
     const int64_t o_mu = take(int64_t(topk) * I * 2);
@@ -593,7 +599,6 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
                                 full ? 0 : top.sliding_window, scale, ws.attn_o);
         if (e != cudaSuccess) return fail("attention", e);
 
-        // ── (f) output gate + o_proj + post-attention conv ─────────────────
         stage = LayerTag("attn_out", l);
         e = RunInklingGateMul(stream, ws.attn_o, ws.attn_gate, ws.attn_o, q_dim);
         if (e != cudaSuccess) return fail("output gate", e);
@@ -734,24 +739,34 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
 cudaError_t RunInklingForwardTrace(cudaStream_t stream, InklingPinnedWeights &pw,
                                    InklingExpertDb &experts,
                                    InklingSession &session, InklingScratch &scratch,
-                                   int32_t tok, int pos, float logit_softcap,
-                                   int unpadded_vocab,
+                                   const std::vector<int32_t> &tokens,
+                                   float logit_softcap, int unpadded_vocab,
                                    std::vector<float> &out_states)
 {
+    if (tokens.empty()) return cudaErrorInvalidValue;
     const InklingTopology &top = pw.top;
-    cudaError_t e = session.EnsureCapacity(top, static_cast<int64_t>(pos) + 1, stream);
+    cudaError_t e =
+        session.EnsureCapacity(top, static_cast<int64_t>(tokens.size()), stream);
     if (e != cudaSuccess) return e;
     if (scratch.arena == nullptr &&
         !scratch.Allocate(top, session.capacity, stream))
         return cudaErrorMemoryAllocation;
+    // A trace is a fresh sequence: zero the conv rings so the history matches
+    // what a real request sees.
     session.Reset();
     for (auto &lw : pw.layers)
         if (lw.conv_state != nullptr && lw.conv_state_bytes > 0)
             cudaMemsetAsync(lw.conv_state, 0,
                             static_cast<size_t>(lw.conv_state_bytes), stream);
     std::string err;
-    return Forward(stream, pw, experts, session, scratch, tok, pos, logit_softcap,
-                   unpadded_vocab, err, &out_states);
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        const bool last = (i + 1 == tokens.size());
+        e = Forward(stream, pw, experts, session, scratch, tokens[i],
+                    static_cast<int>(i), logit_softcap, unpadded_vocab, err,
+                    last ? &out_states : nullptr);
+        if (e != cudaSuccess) return e;
+    }
+    return cudaSuccess;
 }
 
 cudaError_t RunInklingGeneration(cudaStream_t stream,

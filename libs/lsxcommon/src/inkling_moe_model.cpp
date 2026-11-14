@@ -255,13 +255,14 @@ bool InklingMoeModel::ParseToolCalls(const ArrowTokenizerDb &tok,
     return true;
 }
 
-bool InklingMoeModel::TraceForward(int32_t token_id, const std::string &path)
+bool InklingMoeModel::TraceForward(const std::vector<int32_t> &tokens,
+                                  const std::string &path)
 {
     if (!weights_loaded_ || !experts_) return false;
     if (!EnsureContext()) return false;
     std::vector<float> states;
     const auto ec = inkling::RunInklingForwardTrace(
-        stream(), pw_, *experts_, session_, scratch_, token_id, /*pos=*/0,
+        stream(), pw_, *experts_, session_, scratch_, tokens,
         static_cast<float>(top_.final_logit_softcap), top_.unpadded_vocab, states);
     if (ec != cudaSuccess) {
         log::error(absl::StrFormat("[inkling] trace failed (cuda %d)",

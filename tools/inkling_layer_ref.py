@@ -175,12 +175,166 @@ def moe_only(base, idx, l, hh):
     return acc
 
 
+
+def expert_block(base, idx, l, mlp_x):
+    """One layer's routed MoE: sigmoid scores, selection bias for the top-k
+    CHOICE only, weights renormalised then scaled, softcapped SwiGLU, FP32 sum."""
+    H = idx["hidden_size"]; topk = idx["num_experts_per_tok"]
+    I = idx["moe_intermediate_size"]
+    rw = raw_tensors(base / "pinned" / f"layer_{l}.arrow")
+    nm = lambda s: f"model.llm.layers.{l}.{s}"
+    logits = rw[nm("mlp.gate.weight")] @ mlp_x
+    scores = 1.0 / (1.0 + np.exp(-logits))
+    sel = np.sort(np.argsort(-(scores + rw[nm("mlp.gate.bias")]),
+                             kind="stable")[:topk])
+    wsel = scores[sel]
+    coeff = wsel / (wsel.sum() + 1e-20) * idx["routed_scaling_factor"]
+    acc = np.zeros(H)
+    for c, e in enumerate(sel):
+        cols, gs = expert_planes(base / "experts" / f"layer_{l}" / f"exp_{e}.arrow")
+        gate_e = dequant_nvfp4(cols[0], cols[3], gs[0], I, H)
+        down_e = dequant_nvfp4(cols[1], cols[4], gs[1], H, I)
+        up_e = dequant_nvfp4(cols[2], cols[5], gs[2], I, H)
+        g_e = gate_e @ mlp_x
+        u_e = up_e @ mlp_x
+        act = (np.tanh(g_e / idx["mlp_gate_softcap"]) * idx["mlp_gate_softcap"]) \
+            * (1.0 / (1.0 + np.exp(-g_e))) \
+            * (np.tanh(u_e / idx["mlp_up_softcap"]) * idx["mlp_up_softcap"])
+        acc += coeff[c] * (down_e @ act)
+    return acc
+
+
+def layer0_sequence(base, idx, states, tok_ids):
+    """Runs LAYER 0 over `tok_ids` sequentially and returns the per-position
+    residual stream plus the stage magnitudes at the last position.
+
+    Layer 0 is the only layer with no AttnRes mixture, so its output depends
+    solely on: the residual stream (supplied by the trace), the FOUR conv rings
+    and the KV cache carried from earlier positions. Comparing its output at
+    position 1 against the engine's trace therefore tests exactly the
+    multi-position machinery — conv history, KV append and attention over more
+    than one cached key — with no block stack and no accumulated FP16 rounding
+    from earlier layers.
+    """
+    H = idx["hidden_size"]; nh = idx["num_attention_heads"]
+    nkv = idx["num_key_value_heads"]; hd = idx["head_dim"]
+    drel = idx["d_rel"]; k = idx["conv_kernel"]; eps = idx["rms_norm_eps"]
+    scale = idx["attn_scale_denom"] ** -0.5
+    l = 0
+    nv = nvfp4_tensors(base / "pinned" / f"layer_{l}_nvfp4.arrow")
+    rw = raw_tensors(base / "pinned" / f"layer_{l}.arrow")
+    g_raw = raw_tensors(base / "pinned" / "global.arrow")
+    nm = lambda x: f"model.llm.layers.{l}.{x}"
+
+    ring_k = np.zeros((k, nkv * hd))
+    ring_v = np.zeros((k, nkv * hd))
+    ring_o = np.zeros((k, H))
+    ring_m = np.zeros((k, H))
+    keys = []          # one [nkv, hd] per cached position
+    vals = []
+    outs = []
+    mags = {}
+    w_ao = rw[nm("attn_sconv.weight")].reshape(-1, k)
+    w_mo = rw[nm("mlp_sconv.weight")].reshape(-1, k)
+
+    for pos, x in enumerate(states):
+        qs = ks = vs = rmsnorm(x, rw[nm("attn_norm.weight")], eps)
+        q = nv[nm("attn.wq_du.weight")] @ qs
+        kv_k = nv[nm("attn.wk_dv.weight")] @ ks
+        kv_v = nv[nm("attn.wv_dv.weight")] @ vs
+        rel = nv[nm("attn.wr_du.weight")] @ qs
+        gate = nv[nm("attn.gate_attn.weight")] @ qs
+        sink = rw[nm("attn.attn_sink_proj.weight")] @ qs
+
+        ring_k = np.vstack([ring_k[1:], kv_k[None, :]])
+        ring_v = np.vstack([ring_v[1:], kv_v[None, :]])
+        kconv = short_conv_static(ring_k, rw[nm("attn.k_sconv.weight")].reshape(-1, k),
+                                  k, (k + 1) ** -0.5)
+        vconv = short_conv_static(ring_v, rw[nm("attn.v_sconv.weight")].reshape(-1, k),
+                                  k, (k + 1) ** -0.5)
+
+        qc = np.stack([l2_clip(q[h * hd:(h + 1) * hd],
+                               rw[nm("attn.q_l2_clip.scale")][h].astype(np.float64),
+                               idx["qk_l2_clip"]) for h in range(nh)])
+        kc = np.stack([l2_clip(kconv[h * hd:(h + 1) * hd], None,
+                               idx["qk_l2_clip"]) for h in range(nkv)])
+        vn = np.stack([unweighted_rmsnorm(vconv[h * hd:(h + 1) * hd], eps)
+                       for h in range(nkv)])
+        rc = np.stack([l2_clip(rel[h * drel:(h + 1) * drel],
+                               rw[nm("attn.rel_l2_clip.scale")][h].astype(np.float64),
+                               idx["rel_l2_clip"]) for h in range(nh)])
+        keys.append(kc)
+        vals.append(vn)
+        rel_proj = rw[nm("attn.rel_logits_proj.proj")]
+        group = nh // nkv
+        window = idx["sliding_window_size"]
+        kv_len = len(keys)
+        out = np.zeros((nh, hd))
+        for h in range(nh):
+            kvh = h // group
+            prof = rc[h] @ rel_proj
+            logits = np.full(kv_len, -np.inf)
+            for j in range(kv_len):
+                if j > pos - window:
+                    d = pos - j
+                    b = prof[d] if 0 <= d < window else 0.0
+                    logits[j] = scale * float(qc[h] @ keys[j][kvh]) + b
+            mx = max(logits.max(), sink[h])
+            e = np.exp(logits - mx)
+            denom = e.sum() + math.exp(sink[h] - mx)
+            out[h] = (e / denom) @ np.stack([vals[j][kvh] for j in range(kv_len)])
+        attn_o = out.reshape(-1) * (1.0 / (1.0 + np.exp(-gate)))
+        o_out = nv[nm("attn.wo_ud.weight")] @ attn_o
+        ring_o = np.vstack([ring_o[1:], o_out[None, :]])
+        post_attn = short_conv_static(ring_o, w_ao, k, (k + 1) ** -0.5)
+        residual = post_attn                      # layer 0 is a block boundary
+        mq = g_raw["model.llm.attn_res.mlp_queries.0"]
+        mlp_in = depth_mix([x, residual], [mq], eps)[0]
+        mlp_x = rmsnorm(mlp_in, rw[nm("mlp_norm.weight")], eps)
+        acc = expert_block(base, idx, l, mlp_x)
+        ring_m = np.vstack([ring_m[1:], acc[None, :]])
+        post_mlp = short_conv_static(ring_m, w_mo, k, (k + 1) ** -0.5)
+        x_out = residual + post_mlp
+        outs.append(x_out)
+        if pos == len(states) - 1:
+            mags = {"kconv": kconv, "vconv": vconv, "attn_o": attn_o,
+                    "o_out": o_out, "residual": residual, "moe_acc": acc}
+    return outs, mags
+
+
+def two_position_check(base, idx, args):
+    L = idx["num_layers"]
+    H = idx["hidden_size"]
+    t0 = np.fromfile(args.trace, dtype=np.float32).astype(np.float64).reshape(L + 1, H)
+    t1 = np.fromfile(args.trace2, dtype=np.float32).astype(np.float64).reshape(L + 1, H)
+    print(f"pos0 trace |row0|={np.linalg.norm(t0[0]):.6g} "
+          f"|row1|={np.linalg.norm(t0[1]):.6g}")
+    print(f"pos1 trace |row0|={np.linalg.norm(t1[0]):.6g} "
+          f"|row1|={np.linalg.norm(t1[1]):.6g}")
+    # Both positions in one sequential pass; every position's layer-0 input is
+    # the ENGINE's own state, so the only thing under test is layer 0 itself.
+    states = [t0[0].copy(), t1[0].copy()]
+    outs, mags = layer0_sequence(base, idx, states, [args.tok, args.tok2])
+    for pos, (ref, eng) in enumerate(zip(outs, (t0[1], t1[1]))):
+        rel = np.linalg.norm(ref - eng) / (np.linalg.norm(ref) + 1e-30)
+        print(f"layer 0 at pos {pos}: relL2={rel:.6g} "
+              f"|ref|={np.linalg.norm(ref):.6g} |eng|={np.linalg.norm(eng):.6g}")
+    for name, v in mags.items():
+        print(f"  [host pos1] {name:10s} {np.linalg.norm(v):.8g}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("vault")
     ap.add_argument("trace")
     ap.add_argument("--layers", type=int, default=48)
     ap.add_argument("--tok", type=int, default=1000)
+    ap.add_argument("--trace2", default="",
+                    help="second trace file (pos 1); required with --tok2")
+    ap.add_argument("--tok2", type=int, default=-1,
+                    help="second token: run pos 0 with --tok, then compare the "
+                         "trace at pos 1 (multi-position path)")
     ap.add_argument("--moe-from", default="",
                     help="file of the engine's own mlp_norm output (fp16); "
                          "computes ONLY the MoE from it, separating expert "
@@ -210,6 +364,10 @@ def main() -> int:
     eps = idx["rms_norm_eps"]
     scale = idx["attn_scale_denom"] ** -0.5
     full_layers = set(idx["full_layers"])
+
+    if args.tok2 >= 0:
+        idx0 = json.loads((base / "model.index.json").read_text())
+        return two_position_check(base, idx0, args)
 
     if args.moe_from:
         idx0 = json.loads((base / "model.index.json").read_text())
