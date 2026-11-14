@@ -176,45 +176,11 @@ bool InklingTopologyMatchesFrozen(const InklingTopology &top)
 namespace {
 
 // ── upload helpers ─────────────────────────────────────────────────────────
-const DenseNvfp4View *FindDense(const DenseNvfp4BatchViews &v, std::string_view n)
-{
-    for (const auto &r : v.records)
-        if (r.name == n) return &r;
-    return nullptr;
-}
-
 const TensorView *FindRaw(const TensorBatchViews &v, std::string_view n)
 {
     for (const auto &t : v.tensors)
         if (t.name == n) return &t;
     return nullptr;
-}
-
-bool UploadDenseNvfp4(const DenseNvfp4View &r, lsx_nvfp4::LsxNvfp4Weight &w,
-                      cudaStream_t s)
-{
-    w = lsx_nvfp4::LsxNvfp4Weight{};
-    if (r.rank != 2 || r.packed == nullptr || r.scales == nullptr) return false;
-    w.rows = static_cast<int>(r.shape[0]);
-    w.cols = static_cast<int>(r.shape[1]);
-    w.global_scale = r.global_scale;
-    void *p = nullptr;
-    void *sc = nullptr;
-    if (cudaMalloc(&p, static_cast<size_t>(r.packed_bytes)) != cudaSuccess)
-        return false;
-    if (cudaMalloc(&sc, static_cast<size_t>(r.scale_bytes)) != cudaSuccess) {
-        cudaFree(p);
-        return false;
-    }
-    cudaMemcpyAsync(p, r.packed, static_cast<size_t>(r.packed_bytes),
-                    cudaMemcpyHostToDevice, s);
-    cudaMemcpyAsync(sc, r.scales, static_cast<size_t>(r.scale_bytes),
-                    cudaMemcpyHostToDevice, s);
-    w.d_packed = static_cast<const uint8_t *>(p);
-    w.d_scales = static_cast<const uint8_t *>(sc);
-    w.packed_bytes = r.packed_bytes;
-    w.scale_bytes = r.scale_bytes;
-    return true;
 }
 
 // BF16 -> F32. NOT `__ushort_as_half`: BF16 and FP16 share a width but not an
@@ -275,18 +241,27 @@ std::string LayerName(int layer, const char *rest)
     return absl::StrCat("model.llm.layers.", layer, ".", rest);
 }
 
-bool RequireDense(const DenseNvfp4BatchViews &v, int layer, const char *rest,
-                  lsx_nvfp4::LsxNvfp4Weight &out, cudaStream_t s,
-                  const char *tag)
+// Uploads one dense projection as an FP16 table. `UploadHalf` converts BF16 ->
+// FP16, which is lossless for these magnitudes (BF16 and FP16 both hold 8+
+// mantissa bits and every weight here is in 1e-3..1e1).
+bool RequireDenseF16(const TensorBatchViews &v, int layer, const char *rest,
+                     InklingDenseF16 &out, cudaStream_t s, const char *tag)
 {
     const std::string name = LayerName(layer, rest);
-    const DenseNvfp4View *r = FindDense(v, name);
-    if (r == nullptr) {
-        log::error(absl::StrFormat("[inkling_load] missing NVFP4 tensor %s (%s)",
-                                   name, tag));
+    const TensorView *t = FindRaw(v, name);
+    if (t == nullptr) {
+        log::error(absl::StrFormat("[inkling_load] missing tensor %s (%s)", name,
+                                   tag));
         return false;
     }
-    if (!UploadDenseNvfp4(*r, out, s)) {
+    if (t->rank != 2) {
+        log::error(absl::StrFormat("[inkling_load] %s is not 2-D", name));
+        return false;
+    }
+    out.rows = static_cast<int>(t->shape[0]);
+    out.cols = static_cast<int>(t->shape[1]);
+    out.d = UploadHalf(*t, s);
+    if (out.d == nullptr) {
         log::error(absl::StrFormat("[inkling_load] upload failed for %s", name));
         return false;
     }
@@ -361,12 +336,10 @@ void FreeInklingPinnedWeights(InklingPinnedWeights &pw)
     auto release = [](auto *p) {
         if (p) cudaFree(const_cast<std::remove_const_t<std::remove_pointer_t<decltype(p)>> *>(p));
     };
-    if (pw.embed.d_packed) cudaFree(const_cast<uint8_t *>(pw.embed.d_packed));
-    if (pw.embed.d_scales) cudaFree(const_cast<uint8_t *>(pw.embed.d_scales));
-    if (pw.head.d_packed) cudaFree(const_cast<uint8_t *>(pw.head.d_packed));
-    if (pw.head.d_scales) cudaFree(const_cast<uint8_t *>(pw.head.d_scales));
-    pw.embed = lsx_nvfp4::LsxNvfp4Weight{};
-    pw.head = lsx_nvfp4::LsxNvfp4Weight{};
+    release(pw.embed);
+    release(pw.head);
+    pw.embed_rows = 0;
+    pw.embed_cols = 0;
     release(pw.embed_norm);
     release(pw.final_norm);
     release(pw.attn_queries);
@@ -375,9 +348,8 @@ void FreeInklingPinnedWeights(InklingPinnedWeights &pw)
     for (auto &l : pw.layers) {
         for (auto *w : {&l.wq, &l.wk, &l.wv, &l.wo, &l.wr, &l.attn_gate,
                         &l.ksconv_proj, &l.vsconv_proj}) {
-            if (w->d_packed) cudaFree(const_cast<uint8_t *>(w->d_packed));
-            if (w->d_scales) cudaFree(const_cast<uint8_t *>(w->d_scales));
-            *w = lsx_nvfp4::LsxNvfp4Weight{};
+            if (w->d) cudaFree(w->d);
+            *w = InklingDenseF16{};
         }
         release(l.attn_norm);
         release(l.q_in_norm);
@@ -415,12 +387,6 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
     const int kv_dim = top.num_kv_heads * top.head_dim;
     const int k = top.conv_kernel;
 
-    auto g_nv = LoadDenseNvfp4BatchViews(pinned / "global_nvfp4.arrow");
-    if (!g_nv.ok()) {
-        log::error(absl::StrFormat("[inkling_load] global_nvfp4: %s",
-                                   g_nv.status().ToString()));
-        return false;
-    }
     auto g_raw = LoadTensorBatchViews(pinned / "global.arrow");
     if (!g_raw.ok()) {
         log::error(absl::StrFormat("[inkling_load] global: %s",
@@ -429,14 +395,19 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
     }
 
     // ── globals ─────────────────────────────────────────────────────────────
-    const DenseNvfp4View *emb = FindDense(*g_nv, "model.llm.embed.weight");
-    const DenseNvfp4View *hd = FindDense(*g_nv, "model.llm.unembed.weight");
-    if (!emb || !hd) {
-        log::error("[inkling_load] embed/unembed absent");
+    // embed/unembed are BF16 in the artifact (the converter keeps them out of
+    // the NVFP4 plane) and are uploaded as FP16 tables.
+    const TensorView *emb = FindRaw(*g_raw, "model.llm.embed.weight");
+    const TensorView *hd = FindRaw(*g_raw, "model.llm.unembed.weight");
+    if (emb == nullptr || hd == nullptr || emb->rank != 2 || hd->rank != 2) {
+        log::error("[inkling_load] embed/unembed absent from the BF16 plane");
         return false;
     }
-    if (!UploadDenseNvfp4(*emb, pw.embed, stream) ||
-        !UploadDenseNvfp4(*hd, pw.head, stream)) {
+    pw.embed_rows = static_cast<int>(emb->shape[0]);
+    pw.embed_cols = static_cast<int>(emb->shape[1]);
+    pw.embed = UploadHalf(*emb, stream);
+    pw.head = UploadHalf(*hd, stream);
+    if (pw.embed == nullptr || pw.head == nullptr) {
         log::error("[inkling_load] embed/head upload failed");
         return false;
     }
@@ -555,32 +526,6 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
         InklingLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
         lw.full = top.IsFull(l);
 
-        const fs::path nv_path = absl::StrFormat("layer_%d_nvfp4.arrow", l);
-        auto nv = LoadDenseNvfp4BatchViews(pinned / nv_path);
-        if (!nv.ok()) {
-            log::error(absl::StrFormat("[inkling_load] %s: %s", nv_path.string(),
-                                       nv.status().ToString()));
-            return false;
-        }
-        if (!RequireDense(*nv, l, "attn.wq_du.weight", lw.wq, stream, "wq") ||
-            !RequireDense(*nv, l, "attn.wk_dv.weight", lw.wk, stream, "wk") ||
-            !RequireDense(*nv, l, "attn.wv_dv.weight", lw.wv, stream, "wv") ||
-            !RequireDense(*nv, l, "attn.wo_ud.weight", lw.wo, stream, "wo") ||
-            !RequireDense(*nv, l, "attn.wr_du.weight", lw.wr, stream, "wr") ||
-            !RequireDense(*nv, l, "attn.gate_attn.weight", lw.attn_gate, stream,
-                          "attn gate"))
-            return false;
-        if (lw.full &&
-            (!RequireDense(*nv, l, "attn.k_sconv.weight_proj", lw.ksconv_proj,
-                           stream, "k conv proj") ||
-             !RequireDense(*nv, l, "attn.v_sconv.weight_proj", lw.vsconv_proj,
-                           stream, "v conv proj")))
-            return false;
-        for (const auto &w : {lw.wq, lw.wk, lw.wv, lw.wo, lw.wr, lw.attn_gate,
-                              lw.ksconv_proj, lw.vsconv_proj})
-            resident += static_cast<std::uint64_t>(w.packed_bytes) +
-                        static_cast<std::uint64_t>(w.scale_bytes);
-
         const fs::path raw_path = absl::StrFormat("layer_%d.arrow", l);
         auto raw = LoadTensorBatchViews(pinned / raw_path);
         if (!raw.ok()) {
@@ -588,6 +533,25 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
                                        raw.status().ToString()));
             return false;
         }
+        if (!RequireDenseF16(*raw, l, "attn.wq_du.weight", lw.wq, stream, "wq") ||
+            !RequireDenseF16(*raw, l, "attn.wk_dv.weight", lw.wk, stream, "wk") ||
+            !RequireDenseF16(*raw, l, "attn.wv_dv.weight", lw.wv, stream, "wv") ||
+            !RequireDenseF16(*raw, l, "attn.wo_ud.weight", lw.wo, stream, "wo") ||
+            !RequireDenseF16(*raw, l, "attn.wr_du.weight", lw.wr, stream, "wr") ||
+            !RequireDenseF16(*raw, l, "attn.gate_attn.weight", lw.attn_gate,
+                             stream, "attn gate"))
+            return false;
+        if (lw.full &&
+            (!RequireDenseF16(*raw, l, "attn.k_sconv.weight_proj",
+                              lw.ksconv_proj, stream, "k conv proj") ||
+             !RequireDenseF16(*raw, l, "attn.v_sconv.weight_proj",
+                              lw.vsconv_proj, stream, "v conv proj")))
+            return false;
+        for (const auto &w : {lw.wq, lw.wk, lw.wv, lw.wo, lw.wr, lw.attn_gate,
+                              lw.ksconv_proj, lw.vsconv_proj})
+            resident += static_cast<std::uint64_t>(w.rows) *
+                        static_cast<std::uint64_t>(w.cols) * sizeof(__half);
+
         auto half_into = [&](const char *rest, __half *&dst, const char *tag) {
             return RequireRaw(*raw, l, rest, "BF16", tag, [&](const TensorView &t) {
                 dst = UploadHalf(t, stream);
@@ -658,10 +622,8 @@ bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
     }
 
     // Small tensors: count them from the uploaded shapes.
-    resident += static_cast<std::uint64_t>(pw.embed.packed_bytes) +
-                static_cast<std::uint64_t>(pw.embed.scale_bytes) +
-                static_cast<std::uint64_t>(pw.head.packed_bytes) +
-                static_cast<std::uint64_t>(pw.head.scale_bytes);
+    resident += 2ull * static_cast<std::uint64_t>(pw.embed_rows) *
+                static_cast<std::uint64_t>(pw.embed_cols) * sizeof(__half);
     resident += static_cast<std::uint64_t>(
         (total_q + static_cast<size_t>(top.num_layers) + 1) *
             static_cast<size_t>(H) * sizeof(float));

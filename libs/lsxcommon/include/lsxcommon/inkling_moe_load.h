@@ -112,11 +112,18 @@ using InklingExpertDb = gpu::expert_store::ExpertStore<InklingExpertEntry>;
 // ── pinned weights (device-resident for the whole session) ──────────────────
 // The dense plane is ~4.7 GiB of NVFP4 plus the FP32 routers (~340 MiB) and the
 // FP32 side tensors; the 594B-parameter routed set is only ever an mmap view.
+// One FP16 dense projection: [rows, cols], row-major.
+struct InklingDenseF16 {
+    __half *d = nullptr;
+    int rows = 0;
+    int cols = 0;
+};
+
 struct InklingLayerWeights {
     bool full = false;
-    // NVFP4 projections (never a raw BF16 matmul: these are the 4-bit path).
-    lsx_nvfp4::LsxNvfp4Weight wq, wk, wv, wo, wr, attn_gate;
-    lsx_nvfp4::LsxNvfp4Weight ksconv_proj, vsconv_proj;  // full layers only
+    // BF16 in the checkpoint, FP16 on device (lossless for these magnitudes).
+    InklingDenseF16 wq, wk, wv, wo, wr, attn_gate;
+    InklingDenseF16 ksconv_proj, vsconv_proj;  // full layers only
     // Norms (FP16 weights, never quantized).
     __half *attn_norm = nullptr;    // sliding layers
     __half *q_in_norm = nullptr;    // full layers
@@ -150,8 +157,13 @@ struct InklingLayerWeights {
 
 struct InklingPinnedWeights {
     InklingTopology top;
-    lsx_nvfp4::LsxNvfp4Weight embed;   // [vocab, hidden] NVFP4
-    lsx_nvfp4::LsxNvfp4Weight head;    // [vocab, hidden] NVFP4 (unembed)
+    // `embed`/`unembed` are FP16, NOT NVFP4 (see InklingTensorIsPinnedNvfp4 in
+    // the converter): they carry the residual stream at full width, and 4-bit
+    // rounding there displaces every token vector at the input.
+    __half *embed = nullptr;           // [vocab, hidden] FP16
+    __half *head = nullptr;            // [vocab, hidden] FP16 (unembed)
+    int embed_rows = 0;
+    int embed_cols = 0;
     __half *embed_norm = nullptr;
     __half *final_norm = nullptr;
     // AttnRes query banks, FP32: [layers][nq][hidden] with nq = 3 on the full

@@ -69,7 +69,8 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
 {
     const char *path = std::getenv("LSX_INKLING_TRACE");
     if (path == nullptr) SKIP("LSX_INKLING_TRACE not set");
-    const fs::path root = VaultRoot();
+    fs::path root = VaultRoot();
+    if (const char *alt = std::getenv("LSX_INKLING_TRACE_ROOT")) root = alt;
     if (!fs::exists(root / "logestix" / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
@@ -89,10 +90,30 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
     for (const char *name : {"LSX_INKLING_TRACE_TOK2", "LSX_INKLING_TRACE_TOK3",
                              "LSX_INKLING_TRACE_TOK4"})
         if (const char *v = std::getenv(name)) toks.push_back(std::atoi(v));
+    // A comma-separated list overrides the individual variables (used by
+    // tools/inkling_transformers_crosscheck.py, which must feed the engine the
+    // exact ids it fed transformers).
+    if (const char *list = std::getenv("LSX_INKLING_TRACE_TOKS")) {
+        toks.clear();
+        std::string s2(list);
+        std::size_t p2 = 0;
+        while (p2 <= s2.size()) {
+            const std::size_t c2 = s2.find(',', p2);
+            const std::string piece = s2.substr(p2, c2 == std::string::npos
+                                                       ? std::string::npos
+                                                       : c2 - p2);
+            if (!piece.empty()) toks.push_back(std::atoi(piece.c_str()));
+            if (c2 == std::string::npos) break;
+            p2 = c2 + 1;
+        }
+        REQUIRE_FALSE(toks.empty());
+    }
     // What does the head actually predict for the REAL framed prompt? Printed
     // here because "the model emits a space forever" is only actionable once we
     // know whether the top-1 is the assistant role marker.
-    {
+    // The diagnostic block needs the checkpoint's tokenizer; a converted
+    // fixture without one (the transformers cross-check tree) skips it.
+    if (InklingMarkerId(model->Tokenizer(), "<|message_user|>") >= 0) {
         lsxcommon::ModelRequest r;
         REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
                                            "The capital of France is",
@@ -128,29 +149,6 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
                                        r.input_ids.size(), t.data(), &cap) == 0) {
                 t.resize(cap);
                 WARN("inkling prompt decodes to: [" << t << "]");
-            }
-            // Prefix probes: the model must predict the NEXT token of its own
-            // template. If the first few prefixes are right and later ones are
-            // not, the defect is positional; if none are right, it is not.
-            const std::vector<int32_t> full = {
-                200002, 200004, 34182, 279, 154554, 150628, 25, 220, 15, 13,
-                24, 200010, 200000, 200004, 371, 151451, 149879, 151194,
-                149884, 200010};
-            for (std::size_t cut = 1; cut <= full.size(); ++cut) {
-                lsxcommon::ModelRequest pr;
-                pr.input_ids.assign(full.begin(), full.begin() + cut);
-                pr.max_gen_tokens = 1;
-                pr.ignore_eos = true;
-                const auto pc = model->Infer(pr);
-                if (!pc.ok) { WARN("prefix " << cut << " failed: " << pc.error_msg); continue; }
-                std::size_t best = 0;
-                for (std::size_t i = 1; i < pc.final_logits.size(); ++i)
-                    if (pc.final_logits[i] > pc.final_logits[best]) best = i;
-                const std::string want =
-                    cut < full.size() ? std::to_string(full[cut]) : "-";
-                WARN("prefix " << cut << ": top1=" << best << " ("
-                               << pc.final_logits[best] << ") next=" << want
-                               << (cut < full.size() && static_cast<int32_t>(best) == full[cut] ? "  MATCH" : ""));
             }
             std::string g(512, '\0');
             cap = g.size();

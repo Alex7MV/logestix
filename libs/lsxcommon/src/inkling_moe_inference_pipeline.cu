@@ -48,13 +48,13 @@ std::string LayerTag(const char *what, int layer)
     return absl::StrFormat("%s l%d", what, layer);
 }
 
-// One NVFP4 projection of a single token row.
-cudaError_t Proj(cudaStream_t stream, const lsx_nvfp4::LsxNvfp4Weight &w,
-                 const __half *x, __half *y)
+// One dense projection of a single token row. The dense weights are FP16 (the
+// release's own precision); only the routed experts are NVFP4.
+cudaError_t Proj(cudaStream_t stream, const InklingDenseF16 &w, const __half *x,
+                 __half *y)
 {
-    return lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(stream, x, w.d_packed,
-                                               w.d_scales, w.global_scale, y,
-                                               w.cols, w.rows);
+    if (w.d == nullptr) return cudaErrorInvalidValue;
+    return RunInklingMatVecF16ToHalf(stream, w.d, x, y, w.rows, w.cols);
 }
 
 // The eight staged experts of one layer: three pointer planes plus the two
@@ -419,8 +419,7 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
     e = cudaMemcpyAsync(ws.d_token, &tok, sizeof(int32_t), cudaMemcpyHostToDevice,
                         stream);
     if (e != cudaSuccess) return fail("token upload", e);
-    e = RunInklingEmbedRow(stream, pw.embed.d_packed, pw.embed.d_scales,
-                           pw.embed.global_scale, ws.d_token, ws.x_h, H);
+    e = RunInklingEmbedGather(stream, pw.embed, ws.d_token, ws.x_h, H);
     if (e != cudaSuccess) return fail("embed row", e);
     e = RunInklingHalfToF32(stream, ws.x_h, ws.x_f, H);
     if (e != cudaSuccess) return fail("embed to f32", e);
@@ -515,7 +514,7 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
             const float *taps = nullptr;
             float inv = inv_static;
             if (full) {
-                const lsx_nvfp4::LsxNvfp4Weight &proj_w =
+                const InklingDenseF16 &proj_w =
                     pass == 0 ? lw.ksconv_proj : lw.vsconv_proj;
                 float *proj_out = pass == 0 ? ws.proj_k : ws.proj_v;
                 float *dyn = pass == 0 ? ws.taps_k : ws.taps_v;
@@ -722,11 +721,9 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
     if (e2 != cudaSuccess) return fail("final depth mix", e2);
     e2 = RunInklingNormF32In(stream, ws.mix, pw.final_norm, ws.hh, 1, H, eps);
     if (e2 != cudaSuccess) return fail("final norm", e2);
-    e2 = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(
-        stream, ws.hh, pw.head.d_packed, pw.head.d_scales, pw.head.global_scale,
-        ws.logits, H, pw.head.rows, false);
+    e2 = RunInklingMatVecF16(stream, pw.head, ws.hh, ws.logits, pw.embed_rows, H);
     if (e2 != cudaSuccess) return fail("unembed", e2);
-    if (unpadded_vocab > 0 && unpadded_vocab < pw.head.rows) {
+    if (unpadded_vocab > 0 && unpadded_vocab < pw.embed_rows) {
         e2 = RunInklingLogitSoftcap(stream, ws.logits, ws.logits, unpadded_vocab,
                                     logit_softcap);
         if (e2 != cudaSuccess) return fail("logit softcap", e2);
@@ -741,7 +738,8 @@ cudaError_t RunInklingForwardTrace(cudaStream_t stream, InklingPinnedWeights &pw
                                    InklingSession &session, InklingScratch &scratch,
                                    const std::vector<int32_t> &tokens,
                                    float logit_softcap, int unpadded_vocab,
-                                   std::vector<float> &out_states)
+                                   std::vector<float> &out_states,
+                                   std::vector<float> *out_logits)
 {
     if (tokens.empty()) return cudaErrorInvalidValue;
     const InklingTopology &top = pw.top;
@@ -764,6 +762,17 @@ cudaError_t RunInklingForwardTrace(cudaStream_t stream, InklingPinnedWeights &pw
         e = Forward(stream, pw, experts, session, scratch, tokens[i],
                     static_cast<int>(i), logit_softcap, unpadded_vocab, err,
                     last ? &out_states : nullptr);
+        if (e != cudaSuccess) return e;
+    }
+    if (out_logits != nullptr) {
+        const int n = (unpadded_vocab > 0 && unpadded_vocab < pw.embed_rows)
+                          ? unpadded_vocab
+                          : pw.embed_rows;
+        out_logits->assign(static_cast<size_t>(n), 0.0f);
+        cudaStreamSynchronize(stream);
+        e = cudaMemcpy(out_logits->data(), scratch.logits,
+                       out_logits->size() * sizeof(float),
+                       cudaMemcpyDeviceToHost);
         if (e != cudaSuccess) return e;
     }
     return cudaSuccess;
@@ -808,9 +817,9 @@ cudaError_t RunInklingGeneration(cudaStream_t stream,
             return cudaErrorMemoryAllocation;
         }
     }
-    const int vocab = (unpadded_vocab > 0 && unpadded_vocab < pw.head.rows)
+    const int vocab = (unpadded_vocab > 0 && unpadded_vocab < pw.embed_rows)
                           ? unpadded_vocab
-                          : pw.head.rows;
+                          : pw.embed_rows;
 
     // A new request is a new sequence: clear the recurrent short-convolution
     // state of every layer and the KV bookkeeping. Skipping this makes the

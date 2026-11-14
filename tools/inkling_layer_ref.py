@@ -376,7 +376,8 @@ def main() -> int:
         return 0
 
     g_raw = raw_tensors(base / "pinned" / "global.arrow")
-    g_nv = nvfp4_tensors(base / "pinned" / "global_nvfp4.arrow")
+    gp = base / "pinned" / "global_nvfp4.arrow"
+    g_nv = {**g_raw, **(nvfp4_tensors(gp) if gp.exists() else {})}
 
     trace = np.fromfile(args.trace, dtype=np.float32).astype(np.float64)
     trace = trace.reshape(L + 1, H)
@@ -409,8 +410,11 @@ def main() -> int:
         layers = list(range(min(args.layers, L)))
 
     for l in layers:
-        nv = nvfp4_tensors(base / "pinned" / f"layer_{l}_nvfp4.arrow")
         rw = raw_tensors(base / "pinned" / f"layer_{l}.arrow")
+        # Dense weights are BF16 in the artifact (the release's own precision);
+        # a tree converted by an older build kept them in an NVFP4 batch.
+        nvp = base / "pinned" / f"layer_{l}_nvfp4.arrow"
+        nv = {**rw, **(nvfp4_tensors(nvp) if nvp.exists() else {})}
         full = l in full_layers
         is_boundary = (l % idx["attn_res_block"]) == 0
 

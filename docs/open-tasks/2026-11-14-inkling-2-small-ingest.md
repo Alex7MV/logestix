@@ -172,95 +172,100 @@ and returns. It does **not** answer Paris: the model emits token 220 (a single
 space) over and over. The gate is in the tree and **fails when run** — it is a
 red gate, not a pass.
 
-### What was fixed (five real defects, all real-weight visible)
+### What was fixed (seven real defects, all found by measurement)
 
 1. **BF16 tensors were read as FP16 bit patterns.** `UploadHalf`/`UploadF32`
    used `__ushort_as_half`, which reinterprets the 16 bits as IEEE half. The two
-   formats share a width but not an exponent bias (127 vs 15), so every BF16
-   value collapsed into ~1-2 (BF16 1.0 = 0x3F80 reads as FP16 1.875), corrupting
-   **every** norm weight, L2 clip scale, conv tap, attention sink,
-   relative-position bank, router weight and router bias. The synthetic fixtures
-   could not catch it because they write their BF16 payload and read it back
-   through the same mistaken path, so they stayed self-consistent. This was the
-   cause of the incoherent multibyte output.
+   formats share a width but not an exponent bias (127 vs 15), so BF16 1.0
+   (0x3F80) read as FP16 1.875 and every norm weight, L2 clip scale, conv tap,
+   attention sink, relative-position bank, router weight and router bias was
+   corrupted. The synthetic fixtures could not catch it (they write their BF16
+   payload and read it back through the same path), so it took a real-weight
+   trace to see. This turned incoherent multibyte garbage into English.
 2. **A scratch-arena overlap corrupted the AttnRes block stack.** `o_taps` and
    `o_proj` reserved room for ONE array while the code derives a second pointer
-   at `base + size` (`taps_v`, `proj_v`). Only the FULL layers use the second
-   array, so `taps_v` wrote ~16 KiB into the block stack on exactly those layers.
-   That is why full layers and block-boundary layers disagreed with the host
-   reference while sliding non-boundary layers matched — a signature that named
-   the bug before the bisect confirmed it.
-3. **The relative-position states were projected into the same scratch buffer
-   the k/v short convolutions overwrite**, so the position bias read a
-   convolution result.
-4. **The recurrent conv state was never reset between requests**, so a second
+   at `base + size` (`taps_v`, `proj_v`); only the FULL layers use the second
+   one, so it wrote ~16 KiB into the block stack on exactly those layers. The
+   symptom named it: full and boundary layers disagreed with the reference while
+   sliding non-boundary layers matched.
+3. **The relative-position states were projected into the conv scratch buffer**,
+   so the position bias read a convolution result.
+4. **The recurrent conv state was never reset between requests** — a second
    identical request decoded differently.
-5. **The post-MLP conv state overlapped the post-attention one** whenever
-   `kv_dim < hidden` (offset `3*k*kv_dim` instead of `2*k*kv_dim + k*hidden`),
-   and a static-conv layer passing its taps for both the `w` and `dyn_taps`
-   arguments silently ran the lag convention on every sliding layer (the kernel
-   picks the order from `dyn_taps == nullptr`).
+5. **The post-MLP conv state overlapped the post-attention one** when
+   `kv_dim < hidden`, and a static-conv layer passing its taps for both the `w`
+   and `dyn_taps` arguments silently ran the lag convention on every sliding
+   layer.
+6. **`embed`/`unembed` were requantized to NVFP4.** The release keeps both at
+   BF16 (`hf_quant_config.json` puts them in the `bfloat16` group even though the
+   model is natively NVFP4 elsewhere), and 4-bit rounding added a measured
+   4.6-degree direction error to every token vector at the input
+   (cos 0.9968 vs the source). Keeping them BF16 is what moved the output from
+   garbage to English.
+7. **The dense projections were requantized to NVFP4.** `hf_quant_config.json`
+   puts ONLY the routed experts in a low-precision codec; every attention
+   projection is BF16. Requantizing them costs a measured **9.5% relative L2**,
+   which is the difference between a working model and a repetition loop. The
+   artifact now carries the release's own precision: BF16 dense (widened to FP16
+   on device, which is lossless for these magnitudes) and the routed experts
+   byte-verbatim.
 
-### What is now VERIFIED against independent references
+### The engine is now VERIFIED against two independent implementations
 
-Two instruments, both kept in the tree:
+- **`tools/inkling_transformers_crosscheck.py`** writes a synthetic checkpoint in
+  the released naming convention, converts it with the repo's own converter,
+  dequantizes the artifact back to float32, loads those exact tensors into
+  **`transformers.models.inkling2.Inkling2ForCausalLM`** (the authoritative
+  implementation, 5.23) and compares logits and per-layer hidden states. Because
+  both sides consume identical numbers, any disagreement is a semantic defect.
+  Result: **identical top-5 and per-layer agreement to 1e-3** — twice, once at
+  the tiny fixture geometry and once at the REAL model's ratios (GQA group 6,
+  top-8 of 16 experts, two AttnRes blocks, 12 layers, 4 positions).
+- **`tools/inkling_layer_ref.py`** is an independent float64 reference over the
+  same artifact: per-layer replay from the engine's own state, N-position replay,
+  MoE-isolated replay and deliberately-wrong variants for bisection.
+- **`InklingMoeModel::TraceForward`** dumps the residual stream after every layer
+  for a token sequence, plus the logits row.
 
-- **`tools/inkling_layer_ref.py`** — a float64 host reference that reads the same
-  converted artifact and shares no code with the kernels. It can replay one
-  layer from the engine's own state, run a single layer across N positions, probe
-  the MoE in isolation, and take deliberately-wrong full-layer variants.
-- **`InklingMoeModel::TraceForward`** (`RunInklingForwardTrace`) — dumps the
-  residual stream after every layer for one token, or at the last of N tokens.
-
-A **sequential** host run is NOT a valid oracle: the engine rounds to FP16 at
-every layer, the top-8 router selection flips on those differences, and the two
-runs then diverge permanently (layer 2 shows 0.068 and it never recovers). Every
-comparison below therefore replays a layer from the engine's own state.
+Measured with those instruments:
 
 | check | result |
 |---|---|
-| seed (post-`embed_norm`) | relL2 1.6e-4 (FP16 store) |
-| **position 0, end to end** (48 layers + head + unembed + softcap) | **identical top-5 ids and values**, whole-row relL2 **1.7e-4** |
-| per-layer replay, pos 0: layers 0-47 | **3e-4 .. 7e-4** (FP16 storage) |
-| full layer (5) across positions 0,1,2,3 | 3.1e-4 / 3.2e-4 / 3.8e-4 / 3.5e-4 |
-| sliding layer (20) across positions 0,1,2,3 | 5.9e-4 / 4.8e-4 / 5.6e-4 / 5.4e-4 |
-| boundary layer (6) across positions 0,1 | 7.3e-4 / 7.3e-4 |
-| MoE seeded with the engine's own `mlp_norm` output | **identically the same 8 expert ids**, coefficients to 1e-8, `\|moe_acc\|` 100.757 vs 100.754 |
-| head recomputed from the source BF16 `unembed` | same top-5 |
-| converted dense projections vs the source safetensors | relL2 **0.095** (the documented NVFP4 base error) |
-| converted routed expert vs the source NVFP4 record | relL2 **0.000000** (byte-verbatim) |
-| prompt ids vs `transformers` `apply_chat_template` on the checkpoint's own tokenizer | **identical, all 20 ids** |
+| **all 996 pinned tensors vs the source safetensors** | **exact** (relL2 < 1e-6), including the `attn_queries` re-indexing |
+| converted routed experts, NVFP4 layers | **byte-exact** (0.000000) |
+| converted routed experts, MXFP8 layers 40-47 | 0.094 (the 4-bit requant; the release keeps them at 8 bits) |
+| engine vs `transformers`, tiny fixture, final logits | identical top-5, relL2 1.0e-3 |
+| engine vs `transformers`, real ratios, final logits | **identical top-5**, relL2 3.1e-3 |
+| per-layer replay (real weights), position 0, layers 0-47 | 3e-4 .. 7e-4 |
+| full layer 5 and sliding layer 20 across positions 0-3 | 3-6e-4 |
+| MoE seeded with the engine's own `mlp_norm` | identical expert ids, coefficients to 1e-8 |
+| prompt ids vs `transformers` `apply_chat_template` | identical, all 20 |
 
 ### What remains
 
-The gate is still RED: the model emits `" 0.9.0.9.0.0.0..."` (token 220, a
-space, repeatedly), and the logit distribution is flat — the top five are within
-~3 logit units of each other at every prompt prefix, and `<|message_model|>`
-never ranks. In other words it behaves as if it is still inside the
-`Thinking effort level: 0.9` line rather than starting an assistant turn.
+The gate is still RED. Current output: `" 0.9.0.9.0.0.0.0..."` — the model
+continues the `Thinking effort level: 0.9` line and the logit distribution is
+flat (top five within ~1.5 units of each other, `<|message_model|>` never ranks).
+Appending the assistant opener to the prompt does **not** change this, so the
+frame is not the cause.
 
-Everything measurable about the engine, the conversion and the prompt now checks
-out against an independent reference, so the remaining difference is between my
-artifact-plus-engine and the source model as a whole. Ranked next steps:
+Ranked next steps:
 
-- N1. **Feed the same prompt through a second, independent runtime.** The
-  checkpoint ships SGLang / vLLM recipes; even a 4-bit CPU/offloaded run of one
-  layer would settle whether the source model answers "Paris" with this exact
-  20-token frame. This is the only way to tell "my engine is wrong" from "this
-  frame is wrong for this model" — the one question the host reference
-  structurally cannot answer, because it reads the same artifact.
-- N2. **Try precision in the two places the source keeps above 4 bits**, in this
-  order: `embed` (the source stores it BF16; a 4-bit table adds a 4.6 deg
-  direction error to *every* token vector at the input), then the attention
-  projections (3-9% per projection; measured clip-state flips: 0, so this is the
-  cheaper bet to defer). `unembed` is already cleared: BF16 gives the same top-5.
-- N3. **Check the `mlp.gate.bias` semantic against a second source**, since it is
-  the one tensor whose role (selection-only correction versus a weight-side bias)
-  changes the expert set for every token. The port says selection-only and that
-  is what the engine does.
-- N4. Rule out a **frame/stop-token mismatch** by generating with
-  `max_gen=1` from a prompt that ends in an explicit assistant turn rendered by
-  the template, and comparing against N1.
+- N1. **The eight MXFP8 expert layers.** They are the one part of the artifact
+  that is NOT at the release's precision: the release stores layers 40-47 as
+  E4M3 + ue8m0/32 and this converter requantizes them to NVFP4 (measured 0.094).
+  The engine already carries FP8 dequant helpers (`deepseek_moe_v41_fp8.h`), so
+  the faithful fix is an FP8 expert plane for those eight layers rather than a
+  second 4-bit rounding.
+- N2. **A reference run of the source model on the same frame.** The checkpoint
+  ships SGLang / vLLM recipes; even one layer offloaded to CPU would settle
+  whether the release answers "Paris" for this 20-token frame. That is the one
+  question no reference reading the artifact can answer.
+- N3. Compare the engine's router on the real model against the reference's
+  `e_score_correction_bias` treatment (selection-only) at 384 experts — the
+  ratio test used 16, where a flipped selection is far less likely.
+- N4. Widen the ratio test to `hidden=4608, expert=2304, 384 experts` on ONE
+  layer if the memory allows; the remaining untested scale is expert COUNT.
 
 ## Registry status: PENDING ingestion (no manifest row yet)
 

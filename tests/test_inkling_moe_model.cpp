@@ -51,15 +51,17 @@ void RegisterInklingOnce()
     (void)once;
 }
 
-// Builds the synthetic tree once per process. The directory names carry the
-// `_sane` marker deliberately: a byte-pattern tree left behind in a same-named
-// directory is silently reused, and its overflowing values make every
-// downstream activation zero (rsqrt of an inf square-sum is 0) -- which is
-// exactly the bug this check found the first time it ran.
+// Builds the synthetic tree once per process. The directory names carry a LAYOUT
+// VERSION (`_v2`) on purpose: an artifact left behind by an older converter is
+// silently reused otherwise, and every later assertion then reports a defect
+// that is really a stale directory. Both hazards have already cost a debugging
+// session here (a byte-pattern tree whose values overflowed, and a tree whose
+// embed/unembed were still NVFP4). Bump the version whenever the converter's
+// output layout changes.
 fs::path EnsureSyntheticModel()
 {
-    const fs::path in = fs::temp_directory_path() / "inkling_model_in_sane";
-    const fs::path out = fs::temp_directory_path() / "inkling_model_out_sane";
+    const fs::path in = fs::temp_directory_path() / "inkling_model_in_v2";
+    const fs::path out = fs::temp_directory_path() / "inkling_model_out_v2";
     if (fs::exists(out / "logestix" / "model.index.json")) return out;
     fs::remove_all(in);
     fs::remove_all(out);

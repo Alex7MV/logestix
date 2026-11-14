@@ -261,9 +261,11 @@ bool InklingMoeModel::TraceForward(const std::vector<int32_t> &tokens,
     if (!weights_loaded_ || !experts_) return false;
     if (!EnsureContext()) return false;
     std::vector<float> states;
+    std::vector<float> logits;
     const auto ec = inkling::RunInklingForwardTrace(
         stream(), pw_, *experts_, session_, scratch_, tokens,
-        static_cast<float>(top_.final_logit_softcap), top_.unpadded_vocab, states);
+        static_cast<float>(top_.final_logit_softcap), top_.unpadded_vocab, states,
+        &logits);
     if (ec != cudaSuccess) {
         log::error(absl::StrFormat("[inkling] trace failed (cuda %d)",
                                    static_cast<int>(ec)));
@@ -273,7 +275,14 @@ bool InklingMoeModel::TraceForward(const std::vector<int32_t> &tokens,
     if (!out) return false;
     out.write(reinterpret_cast<const char *>(states.data()),
               static_cast<std::streamsize>(states.size() * sizeof(float)));
-    return out.good();
+    if (!out.good()) return false;
+    // The logits row rides along as `<path>.logits`: a parity trace without the
+    // row the sampler actually sees cannot be compared against a reference.
+    std::ofstream lo(path + ".logits", std::ios::binary);
+    if (!lo) return false;
+    lo.write(reinterpret_cast<const char *>(logits.data()),
+             static_cast<std::streamsize>(logits.size() * sizeof(float)));
+    return lo.good();
 }
 
 void InklingMoeModel::TeardownWeights()

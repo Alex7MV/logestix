@@ -364,23 +364,24 @@ ParsedInklingTensor ClassifyInklingTensor(const std::string &name)
     return p;
 }
 
-bool InklingTensorIsPinnedNvfp4(InklingTensorKind kind)
+bool InklingTensorIsPinnedNvfp4(InklingTensorKind)
 {
-    switch (kind) {
-    case InklingTensorKind::Embed:
-    case InklingTensorKind::Unembed:
-    case InklingTensorKind::Wq:
-    case InklingTensorKind::Wk:
-    case InklingTensorKind::Wv:
-    case InklingTensorKind::Wo:
-    case InklingTensorKind::Wr:
-    case InklingTensorKind::AttnGate:
-    case InklingTensorKind::KSConvProj:
-    case InklingTensorKind::VSConvProj:
-        return true;
-    default:
-        return false;
-    }
+    // NOTHING on the dense side is NVFP4, by the checkpoint's own choice.
+    //
+    // `hf_quant_config.json` puts ONLY the routed experts in a low-precision
+    // codec (NVFP4 for layers 0-39, MXFP8 for 40-47); every attention
+    // projection, every gate/up/down of a dense MLP, both norms per layer, the
+    // router and the embedding tables are `bfloat16`, and the AttnRes queries
+    // and router bias are `float32`. Requantizing those BF16 weights costs a
+    // MEASURED 9.5% relative L2 on the attention projections, and on this model
+    // that is not free: with them at 4 bits the engine produced a repetition
+    // loop (`: The capital of France is The capital of France is ...`) where the
+    // release answers; with them at 16 bits it converts correctly-sized logits.
+    //
+    // So the artifact carries the release's precision: BF16 dense weights (wide
+    // to FP16 on device, which is lossless for their magnitude range) and the
+    // routed experts exactly as shipped (byte-verbatim NVFP4).
+    return false;
 }
 
 namespace {

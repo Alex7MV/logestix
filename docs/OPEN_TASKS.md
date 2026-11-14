@@ -1541,28 +1541,31 @@ Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.
 **Open, explicitly.**
 
 - I1. **PARITY IS RED on real weights (2026-11-14).** The engine loads the 594B
-  tree, frames the control prompt through the checkpoint's own chat template,
-  and decodes; it emits token 220 (a space) repeatedly instead of answering
-  Paris. **Nothing in this row may be read as a pass.**
-  Five real defects were found and fixed, each real-weight visible: BF16 was
-  read as an FP16 bit pattern (corrupting every norm, clip scale, conv tap, sink,
-  relative bank and router weight — the cause of the earlier garbage output); a
-  scratch-arena overlap where `taps_v`/`proj_v` were derived past their reserved
-  region and wrote 16 KiB into the AttnRes block stack on every FULL layer; the
-  relative-position states aliased onto the conv scratch buffer; the recurrent
-  conv state was never reset between requests; and the post-MLP conv state
-  overlapped the post-attention one when `kv_dim < hidden`.
-  With `tools/inkling_layer_ref.py` (an independent float64 reference over the
-  same artifact) the engine now matches at **position 0 end to end** (identical
-  top-5, whole-row relL2 1.7e-4) and per layer at **positions 0-3** (3-7e-4,
-  FP16 storage); the MoE reproduces the engine's expert ids exactly when seeded
-  with its own router input; the converted dense weights sit at the documented
-  NVFP4 error (0.095) against the source and the routed experts are byte-exact;
-  and the prompt ids are identical to `transformers` `apply_chat_template` on the
-  checkpoint's own tokenizer. The unverified difference is therefore between
-  artifact+engine and the source model as a whole; the ranked next steps (an
-  independent runtime on the same frame first) are in
-  `docs/open-tasks/2026-11-14-inkling-2-small-ingest.md` § "What remains".
+  tree, frames the control prompt through the checkpoint's own chat template and
+  decodes; it continues the `Thinking effort level: 0.9` line instead of
+  answering Paris, with a flat logit distribution. **Nothing in this row may be
+  read as a pass.**
+  Seven real defects were found and fixed on the way: BF16 read as an FP16 bit
+  pattern (every norm, clip scale, conv tap, sink, relative bank and router
+  weight); a scratch-arena overlap that wrote the dynamic conv taps into the
+  AttnRes block stack on every full layer; the relative-position states aliased
+  onto the conv scratch; the recurrent conv state not reset between requests;
+  the post-MLP conv state overlapping the post-attention one; and BOTH
+  `embed`/`unembed` and the dense projections being requantized to NVFP4 when the
+  release keeps them at BF16 (measured cost 4.6 deg on the embedding and 9.5%
+  relative L2 on the projections — fixing them is what turned garbage into
+  English).
+  The artifact now carries the release's own precision and is verified
+  tensor-by-tensor against the source (996/996 pinned tensors exact; NVFP4
+  experts byte-exact), and the engine is verified against the AUTHORITATIVE
+  implementation: `tools/inkling_transformers_crosscheck.py` loads the converted
+  artifact into `transformers.models.inkling2` and gets **identical top-5 logits
+  and 1e-3 per-layer agreement**, both at the tiny fixture geometry and at the
+  real model's ratios (GQA group 6, top-8 experts, two AttnRes blocks).
+  The remaining suspects, ranked, are in
+  `docs/open-tasks/2026-11-14-inkling-2-small-ingest.md` § "What remains"; the
+  first is the eight MXFP8 expert layers, which are the only part of the artifact
+  not at the release's precision (requantized to 4 bits, measured 0.094).
 - I2. `mtp.safetensors` is a **separate 3.4 GB file that the index does not
   list**; a converter that trusts `model.safetensors.index.json` silently
   ignores the 5 MTP layers (correct) but must not assume the directory only

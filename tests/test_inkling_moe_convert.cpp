@@ -122,14 +122,17 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small-nvfp4",
     REQUIRE(skipped_vis == 2);
 
     // ── pin split ─────────────────────────────────────────────────────────
-    // Sliding layer 0: projections NVFP4, per-head clips / rel bank / sinks /
-    // sconv / norm / router raw.
-    REQUIRE(DenseHasName(base / "pinned" / "layer_0_nvfp4.arrow",
-                         Layer(0, "attn.wq_du.weight")));
-    REQUIRE(DenseHasName(base / "pinned" / "layer_0_nvfp4.arrow",
-                         Layer(0, "attn.gate_attn.weight")));
-    REQUIRE(DenseHasName(base / "pinned" / "layer_0_nvfp4.arrow",
-                         Layer(0, "attn.wr_du.weight")));
+    // EVERY dense tensor stays BF16, as in the release: `hf_quant_config.json`
+    // puts only the routed experts in a low-precision codec. Requantizing the
+    // projections costs a measured 9.5% relative L2 on them and turns the model
+    // into a repetition loop, so the artifact must not do it.
+    REQUIRE(PinnedHasName(base / "pinned" / "layer_0.arrow",
+                          Layer(0, "attn.wq_du.weight")));
+    REQUIRE(PinnedHasName(base / "pinned" / "layer_0.arrow",
+                          Layer(0, "attn.gate_attn.weight")));
+    REQUIRE(PinnedHasName(base / "pinned" / "layer_0.arrow",
+                          Layer(0, "attn.wr_du.weight")));
+    REQUIRE_FALSE(fs::exists(base / "pinned" / "layer_0_nvfp4.arrow"));
     REQUIRE(PinnedHasName(base / "pinned" / "layer_0.arrow",
                           Layer(0, "attn.q_l2_clip.scale")));
     REQUIRE(PinnedHasName(base / "pinned" / "layer_0.arrow",
@@ -157,16 +160,21 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small-nvfp4",
                           Layer(5, "v_input_norm.weight")));
     REQUIRE(PinnedHasName(base / "pinned" / "layer_5.arrow",
                           Layer(5, "attn.k_sconv.static_w")));
-    REQUIRE(DenseHasName(base / "pinned" / "layer_5_nvfp4.arrow",
-                         Layer(5, "attn.k_sconv.weight_proj")));
+    REQUIRE(PinnedHasName(base / "pinned" / "layer_5.arrow",
+                          Layer(5, "attn.k_sconv.weight_proj")));
     REQUIRE_FALSE(PinnedHasName(base / "pinned" / "layer_5.arrow",
                                 Layer(5, "attn_norm.weight")));
 
     // ── globals + AttnRes query renaming ──────────────────────────────────
-    REQUIRE(DenseHasName(base / "pinned" / "global_nvfp4.arrow",
-                         Llm("embed.weight")));
-    REQUIRE(DenseHasName(base / "pinned" / "global_nvfp4.arrow",
-                         Llm("unembed.weight")));
+    // embed/unembed stay BF16 (the checkpoint's own precision for them, and the
+    // two tensors that touch the residual stream at full width). They must NOT
+    // appear in the NVFP4 plane.
+    REQUIRE(PinnedHasName(base / "pinned" / "global.arrow",
+                          Llm("embed.weight")));
+    REQUIRE(PinnedHasName(base / "pinned" / "global.arrow",
+                          Llm("unembed.weight")));
+    // No global NVFP4 plane exists at all now.
+    REQUIRE_FALSE(fs::exists(base / "pinned" / "global_nvfp4.arrow"));
     REQUIRE(PinnedHasName(base / "pinned" / "global.arrow",
                           Llm("embed_norm.weight")));
     REQUIRE(PinnedHasName(base / "pinned" / "global.arrow", Llm("norm.weight")));

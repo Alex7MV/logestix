@@ -191,16 +191,25 @@ cudaError_t RunInklingNormF32In(cudaStream_t stream, const float *x,
                                 int hidden, float eps);
 
 // y[r] = sum_c w[r*cols + c] * x[c], FP16 weight and input, FP32 output. Used
-// for the two tiny non-quantized projections (`attn_sink_proj` [heads, hidden]
-// and nothing else); a 4-bit rounding there would perturb the softmax
-// denominator of every head, which is why they stay BF16 in the checkpoint.
+// for the tiny non-quantized projections (`attn_sink_proj` [heads, hidden]).
 cudaError_t RunInklingMatVecF16(cudaStream_t stream, const __half *w,
                                 const __half *x, float *y, int rows, int cols);
 
-// Dequantizes ONE embedding row of the NVFP4 table into FP16. `d_id` is the
-// token id ON THE DEVICE, so a decode step never syncs to fetch it.
+// Same dot, FP16 output: the dense projections of every layer.
+cudaError_t RunInklingMatVecF16ToHalf(cudaStream_t stream, const __half *w,
+                                      const __half *x, __half *y, int rows,
+                                      int cols);
+
+// Dequantizes ONE embedding row of an NVFP4 table into FP16. `d_id` is the
+// token id ON THE DEVICE, so a decode step never syncs to fetch it. Kept for the
+// families that keep a 4-bit table; Inkling stores embed/unembed as FP16 (see
+// RunInklingEmbedGather).
 cudaError_t RunInklingEmbedRow(cudaStream_t stream, const uint8_t *packed,
                                const uint8_t *scales, float global_scale,
                                const int32_t *d_id, __half *out, int hidden);
+
+// Copies ONE row of an FP16 embedding table. `d_id` is on the device.
+cudaError_t RunInklingEmbedGather(cudaStream_t stream, const __half *table,
+                                  const int32_t *d_id, __half *out, int hidden);
 
 }  // namespace lsxcommon::inkling

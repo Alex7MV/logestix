@@ -504,6 +504,31 @@ __global__ void inkling_logit_softcap_kernel(const float *__restrict__ logits,
 
 
 // ── 9. plumbing ───────────────────────────────────────────────────────────
+__global__ void inkling_matvec_f16_h_kernel(const __half *__restrict__ w,
+                                            const __half *__restrict__ x,
+                                            __half *__restrict__ y, int rows,
+                                            int cols)
+{
+    extern __shared__ float scratch[];
+    const int r = blockIdx.x;
+    const int tid = threadIdx.x;
+    const __half *wr = w + static_cast<int64_t>(r) * cols;
+    float acc = 0.0f;
+    for (int c = tid; c < cols; c += blockDim.x)
+        acc = __fadd_rn(acc, __fmul_rn(__half2float(wr[c]), __half2float(x[c])));
+    acc = BlockSum(acc, scratch);
+    if (tid == 0) y[r] = __float2half(acc);
+}
+
+__global__ void inkling_embed_gather_kernel(const __half *__restrict__ table,
+                                            const int32_t *__restrict__ d_id,
+                                            __half *__restrict__ out, int hidden)
+{
+    const int64_t row = d_id[0];
+    const __half *src = table + row * hidden;
+    for (int i = threadIdx.x; i < hidden; i += blockDim.x) out[i] = src[i];
+}
+
 __global__ void inkling_norm_f32in_kernel(const float *__restrict__ x,
                                           const __half *__restrict__ w,
                                           __half *__restrict__ out, int hidden,
@@ -777,6 +802,27 @@ cudaError_t RunInklingLogitSoftcap(cudaStream_t stream, const float *logits,
     if (!logits || !out || n <= 0 || !(cap > 0.0f)) return cudaErrorInvalidValue;
     inkling_logit_softcap_kernel<<<Blocks(n), kThreads, 0, stream>>>(logits, out,
                                                                     n, cap);
+    return cudaGetLastError();
+}
+
+cudaError_t RunInklingMatVecF16ToHalf(cudaStream_t stream, const __half *w,
+                                      const __half *x, __half *y, int rows,
+                                      int cols)
+{
+    if (w == nullptr || x == nullptr || y == nullptr || rows <= 0 || cols <= 0)
+        return cudaErrorInvalidValue;
+    const size_t shmem = static_cast<size_t>(kThreads) * sizeof(float);
+    inkling_matvec_f16_h_kernel<<<rows, kThreads, shmem, stream>>>(w, x, y, rows,
+                                                                   cols);
+    return cudaGetLastError();
+}
+
+cudaError_t RunInklingEmbedGather(cudaStream_t stream, const __half *table,
+                                  const int32_t *d_id, __half *out, int hidden)
+{
+    if (table == nullptr || d_id == nullptr || out == nullptr || hidden <= 0)
+        return cudaErrorInvalidValue;
+    inkling_embed_gather_kernel<<<1, 512, 0, stream>>>(table, d_id, out, hidden);
     return cudaGetLastError();
 }
 
