@@ -241,6 +241,44 @@ Measured with those instruments:
 | MoE seeded with the engine's own `mlp_norm` | identical expert ids, coefficients to 1e-8 |
 | prompt ids vs `transformers` `apply_chat_template` | identical, all 20 |
 
+### The multi-position path is verified at depth (2026-11-14)
+
+`TraceForward` now also dumps the post-`embed_norm` row and a configurable
+layer's input row **for every position**, so any SLIDING NON-BOUNDARY layer can
+be replayed at any depth: its mixture needs only `[block-0 state, current
+residual]`, both of which the dump supplies, and its output then depends on the
+conv rings and the KV cache carried from earlier positions.
+
+Layer 4 over the real 20-token framed prompt, with 20 cached keys and the
+sliding window active:
+
+```
+layer 4 at pos 19/19 (kv_len=20): relL2=4.562e-04
+```
+
+So the conv rings, the KV append, the sliding bound and the relative-bias gather
+are all correct at depth, not just in the first few positions.
+
+### An FP8 expert plane was attempted and WITHDRAWN
+
+The plan was to keep the eight MXFP8 expert layers (40-47) at the release's own
+precision instead of requantizing them to 4 bits: pass the E4M3 weight bytes
+through verbatim, duplicate each ue8m0/32 exponent byte so the record still
+satisfies the neutral schema's per-16 scale count (the value is unchanged, so
+`scale[j/16]` is exactly the source's `scale[j/32]`), and decode
+`e4m3(w) * 2^(ue8m0-127)` in a dedicated batch GEMV. That needs no schema, store
+or model-registry change.
+
+The converter/index/topology side was written, and a host-referenced kernel test
+was written first. The kernel disagreed with its reference by exactly 2x on one
+row, and two fixes (a by-value pointer struct instead of a host array of
+pointers, and a warp-uniform reduction) did not explain it. **The whole attempt
+was reverted rather than shipped**: it is unwired, unproven, and an artifact
+using it would not decode. The bisection that was run and is worth recording:
+with a single uniform ue8m0 exponent only expert 0 passed, which is what
+identified the host-pointer-array defect; the residual 2x on expert 0's second
+row is still unexplained and is where the next attempt should start.
+
 ### What remains
 
 The gate is still RED. Current output: `" 0.9.0.9.0.0.0.0..."` — the model

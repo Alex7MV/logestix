@@ -262,10 +262,11 @@ bool InklingMoeModel::TraceForward(const std::vector<int32_t> &tokens,
     if (!EnsureContext()) return false;
     std::vector<float> states;
     std::vector<float> logits;
+    std::vector<float> pos0;
     const auto ec = inkling::RunInklingForwardTrace(
         stream(), pw_, *experts_, session_, scratch_, tokens,
         static_cast<float>(top_.final_logit_softcap), top_.unpadded_vocab, states,
-        &logits);
+        &logits, &pos0);
     if (ec != cudaSuccess) {
         log::error(absl::StrFormat("[inkling] trace failed (cuda %d)",
                                    static_cast<int>(ec)));
@@ -282,7 +283,15 @@ bool InklingMoeModel::TraceForward(const std::vector<int32_t> &tokens,
     if (!lo) return false;
     lo.write(reinterpret_cast<const char *>(logits.data()),
              static_cast<std::streamsize>(logits.size() * sizeof(float)));
-    return lo.good();
+    if (!lo.good()) return false;
+    // Per-position layer-0 inputs: with the layer-0 trace this rebuilds the conv
+    // rings and the KV cache offline, so the multi-position path can be verified
+    // at any depth.
+    std::ofstream po(path + ".pos0", std::ios::binary);
+    if (!po) return false;
+    po.write(reinterpret_cast<const char *>(pos0.data()),
+             static_cast<std::streamsize>(pos0.size() * sizeof(float)));
+    return po.good();
 }
 
 void InklingMoeModel::TeardownWeights()

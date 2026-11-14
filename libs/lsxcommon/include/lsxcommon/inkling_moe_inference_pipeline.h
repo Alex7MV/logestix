@@ -144,7 +144,10 @@ cudaError_t RunInklingGeneration(cudaStream_t stream,
 // LAST position, so the four conv rings and the KV cache are populated exactly
 // as they are during a real decode. With n == 1 this is the position-0 trace.
 // `out_logits` (optional) receives the softcapped, sliced logits row of the last
-// position — the same row `Infer` samples from.
+// position — the same row `Infer` samples from. `out_pos0` (optional) receives
+// the post-`embed_norm` row of EVERY position, i.e. the layer-0 input per step;
+// with `out_states` that is enough to rebuild layer 0's conv rings and KV cache
+// offline and verify the whole multi-position path.
 cudaError_t RunInklingForwardTrace(cudaStream_t stream,
                                    InklingPinnedWeights &pw,
                                    InklingExpertDb &experts,
@@ -152,7 +155,8 @@ cudaError_t RunInklingForwardTrace(cudaStream_t stream,
                                    const std::vector<int32_t> &tokens,
                                    float logit_softcap, int unpadded_vocab,
                                    std::vector<float> &out_states,
-                                   std::vector<float> *out_logits = nullptr);
+                                   std::vector<float> *out_logits = nullptr,
+                                   std::vector<float> *out_pos0 = nullptr);
 
 // The engine's position-dependent log-scaling factor (1.0 on the sliding
 // layers, where it is never applied).

@@ -389,7 +389,10 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
                     InklingScratch &ws, int32_t tok, int pos,
                     float logit_softcap, int unpadded_vocab,
                     std::string &stage_err,
-                    std::vector<float> *trace = nullptr)
+                    std::vector<float> *trace = nullptr,
+                    std::vector<float> *pos0_row = nullptr,
+                    std::vector<float> *layer_in_row = nullptr,
+                    int layer_in_index = -1)
 {
     const InklingTopology &top = pw.top;
     const int H = top.hidden;
@@ -427,6 +430,15 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
     if (e != cudaSuccess) return fail("embed_norm", e);
 
 
+    if (pos0_row != nullptr) {
+        cudaStreamSynchronize(stream);
+        pos0_row->resize(static_cast<size_t>(H));
+        std::vector<__half> row0(static_cast<size_t>(H));
+        cudaMemcpy(row0.data(), ws.x_h, row0.size() * sizeof(__half),
+                   cudaMemcpyDeviceToHost);
+        for (int i = 0; i < H; ++i) (*pos0_row)[static_cast<size_t>(i)] =
+            __half2float(row0[i]);
+    }
     if (trace != nullptr) {
         // The kernels run on a non-default stream, so every trace copy must be
         // ordered after them; a bare cudaMemcpy here reads a stale row (the
@@ -446,6 +458,19 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
         const bool boundary = top.IsBlockBoundary(l);
         const int nq = full ? 3 : 1;
 
+        if (layer_in_row != nullptr && l == layer_in_index) {
+            // The layer's INPUT (post-mixture is later; this is the residual
+            // entering the layer), per position: with the block-0 rows it makes
+            // any SLIDING NON-BOUNDARY layer verifiable at any depth, because
+            // such a layer's mixture needs only [block0, current].
+            cudaStreamSynchronize(stream);
+            layer_in_row->resize(static_cast<size_t>(H));
+            std::vector<__half> row_in(static_cast<size_t>(H));
+            cudaMemcpy(row_in.data(), ws.x_h, row_in.size() * sizeof(__half),
+                       cudaMemcpyDeviceToHost);
+            for (int i = 0; i < H; ++i)
+                (*layer_in_row)[static_cast<size_t>(i)] = __half2float(row_in[i]);
+        }
         // ── (a) attention-input depth mixture ──────────────────────────────
         stage = LayerTag("attn_res", l);
         e = RunInklingHalfToF32(stream, ws.x_h, ws.x_f, H);
@@ -739,7 +764,8 @@ cudaError_t RunInklingForwardTrace(cudaStream_t stream, InklingPinnedWeights &pw
                                    const std::vector<int32_t> &tokens,
                                    float logit_softcap, int unpadded_vocab,
                                    std::vector<float> &out_states,
-                                   std::vector<float> *out_logits)
+                                   std::vector<float> *out_logits,
+                                   std::vector<float> *out_pos0)
 {
     if (tokens.empty()) return cudaErrorInvalidValue;
     const InklingTopology &top = pw.top;
@@ -757,12 +783,36 @@ cudaError_t RunInklingForwardTrace(cudaStream_t stream, InklingPinnedWeights &pw
             cudaMemsetAsync(lw.conv_state, 0,
                             static_cast<size_t>(lw.conv_state_bytes), stream);
     std::string err;
+    if (out_pos0 != nullptr)
+        out_pos0->assign(tokens.size() * static_cast<std::size_t>(top.hidden),
+                         0.0f);
+    const int layer_in_index = std::getenv("LSX_INKLING_TRACE_LAYER_IN")
+                                   ? std::atoi(std::getenv("LSX_INKLING_TRACE_LAYER_IN"))
+                                   : -1;
+    std::vector<float> layer_in;
+    if (out_pos0 != nullptr && layer_in_index >= 0)
+        out_pos0->reserve(tokens.size() * static_cast<std::size_t>(top.hidden) *
+                          static_cast<std::size_t>(2));
+    std::vector<float> per_pos;
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         const bool last = (i + 1 == tokens.size());
+        per_pos.clear();
         e = Forward(stream, pw, experts, session, scratch, tokens[i],
                     static_cast<int>(i), logit_softcap, unpadded_vocab, err,
-                    last ? &out_states : nullptr);
+                    last ? &out_states : nullptr,
+                    out_pos0 != nullptr ? &per_pos : nullptr,
+                    (out_pos0 != nullptr && layer_in_index >= 0) ? &layer_in
+                                                                 : nullptr,
+                    layer_in_index);
         if (e != cudaSuccess) return e;
+        if (out_pos0 != nullptr) {
+            std::copy(per_pos.begin(), per_pos.begin() + top.hidden,
+                      out_pos0->begin() + static_cast<int64_t>(i) * top.hidden);
+            if (layer_in_index >= 0 && layer_in.size() ==
+                                           static_cast<size_t>(top.hidden))
+                out_pos0->insert(out_pos0->end(), layer_in.begin(),
+                                 layer_in.end());
+        }
     }
     if (out_logits != nullptr) {
         const int n = (unpadded_vocab > 0 && unpadded_vocab < pw.embed_rows)
