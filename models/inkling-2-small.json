@@ -26,6 +26,9 @@
     ],
     "load": [
       "test_inkling_moe_loader"
+    ],
+    "kernels": [
+      "test_inkling_moe_kernels"
     ]
   },
   "perf": {
@@ -42,12 +45,14 @@
     },
     "test_inkling_moe_loader": {
       "timeout": 300
+    },
+    "test_inkling_moe_kernels": {
+      "timeout": 300
     }
   },
   "tool_roundtrip": false,
   "auto_path_determinism": false,
   "golden_debt": {
-    "kernels": "kernels in progress on feat/inkling-2-small",
     "selfcheck": "needs the decode pipeline",
     "fsi": "needs the decode pipeline",
     "code": "needs the decode pipeline",

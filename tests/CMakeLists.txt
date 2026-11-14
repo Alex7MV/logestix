@@ -4004,6 +4004,32 @@ set_target_properties(test_flint_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_flint_moe_kernels PRIVATE test_flint_cu lsxcommon
     Catch2::Catch2WithMain)
 
+# ── Inkling-2-Small numeric kernels (depth mix / L2 clip / rel bias / sink
+# attention / two short-conv tap orders / softcapped SwiGLU / router) ──
+add_library(test_inkling_cu OBJECT
+    test_inkling_moe_kernels.cu
+)
+set_target_properties(test_inkling_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_inkling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_inkling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_inkling_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    )
+target_link_libraries(test_inkling_cu PRIVATE Catch2::Catch2WithMain
+        lsx_dep_includes
+    arrow_shared)
+
+add_executable(test_inkling_moe_kernels)
+set_target_properties(test_inkling_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_inkling_moe_kernels PRIVATE test_inkling_cu lsxcommon
+    Catch2::Catch2WithMain)
+
 # ── Flint SelfCheck (real weights; SKIPs when the vault is absent) ──
 
 # ── Flint FSI parity gate ──
