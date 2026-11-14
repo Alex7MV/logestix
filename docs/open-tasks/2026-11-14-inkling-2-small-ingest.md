@@ -154,25 +154,27 @@ a pinned arena (R1/R2 in `ingesting-a-model`).
     weighted RMSNorm (`norm`) → unembed FP32 → `tanh(x/30)·30` → slice 200058.
 11. **MTP is not applied**; the vision tower is not applied.
 
-**Open decision (recorded, measured later):** the 8 MXFP8 layers. Two options —
-(a) pass the FP8 plane through and add an FP8 expert GEMV (preserves the
-checkpoint exactly, second codec in the MoE path), or (b) requantise those 8
-layers to NVFP4 at conversion (single codec, one measured precision loss on 1/6
-of the stack). Plan: **(a)** first — it is the checkpoint's own precision and the
-repo already has FP8 dequant helpers (`deepseek_moe_v41_fp8.h`); fall back to (b)
-only if the FP8 path cannot be made to fit the shared MoE kernel, and record the
-measured relL2 either way.
+**Open decision (resolved 2026-11-14):** the 8 MXFP8 layers are **requantized to
+NVFP4 at conversion** (option b). Option (a) — passing the FP8 plane through and
+adding a second expert codec to the MoE path — was rejected because (i) the
+engine's expert store schema (`ExpertSchema`) is a uniform 9-column NVFP4 record,
+(ii) it would double the GEMV dispatch surface for 1/6 of the stack, and (iii)
+the residual-plane recipe of stage 2 is available if a parity gate later shows
+the 4-bit rounding on those layers flipping an answer. The measurement to
+record: relL2 of the requantized layer-40..47 experts against their dequantized
+FP8 source (to be taken when the engine can decode them).
 
 ## Plan (TDD, one stage per commit)
 
-| # | deliverable | test (label) |
-|---|---|---|
-| 1 | `inkling_moe_constants.h` passport, naming-guard family token, `models/inkling-2-small.json` | `test_inkling_moe_constants` (fast) |
-| 2 | `inkling_moe_convert.cpp` + `--inkling` in `apps/lsxforge` | `test_inkling_moe_convert` (convert, synthetic) |
-| 3 | `inkling_moe_load.cpp`, expert store (`ExpertStore` alias), pinned dense plane | `test_inkling_moe_loader` (load, synthetic) |
-| 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) |
-| 5 | `inkling_moe_inference_pipeline.cu` + `inkling_moe_model.cpp` | `test_inkling_moe_model` (model) |
-| 6 | `inkling_moe_tool_format.cpp` (stage 4b, native template) | `test_inkling_moe_tool_framing` (fast) |
-| 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` |
-| 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) |
-| 9 | report | `docs/model-reports/2026-11-14-Inkling-2-Small.md` |
+| # | deliverable | test (label) | state |
+|---|---|---|---|
+| 1 | `inkling_moe_constants.h` passport, naming-guard family token, `models/inkling-2-small.json` | `test_inkling_moe_constants` (fast) | **done, green** (186 assertions) |
+| 2 | `inkling_moe_convert.cpp` + `--inkling` in `apps/lsxforge` | `test_inkling_moe_convert` (convert, synthetic) | **done, green** (349 assertions); real tree converted (312 GB, 18 min) |
+| 3 | topology reader + artifact layout (`inkling_moe_load.*`) | `test_inkling_moe_loader` (load, synthetic + real index) | **done, green** (topology half); the weight upload half is stage 5 work |
+| 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) | **open** |
+| 5 | `inkling_moe_inference_pipeline.cu` + weight upload in the loader | `test_inkling_moe_model` (model) | **open** |
+| 6 | `inkling_moe_tool_format.cpp` (stage 4b, native template) | `test_inkling_moe_tool_framing` (fast) | **open** |
+| 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **open** (declared debt) |
+| 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **open** (declared debt) |
+| 9 | report | `docs/model-reports/2026-11-14-Inkling-2-Small.md` | **open** — the stage-0/1/2 evidence is in this file and in `docs/OPEN_TASKS.md` §R19 |
+

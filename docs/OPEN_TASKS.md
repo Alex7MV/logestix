@@ -1499,6 +1499,74 @@ Do not "fix" it by widening `kSlack`: 300 MiB of foreign churn would still fail,
 and a slack large enough to absorb it also hides the 1 GiB leak the case exists
 to catch.
 
+## R19. Inkling-2-Small (594B / 17B active) — stages 0-3 landed, engine pending (2026-11-14)
+
+Branch `feat/inkling-2-small`. New family (`kType = inkling-2-small`, format tag
+`logestix-inkling-2-small-nvfp4`): 48 MoE layers, hidden 4608, 48 Q / 8 KV heads
+at head_dim 128, **no RoPE anywhere** (a learned relative-position bank of
+d_rel 16 profiles over 1024 backward distances replaces it), 40 sliding-window
+layers (1024) + 8 full-attention layers at `(layer+1)%6==0`, per-head learned
+**L2 clipping** (q 16√2, k weight-free, rel 8.0) instead of QK-norm, **gated
+attention with learned per-head sinks**, four short convolutions per layer
+(post-attention, post-MLP, and k/v with static+per-token taps on the full
+layers), an **AttnRes depth mixer** of block 6 (single-query for sliding layers
+and MLP inputs, three queries on the full layers for separate q/k/v inputs, one
+`output_query` for the final norm), 384 routed experts top-8 (sigmoid scoring,
+selection-only FP32 bias, renormalised then ×8.0), softcapped SwiGLU
+(gate 4.0, up 25.0), final logit softcap 30.0, vocab 201024 sliced to 200058,
+tiktoken BPE (kind 2).
+
+Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.md`.
+
+**Measured on the real checkpoint** (367 GB source: 24 shards +
+`mtp.safetensors`; RTX 5090 host, 2026-11-14):
+
+| item | value |
+|---|---|
+| converted artifact | **312 GB** under `<vault>/logestix` (18 432 routed-expert records + 996 pinned tensors) |
+| routed experts | 40 layers passed through **byte-verbatim** NVFP4 (per-expert global scale `amax/2688`), 8 layers (40-47) dequantized from MXFP8/32 and requantized to NVFP4 |
+| stripped ballast | 422 vision tensors + the 5-layer MTP file (`mtp.safetensors`, not in the index) |
+| conversion wall time | ~18 min on this host (single process) |
+| dense plane | ~4.7 GiB NVFP4 + ~190 MiB FP16 router/side tensors |
+| active read per token | ~7.1 GB (8 experts × 48 layers), so ~0.5-2 t/s is the expected band |
+
+**Gates landed and green**
+
+- `test_inkling_moe_constants` (fast, 186 assertions): the frozen passport.
+- `test_inkling_moe_convert` (convert, synthetic checkpoint, 349 assertions):
+  converter E2E, including the byte-verbatim expert pass-through with the
+  per-expert global scale and the MXFP8 -> NVFP4 requant path.
+- `test_inkling_moe_loader` (load, synthetic tree + the real converted index).
+
+**Open, explicitly.**
+
+- I1. **The decode engine is not written.** `InklingMoeModel::Load` validates
+  the converted topology against the passport and then refuses the load
+  ("decode pipeline is not implemented"). Stages 4b/5/6 (kernels, pipeline,
+  tool codec) and stage 8 (SelfCheck/FSI/CODE/DET/perf) carry a declared
+  `golden_debt` row in `models/inkling-2-small.json`. Nothing in this row may
+  be read as a pass.
+- I2. `mtp.safetensors` is a **separate 3.4 GB file that the index does not
+  list**; a converter that trusts `model.safetensors.index.json` silently
+  ignores the 5 MTP layers (correct) but must not assume the directory only
+  holds what the index names.
+- I3. The expert codec is **mixed and undocumented in `config.json`**: only
+  `hf_quant_config.json` says layers 0-39 are NVFP4 and 40-47 MXFP8. A
+  converter that assumes one codec decodes a sixth of the stack as garbage.
+  The converter now cross-checks the observed dtype against that file and
+  fails on a mismatch.
+- I4. `attn_res.attn_queries.L` is indexed by **`layer-1`** (layer 0 has no
+  attention mixture) while `attn_res.mlp_queries.L` is indexed by layer. The
+  artifact re-indexes both to the owning layer.
+- I5. `config.json`'s `eos_token_id` is `<|content_model_end_sampling|>`
+  (200006), not `<|endoftext|>` (199999); both stop. `bos_token_id` is absent
+  and there is no pad id.
+- I6. The `transformers` port that is authoritative for this family is
+  `models/inkling2` (5.23.0+). The earlier `models/inkling` module is a
+  **different** architecture (no sinks, no L2 clip, scale `1/head_dim` instead
+  of `head_dim**-0.5`, no dynamic convolutions, no AttnRes) and copying from it
+  produces plausible but wrong logits.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full

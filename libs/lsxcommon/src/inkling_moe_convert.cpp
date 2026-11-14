@@ -849,13 +849,23 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
     policy.is_nvfp4 = [](const std::string &name) {
         return InklingTensorIsPinnedNvfp4(ClassifyInklingTensor(name).kind);
     };
+    // Every routed-expert tensor (weights AND their amax/denominator/scale
+    // companions) belongs to the routed class; leaving the companions resident
+    // inflates the estimate by the whole per-16 scale plane (~30 GiB here).
     policy.mem_class = [](const std::string &name) {
-        return ClassifyInklingTensor(name).kind ==
-                       InklingTensorKind::ExpertW13 ||
-                   ClassifyInklingTensor(name).kind ==
-                       InklingTensorKind::ExpertW2
-               ? VramTensorClass::RoutedExpert
-               : VramTensorClass::Resident;
+        switch (ClassifyInklingTensor(name).kind) {
+        case InklingTensorKind::ExpertW13:
+        case InklingTensorKind::ExpertW13Scale:
+        case InklingTensorKind::ExpertW13Amax:
+        case InklingTensorKind::ExpertW13Denom:
+        case InklingTensorKind::ExpertW2:
+        case InklingTensorKind::ExpertW2Scale:
+        case InklingTensorKind::ExpertW2Amax:
+        case InklingTensorKind::ExpertW2Denom:
+            return VramTensorClass::RoutedExpert;
+        default:
+            return VramTensorClass::Resident;
+        }
     };
     for (const auto &shard : model.shards)
         for (const auto &t : shard.tensors) {
@@ -880,7 +890,11 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
 
     // ── index ─────────────────────────────────────────────────────────────
     {
+        // 17 significant digits must be set BEFORE the numbers are formatted
+        // into the stream (setting it at the end leaves them at the default 6,
+        // which turned the clip threshold 22.627416997969522 into 22.6274).
         std::ostringstream j;
+        j.precision(17);
         auto int_array = [&j](const char *key, const std::vector<int> &v,
                               bool trailing) {
             j << "  \"" << key << "\": [";
