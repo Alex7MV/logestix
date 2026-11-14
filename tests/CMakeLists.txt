@@ -86,6 +86,13 @@ add_executable(test_kimi_pro_convert test_kimi_pro_convert.cpp)
 target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
+# ── Inkling-2-Small synthetic converter (mixed NVFP4/MXFP8 expert source) ───
+# Same synthetic-checkpoint discipline; the gate is the per-layer expert codec
+# split and the AttnRes query renaming (source index = layer-1).
+add_executable(test_inkling_moe_convert test_inkling_moe_convert.cpp)
+target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
@@ -1586,6 +1593,9 @@ add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp
                                       test_kimi_pro_constants.cpp)
 target_link_libraries(test_kimi_k3_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
 
+# ── Inkling-2-Small frozen passport (host-only) ──────────────────────────
+add_executable(test_inkling_moe_constants test_inkling_moe_constants.cpp)
+target_link_libraries(test_inkling_moe_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
 # ── phi-4 ChatML token bridge test (host-only, synthetic tokenizer) ──
 add_executable(test_phi_tool_framing test_phi_tool_framing.cpp)
 target_include_directories(test_phi_tool_framing PRIVATE

@@ -1,0 +1,56 @@
+{
+  "model_type": "inkling-2-small",
+  "display_name": "Inkling-2-Small",
+  "family": "inkling",
+  "variant": null,
+  "model_class": "InklingMoeModel",
+  "model_header": "inkling_moe_model.h",
+  "passport": "libs/lsxcommon/src/inkling_moe_constants.h",
+  "namespace": "lsxcommon::inkling::frozen",
+  "format_tag": "logestix-inkling-2-small-nvfp4",
+  "forge_flag": "--inkling",
+  "tokenizer_kind": 2,
+  "vault": {
+    "dir": "Inkling-2-Small",
+    "env": "LSX_TEST_INKLING_2_SMALL_ROOT"
+  },
+  "lifecycle_tu": [
+    "inkling_moe_model.cpp"
+  ],
+  "stages": {
+    "convert": [
+      "test_inkling_moe_convert"
+    ],
+    "model": [
+      "test_inkling_moe_constants"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_inkling_2_small",
+    "timeout": 21600
+  },
+  "target_overrides": {
+    "test_inkling_moe_constants": {
+      "label": "fast",
+      "env": []
+    },
+    "test_inkling_moe_convert": {
+      "timeout": 600
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {
+    "load": "loader in progress on feat/inkling-2-small",
+    "kernels": "kernels in progress on feat/inkling-2-small",
+    "selfcheck": "needs the decode pipeline",
+    "fsi": "needs the decode pipeline",
+    "code": "needs the decode pipeline",
+    "det": "needs the decode pipeline"
+  },
+  "report": "docs/open-tasks/2026-11-14-inkling-2-small-ingest.md",
+  "notes": "Stage 0 + passport + converter landed; the 594B decode engine is still in progress.",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": false
+}
