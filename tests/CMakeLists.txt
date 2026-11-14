@@ -115,6 +115,27 @@ set_tests_properties(test_inkling_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
 set_tests_properties(test_inkling_moe_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_inkling_moe_loader PROPERTIES LABELS inference)
 
+add_executable(test_inkling_moe_selfcheck test_inkling_moe_selfcheck.cpp)
+target_include_directories(test_inkling_moe_selfcheck PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_selfcheck COMMAND test_inkling_moe_selfcheck)
+set_tests_properties(test_inkling_moe_selfcheck PROPERTIES TIMEOUT 14400)
+set_tests_properties(test_inkling_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_inkling_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
+set_tests_properties(test_inkling_moe_selfcheck PROPERTIES LABELS inference)
+
+add_executable(test_inkling_moe_tool_framing test_inkling_moe_tool_framing.cpp)
+target_include_directories(test_inkling_moe_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_inkling_moe_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_inkling_moe_tool_framing PRIVATE lsxcommon
+    arrow_shared Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_tool_framing COMMAND test_inkling_moe_tool_framing)
+set_tests_properties(test_inkling_moe_tool_framing PROPERTIES LABELS fast)
+
 add_executable(test_inkling_moe_model test_inkling_moe_model.cpp)
 target_include_directories(test_inkling_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)

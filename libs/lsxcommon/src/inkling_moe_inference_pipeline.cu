@@ -472,9 +472,11 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
         if (e != cudaSuccess) return fail("wk", e);
         e = Proj(stream, lw.wv, vsrc, ws.kv_val);
         if (e != cudaSuccess) return fail("wv", e);
-        // The relative states ([heads*d_rel]) ride `conv_out`, which is sized
-        // max(hidden, kv_dim, rel_dim).
-        e = Proj(stream, lw.wr, qsrc, ws.conv_out);
+        // The relative states ([heads*d_rel]) get their OWN buffer: `conv_out`
+        // is recycled by the k/v convolutions in step (c), so parking them
+        // there reads a convolution result as the position bias (a defect that
+        // compiles, runs, and answers confidently with the wrong tokens).
+        e = Proj(stream, lw.wr, qsrc, ws.o_out);
         if (e != cudaSuccess) return fail("wr", e);
         e = Proj(stream, lw.attn_gate, qsrc, ws.attn_gate);
         if (e != cudaSuccess) return fail("attn gate", e);
@@ -538,7 +540,7 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
         if (e != cudaSuccess) return fail("k l2 clip", e);
         e = RunInklingUnweightedNorm(stream, ws.vf, kv_heads, hd, eps);
         if (e != cudaSuccess) return fail("v value norm", e);
-        e = RunInklingHalfToF32(stream, ws.conv_out, ws.relf, rel_dim);
+        e = RunInklingHalfToF32(stream, ws.o_out, ws.relf, rel_dim);
         if (e != cudaSuccess) return fail("rel to f32", e);
         e = RunInklingL2Clip(stream, ws.relf, lw.rel_clip, heads, top.d_rel,
                              static_cast<float>(top.rel_l2_clip));

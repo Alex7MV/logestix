@@ -1540,12 +1540,22 @@ Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.
 
 **Open, explicitly.**
 
-- I1. **The decode engine is not written.** `InklingMoeModel::Load` validates
-  the converted topology against the passport and then refuses the load
-  ("decode pipeline is not implemented"). Stages 4b/5/6 (kernels, pipeline,
-  tool codec) and stage 8 (SelfCheck/FSI/CODE/DET/perf) carry a declared
-  `golden_debt` row in `models/inkling-2-small.json`. Nothing in this row may
-  be read as a pass.
+- I1. **PARITY IS RED on real weights (2026-11-14).** The engine is written and
+  runs: `test_inkling_moe_selfcheck` loads the 594B tree, frames the control
+  prompt through the checkpoint's own chat template, decodes and returns. It
+  does not answer Paris — the output is incoherent multibyte text
+  (`aterinagjernaterinaskar悆inversheavFactor prison𨂦挦 fem sifat`), i.e. the
+  forward pass diverges from the source somewhere. **Nothing in this row may be
+  read as a pass**, and the five next checks that would localize the defect are
+  listed in `docs/open-tasks/2026-11-14-inkling-2-small-ingest.md` § "Real-weight
+  status" (teacher-forced logits vs a `transformers` reference first).
+  Two engine defects were already found and fixed by getting this far: the
+  relative-position states aliased onto the convolution scratch buffer, and the
+  recurrent conv state not being reset between requests (a second identical
+  request decoded differently).
+- I1b. The engine has no manifest row, so `LsxModelFactory` cannot resolve it
+  and `test_inkling_moe_selfcheck` registers the class itself. The row lands in
+  the commit that turns I1 green (the suite guard forbids an incomplete row).
 - I2. `mtp.safetensors` is a **separate 3.4 GB file that the index does not
   list**; a converter that trusts `model.safetensors.index.json` silently
   ignores the 5 MTP layers (correct) but must not assume the directory only

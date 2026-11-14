@@ -126,6 +126,7 @@ add_library(lsxcommon STATIC
     src/inkling_moe_convert.cpp
     src/inkling_moe_load.cpp
     src/inkling_moe_model.cpp
+    src/inkling_moe_tool_format.cpp
     src/flint_moe_convert.cpp
     src/flint_moe_load.cpp
     src/flint_moe_model.cpp

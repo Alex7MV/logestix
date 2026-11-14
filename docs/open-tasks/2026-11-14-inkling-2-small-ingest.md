@@ -164,6 +164,57 @@ the 4-bit rounding on those layers flipping an answer. The measurement to
 record: relL2 of the requantized layer-40..47 experts against their dequantized
 FP8 source (to be taken when the engine can decode them).
 
+## Real-weight status: the engine runs, parity is RED (2026-11-14)
+
+`test_inkling_moe_selfcheck` loads the converted 594B tree on the RTX 5090,
+frames `"The capital of France is"` through the checkpoint's own chat template,
+decodes and returns. It does **not** answer Paris:
+
+```
+cycle 0 text: aterinagjernaterinaskar悆inversheavFactor prison𨯂挦 fem sifat
+```
+
+Incoherent multibyte output means the forward pass is wrong somewhere, not that
+the weights are unusable. This is the "answers, but not the model's answers"
+class the ingestion protocol warns about, and it is recorded as a **red gate**,
+not a pass. The gate itself is in the tree and fails when run.
+
+Two real defects were found and fixed on the way to this point (both recorded in
+the source where they bite):
+
+1. **Relative-position states aliased onto the convolution scratch.** `w_r` was
+   projected into `ws.conv_out`, which the k/v short convolutions then
+   overwrite, so the position bias read a convolution result. Fixed: the
+   relative states have their own buffer.
+2. **The recurrent conv state was never reset between requests**, so a second
+   identical request decoded differently. Fixed: every request starts with all
+   four convolutions per layer zeroed.
+
+Also fixed while building the layer body: the post-MLP conv state used offset
+`3*k*kv_dim`, overlapping the post-attention state whenever `kv_dim < hidden`
+(correct base is `2*k*kv_dim + k*hidden`); and a static-conv layer passing its
+taps for both the `w` and `dyn_taps` arguments silently ran the lag convention
+on every sliding layer (the kernel picks the order from `dyn_taps == nullptr`).
+
+**Next checks, in the order of "cheapest to falsify" — none of them done yet:**
+
+- N1. Teacher-force a 2-token prefix and compare the engine's `final_logits`
+  against a `transformers` 5.23 reference run on the same ids. This is the only
+  way to localize the defect to a layer instead of guessing at the whole stack.
+- N2. Zero all routed experts and compare: if the output becomes *partly*
+  coherent the expert path is at fault; if it stays garbage the defect is
+  upstream of the MoE.
+- N3. Repeat with only layer 0 executed (early exit after one layer, comparing
+  hidden states against the reference) — the per-layer plumbing is already
+  exercised by the synthetic model test, so a divergence there points at the
+  weight plane rather than the code.
+- N4. Re-verify the two codec invariants on the real artifact: decode one
+  expert record on the host and compare against the source safetensors slice
+  (`base relL2` ~0.09 for NVFP4 is expected), and check the per-expert global
+  scale is applied exactly once in the batch GEMV.
+- N5. The `mlp.gate.bias` tensor: the reference adds it to the sigmoid score for
+  SELECTION only. Verify the shipped values are not being added to the weights.
+
 ## Registry status: PENDING ingestion (no manifest row yet)
 
 `models/inkling-2-small.json` was written when the row looked complete and was
@@ -199,8 +250,8 @@ Current state, machine-enforced from both directions:
 | 3 | topology reader + artifact layout (`inkling_moe_load.*`) | `test_inkling_moe_loader` (load, synthetic + real index) | **done, green** (topology half); the weight upload half is stage 5 work |
 | 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) | **done, green** (1524 assertions, 14 host-reference cases) |
 | 5 | weight upload (`inkling_moe_load.cpp`) + `inkling_moe_inference_pipeline.cu` | `test_inkling_moe_model` (model) | **done, green** (439 assertions): the pinned plane, the neutral expert store, the KV session, the decode scratch arena and the full 12-step layer body with the 8-expert staging and 3 batch GEMVs per layer |
-| 6 | `inkling_moe_tool_format.cpp` (stage 4b, native template) | `test_inkling_moe_tool_framing` (fast) | **open** |
-| 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **open** (declared debt) |
+| 6 | `inkling_moe_tool_format.cpp` (stage 4b, native `chat_template.jinja`) | `test_inkling_moe_tool_framing` (fast) | **done, green** (49 assertions) |
+| 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **RED on real weights** (see below); FSI/CODE/DET not written |
 | 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **open** (declared debt) |
 | 9 | report | `docs/model-reports/2026-11-14-Inkling-2-Small.md` | **open** — the stage-0/1/2 evidence is in this file and in `docs/OPEN_TASKS.md` §R19 |
 

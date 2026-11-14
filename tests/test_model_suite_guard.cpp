@@ -677,6 +677,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
         // the moment the row lands.
         "test_inkling_moe_convert", "test_inkling_moe_loader",
         "test_inkling_moe_kernels", "test_inkling_moe_model",
+        "test_inkling_moe_selfcheck", "test_inkling_moe_tool_framing",
     };
 
     std::set<std::string> claimed;

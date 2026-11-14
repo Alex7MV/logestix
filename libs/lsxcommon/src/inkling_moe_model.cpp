@@ -2,6 +2,8 @@
 
 #include "lsxcommon/inkling_moe_inference_pipeline.h"
 #include "lsxcommon/inkling_moe_load.h"
+#include "lsxcommon/inkling_moe_tool_format.h"
+#include "lsxcommon/prompt_bridge.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
@@ -162,6 +164,94 @@ gpu::InferenceResult InklingMoeModel::SelfCheck(const ModelRequest &req)
     opts.min_tokens = 2;
     opts.answer_window = 8;
     return runtime::RunParisSelfCheck(*this, req, opts);
+}
+
+bool InklingMoeModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                         std::string_view raw_prompt,
+                                         std::vector<int32_t> &out_ids) const
+{
+    ChatConversation conv;
+    conv.messages.push_back({"user", std::string(raw_prompt), std::string(), {}});
+    std::vector<InklingSegment> segs;
+    if (!RenderInklingConversation(conv, segs)) return false;
+    // Without the template markers (a synthetic fixture) fall back to the raw
+    // encode rather than emitting an unframed ChatML string.
+    if (InklingMarkerId(tok, "<|message_user|>") < 0)
+        return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+    return AppendInklingIds(tok, segs, out_ids);
+}
+
+bool InklingMoeModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::vector<InklingSegment> segs;
+    if (!RenderInklingConversation(conv, segs)) return false;
+    if (InklingMarkerId(tok, "<|message_user|>") < 0)
+        return BuildPromptInputIds(tok, InklingSegmentsText(segs), out_ids);
+    return AppendInklingIds(tok, segs, out_ids);
+}
+
+bool InklingMoeModel::ParseToolCalls(const ArrowTokenizerDb &tok,
+                                    const std::vector<int32_t> &gen_tokens,
+                                    std::vector<ToolCall> &out_calls) const
+{
+    out_calls.clear();
+    if (gen_tokens.empty()) return true;
+    // Every marker is special:true, so decode drops it. A tool call is therefore
+    // found by SCANNING THE IDS for the invoke marker and decoding only the span
+    // after it (see the header note in inkling_moe_tool_format.h).
+    const int32_t invoke = InklingMarkerId(tok, "<|content_invoke_tool_json|>");
+    const int32_t end_msg = InklingMarkerId(tok, "<|end_message|>");
+    if (invoke < 0) {
+        // No native markers: fall back to the generic parser over the text.
+        std::string text(4096, '\0');
+        std::size_t cap = text.size();
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            const int rc = arrow_tokenizer_decode(tok, gen_tokens.data(),
+                                                 gen_tokens.size(), text.data(),
+                                                 &cap);
+            if (rc == 0) {
+                text.resize(cap);
+                out_calls = tools::ParseToolCallsText(text);
+                return true;
+            }
+            if (rc == -2 && cap > text.size() && cap <= (1u << 20)) {
+                text.resize(cap);
+                continue;
+            }
+            break;
+        }
+        return false;
+    }
+
+    std::size_t i = 0;
+    while (i < gen_tokens.size()) {
+        if (gen_tokens[i] != invoke) {
+            ++i;
+            continue;
+        }
+        std::size_t j = i + 1;
+        while (j < gen_tokens.size() && gen_tokens[j] != end_msg &&
+               gen_tokens[j] != invoke)
+            ++j;
+        if (j <= i + 1) {
+            i = j;
+            continue;
+        }
+        std::string text((j - i) * 8 + 16, '\0');
+        std::size_t cap = text.size();
+        if (arrow_tokenizer_decode(tok, gen_tokens.data() + i + 1, j - i - 1,
+                                   text.data(), &cap) == 0) {
+            text.resize(cap);
+            // Re-attach the marker spelling so the shared parser sees the
+            // native payload shape it expects.
+            ParseInklingToolCalls("<|content_invoke_tool_json|>" + text,
+                                  out_calls);
+        }
+        i = j;
+    }
+    return true;
 }
 
 void InklingMoeModel::TeardownWeights()
