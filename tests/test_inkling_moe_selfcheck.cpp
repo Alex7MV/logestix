@@ -113,7 +113,8 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
     // know whether the top-1 is the assistant role marker.
     // The diagnostic block needs the checkpoint's tokenizer; a converted
     // fixture without one (the transformers cross-check tree) skips it.
-    if (InklingMarkerId(model->Tokenizer(), "<|message_user|>") >= 0) {
+    if (std::getenv("LSX_INKLING_SKIP_DIAG") == nullptr &&
+        InklingMarkerId(model->Tokenizer(), "<|message_user|>") >= 0) {
         lsxcommon::ModelRequest r;
         REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
                                            "The capital of France is",

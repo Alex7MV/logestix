@@ -84,26 +84,74 @@ TEST_CASE("inkling topology reader reads a converted tree",
     for (int l = 0; l < kLayers; ++l)
         REQUIRE(top.expert_nvfp4[static_cast<size_t>(l)] == (l < kNovfp4Layers));
 
-    // Expert records carry the uniform NVFP4 layout regardless of the source
-    // codec: [I, H] gate/up and [H, I] down, per-16 scales.
+    // Two expert encodings, one record SCHEMA: NVFP4 layers pack nibbles (two
+    // elements per byte), MXFP8 layers keep one E4M3 byte per element with the
+    // source's per-32 ue8m0 exponent duplicated to a per-16 count.
     for (int l : {0, kLayers - 1}) {
         auto batch = lsxcommon::ReadRecordBatchFromFile(
             out / "logestix" / "experts" / ("layer_" + std::to_string(l)) /
             "exp_0.arrow");
         REQUIRE(batch.ok());
-        auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch, 16);
+        // scale_block = 0: layer 4 is one of the MXFP8 layers, whose plane is
+        // one E4M3 byte per element (not packed nibbles), so the per-16
+        // heuristic would reject it by 2x. The exact plane sizes are asserted
+        // below instead, which is the stronger check.
+        const bool fp8_layer = (l >= kNovfp4Layers);
+        auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch, fp8_layer ? 0 : 16);
         if (!pe.ok()) FAIL(pe.status().ToString());
-        REQUIRE(pe->w1_packed.size() ==
-                static_cast<size_t>(kMoeInter) * (kHidden / 2));
-        REQUIRE(pe->w3_packed.size() ==
-                static_cast<size_t>(kMoeInter) * (kHidden / 2));
-        REQUIRE(pe->w2_packed.size() ==
-                static_cast<size_t>(kHidden) * (kMoeInter / 2));
+        // NVFP4 packs two elements per byte; the MXFP8 plane is one byte each.
+        const size_t gate_bytes = fp8_layer
+                                      ? static_cast<size_t>(kMoeInter) * kHidden
+                                      : static_cast<size_t>(kMoeInter) * kHidden / 2;
+        const size_t down_bytes = fp8_layer
+                                      ? static_cast<size_t>(kHidden) * kMoeInter
+                                      : static_cast<size_t>(kHidden) * kMoeInter / 2;
+        REQUIRE(pe->w1_packed.size() == gate_bytes);
+        REQUIRE(pe->w3_packed.size() == gate_bytes);
+        REQUIRE(pe->w2_packed.size() == down_bytes);
         REQUIRE(pe->w1_scales.size() ==
                 static_cast<size_t>(kMoeInter) * (kHidden / 16));
         REQUIRE(pe->w2_scales.size() ==
                 static_cast<size_t>(kHidden) * (kMoeInter / 16));
     }
+}
+
+TEST_CASE("inkling real vault expert store reads both codecs", "[inkling][load]")
+{
+    const fs::path root = VaultRoot();
+    if (!fs::exists(root / "logestix" / "model.index.json"))
+        SKIP("converted Inkling-2-Small tree absent: " + root.string());
+
+    lsxcommon::inkling::InklingTopology top;
+    auto st = lsxcommon::inkling::LoadInklingTopology(root.string(), top);
+    if (!st.ok()) FAIL(st.ToString());
+
+    auto db = lsxcommon::inkling::LoadInklingExpertIndex(
+        root.string(), top.num_layers, top.num_experts, 64, false);
+    REQUIRE(db.error_msg.empty());
+    for (int layer : {0, top.num_layers - 1}) {
+        CAPTURE(layer);
+        db.EnsureResident(layer, 84, nullptr);
+        const auto &e = db.entries[static_cast<size_t>(layer) *
+                                       static_cast<size_t>(top.num_experts) + 84];
+        // Both codecs must be readable through the same store: the NVFP4 plane
+        // packs nibbles, the MXFP8 plane is one E4M3 byte per element.
+        REQUIRE(e.host_w1 != nullptr);
+        REQUIRE(e.host_w2 != nullptr);
+        REQUIRE(e.host_w3 != nullptr);
+        REQUIRE(e.host_w1_scales != nullptr);
+        REQUIRE(e.host_w2_scales != nullptr);
+        REQUIRE(e.host_w3_scales != nullptr);
+        const bool fp8 = top.ExpertIsFp8(layer);
+        CAPTURE(fp8);
+        const int64_t I = top.moe_intermediate;
+        const int64_t H = top.hidden;
+        REQUIRE(e.w1_bytes == (fp8 ? I * H : I * H / 2));
+        REQUIRE(e.w2_bytes == (fp8 ? H * I : H * I / 2));
+        REQUIRE(e.w1_scales_bytes == I * (H / 16));
+        REQUIRE(e.w2_scales_bytes == H * (I / 16));
+    }
+    lsxcommon::inkling::FreeInklingExpertIndex(db);
 }
 
 TEST_CASE("inkling real vault index matches the frozen passport",

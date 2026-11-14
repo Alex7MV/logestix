@@ -143,6 +143,18 @@ arrow::Status LoadInklingTopology(const std::string &model_path,
             if (e.get_bool().get(v) == simdjson::SUCCESS)
                 out.expert_nvfp4.push_back(v);
         }
+    if (auto arr = root["expert_fp8"].get_array();
+        arr.error() == simdjson::SUCCESS)
+        for (auto e : arr.value()) {
+            bool v = false;
+            if (e.get_bool().get(v) == simdjson::SUCCESS)
+                out.expert_fp8.push_back(v);
+        }
+    // A tree converted before the MXFP8 plane existed has every expert plane in
+    // NVFP4 (i.e. layers 40-47 were requantized); treat the missing field as
+    // all-false rather than failing, so old artifacts still load.
+    if (out.expert_fp8.empty() && !out.expert_nvfp4.empty())
+        out.expert_fp8.assign(out.expert_nvfp4.size(), false);
 
     if (out.num_layers <= 0 || out.hidden <= 0 || out.num_experts <= 0 ||
         static_cast<int>(out.full_layers.size() + out.sliding_layers.size()) !=
@@ -315,6 +327,16 @@ InklingExpertDb LoadInklingExpertIndex(const std::string &model_path,
     db.experts_per_layer = experts_per_layer;
     db.first_moe_layer = 0;  // every layer of this model is sparse
     db.max_open = max_open;
+    // The MXFP8 expert layers are 1 byte per element (E4M3), not two nibbles per
+    // byte, so ExpertSchema's per-16 count check — which assumes packed nibbles —
+    // rejects them by 2x. StageExperts and the dequant path both verify the exact
+    // plane sizes against the topology instead, which is a strictly stronger
+    // check, so the schema heuristic is disabled here (`0` = no count check; it
+    // is the same switch the pre-repack source stores use).
+    db.scale_block_size = 0;
+    // A plane that fails to parse is silent at info level, which hid the first
+    // MXFP8 store failure for a whole run; keep the reason.
+    db.log_batch_fails = true;
     db.log_prefix = "[inkling]";
     db.mmap_fail_verb = "inkling expert mmap fail ";
     if (!db.Load(model_path, /*fallback=*/false))

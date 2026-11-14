@@ -64,6 +64,9 @@ struct InklingTopology {
     std::vector<int> full_layers;
     std::vector<int> sliding_layers;
     std::vector<bool> expert_nvfp4;
+    // TRUE where the routed experts carry the release's MXFP8 plane: E4M3 bytes
+    // plus a ue8m0 exponent per 16 (the source's per-32 byte, duplicated).
+    std::vector<bool> expert_fp8;
     std::string error_msg;
 
     bool IsFull(int layer) const
@@ -71,6 +74,11 @@ struct InklingTopology {
         for (int l : full_layers)
             if (l == layer) return true;
         return false;
+    }
+    bool ExpertIsFp8(int layer) const
+    {
+        return layer >= 0 && layer < static_cast<int>(expert_fp8.size()) &&
+               expert_fp8[static_cast<size_t>(layer)];
     }
     bool IsBlockBoundary(int layer) const
     {

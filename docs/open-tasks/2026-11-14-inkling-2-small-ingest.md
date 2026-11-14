@@ -259,25 +259,46 @@ layer 4 at pos 19/19 (kv_len=20): relL2=4.562e-04
 So the conv rings, the KV append, the sliding bound and the relative-bias gather
 are all correct at depth, not just in the first few positions.
 
-### An FP8 expert plane was attempted and WITHDRAWN
+### The FP8 expert plane is IN — and it exposed a codec bug worth recording
 
-The plan was to keep the eight MXFP8 expert layers (40-47) at the release's own
-precision instead of requantizing them to 4 bits: pass the E4M3 weight bytes
-through verbatim, duplicate each ue8m0/32 exponent byte so the record still
-satisfies the neutral schema's per-16 scale count (the value is unchanged, so
-`scale[j/16]` is exactly the source's `scale[j/32]`), and decode
-`e4m3(w) * 2^(ue8m0-127)` in a dedicated batch GEMV. That needs no schema, store
-or model-registry change.
+The eight MXFP8 expert layers (40-47) now carry the release's own 8-bit plane:
+E4M3 weight bytes verbatim plus each ue8m0/32 exponent duplicated to the neutral
+schema's per-16 count. A dedicated FP8 expert GEMV
+(`RunInklingFp8ExpertGemm`, one warp per output row, FP32 accumulate) decodes
+`e4m3(w) * 2^(ue8m0-127)` directly, so there is no requantization and no FP16
+intermediate. Two host-referenced kernel cases cover it (a K=64 fixture and a
+K=512 fixture with a non-trivial `x_stride`, i.e. the down-projection shape).
 
-The converter/index/topology side was written, and a host-referenced kernel test
-was written first. The kernel disagreed with its reference by exactly 2x on one
-row, and two fixes (a by-value pointer struct instead of a host array of
-pointers, and a warp-uniform reduction) did not explain it. **The whole attempt
-was reverted rather than shipped**: it is unwired, unproven, and an artifact
-using it would not decode. The bisection that was run and is worth recording:
-with a single uniform ue8m0 exponent only expert 0 passed, which is what
-identified the host-pointer-array defect; the residual 2x on expert 0's second
-row is still unexplained and is where the next attempt should start.
+Cost: the artifact grew 321 -> 366 GB (+45 GB) because the plane is one byte per
+weight instead of packed nibbles, and the per-token read for those eight layers
+doubles.
+
+**The bug it found.** The first version decoded weights with
+`gpu::nvfp4::E4M3ScaleToFloat`, which is the *unsigned* block-scale codec — it
+masks bit 7 by design. E4M3 **weights** are signed, so every negative weight lost
+its sign and a signed dot product became a sum of magnitudes: the layer-41 gate
+row came out 43x too large (1926 vs ~45) and the residual stream went non-finite
+from layer 42 onward. The kernel test could not see it because its fixture wrote
+`& 0x7E` — positive bytes only. Two lessons, both now enforced in the test:
+
+- weight decode must apply the sign bit explicitly
+  (`E4m3WeightToFloat`: magnitude from the canonical codec, sign from bit 7);
+- a codec fixture MUST contain negative values, or a dropped sign bit is
+  invisible. The FP8 fixtures now use the full byte range (minus the two reserved
+  NaNs, 0x7F/0xFF).
+
+After the fix all 49 trace rows are finite and the magnitudes are level (layer 41
+at 102.3 vs 121.6 under the 4-bit requant).
+
+### What the FIRST FP8 attempt got wrong (kept as a warning)
+
+The first attempt passed a **host array of `mmap` pointers** into device code,
+which is undefined behaviour — it happened to look correct for expert 0 and gave
+a 2x error elsewhere, and one uniform-exponent bisection is what exposed it. The
+fix is the by-value `InklingFp8ExpertPtrs` struct plus an explicit device staging
+step. The second attempt then hit the unsigned-codec bug above. Both are the
+reason the FP8 path is now covered by two host-referenced kernel cases instead of
+one.
 
 ### What remains
 

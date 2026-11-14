@@ -590,7 +590,70 @@ inline int Blocks(int64_t n, int threads = kThreads)
     return static_cast<int>((n + threads - 1) / threads);
 }
 
+// ── 7b. FP8 expert GEMV (the release's MXFP8 plane) ───────────────────────
+__device__ __forceinline__ float Ue8m0ToFloat(uint8_t b)
+{
+    return exp2f(static_cast<float>(static_cast<int>(b) - 127));
+}
+
+// E4M3 *weights* are SIGNED, while `E4M3ScaleToFloat` decodes the unsigned block
+// scale type and masks bit 7 by design. Reusing it for weights silently drops
+// every negative weight's sign, which turns a signed dot product into a sum of
+// magnitudes — measured 43x too large on a 4608-wide gate row. Take the
+// magnitude from the canonical codec (never a local table) and apply the sign.
+__device__ __forceinline__ float E4m3WeightToFloat(uint8_t b)
+{
+    const float mag =
+        gpu::nvfp4::E4M3ScaleToFloat(static_cast<uint8_t>(b & 0x7Fu));
+    return (b & 0x80u) ? -mag : mag;
+}
+
+// One warp per output row: 32 lanes stride K, then a shfl reduction. Grid y picks
+// the expert, so the eight routed slots run in parallel like the NVFP4 batch.
+__global__ void inkling_fp8_expert_gemm_kernel(
+    const __half *__restrict__ x, InklingFp8ExpertPtrs ptrs, int x_stride, int K,
+    int N, __half *__restrict__ y, bool acc)
+{
+    const int e = blockIdx.y;
+    const int lane = threadIdx.x;
+    const int row = blockIdx.x;
+    if (row >= N) return;
+    const uint8_t *w = ptrs.packed[e] + static_cast<int64_t>(row) * K;
+    const uint8_t *s = ptrs.scales[e] + static_cast<int64_t>(row) * (K / 16);
+    const __half *xe = x + static_cast<int64_t>(e) * x_stride;
+    float a = 0.0f;
+    for (int k = lane; k < K; k += 32)
+        a = __fadd_rn(a,
+                      __fmul_rn(__fmul_rn(__half2float(xe[k]),
+                                          E4m3WeightToFloat(w[k])),
+                                Ue8m0ToFloat(s[k >> 4])));
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        a += __shfl_down_sync(0xffffffffu, a, off);
+    if (lane == 0) {
+        __half *d = y + static_cast<int64_t>(e) * N + row;
+        *d = acc ? __float2half(__half2float(*d) + a) : __float2half(a);
+    }
+}
+
 }  // namespace
+
+cudaError_t RunInklingFp8ExpertGemm(cudaStream_t stream, const __half *x,
+                                    const InklingFp8ExpertPtrs &ptrs, int count,
+                                    int x_stride, __half *y, int K, int N,
+                                    bool acc)
+{
+    if (x == nullptr || y == nullptr) return cudaErrorInvalidValue;
+    if (count <= 0 || count > 8 || K <= 0 || N <= 0) return cudaErrorInvalidValue;
+    if ((K & 15) != 0) return cudaErrorInvalidValue;
+    for (int e = 0; e < count; ++e)
+        if (ptrs.packed[e] == nullptr || ptrs.scales[e] == nullptr)
+            return cudaErrorInvalidValue;
+    const dim3 grid(N, count);
+    inkling_fp8_expert_gemm_kernel<<<grid, 32, 0, stream>>>(x, ptrs, x_stride, K,
+                                                            N, y, acc);
+    return cudaGetLastError();
+}
 
 cudaError_t RunInklingDepthMix(cudaStream_t stream, const float *sources,
                                int n_src, const float *queries, int num_queries,

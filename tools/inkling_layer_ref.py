@@ -161,10 +161,8 @@ def moe_only(base, idx, l, hh):
     print("  [host] coeff:", " ".join(f"{c:.8g}" for c in coeff))
     acc = np.zeros(H)
     for c, e in enumerate(sel):
-        cols, gs = expert_planes(base / "experts" / f"layer_{l}" / f"exp_{e}.arrow")
-        gate_e = dequant_nvfp4(cols[0], cols[3], gs[0], I, H)
-        down_e = dequant_nvfp4(cols[1], cols[4], gs[1], H, I)
-        up_e = dequant_nvfp4(cols[2], cols[5], gs[2], I, H)
+        gate_e, down_e, up_e = expert_planes_any(
+            base / "experts" / f"layer_{l}" / f"exp_{e}.arrow", I, H)
         g_e = gate_e @ hh
         u_e = up_e @ hh
         act = (np.tanh(g_e / idx["mlp_gate_softcap"]) * idx["mlp_gate_softcap"]) \
@@ -174,6 +172,29 @@ def moe_only(base, idx, l, hh):
     print(f"  [host] |moe_acc| {np.linalg.norm(acc):.8g}")
     return acc
 
+
+
+def expert_planes_any(path, I, H):
+    """Returns (gate[I,H], down[H,I], up[I,H]) for EITHER expert codec.
+
+    The plane's own byte count says which one it is: NVFP4 packs two elements per
+    byte, the released MXFP8 plane is one E4M3 byte per element with a ue8m0
+    exponent per 16 (the source's per-32 byte, duplicated by the converter).
+    """
+    b = read_arrow(path)
+    cols = [col_bytes(b.column(c), 0) for c in range(6)]
+    gs = [float(b.column(c)[0].as_py()) for c in (6, 7, 8)]
+    fp8 = cols[0].size == I * H
+    if fp8:
+        def dec(w, s, rows, c):
+            w = w.reshape(rows, c)
+            s = s.reshape(rows, c // 16).astype(np.float64)
+            return e4m3_to_float(w) * np.repeat(2.0 ** (s - 127.0), 16, axis=1)
+        return (dec(cols[0], cols[3], I, H), dec(cols[1], cols[4], H, I),
+                dec(cols[2], cols[5], I, H))
+    return (dequant_nvfp4(cols[0], cols[3], gs[0], I, H),
+            dequant_nvfp4(cols[1], cols[4], gs[1], H, I),
+            dequant_nvfp4(cols[2], cols[5], gs[2], I, H))
 
 
 def expert_block(base, idx, l, mlp_x):
@@ -191,10 +212,8 @@ def expert_block(base, idx, l, mlp_x):
     coeff = wsel / (wsel.sum() + 1e-20) * idx["routed_scaling_factor"]
     acc = np.zeros(H)
     for c, e in enumerate(sel):
-        cols, gs = expert_planes(base / "experts" / f"layer_{l}" / f"exp_{e}.arrow")
-        gate_e = dequant_nvfp4(cols[0], cols[3], gs[0], I, H)
-        down_e = dequant_nvfp4(cols[1], cols[4], gs[1], H, I)
-        up_e = dequant_nvfp4(cols[2], cols[5], gs[2], I, H)
+        gate_e, down_e, up_e = expert_planes_any(
+            base / "experts" / f"layer_{l}" / f"exp_{e}.arrow", I, H)
         g_e = gate_e @ mlp_x
         u_e = up_e @ mlp_x
         act = (np.tanh(g_e / idx["mlp_gate_softcap"]) * idx["mlp_gate_softcap"]) \
@@ -557,10 +576,8 @@ def main() -> int:
         coeff = wsel / (wsel.sum() + 1e-20) * idx["routed_scaling_factor"]
         acc = np.zeros(H)
         for c, e in enumerate(sel):
-            cols, gs = expert_planes(base / "experts" / f"layer_{l}" / f"exp_{e}.arrow")
-            gate_e = dequant_nvfp4(cols[0], cols[3], gs[0], I, H)
-            down_e = dequant_nvfp4(cols[1], cols[4], gs[1], H, I)
-            up_e = dequant_nvfp4(cols[2], cols[5], gs[2], I, H)
+            gate_e, down_e, up_e = expert_planes_any(
+                base / "experts" / f"layer_{l}" / f"exp_{e}.arrow", I, H)
             g_e = gate_e @ mlp_x
             u_e = up_e @ mlp_x
             act = (np.tanh(g_e / idx["mlp_gate_softcap"]) * idx["mlp_gate_softcap"]) \

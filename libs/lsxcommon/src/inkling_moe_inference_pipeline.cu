@@ -36,6 +36,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace lsxcommon::inkling {
@@ -159,6 +161,9 @@ void InklingScratch::Free()
     arena = nullptr;
     arena_bytes = 0;
     if (expert_stage) cudaFree(expert_stage);
+    if (fp8_stage) cudaFree(fp8_stage);
+    fp8_stage = nullptr;
+    fp8_stage_bytes = 0;
     if (d_ids) cudaFree(d_ids);
     if (d_slots) cudaFree(d_slots);
     if (d_token) cudaFree(d_token);
@@ -289,6 +294,20 @@ bool InklingScratch::Allocate(const InklingTopology &top, int64_t capacity,
     if (cudaMalloc(&expert_stage, static_cast<size_t>(expert_stage_bytes)) !=
         cudaSuccess)
         return false;
+    // Only allocate the FP8 staging slab when some layer needs it: six planes per
+    // expert (w1, s1, w3, s3, w2, s2), one byte per element.
+    bool any_fp8 = false;
+    for (bool b : top.expert_fp8) any_fp8 = any_fp8 || b;
+    if (any_fp8) {
+        const int64_t gate = int64_t(I) * H;
+        const int64_t gate_s = int64_t(I) * (H / 16);
+        const int64_t down = int64_t(H) * I;
+        const int64_t down_s = int64_t(H) * (I / 16);
+        fp8_stage_bytes = (2 * (gate + gate_s) + down + down_s) * topk;
+        if (cudaMalloc(&fp8_stage, static_cast<size_t>(fp8_stage_bytes)) !=
+            cudaSuccess)
+            return false;
+    }
     if (cudaMalloc(&d_ids, sizeof(int32_t) * topk) != cudaSuccess) return false;
     if (cudaMalloc(&d_slots, sizeof(InklingRoutedSlot) * topk) != cudaSuccess)
         return false;
@@ -681,32 +700,121 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
         e = cudaStreamSynchronize(stream);
         if (e != cudaSuccess) return fail("router sync", e);
 
-        ExpertStage st;
-        e = StageExperts(experts, l, ids, topk, ws, I, H, stream, st, stage_err);
-        if (e != cudaSuccess) return e;
+        if (top.ExpertIsFp8(l)) {
+            // The release's MXFP8 plane, read DIRECTLY: the expert's E4M3 bytes
+            // and the duplicated ue8m0 exponents are staged to the device (the
+            // store hands out mmap pointers, which a kernel cannot dereference)
+            // and the FP8 GEMV decodes them in place. No requantization and no
+            // FP16 intermediate: 8-bit precision at one byte per weight.
+            const int64_t gate = int64_t(I) * H;
+            const int64_t gate_s = int64_t(I) * (H / 16);
+            const int64_t down = int64_t(H) * I;
+            const int64_t down_s = int64_t(H) * (I / 16);
+            const int64_t per = 2 * (gate + gate_s) + down + down_s;
+            InklingFp8ExpertPtrs gate_ptrs, up_ptrs, down_ptrs;
+            for (int k = 0; k < topk; ++k) {
+                const int eid = ids[k];
+                if (eid < 0 || eid >= top.num_experts) {
+                    stage_err = absl::StrFormat("[%s] router returned id %d",
+                                                stage, eid);
+                    return cudaErrorInvalidValue;
+                }
+                experts.EnsureResident(l, eid, stream);
+                const InklingExpertEntry &ent =
+                    experts.entries[static_cast<size_t>(l) *
+                                        static_cast<size_t>(top.num_experts) +
+                                    static_cast<size_t>(eid)];
+                if (ent.host_w1 == nullptr || ent.host_w2 == nullptr ||
+                    ent.host_w3 == nullptr || ent.host_w1_scales == nullptr ||
+                    ent.host_w2_scales == nullptr ||
+                    ent.host_w3_scales == nullptr) {
+                    stage_err = absl::StrFormat(
+                        "[%s] routed expert %d of layer %d is not readable",
+                        stage, eid, l);
+                    return cudaErrorInvalidValue;
+                }
+                if (ent.w1_bytes != gate || ent.w3_bytes != gate ||
+                    ent.w2_bytes != down || ent.w1_scales_bytes != gate_s ||
+                    ent.w3_scales_bytes != gate_s ||
+                    ent.w2_scales_bytes != down_s) {
+                    stage_err = absl::StrFormat(
+                        "[%s] expert %d of layer %d has no FP8 plane "
+                        "(w1 %lld/%lld, scales %lld/%lld)",
+                        stage, eid, l, static_cast<long long>(ent.w1_bytes),
+                        static_cast<long long>(gate),
+                        static_cast<long long>(ent.w1_scales_bytes),
+                        static_cast<long long>(gate_s));
+                    return cudaErrorInvalidValue;
+                }
+                uint8_t *dst = ws.fp8_stage + per * k;
+                int64_t at = 0;
+                auto put = [&](const uint8_t *src, int64_t n) {
+                    if (at + n > per) return static_cast<const uint8_t *>(nullptr);
+                    cudaMemcpyAsync(dst + at, src, static_cast<size_t>(n),
+                                    cudaMemcpyHostToDevice, stream);
+                    const uint8_t *dev = dst + at;
+                    at += n;
+                    return dev;
+                };
+                gate_ptrs.packed[k] = put(ent.host_w1, ent.w1_bytes);
+                gate_ptrs.scales[k] = put(ent.host_w1_scales, ent.w1_scales_bytes);
+                up_ptrs.packed[k] = put(ent.host_w3, ent.w3_bytes);
+                up_ptrs.scales[k] = put(ent.host_w3_scales, ent.w3_scales_bytes);
+                down_ptrs.packed[k] = put(ent.host_w2, ent.w2_bytes);
+                down_ptrs.scales[k] = put(ent.host_w2_scales, ent.w2_scales_bytes);
+                if (gate_ptrs.packed[k] == nullptr || gate_ptrs.scales[k] == nullptr ||
+                    up_ptrs.packed[k] == nullptr || up_ptrs.scales[k] == nullptr ||
+                    down_ptrs.packed[k] == nullptr ||
+                    down_ptrs.scales[k] == nullptr) {
+                    stage_err = absl::StrFormat(
+                        "[%s] FP8 staging slab too small for layer %d", stage, l);
+                    return cudaErrorInvalidValue;
+                }
+            }
+            e = RunInklingFp8ExpertGemm(stream, ws.hh, gate_ptrs, topk, 0,
+                                        ws.moe_gate, H, I, false);
+            if (e != cudaSuccess) return fail("mxfp8 gate gemv", e);
+            e = RunInklingFp8ExpertGemm(stream, ws.hh, up_ptrs, topk, 0, ws.moe_up,
+                                        H, I, false);
+            if (e != cudaSuccess) return fail("mxfp8 up gemv", e);
+            e = RunInklingSoftcapSwiGLU(
+                stream, ws.moe_gate, ws.moe_up, ws.moe_act, int64_t(topk) * I,
+                static_cast<float>(top.mlp_gate_softcap),
+                static_cast<float>(top.mlp_up_softcap));
+            if (e != cudaSuccess) return fail("softcapped swiglu", e);
+            e = RunInklingFp8ExpertGemm(stream, ws.moe_act, down_ptrs, topk, I,
+                                        ws.moe_down, I, H, false);
+            if (e != cudaSuccess) return fail("mxfp8 down gemv", e);
+            e = RunInklingExpertAccumulate(stream, ws.moe_acc, ws.moe_down,
+                                           ws.d_slots, topk, H);
+            if (e != cudaSuccess) return fail("expert accumulate", e);
+        } else {
+            ExpertStage st;
+            e = StageExperts(experts, l, ids, topk, ws, I, H, stream, st, stage_err);
+            if (e != cudaSuccess) return e;
 
-        // gate: [I, H] x hh; up: [I, H] x hh; both share w13's global scale.
-        e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-            stream, ws.hh, st.gate_p, st.gate_s, st.w13_gs, topk, 0, ws.moe_gate,
-            H, I, false);
-        if (e != cudaSuccess) return fail("routed gate gemv", e);
-        e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-            stream, ws.hh, st.up_p, st.up_s, st.w13_gs, topk, 0, ws.moe_up, H, I,
-            false);
-        if (e != cudaSuccess) return fail("routed up gemv", e);
-        e = RunInklingSoftcapSwiGLU(stream, ws.moe_gate, ws.moe_up, ws.moe_act,
-                                    int64_t(topk) * I,
-                                    static_cast<float>(top.mlp_gate_softcap),
-                                    static_cast<float>(top.mlp_up_softcap));
-        if (e != cudaSuccess) return fail("softcapped swiglu", e);
-        // down: [H, I] per expert over that expert's own activation slice.
-        e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-            stream, ws.moe_act, st.down_p, st.down_s, st.w2_gs, topk, I,
-            ws.moe_down, I, H, false);
-        if (e != cudaSuccess) return fail("routed down gemv", e);
-        e = RunInklingExpertAccumulate(stream, ws.moe_acc, ws.moe_down, ws.d_slots,
-                                       topk, H);
-        if (e != cudaSuccess) return fail("expert accumulate", e);
+            // gate: [I, H] x hh; up: [I, H] x hh; both share w13's global scale.
+            e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, ws.hh, st.gate_p, st.gate_s, st.w13_gs, topk, 0,
+                ws.moe_gate, H, I, false);
+            if (e != cudaSuccess) return fail("routed gate gemv", e);
+            e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, ws.hh, st.up_p, st.up_s, st.w13_gs, topk, 0, ws.moe_up, H,
+                I, false);
+            if (e != cudaSuccess) return fail("routed up gemv", e);
+            e = RunInklingSoftcapSwiGLU(stream, ws.moe_gate, ws.moe_up, ws.moe_act,
+                                        int64_t(topk) * I,
+                                        static_cast<float>(top.mlp_gate_softcap),
+                                        static_cast<float>(top.mlp_up_softcap));
+            if (e != cudaSuccess) return fail("softcapped swiglu", e);
+            e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, ws.moe_act, st.down_p, st.down_s, st.w2_gs, topk, I,
+                ws.moe_down, I, H, false);
+            if (e != cudaSuccess) return fail("routed down gemv", e);
+            e = RunInklingExpertAccumulate(stream, ws.moe_acc, ws.moe_down,
+                                           ws.d_slots, topk, H);
+            if (e != cudaSuccess) return fail("expert accumulate", e);
+        }
 
         // ── (i) single FP16 cast, post-MLP conv, residual ─────────────────
         stage = LayerTag("mlp_out", l);

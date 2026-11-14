@@ -153,6 +153,29 @@ cudaError_t RunInklingRouter(cudaStream_t stream, const float *router_w,
                              int K, int H, float route_scale,
                              InklingRoutedSlot *d_slots, int32_t *d_ids);
 
+// ── 7b. the release's MXFP8 expert plane ──────────────────────────────────
+// Eight expert layers ship as E4M3 weights with a ue8m0 exponent per 32 values.
+// The artifact keeps those bytes verbatim and duplicates each exponent byte, so
+// the record still satisfies the neutral schema's per-16 scale count while
+// `scale[j/16]` stays exactly the source's `scale[j/32]`.
+//
+//   y[e][n] = sum_k x[e*x_stride + k] * e4m3(w[e][n*K + k])
+//                                 * 2^(ue8m0(s[e][n*K/16 + k/16]) - 127)
+//
+// The planes must be DEVICE pointers. Host mmap pointers — which is what the
+// expert store hands out — are not readable from a kernel: that mistake produced
+// a plausible-looking 2x error in an earlier attempt, so the caller stages the
+// bytes first (see the FP8 branch of the decode step).
+struct InklingFp8ExpertPtrs {
+    const uint8_t *packed[8] = {};
+    const uint8_t *scales[8] = {};
+};
+
+cudaError_t RunInklingFp8ExpertGemm(cudaStream_t stream, const __half *x,
+                                    const InklingFp8ExpertPtrs &ptrs, int count,
+                                    int x_stride, __half *y, int K, int N,
+                                    bool acc = false);
+
 // ── 8. routed accumulation and residual plumbing ───────────────────────────
 // acc[i] = sum_{k<count} slot[k].coeff * y[k*rows + i]  (FP32 accumulate, the
 // reference sums the top-k expert outputs in FP32 and casts once at the end).

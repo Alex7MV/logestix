@@ -242,29 +242,38 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small-nvfp4",
                             pe.w2_packed.size()) == 0);
     }
 
-    // ── MXFP8 source: requantized to the same NVFP4 record shape ─────────
+    // ── MXFP8 source: kept as the release's own 8-bit plane ─────────────
+    //
+    // Layers 40-47 are E4M3 with a ue8m0 exponent per 32 values. The artifact
+    // keeps those bytes verbatim and duplicates each exponent (per-32 -> per-16)
+    // so the record satisfies the neutral schema's per-16 count, so the plane is
+    // ONE byte per element rather than packed nibbles. Requantizing it to 4 bits
+    // costs a measured 16-17% relative L2 on the MoE output of every affected
+    // layer, which is enough to turn the model into a repetition loop.
     {
         auto batch = lsxcommon::ReadRecordBatchFromFile(
             base / "experts" / "layer_4" / "exp_1.arrow");
         REQUIRE(batch.ok());
-        auto pe_res = lsxcommon::ExpertSchema::UnpackBatch(*batch, 16);
+        // scale_block = 0: the per-16 heuristic assumes packed nibbles (two
+        // elements per byte) and would reject a byte-per-element FP8 plane by 2x.
+        auto pe_res = lsxcommon::ExpertSchema::UnpackBatch(*batch, 0);
         if (!pe_res.ok()) FAIL(pe_res.status().ToString());
         const lsxcommon::PackedExpert &pe = *pe_res;
         REQUIRE(pe.w1_packed.size() ==
-                static_cast<size_t>(kMoeInter) * (kHidden / 2));
+                static_cast<size_t>(kMoeInter) * kHidden);        // 1 byte/elem
         REQUIRE(pe.w1_scales.size() ==
-                static_cast<size_t>(kMoeInter) * (kHidden / 16));
-        REQUIRE(pe.w2_packed.size() ==
-                static_cast<size_t>(kHidden) * (kMoeInter / 2));
+                static_cast<size_t>(kMoeInter) * (kHidden / 16));  // per-16
+        REQUIRE(pe.w2_packed.size() == static_cast<size_t>(kHidden) * kMoeInter);
         REQUIRE(pe.w2_scales.size() ==
                 static_cast<size_t>(kHidden) * (kMoeInter / 16));
-        // Every block scale decodes to a positive finite E4M3 value.
-        for (uint8_t b : pe.w1_scales) {
-            const float s = E4m3(b);
-            REQUIRE(std::isfinite(s));
-            REQUIRE(s >= 0.0f);
-        }
-        REQUIRE(pe.w1_global_scale > 0.0f);
-        REQUIRE(pe.w2_global_scale > 0.0f);
+        // The source bytes are passed through: no global scale is folded in and
+        // the exponent duplicated in pairs is the source's per-32 byte.
+        REQUIRE(pe.w1_global_scale == 1.0f);
+        REQUIRE(pe.w2_global_scale == 1.0f);
+        for (std::size_t i = 0; i + 1 < pe.w1_scales.size(); i += 2)
+            REQUIRE(pe.w1_scales[i] == pe.w1_scales[i + 1]);
+        // ue8m0 is 2^(b-127), so a legal byte is 0..254 (255 is the reserved
+        // "no scale" marker in some MX formats and must not appear here).
+        for (uint8_t b : pe.w1_scales) REQUIRE(b < 255);
     }
 }

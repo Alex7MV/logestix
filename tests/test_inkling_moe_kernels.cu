@@ -945,6 +945,163 @@ TEST_CASE("inkling plumbing: weighted norm, fp16 matvec, embed row",
     }
 }
 
+TEST_CASE("inkling FP8 expert GEMV decodes E4M3 x ue8m0 per 16",
+          "[inkling][kernels]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+    // The eight MXFP8 expert layers are E4M3 weights with a ue8m0 exponent per 32
+    // values; the artifact duplicates each exponent byte so the record keeps the
+    // neutral schema's per-16 count. The kernel must therefore decode
+    // `e4m3(w) * 2^(scale - 127)` with the exponent taken from k/16.
+    constexpr int kCount = 3;
+    constexpr int kK = 64;
+    constexpr int kN = 5;
+    auto e4m3_val = [](uint8_t b) {
+        const int sign = (b >> 7) & 1;
+        const int e = (b >> 3) & 0xF;
+        const int m = b & 0x7;
+        const double v = (e == 0) ? (m * std::ldexp(1.0, -9))
+                                  : ((1.0 + m / 8.0) * std::ldexp(1.0, e - 7));
+        return sign ? -v : v;
+    };
+    // SIGNED weights: E4M3 has a sign bit, and a fixture with only positive bytes
+    // cannot see a decoder that drops it (which is exactly how the 43x bug hid).
+    // 0x7F / 0xFF are the reserved NaNs, so they are nudged away.
+    std::vector<uint8_t> w(static_cast<size_t>(kCount) * kN * kK);
+    for (size_t i = 0; i < w.size(); ++i) {
+        uint8_t b = static_cast<uint8_t>((i * 37 + 11) & 0xFF);
+        if (b == 0x7F || b == 0xFF) b ^= 0x01;
+        w[i] = b;
+    }
+    std::vector<uint8_t> sc(static_cast<size_t>(kCount) * kN * (kK / 16));
+    for (int e = 0; e < kCount; ++e)
+        for (int n = 0; n < kN; ++n)
+            for (int b = 0; b < kK / 16; b += 2) {
+                const uint8_t ex = static_cast<uint8_t>(120 + ((n + b) % 5));
+                sc[static_cast<size_t>(e) * kN * (kK / 16) + n * (kK / 16) + b] = ex;
+                sc[static_cast<size_t>(e) * kN * (kK / 16) + n * (kK / 16) + b + 1] = ex;
+            }
+    auto x = HPattern(static_cast<int64_t>(kCount) * kK, 0.01f, 3);
+
+    std::vector<float> ref(static_cast<size_t>(kCount) * kN);
+    for (int e = 0; e < kCount; ++e)
+        for (int n = 0; n < kN; ++n) {
+            double acc = 0.0;
+            for (int k = 0; k < kK; ++k) {
+                const uint8_t sv =
+                    sc[static_cast<size_t>(e) * kN * (kK / 16) + n * (kK / 16) + (k >> 4)];
+                acc += static_cast<double>(
+                           e4m3_val(w[static_cast<size_t>(e) * kN * kK + n * kK + k]) *
+                           std::ldexp(1.0, int(sv) - 127)) *
+                       F(x[static_cast<size_t>(e) * kK + k]);
+            }
+            ref[static_cast<size_t>(e) * kN + n] = static_cast<float>(acc);
+        }
+
+    uint8_t *d_w = ToDevice(w);
+    uint8_t *d_s = ToDevice(sc);
+    __half *d_x = ToDevice(x);
+    __half *d_y = nullptr;
+    REQUIRE(cudaMalloc(&d_y, sizeof(__half) * kCount * kN) == cudaSuccess);
+    InklingFp8ExpertPtrs ptrs;
+    for (int e = 0; e < kCount; ++e) {
+        ptrs.packed[e] = d_w + static_cast<size_t>(e) * kN * kK;
+        ptrs.scales[e] = d_s + static_cast<size_t>(e) * kN * (kK / 16);
+    }
+    // x_stride = kK: each expert reads its own slice, which is what the
+    // reference indexes. x_stride = 0 (one shared row) is the up-projection
+    // case and is covered by the second test's sibling below.
+    REQUIRE(RunInklingFp8ExpertGemm(Stream0(), d_x, ptrs, kCount, kK, d_y, kK, kN,
+                                    false) == cudaSuccess);
+    Sync();
+    std::vector<__half> got(static_cast<size_t>(kCount) * kN);
+    FromDevice(d_y, got);
+    for (size_t i = 0; i < got.size(); ++i) {
+        INFO("i=" << i);
+        REQUIRE(F(got[i]) ==
+                Approx(ref[i]).margin(std::fabs(ref[i]) * 2e-3 + 2e-3));
+    }
+    // acc=true accumulates into the existing row.
+    REQUIRE(RunInklingFp8ExpertGemm(Stream0(), d_x, ptrs, kCount, kK, d_y, kK, kN,
+                                    true) == cudaSuccess);
+    Sync();
+    std::vector<__half> twice(static_cast<size_t>(kCount) * kN);
+    FromDevice(d_y, twice);
+    for (size_t i = 0; i < twice.size(); ++i)
+        REQUIRE(F(twice[i]) == Approx(2.0 * F(got[i])).margin(2e-2));
+    cudaFree(d_w);
+    cudaFree(d_s);
+    cudaFree(d_x);
+    cudaFree(d_y);
+}
+
+TEST_CASE("inkling FP8 expert GEMV honours x_stride and a 4608-wide row",
+          "[inkling][kernels]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+    // The down projection reads a DIFFERENT input slice per expert (x_stride > 0)
+    // over a K of 2304-ish; the realistic width catches a stride or index bug that
+    // a K=64 fixture cannot.
+    constexpr int kCount = 2;
+    constexpr int kK = 512;
+    constexpr int kN = 4;
+    constexpr int kStride = kK + 32;      // deliberately not equal to K
+    auto e4m3_val = [](uint8_t b) {
+        const int sign = (b >> 7) & 1;
+        const int e = (b >> 3) & 0xF;
+        const int m = b & 0x7;
+        const double v = (e == 0) ? (m * std::ldexp(1.0, -9))
+                                  : ((1.0 + m / 8.0) * std::ldexp(1.0, e - 7));
+        return sign ? -v : v;
+    };
+    std::vector<uint8_t> w(static_cast<size_t>(kCount) * kN * kK);
+    for (size_t i = 0; i < w.size(); ++i) {
+        uint8_t b = static_cast<uint8_t>((i * 53 + 7) & 0xFF);
+        if (b == 0x7F || b == 0xFF) b ^= 0x01;
+        w[i] = b;
+    }
+    std::vector<uint8_t> sc(static_cast<size_t>(kCount) * kN * (kK / 16), 127);
+    auto x = HPattern(static_cast<int64_t>(kCount) * kStride, 0.02f, 5);
+
+    std::vector<float> ref(static_cast<size_t>(kCount) * kN);
+    for (int e = 0; e < kCount; ++e)
+        for (int n = 0; n < kN; ++n) {
+            double acc = 0.0;
+            for (int k = 0; k < kK; ++k)
+                acc += static_cast<double>(
+                           e4m3_val(w[static_cast<size_t>(e) * kN * kK + n * kK + k]) *
+                           std::ldexp(1.0, int(sc[static_cast<size_t>(e) * kN * (kK / 16) +
+                                               n * (kK / 16) + (k >> 4)]) - 127)) *
+                       F(x[static_cast<size_t>(e) * kStride + k]);
+            ref[static_cast<size_t>(e) * kN + n] = static_cast<float>(acc);
+        }
+
+    uint8_t *d_w = ToDevice(w);
+    uint8_t *d_s = ToDevice(sc);
+    __half *d_x = ToDevice(x);
+    __half *d_y = nullptr;
+    REQUIRE(cudaMalloc(&d_y, sizeof(__half) * kCount * kN) == cudaSuccess);
+    InklingFp8ExpertPtrs ptrs;
+    for (int e = 0; e < kCount; ++e) {
+        ptrs.packed[e] = d_w + static_cast<size_t>(e) * kN * kK;
+        ptrs.scales[e] = d_s + static_cast<size_t>(e) * kN * (kK / 16);
+    }
+    REQUIRE(RunInklingFp8ExpertGemm(Stream0(), d_x, ptrs, kCount, kStride, d_y, kK,
+                                    kN, false) == cudaSuccess);
+    Sync();
+    std::vector<__half> got(static_cast<size_t>(kCount) * kN);
+    FromDevice(d_y, got);
+    for (size_t i = 0; i < got.size(); ++i) {
+        INFO("i=" << i);
+        REQUIRE(F(got[i]) ==
+                Approx(ref[i]).margin(std::fabs(ref[i]) * 2e-3 + 2e-3));
+    }
+    cudaFree(d_w);
+    cudaFree(d_s);
+    cudaFree(d_x);
+    cudaFree(d_y);
+}
+
 TEST_CASE("inkling routed accumulate and the logit softcap",
           "[inkling][kernels]")
 {

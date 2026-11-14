@@ -91,6 +91,10 @@ struct InklingScratch {
     // expert staging: [top_k][6 planes] laid out back to back
     uint8_t *expert_stage = nullptr;
     int64_t expert_stage_bytes = 0;
+    // MXFP8 expert layers read E4M3 bytes directly, so their staging slab is one
+    // byte per element (twice the NVFP4 slab for the same geometry).
+    uint8_t *fp8_stage = nullptr;
+    int64_t fp8_stage_bytes = 0;
     int32_t *d_ids = nullptr;
     InklingRoutedSlot *d_slots = nullptr;
     int32_t *d_token = nullptr;

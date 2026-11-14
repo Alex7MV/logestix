@@ -761,41 +761,47 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
                 pe.w3_global_scale = pe.w1_global_scale;
                 pe.w2_global_scale = amax2[static_cast<size_t>(e)] / denom2;
             } else {
-                const std::vector<int64_t> gate_shape = {I, H};
-                const std::vector<int64_t> down_shape = {H, I};
-                const std::vector<int64_t> gate_scale_shape = {I, H / 32};
-                const std::vector<int64_t> down_scale_shape = {H, I / 32};
+                // MXFP8 source: the released E4M3 bytes and the ue8m0 per-32
+                // scales pass through VERBATIM. Requantizing them to 4 bits
+                // costs a measured 16-17% relative L2 on the MoE output of every
+                // affected layer — the same order as the 9.5% dense error that
+                // was already turning this model into a repetition loop — so the
+                // 8-bit plane is kept exactly as shipped.
+                //
+                // Each ue8m0 byte is DUPLICATED (per-32 -> per-16) so the record
+                // still satisfies the neutral ExpertSchema's per-16 scale count:
+                // the value is unchanged, so `scale[j/16]` is exactly the
+                // source's `scale[j/32]` and nothing in the schema, the store or
+                // the registry has to learn a second block size.
+                const size_t gate_bytes = static_cast<size_t>(I) * H;
+                const size_t s13_row = static_cast<size_t>(H / 32);
                 const uint8_t *w13p = w13_data.data() + w13_expert * e;
                 const uint8_t *w2p = w2_data.data() + w2_expert * e;
                 const uint8_t *s13p = s13_data.data() + w13_scale_expert * e;
                 const uint8_t *s2p = s2_data.data() + w2_scale_expert * e;
-                const size_t gate_bytes = static_cast<size_t>(I) * H;
-                DenseNvfp4Record g, u, d;
-                if (!QuantizeSlice(w13p, static_cast<int64_t>(I) * H, "F8_E4M3",
-                                   s13p, gate_shape, gate_scale_shape, g))
-                    return arrow::Status::IOError(
-                        "MXFP8 gate requantization failed: layer ", l, " expert ",
-                        e);
-                if (!QuantizeSlice(w13p + gate_bytes,
-                                   static_cast<int64_t>(I) * H, "F8_E4M3",
-                                   s13p + static_cast<size_t>(I) * (H / 32),
-                                   gate_shape, gate_scale_shape, u))
-                    return arrow::Status::IOError(
-                        "MXFP8 up requantization failed: layer ", l, " expert ", e);
-                if (!QuantizeSlice(w2p, static_cast<int64_t>(H) * I, "F8_E4M3",
-                                   s2p, down_shape, down_scale_shape, d))
-                    return arrow::Status::IOError(
-                        "MXFP8 down requantization failed: layer ", l, " expert ",
-                        e);
-                pe.w1_packed = std::move(g.packed);
-                pe.w1_scales = std::move(g.scales);
-                pe.w1_global_scale = g.global_scale;
-                pe.w3_packed = std::move(u.packed);
-                pe.w3_scales = std::move(u.scales);
-                pe.w3_global_scale = u.global_scale;
-                pe.w2_packed = std::move(d.packed);
-                pe.w2_scales = std::move(d.scales);
-                pe.w2_global_scale = d.global_scale;
+                auto dup_scales = [](const uint8_t *src, int64_t rows,
+                                     int64_t row_scales,
+                                     std::vector<uint8_t> &dst) {
+                    dst.resize(static_cast<size_t>(rows * row_scales * 2));
+                    for (int64_t r = 0; r < rows; ++r)
+                        for (int64_t i = 0; i < row_scales; ++i) {
+                            const uint8_t b = src[r * row_scales + i];
+                            dst[static_cast<size_t>(2 * (r * row_scales + i))] = b;
+                            dst[static_cast<size_t>(2 * (r * row_scales + i) + 1)] = b;
+                        }
+                };
+                pe.w1_packed.assign(w13p, w13p + gate_bytes);
+                pe.w3_packed.assign(w13p + gate_bytes, w13p + 2 * gate_bytes);
+                dup_scales(s13p, I, s13_row, pe.w1_scales);
+                dup_scales(s13p + static_cast<size_t>(I) * s13_row, I, s13_row,
+                           pe.w3_scales);
+                pe.w2_packed.assign(w2p, w2p + w2_expert);
+                dup_scales(s2p, H, static_cast<size_t>(I / 32), pe.w2_scales);
+                // The ue8m0 byte already carries the magnitude; 1.0 keeps the
+                // decode explicit instead of folding a second scale in.
+                pe.w1_global_scale = 1.0f;
+                pe.w3_global_scale = 1.0f;
+                pe.w2_global_scale = 1.0f;
             }
             pe.w1_shape = {I, H};
             pe.w2_shape = {H, I};
@@ -960,6 +966,13 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
         int_array("full_layers", top.full_layers, true);
         int_array("sliding_layers", top.sliding_layers, true);
         bool_array("expert_nvfp4", top.expert_nvfp4, true);
+        {
+            // Which expert layers carry the release's MXFP8 plane (E4M3 bytes +
+            // per-32 ue8m0, duplicated to a per-16 count).
+            std::vector<bool> fp8(top.expert_nvfp4.size(), false);
+            for (size_t i = 0; i < fp8.size(); ++i) fp8[i] = !top.expert_nvfp4[i];
+            bool_array("expert_fp8", fp8, true);
+        }
         j << FormatVramJson(vram) << "\n}";
         std::ofstream out(base / "model.index.json");
         out << j.str();
