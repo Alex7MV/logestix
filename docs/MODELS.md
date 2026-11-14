@@ -239,7 +239,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `inkling_moe_model.cpp`
 - gates: selfcheck: debt; fsi: debt; code: debt; det: debt
 - perf: not seeded
-- debt: code — needs the decode pipeline; det — needs the decode pipeline; fsi — needs the decode pipeline; kernels — kernels in progress on feat/inkling-2-small; load — loader in progress on feat/inkling-2-small; selfcheck — needs the decode pipeline
+- debt: code — needs the decode pipeline; det — needs the decode pipeline; fsi — needs the decode pipeline; kernels — kernels in progress on feat/inkling-2-small; selfcheck — needs the decode pipeline
 - report: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.md`
 - notes: Stage 0 + passport + converter landed; the 594B decode engine is still in progress.
 

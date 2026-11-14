@@ -93,6 +93,11 @@ add_executable(test_inkling_moe_convert test_inkling_moe_convert.cpp)
 target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
+# ── Inkling-2-Small topology + artifact layout (synthetic + real index) ─────
+add_executable(test_inkling_moe_loader test_inkling_moe_loader.cpp)
+target_link_libraries(test_inkling_moe_loader PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
