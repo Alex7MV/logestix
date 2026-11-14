@@ -9,6 +9,8 @@
 // references that pin them are tests/test_inkling_moe_kernels.cu.
 #include "lsxcommon/inkling_moe_kernels.h"
 
+#include "nvfp4_codec.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -274,13 +276,37 @@ __global__ void inkling_gate_mul_kernel(const __half *__restrict__ x,
     out[i] = __float2half(__fmul_rn(__half2float(x[i]), 1.0f / (1.0f + expf(-g))));
 }
 
+__global__ void inkling_log_scale_kernel(float *__restrict__ q, int64_t nq,
+                                        float *__restrict__ rel, int64_t nrel,
+                                        float tau)
+{
+    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i < nq) q[i] = __fmul_rn(q[i], tau);
+    if (i < nrel) rel[i] = __fmul_rn(rel[i], tau);
+}
+
+__global__ void inkling_dynamic_taps_kernel(const float *__restrict__ static_w,
+                                            const float *__restrict__ proj_out,
+                                            float *__restrict__ taps,
+                                            int channels, int head_dim, int k)
+{
+    const int ch = blockIdx.x * blockDim.x + threadIdx.x;
+    if (ch >= channels) return;
+    const int head = ch / head_dim;
+    for (int lag = 0; lag < k; ++lag) {
+        const float base = static_w[static_cast<int64_t>(lag) * channels + ch];
+        const float dyn = proj_out[static_cast<int64_t>(head) * k + lag];
+        taps[static_cast<int64_t>(ch) * k + lag] = __fadd_rn(base, dyn);
+    }
+}
+
 // ── 6. short convolution ──────────────────────────────────────────────────
 // One thread per channel: it owns the whole [k] ring for that channel, so no
 // cross-thread synchronisation is needed for the shift.
 __global__ void inkling_short_conv_kernel(const __half *__restrict__ x_t,
                                           float *__restrict__ state,
-                                          const __half *__restrict__ w,
-                                          const __half *__restrict__ dyn_taps,
+                                          const float *__restrict__ w,
+                                          const float *__restrict__ dyn_taps,
                                           __half *__restrict__ out, int channels,
                                           int k, float inv_scale)
 {
@@ -298,7 +324,7 @@ __global__ void inkling_short_conv_kernel(const __half *__restrict__ x_t,
         // conv1d taps: w[c][j] multiplies state[j], and state[k-1] is the
         // CURRENT token.
         for (int j = 0; j < k; ++j) {
-            const float wv = __half2float(w[static_cast<int64_t>(c) * k + j]);
+            const float wv = w[static_cast<int64_t>(c) * k + j];
             const float sv = state[static_cast<int64_t>(j) * channels + c];
             acc = __fadd_rn(acc, __fmul_rn(wv, sv));
         }
@@ -306,7 +332,7 @@ __global__ void inkling_short_conv_kernel(const __half *__restrict__ x_t,
         // lag taps: lag 0 (dyn[c][0]) is the CURRENT token, so lag l reads
         // state[k-1-l].
         for (int lag = 0; lag < k; ++lag) {
-            const float wv = __half2float(dyn_taps[static_cast<int64_t>(c) * k + lag]);
+            const float wv = dyn_taps[static_cast<int64_t>(c) * k + lag];
             const float sv =
                 state[static_cast<int64_t>(k - 1 - lag) * channels + c];
             acc = __fadd_rn(acc, __fmul_rn(wv, sv));
@@ -476,6 +502,64 @@ __global__ void inkling_logit_softcap_kernel(const float *__restrict__ logits,
     out[i] = tanhf(logits[i] / cap) * cap;
 }
 
+
+// ── 9. plumbing ───────────────────────────────────────────────────────────
+__global__ void inkling_norm_f32in_kernel(const float *__restrict__ x,
+                                          const __half *__restrict__ w,
+                                          __half *__restrict__ out, int hidden,
+                                          float eps)
+{
+    extern __shared__ float scratch[];
+    const int row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const float *xr = x + static_cast<int64_t>(row) * hidden;
+    __half *orow = out + static_cast<int64_t>(row) * hidden;
+    float ss = 0.0f;
+    for (int i = tid; i < hidden; i += blockDim.x)
+        ss = __fadd_rn(ss, __fmul_rn(xr[i], xr[i]));
+    ss = BlockSum(ss, scratch);
+    const float inv = rsqrtf(ss / static_cast<float>(hidden) + eps);
+    for (int i = tid; i < hidden; i += blockDim.x)
+        orow[i] = __float2half(__fmul_rn(__fmul_rn(xr[i], inv),
+                                         __half2float(w[i])));
+}
+
+__global__ void inkling_matvec_f16_kernel(const __half *__restrict__ w,
+                                          const __half *__restrict__ x,
+                                          float *__restrict__ y, int rows,
+                                          int cols)
+{
+    extern __shared__ float scratch[];
+    const int r = blockIdx.x;
+    const int tid = threadIdx.x;
+    const __half *wr = w + static_cast<int64_t>(r) * cols;
+    float acc = 0.0f;
+    for (int c = tid; c < cols; c += blockDim.x)
+        acc = __fadd_rn(acc, __fmul_rn(__half2float(wr[c]),
+                                       __half2float(x[c])));
+    acc = BlockSum(acc, scratch);
+    if (tid == 0) y[r] = acc;
+}
+
+__global__ void inkling_embed_row_kernel(const uint8_t *__restrict__ packed,
+                                         const uint8_t *__restrict__ scales,
+                                         float global_scale,
+                                         const int32_t *__restrict__ d_id,
+                                         __half *__restrict__ out, int hidden)
+{
+    const int64_t row = d_id[0];
+    const uint8_t *p = packed + row * (hidden / 2);
+    const uint8_t *s = scales + row * (hidden / 16);
+    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
+        const uint8_t byte = p[i >> 1];
+        const uint8_t nib = (i & 1) ? static_cast<uint8_t>(byte >> 4)
+                                    : static_cast<uint8_t>(byte & 0xF);
+        const float scl =
+            gpu::nvfp4::E4M3ScaleToFloat(s[i >> 4]) * global_scale;
+        out[i] = __float2half(__fmul_rn(gpu::nvfp4::E2M1Value(nib), scl));
+    }
+}
+
 inline int Blocks(int64_t n, int threads = kThreads)
 {
     return static_cast<int>((n + threads - 1) / threads);
@@ -577,8 +661,8 @@ cudaError_t RunInklingGateMul(cudaStream_t stream, const __half *x,
 }
 
 cudaError_t RunInklingShortConv(cudaStream_t stream, const __half *x_t,
-                                float *state, const __half *w,
-                                const __half *dyn_taps, __half *out, int channels,
+                                float *state, const float *w,
+                                const float *dyn_taps, __half *out, int channels,
                                 int k, float inv_scale)
 {
     if (!x_t || !state || !out) return cudaErrorInvalidValue;
@@ -586,6 +670,27 @@ cudaError_t RunInklingShortConv(cudaStream_t stream, const __half *x_t,
     if (dyn_taps == nullptr && w == nullptr) return cudaErrorInvalidValue;
     inkling_short_conv_kernel<<<Blocks(channels), kThreads, 0, stream>>>(
         x_t, state, w, dyn_taps, out, channels, k, inv_scale);
+    return cudaGetLastError();
+}
+
+cudaError_t RunInklingLogScale(cudaStream_t stream, float *q, float *rel,
+                              int64_t nq, int64_t nrel, float tau)
+{
+    if (!q || nq <= 0) return cudaErrorInvalidValue;
+    const int64_t n = std::max<int64_t>(nq, nrel);
+    inkling_log_scale_kernel<<<Blocks(n), kThreads, 0, stream>>>(q, nq, rel, nrel,
+                                                                tau);
+    return cudaGetLastError();
+}
+
+cudaError_t RunInklingDynamicTaps(cudaStream_t stream, const float *static_w,
+                                 const float *proj_out, float *taps,
+                                 int channels, int head_dim, int k)
+{
+    if (!static_w || !proj_out || !taps) return cudaErrorInvalidValue;
+    if (channels <= 0 || head_dim <= 0 || k <= 0) return cudaErrorInvalidValue;
+    inkling_dynamic_taps_kernel<<<Blocks(channels), kThreads, 0, stream>>>(
+        static_w, proj_out, taps, channels, head_dim, k);
     return cudaGetLastError();
 }
 
@@ -672,6 +777,38 @@ cudaError_t RunInklingLogitSoftcap(cudaStream_t stream, const float *logits,
     if (!logits || !out || n <= 0 || !(cap > 0.0f)) return cudaErrorInvalidValue;
     inkling_logit_softcap_kernel<<<Blocks(n), kThreads, 0, stream>>>(logits, out,
                                                                     n, cap);
+    return cudaGetLastError();
+}
+
+cudaError_t RunInklingNormF32In(cudaStream_t stream, const float *x,
+                                const __half *w, __half *out, int rows,
+                                int hidden, float eps)
+{
+    if (!x || !w || !out || rows <= 0 || hidden <= 0) return cudaErrorInvalidValue;
+    const size_t shmem = static_cast<size_t>(kThreads) * sizeof(float);
+    inkling_norm_f32in_kernel<<<rows, kThreads, shmem, stream>>>(x, w, out,
+                                                                  hidden, eps);
+    return cudaGetLastError();
+}
+
+cudaError_t RunInklingMatVecF16(cudaStream_t stream, const __half *w,
+                                const __half *x, float *y, int rows, int cols)
+{
+    if (!w || !x || !y || rows <= 0 || cols <= 0) return cudaErrorInvalidValue;
+    const size_t shmem = static_cast<size_t>(kThreads) * sizeof(float);
+    inkling_matvec_f16_kernel<<<rows, kThreads, shmem, stream>>>(w, x, y, rows,
+                                                                 cols);
+    return cudaGetLastError();
+}
+
+cudaError_t RunInklingEmbedRow(cudaStream_t stream, const uint8_t *packed,
+                               const uint8_t *scales, float global_scale,
+                               const int32_t *d_id, __half *out, int hidden)
+{
+    if (!packed || !scales || !d_id || !out) return cudaErrorInvalidValue;
+    if (hidden <= 0 || (hidden & 15) != 0) return cudaErrorInvalidValue;
+    inkling_embed_row_kernel<<<1, 512, 0, stream>>>(packed, scales, global_scale,
+                                                    d_id, out, hidden);
     return cudaGetLastError();
 }
 

@@ -2,14 +2,20 @@
 
 #include "inkling_moe_constants.h"
 
+#include "lsxcommon/log.h"
+#include "lsxcommon/schema.h"
+
+#include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
 #include <simdjson.h>
 
 #include "lsxcommon/synthetic_geometry.h"
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <string_view>
 
 namespace lsxcommon::inkling {
 namespace {
@@ -164,6 +170,490 @@ bool InklingTopologyMatchesFrozen(const InklingTopology &top)
            top.moe_intermediate == frozen::kMoeIntermediate &&
            top.shared_experts == frozen::kSharedExperts &&
            static_cast<int>(top.full_layers.size()) == frozen::kFullLayerCount;
+}
+
+
+namespace {
+
+// ── upload helpers ─────────────────────────────────────────────────────────
+const DenseNvfp4View *FindDense(const DenseNvfp4BatchViews &v, std::string_view n)
+{
+    for (const auto &r : v.records)
+        if (r.name == n) return &r;
+    return nullptr;
+}
+
+const TensorView *FindRaw(const TensorBatchViews &v, std::string_view n)
+{
+    for (const auto &t : v.tensors)
+        if (t.name == n) return &t;
+    return nullptr;
+}
+
+bool UploadDenseNvfp4(const DenseNvfp4View &r, lsx_nvfp4::LsxNvfp4Weight &w,
+                      cudaStream_t s)
+{
+    w = lsx_nvfp4::LsxNvfp4Weight{};
+    if (r.rank != 2 || r.packed == nullptr || r.scales == nullptr) return false;
+    w.rows = static_cast<int>(r.shape[0]);
+    w.cols = static_cast<int>(r.shape[1]);
+    w.global_scale = r.global_scale;
+    void *p = nullptr;
+    void *sc = nullptr;
+    if (cudaMalloc(&p, static_cast<size_t>(r.packed_bytes)) != cudaSuccess)
+        return false;
+    if (cudaMalloc(&sc, static_cast<size_t>(r.scale_bytes)) != cudaSuccess) {
+        cudaFree(p);
+        return false;
+    }
+    cudaMemcpyAsync(p, r.packed, static_cast<size_t>(r.packed_bytes),
+                    cudaMemcpyHostToDevice, s);
+    cudaMemcpyAsync(sc, r.scales, static_cast<size_t>(r.scale_bytes),
+                    cudaMemcpyHostToDevice, s);
+    w.d_packed = static_cast<const uint8_t *>(p);
+    w.d_scales = static_cast<const uint8_t *>(sc);
+    w.packed_bytes = r.packed_bytes;
+    w.scale_bytes = r.scale_bytes;
+    return true;
+}
+
+// BF16 (or F32) host view -> FP16 device tensor.
+__half *UploadHalf(const TensorView &t, cudaStream_t s)
+{
+    const size_t n = t.bytes / (t.dtype == "F32" ? 4 : 2);
+    std::vector<__half> h(n);
+    if (t.dtype == "F32") {
+        const float *f = reinterpret_cast<const float *>(t.data);
+        for (size_t i = 0; i < n; ++i) h[i] = __float2half(f[i]);
+    } else {
+        for (size_t i = 0; i < n; ++i) {
+            const uint16_t b =
+                static_cast<uint16_t>(t.data[2 * i] | (t.data[2 * i + 1] << 8));
+            h[i] = __float2half(__ushort_as_half(b));
+        }
+    }
+    void *d = nullptr;
+    if (cudaMalloc(&d, n * sizeof(__half)) != cudaSuccess) return nullptr;
+    cudaMemcpyAsync(d, h.data(), n * sizeof(__half), cudaMemcpyHostToDevice, s);
+    return static_cast<__half *>(d);
+}
+
+// BF16/F32 host view -> FP32 device tensor (the reference keeps these at full
+// precision: the L2-clip scales, the relative bank and the router).
+float *UploadF32(const TensorView &t, cudaStream_t s)
+{
+    const size_t n = t.bytes / (t.dtype == "F32" ? 4 : 2);
+    std::vector<float> h(n);
+    if (t.dtype == "F32") {
+        std::memcpy(h.data(), t.data, n * 4);
+    } else {
+        const uint16_t *b = reinterpret_cast<const uint16_t *>(t.data);
+        for (size_t i = 0; i < n; ++i) h[i] = __half2float(__ushort_as_half(b[i]));
+    }
+    void *d = nullptr;
+    if (cudaMalloc(&d, n * sizeof(float)) != cudaSuccess) return nullptr;
+    cudaMemcpyAsync(d, h.data(), n * sizeof(float), cudaMemcpyHostToDevice, s);
+    return static_cast<float *>(d);
+}
+
+std::string LayerName(int layer, const char *rest)
+{
+    return absl::StrCat("model.llm.layers.", layer, ".", rest);
+}
+
+bool RequireDense(const DenseNvfp4BatchViews &v, int layer, const char *rest,
+                  lsx_nvfp4::LsxNvfp4Weight &out, cudaStream_t s,
+                  const char *tag)
+{
+    const std::string name = LayerName(layer, rest);
+    const DenseNvfp4View *r = FindDense(v, name);
+    if (r == nullptr) {
+        log::error(absl::StrFormat("[inkling_load] missing NVFP4 tensor %s (%s)",
+                                   name, tag));
+        return false;
+    }
+    if (!UploadDenseNvfp4(*r, out, s)) {
+        log::error(absl::StrFormat("[inkling_load] upload failed for %s", name));
+        return false;
+    }
+    return true;
+}
+
+bool RequireRaw(const TensorBatchViews &v, int layer, const char *rest,
+                std::string_view want_dtype, const char *tag,
+                std::function<void(const TensorView &)> take)
+{
+    const std::string name = LayerName(layer, rest);
+    const TensorView *t = FindRaw(v, name);
+    if (t == nullptr) {
+        log::error(absl::StrFormat("[inkling_load] missing tensor %s (%s)", name,
+                                   tag));
+        return false;
+    }
+    if (t->dtype != want_dtype) {
+        log::error(absl::StrFormat("[inkling_load] %s has dtype %s, expected %s",
+                                   name, std::string(t->dtype),
+                                   std::string(want_dtype)));
+        return false;
+    }
+    take(*t);
+    return true;
+}
+
+}  // namespace
+
+size_t InklingExpertWindowFloor(const InklingTopology &top)
+{
+    // One token touches top_k experts in every MoE layer; the layers are walked
+    // in ascending order once per token, so a window below this makes every
+    // touch a re-mmap.
+    return static_cast<size_t>(top.num_layers) * static_cast<size_t>(top.top_k);
+}
+
+size_t InklingResolveExpertWindow(const InklingTopology &top, long requested)
+{
+    const size_t floor = InklingExpertWindowFloor(top);
+    if (requested <= 0) return floor;
+    return std::max<size_t>(static_cast<size_t>(requested), floor);
+}
+
+InklingExpertDb LoadInklingExpertIndex(const std::string &model_path,
+                                       int num_layers, int experts_per_layer,
+                                       size_t max_open, bool warm_on_load)
+{
+    InklingExpertDb db;
+    db.num_layers = num_layers;
+    db.experts_per_layer = experts_per_layer;
+    db.first_moe_layer = 0;  // every layer of this model is sparse
+    db.max_open = max_open;
+    db.log_prefix = "[inkling]";
+    db.mmap_fail_verb = "inkling expert mmap fail ";
+    if (!db.Load(model_path, /*fallback=*/false))
+        log::error("[inkling_load] routed-expert store failed to load");
+    (void)warm_on_load;
+    return db;
+}
+
+void EnsureInklingExpertResident(InklingExpertDb &db, int layer, int expert,
+                                 cudaStream_t stream)
+{
+    db.EnsureResident(layer, expert, stream);
+}
+
+void FreeInklingExpertIndex(InklingExpertDb &db) { db.Free(); }
+
+void FreeInklingPinnedWeights(InklingPinnedWeights &pw)
+{
+    auto release = [](auto *p) {
+        if (p) cudaFree(const_cast<std::remove_const_t<std::remove_pointer_t<decltype(p)>> *>(p));
+    };
+    if (pw.embed.d_packed) cudaFree(const_cast<uint8_t *>(pw.embed.d_packed));
+    if (pw.embed.d_scales) cudaFree(const_cast<uint8_t *>(pw.embed.d_scales));
+    if (pw.head.d_packed) cudaFree(const_cast<uint8_t *>(pw.head.d_packed));
+    if (pw.head.d_scales) cudaFree(const_cast<uint8_t *>(pw.head.d_scales));
+    pw.embed = lsx_nvfp4::LsxNvfp4Weight{};
+    pw.head = lsx_nvfp4::LsxNvfp4Weight{};
+    release(pw.embed_norm);
+    release(pw.final_norm);
+    release(pw.attn_queries);
+    release(pw.mlp_queries);
+    release(pw.out_query);
+    for (auto &l : pw.layers) {
+        for (auto *w : {&l.wq, &l.wk, &l.wv, &l.wo, &l.wr, &l.attn_gate,
+                        &l.ksconv_proj, &l.vsconv_proj}) {
+            if (w->d_packed) cudaFree(const_cast<uint8_t *>(w->d_packed));
+            if (w->d_scales) cudaFree(const_cast<uint8_t *>(w->d_scales));
+            *w = lsx_nvfp4::LsxNvfp4Weight{};
+        }
+        release(l.attn_norm);
+        release(l.q_in_norm);
+        release(l.k_in_norm);
+        release(l.v_in_norm);
+        release(l.mlp_norm);
+        release(l.sink_proj);
+        release(l.q_clip);
+        release(l.rel_clip);
+        release(l.rel_proj);
+        release(l.kconv_w);
+        release(l.vconv_w);
+        release(l.kconv_static);
+        release(l.vconv_static);
+        release(l.kconv_proj_w);
+        release(l.vconv_proj_w);
+        release(l.attn_conv_w);
+        release(l.mlp_conv_w);
+        release(l.router_w);
+        release(l.router_bias);
+        release(l.conv_state);
+    }
+    pw.layers.clear();
+    pw.resident_bytes = 0;
+}
+
+bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
+                              cudaStream_t stream)
+{
+    namespace fs = std::filesystem;
+    const fs::path base = fs::path(root) / "logestix";
+    const fs::path pinned = base / "pinned";
+    const InklingTopology &top = pw.top;
+    const int H = top.hidden;
+    const int kv_dim = top.num_kv_heads * top.head_dim;
+    const int k = top.conv_kernel;
+
+    auto g_nv = LoadDenseNvfp4BatchViews(pinned / "global_nvfp4.arrow");
+    if (!g_nv.ok()) {
+        log::error(absl::StrFormat("[inkling_load] global_nvfp4: %s",
+                                   g_nv.status().ToString()));
+        return false;
+    }
+    auto g_raw = LoadTensorBatchViews(pinned / "global.arrow");
+    if (!g_raw.ok()) {
+        log::error(absl::StrFormat("[inkling_load] global: %s",
+                                   g_raw.status().ToString()));
+        return false;
+    }
+
+    // ── globals ─────────────────────────────────────────────────────────────
+    const DenseNvfp4View *emb = FindDense(*g_nv, "model.llm.embed.weight");
+    const DenseNvfp4View *hd = FindDense(*g_nv, "model.llm.unembed.weight");
+    if (!emb || !hd) {
+        log::error("[inkling_load] embed/unembed absent");
+        return false;
+    }
+    if (!UploadDenseNvfp4(*emb, pw.embed, stream) ||
+        !UploadDenseNvfp4(*hd, pw.head, stream)) {
+        log::error("[inkling_load] embed/head upload failed");
+        return false;
+    }
+    auto need_global_half = [&](const char *name, __half *&dst) {
+        const TensorView *t = FindRaw(*g_raw, name);
+        if (!t) {
+            log::error(absl::StrFormat("[inkling_load] missing %s", name));
+            return false;
+        }
+        dst = UploadHalf(*t, stream);
+        return dst != nullptr;
+    };
+    if (!need_global_half("model.llm.embed_norm.weight", pw.embed_norm) ||
+        !need_global_half("model.llm.norm.weight", pw.final_norm))
+        return false;
+    {
+        const TensorView *t = FindRaw(*g_raw, "model.llm.attn_res.output_query");
+        if (!t) {
+            log::error("[inkling_load] missing output_query");
+            return false;
+        }
+        pw.out_query = UploadF32(*t, stream);
+        if (!pw.out_query) return false;
+    }
+
+    // AttnRes query banks. The converter re-indexed the attention bank to the
+    // owning layer, so both banks are named by layer; the attention bank has
+    // 3 rows on the full layers and 1 elsewhere.
+    pw.attn_query_offset = new int[static_cast<size_t>(top.num_layers)]();
+    size_t total_q = 0;
+    for (int l = 0; l < top.num_layers; ++l) {
+        pw.attn_query_offset[l] = static_cast<int>(total_q);
+        if (l > 0) total_q += static_cast<size_t>(top.IsFull(l) ? 3 : 1);
+    }
+    {
+        std::vector<float> all_q;
+        all_q.reserve(total_q * static_cast<size_t>(H));
+        for (int l = 1; l < top.num_layers; ++l) {
+            const std::string real = absl::StrFormat(
+                "model.llm.attn_res.attn_queries.%d", l);
+            const TensorView *t = FindRaw(*g_raw, real);
+            if (!t) {
+                log::error(absl::StrFormat("[inkling_load] missing %s", real));
+                return false;
+            }
+            const size_t n = t->bytes / (t->dtype == "F32" ? 4 : 2);
+            const size_t rows = n / static_cast<size_t>(H);
+            const size_t want = top.IsFull(l) ? 3u : 1u;
+            if (rows != want) {
+                log::error(absl::StrFormat(
+                    "[inkling_load] %s has %zu rows, expected %zu (full=%d)",
+                    real, rows, want, top.IsFull(l) ? 1 : 0));
+                return false;
+            }
+            std::vector<float> tmp(n);
+            if (t->dtype == "F32") {
+                std::memcpy(tmp.data(), t->data, n * 4);
+            } else {
+                const uint16_t *b = reinterpret_cast<const uint16_t *>(t->data);
+                for (size_t i = 0; i < n; ++i)
+                    tmp[i] = __half2float(__ushort_as_half(b[i]));
+            }
+            all_q.insert(all_q.end(), tmp.begin(), tmp.end());
+        }
+        if (all_q.size() != total_q * static_cast<size_t>(H)) {
+            log::error("[inkling_load] attn query bank size mismatch");
+            return false;
+        }
+        void *d = nullptr;
+        if (cudaMalloc(&d, all_q.size() * sizeof(float)) != cudaSuccess) {
+            log::error("[inkling_load] attn query bank allocation failed");
+            return false;
+        }
+        cudaMemcpyAsync(d, all_q.data(), all_q.size() * sizeof(float),
+                        cudaMemcpyHostToDevice, stream);
+        pw.attn_queries = static_cast<float *>(d);
+    }
+    {
+        std::vector<float> all_m;
+        all_m.reserve(static_cast<size_t>(top.num_layers) * H);
+        for (int l = 0; l < top.num_layers; ++l) {
+            const std::string real = absl::StrFormat(
+                "model.llm.attn_res.mlp_queries.%d", l);
+            const TensorView *t = FindRaw(*g_raw, real);
+            if (!t) {
+                log::error(absl::StrFormat("[inkling_load] missing %s", real));
+                return false;
+            }
+            const size_t n = t->bytes / (t->dtype == "F32" ? 4 : 2);
+            if (n != static_cast<size_t>(H)) {
+                log::error(absl::StrFormat("[inkling_load] %s has %zu rows", real,
+                                           n));
+                return false;
+            }
+            std::vector<float> tmp(n);
+            if (t->dtype == "F32") {
+                std::memcpy(tmp.data(), t->data, n * 4);
+            } else {
+                const uint16_t *b = reinterpret_cast<const uint16_t *>(t->data);
+                for (size_t i = 0; i < n; ++i)
+                    tmp[i] = __half2float(__ushort_as_half(b[i]));
+            }
+            all_m.insert(all_m.end(), tmp.begin(), tmp.end());
+        }
+        void *d = nullptr;
+        if (cudaMalloc(&d, all_m.size() * sizeof(float)) != cudaSuccess) return false;
+        cudaMemcpyAsync(d, all_m.data(), all_m.size() * sizeof(float),
+                        cudaMemcpyHostToDevice, stream);
+        pw.mlp_queries = static_cast<float *>(d);
+    }
+
+    // ── per layer ───────────────────────────────────────────────────────────
+    pw.layers.resize(static_cast<size_t>(top.num_layers));
+    std::uint64_t resident = 0;
+    for (int l = 0; l < top.num_layers; ++l) {
+        InklingLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
+        lw.full = top.IsFull(l);
+
+        const fs::path nv_path = absl::StrFormat("layer_%d_nvfp4.arrow", l);
+        auto nv = LoadDenseNvfp4BatchViews(pinned / nv_path);
+        if (!nv.ok()) {
+            log::error(absl::StrFormat("[inkling_load] %s: %s", nv_path.string(),
+                                       nv.status().ToString()));
+            return false;
+        }
+        if (!RequireDense(*nv, l, "attn.wq_du.weight", lw.wq, stream, "wq") ||
+            !RequireDense(*nv, l, "attn.wk_dv.weight", lw.wk, stream, "wk") ||
+            !RequireDense(*nv, l, "attn.wv_dv.weight", lw.wv, stream, "wv") ||
+            !RequireDense(*nv, l, "attn.wo_ud.weight", lw.wo, stream, "wo") ||
+            !RequireDense(*nv, l, "attn.wr_du.weight", lw.wr, stream, "wr") ||
+            !RequireDense(*nv, l, "attn.gate_attn.weight", lw.attn_gate, stream,
+                          "attn gate"))
+            return false;
+        if (lw.full &&
+            (!RequireDense(*nv, l, "attn.k_sconv.weight_proj", lw.ksconv_proj,
+                           stream, "k conv proj") ||
+             !RequireDense(*nv, l, "attn.v_sconv.weight_proj", lw.vsconv_proj,
+                           stream, "v conv proj")))
+            return false;
+        for (const auto &w : {lw.wq, lw.wk, lw.wv, lw.wo, lw.wr, lw.attn_gate,
+                              lw.ksconv_proj, lw.vsconv_proj})
+            resident += static_cast<std::uint64_t>(w.packed_bytes) +
+                        static_cast<std::uint64_t>(w.scale_bytes);
+
+        const fs::path raw_path = absl::StrFormat("layer_%d.arrow", l);
+        auto raw = LoadTensorBatchViews(pinned / raw_path);
+        if (!raw.ok()) {
+            log::error(absl::StrFormat("[inkling_load] %s: %s", raw_path.string(),
+                                       raw.status().ToString()));
+            return false;
+        }
+        auto half_into = [&](const char *rest, __half *&dst, const char *tag) {
+            return RequireRaw(*raw, l, rest, "BF16", tag, [&](const TensorView &t) {
+                dst = UploadHalf(t, stream);
+            }) && dst != nullptr;
+        };
+        auto f32_into = [&](const char *rest, float *&dst, const char *tag) {
+            return RequireRaw(*raw, l, rest, "BF16", tag, [&](const TensorView &t) {
+                dst = UploadF32(t, stream);
+            }) && dst != nullptr;
+        };
+
+        if (lw.full) {
+            if (!half_into("q_input_norm.weight", lw.q_in_norm, "q input norm") ||
+                !half_into("k_input_norm.weight", lw.k_in_norm, "k input norm") ||
+                !half_into("v_input_norm.weight", lw.v_in_norm, "v input norm"))
+                return false;
+        } else {
+            if (!half_into("attn_norm.weight", lw.attn_norm, "attn norm"))
+                return false;
+        }
+        if (!half_into("mlp_norm.weight", lw.mlp_norm, "mlp norm")) return false;
+        if (!half_into("attn.attn_sink_proj.weight", lw.sink_proj, "sink proj"))
+            return false;
+        if (!f32_into("attn.q_l2_clip.scale", lw.q_clip, "q clip")) return false;
+        if (!f32_into("attn.rel_l2_clip.scale", lw.rel_clip, "rel clip"))
+            return false;
+        if (!f32_into("attn.rel_logits_proj.proj", lw.rel_proj, "rel bank"))
+            return false;
+        if (!f32_into("attn_sconv.weight", lw.attn_conv_w, "attn conv")) return false;
+        if (!f32_into("mlp_sconv.weight", lw.mlp_conv_w, "mlp conv")) return false;
+        if (lw.full) {
+            if (!f32_into("attn.k_sconv.static_w", lw.kconv_static, "k static"))
+                return false;
+            if (!f32_into("attn.v_sconv.static_w", lw.vconv_static, "v static"))
+                return false;
+        } else {
+            if (!f32_into("attn.k_sconv.weight", lw.kconv_w, "k conv")) return false;
+            if (!f32_into("attn.v_sconv.weight", lw.vconv_w, "v conv")) return false;
+        }
+        {
+            // Router: FP32 weight and FP32 selection bias.
+            const TensorView *rw = FindRaw(*raw, LayerName(l, "mlp.gate.weight"));
+            const TensorView *rb = FindRaw(*raw, LayerName(l, "mlp.gate.bias"));
+            if (!rw || !rb) {
+                log::error(absl::StrFormat(
+                    "[inkling_load] layer %d: router tensors missing", l));
+                return false;
+            }
+            lw.router_w = UploadF32(*rw, stream);
+            lw.router_bias = UploadF32(*rb, stream);
+            if (!lw.router_w || !lw.router_bias) return false;
+            resident += static_cast<std::uint64_t>(rw->bytes) +
+                        static_cast<std::uint64_t>(rb->bytes);
+        }
+
+        // Four recurrent convolutions: k and v (kv_dim channels each) then the
+        // post-attention and post-MLP ones (hidden channels each).
+        const size_t floats = 2 * static_cast<size_t>(k) * kv_dim +
+                              2 * static_cast<size_t>(k) * H;
+        float *state = nullptr;
+        if (cudaMalloc(&state, floats * sizeof(float)) != cudaSuccess) return false;
+        if (cudaMemsetAsync(state, 0, floats * sizeof(float), stream) != cudaSuccess)
+            return false;
+        lw.conv_state = state;
+        resident += floats * sizeof(float);
+
+    }
+
+    // Small tensors: count them from the uploaded shapes.
+    resident += static_cast<std::uint64_t>(pw.embed.packed_bytes) +
+                static_cast<std::uint64_t>(pw.embed.scale_bytes) +
+                static_cast<std::uint64_t>(pw.head.packed_bytes) +
+                static_cast<std::uint64_t>(pw.head.scale_bytes);
+    resident += static_cast<std::uint64_t>(
+        (total_q + static_cast<size_t>(top.num_layers) + 1) *
+            static_cast<size_t>(H) * sizeof(float));
+    resident += static_cast<std::uint64_t>(2 * H * sizeof(__half));
+    pw.resident_bytes = resident;
+    cudaStreamSynchronize(stream);
+    return true;
 }
 
 }  // namespace lsxcommon::inkling

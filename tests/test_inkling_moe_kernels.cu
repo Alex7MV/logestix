@@ -478,8 +478,8 @@ TEST_CASE("inkling short conv: the two tap orders are not interchangeable",
         for (int c = 0; c < kCh; ++c)
             ring[static_cast<size_t>(j) * kCh + c] =
                 0.1f * static_cast<float>(j * kCh + c + 1);
-    const auto w = HPattern(kCh * kK, 0.05f, 3);   // conv1d taps: w[c][j]
-    const auto dyn = HPattern(kCh * kK, 0.05f, 4); // lag taps:  dyn[c][lag]
+    const auto w = FPattern(kCh * kK, 0.05f, 3);   // conv1d taps: w[c][j]
+    const auto dyn = FPattern(kCh * kK, 0.05f, 4); // lag taps:  dyn[c][lag]
     const auto x_t = HPattern(kCh, 0.5f, 5);
 
     // Post-push ring: the current token becomes the NEWEST entry.
@@ -498,7 +498,7 @@ TEST_CASE("inkling short conv: the two tap orders are not interchangeable",
         for (int c = 0; c < kCh; ++c) {
             double acc = 0.0;
             for (int j = 0; j < kK; ++j)
-                acc += static_cast<double>(F(w[static_cast<size_t>(c) * kK + j])) *
+                acc += static_cast<double>(w[static_cast<size_t>(c) * kK + j]) *
                        post[static_cast<size_t>(j) * kCh + c];
             ref[static_cast<size_t>(c)] =
                 static_cast<float>((acc + static_cast<double>(F(x_t[static_cast<size_t>(c)]))) *
@@ -506,7 +506,7 @@ TEST_CASE("inkling short conv: the two tap orders are not interchangeable",
         }
         std::vector<float> dev_state = ring;
         float *d_state = ToDevice(dev_state);
-        __half *d_w = ToDevice(w);
+        float *d_w = ToDevice(w);
         __half *d_x = ToDevice(x_t);
         __half *d_out = nullptr;
         REQUIRE(cudaMalloc(&d_out, sizeof(__half) * kCh) == cudaSuccess);
@@ -538,7 +538,7 @@ TEST_CASE("inkling short conv: the two tap orders are not interchangeable",
             for (int lag = 0; lag < kK; ++lag) {
                 const int sj = kK - 1 - lag;  // lag 0 == newest
                 const double tap =
-                    static_cast<double>(F(dyn[static_cast<size_t>(c) * kK + lag]));
+                    static_cast<double>(dyn[static_cast<size_t>(c) * kK + lag]);
                 acc += tap * post[static_cast<size_t>(sj) * kCh + c];
             }
             ref[static_cast<size_t>(c)] =
@@ -547,8 +547,8 @@ TEST_CASE("inkling short conv: the two tap orders are not interchangeable",
         }
         std::vector<float> dev_state = ring;
         float *d_state = ToDevice(dev_state);
-        __half *d_w = ToDevice(w);
-        __half *d_dyn = ToDevice(dyn);
+        float *d_w = ToDevice(w);
+        float *d_dyn = ToDevice(dyn);
         __half *d_x = ToDevice(x_t);
         __half *d_out = nullptr;
         REQUIRE(cudaMalloc(&d_out, sizeof(__half) * kCh) == cudaSuccess);
@@ -568,7 +568,7 @@ TEST_CASE("inkling short conv: the two tap orders are not interchangeable",
         for (int c = 0; c < kCh; ++c) {
             double acc = 0.0;
             for (int j = 0; j < kK; ++j)
-                acc += static_cast<double>(F(w[static_cast<size_t>(c) * kK + j])) *
+                acc += static_cast<double>(w[static_cast<size_t>(c) * kK + j]) *
                        post[static_cast<size_t>(j) * kCh + c];
             static_ref[static_cast<size_t>(c)] =
                 static_cast<float>((acc + static_cast<double>(F(x_t[static_cast<size_t>(c)]))) *
@@ -585,6 +585,79 @@ TEST_CASE("inkling short conv: the two tap orders are not interchangeable",
         cudaFree(d_dyn);
         cudaFree(d_x);
         cudaFree(d_out);
+    }
+}
+
+TEST_CASE("inkling log scaling and dynamic conv taps", "[inkling][kernels]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+
+    SECTION("log scaling multiplies the CLIPPED q and rel")
+    {
+        constexpr int64_t kNq = 20;
+        constexpr int64_t kNrel = 8;
+        auto q = FPattern(kNq, 0.5f, 1);
+        auto rel = FPattern(kNrel, 0.25f, 2);
+        // tau at position 200000 with floor 128000 and alpha 0.1.
+        const double pos = 200000.0;
+        const float tau = static_cast<float>(
+            1.0 + 0.1 * std::log(std::max((pos + 1.0) / 128000.0, 1.0)));
+        REQUIRE(tau > 1.0f);  // the scaling only ever grows with position
+        const auto q0 = q;
+        const auto r0 = rel;
+        float *d_q = ToDevice(q);
+        float *d_r = ToDevice(rel);
+        REQUIRE(RunInklingLogScale(Stream0(), d_q, d_r, kNq, kNrel, tau) ==
+                cudaSuccess);
+        Sync();
+        std::vector<float> gq(static_cast<size_t>(kNq)), gr(static_cast<size_t>(kNrel));
+        FromDevice(d_q, gq);
+        FromDevice(d_r, gr);
+        for (int64_t i = 0; i < kNq; ++i)
+            REQUIRE(gq[static_cast<size_t>(i)] ==
+                    Approx(q0[static_cast<size_t>(i)] * tau).margin(1e-6));
+        for (int64_t i = 0; i < kNrel; ++i)
+            REQUIRE(gr[static_cast<size_t>(i)] ==
+                    Approx(r0[static_cast<size_t>(i)] * tau).margin(1e-6));
+        cudaFree(d_q);
+        cudaFree(d_r);
+    }
+
+    SECTION("dynamic taps: static[lag][ch] plus the head's own projection")
+    {
+        constexpr int kChannels = 6;   // 3 heads x head_dim 2
+        constexpr int kHeadDim = 2;
+        constexpr int kK = 4;
+        constexpr int kHeads = kChannels / kHeadDim;
+        const auto static_w = FPattern(kK * kChannels, 0.1f, 3);   // [k][channels]
+        const auto proj = FPattern(kHeads * kK, 0.2f, 4);          // [heads*k]
+        std::vector<float> ref(static_cast<size_t>(kChannels) * kK);
+        for (int ch = 0; ch < kChannels; ++ch) {
+            const int head = ch / kHeadDim;
+            for (int lag = 0; lag < kK; ++lag)
+                ref[static_cast<size_t>(ch) * kK + lag] =
+                    static_w[static_cast<size_t>(lag) * kChannels + ch] +
+                    proj[static_cast<size_t>(head) * kK + lag];
+        }
+        float *d_s = ToDevice(static_w);
+        float *d_p = ToDevice(proj);
+        float *d_t = nullptr;
+        REQUIRE(cudaMalloc(&d_t, sizeof(float) * ref.size()) == cudaSuccess);
+        REQUIRE(RunInklingDynamicTaps(Stream0(), d_s, d_p, d_t, kChannels, kHeadDim,
+                                      kK) == cudaSuccess);
+        Sync();
+        std::vector<float> got(ref.size());
+        FromDevice(d_t, got);
+        for (size_t i = 0; i < ref.size(); ++i)
+            REQUIRE(got[i] == Approx(ref[i]).margin(1e-6));
+        // Two channels inside one head share the PROJECTION term but not the
+        // static one; that is the property a channel-indexed projection would
+        // break.
+        REQUIRE(got[0 * kK + 1] - static_w[1 * kChannels + 0] ==
+                Approx(got[1 * kK + 1] - static_w[1 * kChannels + 1]).margin(1e-6));
+        cudaFree(d_s);
+        cudaFree(d_p);
+        cudaFree(d_t);
     }
 }
 
@@ -748,6 +821,128 @@ TEST_CASE("inkling router tie-breaks to the lower expert id",
     cudaFree(d_w);
     cudaFree(d_x);
     cudaFree(d_slots);
+}
+
+TEST_CASE("inkling plumbing: weighted norm, fp16 matvec, embed row",
+          "[inkling][kernels]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+    constexpr int kRows = 2;
+    constexpr int kHidden = 32;
+
+    SECTION("weighted RMSNorm, FP32 in and FP16 out")
+    {
+        const auto x = FPattern(kRows * kHidden, 0.6f, 1);
+        const auto w = HPattern(kHidden, 0.3f, 2);
+        std::vector<float> ref(static_cast<size_t>(kRows) * kHidden);
+        for (int r = 0; r < kRows; ++r) {
+            double ss = 0.0;
+            for (int i = 0; i < kHidden; ++i) {
+                const double v = x[static_cast<size_t>(r) * kHidden + i];
+                ss += v * v;
+            }
+            const float inv = static_cast<float>(1.0 / std::sqrt(ss / kHidden + 1e-6));
+            for (int i = 0; i < kHidden; ++i)
+                ref[static_cast<size_t>(r) * kHidden + i] =
+                    x[static_cast<size_t>(r) * kHidden + i] * inv *
+                    F(w[static_cast<size_t>(i)]);
+        }
+        float *d_x = ToDevice(x);
+        __half *d_w = ToDevice(w);
+        __half *d_out = nullptr;
+        REQUIRE(cudaMalloc(&d_out, sizeof(__half) * ref.size()) == cudaSuccess);
+        REQUIRE(RunInklingNormF32In(Stream0(), d_x, d_w, d_out, kRows, kHidden,
+                                    1e-6f) == cudaSuccess);
+        Sync();
+        std::vector<__half> got(ref.size());
+        FromDevice(d_out, got);
+        for (size_t i = 0; i < ref.size(); ++i)
+            REQUIRE(F(got[i]) == Approx(ref[i]).epsilon(0.002));
+        cudaFree(d_x);
+        cudaFree(d_w);
+        cudaFree(d_out);
+    }
+
+    SECTION("fp16 matvec with an FP32 accumulator")
+    {
+        constexpr int kOut = 3;
+        const auto w = HPattern(kOut * kHidden, 0.25f, 3);
+        const auto x = HPattern(kHidden, 0.4f, 4);
+        std::vector<float> ref(static_cast<size_t>(kOut));
+        for (int r = 0; r < kOut; ++r) {
+            double acc = 0.0;
+            for (int c = 0; c < kHidden; ++c)
+                acc += static_cast<double>(F(w[static_cast<size_t>(r) * kHidden + c])) *
+                       F(x[static_cast<size_t>(c)]);
+            ref[static_cast<size_t>(r)] = static_cast<float>(acc);
+        }
+        __half *d_w = ToDevice(w);
+        __half *d_x = ToDevice(x);
+        float *d_y = nullptr;
+        REQUIRE(cudaMalloc(&d_y, sizeof(float) * kOut) == cudaSuccess);
+        REQUIRE(RunInklingMatVecF16(Stream0(), d_w, d_x, d_y, kOut, kHidden) ==
+                cudaSuccess);
+        Sync();
+        std::vector<float> got(static_cast<size_t>(kOut));
+        FromDevice(d_y, got);
+        for (int r = 0; r < kOut; ++r)
+            REQUIRE(got[static_cast<size_t>(r)] ==
+                    Approx(ref[static_cast<size_t>(r)]).margin(1e-4));
+        cudaFree(d_w);
+        cudaFree(d_x);
+        cudaFree(d_y);
+    }
+
+    SECTION("NVFP4 embed row dequantizes from a DEVICE token id")
+    {
+        constexpr int kVocab = 4;
+        const auto h = HPattern(kVocab * kHidden, 0.5f, 5);
+        // Pack to NVFP4 on the host with the neutral codec's own rules so the
+        // decode is checked against the values that were packed.
+        const float gs = 0.5f;
+        std::vector<uint8_t> packed(static_cast<size_t>(kVocab) * kHidden / 2, 0);
+        std::vector<uint8_t> scales(static_cast<size_t>(kVocab) * kHidden / 16,
+                                    0x38);  // 2^0
+        std::vector<float> expect(static_cast<size_t>(kVocab) * kHidden);
+        const float levels[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+        for (int row = 0; row < kVocab; ++row) {
+            for (int i = 0; i < kHidden; ++i) {
+                const float v = F(h[static_cast<size_t>(row) * kHidden + i]) / gs;
+                int best = 0;
+                float bestd = 1e30f;
+                for (int q = 0; q < 8; ++q) {
+                    const float d = std::fabs(levels[q] - std::fabs(v));
+                    if (d < bestd) { bestd = d; best = q; }
+                }
+                const int nib = (v < 0.0f ? 8 : 0) | best;
+                const size_t byte = static_cast<size_t>(row) * kHidden / 2 + i / 2;
+                packed[byte] = (i & 1)
+                                   ? static_cast<uint8_t>(packed[byte] | (nib << 4))
+                                   : static_cast<uint8_t>(packed[byte] | nib);
+                expect[static_cast<size_t>(row) * kHidden + i] =
+                    (nib & 8 ? -levels[best] : levels[best]) * gs;
+            }
+        }
+        uint8_t *d_p = ToDevice(packed);
+        uint8_t *d_s = ToDevice(scales);
+        const int32_t want_row = 2;
+        int32_t *d_id = ToDevice(std::vector<int32_t>{want_row});
+        __half *d_out = nullptr;
+        REQUIRE(cudaMalloc(&d_out, sizeof(__half) * kHidden) == cudaSuccess);
+        REQUIRE(RunInklingEmbedRow(Stream0(), d_p, d_s, gs, d_id, d_out, kHidden) ==
+                cudaSuccess);
+        Sync();
+        std::vector<__half> got(static_cast<size_t>(kHidden));
+        FromDevice(d_out, got);
+        for (int i = 0; i < kHidden; ++i)
+            REQUIRE(F(got[static_cast<size_t>(i)]) ==
+                    Approx(expect[static_cast<size_t>(want_row) * kHidden + i])
+                        .margin(1e-6));
+        cudaFree(d_p);
+        cudaFree(d_s);
+        cudaFree(d_id);
+        cudaFree(d_out);
+    }
 }
 
 TEST_CASE("inkling routed accumulate and the logit softcap",

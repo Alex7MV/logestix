@@ -171,8 +171,8 @@ FP8 source (to be taken when the engine can decode them).
 | 1 | `inkling_moe_constants.h` passport, naming-guard family token, `models/inkling-2-small.json` | `test_inkling_moe_constants` (fast) | **done, green** (186 assertions) |
 | 2 | `inkling_moe_convert.cpp` + `--inkling` in `apps/lsxforge` | `test_inkling_moe_convert` (convert, synthetic) | **done, green** (349 assertions); real tree converted (312 GB, 18 min) |
 | 3 | topology reader + artifact layout (`inkling_moe_load.*`) | `test_inkling_moe_loader` (load, synthetic + real index) | **done, green** (topology half); the weight upload half is stage 5 work |
-| 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) | **open** |
-| 5 | `inkling_moe_inference_pipeline.cu` + weight upload in the loader | `test_inkling_moe_model` (model) | **open** |
+| 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) | **done, green** (1524 assertions, 14 host-reference cases) |
+| 5 | weight upload (`inkling_moe_load.cpp`) + `inkling_moe_inference_pipeline.cu` | `test_inkling_moe_model` (model) | **partly**: the pinned plane, the neutral expert store, the KV session and the decode scratch arena are landed; the per-layer forward pass is NOT written, so `Load` refuses the model and `RunInklingGeneration` returns `cudaErrorNotSupported` |
 | 6 | `inkling_moe_tool_format.cpp` (stage 4b, native template) | `test_inkling_moe_tool_framing` (fast) | **open** |
 | 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **open** (declared debt) |
 | 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **open** (declared debt) |

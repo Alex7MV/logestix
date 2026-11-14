@@ -109,6 +109,57 @@ static_assert(sizeof(InklingExpertEntry) <= 128,
 
 using InklingExpertDb = gpu::expert_store::ExpertStore<InklingExpertEntry>;
 
+// ── pinned weights (device-resident for the whole session) ──────────────────
+// The dense plane is ~4.7 GiB of NVFP4 plus the FP32 routers (~340 MiB) and the
+// FP32 side tensors; the 594B-parameter routed set is only ever an mmap view.
+struct InklingLayerWeights {
+    bool full = false;
+    // NVFP4 projections (never a raw BF16 matmul: these are the 4-bit path).
+    lsx_nvfp4::LsxNvfp4Weight wq, wk, wv, wo, wr, attn_gate;
+    lsx_nvfp4::LsxNvfp4Weight ksconv_proj, vsconv_proj;  // full layers only
+    // Norms (FP16 weights, never quantized).
+    __half *attn_norm = nullptr;    // sliding layers
+    __half *q_in_norm = nullptr;    // full layers
+    __half *k_in_norm = nullptr;
+    __half *v_in_norm = nullptr;
+    __half *mlp_norm = nullptr;
+    // FP32 side tensors: the checkpoint itself keeps these at full precision.
+    float *sink_w = nullptr;        // [heads, hidden] (BF16 -> FP16 on upload)
+    __half *sink_proj = nullptr;    // [heads, hidden] FP16 (matvec)
+    float *q_clip = nullptr;        // [heads, head_dim] learned scale
+    float *rel_clip = nullptr;      // [heads, d_rel]   learned scale
+    float *rel_proj = nullptr;      // [d_rel, rel_extent]
+    float *kconv_w = nullptr;       // [kv_dim, k] conv1d taps (sliding)
+    float *vconv_w = nullptr;
+    float *kconv_static = nullptr;  // [kv_dim, k] lag-0-first taps (full)
+    float *vconv_static = nullptr;
+    __half *kconv_proj_w = nullptr;  // dynamic tap projection [kv_heads*k, hidden]
+    __half *vconv_proj_w = nullptr;
+    float *attn_conv_w = nullptr;   // [hidden, k] conv1d taps
+    float *mlp_conv_w = nullptr;
+    float *router_w = nullptr;      // [experts, hidden] (FP32 in the checkpoint)
+    float *router_bias = nullptr;   // [experts] FP32 selection bias
+    // Recurrent conv state, FOUR convolutions per layer (k/v + post-attn +
+    // post-MLP), laid out back to back: [k][kv_dim] x2 then [k][hidden] x2.
+    float *conv_state = nullptr;
+};
+
+struct InklingPinnedWeights {
+    InklingTopology top;
+    lsx_nvfp4::LsxNvfp4Weight embed;   // [vocab, hidden] NVFP4
+    lsx_nvfp4::LsxNvfp4Weight head;    // [vocab, hidden] NVFP4 (unembed)
+    __half *embed_norm = nullptr;
+    __half *final_norm = nullptr;
+    // AttnRes query banks, FP32: [layers][nq][hidden] with nq = 3 on the full
+    // layers and 1 elsewhere, so the stride is LAYER-dependent.
+    float *attn_queries = nullptr;     // [sum(nq_l)][hidden]
+    int *attn_query_offset = nullptr;  // [layers] host array of row offsets
+    float *mlp_queries = nullptr;      // [layers][hidden]
+    float *out_query = nullptr;        // [hidden]
+    std::vector<InklingLayerWeights> layers;
+    std::uint64_t resident_bytes = 0;
+};
+
 // ── API ────────────────────────────────────────────────────────────────────
 arrow::Status LoadInklingTopology(const std::string &model_path,
                                   InklingTopology &out);
@@ -116,5 +167,24 @@ arrow::Status LoadInklingTopology(const std::string &model_path,
 // Cross-checks the loaded index against the frozen passport (relaxed under
 // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY).
 bool InklingTopologyMatchesFrozen(const InklingTopology &top);
+
+// Uploads the pinned plane. Returns false on any missing/short tensor (a
+// partially loaded model is never left behind).
+bool LoadInklingPinnedWeights(const std::string &root, InklingPinnedWeights &pw,
+                              cudaStream_t stream);
+
+void FreeInklingPinnedWeights(InklingPinnedWeights &pw);
+
+// The neutral routed-expert store (mmap + LRU, no host copy).
+InklingExpertDb LoadInklingExpertIndex(const std::string &model_path,
+                                       int num_layers, int experts_per_layer,
+                                       size_t max_open,
+                                       bool warm_on_load = false);
+// One decode token's working set: top_k draws from every layer.
+size_t InklingExpertWindowFloor(const InklingTopology &top);
+size_t InklingResolveExpertWindow(const InklingTopology &top, long requested);
+void EnsureInklingExpertResident(InklingExpertDb &db, int layer, int expert,
+                                 cudaStream_t stream);
+void FreeInklingExpertIndex(InklingExpertDb &db);
 
 }  // namespace lsxcommon::inkling

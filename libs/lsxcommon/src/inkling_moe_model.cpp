@@ -1,6 +1,7 @@
 #include "inkling_moe_model.h"
 
 #include "lsxcommon/inkling_moe_load.h"
+#include "lsxcommon/inkling_moe_inference_pipeline.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
@@ -41,10 +42,14 @@ bool InklingMoeModel::Load()
         log::error("[inkling] cuda context init failed");
         return AbortLoad();
     }
-    // The decode pipeline (stage 5) is not wired yet: refuse the load rather
-    // than hand a half-loaded model to the caller.
+    // The weights, the expert store and the KV session are all in place, but the
+    // per-layer forward pass (stage 5) is not written yet. Refuse the load: a
+    // model that loads and then cannot decode is worse than one that says so,
+    // because `lsxfabric --serve` would advertise a session it can never
+    // answer. `InklingMoeModel::Infer` reports the same error.
     log::error(
-        "[inkling] the decode pipeline is not implemented in this tree yet");
+        "[inkling] the decode pipeline is not implemented yet (stage 5); "
+        "see docs/open-tasks/2026-11-14-inkling-2-small-ingest.md");
     return AbortLoad();
 }
 

@@ -440,6 +440,7 @@ target_link_libraries(lsxcommon_flint_cu
 # may be reassociated.
 add_library(lsxcommon_inkling_cu OBJECT
     src/inkling_moe_kernels.cu
+    src/inkling_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_inkling_cu PROPERTIES
     CUDA_ARCHITECTURES OFF

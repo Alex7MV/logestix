@@ -111,10 +111,29 @@ cudaError_t RunInklingGateMul(cudaStream_t stream, const __half *x,
 // `state` is the [k, channels] FP32 ring in chronological order (index k-1 is
 // the current token). The kernel pushes `x_t` into the ring itself, so the
 // caller never shifts the window.
+// The taps are FP32 on purpose: the reference keeps every `*_convolution`
+// module in FP32 (`_keep_in_fp32_modules_strict`), unlike the projections.
 cudaError_t RunInklingShortConv(cudaStream_t stream, const __half *x_t,
-                                float *state, const __half *w,
-                                const __half *dyn_taps, __half *out, int channels,
+                                float *state, const float *w,
+                                const float *dyn_taps, __half *out, int channels,
                                 int k, float inv_scale);
+
+// Full-attention log scaling: q *= tau and rel *= tau in place, FP32. tau
+// itself is 1 + alpha*ln(max((pos+1)/floor, 1)), computed on the host (one
+// scalar per token) and applied to the CLIPPED q and the CLIPPED relative
+// states, which is the order the reference uses.
+cudaError_t RunInklingLogScale(cudaStream_t stream, float *q, float *rel,
+                              int64_t nq, int64_t nrel, float tau);
+
+// Assembles the full layers' dynamic convolution taps:
+//   taps[ch*k + lag] = static_w[lag*channels + ch] + proj_out[head(ch)*k + lag]
+// where head(ch) = ch / head_dim. `proj_out` is the per-token projection of the
+// normalized key/value stream ([kv_heads * k] values); note that it depends on
+// the head and the lag but NOT on the channel inside the head, which is why one
+// projection serves a whole head's taps.
+cudaError_t RunInklingDynamicTaps(cudaStream_t stream, const float *static_w,
+                                 const float *proj_out, float *taps,
+                                 int channels, int head_dim, int k);
 
 // ── 6. softcapped SwiGLU (the routed expert activation) ────────────────────
 // out = tanh(g/cap_g)*cap_g * sigmoid(g) * tanh(u/cap_u)*cap_u, computed in FP32
@@ -162,5 +181,26 @@ cudaError_t RunInklingScaleToHalf(cudaStream_t stream, const float *src,
 // first `n` entries (the unpadded vocabulary) are produced.
 cudaError_t RunInklingLogitSoftcap(cudaStream_t stream, const float *logits,
                                    float *out, int n, float cap);
+
+// ── 9. plumbing shared by every layer ──────────────────────────────────────
+// Weighted RMSNorm with an FP32 input and an FP16 output: the layer mixes, the
+// residual stream's FP32 accumulator and the AttnRes outputs are FP32, while
+// every projection consumes FP16.
+cudaError_t RunInklingNormF32In(cudaStream_t stream, const float *x,
+                                const __half *w, __half *out, int rows,
+                                int hidden, float eps);
+
+// y[r] = sum_c w[r*cols + c] * x[c], FP16 weight and input, FP32 output. Used
+// for the two tiny non-quantized projections (`attn_sink_proj` [heads, hidden]
+// and nothing else); a 4-bit rounding there would perturb the softmax
+// denominator of every head, which is why they stay BF16 in the checkpoint.
+cudaError_t RunInklingMatVecF16(cudaStream_t stream, const __half *w,
+                                const __half *x, float *y, int rows, int cols);
+
+// Dequantizes ONE embedding row of the NVFP4 table into FP16. `d_id` is the
+// token id ON THE DEVICE, so a decode step never syncs to fetch it.
+cudaError_t RunInklingEmbedRow(cudaStream_t stream, const uint8_t *packed,
+                               const uint8_t *scales, float global_scale,
+                               const int32_t *d_id, __half *out, int hidden);
 
 }  // namespace lsxcommon::inkling
