@@ -798,6 +798,12 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // kimi-k3.1-pro reuses this XTML codec verbatim (identical tokenizer and
         // chat_template), so the same target proves its render+parse round-trip.
         {"kimi-k3.1-pro", {"test_kimi_k3_tool_framing"}},
+        // Inkling has a native codec (inkling_moe_tool_format.cpp) rendered from
+        // the checkpoint's own chat_template.jinja: `<|message_model|><|content_
+        // thinking|>` opens an answer, tool calls are
+        // `<|content_invoke_tool_json|>{"name":…,"args":{…}}`, and the round-trip
+        // is 49 framing assertions on a synthetic fixture.
+        {"inkling-2-small", {"test_inkling_moe_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

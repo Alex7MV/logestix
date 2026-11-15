@@ -91,14 +91,12 @@ target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
 # generated model_targets.cmake fragment; what stays here is per-target BUILD
 # reality (sources, link libraries, compile definitions).
 #
-# `test_inkling_moe_constants` is not in the manifest: it is the frozen-passport
-# guard for the family and runs before any weights exist, so it is registered by
-# hand as a `fast` target.
+# `test_inkling_moe_constants` is the frozen-passport guard. It is CLAIMED by the
+# manifest row's `model` stage (like kimi-k3's and nemotron-ultra's passport
+# tests), so its ctest registration is generated; only build reality lives here.
 add_executable(test_inkling_moe_constants test_inkling_moe_constants.cpp)
 target_link_libraries(test_inkling_moe_constants PRIVATE lsxcommon
     Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_constants COMMAND test_inkling_moe_constants)
-set_tests_properties(test_inkling_moe_constants PROPERTIES LABELS fast)
 add_executable(test_inkling_moe_convert test_inkling_moe_convert.cpp)
 target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)

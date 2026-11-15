@@ -19,6 +19,9 @@
 //   * the streaming callback sees exactly the generated tokens, in order.
 #include <catch2/catch_test_macros.hpp>
 #include <lsxcommon/inkling_moe_convert.h>
+#include "inkling_moe_constants.h"
+
+#include <simdjson.h>
 #include "inkling_moe_model.h"
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/model_runtime.h>
@@ -29,6 +32,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -58,11 +63,41 @@ void RegisterInklingOnce()
 // session here (a byte-pattern tree whose values overflowed, and a tree whose
 // embed/unembed were still NVFP4). Bump the version whenever the converter's
 // output layout changes.
+// The converted fixture is cached in the temp dir because converting it costs
+// seconds and every case wants it. The cache is only reusable if it was written
+// by THIS binary's format: the tag moved once already
+// (`logestix-inkling-2-small-nvfp4` -> `logestix-inkling-2-small`) and a stale
+// cache then failed as `Load() == false` inside whatever case ran first, which
+// reads like a loader defect rather than a fixture from another build. So the
+// cached index is validated against the compiled `frozen::kFormatTag` and
+// rebuilt on any mismatch or unreadable file.
+bool CachedFixtureIsCurrent(const fs::path &out)
+{
+    const fs::path index = out / "logestix" / "model.index.json";
+    std::error_code ec;
+    if (!fs::exists(index, ec) || ec) return false;
+    std::ifstream f(index);
+    if (!f) return false;
+    const std::string text((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+    // An EXACT value comparison, not a substring search: the tag that replaced
+    // this one (`logestix-inkling-2-small-nvfp4`) has the current tag as its
+    // prefix, so `find` would accept exactly the stale file this check exists to
+    // reject.
+    simdjson::dom::parser parser;
+    simdjson::dom::element doc;
+    if (parser.parse(text).get(doc) != simdjson::SUCCESS) return false;
+    std::string_view format;
+    if (doc["format"].get_string().get(format) != simdjson::SUCCESS)
+        return false;
+    return format == lsxcommon::inkling::frozen::kFormatTag;
+}
+
 fs::path EnsureSyntheticModel()
 {
     const fs::path in = fs::temp_directory_path() / "inkling_model_in_v2";
     const fs::path out = fs::temp_directory_path() / "inkling_model_out_v2";
-    if (fs::exists(out / "logestix" / "model.index.json")) return out;
+    if (CachedFixtureIsCurrent(out)) return out;
     fs::remove_all(in);
     fs::remove_all(out);
     fs::create_directories(in);

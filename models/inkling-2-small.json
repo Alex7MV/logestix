@@ -26,6 +26,7 @@
       "test_inkling_moe_loader"
     ],
     "model": [
+      "test_inkling_moe_constants",
       "test_inkling_moe_model",
       "test_inkling_moe_tool_framing"
     ],
@@ -95,6 +96,10 @@
       "form": "parity",
       "kind": "det",
       "timeout": 3600
+    },
+    "test_inkling_moe_constants": {
+      "label": "fast",
+      "env": []
     }
   },
   "tool_roundtrip": true,
