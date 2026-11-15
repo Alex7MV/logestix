@@ -4,7 +4,8 @@ Snapshot of **2026-10-24/25**, updated **2026-10-31** (GigaChat3.5-432B-A28B),
 re-verified **2026-11-03** (AliceAI-Foundation-80B-A3B re-ingestion), re-verified
 **2026-11-04** (Qwen3.8-Flash-Next full lifecycle; Qwen3.5-35B-A3B and
 DeepSeek-V4.1-Flash audited — both had been filed as "no converted tree" while
-their trees were in the vault), re-verified **2026-11-06** (AliceAI-Foundation-80B-A3B
+their trees were in the vault),
+re-verified **2026-11-06** (AliceAI-Foundation-80B-A3B
 after the inverted workspace predicate was fixed — its row had been unmeasured
 since 2026-11-03 19:33, when generation stopped producing tokens at all:
 `open-tasks/2026-11-06-alice-workspace-polarity.md`), extended **2026-11-07**
@@ -13,6 +14,8 @@ since 2026-11-03 19:33, when generation stopped producing tokens at all:
 **2026-11-10** (NVIDIA-Nemotron-Labs-Dory1.0-4B, looped nGPT — its DET row is
 captured in reasoning mode: the letter-match probe answers CRITICAL without a
 reasoning trace and CATASTROPHIC with it),
+extended **2026-11-15** (Inkling-2-Small: 594B total / 17B active, mixed
+NVFP4+MXFP8 experts, all four gates measured on the real 366 GB tree),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;
@@ -68,6 +71,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
+| **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
 
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
   was restored** (120 min, `-j1`, one GPU). The list is
@@ -274,6 +278,15 @@ one in a ctest summary, which is why the debt rows are called out below.
   placement that fits was measured and moves *away* from the source —
   `docs/OPEN_TASKS.md` §R and
   `open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md` §5.
+- **Inkling-2-Small** is green on all four gates with **template-derived**
+  FSI/CODE/DET goldens — the source is 594B with its own NVFP4/MXFP8 stack and
+  needs 500 GB of aggregated VRAM, so it cannot be executed here (the same
+  deviation GLM-5.3-Flash records). It is also the family whose red gate turned
+  out to be a CONVERSION defect that every byte-level check and both of my
+  references reproduced: the checkpoint's fused `w13_weight` is row-interleaved
+  and the converter split it in half, which cost the model its knowledge
+  (perplexity 12 881 -> 30.4 after the fix). See
+  `docs/model-reports/2026-11-15-inkling-2-small.md`.
 - gemma-4-26b went green in this session (second NVFP4 plane on attn + dense
   MLP, routed experts left 4-bit): FSI/CODE/DET were 1/3, 2/3, 3/3 before.
 

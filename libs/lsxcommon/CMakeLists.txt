@@ -123,6 +123,10 @@ add_library(lsxcommon STATIC
     src/hy_moe_load.cpp
     src/step_moe_convert.cpp
     src/step_moe_load.cpp
+    src/inkling_moe_convert.cpp
+    src/inkling_moe_load.cpp
+    src/inkling_moe_model.cpp
+    src/inkling_moe_tool_format.cpp
     src/flint_moe_convert.cpp
     src/flint_moe_load.cpp
     src/flint_moe_model.cpp
@@ -425,6 +429,34 @@ target_compile_options(lsxcommon_flint_cu PRIVATE
 target_include_directories(lsxcommon_flint_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_flint_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_flint_cu
+    "${CUDA_CUDART_LIBRARY}"
+    lsx_dep_includes
+)
+
+# Inkling-2-Small kernels (AttnRes depth mixer, learned L2 clips, the learned
+# relative-position bias, gated attention with learned sinks, the two short-conv
+# tap orders, softcapped SwiGLU, sigmoid router with a selection-only bias).
+# -fmad=false like the other bit-exact families: the router's top-k selects the
+# expert set and the depth mixer gates the residual stack, so neither arithmetic
+# may be reassociated.
+add_library(lsxcommon_inkling_cu OBJECT
+    src/inkling_moe_kernels.cu
+    src/inkling_moe_inference_pipeline.cu
+)
+set_target_properties(lsxcommon_inkling_cu PROPERTIES
+    CUDA_ARCHITECTURES OFF
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_inkling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(lsxcommon_inkling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_inkling_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_inkling_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_inkling_cu
     "${CUDA_CUDART_LIBRARY}"
     lsx_dep_includes
 )
@@ -812,6 +844,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_minimax_cu
     lsxcommon_hy_cu
     lsxcommon_flint_cu
+    lsxcommon_inkling_cu
     lsxcommon_beam_cu
     lsxcommon_ling_cu
     lsxcommon_step_cu

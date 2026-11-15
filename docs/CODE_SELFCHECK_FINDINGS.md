@@ -31,6 +31,7 @@ was run for each of them. Results on the converted model at `kOff`:
 | Qwen3.6-35B-A3B | PASS | source-captured, committed | **PASS 3/3** |
 | Qwen3.8-Flash-Next | PASS | source-captured (`qwen4_exp`), committed | **PASS 3/3** |
 | GLM-5.3-Flash | PASS | template-derived (`--template-golden`, 512), committed | **PASS 3/3** |
+| Inkling-2-Small | PASS | template-derived (`--template-golden`, 512), committed — source is 594B with its own NVFP4/MXFP8 stack and 500 GB of aggregated VRAM, so it cannot be executed here | **PASS 3/3** |
 | granite-4.2-30b | PASS | source-captured (not committed) | **FAIL 1/3** (CODE-01) |
 | phi-4 | PASS | source-captured, committed | **PASS 3/3** |
 | Qwen3.8-27B | PASS | source-captured (`qwen3_5`), committed | **PASS 3/3** |

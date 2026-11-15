@@ -86,6 +86,82 @@ add_executable(test_kimi_pro_convert test_kimi_pro_convert.cpp)
 target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
+# ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
+# The ctest registrations for every manifest-claimed target come from the
+# generated model_targets.cmake fragment; what stays here is per-target BUILD
+# reality (sources, link libraries, compile definitions).
+#
+# `test_inkling_moe_constants` is not in the manifest: it is the frozen-passport
+# guard for the family and runs before any weights exist, so it is registered by
+# hand as a `fast` target.
+add_executable(test_inkling_moe_constants test_inkling_moe_constants.cpp)
+target_link_libraries(test_inkling_moe_constants PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_constants COMMAND test_inkling_moe_constants)
+set_tests_properties(test_inkling_moe_constants PROPERTIES LABELS fast)
+add_executable(test_inkling_moe_convert test_inkling_moe_convert.cpp)
+target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_loader test_inkling_moe_loader.cpp)
+target_link_libraries(test_inkling_moe_loader PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_selfcheck test_inkling_moe_selfcheck.cpp)
+target_include_directories(test_inkling_moe_selfcheck PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_tool_framing test_inkling_moe_tool_framing.cpp)
+target_include_directories(test_inkling_moe_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_inkling_moe_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_inkling_moe_tool_framing PRIVATE lsxcommon
+    arrow_shared Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_model test_inkling_moe_model.cpp)
+target_include_directories(test_inkling_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_model PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+# The kernel executable is created next to its CUDA object library below
+# (test_inkling_cu).
+
+# Parity gates: the shared driver, one target per kind, parameterised by the
+# model_type of the manifest row and the golden directory CMake knows.
+add_executable(test_inkling_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-small\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_inkling_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-small\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_inkling_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-small\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+
+# ── Inkling-2-Small synthetic converter (mixed NVFP4/MXFP8 expert source) ───
+# Same synthetic-checkpoint discipline; the gate is the per-layer expert codec
+# split and the AttnRes query renaming (source index = layer-1).
+target_link_libraries(test_inkling_moe_convert PRIVATE simdjson::simdjson
+    Catch2::Catch2WithMain)
+
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
@@ -1586,6 +1662,8 @@ add_executable(test_kimi_k3_constants test_kimi_k3_constants.cpp
                                       test_kimi_pro_constants.cpp)
 target_link_libraries(test_kimi_k3_constants PRIVATE lsxcommon Catch2::Catch2WithMain)
 
+# (Inkling-2-Small targets are declared together above, in the pending-ingestion
+# block, because no manifest emits them yet.)
 # ── phi-4 ChatML token bridge test (host-only, synthetic tokenizer) ──
 add_executable(test_phi_tool_framing test_phi_tool_framing.cpp)
 target_include_directories(test_phi_tool_framing PRIVATE
@@ -3988,6 +4066,33 @@ add_executable(test_flint_moe_kernels)
 set_target_properties(test_flint_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_flint_moe_kernels PRIVATE test_flint_cu lsxcommon
     Catch2::Catch2WithMain)
+
+# ── Inkling-2-Small numeric kernels (depth mix / L2 clip / rel bias / sink
+# attention / two short-conv tap orders / softcapped SwiGLU / router) ──
+add_library(test_inkling_cu OBJECT
+    test_inkling_moe_kernels.cu
+)
+set_target_properties(test_inkling_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_inkling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_inkling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_inkling_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    )
+target_link_libraries(test_inkling_cu PRIVATE Catch2::Catch2WithMain
+        lsx_dep_includes
+    arrow_shared)
+
+add_executable(test_inkling_moe_kernels)
+set_target_properties(test_inkling_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_inkling_moe_kernels PRIVATE test_inkling_cu lsxcommon
+    Catch2::Catch2WithMain)
+
 
 # ── Flint SelfCheck (real weights; SKIPs when the vault is absent) ──
 

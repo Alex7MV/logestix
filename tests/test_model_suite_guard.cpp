@@ -670,6 +670,10 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     // declared here. The declaration is checked in both directions - it must
     // name a registered, UNCLAIMED target, and it fails as soon as the owning
     // row appears - so it cannot outlive the problem or hide an orphan.
+    // Empty: every family target is claimed by a manifest row. An ingestion
+    // that is mid-flight adds its targets here and deletes them in the same
+    // commit that lands the row (Inkling-2-Small did exactly that on
+    // 2026-11-15).
     static const std::set<std::string> kPendingSuiteTargets = {};
 
     std::set<std::string> claimed;

@@ -612,6 +612,9 @@ _NON_MODEL_TESTS = frozenset({
     "test_resource_governor", "test_runtime_tuner", "test_safetensors", "test_sampling",
     "test_schema_views", "test_stream_read_ceiling", "test_stream_scratch", "test_tokenizer",
     "test_tokenizer_arrows", "test_tokenizer_vocab_contract", "test_tool_format", "test_vram_estimate",
+    # Inkling-2-Small's frozen-passport guard: it runs before any weights exist
+    # and is not a lifecycle stage, so no manifest stage claims it.
+    "test_inkling_moe_constants",
 })
 
 

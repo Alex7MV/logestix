@@ -23,6 +23,7 @@ only supplies `input_ids` and logs agreement.
 | deepseek-v4.1-flash | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 | phi-4 | **wired** | PASS | **RED** (see §phi-4, `OPEN_TASKS.md` §O) | PASS | `deterministic=true` all |
 | qwen3.8-27b | **wired** | PASS | PASS | PASS | `deterministic=true` all |
+| inkling-2-small | **wired** | PASS | PASS | PASS | `deterministic=true` all (template-derived golden) |
 
 **The determinism stress-test passed in every case** (18 prompt×family
 combinations, byte-identical `gen_tokens` across 3 runs); the extracted

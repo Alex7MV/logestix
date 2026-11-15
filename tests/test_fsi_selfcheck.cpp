@@ -269,3 +269,29 @@ TEST_CASE("fsi: extraction ignores chain-of-thought before </think>",
               "think: Drawdown<Threshold maybe\n</think>\nDrawdown>Threshold") ==
           "Drawdown>Threshold");
 }
+
+TEST_CASE("fsi: prefer_last picks the LAST anchor on an unbroken reasoning line",
+          "[fsi][unit]")
+{
+    // A model that reasons INLINE and emits no newlines between its chain and
+    // its answer puts both on ONE line: the answer is the last `anchor=` on it.
+    // Taking the first occurrence there extracts the chain (measured on
+    // Inkling-2-Small FSI-TEST-01: the answer was correct and was the last thing
+    // in the stream, and the extractor returned the reasoning paragraph).
+    const std::string raw =
+        "Ordinary annuity PV continuous: CF*(1-exp(-r n))/(1-exp(-r))? Actually "
+        "PV=CF*sum_{t=1}^n exp(-r t). The expected template is "
+        "PV=CF*((1-exp(-r*n))/(1-exp(-r)))";
+    CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV", raw, true) ==
+          "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
+    // Without prefer_last the historical first-occurrence behaviour is kept, so
+    // every captured golden that does not opt in is untouched: it still reads
+    // from the chain's first `PV` to the chain's first expression.
+    CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV", raw, false) ==
+          "PVcontinuous:CF*(1-exp(-rn))/(1-exp(-r))?ActuallyPV=CF*sum_");
+    // Same rule for a comparison, and the last candidate line still wins.
+    CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kComparison, "Drawdown",
+                                 "maybe Drawdown<Threshold, but finally "
+                                 "Drawdown>Threshold",
+                                 true) == "Drawdown>Threshold");
+}

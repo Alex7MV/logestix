@@ -1,0 +1,65 @@
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include "lsxcommon/inkling_moe_inference_pipeline.h"
+#include "lsxcommon/inkling_moe_load.h"
+#include "lsxcommon/model_base.h"
+
+namespace lsxcommon {
+
+// Inkling-2-Small (kType "inkling-2-small"): 48-layer hybrid MoE with a 1024
+// sliding window, 8 full-attention layers, an AttnRes depth mixer (block 6),
+// learned relative-position bias instead of RoPE, per-head L2 clipping, gated
+// attention with learned sinks, and 384 routed experts (top-8) with a
+// softcapped SwiGLU. Frozen geometry: src/inkling_moe_constants.h.
+class InklingMoeModel final : public ModelBase {
+public:
+    static const std::string kType;  // "inkling-2-small"
+
+    explicit InklingMoeModel(ModelInitConfig cfg);
+    ~InklingMoeModel() override;
+
+    bool Load() override;
+    gpu::InferenceResult Infer(const ModelRequest &req) override;
+    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+
+    // A chat checkpoint must never see an unframed prompt: a raw string is out
+    // of distribution, so the single-prompt path renders the same native
+    // user turn the conversation bridge does.
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
+
+    // Model Ingestion Protocol step 4b: the checkpoint's own chat_template.jinja
+    // (role markers, tool_declare block, thinking-effort line, native JSON tool
+    // calls).
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
+
+    // Parity diagnostic: runs ONE token from position 0 and writes the residual
+    // stream after every layer to `path` as raw little-endian FP32
+    // ([num_layers+1][hidden], row 0 = post-embed_norm). See
+    // RunInklingForwardTrace in inkling_moe_inference_pipeline.h.
+    bool TraceForward(const std::vector<int32_t> &tokens,
+                     const std::string &path);
+
+    const std::string &Type() const override { return kType; }
+
+protected:
+    void TeardownWeights() override;
+
+    inkling::InklingTopology top_;
+    inkling::InklingPinnedWeights pw_;
+    std::unique_ptr<inkling::InklingExpertDb> experts_;
+    inkling::InklingSession session_;
+    inkling::InklingScratch scratch_;
+    bool weights_loaded_ = false;
+};
+
+}  // namespace lsxcommon
