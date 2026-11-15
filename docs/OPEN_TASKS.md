@@ -1499,7 +1499,7 @@ Do not "fix" it by widening `kSlack`: 300 MiB of foreign churn would still fail,
 and a slack large enough to absorb it also hides the 1 GiB leak the case exists
 to catch.
 
-## R19. Inkling-2-Small (594B / 17B active) — stages 0-3 landed, engine pending (2026-11-14)
+## R19. Inkling-2-Small (594B / 17B active) — engine done, parity green, gates + manifest pending (2026-11-15)
 
 Branch `feat/inkling-2-small`. New family (`kType = inkling-2-small`, format tag
 `logestix-inkling-2-small-nvfp4`): 48 MoE layers, hidden 4608, 48 Q / 8 KV heads
@@ -1523,7 +1523,7 @@ Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.
 
 | item | value |
 |---|---|
-| converted artifact | **312 GB** under `<vault>/logestix` (18 432 routed-expert records + 996 pinned tensors) |
+| converted artifact | **366 GB** under `<vault>/logestix` (18 432 routed-expert records + 996 pinned tensors) |
 | routed experts | 40 layers passed through **byte-verbatim** NVFP4 (per-expert global scale `amax/2688`), 8 layers (40-47) dequantized from MXFP8/32 and requantized to NVFP4 |
 | stripped ballast | 422 vision tensors + the 5-layer MTP file (`mtp.safetensors`, not in the index) |
 | conversion wall time | ~18 min on this host (single process) |
@@ -1540,32 +1540,30 @@ Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.
 
 **Open, explicitly.**
 
-- I1. **PARITY IS RED on real weights (2026-11-14).** The engine loads the 594B
-  tree, frames the control prompt through the checkpoint's own chat template and
-  decodes; it continues the `Thinking effort level: 0.9` line instead of
-  answering Paris, with a flat logit distribution. **Nothing in this row may be
-  read as a pass.**
-  Seven real defects were found and fixed on the way: BF16 read as an FP16 bit
-  pattern (every norm, clip scale, conv tap, sink, relative bank and router
-  weight); a scratch-arena overlap that wrote the dynamic conv taps into the
-  AttnRes block stack on every full layer; the relative-position states aliased
-  onto the conv scratch; the recurrent conv state not reset between requests;
-  the post-MLP conv state overlapping the post-attention one; and BOTH
-  `embed`/`unembed` and the dense projections being requantized to NVFP4 when the
-  release keeps them at BF16 (measured cost 4.6 deg on the embedding and 9.5%
-  relative L2 on the projections — fixing them is what turned garbage into
-  English).
-  The artifact now carries the release's own precision and is verified
-  tensor-by-tensor against the source (996/996 pinned tensors exact; NVFP4
-  experts byte-exact), and the engine is verified against the AUTHORITATIVE
-  implementation: `tools/inkling_transformers_crosscheck.py` loads the converted
-  artifact into `transformers.models.inkling2` and gets **identical top-5 logits
-  and 1e-3 per-layer agreement**, both at the tiny fixture geometry and at the
-  real model's ratios (GQA group 6, top-8 experts, two AttnRes blocks).
-  The remaining suspects, ranked, are in
-  `docs/open-tasks/2026-11-14-inkling-2-small-ingest.md` § "What remains"; the
-  first is the eight MXFP8 expert layers, which are the only part of the artifact
-  not at the release's precision (requantized to 4 bits, measured 0.094).
+- I1. **PARITY IS GREEN (2026-11-15).** SelfCheck answers Paris on the real
+  weights, three cycles bit-identical (`logits_hash 323d30463a3d2b72`), and the
+  answer opens `<|message_model|><|content_thinking|>The user is asking a simple
+  factual question:`. It was RED until 2026-11-15 and the cause was one defect,
+  not the seven before it: the checkpoint stores `mlp.experts.w13_weight` (and
+  `w13_weight_scale`) **row-interleaved** (`[gate, up, gate, up, ...]`) and the
+  release de-interleaves it (`Interleave(dim=1)` in transformers'
+  `"inkling2_text"` conversion mapping) before splitting; the converter copied
+  the slab in half, so all 18 432 experts met the wrong up rows and block scales.
+  The defect was invisible to every byte-level and artifact-reading check -- the
+  bytes, plane sizes, magnitudes and recorded `amax` all matched, and both my
+  float64 reference and the RELEASE's own modelling code reproduced it because
+  they eat the same planes. The model's own output was the only oracle: mean NLL
+  over "The capital of France is Paris" 9.46 (ppl 12 881) -> 3.41 (ppl 30.4) and
+  the answer " the" -> " Paris". Fixed test-first, tree re-converted (366 GB,
+  10 min). A quantitative knowledge gate now guards the class
+  (`inkling real-weight sanity`, one prefill per position, mean NLL < log(100)
+  plus the exact top-1). The same gate exposed a second defect:
+  `InklingSession::EnsureCapacity` copied `kv_rows * LayerStride()` bytes, which
+  includes the capacity and so over-ran the old allocation on every growth; the
+  runtime rejected the copy and the error surfaced two calls later as
+  `[embed] embed row (cuda 1)`. Both fixed and pinned.
+  Still open for this row: FSI/CODE/DET goldens, the perf row + VRAM profile, the
+  manifest row with its generated registries, and the format-tag rename.
 - I2. `mtp.safetensors` is a **separate 3.4 GB file that the index does not
   list**; a converter that trusts `model.safetensors.index.json` silently
   ignores the 5 MTP layers (correct) but must not assume the directory only
@@ -1581,6 +1579,15 @@ Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.
 - I5. `config.json`'s `eos_token_id` is `<|content_model_end_sampling|>`
   (200006), not `<|endoftext|>` (199999); both stop. `bos_token_id` is absent
   and there is no pad id.
+- I7. **`mlp.experts.w13_weight` and `w13_weight_scale` are ROW-INTERLEAVED**
+  (`[gate, up, gate, up, ...]`) and must be de-interleaved before the gate/up
+  split — `Interleave(dim=1)` in `transformers/conversion_mapping.py`'s
+  `"inkling2_text"` entry, applied to BOTH tensors. Taking the slab in halves
+  keeps every byte, plane size and magnitude, and silently destroys the model
+  (see I1). The same map is the authoritative answer for every other name in
+  this checkpoint: the attention projections are plain renames, and
+  `attn_res.attn_queries.{i}` belongs to `layers.{i+1}` — which is what
+  `Inkling2IndexOffsetWeightRename` says in as many words.
 - I6. The `transformers` port that is authoritative for this family is
   `models/inkling2` (5.23.0+). The earlier `models/inkling` module is a
   **different** architecture (no sinks, no L2 clip, scale `1/head_dim` instead

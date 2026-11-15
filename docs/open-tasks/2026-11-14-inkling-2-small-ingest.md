@@ -164,15 +164,84 @@ the 4-bit rounding on those layers flipping an answer. The measurement to
 record: relL2 of the requantized layer-40..47 experts against their dequantized
 FP8 source (to be taken when the engine can decode them).
 
-## Real-weight status: root-cause bug fixed, parity still RED (2026-11-14)
+## Real-weight status: parity GREEN (2026-11-15)
 
 `test_inkling_moe_selfcheck` runs the engine on the converted 594B tree, frames
 `"The capital of France is"` through the checkpoint's own chat template, decodes
-and returns. It does **not** answer Paris: the model emits token 220 (a single
-space) over and over. The gate is in the tree and **fails when run** — it is a
-red gate, not a pass.
+and answers. Three cycles, bit-identical (`logits_hash 323d30463a3d2b72`), and
+the stream opens
 
-### What was fixed (seven real defects, all found by measurement)
+    <|message_model|><|content_thinking|>The user is asking a simple factual
+    question: ...
+
+which also retires the "the template adds no generation prompt" hypothesis: the
+model writes its own assistant marker. The red gate that stood here until
+2026-11-15 was one defect, described below; the seven engine defects listed
+after it were real too, but each only moved the output from garbage towards
+English.
+
+## Root cause: the fused expert slab is ROW-INTERLEAVED (2026-11-15)
+
+This is the defect that cost the model its knowledge, and it is worth recording in
+full because every check in the tree was blind to it.
+
+`model.llm.layers.L.mlp.experts.w13_weight` stores the gate and up projections in
+one slab whose rows alternate: `[gate_0, up_0, gate_1, up_1, ...]`. The release's
+own conversion de-interleaves that before splitting the two projections —
+`Interleave(dim=1)` on both `w13_weight` and `w13_weight_scale` in
+`transformers/conversion_mapping.py`'s `"inkling2_text"` entry, whose docstring is
+literally "Deinterleaves a tensor along `dim` by splitting in two and
+transposing". The converter copied the first `I` rows as the gate plane and the
+second `I` as the up plane, so every expert's gate rows met the wrong up rows and
+the wrong block scales. 18 432 expert records, all of them.
+
+**Why nothing caught it.** Every property a byte-level check can test still held:
+the bytes are the release's, the planes have exactly the right sizes, the
+dequantized magnitudes are right (std 0.01473 against 0.0147 for the dense
+weights) and the maximum equals the recorded `amax` to the last digit. Worse, it
+is *symmetric*: my float64 reference reads the artifact and reproduced it, and so
+did `tools/inkling_transformers_real.py` driving the RELEASE's own
+`Inkling2TextModel` — that tool feeds the release's code my dequantized planes,
+so a wrong plane split passes straight through it. The synthetic `transformers`
+cross-check could not see it either: the fixture's experts were packed by my own
+converter.
+
+**What broke the symmetry.** The model's own output, measured on real weights:
+
+| measurement | split-half (before) | de-interleaved (after) |
+|---|---|---|
+| mean NLL over "The capital of France is Paris" | 9.46 → ppl **12 881** | 3.41 → ppl **30.4** |
+| top-1 after "The capital of France is" | `" the"` | **`" Paris"`** |
+| "France" after "The capital of" | ppl 5.9e5 | ppl 109 |
+| SelfCheck first ids | `" 0.9.9.0.0.9.0.0..."` | `<\|message_model\|><\|content_thinking\|>` |
+
+The intermediate confirmation, taken before 366 GB was re-converted, was a
+host-side row gather injected into the expert staging path behind
+`LSX_INKLING_W13_DEINTERLEAVE`: with it the model answered " Paris", without it
+it answered " the". The converter then got the real fix, test-first
+(`test_inkling_moe_convert` now asserts gate row `r` == source row `2r` and up
+row `r` == source row `2r+1`, for both codecs, weights and scales), and the tree
+was re-converted in 10 min.
+
+**New gate.** `inkling real-weight sanity: the model keeps its knowledge` scores
+the model's own continuation: one prefill per position over a six-token sentence,
+mean NLL < log(100) and the exact top-1 " Paris". Deterministic, no sampling, and
+the bound sits 100x above a healthy value so it only fires when a defect costs
+the model its knowledge. That is the class this bug belonged to, and the class no
+artifact-reading reference can ever see.
+
+### A second defect found by the same gate: KV growth over-read
+
+`InklingSession::EnsureCapacity` copied `kv_rows * LayerStride()` bytes per layer,
+but `LayerStride()` includes the capacity, so the copy ran past the old
+allocation whenever the cache grew; the runtime rejected it with
+`cudaErrorInvalidValue`, which was then picked up by the NEXT request's first
+unchecked launch and reported as `[embed] embed row (cuda 1)` — with every
+pointer non-null and no pending error on entry. Fixed test-first
+(`inkling KV session growth keeps every layer's rows intact`, red at
+`l0 h0 p0 d1` on the old code) and the error is now propagated where it happens.
+
+### What was fixed before it (seven real defects, all found by measurement)
 
 1. **BF16 tensors were read as FP16 bit patterns.** `UploadHalf`/`UploadF32`
    used `__ushort_as_half`, which reinterprets the 16 bits as IEEE half. The two
@@ -302,29 +371,28 @@ one.
 
 ### What remains
 
-The gate is still RED. Current output: `" 0.9.0.9.0.0.0.0..."` — the model
-continues the `Thinking effort level: 0.9` line and the logit distribution is
-flat (top five within ~1.5 units of each other, `<|message_model|>` never ranks).
-Appending the assistant opener to the prompt does **not** change this, so the
-frame is not the cause.
+Parity is green; the lifecycle is not complete. Open, in order:
 
-Ranked next steps:
-
-- N1. **The eight MXFP8 expert layers.** They are the one part of the artifact
-  that is NOT at the release's precision: the release stores layers 40-47 as
-  E4M3 + ue8m0/32 and this converter requantizes them to NVFP4 (measured 0.094).
-  The engine already carries FP8 dequant helpers (`deepseek_moe_v41_fp8.h`), so
-  the faithful fix is an FP8 expert plane for those eight layers rather than a
-  second 4-bit rounding.
-- N2. **A reference run of the source model on the same frame.** The checkpoint
-  ships SGLang / vLLM recipes; even one layer offloaded to CPU would settle
-  whether the release answers "Paris" for this 20-token frame. That is the one
-  question no reference reading the artifact can answer.
-- N3. Compare the engine's router on the real model against the reference's
-  `e_score_correction_bias` treatment (selection-only) at 384 experts — the
-  ratio test used 16, where a flipped selection is far less likely.
-- N4. Widen the ratio test to `hidden=4608, expert=2304, 384 experts` on ONE
-  layer if the memory allows; the remaining untested scale is expert COUNT.
+- N1. FSI / CODE / DET goldens: not written yet. `docs/SELFCHECK_MATRIX.md` still
+  shows the family with SelfCheck only.
+- N2. The perf row at the canonical 2048-token protocol, plus the VRAM profile
+  (which was estimated under the old single-codec assumption and now sees two
+  expert codecs: NVFP4 0.5 B/elem for layers 0-39, E4M3 1.0 B/elem for 40-47).
+- N3. `models/inkling-2-small.json` + the generated registries
+  (`model_manifest.h`, `model_targets.cmake`, `model_registry.inc`), removal of
+  the five `kPendingSuiteTargets` / `_NON_MODEL_TESTS` entries, and a regenerated
+  `docs/MODELS.md`.
+- N4. The stage-9 report in `docs/model-reports/`.
+- N5. The format tag still says `logestix-inkling-2-small-nvfp4` although the
+  artifact now carries two expert codecs plus BF16 dense planes; it should be
+  renamed in the same change that lands the manifest row.
+- N6. N1/N3/N4 of the previous list are now answered rather than open: the MXFP8
+  layers are at the release's own precision (the FP8 GEMV), and the frame is
+  right — the model emits its own `<|message_model|>` marker once its experts
+  work. What is left of "a reference run of the source model" is
+  `tools/inkling_transformers_real.py`, which runs the release's own modelling
+  code on real weights but with MY expert dequantization, so it cannot audit the
+  codec or the interleave — only the model's own perplexity can.
 
 ## Registry status: PENDING ingestion (no manifest row yet)
 
