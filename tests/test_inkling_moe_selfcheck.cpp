@@ -12,6 +12,9 @@
 // Real weights are optional: an absent vault SKIPs (exit 4), never fails.
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -144,6 +147,12 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
         }
         WARN("inkling head top5 at the framed prompt:" << dump);
         {
+            std::string ids_txt;
+            for (std::size_t i2 = 0; i2 < r.input_ids.size(); ++i2)
+                ids_txt += (i2 ? "," : "") + std::to_string(r.input_ids[i2]);
+            WARN("inkling prompt ids (" << r.input_ids.size() << "): " << ids_txt);
+        }
+        {
             std::string t(4096, '\0');
             std::size_t cap = t.size();
             if (arrow_tokenizer_decode(model->Tokenizer(), r.input_ids.data(),
@@ -163,6 +172,140 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
     // TraceForward LAST: its stage dump (when enabled) must not be overwritten
     // by the diagnostic Infer above, which runs a DIFFERENT sequence.
     REQUIRE(m->TraceForward(toks, path));
+    model->Unload();
+}
+
+// The KV session grows on demand. Growing it must copy the rows already written
+// WITHOUT reading past the old allocation: `LayerStride()` includes the capacity,
+// so `kv_rows * LayerStride()` over-reads by capacity/kv_rows -- past the layer,
+// and past the whole buffer once the new stride is bigger. The runtime rejects
+// that D2D copy with cudaErrorInvalidValue, and the error then surfaces at the
+// next request's first unchecked launch as if an unrelated kernel had failed
+// (measured: "inkling prompt: [embed] embed row (cuda 1)" on the second request).
+// This pins the layout too: every layer's rows must land at the same
+// (layer, head, pos, dim) offsets in the new buffer.
+TEST_CASE("inkling KV session growth keeps every layer's rows intact",
+          "[inkling][session]")
+{
+    if (cudaFree(nullptr) != cudaSuccess) SKIP("no CUDA device");
+    lsxcommon::inkling::InklingTopology top;
+    top.num_layers = 3;
+    top.num_kv_heads = 2;
+    top.head_dim = 4;
+
+    lsxcommon::inkling::InklingSession s;
+    REQUIRE(s.EnsureCapacity(top, 2, cudaStream_t{}) == cudaSuccess);
+    const lsxcommon::KvCacheGeometry old_geom = s.geom;
+    REQUIRE(s.capacity == 2);
+
+    auto value = [](int l, int h, int p, int d) {
+        return static_cast<__half>(100.0f * l + 10.0f * h + p + 0.25f * d);
+    };
+    std::vector<__half> seed(static_cast<std::size_t>(old_geom.Elements()), __half{});
+    for (int l = 0; l < 3; ++l)
+        for (int h = 0; h < 2; ++h)
+            for (int p = 0; p < 2; ++p)
+                for (int d = 0; d < 4; ++d)
+                    seed[static_cast<std::size_t>(
+                        old_geom.Offset(l, h, p, d))] = value(l, h, p, d);
+    REQUIRE(cudaMemcpy(s.d_k, seed.data(), seed.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(s.d_v, seed.data(), seed.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    s.kv_rows = 2;
+
+    // Grow: this is the call that used to over-read.
+    REQUIRE(s.EnsureCapacity(top, 5, cudaStream_t{}) == cudaSuccess);
+    REQUIRE(s.capacity >= 5);
+    // The copy is asynchronous on the stream we passed; the same stream's
+    // synchronize is what the pipeline relies on.
+    REQUIRE(cudaStreamSynchronize(cudaStream_t{}) == cudaSuccess);
+
+    std::vector<__half> got(static_cast<std::size_t>(s.geom.Elements()), __half{});
+    REQUIRE(cudaMemcpy(got.data(), s.d_k, got.size() * sizeof(__half),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    for (int l = 0; l < 3; ++l)
+        for (int h = 0; h < 2; ++h)
+            for (int p = 0; p < 2; ++p)
+                for (int d = 0; d < 4; ++d) {
+                    INFO("l" << l << " h" << h << " p" << p << " d" << d);
+                    REQUIRE(got[static_cast<std::size_t>(s.geom.Offset(l, h, p, d))] ==
+                            value(l, h, p, d));
+                }
+    // A second, no-op growth must not disturb anything.
+    REQUIRE(s.EnsureCapacity(top, 4, cudaStream_t{}) == cudaSuccess);
+    s.Free();
+}
+
+// Quantitative sanity gate on the REAL weights.
+//
+// The byte-verbatim checks prove the artifact carries the release's bytes, and
+// the parity traces prove the kernels implement the reference maths. Neither can
+// see a defect that is symmetric in both: the fused expert slab taken as two
+// halves instead of de-interleaved keeps every byte, every plane size and every
+// magnitude, and both my float64 reference and the engine reproduced it exactly.
+// What it destroys is the model's KNOWLEDGE -- measured 12,881 mean perplexity
+// over "The capital of France is Paris" and the answer " the" instead of
+// " Paris", against 30.4 and " Paris" once the slab is de-interleaved.
+//
+// So this gate scores the model's own continuation. It is deterministic, needs
+// one prefill per position and no sampling, and its bound sits ~100x above a
+// healthy value: a defect that only makes the model vague still passes, a defect
+// that costs it its knowledge fails loudly. The ids below are the checkpoint's
+// own tokenizer's encoding of "The capital of France is".
+TEST_CASE("inkling real-weight sanity: the model keeps its knowledge",
+          "[inkling][sanity]")
+{
+    const fs::path root = VaultRoot();
+    if (!fs::exists(root / "logestix" / "model.index.json"))
+        SKIP("converted Inkling-2-Small tree absent: " + root.string());
+
+    static bool once = [] {
+        lsxcommon::LsxModelFactory::Register<lsxcommon::InklingMoeModel>();
+        return true;
+    }();
+    (void)once;
+
+    auto model = lsxcommon::LsxModelFactory::Create(Cfg(root.string()));
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    const std::vector<int32_t> sentence = {371, 151451, 149879, 151194, 149884,
+                                           152717};
+    double nll_sum = 0.0;
+    for (std::size_t i = 1; i < sentence.size(); ++i) {
+        lsxcommon::ModelRequest req;
+        req.input_ids.assign(sentence.begin(),
+                             sentence.begin() + static_cast<long>(i));
+        req.max_gen_tokens = 1;
+        req.ignore_eos = true;
+        const auto res = model->Infer(req);
+        INFO("prefix length " << i << ": " << res.error_msg);
+        REQUIRE(res.ok);
+        REQUIRE_FALSE(res.final_logits.empty());
+        const auto &lg = res.final_logits;
+        const float mx = *std::max_element(lg.begin(), lg.end());
+        double sum = 0.0;
+        for (float v : lg) sum += std::exp(static_cast<double>(v - mx));
+        const double lse = mx + std::log(sum);
+        // The target id must be inside the unpadded vocabulary the engine scores.
+        REQUIRE(static_cast<std::size_t>(sentence[i]) < lg.size());
+        const double nll = lse - static_cast<double>(lg[sentence[i]]);
+        INFO("token " << sentence[i] << " nll " << nll);
+        nll_sum += nll;
+        if (i + 1 == sentence.size()) {
+            std::size_t top = 0;
+            for (std::size_t k = 1; k < lg.size(); ++k)
+                if (lg[k] > lg[top]) top = k;
+            INFO("top-1 after \"The capital of France is\": " << top);
+            // The whole point of the model: the answer, not a filler token.
+            REQUIRE(top == 152717);
+        }
+    }
+    const double mean_nll = nll_sum / static_cast<double>(sentence.size() - 1);
+    WARN("inkling sanity: mean nll " << mean_nll << " -> perplexity "
+                                     << std::exp(mean_nll));
+    REQUIRE(std::exp(mean_nll) < 100.0);
     model->Unload();
 }
 

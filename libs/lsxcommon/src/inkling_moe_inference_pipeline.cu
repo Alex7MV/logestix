@@ -133,18 +133,42 @@ cudaError_t InklingSession::EnsureCapacity(const InklingTopology &top,
         return cudaGetLastError();
     }
     if (d_k && kv_rows > 0) {
+        // `LayerStride()` INCLUDES the capacity, so `kv_rows * LayerStride()` is
+        // not the size of the rows already written: it over-reads by
+        // capacity/kv_rows, past the layer and -- once the new stride is larger
+        // -- past the whole old allocation. The runtime rejects such a copy with
+        // cudaErrorInvalidValue, which in turn surfaces at the NEXT request's
+        // first unchecked launch (`cudaGetLastError`) as if an unrelated kernel
+        // had failed: measured as "inkling prompt: [embed] embed row (cuda 1)"
+        // on the second request of a session. The rows of one layer are
+        // contiguous, `kv_rows * pos_stride` of them.
+        const size_t bytes = static_cast<size_t>(kv_rows) *
+                             static_cast<size_t>(geom.pos_stride) *
+                             sizeof(__half);
         for (int l = 0; l < static_cast<int>(g.layers); ++l) {
-            const size_t bytes = static_cast<size_t>(kv_rows) *
-                                 static_cast<size_t>(g.LayerStride()) *
-                                 sizeof(__half);
-            cudaMemcpyAsync(nk + l * g.LayerStride(),
-                            d_k + l * geom.LayerStride(), bytes,
-                            cudaMemcpyDeviceToDevice, stream);
-            cudaMemcpyAsync(nv + l * g.LayerStride(),
-                            d_v + l * geom.LayerStride(), bytes,
-                            cudaMemcpyDeviceToDevice, stream);
+            cudaError_t ce = cudaMemcpyAsync(
+                nk + l * g.LayerStride(), d_k + l * geom.LayerStride(), bytes,
+                cudaMemcpyDeviceToDevice, stream);
+            if (ce != cudaSuccess) {
+                cudaFree(nk);
+                cudaFree(nv);
+                return ce;
+            }
+            ce = cudaMemcpyAsync(nv + l * g.LayerStride(),
+                                 d_v + l * geom.LayerStride(), bytes,
+                                 cudaMemcpyDeviceToDevice, stream);
+            if (ce != cudaSuccess) {
+                cudaFree(nk);
+                cudaFree(nv);
+                return ce;
+            }
         }
-        cudaStreamSynchronize(stream);
+        const cudaError_t se = cudaStreamSynchronize(stream);
+        if (se != cudaSuccess) {
+            cudaFree(nk);
+            cudaFree(nv);
+            return se;
+        }
     }
     if (d_k) cudaFree(d_k);
     if (d_v) cudaFree(d_v);
