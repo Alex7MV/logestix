@@ -20,7 +20,7 @@ TEST_CASE("inkling-2-small passport: registry and format identity",
           "[inkling][constants]")
 {
     CHECK(std::string(kModelType) == "inkling-2-small");
-    CHECK(std::string(kFormatTag) == "logestix-inkling-2-small-nvfp4");
+    CHECK(std::string(kFormatTag) == "logestix-inkling-2-small");
     CHECK(std::string(kSourceModelType) == "inkling2");
     CHECK(kTokenizerKind == 2);
 }

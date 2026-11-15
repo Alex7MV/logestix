@@ -39,7 +39,7 @@ namespace lsxcommon::inkling {
 namespace frozen {
 
 inline constexpr char kModelType[] = "inkling-2-small";
-inline constexpr char kFormatTag[] = "logestix-inkling-2-small-nvfp4";
+inline constexpr char kFormatTag[] = "logestix-inkling-2-small";
 inline constexpr char kSourceModelType[] = "inkling2";
 // tiktoken BPE (o200k Split pre-tokenizer over a `tiktoken/tokenizer.model`
 // mergeable-ranks file), the Kimi pattern.

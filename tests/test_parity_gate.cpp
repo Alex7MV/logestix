@@ -95,10 +95,19 @@ std::unique_ptr<lsxcommon::IModel> LoadModel(const lsxmanifest::ModelRow &row,
 template <typename Cases>
 std::string ExplainCases(const Cases &cases)
 {
+    // The RAW text is included, tail-first and truncated: without it, "the model
+    // reasoned correctly but the extraction latched onto a reasoning line", "the
+    // budget cut the answer mid-thought" and "the answer is wrong" all print
+    // identically as extracted != expected. The tail matters because a reasoning
+    // model states its answer LAST.
     std::string why;
     for (const auto &c : cases)
+    {
+        std::string tail = c.raw;
+        if (tail.size() > 400) tail = "..." + tail.substr(tail.size() - 400);
         why += "\n  " + c.id + " expected='" + c.expected + "' extracted='" +
-               c.extracted + "' error='" + c.error + "'";
+               c.extracted + "' error='" + c.error + "'\n    raw=" + tail;
+    }
     return why;
 }
 

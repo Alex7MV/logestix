@@ -165,7 +165,7 @@ TEST_CASE("inkling real vault index matches the frozen passport",
     auto st = lsxcommon::inkling::LoadInklingTopology(root.string(), top);
     if (!st.ok()) FAIL(st.ToString());
 
-    REQUIRE(top.format == "logestix-inkling-2-small-nvfp4");
+    REQUIRE(top.format == "logestix-inkling-2-small");
     REQUIRE(top.source_model_type == "inkling2");
     REQUIRE(top.tokenizer_kind == 2);
 

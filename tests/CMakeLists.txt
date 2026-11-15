@@ -86,11 +86,14 @@ add_executable(test_kimi_pro_convert test_kimi_pro_convert.cpp)
 target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
-# ── Inkling-2-Small (PENDING ingestion: no manifest row until the decode
-# engine exists; the targets are declared in test_model_suite_guard's
-# kPendingSuiteTargets and move to models/inkling-2-small.json when stage 5
-# lands). Labels/timeouts/skip codes are set by hand here because the generated
-# model_targets.cmake fragment only covers manifest-claimed targets. ──
+# ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
+# The ctest registrations for every manifest-claimed target come from the
+# generated model_targets.cmake fragment; what stays here is per-target BUILD
+# reality (sources, link libraries, compile definitions).
+#
+# `test_inkling_moe_constants` is not in the manifest: it is the frozen-passport
+# guard for the family and runs before any weights exist, so it is registered by
+# hand as a `fast` target.
 add_executable(test_inkling_moe_constants test_inkling_moe_constants.cpp)
 target_link_libraries(test_inkling_moe_constants PRIVATE lsxcommon
     Catch2::Catch2WithMain)
@@ -99,32 +102,16 @@ set_tests_properties(test_inkling_moe_constants PROPERTIES LABELS fast)
 add_executable(test_inkling_moe_convert test_inkling_moe_convert.cpp)
 target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_convert COMMAND test_inkling_moe_convert)
-set_tests_properties(test_inkling_moe_convert PROPERTIES TIMEOUT 600)
-set_tests_properties(test_inkling_moe_convert PROPERTIES RESOURCE_LOCK "gpu")
-set_tests_properties(test_inkling_moe_convert PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
-set_tests_properties(test_inkling_moe_convert PROPERTIES LABELS convert)
 
 add_executable(test_inkling_moe_loader test_inkling_moe_loader.cpp)
 target_link_libraries(test_inkling_moe_loader PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_loader COMMAND test_inkling_moe_loader)
-set_tests_properties(test_inkling_moe_loader PROPERTIES TIMEOUT 300)
-set_tests_properties(test_inkling_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
-set_tests_properties(test_inkling_moe_loader PROPERTIES RESOURCE_LOCK "gpu")
-set_tests_properties(test_inkling_moe_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
-set_tests_properties(test_inkling_moe_loader PROPERTIES LABELS inference)
 
 add_executable(test_inkling_moe_selfcheck test_inkling_moe_selfcheck.cpp)
 target_include_directories(test_inkling_moe_selfcheck PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_inkling_moe_selfcheck PRIVATE lsxcommon
     Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_selfcheck COMMAND test_inkling_moe_selfcheck)
-set_tests_properties(test_inkling_moe_selfcheck PROPERTIES TIMEOUT 14400)
-set_tests_properties(test_inkling_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
-set_tests_properties(test_inkling_moe_selfcheck PROPERTIES RESOURCE_LOCK "gpu")
-set_tests_properties(test_inkling_moe_selfcheck PROPERTIES LABELS inference)
 
 add_executable(test_inkling_moe_tool_framing test_inkling_moe_tool_framing.cpp)
 target_include_directories(test_inkling_moe_tool_framing PRIVATE
@@ -133,28 +120,41 @@ target_compile_definitions(test_inkling_moe_tool_framing PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_inkling_moe_tool_framing PRIVATE lsxcommon
     arrow_shared Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_tool_framing COMMAND test_inkling_moe_tool_framing)
-set_tests_properties(test_inkling_moe_tool_framing PROPERTIES LABELS fast)
 
 add_executable(test_inkling_moe_model test_inkling_moe_model.cpp)
 target_include_directories(test_inkling_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_inkling_moe_model PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_model COMMAND test_inkling_moe_model)
-set_tests_properties(test_inkling_moe_model PROPERTIES TIMEOUT 600)
-set_tests_properties(test_inkling_moe_model PROPERTIES SKIP_RETURN_CODE 4)
-set_tests_properties(test_inkling_moe_model PROPERTIES RESOURCE_LOCK "gpu")
-set_tests_properties(test_inkling_moe_model PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
-set_tests_properties(test_inkling_moe_model PROPERTIES LABELS inference)
-
 # The kernel executable is created next to its CUDA object library below
-# (test_inkling_cu); only the ctest registration lives here.
-add_test(NAME test_inkling_moe_kernels COMMAND test_inkling_moe_kernels)
-set_tests_properties(test_inkling_moe_kernels PROPERTIES TIMEOUT 300)
-set_tests_properties(test_inkling_moe_kernels PROPERTIES SKIP_RETURN_CODE 4)
-set_tests_properties(test_inkling_moe_kernels PROPERTIES RESOURCE_LOCK "gpu")
-set_tests_properties(test_inkling_moe_kernels PROPERTIES LABELS inference)
+# (test_inkling_cu).
+
+# Parity gates: the shared driver, one target per kind, parameterised by the
+# model_type of the manifest row and the golden directory CMake knows.
+add_executable(test_inkling_moe_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-small\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_inkling_moe_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-small\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_inkling_moe_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-small\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 
 # ── Inkling-2-Small synthetic converter (mixed NVFP4/MXFP8 expert source) ───
 # Same synthetic-checkpoint discipline; the gate is the per-layer expert codec

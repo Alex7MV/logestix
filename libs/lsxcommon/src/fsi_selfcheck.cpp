@@ -274,6 +274,34 @@ std::string CanonicalizeFsiAnswer(FsiKind kind, std::string_view anchor,
 
 } // namespace
 
+// Where on the winning LINE the answer starts.
+//
+// `prefer_last` (a model that states its answer last) has to apply to the anchor
+// position as well as to the line choice: a model that reasons inline emits NO
+// line break between its chain and its answer, so the chain and the answer share
+// one line and the FIRST `anchor=` on it belongs to the chain. Measured on
+// Inkling-2-Small FSI-TEST-01 — the answer was correct and was the last thing in
+// the stream, and this function's first-occurrence predecessor returned a
+// paragraph of reasoning.
+std::size_t AnswerAnchorPos(const std::string &line, std::string_view anchor,
+                            FsiKind kind, bool prefer_last)
+{
+    const std::size_t first = line.find(anchor);
+    if (!prefer_last) return first;
+    std::size_t best = std::string::npos;
+    for (std::size_t a = first; a != std::string::npos;
+         a = line.find(anchor, a + anchor.size()))
+    {
+        std::size_t i = a + anchor.size();
+        while (i < line.size() && std::isspace((unsigned char)line[i])) ++i;
+        if (i >= line.size()) continue;
+        if (kind == FsiKind::kArithmetic && line[i] == '=') best = a;
+        else if (kind == FsiKind::kComparison && IsComparisonOp(line[i]))
+            best = a;
+    }
+    return best == std::string::npos ? first : best;
+}
+
 std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
                               std::string_view raw, bool prefer_last)
 {
@@ -289,8 +317,10 @@ std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
         after = c + 9;
     if (after != std::string::npos) text = text.substr(after);
     const std::string line = SelectAnswerLine(text, anchor, kind, prefer_last);
+    const std::size_t anchor_at =
+        AnswerAnchorPos(line, anchor, kind, prefer_last);
     if (kind == FsiKind::kComparison) {
-        const std::size_t a = line.find(anchor);
+        const std::size_t a = anchor_at;
         if (a == std::string::npos) return {};
         std::size_t i = a + anchor.size();
         while (i < line.size() && std::isspace((unsigned char)line[i])) ++i;
@@ -306,7 +336,7 @@ std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
             ++i;
         return Normalize(std::string_view(line).substr(a, i - a));
     }
-    const std::size_t a = line.find(anchor);
+    const std::size_t a = anchor_at;
     if (a == std::string::npos) return {};
     const std::size_t eq = line.find('=', a + anchor.size());
     if (eq == std::string::npos) return {};

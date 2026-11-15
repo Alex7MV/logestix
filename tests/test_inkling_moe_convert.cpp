@@ -1,6 +1,6 @@
 // Inkling-2-Small synthetic end-to-end converter test. Runs the full converter
 // on a tiny legal fixture (LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1) and asserts the
-// logestix-inkling-2-small-nvfp4 layout: the sliding/full split, the AttnRes
+// logestix-inkling-2-small layout: the sliding/full split, the AttnRes
 // query renaming (source `attn_queries.L` is layer `L+1`), the two expert codec
 // paths (NVFP4 verbatim with a per-expert global scale amax/2688, MXFP8
 // requantized to NVFP4), the stripped+counted vision ballast, and the raw
@@ -64,7 +64,7 @@ float E4m3(uint8_t b) { return lsxcommon::nvfp4::E4m3ToFloat(b); }
 
 }  // namespace
 
-TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small-nvfp4",
+TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small",
           "[inkling][convert]")
 {
     REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
@@ -90,7 +90,7 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small-nvfp4",
 
     std::string_view fmt;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == "logestix-inkling-2-small-nvfp4");
+    REQUIRE(fmt == "logestix-inkling-2-small");
 
     int64_t layers = 0, experts = 0, inter = 0;
     REQUIRE(doc["num_layers"].get_int64().get(layers) == simdjson::SUCCESS);

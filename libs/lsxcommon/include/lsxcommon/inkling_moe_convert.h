@@ -137,7 +137,7 @@ ParsedInklingTensor ClassifyInklingTensor(const std::string &name);
 // Dense weights uploaded as NVFP4 for the whole session.
 bool InklingTensorIsPinnedNvfp4(InklingTensorKind kind);
 
-// Converts the checkpoint into the logestix-inkling-2-small-nvfp4 layout under
+// Converts the checkpoint into the logestix-inkling-2-small layout under
 // <output_root>/logestix.
 arrow::Status ConvertInklingModel(const std::string &input_dir,
                                   const std::string &output_root);
