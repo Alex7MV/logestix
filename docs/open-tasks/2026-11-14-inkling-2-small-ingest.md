@@ -1,8 +1,12 @@
-# Inkling-2-Small ingestion — stage 0 triage and plan
+# Inkling-2-Small ingestion — stage 0 triage, plan and full trail
 
-**Status:** in progress (branch `feat/inkling-2-small`). This file is the stage-0
-record required by `ingesting-a-model` (§ Stage 0) and the working plan; the
-closing artifact is `docs/model-reports/2026-11-14-Inkling-2-Small.md`.
+**Status: COMPLETE (2026-11-15).** Every stage of the Model Ingestion Protocol is
+landed and measured; the family is in the registry (39 rows) with all four gates
+green. This file is the stage-0 record required by `ingesting-a-model` (§ Stage 0)
+plus the investigation trail, because this ingestion's red gate turned out to be a
+conversion defect that no byte-level check could see (see "Root cause");
+the publishable artifact is
+`docs/model-reports/2026-11-15-inkling-2-small.md`.
 
 Source checkpoint: `/mnt/fast_storage/huggingface/Inkling-2-Small`
 (`thinkingmachines/Inkling-2-Small`, modelopt NVFP4 release, 24 shards +
@@ -406,20 +410,47 @@ Two harness gaps were found and closed on the way, both test-first:
    mid-thought" and "the answer is wrong" were indistinguishable. It now prints
    the raw tail.
 
+### Stage 4: throughput (2026-11-15)
+
+Seeded through the harness at the canonical protocol (2048 generated tokens,
+Release build, RTX 5090, one target at a time):
+
+| mode | t/s | TTFT | avg power | peak |
+|---|---|---|---|---|
+| `perf` (kAuto) | **1.47** | 14 485 ms | 95.3 W | 120.9 W |
+| `r3` (kOff) | **1.46** | 14 469 ms | 96.7 W | 101.0 W |
+
+The pre-engine estimate in §0.5 predicted "~0.5-2 t/s is the expected band" from
+the active read alone (8 of 384 experts × 48 layers ≈ 7 GB per token against a
+366 GB artifact on a 32 GB card), and the measurement lands in it. Two
+consequences worth recording: **95 W average on a 575 W card** says the SMs spend
+most of each layer waiting for the next expert slab, and the two numeric modes
+differ by 0.7 %, i.e. there is almost no arithmetic left to speed up.
+
+Remaining headroom, unmeasured on this family: overlap the next layer's expert
+staging with this layer's compute (the §R17 P6 pattern), and raise
+`LSX_INKLING_MAX_OPEN` so the residency window holds a sequence's working set
+instead of evicting between tokens. Neither is a correctness change.
+
 ### What remains
 
-Parity and the three parity gates are green; the lifecycle is not complete. Open,
-in order:
+Nothing in the lifecycle. Every stage is landed and measured:
 
-- N1. The perf row at the canonical 2048-token protocol (both modes) and the
-  generated VRAM profile. The profile is re-derived from the source tensors on
-  every conversion, so it already reflects the two codecs
-  (`min` 13.3 GB / `optimal` 15.5 GB / `max` 391.6 GB at 2048 context); the row
-  needs a Release build because the Debug gate SKIPs by design.
-- N2. The stage-9 report exists (`docs/model-reports/2026-11-15-inkling-2-small.md`)
-  and is linked from the manifest; its throughput section fills in with N1.
-- N3. `docs/OPEN_TASKS.md` §R19 I1 still says "gates + manifest pending" in its
-  title; after N1 it moves to the Archive with the full trail.
+| stage | artifact |
+|---|---|
+| 1-2 convert | `--inkling` in lsxforge, 366 GB tree, `test_inkling_moe_convert` |
+| 3 load | `test_inkling_moe_loader`, generated VRAM profile |
+| 4b framing | `test_inkling_moe_tool_framing`, 49 assertions |
+| 5 kernels | `test_inkling_moe_kernels`, 1588 assertions |
+| 8 gates | SelfCheck x3 `323d30463a3d2b72`, FSI/CODE/DET 3/3, knowledge sanity |
+| 4 throughput | 1.47/1.46 t/s @ 2048, seeded |
+| 9 report | `docs/model-reports/2026-11-15-inkling-2-small.md` |
+
+Follow-ups that are NOT lifecycle gaps, recorded so they are not mistaken for
+them: the six traps in the model report (interleaved slab, mixed codec, the
+`layer-1` query index, the off-index `mtp.safetensors`, the EOS id, and
+`inkling` vs `inkling2`), plus the template-derived goldens, which would become
+source-derived only on a host that can execute a 594B checkpoint.
 
 ## Registry status: LANDED (2026-11-15)
 
@@ -447,18 +478,18 @@ Consequences, machine-enforced:
 - `docs/MODELS.md` now has 39 rows and `test_manifest_sync` verifies it against
   the compiled table.
 
-## Plan (TDD, one stage per commit)
+## Plan (TDD, one stage per commit) — all stages landed 2026-11-15
 
 | # | deliverable | test (label) | state |
 |---|---|---|---|
 | 1 | `inkling_moe_constants.h` passport, naming-guard family token, `models/inkling-2-small.json` | `test_inkling_moe_constants` (fast) | **done, green** (186 assertions) |
-| 2 | `inkling_moe_convert.cpp` + `--inkling` in `apps/lsxforge` | `test_inkling_moe_convert` (convert, synthetic) | **done, green** (349 assertions); real tree converted (312 GB, 18 min) |
+| 2 | `inkling_moe_convert.cpp` + `--inkling` in `apps/lsxforge` | `test_inkling_moe_convert` (convert, synthetic) | **done, green** (445 assertions); real tree converted (366 GB, 10 min after the interleave fix) |
 | 3 | topology reader + artifact layout (`inkling_moe_load.*`) | `test_inkling_moe_loader` (load, synthetic + real index) | **done, green** (topology half); the weight upload half is stage 5 work |
-| 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) | **done, green** (1524 assertions, 14 host-reference cases) |
+| 4 | `inkling_moe_kernels.cu` (attn-res mix, L2 clip, rel bias, sink, convs, softcapped SwiGLU, router) | `test_inkling_moe_kernels` (kernels) | **done, green** (1588 assertions, 16 host-reference cases) |
 | 5 | weight upload (`inkling_moe_load.cpp`) + `inkling_moe_inference_pipeline.cu` | `test_inkling_moe_model` (model) | **done, green** (439 assertions): the pinned plane, the neutral expert store, the KV session, the decode scratch arena and the full 12-step layer body with the 8-expert staging and 3 batch GEMVs per layer |
 | 6 | `inkling_moe_tool_format.cpp` (stage 4b, native `chat_template.jinja`) | `test_inkling_moe_tool_framing` (fast) | **done, green** (49 assertions) |
-| 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **RED on real weights** (see below); FSI/CODE/DET not written |
-| 7b | parity instrumentation + independent host reference | `tools/inkling_layer_ref.py` + `TraceForward` | **done**: five defects found and fixed; engine now clears every position-0 stage end to end |
-| 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **open** (declared debt) |
-| 9 | report | `docs/model-reports/2026-11-14-Inkling-2-Small.md` | **open** — the stage-0/1/2 evidence is in this file and in `docs/OPEN_TASKS.md` §R19 |
+| 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **done, green**: SelfCheck x3 `323d30463a3d2b72`, FSI/CODE/DET 3/3 (template-derived goldens) |
+| 7b | parity instrumentation + independent host references | `tools/inkling_layer_ref.py`, `tools/inkling_full_forward.py`, `tools/inkling_transformers_real.py` + `TraceForward` | **done**: the release's own modelling code on real weights agrees with the engine at 3.7e-4 |
+| 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **done, seeded**: 1.47 / 1.46 t/s at 2048, TTFT 14.5 s |
+| 9 | report | `docs/model-reports/2026-11-15-inkling-2-small.md` | **done** and linked from the manifest row |
 

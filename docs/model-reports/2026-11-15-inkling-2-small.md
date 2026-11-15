@@ -52,14 +52,28 @@ Nothing is requantized. Two consequences worth stating plainly:
 
 ### Gates
 
-| gate | result |
-|---|---|
-| SelfCheck (Paris) | **PASS**, 3 cycles bit-identical, `logits_hash 323d30463a3d2b72` |
-| FSI | see § Gates below |
-| CODE | see § Gates below |
-| DET | see § Gates below |
-| native tool round-trip | **PASS** (`test_inkling_moe_tool_framing`, 49 framing assertions) |
-| perf row @ 2048 | see § Throughput |
+All measured on the real 366 GB artifact at `FastMathMode::kOff`, one target at a
+time:
+
+| gate | result | notes |
+|---|---|---|
+| SelfCheck (Paris) | **PASS** | 3 cycles bit-identical, `logits_hash 323d30463a3d2b72`, framed |
+| FSI | **3/3** | template-derived golden |
+| CODE | **3/3** | template-derived golden, exact match |
+| DET | **3/3** | `deterministic=true` on all three, 3 runs each |
+| native tool round-trip | **PASS** | 49 framing assertions |
+| knowledge sanity | **PASS** | mean NLL 3.41 (ppl 30.4), top-1 `" Paris"` |
+| kernels / model / loader / convert | **PASS** | 1588 / 440 / 111 / 445 assertions |
+| perf row @ 2048 | **seeded** | see § Throughput |
+
+The FSI/CODE/DET goldens are **template-derived**, and the reports say so where
+they are recorded: the source is 594B with its own NVFP4/MXFP8 stack and needs
+500 GB of aggregated VRAM, so it cannot be executed here. What that costs is worth
+stating — a template golden proves the converted model produces the canonical
+answer, not that it produces the *source's* answer. For this family the gap is
+narrower than usual because `tools/inkling_transformers_real.py` runs the
+release's own modelling code on real weights and agrees with the engine at
+`relL2` 3.7e-4 over 6 layers × 5 positions.
 
 ### The defect this ingestion is worth remembering for
 
@@ -96,9 +110,35 @@ KV-growth over-read the new gate exposed: `docs/open-tasks/2026-11-14-inkling-2-
 
 ## Throughput
 
-See `tests/perf/perf_baselines.json` for the seeded row. The read per token for
-the 17B-active set is dominated by the routed experts: 8 experts × 48 layers of
-NVFP4 (0.5 B/elem) for layers 0–39 and E4M3 (1.0 B/elem) for 40–47.
+Seeded at the canonical protocol (2048 generated tokens, prompt "The capital of
+France is", RTX 5090, Release build), one target at a time:
+
+| mode | t/s | TTFT | gen tokens | avg power | peak |
+|---|---|---|---|---|---|
+| `perf` (kAuto) | **1.47** | 14 485 ms | 2048 | 95.3 W | 120.9 W |
+| `r3` (kOff, bit-exact) | **1.46** | 14 469 ms | 2048 | 96.7 W | 101.0 W |
+
+Three facts about these numbers, because each one is easy to misread:
+
+- **1.5 t/s is the arithmetic, not a tuning failure.** One token reads 8 of 384
+  experts in each of 48 layers: 8 × 48 = 384 expert records, each ~0.5 B/elem for
+  layers 0–39 and 1.0 B/elem for 40–47. That working set is ~7 GB per token
+  against a 32 GB card whose artifact is 366 GB, so every token is a first-touch
+  read from the host (mmap) rather than from cache. The ingest plan predicted
+  "~0.5–2 t/s is the expected band" before the engine existed, and the measurement
+  lands in it.
+- **95 W average on a 575 W card** is the clearest evidence that this is
+  read-bound: the SMs are idle most of each layer waiting for the next expert
+  slab. It also means `perf` and `r3` differ by 0.7 % — there is almost no
+  arithmetic left to speed up, which is exactly why the two modes measure the
+  same.
+- **TTFT ≈ 14.5 s** is the same first-touch cost as one decode step, paid once.
+
+Where the remaining headroom is, if this model ever needs to be faster: overlap
+the next layer's expert staging with this layer's compute (the pattern §R17 P6
+records for kimi-k3), and raise `LSX_INKLING_MAX_OPEN` so the residency window
+holds the working set of a whole sequence rather than evicting between tokens.
+Neither is a correctness change; both are unmeasured on this family.
 
 ## Known traps for the next person
 

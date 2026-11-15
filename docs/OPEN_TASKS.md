@@ -1499,105 +1499,6 @@ Do not "fix" it by widening `kSlack`: 300 MiB of foreign churn would still fail,
 and a slack large enough to absorb it also hides the 1 GiB leak the case exists
 to catch.
 
-## R19. Inkling-2-Small (594B / 17B active) — all four gates green, manifest landed; the perf row is the only stage left (2026-11-15)
-
-Branch `feat/inkling-2-small`. New family (`kType = inkling-2-small`, format tag
-`logestix-inkling-2-small`): 48 MoE layers, hidden 4608, 48 Q / 8 KV heads
-at head_dim 128, **no RoPE anywhere** (a learned relative-position bank of
-d_rel 16 profiles over 1024 backward distances replaces it), 40 sliding-window
-layers (1024) + 8 full-attention layers at `(layer+1)%6==0`, per-head learned
-**L2 clipping** (q 16√2, k weight-free, rel 8.0) instead of QK-norm, **gated
-attention with learned per-head sinks**, four short convolutions per layer
-(post-attention, post-MLP, and k/v with static+per-token taps on the full
-layers), an **AttnRes depth mixer** of block 6 (single-query for sliding layers
-and MLP inputs, three queries on the full layers for separate q/k/v inputs, one
-`output_query` for the final norm), 384 routed experts top-8 (sigmoid scoring,
-selection-only FP32 bias, renormalised then ×8.0), softcapped SwiGLU
-(gate 4.0, up 25.0), final logit softcap 30.0, vocab 201024 sliced to 200058,
-tiktoken BPE (kind 2).
-
-Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.md`.
-
-**Measured on the real checkpoint** (367 GB source: 24 shards +
-`mtp.safetensors`; RTX 5090 host, 2026-11-14):
-
-| item | value |
-|---|---|
-| converted artifact | **366 GB** under `<vault>/logestix` (18 432 routed-expert records + 996 pinned tensors) |
-| routed experts | 40 layers passed through **byte-verbatim** NVFP4 (per-expert global scale `amax/2688`), 8 layers (40-47) dequantized from MXFP8/32 and requantized to NVFP4 |
-| stripped ballast | 422 vision tensors + the 5-layer MTP file (`mtp.safetensors`, not in the index) |
-| conversion wall time | ~18 min on this host (single process) |
-| dense plane | ~4.7 GiB NVFP4 + ~190 MiB FP16 router/side tensors |
-| active read per token | ~7.1 GB (8 experts × 48 layers), so ~0.5-2 t/s is the expected band |
-
-**Gates landed and green**
-
-- `test_inkling_moe_constants` (fast, 186 assertions): the frozen passport.
-- `test_inkling_moe_convert` (convert, synthetic checkpoint, 349 assertions):
-  converter E2E, including the byte-verbatim expert pass-through with the
-  per-expert global scale and the MXFP8 -> NVFP4 requant path.
-- `test_inkling_moe_loader` (load, synthetic tree + the real converted index).
-
-**Open, explicitly.**
-
-- I1. **PARITY IS GREEN (2026-11-15).** SelfCheck answers Paris on the real
-  weights, three cycles bit-identical (`logits_hash 323d30463a3d2b72`), and the
-  answer opens `<|message_model|><|content_thinking|>The user is asking a simple
-  factual question:`. It was RED until 2026-11-15 and the cause was one defect,
-  not the seven before it: the checkpoint stores `mlp.experts.w13_weight` (and
-  `w13_weight_scale`) **row-interleaved** (`[gate, up, gate, up, ...]`) and the
-  release de-interleaves it (`Interleave(dim=1)` in transformers'
-  `"inkling2_text"` conversion mapping) before splitting; the converter copied
-  the slab in half, so all 18 432 experts met the wrong up rows and block scales.
-  The defect was invisible to every byte-level and artifact-reading check -- the
-  bytes, plane sizes, magnitudes and recorded `amax` all matched, and both my
-  float64 reference and the RELEASE's own modelling code reproduced it because
-  they eat the same planes. The model's own output was the only oracle: mean NLL
-  over "The capital of France is Paris" 9.46 (ppl 12 881) -> 3.41 (ppl 30.4) and
-  the answer " the" -> " Paris". Fixed test-first, tree re-converted (366 GB,
-  10 min). A quantitative knowledge gate now guards the class
-  (`inkling real-weight sanity`, one prefill per position, mean NLL < log(100)
-  plus the exact top-1). The same gate exposed a second defect:
-  `InklingSession::EnsureCapacity` copied `kv_rows * LayerStride()` bytes, which
-  includes the capacity and so over-ran the old allocation on every growth; the
-  runtime rejected the copy and the error surfaced two calls later as
-  `[embed] embed row (cuda 1)`. Both fixed and pinned.
-  Closed since: FSI 3/3, CODE 3/3, DET 3/3 (template-derived goldens, recorded as
-  such in each file's `source`), the manifest row with its generated registries
-  (`kPendingSuiteTargets` emptied, `_NON_MODEL_TESTS` down to the passport
-  guard), the format-tag rename to `logestix-inkling-2-small`, and the stage-9
-  report. **Still open: the perf row** (both modes at the canonical 2048
-  protocol) — it needs a Release build because a Debug tree SKIPs by design.
-- I2. `mtp.safetensors` is a **separate 3.4 GB file that the index does not
-  list**; a converter that trusts `model.safetensors.index.json` silently
-  ignores the 5 MTP layers (correct) but must not assume the directory only
-  holds what the index names.
-- I3. The expert codec is **mixed and undocumented in `config.json`**: only
-  `hf_quant_config.json` says layers 0-39 are NVFP4 and 40-47 MXFP8. A
-  converter that assumes one codec decodes a sixth of the stack as garbage.
-  The converter now cross-checks the observed dtype against that file and
-  fails on a mismatch.
-- I4. `attn_res.attn_queries.L` is indexed by **`layer-1`** (layer 0 has no
-  attention mixture) while `attn_res.mlp_queries.L` is indexed by layer. The
-  artifact re-indexes both to the owning layer.
-- I5. `config.json`'s `eos_token_id` is `<|content_model_end_sampling|>`
-  (200006), not `<|endoftext|>` (199999); both stop. `bos_token_id` is absent
-  and there is no pad id.
-- I7. **`mlp.experts.w13_weight` and `w13_weight_scale` are ROW-INTERLEAVED**
-  (`[gate, up, gate, up, ...]`) and must be de-interleaved before the gate/up
-  split — `Interleave(dim=1)` in `transformers/conversion_mapping.py`'s
-  `"inkling2_text"` entry, applied to BOTH tensors. Taking the slab in halves
-  keeps every byte, plane size and magnitude, and silently destroys the model
-  (see I1). The same map is the authoritative answer for every other name in
-  this checkpoint: the attention projections are plain renames, and
-  `attn_res.attn_queries.{i}` belongs to `layers.{i+1}` — which is what
-  `Inkling2IndexOffsetWeightRename` says in as many words.
-- I6. The `transformers` port that is authoritative for this family is
-  `models/inkling2` (5.23.0+). The earlier `models/inkling` module is a
-  **different** architecture (no sinks, no L2 clip, scale `1/head_dim` instead
-  of `head_dim**-0.5`, no dynamic convolutions, no AttnRes) and copying from it
-  produces plausible but wrong logits.
-
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
@@ -1605,6 +1506,7 @@ investigation trail:
 
 | Item | Outcome |
 |---|---|
+| 2026-11-15 | Inkling-2-Small (594B/17B) ingested end to end; its red gate was a CONVERSION defect that every byte-level check reproduced | New family (`inkling-2-small`, format `logestix-inkling-2-small`): 48 MoE layers, no RoPE (learned relative bank over 1024 distances), AttnRes depth mixing, gated attention with learned sinks, four short convolutions per layer, 384 experts top-8; 366 GB artifact carrying the release's own mixed precision (NVFP4 verbatim on layers 0-39, MXFP8 E4M3+ue8m0/32 verbatim on 40-47, BF16 dense) with **no requantization anywhere** — measured cost of requantizing the FP8 eighth: 16.0/16.5/16.9 % relL2 on the MoE output of layers 42/45/47. Ten defects found and fixed on the way, and the last one is the lesson: **`mlp.experts.w13_weight` and `w13_weight_scale` are ROW-INTERLEAVED** (`[gate, up, gate, up, ...]`) and the release de-interleaves them (`Interleave(dim=1)` in transformers' `inkling2_text` mapping); the converter split the slab in halves, so all 18 432 experts met the wrong up rows and block scales. It was invisible to every check that existed — bytes, plane sizes, magnitudes, the recorded `amax`, and BOTH references (a hand-written float64 one and the RELEASE's own modelling code driven on real weights) agreed, because all of them read the same planes. The model's own output was the only oracle: perplexity 12 881 -> **30.4** and the answer " the" -> **" Paris"**. A quantitative knowledge gate now guards the class (one prefill per position, mean NLL < log(100) + the exact top-1), and it immediately exposed an 11th defect (KV growth copied `kv_rows * LayerStride()`, which includes the capacity, so it over-read on every growth and surfaced two calls later as `[embed] embed row (cuda 1)`). Gates on the real tree, `kOff`, one target at a time: SelfCheck x3 bit-exact `323d30463a3d2b72` (framed, and the model writes its own `<|message_model|>` — which retires the standing "the template adds no generation prompt" hypothesis), FSI 3/3, CODE 3/3, DET 3/3 (`deterministic=true` all), tool round-trip, knowledge sanity. FSI/CODE/DET goldens are **template-derived** (594B source, own quantisation stack, 500 GB aggregated VRAM) and say so in `source`. Two harness defects fixed test-first: `ExtractFsiFormula` applied `prefer_last_answer` to the line choice but not the anchor position on it (an inline-reasoning model puts chain and answer on ONE line, so the gate read 2/3 while the model was right), and `ExplainCases` printed no raw text, making three different failures indistinguishable. Registry landed (39 rows, `kPendingSuiteTargets` emptied, `_NON_MODEL_TESTS` down to the passport guard). Perf seeded 1.47/1.46 t/s at 2048 with TTFT 14.5 s and **95 W on a 575 W card** — read-bound, as the pre-engine estimate predicted (~0.5-2 t/s). — [`open-tasks/2026-11-14-inkling-2-small-ingest.md`](open-tasks/2026-11-14-inkling-2-small-ingest.md), [`model-reports/2026-11-15-inkling-2-small.md`](model-reports/2026-11-15-inkling-2-small.md) |
 | 2026-11-07 | Granite-Switch 4.1 8B FSI-01: red on a form fork, closed with a MEASURED residual-plane placement | The 8B sibling's FSI-01 answered the formula evaluated (`PV=2500000*…`) where the source answers it symbolically — every constant correct, so a form fork rather than a corrupted computation. Teacher-forcing showed it was not a tie: source margin +6.88 logits for `CF`, converted −1.27, an 8.2-logit swing. Bug checklist first (head `global_scale` applied, `Free()` complete, records decode back at relL2 0.094–0.095 on layers 0/20/39) — so, 4-bit body error. Four trees were then converted and probed rather than assuming gemma's placement: none −1.27 (red), **attn +0.9 GB +1.58 (green, shipped)**, mlp +3.3 GB +2.19, attn+mlp +4.2 GB +7.14. `attn` is the cheapest that clears AND leaves the biggest tensors at 4 bits (MLP = 79% of the layer's bytes). Resident 5.14 → 6.09 GB, profile min 5.51 → 6.45 GB, index records `"residual": "attn"`, knob is convert-time (`LSX_GSW_RESIDUAL`). FSI 3/3, SelfCheck ×3 `b7c1aa453d83a86f` (re-measured 2026-11-07 as `930dd592ea5f5834` when the generation budget became a declared per-family value), DET 2/3 = the source's own `CRITICAL`. Two instrument defects recorded: the probe read `final_logits` (published after the decode loop, one position late) and reported the wrong winner, and the `det` verdict folded an inference error into `deterministic=false` while embedding raw newlines into a one-line record. Legacy 4-bit-only trees still load (`ad9b0c4940bb27a9`). — [`open-tasks/2026-11-07-granite-switch-fsi01-residual.md`](open-tasks/2026-11-07-granite-switch-fsi01-residual.md) |
 | 2026-11-06 | AliceAI-Foundation-80B-A3B: an inverted allocator predicate silently disabled generation for three days | All four gates were red with `alice workspace alloc failed` — and the pre-migration binary failed identically, so it was not the manifest work. The recorded `cudaError_t` and buffer identity showed `cudaMallocAsync -> cudaSuccess (0), free 27399 of 32202 MiB`: nothing had failed. 397ab361 rewrote the workspace macro's ternary arms from `cudaError_t` constants to `true`/`false` while clearing 42 `-Wint-in-bool-context` sites, inverting a chain that reads `if (A() || A() || …)`: the first *successful* malloc aborted the workspace, so alice decoded zero tokens from 2026-11-03 19:33. It stayed invisible because the message discarded the error and the free-VRAM number, because the gate driver's per-case `INFO` left scope before the aggregate `REQUIRE` (Catch2 printed `false` alone), and because the gates carry label `inference`, which no default sweep runs. Fixed with a named `WsAllocFailed()` predicate, a diagnostic naming buffer/bytes/error/free VRAM, and `ExplainCases()` in the gate driver; pinned by *"alice workspace allocator polarity"*, proven red by inverting the predicate. Post-fix SelfCheck Paris ×3 `logits_hash 0bf456024cc05255` (top-1 828), FSI/CODE/DET 3/3 at 230/221/183 s, tool round-trip green; the hash moved from `f900547d25be7914` (2026-11-03) at an unchanged top-1 id, unattributed between 397ab361's dropped `__restrict__` sites and the CUDA 13.5 bump. — [`open-tasks/2026-11-06-alice-workspace-polarity.md`](open-tasks/2026-11-06-alice-workspace-polarity.md) |
 | 2026-11-03 | Dense-trio consolidation, phase 1: granite / granite-switch / phi now run one neutral `lsxcommon::dense` kernel layer | The three dense families had drifted into three near-copies of the same decode kernels. Phase 1 moved RMSNorm, full-dim RoPE, causal GQA attention (with the split-KV flash-decode path), fused split-QKV and fused SwiGLU into `lsx_dense_inference.{h,cu}`; the algorithm is the one Granite-4.2 always ran, moved verbatim (`tools/dedup_provenance.py` proves it), and every family's layer driver stays family-named. No golden moved. — [`open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md`](open-tasks/2026-11-03-dense-trio-neutral-layer-closed.md) |
