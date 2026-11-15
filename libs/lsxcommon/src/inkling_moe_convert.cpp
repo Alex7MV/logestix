@@ -19,6 +19,17 @@
 //   3. `attn_res.attn_queries.L` is indexed by `layer-1` (layer 0 has no
 //      attention mixture) while `mlp_queries.L` is indexed by layer. The
 //      artifact renames both to the layer they belong to.
+//   4. `mlp.experts.w13_weight` and `w13_weight_scale` are stored
+//      ROW-INTERLEAVED ([gate_0, up_0, gate_1, up_1, ...]) and must be
+//      de-interleaved before the gate/up split, which is what the release's own
+//      conversion does (`Interleave(dim=1)` in transformers'
+//      `conversion_mapping.py`, entry "inkling2_text"). Splitting the slab in
+//      halves instead keeps every byte, every plane size and every magnitude --
+//      so no byte-level check, and no reference that reads the artifact, can see
+//      it -- while pairing every expert's gate rows with the wrong up rows and
+//      the wrong block scales. Measured on the real weights: perplexity 12 881
+//      instead of 30.4 on "The capital of France is Paris", and the answer " the"
+//      instead of " Paris". `test_inkling_moe_convert` pins the row pairing.
 #include "lsxcommon/inkling_moe_convert.h"
 
 #include "lsxcommon/converter.h"
