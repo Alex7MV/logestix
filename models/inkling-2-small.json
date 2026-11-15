@@ -100,7 +100,7 @@
   "tool_roundtrip": true,
   "auto_path_determinism": false,
   "golden_debt": {},
-  "report": "",
+  "report": "docs/model-reports/2026-11-15-inkling-2-small.md",
   "notes": "Mixed-precision release: NVFP4 experts on 0-39, MXFP8 on 40-47, BF16 dense; no RoPE (learned relative bank), AttnRes depth mixing.",
   "cooperative_cancel": true,
   "selfcheck_max_gen": 32,

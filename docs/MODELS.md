@@ -239,7 +239,7 @@ history live in `docs/model-reports/`; gate verdicts in
 - lifecycle TUs: `inkling_moe_model.cpp`, `inkling_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: not seeded
-- report: **not written** (stage-9 debt)
+- report: `docs/model-reports/2026-11-15-inkling-2-small.md`
 - notes: Mixed-precision release: NVFP4 experts on 0-39, MXFP8 on 40-47, BF16 dense; no RoPE (learned relative bank), AttnRes depth mixing.
 
 ## kimi-k2.7-code
