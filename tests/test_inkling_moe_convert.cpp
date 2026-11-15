@@ -225,9 +225,27 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small-nvfp4",
         REQUIRE(pe.w3_packed.size() == gate_bytes);
         REQUIRE(pe.w1_scales.size() ==
                 static_cast<size_t>(kMoeInter) * (kHidden / 16));
-        REQUIRE(std::memcmp(pe.w1_packed.data(), base13, gate_bytes) == 0);
-        REQUIRE(std::memcmp(pe.w3_packed.data(), base13 + gate_bytes,
-                            gate_bytes) == 0);
+        // The checkpoint stores the fused slab ROW-INTERLEAVED -- source rows
+        // alternate gate, up, gate, up -- and the release's own conversion
+        // de-interleaves it (`Interleave(dim=1)` in transformers'
+        // conversion_mapping.py for "inkling2_text", applied to `w13_weight` and
+        // `w13_weight_scale` alike) before splitting gate from up. Copying the
+        // first half instead, which is what an earlier converter did, pairs the
+        // wrong scale with most rows: the artifact still looks byte-verbatim and
+        // every plane still has the right size and magnitude, but the model
+        // loses its knowledge. Measured on the real weights: perplexity 12,881
+        // on "The capital of France is Paris" and the answer is " the"; with the
+        // de-interleave it is 30.4 and the answer is " Paris".
+        for (int r = 0; r < kMoeInter; ++r) {
+            INFO("gate row " << r);
+            REQUIRE(std::memcmp(pe.w1_packed.data() + static_cast<std::size_t>(r) * w13_row,
+                                base13 + static_cast<std::size_t>(2 * r) * w13_row,
+                                w13_row) == 0);
+            INFO("up row " << r);
+            REQUIRE(std::memcmp(pe.w3_packed.data() + static_cast<std::size_t>(r) * w13_row,
+                                base13 + static_cast<std::size_t>(2 * r + 1) * w13_row,
+                                w13_row) == 0);
+        }
 
         const float expect_g13 = (0.08f + 0.001f * 2.0f) / 2688.0f;
         const float expect_g2 = (0.04f + 0.001f * 2.0f) / 2688.0f;
@@ -272,6 +290,29 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small-nvfp4",
         REQUIRE(pe.w2_global_scale == 1.0f);
         for (std::size_t i = 0; i + 1 < pe.w1_scales.size(); i += 2)
             REQUIRE(pe.w1_scales[i] == pe.w1_scales[i + 1]);
+        // ... and the row pairing follows the same interleaved slab: gate row r
+        // is source row 2r, up row r is source row 2r+1.
+        {
+            auto src8 = MakeExpertPlane(4);
+            const auto &s13 = src8.tensors[1].data;      // [E, 2I, H/32]
+            const std::size_t s13_row = static_cast<std::size_t>(kHidden / 32);
+            const auto &w13_8 = src8.tensors[0].data;    // [E, 2I, H]
+            const std::size_t w13_row8 = static_cast<std::size_t>(kHidden);
+            const std::size_t s13_expert = static_cast<std::size_t>(2 * kMoeInter) * s13_row;
+            const std::size_t w13_expert8 = static_cast<std::size_t>(2 * kMoeInter) * w13_row8;
+            const uint8_t *b8 = w13_8.data() + w13_expert8 * 1;
+            const uint8_t *p8 = s13.data() + s13_expert * 1;
+            for (int r = 0; r < kMoeInter; ++r) {
+                INFO("mxfp8 gate row " << r);
+                REQUIRE(std::memcmp(pe.w1_packed.data() + static_cast<std::size_t>(r) * kHidden,
+                                    b8 + static_cast<std::size_t>(2 * r) * w13_row8,
+                                    w13_row8) == 0);
+                REQUIRE(pe.w1_scales[static_cast<std::size_t>(r) * (kHidden / 16)] ==
+                        pe.w1_scales[static_cast<std::size_t>(r) * (kHidden / 16) + 1]);
+                REQUIRE(pe.w1_scales[static_cast<std::size_t>(r) * (kHidden / 16)] ==
+                        p8[static_cast<std::size_t>(2 * r) * s13_row]);
+            }
+        }
         // ue8m0 is 2^(b-127), so a legal byte is 0..254 (255 is the reserved
         // "no scale" marker in some MX formats and must not appear here).
         for (uint8_t b : pe.w1_scales) REQUIRE(b < 255);

@@ -741,6 +741,29 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
 
         const fs::path dir = experts_dir / absl::StrCat("layer_", l);
         fs::create_directories(dir);
+        // The checkpoint stores the fused expert slab ROW-INTERLEAVED -- source
+        // rows alternate gate, up, gate, up -- and the release's own conversion
+        // de-interleaves it (`Interleave(dim=1)`, applied to `w13_weight` AND
+        // `w13_weight_scale` in transformers' "inkling2_text" mapping) before
+        // splitting gate from up. Taking the first half as the gate plane keeps
+        // every byte and every magnitude but pairs the wrong scale with most
+        // rows. That failure is invisible to a byte-verbatim comparison, to the
+        // plane sizes and to any reference that reads the same artifact; it only
+        // shows in the model's own output. Measured on the real weights:
+        // perplexity 12,881 vs 30.4 on "The capital of France is Paris", and the
+        // control answer " the" instead of " Paris".
+        auto deinterleave = [](const uint8_t *src, std::size_t rows,
+                               std::size_t row_bytes, std::vector<uint8_t> &even,
+                               std::vector<uint8_t> &odd_rows) {
+            even.resize(rows * row_bytes);
+            odd_rows.resize(rows * row_bytes);
+            for (std::size_t r = 0; r < rows; ++r) {
+                std::memcpy(even.data() + r * row_bytes, src + 2 * r * row_bytes,
+                            row_bytes);
+                std::memcpy(odd_rows.data() + r * row_bytes,
+                            src + (2 * r + 1) * row_bytes, row_bytes);
+            }
+        };
         for (int e = 0; e < E; ++e) {
             PackedExpert pe;
             if (nvfp4) {
@@ -748,13 +771,10 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
                 const uint8_t *w2p = w2_data.data() + w2_expert * e;
                 const uint8_t *s13p = s13_data.data() + w13_scale_expert * e;
                 const uint8_t *s2p = s2_data.data() + w2_scale_expert * e;
-                const size_t gate_rows = static_cast<size_t>(I);
-                pe.w1_packed.assign(w13p, w13p + gate_rows * w13_row);
-                pe.w3_packed.assign(w13p + gate_rows * w13_row,
-                                    w13p + 2 * gate_rows * w13_row);
-                pe.w1_scales.assign(s13p, s13p + gate_rows * w13_scale_row);
-                pe.w3_scales.assign(s13p + gate_rows * w13_scale_row,
-                                    s13p + 2 * gate_rows * w13_scale_row);
+                deinterleave(w13p, static_cast<std::size_t>(I), w13_row,
+                             pe.w1_packed, pe.w3_packed);
+                deinterleave(s13p, static_cast<std::size_t>(I), w13_scale_row,
+                             pe.w1_scales, pe.w3_scales);
                 pe.w2_packed.assign(w2p, w2p + w2_expert);
                 pe.w2_scales.assign(s2p, s2p + w2_scale_expert);
                 pe.w1_global_scale = amax13[static_cast<size_t>(e)] / denom13;
@@ -773,7 +793,6 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
                 // the value is unchanged, so `scale[j/16]` is exactly the
                 // source's `scale[j/32]` and nothing in the schema, the store or
                 // the registry has to learn a second block size.
-                const size_t gate_bytes = static_cast<size_t>(I) * H;
                 const size_t s13_row = static_cast<size_t>(H / 32);
                 const uint8_t *w13p = w13_data.data() + w13_expert * e;
                 const uint8_t *w2p = w2_data.data() + w2_expert * e;
@@ -790,11 +809,16 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
                             dst[static_cast<size_t>(2 * (r * row_scales + i) + 1)] = b;
                         }
                 };
-                pe.w1_packed.assign(w13p, w13p + gate_bytes);
-                pe.w3_packed.assign(w13p + gate_bytes, w13p + 2 * gate_bytes);
-                dup_scales(s13p, I, s13_row, pe.w1_scales);
-                dup_scales(s13p + static_cast<size_t>(I) * s13_row, I, s13_row,
-                           pe.w3_scales);
+                deinterleave(w13p, static_cast<std::size_t>(I),
+                             static_cast<std::size_t>(H), pe.w1_packed,
+                             pe.w3_packed);
+                {
+                    std::vector<uint8_t> s_even, s_odd;
+                    deinterleave(s13p, static_cast<std::size_t>(I), s13_row, s_even,
+                                 s_odd);
+                    dup_scales(s_even.data(), I, s13_row, pe.w1_scales);
+                    dup_scales(s_odd.data(), I, s13_row, pe.w3_scales);
+                }
                 pe.w2_packed.assign(w2p, w2p + w2_expert);
                 dup_scales(s2p, H, static_cast<size_t>(I / 32), pe.w2_scales);
                 // The ue8m0 byte already carries the magnitude; 1.0 keeps the
