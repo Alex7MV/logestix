@@ -136,6 +136,14 @@ def main():
           flush=True)
     with torch.device("meta"):
         model = M.Inkling2TextModel(tc)
+    # The routed experts are supplied on demand below, so their slabs are dropped
+    # BEFORE materializing: kept, they cost 25 GB (bf16) / 50 GB (fp32) per layer,
+    # i.e. 2.3 TB for the whole stack, and the forward never reads them.
+    for layer in model.layers:
+        layer.mlp.experts.gate_up_proj = torch.nn.Parameter(
+            torch.empty(0, device="meta"), requires_grad=False)
+        layer.mlp.experts.down_proj = torch.nn.Parameter(
+            torch.empty(0, device="meta"), requires_grad=False)
     model.to_empty(device="cpu")
     model = model.to(dtype)
     model.eval()
