@@ -208,6 +208,10 @@ def expert_block(base, idx, l, mlp_x):
     scores = 1.0 / (1.0 + np.exp(-logits))
     sel = np.sort(np.argsort(-(scores + rw[nm("mlp.gate.bias")]),
                              kind="stable")[:topk])
+    # The top-k CHOICE is discrete: a fraction of a percent of drift can flip an
+    # expert and move the layer output by tens of percent. Printing the ids makes
+    # "the maths disagrees" and "the selection flipped" distinguishable.
+    print(f"  [host] sel        {sel.tolist()}", flush=True)
     wsel = scores[sel]
     coeff = wsel / (wsel.sum() + 1e-20) * idx["routed_scaling_factor"]
     acc = np.zeros(H)
@@ -348,6 +352,11 @@ def main() -> int:
     ap.add_argument("vault")
     ap.add_argument("trace")
     ap.add_argument("--layers", type=int, default=48)
+    ap.add_argument("--head-row", type=int, default=None,
+                    help="with --head, use the state after this many layers")
+    ap.add_argument("--head", action="store_true",
+                    help="recompute the final mixture + norm + unembed from the "
+                         "trace and compare with <trace>.logits")
     ap.add_argument("--tok", type=int, default=1000)
     ap.add_argument("--trace2", default="",
                     help="second trace file (pos 1); required with --tok2")
@@ -387,6 +396,50 @@ def main() -> int:
     if args.tok2 >= 0:
         idx0 = json.loads((base / "model.index.json").read_text())
         return two_position_check(base, idx0, args)
+
+    if args.head:
+        # Head-only check: the layers are verified layer by layer, so this isolates
+        # the final mixture + norm + unembed + softcap against the engine's logits
+        # for the SAME residual stream. Needs the trace (row 0 is the post-embed
+        # state, row l+1 is the output of layer l) and the logits the engine wrote
+        # next to it (<trace>.logits).
+        g_raw = raw_tensors(base / "pinned" / "global.arrow")
+        trace_h = np.fromfile(args.trace, dtype=np.float32).astype(np.float64)
+        trace_h = trace_h.reshape(L + 1, H)
+        B = idx["attn_res_block"]
+        # --head-row k runs the head on the state after k layers instead of 48.
+        # Sweeping k shows whether the answer survives depth: a model whose
+        # knowledge is intact should predict " Paris" at some depth even if a
+        # later layer destroys it.
+        L = args.head_row if args.head_row is not None else L
+        blocks = [trace_h[b] for b in range(0, L, B)]
+        final = depth_mix(blocks + [trace_h[L]],
+                          [g_raw["model.llm.attn_res.output_query"]], eps)[0]
+        hh = rmsnorm(final, g_raw["model.llm.norm.weight"], eps)
+        print(f"|final|={np.linalg.norm(final):.6g} |hh|={np.linalg.norm(hh):.6g}")
+        vocab = g_raw["model.llm.unembed.weight"].shape[0]
+        unembed = g_raw["model.llm.unembed.weight"]
+        cap = idx["final_logit_softcap"]
+        lg = unembed @ hh
+        lg = np.tanh(lg / cap) * cap
+        ep = str(args.trace) + ".logits"
+        if not Path(ep).exists():
+            print(f"no {ep}: only the reference's own top-5 is available")
+            rt = np.argsort(-lg)[:5]
+            print("host    top5:", [(int(i), round(float(lg[i]), 4)) for i in rt])
+        else:
+            eng = np.fromfile(ep, dtype=np.float32).astype(np.float64)
+            n = min(eng.size, lg.size)
+            rel = np.linalg.norm(eng[:n] - lg[:n]) / (np.linalg.norm(lg[:n]) + 1e-30)
+            print(f"logits: n={n} relL2={rel:.6g}")
+            et = np.argsort(-eng[:n])[:5]
+            rt = np.argsort(-lg[:n])[:5]
+            print("engine  top5:", [(int(i), round(float(eng[i]), 4)) for i in et])
+            print("host    top5:", [(int(i), round(float(lg[i]), 4)) for i in rt])
+            print("top1 agree:", int(et[0]) == int(rt[0]))
+        print("host    top5:", [(int(i), round(float(lg[i]), 3)) for i in rt],
+              f"| |hh|={np.linalg.norm(hh):.4g}")
+        return 0
 
     if args.moe_from:
         idx0 = json.loads((base / "model.index.json").read_text())

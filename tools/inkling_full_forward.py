@@ -79,7 +79,10 @@ def main() -> int:
     wm = json.loads((src / "model.safetensors.index.json").read_text())["weight_map"]
     scache = {}
     g_raw = _ref.raw_tensors(base / "pinned" / "global.arrow")
-    g_nv = _ref.nvfp4_tensors(base / "pinned" / "global_nvfp4.arrow")
+    # A tree converted by the current converter keeps NO global NVFP4 plane:
+    # embed/unembed are BF16, like the release.
+    _gp = base / "pinned" / "global_nvfp4.arrow"
+    g_nv = {**g_raw, **(_ref.nvfp4_tensors(_gp) if _gp.exists() else {})}
 
     embed = g_nv["model.llm.embed.weight"].astype(np.float64)
     unembed = g_nv["model.llm.unembed.weight"].astype(np.float64)
@@ -90,8 +93,22 @@ def main() -> int:
 
     ids = [int(x) for x in args.tokens.split(",")]
     blocks = []
-    ring_k = np.zeros((k, nkv * hd)); ring_v = np.zeros((k, nkv * hd))
-    ring_o = np.zeros((k, H)); ring_m = np.zeros((k, H))
+    # The short convolutions are over POSITIONS *within one layer*: every layer
+    # owns its own taps, so the history ring must be per layer. Sharing one ring
+    # across layers (the first version of this tool) leaks layer l-1's
+    # projection into layer l's convolution. At position 0 that is the only
+    # surviving tap, which made the whole-token reference disagree with both the
+    # engine and the per-layer reference from layer 1 onward while layer 0 —
+    # where the ring is still zero — agreed to 5e-5.
+    ring_k = {}; ring_v = {}; ring_o = {}; ring_m = {}
+
+    def push(store, l, v):
+        r = store.get(l)
+        if r is None:
+            r = np.zeros((k, v.size))
+        r = np.vstack([r[1:], v[None, :]])
+        store[l] = r
+        return r
     keys = []; vals = []
     x = None
     for pos, tok in enumerate(ids):
@@ -100,8 +117,11 @@ def main() -> int:
         for l in range(L):
             full = l in full_layers
             boundary = (l % B) == 0
-            nv = _ref.nvfp4_tensors(base / "pinned" / f"layer_{l}_nvfp4.arrow")
+            _lp = base / "pinned" / f"layer_{l}_nvfp4.arrow"
             rw = _ref.raw_tensors(base / "pinned" / f"layer_{l}.arrow")
+            # dense weights are BF16 in the artifact (an older tree kept them in
+            # an NVFP4 batch), so the projection map is rw + any legacy plane.
+            nv = {**rw, **(_ref.nvfp4_tensors(_lp) if _lp.exists() else {})}
             if args.attn == "bf16":
                 for nm_src, key in (("attn.wq_du.weight", "attn.wq_du.weight"),
                                     ("attn.wk_dv.weight", "attn.wk_dv.weight"),
@@ -132,8 +152,8 @@ def main() -> int:
             gate = nv[nm("attn.gate_attn.weight")] @ qs
             sink = rw[nm("attn.attn_sink_proj.weight")] @ qs
 
-            ring_k = np.vstack([ring_k[1:], kv_k[None, :]])
-            ring_v = np.vstack([ring_v[1:], kv_v[None, :]])
+            rk = push(ring_k, l, kv_k)
+            rv = push(ring_v, l, kv_v)
             if full:
                 sk = rw[nm("attn.k_sconv.static_w")]
                 dk = (nv[nm("attn.k_sconv.weight_proj")] @ ks).reshape(nkv, k)
@@ -141,14 +161,14 @@ def main() -> int:
                 sv = rw[nm("attn.v_sconv.static_w")]
                 dv = (nv[nm("attn.v_sconv.weight_proj")] @ vs).reshape(nkv, k)
                 tv = np.stack([sv[lag] for lag in range(k)], 1) + np.repeat(dv, hd, 0)
-                kconv = _ref.short_conv_dynamic(ring_k, tk, k, (2 * k + 1) ** -0.5)
-                vconv = _ref.short_conv_dynamic(ring_v, tv, k, (2 * k + 1) ** -0.5)
+                kconv = _ref.short_conv_dynamic(rk, tk, k, (2 * k + 1) ** -0.5)
+                vconv = _ref.short_conv_dynamic(rv, tv, k, (2 * k + 1) ** -0.5)
             else:
                 kconv = _ref.short_conv_static(
-                    ring_k, rw[nm("attn.k_sconv.weight")].reshape(-1, k), k,
+                    rk, rw[nm("attn.k_sconv.weight")].reshape(-1, k), k,
                     (k + 1) ** -0.5)
                 vconv = _ref.short_conv_static(
-                    ring_v, rw[nm("attn.v_sconv.weight")].reshape(-1, k), k,
+                    rv, rw[nm("attn.v_sconv.weight")].reshape(-1, k), k,
                     (k + 1) ** -0.5)
 
             qc = np.stack([_ref.l2_clip(q[h * hd:(h + 1) * hd],
@@ -186,9 +206,9 @@ def main() -> int:
                 out[h] = (e / den) @ np.stack([vals[j][kvh] for j in range(kv_len)])
             attn_o = out.reshape(-1) * (1.0 / (1.0 + np.exp(-gate)))
             o_out = nv[nm("attn.wo_ud.weight")] @ attn_o
-            ring_o = np.vstack([ring_o[1:], o_out[None, :]])
+            ro = push(ring_o, l, o_out)
             post = _ref.short_conv_static(
-                ring_o, rw[nm("attn_sconv.weight")].reshape(-1, k), k,
+                ro, rw[nm("attn_sconv.weight")].reshape(-1, k), k,
                 (k + 1) ** -0.5)
             if boundary:
                 blocks.append(x.copy())
@@ -200,9 +220,9 @@ def main() -> int:
                                     eps)[0]
             mlp_x = _ref.rmsnorm(mlp_in, rw[nm("mlp_norm.weight")], eps)
             acc = _ref.expert_block(base, idx, l, mlp_x)
-            ring_m = np.vstack([ring_m[1:], acc[None, :]])
+            rm = push(ring_m, l, acc)
             post_mlp = _ref.short_conv_static(
-                ring_m, rw[nm("mlp_sconv.weight")].reshape(-1, k), k,
+                rm, rw[nm("mlp_sconv.weight")].reshape(-1, k), k,
                 (k + 1) ** -0.5)
             x = residual + post_mlp
         print(f"pos {pos}: |x|={np.linalg.norm(x):.6g}", flush=True)
