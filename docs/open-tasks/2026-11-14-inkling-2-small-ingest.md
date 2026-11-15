@@ -6,7 +6,7 @@ green. This file is the stage-0 record required by `ingesting-a-model` (§ Stage
 plus the investigation trail, because this ingestion's red gate turned out to be a
 conversion defect that no byte-level check could see (see "Root cause");
 the publishable artifact is
-`docs/model-reports/2026-11-15-inkling-2-small.md`.
+`docs/model-reports/2026-11-15-Inkling-2-Small.md`.
 
 Source checkpoint: `/mnt/fast_storage/huggingface/Inkling-2-Small`
 (`thinkingmachines/Inkling-2-Small`, modelopt NVFP4 release, 24 shards +
@@ -444,7 +444,7 @@ Nothing in the lifecycle. Every stage is landed and measured:
 | 5 kernels | `test_inkling_moe_kernels`, 1588 assertions |
 | 8 gates | SelfCheck x3 `323d30463a3d2b72`, FSI/CODE/DET 3/3, knowledge sanity |
 | 4 throughput | 1.47/1.46 t/s @ 2048, seeded |
-| 9 report | `docs/model-reports/2026-11-15-inkling-2-small.md` |
+| 9 report | `docs/model-reports/2026-11-15-Inkling-2-Small.md` |
 
 Follow-ups that are NOT lifecycle gaps, recorded so they are not mistaken for
 them: the six traps in the model report (interleaved slab, mixed codec, the
@@ -491,5 +491,5 @@ Consequences, machine-enforced:
 | 7 | `SelfCheck` (Paris), goldens | `test_inkling_moe_selfcheck`, `*_fsi/code/det_selfcheck` | **done, green**: SelfCheck x3 `323d30463a3d2b72`, FSI/CODE/DET 3/3 (template-derived goldens) |
 | 7b | parity instrumentation + independent host references | `tools/inkling_layer_ref.py`, `tools/inkling_full_forward.py`, `tools/inkling_transformers_real.py` + `TraceForward` | **done**: the release's own modelling code on real weights agrees with the engine at 3.7e-4 |
 | 8 | perf row | `test_perf_baseline_inkling_2_small` (perf) | **done, seeded**: 1.47 / 1.46 t/s at 2048, TTFT 14.5 s |
-| 9 | report | `docs/model-reports/2026-11-15-inkling-2-small.md` | **done** and linked from the manifest row |
+| 9 | report | `docs/model-reports/2026-11-15-Inkling-2-Small.md` | **done** and linked from the manifest row |
 

@@ -7,6 +7,7 @@
 // (never quantized) norm/bias/rel/sconv plane.
 #include <catch2/catch_test_macros.hpp>
 #include <lsxcommon/inkling_moe_convert.h>
+#include "inkling_moe_model.h"
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
 
@@ -91,6 +92,24 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small",
     std::string_view fmt;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
     REQUIRE(fmt == "logestix-inkling-2-small");
+
+    // `model` is what path auto-detection resolves: `gpu::detect_model_type`
+    // reads this key from `<vault>/logestix/model.index.json`, normalizes it
+    // (spaces -> '-', lower case) and hands the result to `LsxModelFactory`.
+    // Without it `lsxbenchmark --model <vault>` / `lsxfabric --localmodel`
+    // fail with "cannot autodetect model type" even though the tree is
+    // complete -- every other family in the vault writes it. The normalized
+    // value must be EXACTLY `IModel::Type()`, or the factory cannot resolve it.
+    std::string_view card;
+    REQUIRE(doc["model"].get_string().get(card) == simdjson::SUCCESS);
+    REQUIRE(card == "Inkling-2-Small");
+    {
+        std::string normalized(card);
+        for (char &c : normalized)
+            if (c == ' ') c = '-';
+            else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        REQUIRE(normalized == lsxcommon::InklingMoeModel::kType);
+    }
 
     int64_t layers = 0, experts = 0, inter = 0;
     REQUIRE(doc["num_layers"].get_int64().get(layers) == simdjson::SUCCESS);

@@ -286,7 +286,7 @@ one in a ctest summary, which is why the debt rows are called out below.
   references reproduced: the checkpoint's fused `w13_weight` is row-interleaved
   and the converter split it in half, which cost the model its knowledge
   (perplexity 12 881 -> 30.4 after the fix). See
-  `docs/model-reports/2026-11-15-inkling-2-small.md`.
+  `docs/model-reports/2026-11-15-Inkling-2-Small.md`.
 - gemma-4-26b went green in this session (second NVFP4 plane on attn + dense
   MLP, routed experts left 4-bit): FSI/CODE/DET were 1/3, 2/3, 3/3 before.
 

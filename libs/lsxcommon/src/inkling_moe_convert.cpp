@@ -956,6 +956,15 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
             j << "]" << (trailing ? ",\n" : "\n");
         };
         j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n";
+        // The CARD name, not the architecture's: `gpu::detect_model_type` reads
+        // this key and normalizes it (spaces -> '-', lower case) into the
+        // `LsxModelFactory` key, so it must normalize to exactly
+        // `InklingMoeModel::kType`. Without the key, path auto-detection fails
+        // with "cannot autodetect model type" for a perfectly complete tree --
+        // which is how every other family in the vault writes it.
+        j << "  \"model\": \"Inkling-2-Small\",\n";
+        // The architecture the SOURCE declares (`inkling2`), kept for humans and
+        // for a future re-verification against the checkpoint's own config.
         j << "  \"source_model_type\": \"" << top.model_type << "\",\n";
         j << "  \"num_layers\": " << top.num_layers << ",\n";
         j << "  \"hidden_size\": " << top.hidden_size << ",\n";

@@ -98,6 +98,10 @@ add_executable(test_inkling_moe_constants test_inkling_moe_constants.cpp)
 target_link_libraries(test_inkling_moe_constants PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_executable(test_inkling_moe_convert test_inkling_moe_convert.cpp)
+# The index writer's `model` key is asserted against `InklingMoeModel::kType`,
+# so the test needs the family header (it lives next to the model TU).
+target_include_directories(test_inkling_moe_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
