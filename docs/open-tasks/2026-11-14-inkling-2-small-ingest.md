@@ -369,56 +369,83 @@ step. The second attempt then hit the unsigned-codec bug above. Both are the
 reason the FP8 path is now covered by two host-referenced kernel cases instead of
 one.
 
+### Stage 8 gates on the real tree (2026-11-15)
+
+Measured on the 366 GB artifact at `FastMathMode::kOff`, one target at a time:
+
+| gate | result | evidence |
+|---|---|---|
+| SelfCheck | **PASS** | 3 cycles bit-identical, `logits_hash 323d30463a3d2b72` |
+| FSI | **3/3** | PV formula, three-leg balance chain, strict comparison |
+| CODE | **3/3** | unspaced JSON, midpoint assignment, word-bounded hex regex |
+| DET | **3/3** | all three classes bit-identical over 3 runs each |
+| tool round-trip | **PASS** | `test_inkling_moe_tool_framing`, 49 framing assertions |
+| knowledge sanity | **PASS** | mean NLL 3.41 (ppl 30.4), top-1 " Paris" |
+
+The FSI/CODE/DET goldens are **template-derived** (`--template-only` /
+`--template-golden`), which each file's `source` field records: the source is
+594B with its own NVFP4/MXFP8 stack and needs 500 GB of aggregated VRAM, so it
+cannot be executed here. This is the deviation GLM-5.3-Flash already records, not
+a silent relaxation — and it is worth naming what it costs: a template golden
+proves the converted model produces the canonical answer, not that it produces
+the SOURCE's answer. For this family the difference is unusually well covered by
+`tools/inkling_transformers_real.py` (the release's own modelling code on real
+weights, 3.7e-4 against the engine's trace).
+
+Two harness gaps were found and closed on the way, both test-first:
+
+1. `fsi::ExtractFsiFormula` applied `prefer_last_answer` to the LINE choice only,
+   not to the anchor position inside it. A model that reasons inline emits no
+   line break between its chain and its answer, so both live on one line and the
+   first `anchor=` on it belongs to the chain. Inkling's answer was correct and
+   was the last thing in the stream; the extractor returned a reasoning
+   paragraph. Fixed and pinned in both directions (opt-in models move, every
+   other model's extraction is byte-identical).
+2. `ExplainCases` printed expected/extracted/error but not the RAW text, so "the
+   extraction latched onto a reasoning line", "the budget cut the answer
+   mid-thought" and "the answer is wrong" were indistinguishable. It now prints
+   the raw tail.
+
 ### What remains
 
-Parity is green; the lifecycle is not complete. Open, in order:
+Parity and the three parity gates are green; the lifecycle is not complete. Open,
+in order:
 
-- N1. FSI / CODE / DET goldens: not written yet. `docs/SELFCHECK_MATRIX.md` still
-  shows the family with SelfCheck only.
-- N2. The perf row at the canonical 2048-token protocol, plus the VRAM profile
-  (which was estimated under the old single-codec assumption and now sees two
-  expert codecs: NVFP4 0.5 B/elem for layers 0-39, E4M3 1.0 B/elem for 40-47).
-- N3. `models/inkling-2-small.json` + the generated registries
-  (`model_manifest.h`, `model_targets.cmake`, `model_registry.inc`), removal of
-  the five `kPendingSuiteTargets` / `_NON_MODEL_TESTS` entries, and a regenerated
-  `docs/MODELS.md`.
-- N4. The stage-9 report in `docs/model-reports/`.
-- N5. The format tag still says `logestix-inkling-2-small-nvfp4` although the
-  artifact now carries two expert codecs plus BF16 dense planes; it should be
-  renamed in the same change that lands the manifest row.
-- N6. N1/N3/N4 of the previous list are now answered rather than open: the MXFP8
-  layers are at the release's own precision (the FP8 GEMV), and the frame is
-  right — the model emits its own `<|message_model|>` marker once its experts
-  work. What is left of "a reference run of the source model" is
-  `tools/inkling_transformers_real.py`, which runs the release's own modelling
-  code on real weights but with MY expert dequantization, so it cannot audit the
-  codec or the interleave — only the model's own perplexity can.
+- N1. The perf row at the canonical 2048-token protocol (both modes) and the
+  generated VRAM profile. The profile is re-derived from the source tensors on
+  every conversion, so it already reflects the two codecs
+  (`min` 13.3 GB / `optimal` 15.5 GB / `max` 391.6 GB at 2048 context); the row
+  needs a Release build because the Debug gate SKIPs by design.
+- N2. The stage-9 report exists (`docs/model-reports/2026-11-15-inkling-2-small.md`)
+  and is linked from the manifest; its throughput section fills in with N1.
+- N3. `docs/OPEN_TASKS.md` §R19 I1 still says "gates + manifest pending" in its
+  title; after N1 it moves to the Archive with the full trail.
 
-## Registry status: PENDING ingestion (no manifest row yet)
+## Registry status: LANDED (2026-11-15)
 
-`models/inkling-2-small.json` was written when the row looked complete and was
-then **withdrawn**, because `test_model_suite_guard` forbids a suite row whose
-nine stages do not all exist and the engine-dependent four
-(`selfcheck`/`fsi`/`code`/`det`) cannot exist before the decode engine does.
-The repo's sanctioned intermediate state for a multi-stage ingestion is the
-opposite order: register the targets, declare them in
-`test_model_suite_guard.cpp::kPendingSuiteTargets`, and add the manifest row in
-the commit that completes the last stage.
+`models/inkling-2-small.json` is the single hand-written registry row; everything
+else is generated at configure time and must not be edited:
 
-Current state, machine-enforced from both directions:
+| generated | covers |
+|---|---|
+| `model_manifest.h` | `kModels` (39 rows), the vault dir/env, the passport |
+| `model_targets.cmake` | `add_test` + timeout/skip code/`gpu` lock/label/env for all nine stages |
+| `model_registry.inc` | the `LsxModelFactory` registration and its aliases |
+| `test_model_suite_guard.cpp::Suites()` | the suite row, built from the manifests |
 
-- `tests/CMakeLists.txt` registers the four targets by hand (labels `fast`,
-  `convert`, `inference` x2; bounded `TIMEOUT`s; `RESOURCE_LOCK "gpu"`;
-  `SKIP_RETURN_CODE 4` where a vault may be absent).
-- `test_model_suite_guard` lists `test_inkling_moe_{convert,loader,kernels}` in
-  `kPendingSuiteTargets`; the guard fails if a pending name stops being a
-  registered unclaimed target **or** if a suite row claims it — so the entry
-  cannot outlive the problem.
-- `tools/gen_model_manifest.py::_NON_MODEL_TESTS` claims the four test files so
-  the `--strict` orphan scan stays clean, with the same delete-on-row comment.
-- Because there is no row, `LsxModelFactory` cannot resolve `inkling-2-small`
-  and `docs/MODELS.md` (38 rows) does not list it. That is correct: the model is
-  not servable.
+Consequences, machine-enforced:
+
+- The six targets that used to be declared in `kPendingSuiteTargets` are claimed
+  by the row, so the declaration was **deleted** (the guard fails if a pending
+  name outlives its row, and it fails if a claimed target is not registered).
+- `tools/gen_model_manifest.py::_NON_MODEL_TESTS` keeps only
+  `test_inkling_moe_constants`: that one is the frozen-passport guard, not a
+  lifecycle stage, so no stage claims it.
+- The hand-written `add_test` lines are gone from `tests/CMakeLists.txt`; what
+  remains there is build reality (sources, link libraries, defines), including
+  the three `test_parity_gate.cpp` targets.
+- `docs/MODELS.md` now has 39 rows and `test_manifest_sync` verifies it against
+  the compiled table.
 
 ## Plan (TDD, one stage per commit)
 

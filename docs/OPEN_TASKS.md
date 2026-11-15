@@ -1499,10 +1499,10 @@ Do not "fix" it by widening `kSlack`: 300 MiB of foreign churn would still fail,
 and a slack large enough to absorb it also hides the 1 GiB leak the case exists
 to catch.
 
-## R19. Inkling-2-Small (594B / 17B active) — engine done, parity green, gates + manifest pending (2026-11-15)
+## R19. Inkling-2-Small (594B / 17B active) — all four gates green, manifest landed; the perf row is the only stage left (2026-11-15)
 
 Branch `feat/inkling-2-small`. New family (`kType = inkling-2-small`, format tag
-`logestix-inkling-2-small-nvfp4`): 48 MoE layers, hidden 4608, 48 Q / 8 KV heads
+`logestix-inkling-2-small`): 48 MoE layers, hidden 4608, 48 Q / 8 KV heads
 at head_dim 128, **no RoPE anywhere** (a learned relative-position bank of
 d_rel 16 profiles over 1024 backward distances replaces it), 40 sliding-window
 layers (1024) + 8 full-attention layers at `(layer+1)%6==0`, per-head learned
@@ -1562,8 +1562,12 @@ Stage 0 record and the plan: `docs/open-tasks/2026-11-14-inkling-2-small-ingest.
   includes the capacity and so over-ran the old allocation on every growth; the
   runtime rejected the copy and the error surfaced two calls later as
   `[embed] embed row (cuda 1)`. Both fixed and pinned.
-  Still open for this row: FSI/CODE/DET goldens, the perf row + VRAM profile, the
-  manifest row with its generated registries, and the format-tag rename.
+  Closed since: FSI 3/3, CODE 3/3, DET 3/3 (template-derived goldens, recorded as
+  such in each file's `source`), the manifest row with its generated registries
+  (`kPendingSuiteTargets` emptied, `_NON_MODEL_TESTS` down to the passport
+  guard), the format-tag rename to `logestix-inkling-2-small`, and the stage-9
+  report. **Still open: the perf row** (both modes at the canonical 2048
+  protocol) — it needs a Release build because a Debug tree SKIPs by design.
 - I2. `mtp.safetensors` is a **separate 3.4 GB file that the index does not
   list**; a converter that trusts `model.safetensors.index.json` silently
   ignores the 5 MTP layers (correct) but must not assume the directory only
