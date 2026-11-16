@@ -7,8 +7,8 @@ Thanks for your interest in contributing!
 logestix is dual-licensed: the open-source edition is AGPL-3.0, and a separate
 commercial license is offered for enterprise deployments. To keep that model
 viable, **every contributor must sign the Contributor License Agreement (CLA)
-before a Pull Request can be merged**. The signing flow is automated via GitHub
-as soon as you open a Pull Request.
+before a Pull Request can be merged** — confirm agreement in the PR checklist
+or contact <info@logestix.io>.
 
 ## Getting started
 
@@ -22,9 +22,11 @@ cmake --build --preset linux-debug
 ctest --preset linux-debug
 ```
 
-See `README.md` for the Windows and AOCC release flows, and
-`docs/NVIDIA_DOCS.md` for the mandatory NVIDIA documentation workflow before
-touching NVFP4/CUDA kernel semantics.
+See `README.md` for the Windows release flow, and the `linux-release-znver4-aocc`
+preset in `CMakePresets.json` for the AOCC host-compiler build (set `AOCC_ROOT`
+to your AOCC install root; without it the preset falls back to `clang`/`clang++`
+from `PATH`). See `docs/NVIDIA_DOCS.md` for the mandatory NVIDIA documentation
+workflow before touching NVFP4/CUDA kernel semantics.
 
 ## Development rules
 
@@ -56,7 +58,8 @@ English, with a type prefix: `build:`, `feat:`, `fix:`, `refactor:`, `test:`,
 2. Keep the change focused; extend the relevant guard tests and label registries
    in the same commit.
 3. Make sure the fast suite is green: `ctest --preset linux-debug` (fast-only).
-4. Open the PR — the CLA prompt appears automatically.
+4. Open the PR and confirm CLA agreement in the PR checklist (or contact
+   <info@logestix.io>).
 
 By contributing you agree that your contributions are licensed under the
 project's AGPL-3.0 license and may also be distributed under the commercial
