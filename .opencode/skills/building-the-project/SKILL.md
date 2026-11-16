@@ -45,10 +45,27 @@ generic `linux-debug`/`linux-release` presets stay `-march`-free.
 
 ## Linux release — AOCC
 
-Alternative host compiler (clang 17.0.6) used as NVCC's `-ccbin`:
+Alternative host compiler (clang 17.0.6) used as NVCC's `-ccbin`. The
+`linux-release-znver4-aocc` preset reads the install root from `AOCC_ROOT`:
 
 ```bash
-AOCC=$HOME/aocc-compiler-5.2.0/bin   # point at your AOCC install
+export AOCC_ROOT=/path/to/aocc-compiler-5.2.0   # your AOCC install root
+cmake --preset linux-release-znver4-aocc
+cmake --build --preset linux-release-znver4-aocc
+ctest --preset linux-release-znver4-aocc        # fast label only
+```
+
+Without `AOCC_ROOT` the preset falls back to `$penv{AOCC_ROOT}/bin/clang++`,
+i.e. `/bin/clang++` — which does not exist; a system clang on `PATH` needs the
+manual configure below with `-DCMAKE_CXX_COMPILER=clang++` etc. The preset
+already carries the two load-bearing flags described under the next heading
+(`CMAKE_BUILD_WITH_INSTALL_RPATH` + `$ORIGIN`-relative `CMAKE_INSTALL_RPATH`,
+and `CMAKE_CXX_FLAGS_RELEASE=-DNDEBUG`).
+
+The equivalent manual configure (any clang, e.g. one on `PATH`):
+
+```bash
+AOCC=$AOCC_ROOT/bin   # or the directory of your clang
 cmake -S . -B build/linux-release-znver4-aocc -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -106,14 +123,15 @@ while that sub-build inherits clang-only host flags, and it dies with
 tree can be configured from scratch without it. Use AOCC's own `clang`:
 
 ```
--DCMAKE_C_COMPILER=$HOME/projects/amd/aocc-compiler-5.2.0/bin/clang
+-DCMAKE_C_COMPILER=$AOCC_ROOT/bin/clang
 ```
 
 What must stay true is that the path is **valid**: a bad path poisons the cache
 with `CMAKE_C_COMPILER:UNINITIALIZED` and CMake then loses the ELF platform
 detection the Arrow RPATH check depends on, which surfaces as the same confusing
-RPATH error one step later. `AOCC` lives in `~/projects/amd/`, **not** in
-`$HOME` — a `$HOME/aocc-compiler-5.2.0` path does not exist.
+RPATH error one step later. The preset's `$penv{AOCC_ROOT}` expands to the empty
+string when `AOCC_ROOT` is unset, leaving `/bin/clang++` — exactly this trap;
+export `AOCC_ROOT` (or configure manually with a `PATH` clang) before using it.
 
 This tree (`build/linux-release-znver4-aocc`) is the perf reference. AOCC/Clang
 specifics (`-flto=thin` fallback, the abseil format-checker patch) are in
