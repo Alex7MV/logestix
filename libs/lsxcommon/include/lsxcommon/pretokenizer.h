@@ -1,3 +1,4 @@
+// Split patterns follow the GPT-2 (OpenAI) / tiktoken (MIT) reference patterns; the streaming matchers are original implementations.
 #pragma once
 #include <cstddef>
 #include <cstdint>
