@@ -23,10 +23,10 @@ Source of the removed export: `mcp: nvidia-cuda-docs`.
 
 ## Offline copy kept outside the repository
 
-The operator keeps the same export **outside** the tree, at
-`/home/alexmv2025/projects/cuda/docs/` (`NVIDIA_DOCS_NVFP4_MEMORY.md`,
+The operator keeps the same export **outside** the tree, in a private
+untracked directory (`NVIDIA_DOCS_NVFP4_MEMORY.md`,
 `NVIDIA_DOCS_HOPPER.md`, `NVIDIA_DOCS_AMPERE.md`, `NVIDIA_DOCS_RUBIN.md`, plus
-`numeric-contract.md` / `numeric-conformance-audit.md`).
+copies of `numeric-contract.md` / `numeric-conformance-audit.md`).
 
 This section is a **pointer only**: no NVIDIA text is reproduced here, the
 dumps stay untracked and outside `logestix/`, and the names above are the same

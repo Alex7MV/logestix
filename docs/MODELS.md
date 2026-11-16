@@ -7,6 +7,8 @@
 history live in `docs/model-reports/`; gate verdicts in
 `docs/SELFCHECK_MATRIX.md`; throughput in `tests/perf/perf_baselines.json`.
 
+Legend: `gates: <stage>: yes` means the stage target and its golden exist — not that every probe passed (measured verdicts, including documented red cells, are in `docs/SELFCHECK_MATRIX.md`); `debt` means the golden was never captured.
+
 ## alice-foundation-80b-a3b
 
 - family `alice`

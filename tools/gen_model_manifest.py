@@ -944,6 +944,8 @@ def emit_docs(manifests, baseline) -> str:
         "history live in `docs/model-reports/`; gate verdicts in",
         "`docs/SELFCHECK_MATRIX.md`; throughput in `tests/perf/perf_baselines.json`.",
         "",
+        "Legend: `gates: <stage>: yes` means the stage target and its golden exist — not that every probe passed (measured verdicts, including documented red cells, are in `docs/SELFCHECK_MATRIX.md`); `debt` means the golden was never captured.",
+        "",
     ]
     for m in sorted(manifests, key=lambda x: (x.family, x.model_type)):
         lines.append(emit_model_section(m, baseline).rstrip("\n"))
