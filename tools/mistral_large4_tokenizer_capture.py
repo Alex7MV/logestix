@@ -25,7 +25,7 @@ CORPUS = [
     "x0y00z000",
     # Case runs / acronyms / mixed scripts.
     "getUserName", "HTTPRequest", "iPhone15Pro", "XMLHttpRequest",
-    "Maße", "ÄÖÜäöü", "приветМир", "Σίσυφος",
+    "Maße", "ÄÖÜäöü", "\u043f\u0440\u0438\u0432\u0435\u0442\u041c\u0438\u0440", "Σίσυφος",
     # Contractions are NOT peeled (no contraction alternative).
     "it's", "don't", "we'll", "I'M",
     # CJK is not isolated by this pattern.

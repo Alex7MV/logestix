@@ -28,7 +28,7 @@ CORPUS = [
     "    indented code line with   multiple   spaces",
     "Numbers 1234567 and 3.14159 and -42 and 0x1F and 1e-9",
     'JSON {"key": [1, 2, 3], "nested": {"a": true, "b": null}}',
-    "Привет, мир! 你好世界 こんにちは",
+    "\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440! 你好世界 こんにちは",
     "<｜hy_User｜>Hello<｜hy_Assistant｜><think></think>",
     "<tool_calls>\n<tool_call>get_weather<tool_sep>\n<arg_key>city</arg_key>"
     "\n<arg_value>Paris</arg_value>\n</tool_call>\n</tool_calls>",

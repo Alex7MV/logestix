@@ -47,7 +47,7 @@ CORPUS = [
     "  mixed   spaces\tand\ttabs  ",
     "numbers 42 4 2 42 424242",
     "Eine Straße in Zürich, 2026.",
-    "user<|role_sep|>\nПривет, мир!<|message_sep|>\n\n",
+    "user<|role_sep|>\n\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440!<|message_sep|>\n\n",
     "<think></think>",
     "<|message_sep|>\n\n",
 ]
