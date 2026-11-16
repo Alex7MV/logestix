@@ -1,6 +1,7 @@
 // Arrow usage guard (host-only static scan; zero deps beyond Catch2).
 //
-// The audit's machine-checkable rules (docs/ARROW_AUDIT_2026-11-01.md):
+// The audit's machine-checkable rules (docs/ARROW_MATRIX.md, extracted from
+// the 2026-11-01 Arrow usage audit):
 //
 //   R-A1  Reading goes through MemoryMappedFile; ReadableFile is forbidden.
 //   R-A2  Every owning *Schema::UnpackBatch call site has a recorded verdict
@@ -188,7 +189,7 @@ struct MatrixRow {
 std::vector<MatrixRow> ReadMatrix()
 {
     const fs::path report = fs::path(LSX_SOURCE_DIR) /
-                            "docs" / "ARROW_AUDIT_2026-11-01.md";
+                            "docs" / "ARROW_MATRIX.md";
     REQUIRE(fs::exists(report));
     const std::string text = ReadFile(report);
     const std::string start_marker = "<!-- arrow-matrix:start -->";

@@ -4,7 +4,7 @@
 // and the post-conversion hook (`lsxforge --verify`). It checks a converted
 // `logestix/` tree: every .arrow opens, has one known schema and one record
 // batch with the expected row count, and a deterministic payload sample
-// satisfies the offset/range/size invariants (docs/ARROW_AUDIT_2026-11-01.md).
+// satisfies the offset/range/size invariants (lsxcommon/arrow_validate.h).
 #pragma once
 
 #include <cstdint>

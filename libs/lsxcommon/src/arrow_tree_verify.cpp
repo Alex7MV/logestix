@@ -1,5 +1,6 @@
 // Arrow IPC tree verification — the shared implementation used by the
-// audit test and by `lsxforge --verify` (docs/ARROW_AUDIT_2026-11-01.md).
+// audit test and by `lsxforge --verify` (invariants: lsxcommon/arrow_validate.h;
+// read-path matrix: docs/ARROW_MATRIX.md).
 #include "lsxcommon/arrow_tree_verify.h"
 #include "lsxcommon/arrow_validate.h"
 #include "lsxcommon/schema.h"

@@ -2,7 +2,8 @@
 
 Session record. Branch `audit/arrow-usage-2026-11-01`. Host: Linux, RTX 5090
 (32 GiB), CUDA 13.4. Vault `/mnt/fast_storage/huggingface` (29 models).
-Companion report: [`../ARROW_AUDIT_2026-11-01.md`](../ARROW_AUDIT_2026-11-01.md).
+Companion report: the internal audit draft was removed before open-sourcing;
+its machine-checked matrix survives at [`../ARROW_MATRIX.md`](../ARROW_MATRIX.md).
 
 ## 1. Arrow IPC audit — closed findings
 

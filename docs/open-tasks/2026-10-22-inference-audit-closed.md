@@ -1,13 +1,15 @@
 # Inference audit 2026-10-22 — findings closed
 
 Verbatim snapshot of §X from `docs/OPEN_TASKS.md` as written before the fixes,
-with the resolution log appended. Full evidence:
-[`../INFERENCE_AUDIT_2026-10-22.md`](../INFERENCE_AUDIT_2026-10-22.md).
+with the resolution log appended. The full-evidence draft
+(`../INFERENCE_AUDIT_2026-10-22.md`, internal, Russian-language) was removed
+before open-sourcing; the findings and their resolutions are recorded here.
 Branch `fix/inference-audit-2026-10-22`.
 
 ## X. Inference audit 2026-10-22 — findings to close
 
-Full evidence: [`INFERENCE_AUDIT_2026-10-22.md`](../INFERENCE_AUDIT_2026-10-22.md).
+Full evidence: the companion draft was removed before open-sourcing (see the
+note above); this file is the surviving record.
 Branch `fix/inference-audit-2026-10-22`; each item gets a failing test first
 (TDD) and moves to the archive when green.
 
