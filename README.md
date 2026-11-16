@@ -55,7 +55,20 @@ as reproducibility levels with their "not guaranteed" cells written down in
 - C++20 / C23 compiler (GCC 15+ on Ubuntu 26.04, MSVC in Visual Studio 2026)
 - Ninja build system (required on Ubuntu; optional on Windows)
 - Git
-- NVIDIA CUDA Toolkit 13.2+ (optional, for GPU support; verified on 13.4)
+- **NVIDIA CUDA Toolkit 13.5 — required, not optional.** The build enables
+  CUDA unconditionally (`project(... LANGUAGES C CXX CUDA)` +
+  `find_package(CUDAToolkit REQUIRED)`); there is no CPU-only build. The
+  enforced floor is 13.2 (`test_cuda_toolkit_guard`); 13.5 is the verified
+  toolkit. A 13.x driver older than the toolkit is supported through CUDA
+  minor-version compatibility (e.g. toolkit 13.5 on a 13.4 driver).
+- **NVIDIA Blackwell GPU — required for all device work.** Compute capability
+  12.0/12.1 only (`sm_120`/`sm_121`, e.g. RTX 5090). Pre-Blackwell
+  architectures (Hopper, Ada, Ampere) are deliberately unsupported and
+  rejected at configure time. Device codegen comes from `LSX_CUDA_ARCH`
+  (default `120;121`); `-DLSX_CUDA_ARCH="120f;121f"` selects the
+  family-specific targets — measured neutral for this repo's weight-streaming
+  NVFP4 decode paths, kept as a one-variable experiment for compute-bound
+  cases.
 
 ## Clone with submodules
 
@@ -100,27 +113,69 @@ ctest --preset linux-release-znver4
 
 ## Test
 
-`BUILD_TESTING=ON` is already enabled in all presets.
+`BUILD_TESTING=ON` is already enabled in all presets. Every test target
+carries exactly one label, and the label decides when it runs
+(enforced by `test_ctest_labels_guard`):
+
+| Label | What it is | When it runs |
+|---|---|---|
+| `fast` | host-only unit and guard tests; parallel-safe, no model weights needed | every `ctest --preset` — the default filter of all test presets |
+| `convert` | model converters on synthetic checkpoints | when a converter changed, or manually |
+| `inference` | CUDA kernels and the model contour (load / model / selfcheck / fsi / code / det) | when the contour changed, or manually |
+| `perf` | throughput baselines on real weights | separate command only, **Release only** (a Debug run SKIPs) |
+
+The one CUDA-aware `fast` target, `test_cuda_toolkit_guard`, allocates no
+device memory — it reads toolkit/driver versions and device properties, and
+its device case SKIPs where no GPU exists.
+
+As of 2026-11-16 the tree registers **555 CTest targets: 149 `fast`,
+41 `convert`, 318 `inference`, 47 `perf`**. Counts move as models are
+ingested, so re-read them instead of trusting this paragraph:
+`ctest --preset linux-debug -N` (the fast default) or
+`ctest --test-dir <build-dir> -N` (the full tree).
 
 ```powershell
-ctest --preset windows-debug    # Windows 11
+ctest --preset windows-debug    # Windows 11 — fast label only
 ```
 
 ```bash
-ctest --preset linux-debug      # Ubuntu 26.04
+ctest --preset linux-debug               # Ubuntu 26.04 — fast label only (149 targets)
+ctest --preset linux-debug-convert       # converter sweep
+ctest --preset linux-debug-inference     # CUDA / model-contour sweep
+ctest --preset linux-release-znver4-perf # perf sweep; Release-only
+ctest -L "^(fast|convert|inference|perf)$"   # full run (from the build directory)
 ```
 
-Test executables (~100 test cases, ~2.6M assertions). GLM-5.2 and DeepSeek
-suites are autonomous and run independently:
+Every base test preset also exists with a `-fast` / `-convert` / `-inference`
+/ `-perf` suffix selecting that label. GPU-labelled targets hold the `gpu`
+resource lock: run **one GPU workload at a time**. The lock is per `ctest`
+process, not per machine — two concurrent `ctest` invocations both acquire it
+and share the GPU, so never start a second GPU-labelled sweep while one is in
+flight.
+
+Family sweeps work by name regex, e.g. `ctest -R glm` (GLM-5.2 and
+GLM-5.3-Flash) or `ctest -R deepseek` (all DeepSeek variants). The suites are
+autonomous and run independently.
+
+### Model vault (`LSX_MODEL_ROOT`)
+
+The engine and the real-model tests resolve converted checkpoints from a
+model vault. The root defaults to `/mnt/fast_storage/huggingface` on Linux
+and `D:\Programs\huggingface.co` on Windows (compile-time defaults in
+`libs/lsxcommon/include/lsxcommon/path_registry.h`). **Set `LSX_MODEL_ROOT`
+to an absolute path to relocate the vault** — the runtime override takes
+precedence over the platform default:
 
 ```bash
-ctest -R glm        # GLM-5.2 suite only (11 executables)
-ctest -R deepseek   # DeepSeek suite only (2 executables)
+export LSX_MODEL_ROOT=/data/models   # your vault root
 ```
 
-Real-model tests SKIP gracefully when the checkpoint is absent
-(`LSX_TEST_GLM_MODEL_PATH` for GLM-5.2, `LSX_TEST_MODEL_PATH` for DeepSeek,
-`LSX_TEST_GLM_FLASH_ROOT` for GLM-5.3-Flash).
+Converted models live in `<LSX_MODEL_ROOT>/<Model>/logestix/` (produced by
+`lsxforge`). Individual model tests also accept a per-model root override
+declared in `models/<model_type>.json` (`vault.env`, e.g.
+`LSX_TEST_GLM_5_2_ROOT`); the full per-model list is in `docs/MODELS.md`.
+When the converted tree or a parity golden is absent, the test SKIPs
+gracefully (exit code 4) — a SKIP is **not** a pass.
 
 ## Structure
 
