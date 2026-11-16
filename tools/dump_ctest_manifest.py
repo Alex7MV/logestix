@@ -18,6 +18,12 @@ first edit.
 Reads the CMake-generated `CTestTestfile.cmake` files (the same source ctest
 itself parses), so it does not depend on the project's CMake text.
 
+The committed baseline stores commands relative to a `<REPO_ROOT>/` placeholder
+instead of the capturing host's absolute checkout path; `--diff-cmake` compares
+labels/timeout/skip/environment/resource_lock only, so the placeholder does not
+affect the diff. A freshly dumped snapshot carries absolute paths — replace the
+checkout prefix with `<REPO_ROOT>/` before committing it.
+
 Usage:
     tools/dump_ctest_manifest.py --preset linux-debug --out tests/fixtures/ctest/base.json
 """
