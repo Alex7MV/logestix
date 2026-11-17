@@ -117,6 +117,25 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
     }
 }
 
+TEST_CASE("forge cli: --inkling_base selects the Inkling base pipeline",
+          "[lsxforge][cli]")
+{
+    Flags f = Base();
+    f.inkling_base = true;
+    const auto r = ResolvePipeline(f);
+    CHECK(r.error.empty());
+    CHECK(r.pipeline == Pipeline::kInklingBase);
+
+    // The two inkling converters are different architectures: selecting both
+    // is ambiguous, never first-flag-wins.
+    Flags both = Base();
+    both.inkling = true;
+    both.inkling_base = true;
+    const auto rb = ResolvePipeline(both);
+    CHECK(rb.pipeline == Pipeline::kError);
+    CHECK(rb.error.find("--inkling") != std::string::npos);
+}
+
 TEST_CASE("forge cli: no family flag falls back to the generic converter",
           "[lsxforge][cli]")
 {

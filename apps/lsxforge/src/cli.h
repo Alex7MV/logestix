@@ -58,6 +58,7 @@ enum class Pipeline {
     kBeam,
     kStep,
     kInkling,
+    kInklingBase,
     kGeneric,
     kError,
 };
@@ -109,6 +110,7 @@ struct Flags {
     bool beam = false;
     bool step = false;
     bool inkling = false;
+    bool inkling_base = false;
 };
 
 // Parses the "--layers first:last" conversion window (inclusive, both bounds

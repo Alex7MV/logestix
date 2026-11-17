@@ -17,6 +17,7 @@
 #include "lsxcommon/kimi_moe_k3_convert.h"
 #include "lsxcommon/kimi_moe_pro_convert.h"
 #include "lsxcommon/inkling_moe_convert.h"
+#include "lsxcommon/inkling_moe_base_convert.h"
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/mistral_moe_large4_convert.h"
@@ -120,6 +121,9 @@ ABSL_FLAG(bool, kimi_k31_pro, false,
 ABSL_FLAG(bool, inkling, false,
           "Inkling-2-Small (hybrid sliding/full + AttnRes + relative-bias MoE, "
           "mixed NVFP4/MXFP8 expert source) conversion pipeline");
+ABSL_FLAG(bool, inkling_base, false,
+          "Inkling base (hybrid sliding/full + relative-bias MoE with 2 "
+          "shared-sink experts, pure-BF16 source) conversion pipeline");
 ABSL_FLAG(bool, alice, false,
           "AliceAI-Foundation-80B-A3B-Base (KDA + gated attention sparse MoE) "
           "conversion pipeline");
@@ -217,6 +221,7 @@ int main(int argc, char* argv[]) {
     bool kimi_k3 = absl::GetFlag(FLAGS_kimi_k3);
     bool kimi_k31_pro = absl::GetFlag(FLAGS_kimi_k31_pro);
     bool inkling = absl::GetFlag(FLAGS_inkling);
+    bool inkling_base = absl::GetFlag(FLAGS_inkling_base);
     bool alice = absl::GetFlag(FLAGS_alice);
     bool xing = absl::GetFlag(FLAGS_xing);
     bool mistral = absl::GetFlag(FLAGS_mistral);
@@ -304,6 +309,7 @@ int main(int argc, char* argv[]) {
     flags.kimi_k3 = kimi_k3;
     flags.kimi_k31_pro = kimi_k31_pro;
     flags.inkling = inkling;
+    flags.inkling_base = inkling_base;
     flags.alice = alice;
     flags.xing = xing;
     flags.mistral = mistral;
@@ -724,6 +730,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Inkling-2-Small conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kInklingBase: {
+        lsxcommon::log::info(
+            "Inkling base pipeline (logestix-inkling-nvfp4 layout)");
+        auto st = lsxcommon::inkling::base::ConvertInklingBaseModel(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "Inkling base conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Inkling base conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

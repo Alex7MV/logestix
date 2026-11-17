@@ -124,6 +124,7 @@ add_library(lsxcommon STATIC
     src/step_moe_convert.cpp
     src/step_moe_load.cpp
     src/inkling_moe_convert.cpp
+    src/inkling_moe_base_convert.cpp
     src/inkling_moe_load.cpp
     src/inkling_moe_model.cpp
     src/inkling_moe_tool_format.cpp

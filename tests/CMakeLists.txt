@@ -96,6 +96,15 @@ add_test(NAME test_inkling_moe_base_constants
     COMMAND test_inkling_moe_base_constants)
 set_tests_properties(test_inkling_moe_base_constants PROPERTIES
     LABELS "fast" TIMEOUT 120)
+add_executable(test_inkling_moe_base_convert test_inkling_moe_base_convert.cpp)
+target_include_directories(test_inkling_moe_base_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_base_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_base_convert COMMAND test_inkling_moe_base_convert)
+set_tests_properties(test_inkling_moe_base_convert PROPERTIES
+    LABELS "convert" TIMEOUT 300 RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the
