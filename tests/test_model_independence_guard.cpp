@@ -318,6 +318,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "step_moe_model.cpp",          // step-5-preview (GQA + DSA + 352-expert MoE)
         "kimi_moe_k3_model.cpp",       // kimi-k3 (KDA + gated NoPE MLA + LatentMoE)
         "kimi_moe_pro_model.cpp",      // kimi-k3.1-pro (the same tower + Gated DSA)
+        "inkling_moe_base_model.cpp",  // inkling base (rel-bank + shared-sink MoE)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);

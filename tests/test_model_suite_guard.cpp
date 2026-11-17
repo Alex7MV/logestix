@@ -674,13 +674,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     // that is mid-flight adds its targets here and deletes them in the same
     // commit that lands the row (Inkling-2-Small did exactly that on
     // 2026-11-15).
-    static const std::set<std::string> kPendingSuiteTargets = {
-        // Inkling base ingestion in flight (2026-11-17): the convert-stage
-        // targets land before the full manifest row; deleted in the commit
-        // that lands models/inkling.json.
-        "test_inkling_moe_base_constants",
-        "test_inkling_moe_base_convert",
-    };
+    static const std::set<std::string> kPendingSuiteTargets = {};
 
     std::set<std::string> claimed;
     for (const auto &s : Suites())
@@ -810,6 +804,10 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // `<|content_invoke_tool_json|>{"name":…,"args":{…}}`, and the round-trip
         // is 49 framing assertions on a synthetic fixture.
         {"inkling-2-small", {"test_inkling_moe_tool_framing"}},
+        // Inkling base has its OWN codec (inkling_moe_base_tool_format.cpp):
+        // the same marker family, but the tool-result header carries the tool
+        // name — verified against the base checkpoint's chat_template.jinja.
+        {"inkling", {"test_inkling_moe_base_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

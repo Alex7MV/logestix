@@ -87,24 +87,89 @@ target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
 # ── Inkling base (models/inkling.json) ──────────────────────────────────────
-# TEMPORARY registration until the manifest row lands (Task 3); the generated
-# model_targets.cmake fragment then owns the ctest registration.
+# The ctest registrations come from the generated model_targets.cmake
+# fragment; what stays here is per-target BUILD reality.
 add_executable(test_inkling_moe_base_constants test_inkling_moe_base_constants.cpp)
 target_link_libraries(test_inkling_moe_base_constants PRIVATE lsxcommon
     Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_base_constants
-    COMMAND test_inkling_moe_base_constants)
-set_tests_properties(test_inkling_moe_base_constants PROPERTIES
-    LABELS "fast" TIMEOUT 120)
 add_executable(test_inkling_moe_base_convert test_inkling_moe_base_convert.cpp)
 target_include_directories(test_inkling_moe_base_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_inkling_moe_base_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
-add_test(NAME test_inkling_moe_base_convert COMMAND test_inkling_moe_base_convert)
-set_tests_properties(test_inkling_moe_base_convert PROPERTIES
-    LABELS "convert" TIMEOUT 300 RESOURCE_LOCK "gpu"
-    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+add_executable(test_inkling_moe_base_loader test_inkling_moe_base_loader.cpp)
+target_include_directories(test_inkling_moe_base_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_base_loader PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_executable(test_inkling_moe_base_model test_inkling_moe_base_model.cpp)
+target_include_directories(test_inkling_moe_base_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_base_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_library(test_inkling_base_cu OBJECT
+    test_inkling_moe_base_kernels.cu
+)
+set_target_properties(test_inkling_base_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_inkling_base_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_inkling_base_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_inkling_base_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_base_cu PRIVATE Catch2::Catch2WithMain
+    lsx_dep_includes arrow_shared)
+add_executable(test_inkling_moe_base_kernels)
+set_target_properties(test_inkling_moe_base_kernels PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_inkling_moe_base_kernels PRIVATE
+    test_inkling_base_cu lsxcommon Catch2::Catch2WithMain)
+add_executable(test_inkling_moe_base_tool_framing
+    test_inkling_moe_base_tool_framing.cpp)
+target_compile_definitions(test_inkling_moe_base_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_inkling_moe_base_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+# Inkling base lifecycle gates (shared drivers).
+add_executable(test_inkling_moe_base_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_inkling_moe_base_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_base_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_base_selfcheck PRIVATE
+    "LSX_SELFCHECK_MODEL=\"inkling\"")
+
+add_executable(test_inkling_moe_base_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_base_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_base_fsi_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_base_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+
+add_executable(test_inkling_moe_base_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_base_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_base_code_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_base_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+
+add_executable(test_inkling_moe_base_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_base_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_base_det_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_base_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the
