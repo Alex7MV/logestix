@@ -20,6 +20,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- Bumped simdjson v5.0.6 -> v5.2.0 (submodule `third_party/simdjson`, commit
+  `a0d5ad97…`; the `test_core.cpp` version guard now asserts 5.2.0). On-demand
+  correctness fixes upstream (malformed-value escapes, incomplete-JSON key
+  cuts, `at_pointer` result handling); license texts unchanged.
+- Bumped cpp-httplib v0.63.0 -> v0.66.0 (FetchContent pin `v0.66.0`; the
+  `test_core.cpp` `CPPHTTPLIB_VERSION` guard now asserts 0.66.0).
 - Consolidated the duplicated dense-decoder kernels: a new model-neutral
   `lsxcommon::dense` layer (`lsx_dense_inference.{h,cu}`) now owns RMSNorm,
   full-dim RoPE, causal GQA attention (with the split-KV path), fused split-QKV

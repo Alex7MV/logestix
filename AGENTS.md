@@ -145,11 +145,11 @@ family's suite is complete and self-contained.
 | spdlog | 1.17.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule | Static |
 | libzmq | v4.3.5 | submodule | Static |
-| simdjson | v5.0.6 | submodule | Static (`.lib`) |
+| simdjson | v5.2.0 | submodule | Static (`.lib`) |
 | NVIDIA CCCL | toolkit bundle, band 3.2.x–3.5.x | `<include>/cccl` | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (LTS) | Header-only + static |
 | Catch2 | v3.16.1 | FetchContent (test only) | Header-only |
-| cpp-httplib | v0.63.0 | FetchContent (host HTTP) | Header-only |
+| cpp-httplib | v0.66.0 | FetchContent (host HTTP) | Header-only |
 
 Pins are enforced by `tests/test_core.cpp` → `TEST_CASE("pinned dependency
 versions")` (no guard for flatbuffers/libzmq). CCCL is deliberately not pinned:

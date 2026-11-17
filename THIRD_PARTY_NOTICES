@@ -22,9 +22,9 @@ pinned version.
 | CUB (part of CCCL) | from CUDA Toolkit | BSD-3-Clause | build-only (provided by the CUDA Toolkit; not redistributed) |
 | FlatBuffers | v25.12.19 | Apache-2.0 | runtime (static) |
 | libzmq | v4.3.5 | MPL-2.0 | runtime (static) |
-| simdjson | v5.0.6 | Apache-2.0 and MIT | runtime (static) |
+| simdjson | v5.2.0 | Apache-2.0 and MIT | runtime (static) |
 | spdlog | 1.17.0 | MIT (bundles fmt, MIT) | runtime (header-only) |
-| cpp-httplib | v0.63.0 | MIT | runtime (host-only, header-only) |
+| cpp-httplib | v0.66.0 | MIT | runtime (host-only, header-only) |
 | abseil-cpp | 20260817.0 | Apache-2.0 | runtime (host-only) |
 | xsimd (bundled by Arrow) | — | BSD-3-Clause | build/runtime |
 | Unicode Character Database | 16.0.0 | Unicode License V3 | generated code (`unicode_tables.inc`) |
@@ -559,7 +559,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Copyright 2014 Google Inc. Licensed under the Apache License,
 Version 2.0 (section 1.6).
 
-### 1.4 simdjson v5.0.6
+### 1.4 simdjson v5.2.0
 
 Copyright 2018-2025 The simdjson authors. simdjson is dual-licensed
 under the Apache License, Version 2.0 (section 1.6) and the MIT license
@@ -814,7 +814,7 @@ canonical text is reproduced at the end of this section.
 |---|---|
 | spdlog 1.17.0 | Copyright (c) 2016-present, Gabi Melman and spdlog contributors |
 | fmt (bundled by spdlog) | Copyright (c) 2012-present, Victor Zverovich and fmt contributors |
-| cpp-httplib v0.63.0 | Copyright (c) 2017 yhirose |
+| cpp-httplib v0.66.0 | Copyright (c) 2017 yhirose |
 | simdjson (alternative) | Copyright 2018-2025 The simdjson authors |
 | unity (bundled by libzmq) | Copyright (c) 2007-14 Mike Karlesky, Mark VanderVoord, Greg Williams |
 | mman-win32 (bundled by Arrow) | see Arrow NOTICE (section 1.1) |
