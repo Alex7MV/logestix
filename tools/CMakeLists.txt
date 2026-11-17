@@ -11,6 +11,14 @@ target_link_libraries(tokenizer_audit PRIVATE lsxcommon arrow_shared)
 add_executable(tokenizer_parity tokenizer_parity.cpp)
 target_link_libraries(tokenizer_parity PRIVATE lsxcommon arrow_shared)
 
+# Inkling base real-tree numeric probe: TraceForward dump for the independent
+# float64 reference + framed-Paris top-5 + optional teacher-forced NLL.
+# Diagnostic, not part of the test suite (loads the real vault).
+add_executable(inkling_base_probe inkling_base_probe.cpp)
+target_include_directories(inkling_base_probe PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(inkling_base_probe PRIVATE lsxcommon arrow_shared)
+
 if(WIN32)
     add_custom_command(TARGET tokenizer_audit POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
