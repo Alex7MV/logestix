@@ -75,6 +75,10 @@ const PerfModel kGlm52 = {
 // other row.
 const PerfModel kInkling = {
     "inkling-2-small", "Inkling-2-Small", "The capital of France is", 2048};
+// Inkling base: 28B active of 952B, so the per-token expert read dominates
+// and the expected band is low (~0.5-1.5 t/s, read-bound like the sibling).
+const PerfModel kInklingBase = {
+    "inkling", "Inkling", "The capital of France is", 2048};
 const PerfModel kDeepseek = {
     "deepseek-v4-flash", "DeepSeek-V4-Flash", "The capital of France is",
     2048};
@@ -566,6 +570,11 @@ TEST_CASE("perf baseline: glm-5.3-flash", "[perf]")
 TEST_CASE("perf baseline: inkling-2-small", "[perf]")
 {
     RunPerfModel(kInkling);
+}
+
+TEST_CASE("perf baseline: inkling", "[perf]")
+{
+    RunPerfModel(kInklingBase);
 }
 
 TEST_CASE("perf baseline: deepseek-v4-flash", "[perf]")
