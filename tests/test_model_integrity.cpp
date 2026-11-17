@@ -194,9 +194,13 @@ TEST_CASE("BuildAndVerifyTokenizer: missing required bos fails", "[integrity][to
     std::string content = read_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json");
     auto p0 = content.find("{\"id\":0,\"content\":\"<|bos|>\"");
     REQUIRE(p0 != std::string::npos);
-    auto p1 = content.find(',', p0);
+    // Erase the WHOLE object entry, not just its first field: simdjson 5.2
+    // hardens on-demand against malformed objects (a value without a key no
+    // longer escapes a skipped container), so a truncated entry would fail
+    // earlier with "no model object" instead of reaching the bos check.
+    auto p1 = content.find("},", p0);
     REQUIRE(p1 != std::string::npos);
-    content.erase(p0, p1 - p0 + 1);
+    content.erase(p0, p1 - p0 + 2);
 
     {
         std::ofstream of(tmp / "tokenizer.json");
