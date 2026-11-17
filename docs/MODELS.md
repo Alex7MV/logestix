@@ -239,9 +239,8 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 2
 - vault `Inkling` (override `LSX_TEST_INKLING_ROOT`)
 - lifecycle TUs: `inkling_moe_base_model.cpp`, `inkling_moe_base_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: not seeded
-- debt: code — in flight: template capture pending; det — in flight: template capture pending; fsi — in flight: template capture pending (source not runnable locally)
 - report: **not written** (stage-9 debt)
 - notes: Original inkling arch (NOT inkling2): rel-bank attention, static sconv, 256 experts top-6 + 2 shared-sink, muP /24 head, BF16 -> NVFP4.
 
