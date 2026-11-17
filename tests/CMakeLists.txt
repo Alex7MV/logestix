@@ -86,6 +86,17 @@ add_executable(test_kimi_pro_convert test_kimi_pro_convert.cpp)
 target_link_libraries(test_kimi_pro_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
+# ── Inkling base (models/inkling.json) ──────────────────────────────────────
+# TEMPORARY registration until the manifest row lands (Task 3); the generated
+# model_targets.cmake fragment then owns the ctest registration.
+add_executable(test_inkling_moe_base_constants test_inkling_moe_base_constants.cpp)
+target_link_libraries(test_inkling_moe_base_constants PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_base_constants
+    COMMAND test_inkling_moe_base_constants)
+set_tests_properties(test_inkling_moe_base_constants PROPERTIES
+    LABELS "fast" TIMEOUT 120)
+
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the
 # generated model_targets.cmake fragment; what stays here is per-target BUILD
