@@ -159,7 +159,11 @@ gpu::InferenceResult InklingMoeBaseModel::SelfCheck(const ModelRequest &req)
     // re-measured on the real tree before the golden is captured.
     opts.frame_prompt = true;
     opts.min_tokens = 2;
-    opts.answer_window = 8;
+    // Inline-reasoning release: the model emits <|content_thinking|> first and
+    // a reasoning span before the answer ("The capital of France is **Paris**."
+    // lands ~40 tokens in). The answer window must cover the whole generation
+    // budget (selfcheck_max_gen=48), not a short prefix.
+    opts.answer_window = 48;
     opts.substring_match = true;
     return runtime::RunParisSelfCheck(*this, req, opts);
 }

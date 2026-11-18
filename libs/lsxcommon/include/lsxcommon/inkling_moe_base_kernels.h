@@ -62,11 +62,15 @@ cudaError_t RunAttention(cudaStream_t stream, const __half *q,
                          __half *out);
 
 // Static-tap depthwise causal short conv over one token: push x into the
-// [k][channels] ring, out[c] = sum_j w[c,j]*state[j,c] + x[c]. NO normalizer
-// (inv_scale is always 1 here; the parameter exists only to keep the launch
-// shape explicit). FP16 in/out, FP32 ring state and taps.
+// [k][channels] ring, out[c] = sum_j w[c,j]*state[j,c] + x[c]. NO normalizer.
+// FP16 in/out, FP32 ring state and taps.
 cudaError_t RunShortConv(cudaStream_t stream, const __half *x_t, float *state,
                          const float *w, __half *out, int channels, int k);
+// FP32-input / FP32-output variant for the residual-path convolutions: the
+// base release's post-MLP conv output reaches ~1.9e5 (> FP16 max), so the
+// conv that feeds the FP32 residual must not narrow to FP16.
+cudaError_t RunShortConvF32(cudaStream_t stream, const float *x_t, float *state,
+                            const float *w, float *out, int channels, int k);
 
 // Router: w is [E+S, H] FP32, bias [E] FP32 (selection only), x [H] FP16.
 // Scores = sigmoid(w·x); the top-K of the first E scores+bias are selected;
@@ -86,10 +90,19 @@ cudaError_t RunSwiGLU(cudaStream_t stream, const __half *gate,
 cudaError_t RunExpertAccumulate(cudaStream_t stream, float *acc,
                                 const __half *y, const RoutedSlot *slots,
                                 int count, int rows);
+// FP32-y variant: the base release's expert down output can exceed the FP16
+// range (a shared expert's down reached ~9.6e5 at an early position), so the
+// down GEMV writes FP32 and the accumulation reads FP32.
+cudaError_t RunExpertAccumulateF32(cudaStream_t stream, float *acc,
+                                   const float *y, const RoutedSlot *slots,
+                                   int count, int rows);
 
 // acc[i] += gamma * y[i] (FP32 acc, FP16 y) — one shared expert's contribution.
 cudaError_t RunSharedAccumulate(cudaStream_t stream, float *acc,
                                 const __half *y, float gamma, int rows);
+// FP32-y variant (see RunExpertAccumulateF32).
+cudaError_t RunSharedAccumulateF32(cudaStream_t stream, float *acc,
+                                   const float *y, float gamma, int rows);
 
 // ── plumbing ────────────────────────────────────────────────────────────────
 cudaError_t RunEmbedGather(cudaStream_t stream, const __half *table,
@@ -97,6 +110,12 @@ cudaError_t RunEmbedGather(cudaStream_t stream, const __half *table,
 // Weighted RMSNorm, FP32 input row(s) -> FP16 output (norm weights FP16).
 cudaError_t RunNormF32In(cudaStream_t stream, const float *x, const __half *w,
                          __half *out, int rows, int hidden, float eps);
+// Weighted RMSNorm, FP32 input -> FP32 output. The residual stream of the
+// base release exceeds the FP16 range (absmax ~2e5 at the early positions of
+// the deeper layers), so it is carried in FP32; the norm that feeds the next
+// layer must not narrow it.
+cudaError_t RunNormF32(cudaStream_t stream, const float *x, const __half *w,
+                       float *out, int rows, int hidden, float eps);
 cudaError_t RunHalfToF32(cudaStream_t stream, const __half *src, float *dst,
                          int64_t n);
 cudaError_t RunCastToHalf(cudaStream_t stream, const float *src, __half *dst,

@@ -4,15 +4,17 @@
 // `inkling_mm_model`). Everything here is standard NVFP4 quantization through
 // the neutral helpers; the things that are easy to get wrong are pinned:
 //
-//   1. THREE fused gate/up slabs with TWO different row layouts. The routed
-//      `mlp.experts.w13_weight` is HALVES (gate rows [0,I), up rows [I,2I));
-//      `shared_w13_weight` and the dense `w13_dn.weight` are ROW-INTERLEAVED
-//      (gate=even rows, up=odd rows). transformers' conversion_mapping.py
-//      "inkling_mm_model" applies Interleave+Chunk to the latter two and a
-//      bare Interleave(dim=1) to the routed slab (whose target chunks in
-//      halves). Splitting any of them with the wrong layout keeps every byte
-//      and every plane size while pairing the wrong rows — invisible to every
-//      check except the model's own output. The convert test pins all three.
+//   1. THREE fused gate/up slabs, ALL ROW-INTERLEAVED (gate=even rows, up=odd
+//      rows): routed `mlp.experts.w13_weight`, `shared_w13_weight` and the
+//      dense `w13_dn.weight`. transformers' conversion_mapping.py
+//      "inkling_mm_model" applies Interleave(dim=1) to the routed/shared slabs
+//      and Interleave(dim=0)+Chunk to the dense one; each de-interleaves
+//      [g0,u0,g1,u1,...] into [gate;up] before the forward chunks the output.
+//      Splitting any of them as HALVES keeps every byte and every plane size
+//      while pairing the wrong rows — invisible to every check except the
+//      model's own output. The convert test pins all three. (The routed slab
+//      was originally mis-read as HALVES; the release op on the real
+//      checkpoint proved it interleaved, 2026-11-18.)
 //   2. The router weight has E+S rows (256 routed + 2 shared); the selection
 //      bias covers only the E routed rows. Both stay high precision: NVFP4
 //      rounding on the argmax surface silently swaps the expert set.
@@ -620,7 +622,12 @@ arrow::Status ConvertInklingBaseModel(const std::string &input_dir,
         }
     }
 
-    // ── routed experts: HALVES w13, one Arrow file per (layer, expert) ─────
+    // ── routed experts: ROW-INTERLEAVED w13, one Arrow file per (layer,
+    //    expert). The release conversion_mapping applies Interleave(dim=1)
+    //    to de-interleave [g0,u0,g1,u1,...] into [gate;up] before the forward
+    //    chunks the output — the SAME layout as shared_w13 / dense w13_dn.
+    //    Verified against the release op on the real checkpoint (2026-11-18):
+    //    the HALVES split mixed gate/up rows and made every MoE layer diverge.
     int experts_written = 0;
     for (int l = top.dense_mlp_layers; l < L; ++l) {
         const std::string w13_key =
@@ -646,10 +653,13 @@ arrow::Status ConvertInklingBaseModel(const std::string &input_dir,
         for (int e = 0; e < E; ++e) {
             const uint8_t *w13p = w13_data.data() + w13_expert * e;
             ExpertData ed;
-            // HALVES: rows [0,I) gate, rows [I,2I) up. NO de-interleave here
-            // (that is the inkling2 layout; applying it pairs the wrong rows).
-            ed.w1_raw.assign(w13p, w13p + w1_plane);
-            ed.w3_raw.assign(w13p + w1_plane, w13p + 2 * w1_plane);
+            // ROW-INTERLEAVED: source row 2r is gate row r, row 2r+1 is up
+            // row r (release Interleave(dim=1) de-interleaves to [gate;up]).
+            std::vector<uint8_t> gate, up;
+            TakeParityRows(w13p, static_cast<size_t>(I), w1_plane / I, 0, gate);
+            TakeParityRows(w13p, static_cast<size_t>(I), w1_plane / I, 1, up);
+            ed.w1_raw = std::move(gate);
+            ed.w3_raw = std::move(up);
             ed.w2_raw.assign(w2_data.data() + w2_expert * e,
                              w2_data.data() + w2_expert * (e + 1));
             ed.w1_dtype = ed.w2_dtype = ed.w3_dtype = "BF16";

@@ -5,8 +5,9 @@
 // (never quantized) norm/bias/rel/sconv/router plane, and — the defect class
 // that cost Inkling-2-Small a whole debugging session — the ROW PAIRING of the
 // three fused gate/up slabs:
-//   * routed w13 is HALVES (gate rows [0,I), up rows [I,2I));
-//   * shared_w13 and dense w13_dn are ROW-INTERLEAVED (gate=even, up=odd).
+//   * routed w13, shared_w13 and dense w13_dn are ALL ROW-INTERLEAVED
+//     (gate=even rows, up=odd rows); the release conversion_mapping applies
+//     Interleave to each.
 // The fixture writes row-identifiable values, so the pins below decode the
 // written NVFP4 records with the canonical codec and compare against the
 // CORRECT and the SWAPPED source rows: a converter that confuses the two
@@ -314,7 +315,12 @@ TEST_CASE("inkling base synthetic convert emits logestix-inkling-nvfp4",
         }
     }
 
-    // ── ROW PAIRING 3: routed w13 is HALVES (no de-interleave!) ────────────
+    // ── ROW PAIRING 3: routed w13 is ROW-INTERLEAVED (gate=even, up=odd) ───
+    // The release conversion_mapping applies Interleave(dim=1) to the routed
+    // slab exactly as it does to shared_w13: source row 2r is gate row r,
+    // source row 2r+1 is up row r. Verified against the release op on the
+    // real checkpoint (2026-11-18): the HALVES split mixed gate/up rows and
+    // made every MoE layer diverge from the release forward.
     {
         auto batch = lsxcommon::ReadRecordBatchFromFile(
             base / "experts" / "layer_3" / "exp_1.arrow");
@@ -346,14 +352,15 @@ TEST_CASE("inkling base synthetic convert emits logestix-inkling-nvfp4",
                             int64_t(kMoeInter) * kHidden);
         const auto w3 = deq(pe.w3_packed, pe.w3_scales, pe.w3_global_scale,
                             int64_t(kMoeInter) * kHidden);
-        // expert 1: gate tag 101, up tag 201 (HALVES layout).
+        // expert 1: gate tag 101, up tag 201 (ROW-INTERLEAVED layout).
         INFO("routed gate relL2=" << RelL2Vs(w1, kMoeInter, kHidden, 101));
         REQUIRE(RelL2Vs(w1, kMoeInter, kHidden, 101) < 0.2f);
         REQUIRE(RelL2Vs(w1, kMoeInter, kHidden, 201) > 0.5f);
         REQUIRE(RelL2Vs(w3, kMoeInter, kHidden, 201) < 0.2f);
         REQUIRE(RelL2Vs(w3, kMoeInter, kHidden, 101) > 0.5f);
-        // The de-interleave defect (inkling-2's layout applied here): gate
-        // would carry the EVEN source rows, which alternate gate/up values.
+        // The HALVES defect (the original wrong assumption): gate would carry
+        // the FIRST I source rows, which alternate gate/up values. Pin that
+        // the converter does NOT do that: w1 must match the EVEN rows.
         const auto slab = RoutedW13();
         const int64_t H = kHidden;
         const int64_t expert_off = int64_t(1) * 2 * kMoeInter * H;
@@ -365,7 +372,7 @@ TEST_CASE("inkling base synthetic convert emits logestix-inkling-nvfp4",
                 num += d * d;
                 den += double(even) * even;
             }
-        REQUIRE(std::sqrt(num / den) > 0.5);
+        REQUIRE(std::sqrt(num / den) < 0.2);
         // down plane: expert 1 tag 701.
         const auto w2 = deq(pe.w2_packed, pe.w2_scales, pe.w2_global_scale,
                             int64_t(kHidden) * kMoeInter);

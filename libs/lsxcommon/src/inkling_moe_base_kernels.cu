@@ -210,6 +210,28 @@ __global__ void short_conv_kernel(const __half *__restrict__ x_t,
     out[c] = __float2half(__fadd_rn(acc, cur));
 }
 
+__global__ void short_conv_f32_kernel(const float *__restrict__ x_t,
+                                      float *__restrict__ state,
+                                      const float *__restrict__ w,
+                                      float *__restrict__ out, int channels,
+                                      int k)
+{
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= channels) return;
+    for (int j = 0; j + 1 < k; ++j)
+        state[static_cast<int64_t>(j) * channels + c] =
+            state[static_cast<int64_t>(j + 1) * channels + c];
+    const float cur = x_t[c];
+    state[static_cast<int64_t>(k - 1) * channels + c] = cur;
+    float acc = 0.0f;
+    for (int j = 0; j < k; ++j) {
+        const float wv = w[static_cast<int64_t>(c) * k + j];
+        const float sv = state[static_cast<int64_t>(j) * channels + c];
+        acc = __fadd_rn(acc, __fmul_rn(wv, sv));
+    }
+    out[c] = __fadd_rn(acc, cur);
+}
+
 // ── 5. router: joint routed+shared renorm ─────────────────────────────────
 __global__ void router_kernel(const float *__restrict__ w,
                               const float *__restrict__ bias,
@@ -342,6 +364,20 @@ __global__ void expert_accumulate_kernel(float *__restrict__ acc,
     acc[i] = v;
 }
 
+__global__ void expert_accumulate_f32_kernel(float *__restrict__ acc,
+                                             const float *__restrict__ y,
+                                             const RoutedSlot *slots, int count,
+                                             int rows)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows) return;
+    float v = 0.0f;
+    for (int k = 0; k < count; ++k)
+        v = __fadd_rn(v, __fmul_rn(slots[k].coeff,
+                                   y[static_cast<int64_t>(k) * rows + i]));
+    acc[i] = v;
+}
+
 __global__ void shared_accumulate_kernel(float *__restrict__ acc,
                                          const __half *__restrict__ y,
                                          float gamma, int rows)
@@ -349,6 +385,15 @@ __global__ void shared_accumulate_kernel(float *__restrict__ acc,
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= rows) return;
     acc[i] = __fadd_rn(acc[i], __fmul_rn(gamma, __half2float(y[i])));
+}
+
+__global__ void shared_accumulate_f32_kernel(float *__restrict__ acc,
+                                             const float *__restrict__ y,
+                                             float gamma, int rows)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows) return;
+    acc[i] = __fadd_rn(acc[i], __fmul_rn(gamma, y[i]));
 }
 
 __global__ void cast_half_kernel(const float *__restrict__ acc,
@@ -418,6 +463,24 @@ __global__ void norm_f32in_kernel(const float *__restrict__ x,
     for (int i = tid; i < hidden; i += blockDim.x)
         orow[i] = __float2half(__fmul_rn(__fmul_rn(xr[i], inv),
                                          __half2float(w[i])));
+}
+
+__global__ void norm_f32_kernel(const float *__restrict__ x,
+                                const __half *__restrict__ w,
+                                float *__restrict__ out, int hidden, float eps)
+{
+    extern __shared__ float scratch[];
+    const int row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const float *xr = x + static_cast<int64_t>(row) * hidden;
+    float *orow = out + static_cast<int64_t>(row) * hidden;
+    float ss = 0.0f;
+    for (int i = tid; i < hidden; i += blockDim.x)
+        ss = __fadd_rn(ss, __fmul_rn(xr[i], xr[i]));
+    ss = BlockSum(ss, scratch);
+    const float inv = rsqrtf(ss / static_cast<float>(hidden) + eps);
+    for (int i = tid; i < hidden; i += blockDim.x)
+        orow[i] = __fmul_rn(__fmul_rn(xr[i], inv), __half2float(w[i]));
 }
 
 __global__ void matvec_f16_kernel(const __half *__restrict__ w,
@@ -519,6 +582,16 @@ cudaError_t RunShortConv(cudaStream_t stream, const __half *x_t, float *state,
     return cudaGetLastError();
 }
 
+cudaError_t RunShortConvF32(cudaStream_t stream, const float *x_t, float *state,
+                            const float *w, float *out, int channels, int k)
+{
+    if (!x_t || !state || !w || !out) return cudaErrorInvalidValue;
+    if (channels <= 0 || k <= 0) return cudaErrorInvalidValue;
+    short_conv_f32_kernel<<<Blocks(channels), kThreads, 0, stream>>>(
+        x_t, state, w, out, channels, k);
+    return cudaGetLastError();
+}
+
 cudaError_t RunRouter(cudaStream_t stream, const float *router_w,
                       const float *router_bias, const __half *x, int E, int S,
                       int K, int H, float route_scale, float global_scale,
@@ -558,11 +631,31 @@ cudaError_t RunExpertAccumulate(cudaStream_t stream, float *acc,
     return cudaGetLastError();
 }
 
+cudaError_t RunExpertAccumulateF32(cudaStream_t stream, float *acc,
+                                   const float *y, const RoutedSlot *slots,
+                                   int count, int rows)
+{
+    if (!acc || !y || !slots || count <= 0 || rows <= 0)
+        return cudaErrorInvalidValue;
+    expert_accumulate_f32_kernel<<<Blocks(rows), kThreads, 0, stream>>>(
+        acc, y, slots, count, rows);
+    return cudaGetLastError();
+}
+
 cudaError_t RunSharedAccumulate(cudaStream_t stream, float *acc,
                                 const __half *y, float gamma, int rows)
 {
     if (!acc || !y || rows <= 0) return cudaErrorInvalidValue;
     shared_accumulate_kernel<<<Blocks(rows), kThreads, 0, stream>>>(
+        acc, y, gamma, rows);
+    return cudaGetLastError();
+}
+
+cudaError_t RunSharedAccumulateF32(cudaStream_t stream, float *acc,
+                                   const float *y, float gamma, int rows)
+{
+    if (!acc || !y || rows <= 0) return cudaErrorInvalidValue;
+    shared_accumulate_f32_kernel<<<Blocks(rows), kThreads, 0, stream>>>(
         acc, y, gamma, rows);
     return cudaGetLastError();
 }
@@ -582,6 +675,15 @@ cudaError_t RunNormF32In(cudaStream_t stream, const float *x, const __half *w,
     if (!x || !w || !out || rows <= 0 || hidden <= 0) return cudaErrorInvalidValue;
     const size_t shmem = static_cast<size_t>(kThreads) * sizeof(float);
     norm_f32in_kernel<<<rows, kThreads, shmem, stream>>>(x, w, out, hidden, eps);
+    return cudaGetLastError();
+}
+
+cudaError_t RunNormF32(cudaStream_t stream, const float *x, const __half *w,
+                       float *out, int rows, int hidden, float eps)
+{
+    if (!x || !w || !out || rows <= 0 || hidden <= 0) return cudaErrorInvalidValue;
+    const size_t shmem = static_cast<size_t>(kThreads) * sizeof(float);
+    norm_f32_kernel<<<rows, kThreads, shmem, stream>>>(x, w, out, hidden, eps);
     return cudaGetLastError();
 }
 

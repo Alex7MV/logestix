@@ -106,8 +106,12 @@ inline std::vector<uint8_t> RowMatrix(int64_t rows, int64_t cols, int64_t tag)
     });
 }
 
-// The routed expert slab [E, 2I, H] in HALVES layout: for expert e, rows
-// [0,I) are gate (tag 100+e), rows [I,2I) are up (tag 200+e).
+// The routed expert slab [E, 2I, H] ROW-INTERLEAVED: source row 2r is gate
+// row r (tag 100+e), source row 2r+1 is up row r (tag 200+e). The release
+// conversion_mapping applies Interleave(dim=1) to de-interleave it to
+// [gate;up] halves before the forward chunks the output — the SAME layout
+// family as shared_w13 / dense w13_dn (verified against the release op on
+// the real checkpoint, 2026-11-18).
 inline std::vector<uint8_t> RoutedW13()
 {
     const int64_t E = kExperts, I = kMoeInter, H = kHidden;
@@ -115,9 +119,8 @@ inline std::vector<uint8_t> RoutedW13()
         const int64_t e = i / (2 * I * H);
         const int64_t r = (i / H) % (2 * I);
         const int64_t c = i % H;
-        const bool up = r >= I;
-        const int64_t rr = up ? r - I : r;
-        return RowValue(rr, c, (up ? 200 : 100) + e);
+        const bool up = (r & 1) != 0;
+        return RowValue(r / 2, c, (up ? 200 : 100) + e);
     });
 }
 

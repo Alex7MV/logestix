@@ -11,6 +11,8 @@
 //   * a pre-set abort yields zero tokens and no error.
 #include <catch2/catch_test_macros.hpp>
 #include <lsxcommon/inkling_moe_base_convert.h>
+#include <lsxcommon/converter.h>
+#include <lsxcommon/schema.h>
 #include "inkling_moe_base_model.h"
 
 #include <lsxcommon/model_factory.h>
@@ -19,6 +21,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -123,12 +127,29 @@ TEST_CASE("inkling base model decodes deterministically on the synthetic tree",
     REQUIRE(SameFloatRow(second.final_logits, first.final_logits));
 
     // ── not "one fixed answer for every prompt" ────────────────────────────
+    // The synthetic fixture's smooth low-ramp weights can collapse the FINAL
+    // logits to a fixed point under accurate FP32 arithmetic (the residual
+    // stream saturates). Prompt-sensitivity is therefore pinned at the TRACE
+    // (the per-layer residual), which must differ for different prompts even
+    // when the degenerate fixture's head output collapses. The real-tree
+    // prompt-sensitivity is verified by the probe (framed vs raw Paris).
     lsxcommon::ModelRequest other = req;
     other.input_ids = Prompt(6, 9);
     const auto alt = model->Infer(other);
     REQUIRE(alt.ok);
     REQUIRE(alt.gen_tokens.size() == 4);
-    CHECK_FALSE(SameFloatRow(alt.final_logits, first.final_logits));
+    auto *base_model = dynamic_cast<lsxcommon::InklingMoeBaseModel *>(model.get());
+    REQUIRE(base_model != nullptr);
+    const fs::path tr1 = fs::temp_directory_path() / "inkling_base_tr1.bin";
+    const fs::path tr9 = fs::temp_directory_path() / "inkling_base_tr9.bin";
+    REQUIRE(base_model->TraceForward(req.input_ids, tr1.string()));
+    REQUIRE(base_model->TraceForward(other.input_ids, tr9.string()));
+    // Byte-compare the raw FP32 traces (different prompts -> different rows).
+    std::ifstream f1(tr1, std::ios::binary), f9(tr9, std::ios::binary);
+    std::string b1((std::istreambuf_iterator<char>(f1)), {});
+    std::string b9((std::istreambuf_iterator<char>(f9)), {});
+    REQUIRE_FALSE(b1.empty());
+    CHECK(b1 != b9);
 
     model->Unload();
 }
@@ -209,4 +230,65 @@ TEST_CASE("inkling base model refuses a request longer than the engine context",
     REQUIRE_FALSE(r.error_msg.empty());
 
     model->Unload();
+}
+
+// The v short-convolution must actually reach the KV cache. The defect this
+// pins (found on the real tree: NaN by layer 3, attention output 3x too large
+// because the cache held the RAW v projection instead of the convolved one):
+// the k path stored its conv result back to the cache row, the v path did not.
+// A synthetic-tree pin that FAILS on the raw-v engine: zero the v conv taps
+// in a second converted tree and require the logits to CHANGE. With the bug,
+// the v conv output is discarded, so zeroing its taps changes nothing; with
+// the fix, the cache holds conv(v)+v and zeroing the taps removes the conv
+// contribution, changing every attention output.
+TEST_CASE("inkling base v short-conv reaches the KV cache",
+          "[inkling][model]")
+{
+    if (std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") == nullptr)
+        SKIP("synthetic-geometry fixture not enabled");
+    const fs::path root = EnsureSyntheticModel();
+
+    // A second tree with the layer-0 v_sconv taps zeroed.
+    const fs::path root2 = fs::temp_directory_path() / "inkling_base_model_out_v0";
+    fs::remove_all(root2);
+    fs::copy(root, root2, fs::copy_options::recursive);
+    {
+        const fs::path p = root2 / "logestix" / "pinned" / "layer_0.arrow";
+        auto batch = lsxcommon::ReadRecordBatchFromFile(p);
+        REQUIRE(batch.ok());
+        auto rows = lsxcommon::PinnedSchema::UnpackBatch(*batch);
+        REQUIRE(rows.ok());
+        for (auto &r : *rows) {
+            if (r.name == Layer(0, "attn.v_sconv.weight")) {
+                std::fill(r.data.begin(), r.data.end(), 0);
+            }
+        }
+        REQUIRE(lsxcommon::WriteBatch(
+                    lsxcommon::PinnedSchema::MakeBatch(*rows), p).ok());
+    }
+
+    lsxcommon::EnsureModelRegistry();
+    auto m1 = lsxcommon::LsxModelFactory::Create(Cfg(root));
+    auto m2 = lsxcommon::LsxModelFactory::Create(Cfg(root2));
+    REQUIRE(m1 != nullptr);
+    REQUIRE(m2 != nullptr);
+    REQUIRE(m1->Load());
+    REQUIRE(m2->Load());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = Prompt(12, 5);  // longer than the conv kernel
+    req.max_gen_tokens = 2;
+    req.ignore_eos = true;
+    const auto r1 = m1->Infer(req);
+    const auto r2 = m2->Infer(req);
+    INFO("r1 error: " << r1.error_msg);
+    INFO("r2 error: " << r2.error_msg);
+    REQUIRE(r1.ok);
+    REQUIRE(r2.ok);
+    REQUIRE(r1.final_logits.size() == r2.final_logits.size());
+    // Zeroing the v conv taps MUST change the logits (the conv contribution
+    // is real). If the engine discards the v conv output, these are identical.
+    CHECK_FALSE(SameFloatRow(r1.final_logits, r2.final_logits));
+    m1->Unload();
+    m2->Unload();
 }

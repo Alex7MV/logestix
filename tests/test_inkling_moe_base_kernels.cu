@@ -414,6 +414,116 @@ TEST_CASE("inkling base kv append addresses through the geometry",
     Free(dk); Free(dv); Free(dkn); Free(dvn);
 }
 
+TEST_CASE("inkling base FP32 expert/shared accumulate keeps huge down outputs",
+          "[inkling][kernels]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+    const int count = 2, rows = 64;
+    // A down output beyond FP16 max (the base release's shared expert reached
+    // ~9.6e5 at an early position).
+    std::vector<float> y(static_cast<size_t>(count * rows));
+    for (int k = 0; k < count; ++k)
+        for (int i = 0; i < rows; ++i)
+            y[k * rows + i] = (k == 0 ? 1.0e5f : -2.0f) + 0.01f * i;
+    std::vector<RoutedSlot> slots(static_cast<size_t>(count));
+    slots[0].eid = 0; slots[0].coeff = 0.5f;
+    slots[1].eid = 1; slots[1].coeff = 0.25f;
+    std::vector<float> want(static_cast<size_t>(rows));
+    for (int i = 0; i < rows; ++i)
+        want[i] = 0.5f * y[i] + 0.25f * y[rows + i];
+    auto *dy = Dev(y);
+    auto *dslots = Dev(slots);
+    float *dacc = nullptr;
+    REQUIRE(cudaMalloc(&dacc, rows * 4) == cudaSuccess);
+    REQUIRE(RunExpertAccumulateF32(S0(), dacc, dy, dslots, count, rows) ==
+            cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    auto got = Host(dacc, static_cast<size_t>(rows));
+    for (int i = 0; i < rows; ++i) {
+        REQUIRE(std::isfinite(got[i]));
+        REQUIRE(got[i] == Approx(want[i]).epsilon(1e-4).margin(1e-1));
+    }
+    // Shared accumulate on top, FP32 y.
+    std::vector<float> sy(static_cast<size_t>(rows), 3.0e5f);
+    auto *dsy = Dev(sy);
+    REQUIRE(RunSharedAccumulateF32(S0(), dacc, dsy, 0.1f, rows) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    got = Host(dacc, static_cast<size_t>(rows));
+    for (int i = 0; i < rows; ++i)
+        REQUIRE(got[i] == Approx(want[i] + 0.1f * sy[i]).epsilon(1e-4).margin(1e-1));
+    Free(dy); Free(dslots); Free(dacc); Free(dsy);
+}
+
+TEST_CASE("inkling base FP32 short conv keeps values beyond the FP16 range",
+          "[inkling][kernels]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+    const int channels = 64, k = 4;
+    const auto w = FPattern(channels * k, 0.1f, 40);
+    std::vector<float> state(static_cast<size_t>(k * channels), 0.0f);
+    auto *dstate = Dev(state);
+    auto *dw = Dev(w);
+    // A current token whose conv output exceeds FP16 max (65504).
+    std::vector<float> x(static_cast<size_t>(channels), 0.0f);
+    x[0] = 1.0e5f;
+    std::vector<float> want(static_cast<size_t>(channels));
+    for (int c = 0; c < channels; ++c) {
+        for (int j = 0; j + 1 < k; ++j)
+            state[j * channels + c] = state[(j + 1) * channels + c];
+        state[(k - 1) * channels + c] = x[c];
+        float acc = 0;
+        for (int j = 0; j < k; ++j) acc += w[c * k + j] * state[j * channels + c];
+        want[c] = acc + x[c];
+    }
+    auto *dx = Dev(x);
+    float *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, channels * 4) == cudaSuccess);
+    REQUIRE(RunShortConvF32(S0(), dx, dstate, dw, dout, channels, k) ==
+            cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    const auto got = Host(dout, static_cast<size_t>(channels));
+    for (int c = 0; c < channels; ++c) {
+        REQUIRE(std::isfinite(got[c]));
+        REQUIRE(got[c] == Approx(want[c]).epsilon(1e-4).margin(1e-1));
+    }
+    REQUIRE(got[0] > 65504.0f);  // the magnitude that overflowed FP16
+    Free(dstate); Free(dw); Free(dx); Free(dout);
+}
+
+TEST_CASE("inkling base FP32 norm keeps values beyond the FP16 range",
+          "[inkling][kernels]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+    // The base release's residual stream reaches ~2e5 (> FP16 max 65504).
+    // The FP32-output norm must preserve such magnitudes; the FP16-output
+    // variant would overflow them to inf.
+    const int rows = 2, dim = 128;
+    const float eps = 1e-6f;
+    auto x = FPattern(rows * dim, 1.0f, 30);
+    for (int i = 0; i < dim; ++i) x[i] = 1.0e5f;  // one huge row
+    auto wh = HPattern(dim, 0.0f, 31);
+    for (auto &w : wh) w = H(1.0f);
+    std::vector<float> want(static_cast<size_t>(rows * dim));
+    for (int r = 0; r < rows; ++r) {
+        double ss = 0;
+        for (int i = 0; i < dim; ++i) ss += double(x[r * dim + i]) * x[r * dim + i];
+        const float inv = 1.0f / std::sqrt(float(ss / dim) + eps);
+        for (int i = 0; i < dim; ++i) want[r * dim + i] = x[r * dim + i] * inv;
+    }
+    auto *dx = Dev(x);
+    auto *dw = Dev(wh);
+    float *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, want.size() * 4) == cudaSuccess);
+    REQUIRE(RunNormF32(S0(), dx, dw, dout, rows, dim, eps) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    const auto got = Host(dout, want.size());
+    for (size_t i = 0; i < want.size(); ++i) {
+        REQUIRE(std::isfinite(got[i]));
+        REQUIRE(got[i] == Approx(want[i]).epsilon(1e-4).margin(1e-4));
+    }
+    Free(dx); Free(dw); Free(dout);
+}
+
 TEST_CASE("inkling base log scale multiplies q and bias by tau",
           "[inkling][kernels]")
 {

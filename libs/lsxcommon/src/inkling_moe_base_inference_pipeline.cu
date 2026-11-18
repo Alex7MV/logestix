@@ -35,6 +35,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace lsxcommon::inkling::base {
@@ -55,6 +57,18 @@ cudaError_t Proj(cudaStream_t stream, const DenseNvfp4 &w, const __half *x,
     return lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(stream, x, w.d_packed, w.d_scales,
                                                w.global_scale, y, w.cols,
                                                w.rows, false);
+}
+
+// FP32-output projection: the base release's residual stream reaches ~1e6 at
+// the deep layers, so a projection that feeds the residual (wo) can exceed the
+// FP16 range. The F32 GEMV keeps the magnitude; the caller convolves in FP32.
+cudaError_t ProjF32(cudaStream_t stream, const DenseNvfp4 &w, const __half *x,
+                    float *y)
+{
+    if (w.d_packed == nullptr) return cudaErrorInvalidValue;
+    return lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(stream, x, w.d_packed,
+                                                  w.d_scales, w.global_scale,
+                                                  y, w.cols, w.rows, false);
 }
 
 // The six staged experts of one layer: three pointer planes + global scales.
@@ -173,6 +187,10 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
     };
     cudaError_t e = cudaSuccess;
     // ── embed + embed_norm ─────────────────────────────────────────────────
+    // The residual stream is carried in FP32 (ws.x_f): the base release's
+    // residual reaches ~2e5 at the early positions of the deeper layers,
+    // beyond the FP16 range (65504). Narrowing it to FP16 produced NaN K rows
+    // by layer 9 on the real tree. The norm weights stay FP16.
     e = cudaMemcpyAsync(ws.d_token, &tok, sizeof(int32_t),
                         cudaMemcpyHostToDevice, stream);
     if (e != cudaSuccess) return fail("token upload", e);
@@ -180,7 +198,7 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
     if (e != cudaSuccess) return fail("embed row", e);
     e = RunHalfToF32(stream, ws.x_h, ws.x_f, H);
     if (e != cudaSuccess) return fail("embed to f32", e);
-    e = RunNormF32In(stream, ws.x_f, pw.embed_norm, ws.x_h, 1, H, eps);
+    e = RunNormF32(stream, ws.x_f, pw.embed_norm, ws.x_f, 1, H, eps);
     if (e != cudaSuccess) return fail("embed_norm", e);
 
     if (trace != nullptr) {
@@ -188,11 +206,8 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
         // be ordered after them.
         cudaStreamSynchronize(stream);
         trace->assign(static_cast<size_t>(top.num_layers + 1) * H, 0.0f);
-        std::vector<__half> row(static_cast<size_t>(H));
-        cudaMemcpy(row.data(), ws.x_h, row.size() * sizeof(__half),
+        cudaMemcpy(trace->data(), ws.x_f, static_cast<size_t>(H) * sizeof(float),
                    cudaMemcpyDeviceToHost);
-        for (int i = 0; i < H; ++i)
-            (*trace)[static_cast<size_t>(i)] = __half2float(row[i]);
     }
 
     for (int l = 0; l < top.num_layers; ++l) {
@@ -203,8 +218,8 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
 
         // ── (a) input norm + projections ───────────────────────────────────
         stage = LayerTag("attn_proj", l);
-        e = RunHalfToF32(stream, ws.x_h, ws.x_f, H);
-        if (e != cudaSuccess) return fail("layer input to f32", e);
+        // The residual stream is already FP32 (ws.x_f); the norm reads it
+        // directly and narrows only the projection input to FP16.
         e = RunNormF32In(stream, ws.x_f, lw.attn_norm, ws.hh, 1, H, eps);
         if (e != cudaSuccess) return fail("attn norm", e);
         e = Proj(stream, lw.wq, ws.hh, ws.q);
@@ -243,8 +258,16 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
                 if (e != cudaSuccess) return fail("k head norm", e);
                 e = RunScaleToHalf(stream, ws.qf, ws.kv_key, kv_dim, 1.0f);
                 if (e != cudaSuccess) return fail("k store", e);
+            } else {
+                // v: the conv output IS the cache value (no value norm in this
+                // family). Store it back — leaving ws.kv_val at the raw
+                // projection silently skips the v convolution (the defect
+                // that produced NaNs by layer 3 on the real tree).
+                e = cudaMemcpyAsync(ws.kv_val, ws.conv_out,
+                                    sizeof(__half) * kv_dim,
+                                    cudaMemcpyDeviceToDevice, stream);
+                if (e != cudaSuccess) return fail("v store", e);
             }
-            // v stays the raw conv output (no value norm in this family).
         }
 
         // ── (c) q head norm, log scaling ───────────────────────────────────
@@ -280,19 +303,83 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
         e = RunAttention(stream, ws.q, d_k, d_v, geom, heads, pos, ws.rel_bias,
                          full ? 0 : top.sliding_window, scale, ws.attn_o);
         if (e != cudaSuccess) return fail("attention", e);
+        if (const char *dl = std::getenv("LSX_INKLING_BASE_DEBUG_LAYER")) {
+            const int dbg_l = std::atoi(dl);
+            const int dbg_pos = std::getenv("LSX_INKLING_BASE_DEBUG_POS")
+                                    ? std::atoi(std::getenv("LSX_INKLING_BASE_DEBUG_POS"))
+                                    : 0;
+            if (l == dbg_l && pos == dbg_pos) {
+                cudaStreamSynchronize(stream);
+                // q (fp16 q_dim), attn_o (fp16 q_dim), rel_bias (heads*(pos+1))
+                std::vector<__half> qh(static_cast<size_t>(q_dim));
+                std::vector<__half> oh(static_cast<size_t>(q_dim));
+                cudaMemcpy(qh.data(), ws.q, q_dim * 2, cudaMemcpyDeviceToHost);
+                cudaMemcpy(oh.data(), ws.attn_o, q_dim * 2, cudaMemcpyDeviceToHost);
+                std::vector<float> qf(static_cast<size_t>(q_dim));
+                std::vector<float> of(static_cast<size_t>(q_dim));
+                for (int i = 0; i < q_dim; ++i) {
+                    qf[i] = __half2float(qh[i]);
+                    of[i] = __half2float(oh[i]);
+                }
+                if (FILE *f = std::fopen("/mnt/fast_storage/tmp/inkling_base/dbg_attn.bin", "wb")) {
+                    std::fwrite(qf.data(), 4, qf.size(), f);
+                    std::fwrite(of.data(), 4, of.size(), f);
+                    // K/V cache rows at this position (kv_heads*hd each).
+                    const int kvd = static_cast<int>(geom.kv_heads) * hd;
+                    std::vector<__half> kr(static_cast<size_t>(kvd));
+                    std::vector<__half> vr(static_cast<size_t>(kvd));
+                    cudaMemcpy(kr.data(), d_k + int64_t(pos) * geom.pos_stride,
+                               kvd * 2, cudaMemcpyDeviceToHost);
+                    cudaMemcpy(vr.data(), d_v + int64_t(pos) * geom.pos_stride,
+                               kvd * 2, cudaMemcpyDeviceToHost);
+                    std::vector<float> kf(static_cast<size_t>(kvd));
+                    std::vector<float> vf(static_cast<size_t>(kvd));
+                    for (int i = 0; i < kvd; ++i) {
+                        kf[i] = __half2float(kr[i]);
+                        vf[i] = __half2float(vr[i]);
+                    }
+                    std::fwrite(kf.data(), 4, kf.size(), f);
+                    std::fwrite(vf.data(), 4, vf.size(), f);
+                    // rel_bias row for head 0 (pos+1 floats) + relf (rel_dim).
+                    std::vector<float> rb(static_cast<size_t>(pos + 1));
+                    cudaMemcpy(rb.data(), ws.rel_bias, rb.size() * 4,
+                               cudaMemcpyDeviceToHost);
+                    std::fwrite(rb.data(), 4, rb.size(), f);
+                    const int rel_dim = heads * top.d_rel;
+                    std::vector<float> rf(static_cast<size_t>(rel_dim));
+                    cudaMemcpy(rf.data(), ws.relf, rel_dim * 4,
+                               cudaMemcpyDeviceToHost);
+                    std::fwrite(rf.data(), 4, rf.size(), f);
+                    // Full K cache [pos+1, kv_heads, hd] to find an inf row.
+                    const int64_t kvn = int64_t(pos + 1) * kvd;
+                    std::vector<__half> kall(static_cast<size_t>(kvn));
+                    cudaMemcpy(kall.data(), d_k, kall.size() * 2,
+                               cudaMemcpyDeviceToHost);
+                    std::vector<float> kalf(static_cast<size_t>(kvn));
+                    for (int64_t i = 0; i < kvn; ++i)
+                        kalf[i] = __half2float(kall[i]);
+                    std::fwrite(kalf.data(), 4, kalf.size(), f);
+                    std::fclose(f);
+                }
+            }
+        }
 
         stage = LayerTag("attn_out", l);
-        e = Proj(stream, lw.wo, ws.attn_o, ws.o_out);
+        // The wo projection feeds the FP32 residual: at the deep layers the
+        // base release's attention output (~881) times wo can exceed the FP16
+        // range, so the GEMV writes FP32 directly (no FP16 narrowing).
+        e = ProjF32(stream, lw.wo, ws.attn_o, ws.moe_f32);
         if (e != cudaSuccess) return fail("wo", e);
-        e = RunShortConv(stream, ws.o_out,
-                         lw.conv_state + 2 * kconv * kv_dim, lw.attn_conv_w,
-                         ws.conv_out, H, kconv);
+        e = RunShortConvF32(stream, ws.moe_f32,
+                            lw.conv_state + 2 * kconv * kv_dim, lw.attn_conv_w,
+                            ws.conv_f32, H, kconv);
         if (e != cudaSuccess) return fail("post-attention conv", e);
 
         // ── (e) residual, then the MLP ─────────────────────────────────────
         stage = LayerTag("residual", l);
-        e = RunHalfToF32(stream, ws.conv_out, ws.residual, H);
-        if (e != cudaSuccess) return fail("post-attn to f32", e);
+        e = cudaMemcpyAsync(ws.residual, ws.conv_f32, sizeof(float) * H,
+                            cudaMemcpyDeviceToDevice, stream);
+        if (e != cudaSuccess) return fail("post-attn stage", e);
         e = RunAddF32(stream, ws.residual, ws.x_f, H);
         if (e != cudaSuccess) return fail("attention residual add", e);
         e = RunNormF32In(stream, ws.residual, lw.mlp_norm, ws.hh, 1, H, eps);
@@ -308,10 +395,11 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
             e = RunSwiGLU(stream, ws.moe_gate, ws.moe_up, ws.moe_act,
                           top.dense_intermediate);
             if (e != cudaSuccess) return fail("dense swiglu", e);
-            e = Proj(stream, lw.dense_down, ws.moe_act, ws.moe_down);
+            e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(
+                stream, ws.moe_act, lw.dense_down.d_packed,
+                lw.dense_down.d_scales, lw.dense_down.global_scale,
+                ws.moe_acc, top.dense_intermediate, H, false);
             if (e != cudaSuccess) return fail("dense down", e);
-            e = RunHalfToF32(stream, ws.moe_down, ws.moe_acc, H);
-            if (e != cudaSuccess) return fail("dense to f32", e);
             float mlp_gs = 1.0f;
             e = cudaMemcpyAsync(&mlp_gs, lw.mlp_gs, sizeof(float),
                                 cudaMemcpyDeviceToHost, stream);
@@ -365,17 +453,24 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
             e = RunSwiGLU(stream, ws.moe_gate, ws.moe_up, ws.moe_act,
                           int64_t(topk) * I);
             if (e != cudaSuccess) return fail("routed swiglu", e);
-            e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                stream, ws.moe_act, st.down_p, st.down_s, st.w2_gs, topk, I,
-                ws.moe_down, I, H, false);
-            if (e != cudaSuccess) return fail("routed down gemv", e);
-            e = RunExpertAccumulate(stream, ws.moe_acc, ws.moe_down,
-                                    static_cast<RoutedSlot *>(ws.d_slots),
-                                    topk, H);
+            // The down projection writes FP32: the base release's expert down
+            // output can exceed the FP16 range (a shared expert reached ~9.6e5
+            // at an early position). One F32 GEMV per expert into its own slice.
+            for (int k = 0; k < topk; ++k) {
+                e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(
+                    stream, ws.moe_act + int64_t(k) * I, st.down_p[k],
+                    st.down_s[k], st.w2_gs[k],
+                    ws.moe_down_f32 + int64_t(k) * H, I, H, false);
+                if (e != cudaSuccess) return fail("routed down gemv", e);
+            }
+            e = RunExpertAccumulateF32(stream, ws.moe_acc, ws.moe_down_f32,
+                                       static_cast<RoutedSlot *>(ws.d_slots),
+                                       topk, H);
             if (e != cudaSuccess) return fail("expert accumulate", e);
 
             // Shared experts: each sees the SAME mlp_norm input, weighted by
-            // its own gamma from the joint renorm.
+            // its own gamma from the joint renorm. The down projection writes
+            // FP32 (same overflow reason as the routed down).
             for (int s = 0; s < top.shared_experts; ++s) {
                 const SharedExpertWeights &se =
                     lw.shared[static_cast<size_t>(s)];
@@ -385,43 +480,64 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
                 if (e != cudaSuccess) return fail("shared up", e);
                 e = RunSwiGLU(stream, ws.sh_gate, ws.sh_up, ws.sh_act, I);
                 if (e != cudaSuccess) return fail("shared swiglu", e);
-                e = Proj(stream, se.down, ws.sh_act, ws.sh_down);
+                e = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(
+                    stream, ws.sh_act, se.down.d_packed, se.down.d_scales,
+                    se.down.global_scale, ws.sh_down_f32, I, H, false);
                 if (e != cudaSuccess) return fail("shared down", e);
-                e = RunSharedAccumulate(stream, ws.moe_acc, ws.sh_down,
-                                        gammas[s], H);
+                e = RunSharedAccumulateF32(stream, ws.moe_acc, ws.sh_down_f32,
+                                           gammas[s], H);
                 if (e != cudaSuccess) return fail("shared accumulate", e);
             }
         }
 
         // ── (f) post-MLP conv, residual ────────────────────────────────────
         stage = LayerTag("mlp_out", l);
-        e = RunCastToHalf(stream, ws.moe_acc, ws.o_out, H);
-        if (e != cudaSuccess) return fail("mlp cast", e);
-        e = RunShortConv(stream, ws.o_out,
-                         lw.conv_state + 2 * kconv * kv_dim + kconv * H,
-                         lw.mlp_conv_w, ws.conv_out, H, kconv);
+        // The post-MLP conv feeds the FP32 residual: convolve the FP32 MLP
+        // accumulator directly (no FP16 narrowing — the base release's conv
+        // output reaches ~1.9e5 at the early positions of the deeper layers).
+        e = RunShortConvF32(stream, ws.moe_acc,
+                            lw.conv_state + 2 * kconv * kv_dim + kconv * H,
+                            lw.mlp_conv_w, ws.conv_f32, H, kconv);
         if (e != cudaSuccess) return fail("post-mlp conv", e);
-        e = RunHalfToF32(stream, ws.conv_out, ws.conv_f, H);
-        if (e != cudaSuccess) return fail("post-mlp to f32", e);
-        e = RunAddF32(stream, ws.conv_f, ws.residual, H);
+        e = RunAddF32(stream, ws.conv_f32, ws.residual, H);
         if (e != cudaSuccess) return fail("mlp residual add", e);
-        e = RunScaleToHalf(stream, ws.conv_f, ws.x_h, H, 1.0f);
+        // The layer output IS the FP32 residual stream (no FP16 narrowing).
+        e = cudaMemcpyAsync(ws.x_f, ws.conv_f32, sizeof(float) * H,
+                            cudaMemcpyDeviceToDevice, stream);
         if (e != cudaSuccess) return fail("layer output store", e);
+        // Debug: dump the post-attention residual and the MLP output of one
+        // layer at one position (LSX_INKLING_BASE_DEBUG_LAYER/POS), so a
+        // parity divergence can be localized to the attention or MLP half.
+        if (const char *dl = std::getenv("LSX_INKLING_BASE_DEBUG_LAYER")) {
+            const int dbg_l = std::atoi(dl);
+            const int dbg_pos = std::getenv("LSX_INKLING_BASE_DEBUG_POS")
+                                    ? std::atoi(std::getenv("LSX_INKLING_BASE_DEBUG_POS"))
+                                    : 0;
+            if (l == dbg_l && pos == dbg_pos) {
+                cudaStreamSynchronize(stream);
+                std::vector<float> buf(static_cast<size_t>(2 * H));
+                cudaMemcpy(buf.data(), ws.residual, H * sizeof(float),
+                           cudaMemcpyDeviceToHost);
+                cudaMemcpy(buf.data() + H, ws.moe_acc, H * sizeof(float),
+                           cudaMemcpyDeviceToHost);
+                if (FILE *f = std::fopen("/mnt/fast_storage/tmp/inkling_base/dbg_layer.bin", "wb")) {
+                    std::fwrite(buf.data(), sizeof(float), buf.size(), f);
+                    std::fclose(f);
+                }
+            }
+        }
         if (trace != nullptr) {
             cudaStreamSynchronize(stream);
-            std::vector<__half> row(static_cast<size_t>(H));
-            cudaMemcpy(row.data(), ws.x_h, row.size() * sizeof(__half),
-                       cudaMemcpyDeviceToHost);
             float *dst = trace->data() +
                          static_cast<size_t>(l + 1) * static_cast<size_t>(H);
-            for (int i = 0; i < H; ++i) dst[i] = __half2float(row[i]);
+            cudaMemcpy(dst, ws.x_f, static_cast<size_t>(H) * sizeof(float),
+                       cudaMemcpyDeviceToHost);
         }
     }
 
     // ── head: final norm -> /mup -> unembed -> slice (NO softcap) ──────────
     stage = "head";
-    e = RunHalfToF32(stream, ws.x_h, ws.x_f, H);
-    if (e != cudaSuccess) return fail("final residual", e);
+    // The residual stream is already FP32 (ws.x_f).
     e = RunNormF32In(stream, ws.x_f, pw.final_norm, ws.hh, 1, H, eps);
     if (e != cudaSuccess) return fail("final norm", e);
     // muP: the reference divides the final hidden state by the width
@@ -605,6 +721,8 @@ bool Scratch::Allocate(const Topology &top, cudaStream_t stream)
     const int64_t o_oo = take(int64_t(H) * 2);
     const int64_t o_conv = take(int64_t(maxch) * 2);
     const int64_t o_conff = take(int64_t(H) * 4);
+    const int64_t o_conv32 = take(int64_t(H) * 4);
+    const int64_t o_moef32 = take(int64_t(H) * 4);
     const int64_t o_res = take(int64_t(H) * 4);
     // Sized by the engine bound (not the session capacity): the bias gather
     // must never outrun this buffer.
@@ -613,11 +731,13 @@ bool Scratch::Allocate(const Topology &top, cudaStream_t stream)
     const int64_t o_mu = take(int64_t(topk) * max_inter * 2);
     const int64_t o_ma = take(int64_t(topk) * max_inter * 2);
     const int64_t o_md = take(int64_t(topk) * H * 2);
+    const int64_t o_md32 = take(int64_t(topk) * H * 4);
     const int64_t o_macc = take(int64_t(H) * 4);
     const int64_t o_sg = take(int64_t(I) * 2);
     const int64_t o_su = take(int64_t(I) * 2);
     const int64_t o_sa = take(int64_t(I) * 2);
     const int64_t o_sd = take(int64_t(H) * 2);
+    const int64_t o_sd32 = take(int64_t(H) * 4);
     const int64_t o_logits = take(int64_t(top.vocab) * 4);
     arena_bytes = off;
 
@@ -640,17 +760,21 @@ bool Scratch::Allocate(const Topology &top, cudaStream_t stream)
     o_out = reinterpret_cast<__half *>(at(o_oo));
     conv_out = reinterpret_cast<__half *>(at(o_conv));
     conv_f = reinterpret_cast<float *>(at(o_conff));
+    conv_f32 = reinterpret_cast<float *>(at(o_conv32));
+    moe_f32 = reinterpret_cast<float *>(at(o_moef32));
     residual = reinterpret_cast<float *>(at(o_res));
     rel_bias = reinterpret_cast<float *>(at(o_bias));
     moe_gate = reinterpret_cast<__half *>(at(o_mg));
     moe_up = reinterpret_cast<__half *>(at(o_mu));
     moe_act = reinterpret_cast<__half *>(at(o_ma));
     moe_down = reinterpret_cast<__half *>(at(o_md));
+    moe_down_f32 = reinterpret_cast<float *>(at(o_md32));
     moe_acc = reinterpret_cast<float *>(at(o_macc));
     sh_gate = reinterpret_cast<__half *>(at(o_sg));
     sh_up = reinterpret_cast<__half *>(at(o_su));
     sh_act = reinterpret_cast<__half *>(at(o_sa));
     sh_down = reinterpret_cast<__half *>(at(o_sd));
+    sh_down_f32 = reinterpret_cast<float *>(at(o_sd32));
     logits = reinterpret_cast<float *>(at(o_logits));
 
     // Expert staging: gate/up are [I, H] and down is [H, I], each paired with
