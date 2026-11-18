@@ -35,8 +35,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 namespace lsxcommon::inkling::base {
@@ -162,7 +160,7 @@ cudaError_t StageExperts(ExpertDb &db, int layer, const int32_t *ids, int count,
 // logits row into `ws.logits`.
 cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
                     ExpertDb &experts, Session &session, Scratch &ws,
-                    int32_t tok, int pos, int unpadded_vocab,
+                    int32_t tok, int pos, int /*unpadded_vocab*/,
                     std::string &stage_err,
                     std::vector<float> *trace = nullptr)
 {
@@ -303,67 +301,6 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
         e = RunAttention(stream, ws.q, d_k, d_v, geom, heads, pos, ws.rel_bias,
                          full ? 0 : top.sliding_window, scale, ws.attn_o);
         if (e != cudaSuccess) return fail("attention", e);
-        if (const char *dl = std::getenv("LSX_INKLING_BASE_DEBUG_LAYER")) {
-            const int dbg_l = std::atoi(dl);
-            const int dbg_pos = std::getenv("LSX_INKLING_BASE_DEBUG_POS")
-                                    ? std::atoi(std::getenv("LSX_INKLING_BASE_DEBUG_POS"))
-                                    : 0;
-            if (l == dbg_l && pos == dbg_pos) {
-                cudaStreamSynchronize(stream);
-                // q (fp16 q_dim), attn_o (fp16 q_dim), rel_bias (heads*(pos+1))
-                std::vector<__half> qh(static_cast<size_t>(q_dim));
-                std::vector<__half> oh(static_cast<size_t>(q_dim));
-                cudaMemcpy(qh.data(), ws.q, q_dim * 2, cudaMemcpyDeviceToHost);
-                cudaMemcpy(oh.data(), ws.attn_o, q_dim * 2, cudaMemcpyDeviceToHost);
-                std::vector<float> qf(static_cast<size_t>(q_dim));
-                std::vector<float> of(static_cast<size_t>(q_dim));
-                for (int i = 0; i < q_dim; ++i) {
-                    qf[i] = __half2float(qh[i]);
-                    of[i] = __half2float(oh[i]);
-                }
-                if (FILE *f = std::fopen("/mnt/fast_storage/tmp/inkling_base/dbg_attn.bin", "wb")) {
-                    std::fwrite(qf.data(), 4, qf.size(), f);
-                    std::fwrite(of.data(), 4, of.size(), f);
-                    // K/V cache rows at this position (kv_heads*hd each).
-                    const int kvd = static_cast<int>(geom.kv_heads) * hd;
-                    std::vector<__half> kr(static_cast<size_t>(kvd));
-                    std::vector<__half> vr(static_cast<size_t>(kvd));
-                    cudaMemcpy(kr.data(), d_k + int64_t(pos) * geom.pos_stride,
-                               kvd * 2, cudaMemcpyDeviceToHost);
-                    cudaMemcpy(vr.data(), d_v + int64_t(pos) * geom.pos_stride,
-                               kvd * 2, cudaMemcpyDeviceToHost);
-                    std::vector<float> kf(static_cast<size_t>(kvd));
-                    std::vector<float> vf(static_cast<size_t>(kvd));
-                    for (int i = 0; i < kvd; ++i) {
-                        kf[i] = __half2float(kr[i]);
-                        vf[i] = __half2float(vr[i]);
-                    }
-                    std::fwrite(kf.data(), 4, kf.size(), f);
-                    std::fwrite(vf.data(), 4, vf.size(), f);
-                    // rel_bias row for head 0 (pos+1 floats) + relf (rel_dim).
-                    std::vector<float> rb(static_cast<size_t>(pos + 1));
-                    cudaMemcpy(rb.data(), ws.rel_bias, rb.size() * 4,
-                               cudaMemcpyDeviceToHost);
-                    std::fwrite(rb.data(), 4, rb.size(), f);
-                    const int rel_dim = heads * top.d_rel;
-                    std::vector<float> rf(static_cast<size_t>(rel_dim));
-                    cudaMemcpy(rf.data(), ws.relf, rel_dim * 4,
-                               cudaMemcpyDeviceToHost);
-                    std::fwrite(rf.data(), 4, rf.size(), f);
-                    // Full K cache [pos+1, kv_heads, hd] to find an inf row.
-                    const int64_t kvn = int64_t(pos + 1) * kvd;
-                    std::vector<__half> kall(static_cast<size_t>(kvn));
-                    cudaMemcpy(kall.data(), d_k, kall.size() * 2,
-                               cudaMemcpyDeviceToHost);
-                    std::vector<float> kalf(static_cast<size_t>(kvn));
-                    for (int64_t i = 0; i < kvn; ++i)
-                        kalf[i] = __half2float(kall[i]);
-                    std::fwrite(kalf.data(), 4, kalf.size(), f);
-                    std::fclose(f);
-                }
-            }
-        }
-
         stage = LayerTag("attn_out", l);
         // The wo projection feeds the FP32 residual: at the deep layers the
         // base release's attention output (~881) times wo can exceed the FP16
@@ -505,27 +442,6 @@ cudaError_t Forward(cudaStream_t stream, const PinnedWeights &pw,
         e = cudaMemcpyAsync(ws.x_f, ws.conv_f32, sizeof(float) * H,
                             cudaMemcpyDeviceToDevice, stream);
         if (e != cudaSuccess) return fail("layer output store", e);
-        // Debug: dump the post-attention residual and the MLP output of one
-        // layer at one position (LSX_INKLING_BASE_DEBUG_LAYER/POS), so a
-        // parity divergence can be localized to the attention or MLP half.
-        if (const char *dl = std::getenv("LSX_INKLING_BASE_DEBUG_LAYER")) {
-            const int dbg_l = std::atoi(dl);
-            const int dbg_pos = std::getenv("LSX_INKLING_BASE_DEBUG_POS")
-                                    ? std::atoi(std::getenv("LSX_INKLING_BASE_DEBUG_POS"))
-                                    : 0;
-            if (l == dbg_l && pos == dbg_pos) {
-                cudaStreamSynchronize(stream);
-                std::vector<float> buf(static_cast<size_t>(2 * H));
-                cudaMemcpy(buf.data(), ws.residual, H * sizeof(float),
-                           cudaMemcpyDeviceToHost);
-                cudaMemcpy(buf.data() + H, ws.moe_acc, H * sizeof(float),
-                           cudaMemcpyDeviceToHost);
-                if (FILE *f = std::fopen("/mnt/fast_storage/tmp/inkling_base/dbg_layer.bin", "wb")) {
-                    std::fwrite(buf.data(), sizeof(float), buf.size(), f);
-                    std::fclose(f);
-                }
-            }
-        }
         if (trace != nullptr) {
             cudaStreamSynchronize(stream);
             float *dst = trace->data() +

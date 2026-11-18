@@ -109,6 +109,7 @@
     "inkling"
   ],
   "notes": "Original inkling arch (NOT inkling2): rel-bank attention, static sconv, 256 experts top-6 + 2 shared-sink, muP /24 head, BF16 -> NVFP4.",
+  "report": "docs/model-reports/2026-11-18-Inkling.md",
   "cooperative_cancel": true,
   "selfcheck_max_gen": 48,
   "selfcheck_bit_exact": true,
