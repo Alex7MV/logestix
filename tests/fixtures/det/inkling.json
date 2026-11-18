@@ -125,7 +125,7 @@
         200010,
         200001
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 1024,
       "stress_runs": 3,
       "body": "[CONTEXT]: DET-Validation-Core-01 // Self-Referential Resolution\nResolve the standard Epimenides boundary paradox under absolute zero-variance constraints.\nStatement: \"This explicit statement is completely false.\"\nTask: Determine the structural truth-value behavior condition of the statement above.\nOutput Specification: Output strictly one capitalized token: PARADOX_ANTINOMY. Do not evaluate textually, do not include whitespace or formatting tags.\nExpected Template: PARADOX_ANTINOMY",
       "expected": "PARADOX_ANTINOMY",
@@ -242,7 +242,7 @@
         200010,
         200001
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 1024,
       "stress_runs": 3,
       "body": "[CONTEXT]: DET-Validation-Core-02 // Literal Alphabetical Sort\nSelect exactly one word from the provided array: [CATASTROPHIC, CRITICAL, FATAL, TERMINAL].\nConstraint: Choose the specific word that strictly begins with the character 'C' and ends with the character 'C'.\nOutput Specification: Output ONLY the single matching uppercase word payload without spaces or markdown blocks.\nExpected Template: CATASTROPHIC",
       "expected": "CATASTROPHIC",
@@ -349,7 +349,7 @@
         200010,
         200001
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 1024,
       "stress_runs": 3,
       "body": "[CONTEXT]: DET-Validation-Core-03 // Superposition State Anchor\nEvaluate a simulated hardware register state holding a default static zero condition.\nTask: Force the output token to represent this state strictly as a two-token alphabetical word connected by an underscore.\nOutput Specification: Output exactly the uppercase characters pattern provided in the template below. Do not output raw single digits, omit spaces.\nExpected Template: BIT_ZERO",
       "expected": "BIT_ZERO",

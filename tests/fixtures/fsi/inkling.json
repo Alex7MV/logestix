@@ -161,7 +161,7 @@
         200010,
         200001
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 1024,
       "expected": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))",
       "raw": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))",
       "prefer_last_answer": true
@@ -369,7 +369,7 @@
         200010,
         200001
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 1024,
       "expected": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C",
       "raw": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C",
       "prefer_last_answer": true
@@ -495,7 +495,7 @@
         200010,
         200001
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 1024,
       "expected": "Drawdown>Threshold",
       "raw": "Drawdown>Threshold",
       "prefer_last_answer": true
