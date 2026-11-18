@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|dory|alice|xing|mistral|minimax|hy|flint|ling|beam|step|inkling)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|dory|alice|xing|mistral|minimax|hy|flint|ling|beam|step|inkling|muse)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra|base)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -57,7 +57,7 @@ const std::vector<std::string>& FamilyStems()
     static const std::vector<std::string> v =
         {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat",
          "ornith", "granite", "mimo", "phi", "dory", "alice", "xing",
-         "mistral", "minimax", "hy", "flint", "ling", "beam", "step"};
+         "mistral", "minimax", "hy", "flint", "ling", "beam", "step", "muse"};
     return v;
 }
 
@@ -91,6 +91,7 @@ bool AllowedCommon(const std::string& stem)
         "kimi_moe_k3_tool_format",    // Kimi-K3 XTML chat/tool codec
         "nemotron_ultra_tool_format", // Nemotron-Ultra ChatML + <function=> codec
         "granite_switch_tool_format", // Granite-4.1 role markers + aLoRA codec
+        "muse_tool_format",           // Muse-Glimmer ATEM channel + XML codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
 }
@@ -166,6 +167,19 @@ TEST_CASE("naming guard accepts qwen_moe_exp_* stems", "[naming][guard]")
     CHECK(m("qwen_moe_exp_model"));
     CHECK(m("qwen_moe_exp_load"));
     CHECK(m("qwen_moe_exp_constants"));
+}
+
+TEST_CASE("naming guard accepts muse_dense_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) { return std::regex_match(s, SchemeRegex()); };
+    CHECK(m("muse_dense_constants"));
+    CHECK(m("muse_dense_convert"));
+    CHECK(m("muse_dense_load"));
+    CHECK(m("muse_dense_model"));
+    CHECK(m("muse_dense_inference"));
+    CHECK(m("muse_dense_inference_pipeline"));
+    CHECK(AllowedCommon("muse_tool_format"));
+    CHECK(IsFamilyPrefixed("muse_dense_model"));
 }
 
 TEST_CASE("naming guard accepts granite_dense_switch_* stems", "[naming][guard]")
