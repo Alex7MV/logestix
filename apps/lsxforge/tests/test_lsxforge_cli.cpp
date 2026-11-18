@@ -136,6 +136,24 @@ TEST_CASE("forge cli: --inkling_base selects the Inkling base pipeline",
     CHECK(rb.error.find("--inkling") != std::string::npos);
 }
 
+TEST_CASE("forge cli: --muse selects the Muse-Glimmer pipeline",
+          "[lsxforge][cli]")
+{
+    Flags f = Base();
+    f.muse = true;
+    const auto r = ResolvePipeline(f);
+    CHECK(r.error.empty());
+    CHECK(r.pipeline == Pipeline::kMuse);
+
+    // --muse with another family is ambiguous, never first-flag-wins.
+    Flags both = Base();
+    both.muse = true;
+    both.gemma4dense = true;
+    const auto rb = ResolvePipeline(both);
+    CHECK(rb.pipeline == Pipeline::kError);
+    CHECK(rb.error.find("--muse") != std::string::npos);
+}
+
 TEST_CASE("forge cli: no family flag falls back to the generic converter",
           "[lsxforge][cli]")
 {

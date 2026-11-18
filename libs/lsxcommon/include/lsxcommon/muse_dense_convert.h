@@ -58,5 +58,20 @@ bool muse_dense_tensor_is_nvfp4(TensorKind kind);
 // merged for the full eos set and the pad id when present.
 MuseDenseTopology load_muse_dense_topology(const std::string &config_path);
 
+// Writes <output_root>/logestix/model.index.json (kFormatTag + the geometry
+// the loader and the runtime gates read back).
+arrow::Status WriteMuseDenseModelIndex(const std::string &output_root,
+                                       const MuseDenseTopology &top);
+
+// Full conversion pipeline: safetensors -> pinned layout
+//   pinned/global.arrow         raw BF16 (embed, untied lm_head, final norm)
+//   pinned/layer_N.arrow        8 NVFP4 projection triples + 4 raw BF16 norms
+//   pinned/tokenizer*           stage-4 token bridge (kind 3, o200k/Llama-3)
+//   logestix/model.index.json   structural manifest (vision ballast counted)
+// The loader converts BF16 -> FP16 at upload (fastload::CvKind::kBf16ToHalf);
+// the pinned records keep the source dtype, the repo's dense-family convention.
+arrow::Status ConvertMuseDenseModel(const std::string &input_path,
+                                    const std::string &output_root);
+
 } // namespace muse_dense
 } // namespace lsxcommon

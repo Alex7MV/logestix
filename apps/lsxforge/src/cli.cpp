@@ -23,7 +23,7 @@ Resolution ResolvePipeline(const Flags &flags)
         flags.hy_simulmt ||
         flags.flint ||
         flags.ling || flags.beam || flags.step || flags.inkling ||
-        flags.inkling_base;
+        flags.inkling_base || flags.muse;
 
     // --tokenizer supplies the source directory itself (main() assigns
     // input_path = FLAGS_tokenizer before doing any work).
@@ -101,6 +101,7 @@ Resolution ResolvePipeline(const Flags &flags)
              {Pipeline::kKimiK31Pro, flags.kimi_k31_pro}},
             {"--inkling", {Pipeline::kInkling, flags.inkling}},
             {"--inkling_base", {Pipeline::kInklingBase, flags.inkling_base}},
+            {"--muse", {Pipeline::kMuse, flags.muse}},
         };
 
     const char *chosen = nullptr;
