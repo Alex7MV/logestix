@@ -26,6 +26,7 @@ add_library(lsxcommon STATIC
     src/gemma_moe_convert.cpp
     src/gemma_moe_load.cpp
     src/gemma_dense_convert.cpp
+    src/muse_dense_convert.cpp
     src/gemma_dense_load.cpp
     src/granite_dense_convert.cpp
     src/granite_dense_load.cpp
