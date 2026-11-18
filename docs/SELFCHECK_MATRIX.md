@@ -72,6 +72,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 | **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
+| **inkling** (base) | PASS (x3, framed, inline-reasoning) | 3/3 (template) | 3/3 (template) | 3/3 |
 
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
   was restored** (120 min, `-j1`, one GPU). The list is
@@ -287,6 +288,19 @@ one in a ctest summary, which is why the debt rows are called out below.
   and the converter split it in half, which cost the model its knowledge
   (perplexity 12 881 -> 30.4 after the fix). See
   `docs/model-reports/2026-11-15-Inkling-2-Small.md`.
+- **Inkling (base)** is green on all four gates with **template-derived**
+  FSI/CODE/DET goldens (952B pure-BF16 source, not runnable locally). The SAME
+  row-interleave defect recurred on the routed `w13_weight` (the release
+  `Interleave(dim=1)` de-interleaves it; the converter split it in halves) and
+  was caught the same way — the release modelling code driven on real weights
+  is the only oracle that sees it. The base release additionally forces an
+  **FP32 residual stream**: its residual genuinely reaches ~1e6 by the deep
+  layers (the model's own bf16 behaviour), overflowing FP16 at five points
+  (residual, residual-path convs, expert/shared down GEMV, wo projection).
+  Knowledge sanity perplexity **3.84**; framed-Paris generation answers
+  "The capital of France is **Paris**." after an inline-reasoning span. CODE
+  uses `answer_start_token_id=200004` (`<|content_text|>`) to cut to the final
+  answer. See `docs/model-reports/2026-11-18-Inkling.md`.
 - gemma-4-26b went green in this session (second NVFP4 plane on attn + dense
   MLP, routed experts left 4-bit): FSI/CODE/DET were 1/3, 2/3, 3/3 before.
 
