@@ -87,6 +87,27 @@ int main(int argc, char **argv)
     }
     std::printf("\n");
 
+    // Full generation (the model is inline-reasoning: it emits a thinking
+    // marker first, then the answer). Decode the whole span to verify Paris.
+    {
+        lsxcommon::ModelRequest gr;
+        gr.input_ids = ids;
+        gr.max_gen_tokens = 48;
+        gr.ignore_eos = false;
+        const auto g = m->Infer(gr);
+        if (g.ok && !g.gen_tokens.empty()) {
+            std::vector<char> txt(g.gen_tokens.size() * 8 + 64, 0);
+            size_t cap = txt.size();
+            lsxcommon::arrow_tokenizer_decode(
+                tok, g.gen_tokens.data(), g.gen_tokens.size(), txt.data(), &cap);
+            txt[cap] = 0;
+            std::printf("framed-Paris generation (%zu tok): %s\n",
+                        g.gen_tokens.size(), txt.data());
+        } else {
+            std::printf("generation failed: %s\n", g.error_msg.c_str());
+        }
+    }
+
     if (nll) {
         // Teacher-forced mean NLL over a fixed paragraph (raw BPE ids, the
         // knowledge sanity gate of the ingestion skill).

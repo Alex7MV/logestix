@@ -19,6 +19,20 @@ target_include_directories(inkling_base_probe PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(inkling_base_probe PRIVATE lsxcommon arrow_shared)
 
+# Short-prompt NaN diagnostic (temporary): Infer at n=1..20 tokens, report NaN
+# count + max logit. Loads the real vault; not part of the test suite.
+add_executable(inkling_base_short_probe inkling_base_short_probe.cpp)
+target_include_directories(inkling_base_short_probe PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(inkling_base_short_probe PRIVATE lsxcommon arrow_shared)
+
+# CODE-03 token dump (temporary): inspect the generation markers to pick the
+# answer_start_token_id for the inline-reasoning golden. Not a test.
+add_executable(inkling_base_code03_tokens inkling_base_code03_tokens.cpp)
+target_include_directories(inkling_base_code03_tokens PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(inkling_base_code03_tokens PRIVATE lsxcommon arrow_shared)
+
 if(WIN32)
     add_custom_command(TARGET tokenizer_audit POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
