@@ -655,22 +655,33 @@ The converted model's CODE gate is fully green (3/3) and the DET gate is green
 
 The ingestion (2026-11-19, `docs/model-reports/2026-11-19-Muse-Glimmer-30B.md`)
 landed every gate except FSI, which was declared debt after two failed captures.
-Both failures had the same cause and it was **not** the token budget:
+Re-reading the failed run's own raw shows **two** defects, and the model was only
+responsible for one:
 
-- the checkpoint's `chat_template.jinja` renders `Reasoning strength: <value>.`
-  into the system block, defaulting to `high` (`reasoning_strength` is the
-  template's own kwarg);
-- at `high` the model answers inside `assistant to=user` and then loops
-  `assistant to=self` for the rest of the budget, re-emitting the answer, so the
-  512-token run aborted on FSI-03 (the raw was a wall of repeated "So output
-  Drawdown>Threshold" inside the reasoning channel) and the 1024-token run never
-  finished (>1.5 h for 3 cases on CPU, killed).
+1. **The extraction read the reasoning tail.** The retained FSI-03 raw from the
+   512-token `high` attempt contains `assistant to=userDrawdown>Threshold`
+   repeatedly — the model answered — yet the run recorded `empty extraction`,
+   because the echoed prompt's `Variables: Drawdown = 14.999991; Threshold =
+   15.000000.` gave the extractor a `Drawdown`-plus-`=` line first and the
+   comparison pattern then found no identifier. Same defect as the CODE/DET
+   gates, fixed by the ATEM first-complete-channel rule.
+2. **The framing decided the answer's form.** The checkpoint's
+   `chat_template.jinja` renders `Reasoning strength: <value>.` into the system
+   block, defaulting to `high` (`reasoning_strength` is the template's own
+   kwarg). At `high` the answer channel is not consistently the canonical
+   formula: the 512-token attempt's extraction recorded `Balance_Alpha=100000000`
+   (the prompt's numeric echo) for FSI-02 — that raw was not retained, so the
+   channel-vs-echo origin cannot be separated, which is the argument for reading
+   a named channel rather than the tail.
 
-Passing `reasoning_strength: low` removes the loop. Captured one prompt per run
-through the CPU text tower (`tools/muse_golden_oracle.py`, 627 text tensors,
-809 vision tensors skipped), 512 tokens, `~27 min/case` (400-470 CPU-min):
-`raw` 1.7-2.0 kB, answer channel 18-71 characters, **no repeated channel**, and
-no "model answer differs from the template" warning on any case.
+The 1024-token retry could not have fixed either defect, and the loop is **not**
+what `reasoning_strength: low` removes: the captured `low` raws still carry
+12 / 7 / 37 `assistant to=user` channels (and 0 / 5 / 0 `assistant to=self`) in
+512 tokens. What `low` does is make the answer channel the canonical formula for
+all three prompts; what the first-complete rule does is read it. Capture ran one
+prompt per run through the CPU text tower (`tools/muse_golden_oracle.py`, 627
+text tensors, 809 vision skipped), 512 tokens, `~27 min/case` (400-470 CPU-min),
+with no "model answer differs from the template" warning on any case.
 
 | case | source golden | converted (kOff, 512) | verdict |
 |---|---|---|---|

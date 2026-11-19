@@ -42,12 +42,27 @@ template supports it (the jinja's `reasoning_strength` kwarg).
 
 ## Resolution (2026-11-19)
 
-**The decisive fact was already in the checkpoint, not in the budget.** The
-checkpoint's `chat_template.jinja` renders `Reasoning strength: <value>.` into
-the system block and defaults to `high`; `reasoning_strength: low` is the
-template's own switch, and at `low` the model stops looping its reasoning
-channel and answers immediately. Re-running at a longer budget would have
-reproduced the loop — the 1024-token attempt had already spent 1.5 h on it.
+**The two defects were in the harness and in the framing, not in the budget.**
+Re-reading the failed run's raw separated them:
+
+1. *Extraction.* The retained FSI-03 raw from the 512-token `high` attempt
+   contains `assistant to=userDrawdown>Threshold` repeatedly — the model
+   answered — but the run recorded `empty extraction`, because the echoed
+   prompt's `Variables: Drawdown = 14.999991; Threshold = 15.000000.` gave the
+   extractor a `Drawdown`-plus-`=` line first and the comparison pattern then
+   found no identifier. This is the same defect CODE/DET hit.
+2. *Framing.* The checkpoint's `chat_template.jinja` renders `Reasoning
+   strength: <value>.` into the system block and defaults to `high`;
+   `reasoning_strength: low` is the template's own switch, and at `low` the
+   answer channel carries the canonical formula for all three prompts (at
+   `high` the 512-token attempt extracted `Balance_Alpha=100000000`, the
+   prompt's numeric echo, for FSI-02).
+
+A longer budget could fix neither: the 1024-token attempt burned 1.5 h and would
+have produced the same answers. The loop itself is **not** removed by `low` —
+the captured raws still carry 12 / 7 / 37 `assistant to=user` channels (0 / 5 /
+0 `assistant to=self`) in 512 tokens; the first-complete-channel rule is what
+makes the repetition harmless.
 
 **Capture recipe (now the documented one):**
 
@@ -62,10 +77,9 @@ python3 tools/fsi_capture.py ... --only FSI-TEST-02,FSI-TEST-03 --resume
 Measured on the reference host (CPU text tower, 627 text tensors loaded, 809
 vision tensors skipped): ~27 min per case at 512 tokens (~21 cores, 400-470
 CPU-min/case), 512 tokens regardless of `ignore_eos`; the raw is 1.7-2.0 kB and
-the answer channel is 18-71 characters — i.e. **no loop**. The FIRST COMPLETE
-`assistant to=user` channel is the answer in all three cases and equals the
-prompt's canonical answer, so no case needed the "model answers differently"
-warning path.
+the FIRST COMPLETE `assistant to=user` channel is 18-71 characters and equals
+the prompt's canonical answer in all three cases, so no case needed the "model
+answers differently" warning path.
 
 **Tooling changes (TDD, `test_fsi_selfcheck.cpp` RED first):**
 

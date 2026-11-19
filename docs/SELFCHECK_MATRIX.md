@@ -18,9 +18,9 @@ extended **2026-11-15** (Inkling-2-Small: 594B total / 17B active, mixed
 NVFP4+MXFP8 experts, all four gates measured on the real 366 GB tree),
 closed **2026-11-19** (Muse-Glimmer-30B: the FSI golden that had been declared
 debt was captured from the source text tower at `reasoning_strength: low` — the
-chat template's own off switch for its `to=self` loop — one prompt per run, and
-the converted model reproduces all three answers; Code/DET came from the same
-oracle the day before),
+chat template's own switch, which makes the answer channel the canonical formula
+— one prompt per run, and the converted model reproduces all three answers;
+CODE/DET came from the same oracle the day before),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;

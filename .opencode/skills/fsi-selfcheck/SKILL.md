@@ -193,11 +193,15 @@ the verifier extracts from the same decode.
 
 **The framing is part of the prompt.** Muse's chat template renders
 `Reasoning strength: <reasoning_strength>.` into the system block, defaulting to
-`high`, and at `high` the model spends the whole budget in `to=self` loops
-(docs/OPEN_TASKS.md R21: two capture attempts, one aborted, one killed after
->1.5 h). Its capture therefore passes `reasoning_strength: low` via
-`template_kwargs`; the kwarg is part of the captured `input_ids`, so the converted
-model is replayed at the same strength and the gate stays a parity check.
+`high`, and the strength decides what the answer channel says: at `high` the
+extraction read the prompt's numeric echo (`Balance_Alpha=100000000`), at `low`
+all three answer channels are the canonical formula. Its capture therefore
+passes `reasoning_strength: low` via `template_kwargs`; the kwarg is part of the
+captured `input_ids`, so the converted model is replayed at the same strength and
+the gate stays a parity check. Note `low` does **not** stop the channel loop (the
+captured raws still hold 12/7/37 answer channels in 512 tokens) — the
+first-complete rule above is what makes the repetition harmless, and a longer
+budget is not a substitute for it (R21's 1024-token retry burned 1.5 h).
 
 ### 3. Test + CMake + guard
 
