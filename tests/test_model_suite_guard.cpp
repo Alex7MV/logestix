@@ -808,6 +808,10 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // the same marker family, but the tool-result header carries the tool
         // name — verified against the base checkpoint's chat_template.jinja.
         {"inkling", {"test_inkling_moe_base_tool_framing"}},
+        // Muse-Glimmer has a native ATEM codec (muse_tool_format.cpp): channel
+        // markers <|start|>/<|message|>/<|eot|> + <atem:function_calls> XML,
+        // proven byte-identical to the checkpoint's chat_template.jinja render.
+        {"muse-glimmer-30b", {"test_muse_dense_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

@@ -135,6 +135,108 @@ target_compile_definitions(test_inkling_moe_base_tool_framing PRIVATE
 target_link_libraries(test_inkling_moe_base_tool_framing PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
+# ── Muse-Glimmer-30B (muse dense family; models/muse-glimmer-30b.json) ──────
+# ctest registrations (labels/timeouts/skip/locks/env) come from the generated
+# model_targets.cmake; what stays here is per-target BUILD reality.
+add_executable(test_muse_dense_constants test_muse_dense_constants.cpp)
+target_link_libraries(test_muse_dense_constants PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_muse_dense_convert test_muse_dense_convert.cpp)
+target_include_directories(test_muse_dense_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_muse_dense_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_muse_dense_loader test_muse_dense_loader.cpp)
+target_link_libraries(test_muse_dense_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_muse_dense_model test_muse_dense_model.cpp)
+target_include_directories(test_muse_dense_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_muse_dense_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_muse_dense_tool_framing test_muse_dense_tool_framing.cpp)
+target_include_directories(test_muse_dense_tool_framing PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_muse_dense_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_muse_dense_tool_framing PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+# Kernel + pipeline .cu tests: one OBJECT lib each (-fmad=false, bit-exact).
+add_library(test_muse_kernels_cu OBJECT test_muse_dense_kernels.cu)
+set_target_properties(test_muse_kernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF CUDA_ARCHITECTURES OFF)
+target_compile_options(test_muse_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_muse_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_muse_kernels_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_muse_kernels_cu PRIVATE Catch2::Catch2WithMain
+    lsx_dep_includes arrow_shared)
+add_executable(test_muse_dense_kernels)
+set_target_properties(test_muse_dense_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_muse_dense_kernels PRIVATE
+    test_muse_kernels_cu lsxcommon Catch2::Catch2WithMain)
+
+add_library(test_muse_pipeline_cu OBJECT test_muse_dense_pipeline.cu)
+set_target_properties(test_muse_pipeline_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF CUDA_ARCHITECTURES OFF)
+target_compile_options(test_muse_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_muse_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_muse_pipeline_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_muse_pipeline_cu PRIVATE Catch2::Catch2WithMain
+    lsx_dep_includes arrow_shared)
+add_executable(test_muse_dense_pipeline)
+set_target_properties(test_muse_dense_pipeline PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_muse_dense_pipeline PRIVATE
+    test_muse_pipeline_cu lsxcommon Catch2::Catch2WithMain)
+
+# Lifecycle gates (shared drivers, parameterised by the manifest row).
+add_executable(test_muse_dense_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_muse_dense_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_muse_dense_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_muse_dense_selfcheck PRIVATE
+    "LSX_SELFCHECK_MODEL=\"muse-glimmer-30b\"")
+
+add_executable(test_muse_dense_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_muse_dense_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_muse_dense_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_muse_dense_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"muse-glimmer-30b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+
+add_executable(test_muse_dense_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_muse_dense_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_muse_dense_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_muse_dense_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"muse-glimmer-30b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+
+add_executable(test_muse_dense_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_muse_dense_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_muse_dense_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_muse_dense_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"muse-glimmer-30b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+
 # Inkling base lifecycle gates (shared drivers).
 add_executable(test_inkling_moe_base_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_inkling_moe_base_selfcheck PRIVATE
@@ -3066,6 +3168,7 @@ lsx_copy_arrow_dlls(test_mimo_moe_model)
 # MiMo SelfCheck (real weights; SKIP when absent).
 
 # MiMo FSI / CODE / DET golden-parity gates (real weights + golden; SKIP).
+
 
 
 # Guard: model code file naming convention (host-only, no lsxcommon deps).

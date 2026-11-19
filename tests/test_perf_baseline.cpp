@@ -170,6 +170,11 @@ const PerfModel kBeam = {
     "beam", "Beam-1.0-501B-A23B", "The capital of France is", 2048};
 const PerfModel kStep = {
     "step-5-preview", "Step-5-Preview", "The capital of France is", 2048};
+const PerfModel kMuse = {
+    "muse-glimmer-30b", "Muse-Glimmer-30B",
+    "Write a detailed long essay about the history of computing, from "
+    "Babbage to modern GPUs.",
+    2048};
 
 std::string BaselinePath()
 {
@@ -575,6 +580,11 @@ TEST_CASE("perf baseline: inkling-2-small", "[perf]")
 TEST_CASE("perf baseline: inkling", "[perf]")
 {
     RunPerfModel(kInklingBase);
+}
+
+TEST_CASE("perf baseline: muse-glimmer-30b", "[perf]")
+{
+    RunPerfModel(kMuse);
 }
 
 TEST_CASE("perf baseline: deepseek-v4-flash", "[perf]")
