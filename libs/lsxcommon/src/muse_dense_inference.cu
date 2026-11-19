@@ -22,6 +22,7 @@
 #include <math_constants.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -623,26 +624,426 @@ cudaError_t RunMuseDenseLogitsArgmax(cudaStream_t stream, const __half *lm_head,
     return cudaGetLastError();
 }
 
-// ── Generation driver (body lands with Task 7) ──────────────────────────────
+// ── Workspace ───────────────────────────────────────────────────────────────
+
+void MuseDenseGenContext::Workspace::Free()
+{
+    auto F = [](void **p) {
+        if (*p) { cudaFree(*p); *p = nullptr; }
+    };
+    F((void **)&x);
+    F((void **)&normed);
+    F((void **)&q);
+    F((void **)&k);
+    F((void **)&v);
+    F((void **)&gate);
+    F((void **)&attn);
+    F((void **)&proj);
+    F((void **)&mlp_gate);
+    F((void **)&mlp_up);
+    F((void **)&ffn);
+    F((void **)&logits);
+    F((void **)&ids);
+    F((void **)&pos);
+    F((void **)&argmax);
+    F((void **)&maxv);
+    F((void **)&attn_part);
+    seq_cap = q_rows_cap = kv_rows_cap = 0;
+}
+
+cudaError_t MuseDenseGenContext::Workspace::Alloc(std::int64_t H, std::int64_t I,
+                                                  std::int64_t V, size_t S,
+                                                  size_t q_rows, size_t kv_rows,
+                                                  size_t nh, size_t hd)
+{
+    Free();
+    cudaError_t e = cudaSuccess;
+    auto A = [&](void **p, size_t bytes) { return cudaMalloc(p, bytes); };
+    if ((e = A((void **)&x, S * H * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&normed, S * H * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&q, S * q_rows * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&k, S * kv_rows * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&v, S * kv_rows * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&gate, S * q_rows * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&attn, S * q_rows * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&proj, S * H * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&mlp_gate, S * I * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&mlp_up, S * I * 2)) != cudaSuccess) return e;
+    if ((e = A((void **)&ffn, S * H * 2)) != cudaSuccess) return e;
+    const size_t argmax_tail =
+        static_cast<size_t>((V + kThreads - 1) / kThreads) * 2;
+    if ((e = A((void **)&logits, (static_cast<size_t>(V) + argmax_tail) * 4)) !=
+        cudaSuccess)
+        return e;
+    if ((e = A((void **)&ids, S * sizeof(std::int32_t))) != cudaSuccess) return e;
+    if ((e = A((void **)&pos, S * sizeof(std::int32_t))) != cudaSuccess) return e;
+    if ((e = A((void **)&argmax, 4)) != cudaSuccess) return e;
+    if ((e = A((void **)&maxv, 4)) != cudaSuccess) return e;
+    const size_t sp_seq = std::min<size_t>(S, 8);
+    if ((e = A((void **)&attn_part,
+               static_cast<size_t>(kMuseDenseAttnSplitMax) * sp_seq * nh *
+                   (hd + 2) * sizeof(float))) != cudaSuccess)
+        return e;
+    seq_cap = S;
+    q_rows_cap = q_rows;
+    kv_rows_cap = kv_rows;
+    return cudaSuccess;
+}
+
+MuseDenseGenContext *CreateMuseDenseGenContext()
+{
+    return new MuseDenseGenContext();
+}
+
+void DestroyMuseDenseGenContext(MuseDenseGenContext *ctx) { delete ctx; }
+
+// ── Layer / generation ──────────────────────────────────────────────────────
+
+namespace {
+
+// One layer, `seq` tokens, writing k/v rows at [pos_base, pos_base + seq).
+//
+//   n    = centered_norm(x, input_norm)                  # eps rms_norm_eps
+//   q,k,v = proj(n); weightless qk_norm; Q *= 3.87
+//   sliding layers: RoPE(q,k); full (NoPE) layers: NO RoPE
+//   a    = attention(scale 1/sqrt(hd), sliding band / full prefix)
+//   a   *= sigmoid(gate_proj(n))                          # BEFORE o_proj
+//   x   += centered_norm(o_proj(a), post_attn)            # eps post_norm_eps
+//   n2   = centered_norm(x, pre_ffn)                      # eps rms_norm_eps
+//   x   += centered_norm(down(silu(gate(n2))*up(n2)), post_ffn)  # post eps
+cudaError_t ForwardLayer(cudaStream_t stream,
+                         const MuseDensePinnedWeights &pw,
+                         const MuseDenseLayerWeights &lw, int layer_idx,
+                         MuseDenseGenContext::Workspace &ws, int seq,
+                         int pos_base, __half *dk, __half *dv,
+                         KvCacheGeometry kgeo, KvCacheGeometry vgeo)
+{
+    const auto &top = pw.top;
+    const std::int64_t H = top.hidden_size;
+    const std::int64_t I = top.intermediate_size;
+    const bool full = top.IsFull(layer_idx);
+    const int nh = top.num_attention_heads;
+    const int nkv = top.num_key_value_heads;
+    const int hd = top.head_dim;
+    const int q_rows = top.QRows();
+    const int kv_rows = top.KvRows();
+    const float pre_eps = top.rms_norm_eps;
+    const float post_eps = top.post_norm_eps;
+    const double theta = top.RopeTheta(layer_idx);
+    const int window = top.Window(layer_idx);
+
+    cudaError_t e = RunMuseDenseCenteredNorm(stream, ws.x, lw.d_input_norm,
+                                             ws.normed, seq, static_cast<int>(H),
+                                             pre_eps);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+
+    // q / k / v / gate projections (all NVFP4 through the neutral layer). The
+    // gate projects the SAME normed input as q/k/v.
+    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.attn_q.d_packed,
+                        lw.attn_q.d_scales, lw.attn_q.global_scale, ws.q, seq,
+                        static_cast<int>(H), q_rows);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.attn_k.d_packed,
+                        lw.attn_k.d_scales, lw.attn_k.global_scale, ws.k, seq,
+                        static_cast<int>(H), kv_rows);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.attn_v.d_packed,
+                        lw.attn_v.d_scales, lw.attn_v.global_scale, ws.v, seq,
+                        static_cast<int>(H), kv_rows);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.attn_gate.d_packed,
+                        lw.attn_gate.d_scales, lw.attn_gate.global_scale,
+                        ws.gate, seq, static_cast<int>(H), q_rows);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+
+    // Weightless per-head QK norm; Q gets the 3.87 scale.
+    e = RunMuseDenseQkNormScale(stream, ws.q, ws.k, seq, nh, nkv, hd, pre_eps,
+                                top.qk_scale_factor);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+
+    // RoPE on q/k ONLY on the sliding layers; the full (NoPE) layers skip it.
+    if (!full && theta > 0.0) {
+        std::vector<std::int32_t> pos(static_cast<size_t>(seq));
+        for (int i = 0; i < seq; ++i)
+            pos[static_cast<size_t>(i)] = pos_base + i;
+        e = cudaMemcpyAsync(ws.pos, pos.data(),
+                            sizeof(std::int32_t) * static_cast<size_t>(seq),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+        e = RunMuseDenseRope(stream, ws.pos, ws.q, ws.k, seq, nh, nkv, hd,
+                             theta);
+        if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    }
+
+    // Append this chunk's k/v rows to the pos-major cache (one token's row is
+    // kv_heads*head_dim contiguous halves).
+    const std::size_t row_bytes = static_cast<std::size_t>(kgeo.kv_heads) *
+                                  static_cast<std::size_t>(kgeo.head_dim) *
+                                  sizeof(__half);
+    e = cudaMemcpyAsync(dk + kgeo.Offset(0, 0, pos_base), ws.k,
+                        row_bytes * static_cast<size_t>(seq),
+                        cudaMemcpyDeviceToDevice, stream);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = cudaMemcpyAsync(dv + vgeo.Offset(0, 0, pos_base), ws.v,
+                        row_bytes * static_cast<size_t>(seq),
+                        cudaMemcpyDeviceToDevice, stream);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+
+    // Attention (decode seq==1 takes split-KV for long context).
+    if (seq == 1) {
+        int splits = 1;
+        const int span = window > 0 ? std::min(window, pos_base + 1)
+                                    : pos_base + 1;
+        if (span >= kAttnSplitMinKv)
+            splits = (span + kAttnSplitKeys - 1) / kAttnSplitKeys;
+        if (splits <= 1) {
+            e = RunMuseDenseAttention(stream, ws.q, dk, dv, ws.attn, seq, nh,
+                                      nkv, hd, window, frozen::kAttentionScale,
+                                      pos_base, kgeo, vgeo);
+        } else {
+            e = RunMuseDenseAttentionSplit(stream, ws.q, dk, dv, ws.attn,
+                                           ws.attn_part, seq, nh, nkv, hd,
+                                           window, frozen::kAttentionScale,
+                                           pos_base, splits, kgeo, vgeo);
+        }
+    } else {
+        e = RunMuseDenseAttention(stream, ws.q, dk, dv, ws.attn, seq, nh, nkv,
+                                  hd, window, frozen::kAttentionScale, pos_base,
+                                  kgeo, vgeo);
+    }
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+
+    // Attention OUTPUT gate: attn *= sigmoid(gate), elementwise, BEFORE o_proj.
+    e = RunMuseDenseAttnGate(stream, ws.attn, ws.gate, ws.attn,
+                             static_cast<std::int64_t>(seq) * q_rows);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+
+    // o_proj + centered post-attn norm + residual.
+    e = RunLsxNvfp4Gemm(stream, ws.attn, lw.attn_o.d_packed, lw.attn_o.d_scales,
+                        lw.attn_o.global_scale, ws.proj, seq, q_rows,
+                        static_cast<int>(H));
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunMuseDenseCenteredNorm(stream, ws.proj, lw.d_post_attn_norm,
+                                 ws.normed, seq, static_cast<int>(H), post_eps);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    {
+        const std::int64_t numel = static_cast<std::int64_t>(seq) * H;
+        kernels::AddInPlaceKernel<__half>
+            <<<static_cast<unsigned>((numel + kThreads - 1) / kThreads),
+               kThreads, 0, stream>>>(ws.normed, ws.x, numel);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    }
+
+    // SwiGLU MLP: pre-ffn norm, gate/up, silu(gate)*up, down, post-ffn norm.
+    e = RunMuseDenseCenteredNorm(stream, ws.x, lw.d_pre_ffn, ws.normed, seq,
+                                 static_cast<int>(H), pre_eps);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.mlp_gate.d_packed,
+                        lw.mlp_gate.d_scales, lw.mlp_gate.global_scale,
+                        ws.mlp_gate, seq, static_cast<int>(H),
+                        static_cast<int>(I));
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.mlp_up.d_packed,
+                        lw.mlp_up.d_scales, lw.mlp_up.global_scale, ws.mlp_up,
+                        seq, static_cast<int>(H), static_cast<int>(I));
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunMuseDenseSwiGLU(stream, ws.mlp_gate, ws.mlp_up, ws.mlp_gate,
+                           static_cast<std::int64_t>(seq) * I);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunLsxNvfp4Gemm(stream, ws.mlp_gate, lw.mlp_down.d_packed,
+                        lw.mlp_down.d_scales, lw.mlp_down.global_scale, ws.ffn,
+                        seq, static_cast<int>(I), static_cast<int>(H));
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    e = RunMuseDenseCenteredNorm(stream, ws.ffn, lw.d_post_ffn, ws.proj, seq,
+                                 static_cast<int>(H), post_eps);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    {
+        const std::int64_t numel = static_cast<std::int64_t>(seq) * H;
+        kernels::AddInPlaceKernel<__half>
+            <<<static_cast<unsigned>((numel + kThreads - 1) / kThreads),
+               kThreads, 0, stream>>>(ws.proj, ws.x, numel);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    }
+    return cudaSuccess;
+}
+
+// Final plain norm + FP16 softcapped head + argmax.
+cudaError_t SampleNext(cudaStream_t stream,
+                       MuseDenseGenContext::Workspace &ws,
+                       const MuseDensePinnedWeights &pw, int seq)
+{
+    const std::int64_t H = pw.top.hidden_size;
+    const std::int64_t V = pw.top.vocab_size;
+    cudaError_t e = RunMuseDensePlainNorm(stream, ws.x, pw.d_final_norm,
+                                          ws.normed, seq, static_cast<int>(H),
+                                          pw.top.rms_norm_eps);
+    if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+    const __half *last = ws.normed + static_cast<std::int64_t>(seq - 1) * H;
+    return RunMuseDenseLogitsArgmax(stream, pw.d_lm_head, last,
+                                    static_cast<int>(V), static_cast<int>(H),
+                                    pw.top.output_multiplier,
+                                    pw.top.final_logit_softcapping, ws.argmax,
+                                    ws.maxv, ws.logits);
+}
+
+} // namespace
 
 cudaError_t RunMuseDenseGeneration(
     cudaStream_t stream, const MuseDensePinnedWeights &pw,
     const std::vector<std::int32_t> &input_ids, int max_gen_tokens,
     const std::vector<int> &eos_ids, MuseDenseGenerationResult &out,
-    MuseDenseKvCache &kv, lsxcommon::sample::ISampler &sampler,
-    const lsxcommon::GenerationStream *gs)
+    MuseDenseKvCache &kv, MuseDenseGenContext *ctx,
+    lsxcommon::sample::ISampler &sampler, const lsxcommon::GenerationStream *gs)
 {
-    (void)stream;
-    (void)pw;
-    (void)input_ids;
-    (void)max_gen_tokens;
-    (void)eos_ids;
-    (void)kv;
-    (void)sampler;
-    (void)gs;
-    out.ok = false;
-    out.error_msg = "muse-glimmer generation driver not yet implemented";
-    return cudaErrorNotYetImplemented;
+    const auto t_start = std::chrono::steady_clock::now();
+    out = MuseDenseGenerationResult{};
+    const auto &top = pw.top;
+    const int H = top.hidden_size;
+    const int V = top.vocab_size;
+    const int P = static_cast<int>(input_ids.size());
+    if (P <= 0) { out.error_msg = "empty prompt"; return cudaErrorInvalidValue; }
+    if (top.num_layers <= 0 ||
+        pw.layers.size() < static_cast<size_t>(top.num_layers)) {
+        out.error_msg = "model has no loaded layers";
+        return cudaErrorInvalidValue;
+    }
+    if (!pw.d_embed || !pw.d_lm_head || !pw.d_final_norm) {
+        out.error_msg = "embed/head/final-norm missing";
+        return cudaErrorInvalidValue;
+    }
+    if (!kv.allocated()) {
+        out.error_msg = "kv cache not allocated";
+        return cudaErrorInvalidValue;
+    }
+    MuseDenseGenContext local_ctx;
+    if (!ctx) ctx = &local_ctx;
+
+    const size_t q_rows = static_cast<size_t>(top.QRows());
+    const size_t kv_rows = static_cast<size_t>(top.KvRows());
+    auto &ws = ctx->ws;
+    const size_t need = static_cast<size_t>(P) +
+                        static_cast<size_t>(std::max(max_gen_tokens, 1)) + 8;
+    if (!ctx->ws_ready || ws.seq_cap < need || ws.q_rows_cap < q_rows ||
+        ws.kv_rows_cap < kv_rows) {
+        const cudaError_t e = ws.Alloc(H, top.intermediate_size, V,
+                                       std::max<size_t>(need, 64), q_rows,
+                                       kv_rows,
+                                       static_cast<size_t>(top.num_attention_heads),
+                                       static_cast<size_t>(top.head_dim));
+        if (e != cudaSuccess) { out.error_msg = "workspace alloc failed"; return e; }
+        ctx->ws_ready = true;
+    }
+
+    auto run_layers = [&](int seq, int pos_base) -> cudaError_t {
+        for (int l = 0; l < top.num_layers; ++l) {
+            const auto &lw = pw.layers[static_cast<size_t>(l)];
+            const cudaError_t e = ForwardLayer(
+                stream, pw, lw, l, ws, seq, pos_base,
+                kv.dk[static_cast<size_t>(l)], kv.dv[static_cast<size_t>(l)],
+                kv.geo[static_cast<size_t>(l)], kv.geo[static_cast<size_t>(l)]);
+            if (e != cudaSuccess) { MD_FAIL_LINE(e); return e; }
+        }
+        return cudaSuccess;
+    };
+    const auto is_eos = [&](std::int32_t t) {
+        for (const int e : eos_ids) if (t == e) return true;
+        return false;
+    };
+    // Embed gather + weightless embed norm (NO sqrt(hidden) scale).
+    auto embed = [&](int seq) -> cudaError_t {
+        cudaError_t e = RunMuseDenseEmbedGatherFp16(stream, pw.d_embed, ws.ids,
+                                                    ws.x, seq, H);
+        if (e != cudaSuccess) return e;
+        return RunMuseDensePlainNorm(stream, ws.x, nullptr, ws.x, seq, H,
+                                     top.rms_norm_eps);
+    };
+
+    // ── Prefill ── (scalar path: the goldens are captured on it)
+    {
+        const int seq = P;
+        const bool tc_saved = lsx_nvfp4::LsxTcFastMath();
+        lsx_nvfp4::SetLsxTcFastMath(false);
+        cudaError_t e = cudaMemcpyAsync(ws.ids, input_ids.data(),
+                                        sizeof(std::int32_t) *
+                                            static_cast<size_t>(seq),
+                                        cudaMemcpyHostToDevice, stream);
+        if (e == cudaSuccess) e = embed(seq);
+        if (e == cudaSuccess) e = run_layers(seq, 0);
+        std::int32_t tok = -1;
+        if (e == cudaSuccess) e = SampleNext(stream, ws, pw, seq);
+        if (e == cudaSuccess && !sampler.IsGreedy())
+            e = sampler.Sample(stream, ws.logits, V,
+                               lsxcommon::sample::LogitType::kF32, ws.argmax,
+                               ws.maxv);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(&tok, ws.argmax, sizeof(std::int32_t),
+                                cudaMemcpyDeviceToHost, stream);
+        if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
+        lsx_nvfp4::SetLsxTcFastMath(tc_saved);
+        if (e != cudaSuccess) { out.error_msg = "prefill failed"; return e; }
+        if (tok < 0 || tok >= V) {
+            out.error_msg = "sampled token out of range";
+            return cudaErrorInvalidValue;
+        }
+        out.tokens.push_back(tok);
+        if (gs) gs->Emit(static_cast<std::uint32_t>(tok), 0u);
+    }
+
+    out.ttft_ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - t_start).count();
+    if (is_eos(out.tokens.front())) out.eos_terminated = true;
+
+    // ── Decode ──
+    int pos_base = P;
+    for (int step = 1; step < max_gen_tokens && !out.eos_terminated; ++step) {
+        if (gs && gs->Aborted()) break;
+        const std::int32_t next = out.tokens.back();
+        cudaError_t e = cudaMemcpyAsync(ws.ids, &next, sizeof(std::int32_t),
+                                        cudaMemcpyHostToDevice, stream);
+        if (e == cudaSuccess) e = embed(1);
+        if (e == cudaSuccess) e = run_layers(1, pos_base);
+        std::int32_t tok = -1;
+        if (e == cudaSuccess) e = SampleNext(stream, ws, pw, 1);
+        if (e == cudaSuccess && !sampler.IsGreedy())
+            e = sampler.Sample(stream, ws.logits, V,
+                               lsxcommon::sample::LogitType::kF32, ws.argmax,
+                               ws.maxv);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(&tok, ws.argmax, sizeof(std::int32_t),
+                                cudaMemcpyDeviceToHost, stream);
+        if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
+        if (e != cudaSuccess) { out.error_msg = "decode failed"; return e; }
+        if (tok < 0 || tok >= V) {
+            out.error_msg = "sampled token out of range";
+            return cudaErrorInvalidValue;
+        }
+        ++pos_base;
+        out.tokens.push_back(tok);
+        if (gs)
+            gs->Emit(static_cast<std::uint32_t>(tok),
+                     static_cast<std::uint32_t>(out.tokens.size() - 1));
+        if (is_eos(tok)) out.eos_terminated = true;
+    }
+
+    // Final logits row (determinism evidence for SelfCheck).
+    {
+        std::vector<float> h(static_cast<size_t>(V));
+        cudaError_t e = cudaMemcpyAsync(h.data(), ws.logits,
+                                        static_cast<size_t>(V) * sizeof(float),
+                                        cudaMemcpyDeviceToHost, stream);
+        if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
+        if (e != cudaSuccess) { out.error_msg = "final logits copy failed"; return e; }
+        out.final_logits = std::move(h);
+    }
+
+    out.ok = !out.tokens.empty();
+    if (!out.ok && out.error_msg.empty()) out.error_msg = "no tokens generated";
+    out.total_ms = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - t_start).count();
+    out.resident_bytes = pw.resident_bytes;
+    return cudaSuccess;
 }
 
 } // namespace muse_dense

@@ -117,15 +117,52 @@ struct MuseDenseGenerationResult {
     std::uint64_t resident_bytes = 0;
 };
 
+// Persistent per-session generation context (capacity-grown workspace). Owned
+// by the model; single-threaded (one consumer). RAII: every error/abort path
+// frees through the destructor / Free().
+struct MuseDenseGenContext {
+    struct Workspace {
+        __half *x = nullptr;        // [S][H] residual stream
+        __half *normed = nullptr;   // [S][H]
+        __half *q = nullptr;        // [S][q_rows]
+        __half *k = nullptr;        // [S][kv_rows]
+        __half *v = nullptr;        // [S][kv_rows]
+        __half *gate = nullptr;     // [S][q_rows] attention output gate
+        __half *attn = nullptr;     // [S][q_rows]
+        __half *proj = nullptr;     // [S][H]
+        __half *mlp_gate = nullptr; // [S][I]
+        __half *mlp_up = nullptr;   // [S][I]
+        __half *ffn = nullptr;      // [S][H]
+        float *logits = nullptr;    // [V] fp32 + argmax winner tail
+        int32_t *ids = nullptr;     // [S]
+        int32_t *pos = nullptr;     // [S]
+        int32_t *argmax = nullptr;  // [1]
+        float *maxv = nullptr;      // [1]
+        float *attn_part = nullptr; // split-KV partials
+        size_t seq_cap = 0, q_rows_cap = 0, kv_rows_cap = 0;
+
+        void Free();
+        cudaError_t Alloc(std::int64_t H, std::int64_t I, std::int64_t V,
+                          size_t S, size_t q_rows, size_t kv_rows, size_t nh,
+                          size_t hd);
+    };
+
+    Workspace ws;
+    bool ws_ready = false;
+
+    ~MuseDenseGenContext() { ws.Free(); }
+};
+
+MuseDenseGenContext *CreateMuseDenseGenContext();
+void DestroyMuseDenseGenContext(MuseDenseGenContext *ctx);
+
 // Full generation loop: prefill(input) + up to max_gen_tokens decode steps on
 // ONE stream. @p kv must be pre-allocated for prompt + generated capacity.
-// The driver body lands with the kernel suite (Task 7); the signature is the
-// contract the model TU compiles against.
 cudaError_t RunMuseDenseGeneration(
     cudaStream_t stream, const MuseDensePinnedWeights &pw,
     const std::vector<std::int32_t> &input_ids, int max_gen_tokens,
     const std::vector<int> &eos_ids, MuseDenseGenerationResult &out,
-    MuseDenseKvCache &kv,
+    MuseDenseKvCache &kv, MuseDenseGenContext *ctx,
     lsxcommon::sample::ISampler &sampler = lsxcommon::sample::DefaultSampler(),
     const lsxcommon::GenerationStream *gs = nullptr);
 

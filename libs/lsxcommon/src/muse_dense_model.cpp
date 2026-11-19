@@ -28,6 +28,8 @@ void MuseGlimmer30BModel::TeardownWeights()
     weights_loaded_ = false;
     kv_.reset();
     session_tail_.clear();
+    muse_dense::DestroyMuseDenseGenContext(gen_ctx_);
+    gen_ctx_ = nullptr;
     TeardownContext();
 }
 
@@ -142,6 +144,7 @@ gpu::InferenceResult MuseGlimmer30BModel::Infer(const ModelRequest &req)
         kv_.reset();
         kv_ = std::make_unique<muse_dense::MuseDenseKvCache>();
         session_tail_.clear();
+        if (!gen_ctx_) gen_ctx_ = muse_dense::CreateMuseDenseGenContext();
 
         const int need = static_cast<int>(req.input_ids.size()) +
                          std::max(1, req.max_gen_tokens) + 8;
@@ -162,7 +165,7 @@ gpu::InferenceResult MuseGlimmer30BModel::Infer(const ModelRequest &req)
         muse_dense::MuseDenseGenerationResult gen;
         const cudaError_t ge = muse_dense::RunMuseDenseGeneration(
             st, pw_, req.input_ids, req.max_gen_tokens, eos_ids, gen, *kv_,
-            sample::SamplerFor(req.sampling), &gs);
+            gen_ctx_, sample::SamplerFor(req.sampling), &gs);
         if (ge != cudaSuccess || !gen.ok) {
             lsxcommon::log::error(
                 "[muse-model] RunMuseDenseGeneration rc=" +

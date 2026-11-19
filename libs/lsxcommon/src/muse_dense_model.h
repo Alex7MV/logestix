@@ -58,6 +58,8 @@ protected:
     // lock.
     std::unique_ptr<muse_dense::MuseDenseKvCache> kv_;
     std::vector<int32_t> session_tail_;
+
+    muse_dense::MuseDenseGenContext *gen_ctx_ = nullptr;
 };
 
 } // namespace lsxcommon
