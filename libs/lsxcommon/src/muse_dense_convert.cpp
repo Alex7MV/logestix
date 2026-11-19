@@ -501,7 +501,7 @@ arrow::Status ConvertMuseDenseModel(const std::string &input_path,
     if (!unclassified.empty()) {
         std::sort(unclassified.begin(), unclassified.end());
         return arrow::Status::Invalid(
-            "unclassified tensor(s) — the Muse-Glimmer converter refuses to "
+            "unclassified tensor(s) -- the Muse-Glimmer converter refuses to "
             "drop them: ",
             absl::StrJoin(unclassified, ", "));
     }

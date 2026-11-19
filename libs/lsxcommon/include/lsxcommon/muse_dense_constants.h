@@ -157,7 +157,7 @@ static_assert(kHiddenSize > 0 && kIntermediateSize > 0 && kVocabSize > 0,
 static_assert(kNumHeads % kNumKVHeads == 0 && kNumKVHeads > 0,
               "num_attention_heads must be a multiple of num_key_value_heads");
 static_assert(kQRows != kHiddenSize,
-              "q/o rows are heads*head_dim, not hidden_size — the o_proj is "
+              "q/o rows are heads*head_dim, not hidden_size -- the o_proj is "
               "[hidden, q_rows], not square");
 static_assert(kNumFullLayers * kFullLayerPeriod == kNumLayers,
               "the 3:1 sliding/full pattern must divide the depth exactly");
