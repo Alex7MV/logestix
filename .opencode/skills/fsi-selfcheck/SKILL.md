@@ -98,7 +98,20 @@ truth. The C++ side never embeds the bodies — the golden carries the captured
 python tools/fsi_capture.py --selftest                 # no model; validates the set
 python tools/fsi_capture.py --model <safetensors-dir|hf-id> \
     --type <model_type> --out tests/fixtures/fsi/<model_type>.json
+
+# one prompt per run, merged into what an earlier run already wrote:
+python tools/fsi_capture.py --model <dir> --type <model_type> \
+    --out tests/fixtures/fsi/<model_type>.json \
+    --only FSI-TEST-01 --resume [--max-new-tokens 512]
 ```
+
+- **The capture is incremental and per-prompt-resumable.** Each completed case
+  is written to `--out` immediately (atomically), the golden always carries the
+  cases in prompt-set order, and `--only <ids>` + `--resume` capture a single
+  prompt at a time and merge it into the file. A killed run therefore keeps
+  every case it finished — the R21 Muse run that lost 1.5 h of CPU to a partial
+  golden is the reason. A failed case is skipped (not fatal), its full raw is
+  dumped to `<out>.<ID>.raw.txt`, and the process exits 3 with the ids to retry.
 
 - Greedy (`do_sample=False`), `max_new_tokens` default 128, frames with
   `tokenizer.apply_chat_template(...)` when the tokenizer defines one.
@@ -108,6 +121,12 @@ python tools/fsi_capture.py --model <safetensors-dir|hf-id> \
 - Per-model quirks go in the `OVERRIDES` table keyed by `--type` (never implicit).
   Known ones: `granite-4.2-30b` → `{"enable_thinking": True, "low_effort": True}`;
   `qwen3.8-flash-next` → `{"loader": "qwen4_exp"}` (config allowlist + PLE shards).
+  A custom loader may contribute its own capture facts through a
+  `capture_opts()` function returning `template_kwargs` / `answer_channel` /
+  `reasoning_channel` / `ignore_eos`; `tools/fsi_capture.py` merges it right
+  after the loader is imported. `muse-glimmer-30b` is the worked example
+  (`tools/muse_golden_oracle.py`): `reasoning_strength: low` plus the ATEM
+  channel headers, see "ATEM channel framing" below.
 - The golden `expected` is **model-defined**: the source model's own extracted
   answer, not the prompt template. A template difference is a warning, not a
   failure. Structural sanity (non-empty, balanced parens) must pass or capture
@@ -128,7 +147,10 @@ forced by the unrunnable source; it still guards the converted path. See
   "source": "...", "runtime": "transformers X / torch Y",
   "prompts": [ { "id": "FSI-TEST-01", "kind": "arithmetic", "anchor": "PV",
     "input_ids": [151644, 872, ...], "max_new_tokens": 128,
-    "ignore_eos": true, "expected": "...", "raw": "..." } ] }
+    "ignore_eos": true,
+    "answer_channel": "assistant to=user",
+    "reasoning_channel": "assistant to=self",
+    "expected": "...", "raw": "..." } ] }
 ```
 
 - Filename is `<model_type>.json` verbatim (dots allowed), matching `IModel::Type()`.
@@ -136,7 +158,46 @@ forced by the unrunnable source; it still guards the converted path. See
   non-empty; a malformed file is a parse error, never a silent skip.
 - `ignore_eos` (optional) forces the full token budget — set it for reasoning
   models that never emit EOS so the answer line is always produced.
-- `raw` is diagnostic only.
+- `answer_channel` / `reasoning_channel` (optional, both-or-none in practice) turn
+  on **ATEM channel selection** before extraction: the harness reads the FIRST
+  COMPLETE answer channel instead of the raw stream (`fsi::atem::SelectAnswerChannel`
+  in `libs/lsxcommon/include/lsxcommon/atem_channel.h`, shared with the CODE and
+  DET harnesses). The capture writes the same rule's result as `expected`
+  (`tools/muse_golden_oracle.py::select_answer_channel`, pinned against the C++
+  side by unit tests). Absent → historical behaviour, every existing golden is
+  untouched.
+- `raw` is diagnostic only (it is the un-truncated decode, so a looping model
+  makes it large; nothing compares it).
+
+### 2a. ATEM channel framing (reasoning checkpoints)
+
+Some checkpoints (Muse-Glimmer) are channel models: `<|start|>assistant to=user<|message|>`
+carries the answer, `assistant to=self` carries the reasoning, and the end markers
+(`<|eom|>`, `<|eot|>`) are **special tokens**, so `skip_special_tokens=True` drops them
+and the channel *headers* survive as literal text. Such a model also **re-emits** its
+answer after looping into reasoning, so:
+
+| stream shape | what the answer is |
+|---|---|
+| `…to=user<answerA> … to=self<reasoning> … to=user<answerA>` | `answerA` (first **complete** channel: another header follows it) |
+| `…to=self<reasoning> … to=user<answerA` (budget ran out) | `answerA` (the lone channel is still the answer) |
+| no channel header at all | the raw decode, unchanged |
+
+The last answer channel is **not** trustworthy: the token budget can cut it
+mid-answer (measured on Muse: `PARADOX_ANTINOM` for `PARADOX_ANTINOMY`). The rule is
+implemented once per language and both are pinned by tests:
+`fsi::atem::SelectAnswerChannel` (C++, shared by FSI/CODE/DET) and
+`muse_golden_oracle.select_answer_channel` (Python capture). At the capture side the
+channel text replaces the raw stream before `extract()`, so `expected` is exactly what
+the verifier extracts from the same decode.
+
+**The framing is part of the prompt.** Muse's chat template renders
+`Reasoning strength: <reasoning_strength>.` into the system block, defaulting to
+`high`, and at `high` the model spends the whole budget in `to=self` loops
+(docs/OPEN_TASKS.md R21: two capture attempts, one aborted, one killed after
+>1.5 h). Its capture therefore passes `reasoning_strength: low` via
+`template_kwargs`; the kwarg is part of the captured `input_ids`, so the converted
+model is replayed at the same strength and the gate stays a parity check.
 
 ### 3. Test + CMake + guard
 

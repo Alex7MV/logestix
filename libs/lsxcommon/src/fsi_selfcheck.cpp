@@ -8,6 +8,7 @@
 #include <memory>
 #include <sstream>
 
+#include "lsxcommon/atem_channel.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 
@@ -462,6 +463,12 @@ bool ParseFsiGolden(std::string_view json, FsiGolden &out, std::string *error)
         bool pl = false;
         if (o["prefer_last_answer"].get_bool().get(pl) == simdjson::SUCCESS)
             c.prefer_last_answer = pl;
+        std::string_view ach;
+        if (o["answer_channel"].get_string().get(ach) == simdjson::SUCCESS)
+            c.answer_channel = std::string(ach);
+        std::string_view rch;
+        if (o["reasoning_channel"].get_string().get(rch) == simdjson::SUCCESS)
+            c.reasoning_channel = std::string(rch);
         if (o["expected"].get_string().get(sv) != simdjson::SUCCESS ||
             sv.empty()) {
             if (error) *error = c.id + ": missing expected";
@@ -531,7 +538,10 @@ FsiCaseResult RunFsiCase(IModel &model, const FsiGoldenCase &c,
     const std::string text = decode(TailAfter(ir.gen_tokens,
                                               c.answer_start_token_id));
     r.raw = text;
-    r.extracted = ExtractFsiFormula(c.kind, c.anchor, text,
+    const std::string channel =
+        atem::SelectAnswerChannel(text, c.answer_channel,
+                                  c.reasoning_channel);
+    r.extracted = ExtractFsiFormula(c.kind, c.anchor, channel,
                                     c.prefer_last_answer);
     r.passed =
         (r.extracted == CanonicalizeFsiAnswer(c.kind, c.anchor, c.expected));

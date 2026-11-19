@@ -62,6 +62,8 @@ const char *kGoldenJson = R"JSON({
       "anchor": "PV",
       "input_ids": [1, 2, 3],
       "max_new_tokens": 16,
+      "answer_channel": "assistant to=user",
+      "reasoning_channel": "assistant to=self",
       "expected": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))",
       "raw": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))"
     },
@@ -92,6 +94,9 @@ TEST_CASE("fsi: golden JSON parses all fields", "[fsi][unit]")
     CHECK(g.cases[0].anchor == "PV");
     CHECK(g.cases[0].input_ids == std::vector<int32_t>{1, 2, 3});
     CHECK(g.cases[0].max_new_tokens == 16);
+    CHECK(g.cases[0].answer_channel == "assistant to=user");
+    CHECK(g.cases[0].reasoning_channel == "assistant to=self");
+    CHECK(g.cases[1].answer_channel.empty());
     CHECK(g.cases[1].kind == fsi::FsiKind::kComparison);
 }
 
@@ -294,4 +299,51 @@ TEST_CASE("fsi: prefer_last picks the LAST anchor on an unbroken reasoning line"
                                  "maybe Drawdown<Threshold, but finally "
                                  "Drawdown>Threshold",
                                  true) == "Drawdown>Threshold");
+}
+
+TEST_CASE("fsi: ATEM answer channel is selected from a reasoning loop",
+          "[fsi][unit]")
+{
+    // Muse-Glimmer answers inside an `assistant to=user` ATEM channel and then
+    // loops back into `assistant to=self` reasoning, re-emitting the answer.
+    // The LAST answer channel can be cut mid-answer by the token budget, and
+    // the reasoning tail repeats the prompt body (so the prompt-echo cut would
+    // remove everything). The harness must read the FIRST COMPLETE answer
+    // channel. Markers are special tokens, so the decoder leaves the channel
+    // headers as literal text.
+    FakeFsiModel m;
+    fsi::FsiGolden g = OneCaseGolden();
+    g.cases[0].answer_channel = "assistant to=user";
+    g.cases[0].reasoning_channel = "assistant to=self";
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string(
+            "assistant to=selfWe need PV=CF*((1-exp(-r*n))/(1-exp(-r)))."
+            "assistant to=userPV=CF*((1-exp(-r*n))/(1-exp(-r)))"
+            "assistant to=selfDone."
+            "assistant to=userPV=CF*((1-exp(-r*n))/(1-exp(");
+    };
+    const fsi::FsiResult r = fsi::RunFsiSelfCheck(m, g, decode);
+    REQUIRE(r.all_passed);
+    REQUIRE(r.cases.size() == 1);
+    CHECK(r.cases[0].extracted == "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
+}
+
+TEST_CASE("fsi: ATEM channel selection keeps a lone truncated answer channel",
+          "[fsi][unit]")
+{
+    // One answer channel and the budget ran out inside it: there is no
+    // complete channel to prefer, so the (truncated) channel is still the
+    // answer — never the reasoning text that precedes it.
+    FakeFsiModel m;
+    fsi::FsiGolden g = OneCaseGolden();
+    g.cases[0].answer_channel = "assistant to=user";
+    g.cases[0].reasoning_channel = "assistant to=self";
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string(
+            "assistant to=selfCompute PV from the cash-flow series."
+            "assistant to=userPV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+    };
+    const fsi::FsiResult r = fsi::RunFsiSelfCheck(m, g, decode);
+    REQUIRE(r.all_passed);
+    CHECK(r.cases[0].extracted == "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
 }

@@ -23,8 +23,12 @@ OVERRIDES = {
     # Muse-Glimmer-30B: the 59.5 GB BF16 multimodal tree does not fit the 32 GB
     # card; tools/muse_golden_oracle.py loads ONLY the text tower (language_model
     # + lm_head, skipping the 809 vision tensors) onto the 750 GB host CPU.
-    # Reasoning model: the chat template opens a `to=self` reasoning channel, so
-    # ignore_eos forces the full budget to reach the answer line.
+    # That oracle also supplies this model's capture facts (merged after the
+    # loader is imported): the chat-template `reasoning_strength: low` switch,
+    # which renders `Reasoning strength: low.` into the system block and stops
+    # the high-effort reasoning loop that made the first FSI capture abort
+    # (docs/OPEN_TASKS.md R21), and the ATEM answer/reasoning channel headers
+    # the answer is read from. ignore_eos keeps the budget the verifier replays.
     "muse-glimmer-30b": {"loader": "muse_text", "ignore_eos": True},
 
     # nemotron-3.5-lightning-30b-a3b: the engine's frame for this checkpoint
@@ -159,6 +163,8 @@ GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
            "device_map": None, "loader": None, "system": None,
            "add_special_tokens": True,
+           # ATEM channel framing (empty -> the raw decode is the answer).
+           "answer_channel": None, "reasoning_channel": None,
            "unrunnable": None}
 
 _QWEN4_NGRAM_ROWS = 2500012  # rows per PLE n-gram shard (128 shards)
@@ -408,6 +414,40 @@ def selftest():
     # qwen3.5-9b is the same Qwen3_5 VLM checkpoint shape as the 27B.
     assert OVERRIDES.get("qwen3.5-9b", {}).get("loader") == "qwen3_5", \
         "qwen3.5-9b must use the qwen3_5 text-only loader"
+
+    # Muse-Glimmer: the FSI capture frames the source at reasoning_strength=low
+    # (the ATEM chat template renders `Reasoning strength: low.` into the system
+    # block, which switches the high-effort reasoning loop off) and reads the
+    # answer from the FIRST COMPLETE ATEM answer channel — the same rule the C++
+    # harness applies (fsi::SelectAtemAnswerChannel).
+    sys.path.insert(0, HERE)
+    import muse_golden_oracle as mo
+    assert mo.TEMPLATE_KWARGS == {"reasoning_strength": "low"}, mo.TEMPLATE_KWARGS
+    opts = mo.capture_opts()
+    assert opts["template_kwargs"] == mo.TEMPLATE_KWARGS, opts
+    assert opts["answer_channel"] == "assistant to=user", opts
+    assert opts["reasoning_channel"] == "assistant to=self", opts
+    loop_raw = ("assistant to=selfWe need PV=CF*n."
+                "assistant to=userPV=CF*n"
+                "assistant to=selfDone."
+                "assistant to=userPV=CF*(")
+    assert mo.select_answer_channel(
+        loop_raw, mo.ATEM_ANSWER_CHANNEL,
+        mo.ATEM_REASONING_CHANNEL) == "PV=CF*n", "first complete channel"
+    lone = "assistant to=selfCompute it.assistant to=userPV=CF*n"
+    assert mo.select_answer_channel(
+        lone, mo.ATEM_ANSWER_CHANNEL,
+        mo.ATEM_REASONING_CHANNEL) == "PV=CF*n", "lone truncated channel"
+    assert mo.select_answer_channel(
+        "no channels here", mo.ATEM_ANSWER_CHANNEL,
+        mo.ATEM_REASONING_CHANNEL) == "no channels here", "unchanged"
+    # Incremental save: a later single-prompt run keeps the cases it did not
+    # re-capture, in prompt order.
+    assert merge_cases([{"id": "FSI-TEST-01", "expected": "a"}],
+                       [{"id": "FSI-TEST-03", "expected": "c"}],
+                       ["FSI-TEST-01", "FSI-TEST-02", "FSI-TEST-03"]) == [
+        {"id": "FSI-TEST-01", "expected": "a"},
+        {"id": "FSI-TEST-03", "expected": "c"}], "merge keeps prompt order"
     print("fsi selftest OK: pv=%.6f arb=%.6f" % (v1, v2))
 
 
@@ -540,7 +580,7 @@ def _load_dory_tokenizer(model):
     return tok
 
 def capture(model, model_type, out, max_new_tokens, device_map=None,
-            template_only=False):
+            template_only=False, only=None, resume=False):
     import torch
     import transformers
     from transformers import AutoTokenizer
@@ -548,6 +588,8 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
     opts = dict(GENERIC)
     opts.update(OVERRIDES.get(model_type, {}))
     opts["max_new_tokens"] = max_new_tokens
+    # capture_case dumps the raw stream next to the golden for diagnosis.
+    opts["_out"] = out
     if device_map:
         opts["device_map"] = device_map
     prompts = load_prompts()
@@ -597,7 +639,13 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import muse_golden_oracle
         lm = muse_golden_oracle.load(model, opts.get("device_map"))
-        print("device:", next(lm.parameters()).device)
+        # The loader owns its checkpoint's capture facts: the chat-template
+        # `reasoning_strength` switch and the ATEM channel headers the answer
+        # must be read from (see the oracle's module docstring).
+        opts.update(muse_golden_oracle.capture_opts())
+        print("device:", next(lm.parameters()).device,
+              "template_kwargs:", opts.get("template_kwargs"),
+              file=sys.stderr)
     elif opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)
         print("device:", next(lm.parameters()).device)
@@ -635,66 +683,190 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
             lm = lm.to(device)
         print("device:", next(lm.parameters()).device)
 
-    cases = []
-    for p in prompts:
-        prompt_text = p["body"]
-        if getattr(tok, "chat_template", None):
-            template_kwargs = {"tokenize": False, "add_generation_prompt": True}
-            if opts.get("enable_thinking") is not None:
-                template_kwargs["enable_thinking"] = opts["enable_thinking"]
-            if opts.get("low_effort"):
-                template_kwargs["low_effort"] = True
-            _apply_template_kwargs(template_kwargs, opts)
-            messages = _frame_messages(opts, p["body"])
-            try:
-                prompt_text = tok.apply_chat_template(
-                    messages, **template_kwargs)
-            except TypeError:
-                template_kwargs.pop("enable_thinking", None)
-                prompt_text = tok.apply_chat_template(
-                    messages, **template_kwargs)
-            except Exception as exc:  # noqa: BLE001
-                print("chat_template failed, using raw prompt:", exc,
-                      file=sys.stderr)
-                prompt_text = p["body"]
-        ids = tok(prompt_text, return_tensors="pt",
-                  add_special_tokens=opts.get("add_special_tokens", True)
-                  ).input_ids
-        if lm is not None:
-            ids = ids.to(lm.device)
-        with torch.no_grad():
-            gen_kwargs = {"do_sample": False, "max_new_tokens": max_new_tokens}
-            if opts.get("ignore_eos"):
-                gen_kwargs["eos_token_id"] = None
-            out_ids = lm.generate(ids, **gen_kwargs)
-        gen = out_ids[0][ids.shape[1]:].tolist()
-        raw = tok.decode(gen, skip_special_tokens=True)
-        got = extract(p["kind"], p["anchor"], raw)
-        if not got:
-            raise SystemExit("%s: empty extraction (raw=%r)" % (p["id"], raw))
-        if got.count("(") != got.count(")"):
-            raise SystemExit(
-                "%s: unbalanced parentheses in extracted answer %r (raw=%r)"
-                % (p["id"], got, raw))
-        if got != p["expected"]:
-            print("WARNING %s: model answer differs from the prompt template: "
-                  "%r != %r" % (p["id"], got, p["expected"]), file=sys.stderr)
-        cases.append({"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
-                      "input_ids": ids[0].tolist(),
-                      "max_new_tokens": max_new_tokens,
-                      "ignore_eos": bool(opts.get("ignore_eos")),
-                      "expected": got, "raw": raw})
+    # ---- one prompt at a time, saved incrementally -------------------------
+    # An FSI capture on a CPU oracle can run for tens of minutes per prompt (the
+    # Muse-Glimmer text tower at 1024 tokens took >1.5 h for 3 cases and was
+    # killed with nothing written). Each completed case is therefore flushed to
+    # `--out` immediately, `--only` captures a single prompt, and `--resume`
+    # merges into the cases an earlier run already wrote.
+    order = [p["id"] for p in prompts]
+    cases = load_cases(out) if resume else []
+    if cases:
+        print("[fsi-capture] resume: %d case(s) already in %s"
+              % (len(cases), out), file=sys.stderr, flush=True)
+    if only:
+        unknown = sorted(set(only) - set(order))
+        if unknown:
+            raise SystemExit("--only: unknown prompt id(s): %s"
+                             % ", ".join(unknown))
+    selected = [p for p in prompts if not only or p["id"] in only]
+    failures = 0
+    for idx, p in enumerate(selected, 1):
+        print("[fsi-capture] %s start (%d/%d) max_new_tokens=%d"
+              % (p["id"], idx, len(selected), max_new_tokens),
+              file=sys.stderr, flush=True)
+        case, err = capture_case(tok, lm, opts, p, max_new_tokens, torch)
+        if case is None:
+            failures += 1
+            raw_path = "%s.%s.raw.txt" % (out, p["id"])
+            print("[fsi-capture] %s FAILED: %s (raw in %s)"
+                  % (p["id"], err, raw_path), file=sys.stderr, flush=True)
+            continue
+        cases = merge_cases(cases, [case], order)
+        write_golden(out, model_type, model, cases, transformers, torch)
+        print("[fsi-capture] %s captured: expected=%r (%d case(s) in %s)"
+              % (p["id"], case["expected"], len(cases), out),
+              file=sys.stderr, flush=True)
+    if failures:
+        raise SystemExit("[fsi-capture] %d of %d prompt(s) failed; %s holds %d "
+                         "case(s) -- keep the partial file, re-run the failed "
+                         "ids with --only ... --resume"
+                         % (failures, len(selected), out, len(cases)))
+    print("wrote", out, "(%d case(s))" % len(cases))
 
+
+def merge_cases(prev, new, order):
+    """Merge captured cases by id and order them by the prompt set.
+
+    The incremental save must never reorder or drop the cases an earlier run
+    wrote, so the on-disk order is the prompt-set order, not completion order.
+    """
+    by_id = {c["id"]: c for c in prev}
+    for c in new:
+        by_id[c["id"]] = c
+    rank = {pid: i for i, pid in enumerate(order)}
+    return sorted(by_id.values(),
+                  key=lambda c: (rank.get(c["id"], len(rank)), c["id"]))
+
+
+def load_cases(path):
+    """Cases already captured into `path` (for --resume). Missing -> []."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise SystemExit("--resume: cannot read %s: %s" % (path, exc))
+    if doc.get("format") != "logestix-fsi-golden":
+        raise SystemExit("--resume: %s is not a logestix-fsi-golden" % path)
+    return list(doc.get("prompts") or [])
+
+
+def write_golden(out, model_type, source, cases, transformers, torch):
+    """Write the golden atomically: a killed run leaves the previous file."""
     golden = {"format": "logestix-fsi-golden", "version": 1,
-              "model_type": model_type, "source": model,
+              "model_type": model_type, "source": source,
               "runtime": "transformers %s / torch %s"
                          % (transformers.__version__, torch.__version__),
               "prompts": cases}
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with open(out, "w", encoding="utf-8") as fh:
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(golden, fh, indent=2)
         fh.write("\n")
-    print("wrote", out)
+    os.replace(tmp, out)
+
+
+def _frame_prompt(tok, opts, body):
+    """The prompt text the source sees: the checkpoint's own chat template,
+    with the per-model template kwargs (e.g. Muse's `reasoning_strength`)."""
+    prompt_text = body
+    if not getattr(tok, "chat_template", None):
+        return prompt_text
+    template_kwargs = {"tokenize": False, "add_generation_prompt": True}
+    if opts.get("enable_thinking") is not None:
+        template_kwargs["enable_thinking"] = opts["enable_thinking"]
+    if opts.get("low_effort"):
+        template_kwargs["low_effort"] = True
+    _apply_template_kwargs(template_kwargs, opts)
+    messages = _frame_messages(opts, body)
+    try:
+        prompt_text = tok.apply_chat_template(messages, **template_kwargs)
+    except TypeError:
+        template_kwargs.pop("enable_thinking", None)
+        prompt_text = tok.apply_chat_template(messages, **template_kwargs)
+    except Exception as exc:  # noqa: BLE001
+        print("chat_template failed, using raw prompt:", exc, file=sys.stderr)
+        prompt_text = body
+    return prompt_text
+
+
+def _select_channel(raw, opts):
+    """ATEM: read the FIRST COMPLETE answer channel, not the raw stream.
+
+    The rule is the loader's (tools/muse_golden_oracle.py::select_answer_channel,
+    mirrored by the C++ harness in
+    libs/lsxcommon/include/lsxcommon/atem_channel.h), so the golden's `expected`
+    is exactly the answer the verifier extracts from the same text. Models
+    without a channel override get the raw decode unchanged.
+    """
+    if not opts.get("answer_channel"):
+        return raw
+    sys.path.insert(0, HERE)
+    import muse_golden_oracle
+    text = muse_golden_oracle.select_answer_channel(
+        raw, opts["answer_channel"], opts.get("reasoning_channel") or "")
+    # Progress lines must stay readable: the reasoning loop can be megabytes.
+    print("[fsi-capture] channel selected: %d of %d chars"
+          % (len(text), len(raw)), file=sys.stderr, flush=True)
+    return text
+
+
+def _dump_raw(opts, prompt_id, raw):
+    """A failed case writes its full raw next to the golden — for a reasoning
+    loop that text (megabytes) is the only evidence of what went wrong."""
+    path = "%s.%s.raw.txt" % (opts["_out"], prompt_id)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(raw)
+    except OSError as exc:  # diagnostic only; never mask the real failure
+        print("could not write %s: %s" % (path, exc), file=sys.stderr)
+
+
+def capture_case(tok, lm, opts, p, max_new_tokens, torch):
+    """Run one prompt and return (case, None) or (None, error).
+
+    A failure dumps the full raw next to the golden (`<out>.<id>.raw.txt`) —
+    for a reasoning loop that text is the only evidence of what went wrong.
+    """
+    prompt_text = _frame_prompt(tok, opts, p["body"])
+    ids = tok(prompt_text, return_tensors="pt",
+              add_special_tokens=opts.get("add_special_tokens", True)).input_ids
+    if lm is not None:
+        ids = ids.to(lm.device)
+    with torch.no_grad():
+        gen_kwargs = {"do_sample": False, "max_new_tokens": max_new_tokens}
+        if opts.get("ignore_eos"):
+            gen_kwargs["eos_token_id"] = None
+        out_ids = lm.generate(ids, **gen_kwargs)
+    gen = out_ids[0][ids.shape[1]:].tolist()
+    raw = tok.decode(gen, skip_special_tokens=True)
+    channel = _select_channel(raw, opts)
+    got = extract(p["kind"], p["anchor"], channel)
+    if not got:
+        _dump_raw(opts, p["id"], raw)
+        return None, ("empty extraction (gen=%d tokens, channel=%r)"
+                      % (len(gen), channel[:300]))
+    if got.count("(") != got.count(")"):
+        _dump_raw(opts, p["id"], raw)
+        return None, ("unbalanced parentheses in extracted answer %r "
+                      "(channel=%r)" % (got, channel[:300]))
+    if got != p["expected"]:
+        print("WARNING %s: model answer differs from the prompt template: "
+              "%r != %r" % (p["id"], got, p["expected"]), file=sys.stderr)
+    case = {"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
+            "input_ids": ids[0].tolist(),
+            "max_new_tokens": max_new_tokens,
+            "ignore_eos": bool(opts.get("ignore_eos"))}
+    if opts.get("answer_channel"):
+        case["answer_channel"] = opts["answer_channel"]
+        case["reasoning_channel"] = opts.get("reasoning_channel") or ""
+    case["expected"] = got
+    case["raw"] = raw
+    print("[fsi-capture] %s gen=%d tokens, raw=%d chars"
+          % (p["id"], len(gen), len(raw)), file=sys.stderr, flush=True)
+    return case, None
 
 
 def main():
@@ -711,14 +883,23 @@ def main():
     ap.add_argument("--device-map", default=None,
                     help="transformers device_map (requires accelerate); use "
                          "'auto' for FP8/large models on a big-VRAM host")
+    ap.add_argument("--only", default=None,
+                    help="capture only these prompt ids (comma-separated), e.g. "
+                         "FSI-TEST-01: one prompt per run for a slow oracle")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep the cases already captured in --out and merge "
+                         "this run's cases into them (use with --only)")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         return
     if not (args.model and args.type and args.out):
         ap.error("--model, --type and --out are required unless --selftest")
+    only = None
+    if args.only:
+        only = [s.strip() for s in args.only.split(",") if s.strip()]
     capture(args.model, args.type, args.out, args.max_new_tokens,
-            args.device_map, args.template_only)
+            args.device_map, args.template_only, only, args.resume)
 
 
 if __name__ == "__main__":
