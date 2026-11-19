@@ -235,3 +235,33 @@ TEST_CASE("det: stress_runs override is floored at 3", "[det][unit]")
     CHECK(r.cases[0].runs == 3);
     CHECK(m.calls == 3);
 }
+
+TEST_CASE("det: ATEM answer channel is selected from a reasoning loop",
+          "[det][unit]")
+{
+    // Muse-Glimmer emits its answer in an "assistant to=user" ATEM channel and
+    // loops back into "assistant to=self" reasoning; the last answer channel
+    // can be truncated by the token budget. The harness must read the first
+    // COMPLETE answer channel.
+    FakeDetModel m;
+    det::DetGolden g;
+    det::DetGoldenCase c;
+    c.id = "DET-TEST-01";
+    c.kind = det::DetKind::kToken;
+    c.input_ids = {1};
+    c.max_new_tokens = 8;
+    c.expected = "PARADOX_ANTINOMY";
+    c.answer_channel = "assistant to=user";
+    c.reasoning_channel = "assistant to=self";
+    g.cases.push_back(std::move(c));
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string(
+            "assistant to=selfThink about PARADOX_ANTINOMY."
+            "assistant to=userPARADOX_ANTINOMY"
+            "assistant to=selfDone.assistant to=userPARADOX_ANTINOM"
+            "assistant to=selfOk.");
+    };
+    const det::DetResult r = det::RunDetSelfCheck(m, g, decode, 3);
+    REQUIRE(r.all_passed);
+    CHECK(r.cases[0].extracted == "PARADOX_ANTINOMY");
+}

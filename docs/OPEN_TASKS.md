@@ -2537,6 +2537,43 @@ ambiguous (`FSI-01`) is also the one that passes — do not generalise from it.
   (a tautology). The recorded budget is 2048, measured from the source's
   363–1358. Any future re-capture must check `</think>` is present in the raw.
 
+## R21. Muse-Glimmer-30B — ingestion landed; FSI golden capture open (2026-11-19)
+
+Branch `feat/muse-glimmer-30b-ingest`. New dense family `muse`: 52 layers,
+hidden 6656, 32Q/2KV x128 gated GQA, [sliding x3, full-NoPE] x13, centered
+norms, weightless embed norm, untied FP16 head, softcap 20 x 0.196116.
+BF16 -> NVFP4 (8 projections/layer), embed/head/norms FP16. Report:
+`docs/model-reports/2026-11-19-Muse-Glimmer-30B.md`.
+
+**Measured lifecycle:** SelfCheck PASS x3 bit-exact (`logits_hash
+3374b7bc94231955`, top-1 13796 "Paris", raw probe, kOff, max_gen 2); native
+ATEM tool round-trip `get_weather {"city":"Paris"}`; cooperative cancel;
+CODE 3/3 and DET 3/3 (deterministic x3) on goldens captured from the EXECUTED
+source via the text-tower CPU oracle (`tools/muse_golden_oracle.py`); perf
+52.86 (perf) / 53.34 (r3) t/s @2048, ttft 554 ms, resident 19.5 GB.
+
+**The harness defect found and fixed (TDD):** Muse emits its answer in an
+`assistant to=user` ATEM channel, then loops back into `assistant to=self`
+reasoning; the LAST answer channel can be truncated by the token budget
+mid-answer, and the reasoning tail echoes the prompt body (so `CutPromptEcho`
+cut everything and the extraction was empty). `CodeGoldenCase`/`DetGoldenCase`
+gained `answer_channel`/`reasoning_channel`; the harness selects the FIRST
+COMPLETE answer channel. Two CODE unit cases + one DET unit case written RED
+first (`tests/test_code_selfcheck.cpp`, `tests/test_det_selfcheck.cpp`).
+
+**Open: the FSI golden.** The source IS runnable (the CPU oracle answers the
+Paris probe and the CODE/DET sets), but the FSI capture was attempted twice
+and did not complete: at 512 tokens FSI-03 aborts (the source loops in its
+`to=self` reasoning channel and never emits a clean `Drawdown>Threshold`
+line — the raw is a wall of repeated "So output Drawdown>Threshold" inside
+reasoning); at 1024 tokens the 3-case capture ran >1.5 h on CPU (160 cores,
+~1600% CPU) without finishing and was killed. The gate is wired
+(`test_muse_dense_fsi_selfcheck`, SKIP_RETURN_CODE 4) and SKIPs for the
+golden, not the tree; `golden_debt.fsi` records the attempt. Next step: a
+longer-budget capture run unattended (the per-case cost is ~30-50 min at
+1024 tokens), or a reasoning-strength-low framing if the checkpoint's
+template supports it (the jinja's `reasoning_strength` kwarg).
+
 ## Model manifest migration (2026-11-06) — what it did not cover
 
 The registry moved from six hand-maintained projections to `models/*.json`.

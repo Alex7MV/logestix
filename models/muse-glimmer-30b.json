@@ -1,0 +1,127 @@
+{
+  "model_type": "muse-glimmer-30b",
+  "display_name": "muse-glimmer-30b",
+  "family": "muse",
+  "variant": null,
+  "model_class": "MuseGlimmer30BModel",
+  "model_header": "muse_dense_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/muse_dense_constants.h",
+  "namespace": "lsxcommon::muse_dense::frozen",
+  "format_tag": "logestix-muse-nvfp4",
+  "forge_flag": "--muse",
+  "tokenizer_kind": 3,
+  "vault": {
+    "dir": "Muse-Glimmer-30B",
+    "env": "LSX_TEST_MUSE_GLIMMER_30B_ROOT"
+  },
+  "lifecycle_tu": [
+    "muse_dense_model.cpp",
+    "muse_dense_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_muse_dense_convert"
+    ],
+    "load": [
+      "test_muse_dense_loader"
+    ],
+    "model": [
+      "test_muse_dense_constants",
+      "test_muse_dense_model",
+      "test_muse_dense_tool_framing"
+    ],
+    "kernels": [
+      "test_muse_dense_kernels",
+      "test_muse_dense_pipeline"
+    ],
+    "selfcheck": [
+      "test_muse_dense_selfcheck"
+    ],
+    "fsi": [
+      "test_muse_dense_fsi_selfcheck"
+    ],
+    "code": [
+      "test_muse_dense_code_selfcheck"
+    ],
+    "det": [
+      "test_muse_dense_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_muse_glimmer_30b"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_muse_glimmer_30b",
+    "vault_subdir": "Muse-Glimmer-30B",
+    "timeout": 1800
+  },
+  "target_overrides": {
+    "test_muse_dense_convert": {
+      "timeout": 300,
+      "skip": true,
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_muse_dense_loader": {
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_muse_dense_model": {
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_muse_dense_constants": {
+      "label": "fast",
+      "env": []
+    },
+    "test_muse_dense_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_muse_dense_kernels": {
+      "resource_lock": "gpu"
+    },
+    "test_muse_dense_pipeline": {
+      "resource_lock": "gpu",
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_muse_dense_selfcheck": {
+      "form": "selfcheck",
+      "timeout": 3600
+    },
+    "test_muse_dense_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi",
+      "timeout": 3600
+    },
+    "test_muse_dense_code_selfcheck": {
+      "form": "parity",
+      "kind": "code",
+      "timeout": 3600
+    },
+    "test_muse_dense_det_selfcheck": {
+      "form": "parity",
+      "kind": "det",
+      "timeout": 3600
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "cooperative_cancel": true,
+  "selfcheck_frame_prompt": false,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": true,
+  "golden_debt": {
+    "fsi": "source capture attempted twice (512: FSI-03 reasoning loop aborts; 1024: >1.5h/3 cases on CPU, killed); golden pending, gate wired"
+  },
+  "aliases": [
+    "muse-glimmer-30b"
+  ],
+  "notes": "Dense gated attention: 52 layers, hidden 6656, 32Q/2KV x128, [sliding x3, full-NoPE] x13, centered norms, untied FP16 head, softcap 20. BF16 -> NVFP4.",
+  "report": "docs/model-reports/2026-11-19-Muse-Glimmer-30B.md"
+}

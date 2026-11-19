@@ -26,6 +26,10 @@ add_library(lsxcommon STATIC
     src/gemma_moe_convert.cpp
     src/gemma_moe_load.cpp
     src/gemma_dense_convert.cpp
+    src/muse_dense_convert.cpp
+    src/muse_dense_load.cpp
+    src/muse_dense_model.cpp
+    src/muse_tool_format.cpp
     src/gemma_dense_load.cpp
     src/granite_dense_convert.cpp
     src/granite_dense_load.cpp
@@ -662,6 +666,29 @@ target_link_libraries(lsxcommon_gemma_cu
     "${CUDA_CUDART_LIBRARY}"
     lsx_dep_includes
 )
+# Muse-Glimmer-30B dense kernels (gated attention, NoPE full layers, centered
+# norms, softcap FP16 head). -fmad=false: bit-exact math (protocol invariant).
+add_library(lsxcommon_muse_cu OBJECT
+    src/muse_dense_inference.cu
+)
+set_target_properties(lsxcommon_muse_cu PROPERTIES
+    CUDA_ARCHITECTURES OFF
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_muse_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(lsxcommon_muse_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_muse_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_muse_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_muse_cu
+    "${CUDA_CUDART_LIBRARY}"
+    lsx_dep_includes
+)
+
 # Ornith-1.5-35B-A3B MoE kernels (duplicated qwen_moe layer).
 # -fmad=false: bit-exact router/expert math (protocol invariant).
 add_library(lsxcommon_ornith_cu OBJECT
@@ -878,6 +905,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_beam_cu
     lsxcommon_ling_cu
     lsxcommon_step_cu
+    lsxcommon_muse_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.

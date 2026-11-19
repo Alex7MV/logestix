@@ -30,6 +30,10 @@ struct DetGoldenCase {
     int32_t answer_start_token_id = -1;
     std::string raw;           // diagnostic
     std::string body;          // optional prompt body for the echo cut
+    // ATEM-style channel framing (Muse-Glimmer): see CodeGoldenCase. When set,
+    // the harness selects the FIRST complete answer channel.
+    std::string answer_channel;
+    std::string reasoning_channel;
 };
 
 struct DetGolden {

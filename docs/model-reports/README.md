@@ -54,3 +54,5 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 | `2026-11-11-NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16.md` |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | `2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md` |
 | Inkling-2-Small | `2026-11-15-Inkling-2-Small.md` |
+| Inkling | `2026-11-18-Inkling.md` |
+| Muse-Glimmer-30B | `2026-11-19-Muse-Glimmer-30B.md` |

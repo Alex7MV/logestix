@@ -303,6 +303,12 @@ bool ParseCodeGolden(std::string_view json, CodeGolden &out, std::string *error)
         std::string_view body;
         if (o["body"].get_string().get(body) == simdjson::SUCCESS)
             c.body = std::string(body);
+        std::string_view ach;
+        if (o["answer_channel"].get_string().get(ach) == simdjson::SUCCESS)
+            c.answer_channel = std::string(ach);
+        std::string_view rch;
+        if (o["reasoning_channel"].get_string().get(rch) == simdjson::SUCCESS)
+            c.reasoning_channel = std::string(rch);
         out.cases.push_back(std::move(c));
     }
     if (out.cases.empty()) {
@@ -359,6 +365,47 @@ std::vector<int32_t> TailAfter(const std::vector<int32_t> &ids, int32_t marker)
     return ids;
 }
 
+// ATEM channel selection: the answer lives in `answer_channel` segments,
+// separated from `reasoning_channel` segments. The channel markers are special
+// tokens (decode drops them), so the headers survive as literal text. Return
+// the FIRST answer channel that is followed by another channel header (i.e. a
+// COMPLETE one — the last channel can be truncated by the token budget). When
+// no answer channel is present, return the text unchanged.
+std::string SelectAnswerChannel(std::string_view text,
+                                std::string_view answer_channel,
+                                std::string_view reasoning_channel)
+{
+    if (answer_channel.empty()) return std::string(text);
+    const std::string_view s = text;
+    std::size_t pos = 0;
+    std::string first_complete;
+    while (pos < s.size()) {
+        const std::size_t a = s.find(answer_channel, pos);
+        if (a == std::string_view::npos) break;
+        const std::size_t body = a + answer_channel.size();
+        // The channel ends at the next channel header (answer or reasoning).
+        std::size_t end = s.size();
+        const std::size_t next_a = s.find(answer_channel, body);
+        const std::size_t next_r = reasoning_channel.empty()
+                                       ? std::string_view::npos
+                                       : s.find(reasoning_channel, body);
+        if (next_a != std::string_view::npos) end = std::min(end, next_a);
+        if (next_r != std::string_view::npos) end = std::min(end, next_r);
+        const std::string_view seg = s.substr(body, end - body);
+        const bool complete = (end < s.size());
+        if (complete && first_complete.empty())
+            first_complete = std::string(seg);
+        pos = end;
+    }
+    if (!first_complete.empty()) return first_complete;
+    // No complete channel: fall back to the last answer segment (may be the
+    // only one, truncated or not).
+    const std::size_t last = s.rfind(answer_channel);
+    if (last != std::string_view::npos)
+        return std::string(s.substr(last + answer_channel.size()));
+    return std::string(text);
+}
+
 CodeCaseResult RunCodeCase(IModel &model, const CodeGoldenCase &c,
                            const CodeDecodeFn &decode)
 {
@@ -377,8 +424,10 @@ CodeCaseResult RunCodeCase(IModel &model, const CodeGoldenCase &c,
     const std::string text = decode(TailAfter(ir.gen_tokens,
                                               c.answer_start_token_id));
     r.raw = text;
+    const std::string channel =
+        SelectAnswerChannel(text, c.answer_channel, c.reasoning_channel);
     r.extracted =
-        ExtractCodeAnswer(c.kind, c.anchor, CutPromptEcho(text, c.body));
+        ExtractCodeAnswer(c.kind, c.anchor, CutPromptEcho(channel, c.body));
     r.passed = (r.extracted == c.expected);
     return r;
 }

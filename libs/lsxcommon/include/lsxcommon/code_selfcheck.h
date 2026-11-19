@@ -33,6 +33,15 @@ struct CodeGoldenCase {
     // (degeneration), the harness cuts the echo at the body's prefix before
     // extraction. Empty -> no cut.
     std::string body;
+    // ATEM-style channel framing (Muse-Glimmer): the answer lives in a channel
+    // whose decoded header is `answer_channel` (e.g. "assistant to=user"), and
+    // reasoning in `reasoning_channel` ("assistant to=self"). The channel
+    // markers are special tokens the decoder drops, so the headers survive as
+    // literal text. When set, the harness selects the FIRST complete answer
+    // channel (the last can be truncated by the token budget) instead of the
+    // raw tail. Empty -> historical behaviour.
+    std::string answer_channel;
+    std::string reasoning_channel;
 };
 
 struct CodeGolden {
