@@ -18,6 +18,10 @@ PROMPTS = os.path.join(HERE, "code_prompts.json")
 
 # Per-model capture overrides keyed by model type. Absent -> generic defaults.
 OVERRIDES = {
+    # Muse-Glimmer-30B: text-tower-only CPU oracle (the 59.5 GB BF16 multimodal
+    # tree does not fit the card); reasoning model, ignore_eos for the answer.
+    "muse-glimmer-30b": {"loader": "muse_text", "ignore_eos": True},
+
     # nemotron-3.5-lightning-30b-a3b: the engine's frame for this checkpoint
     # opens `<|im_start|>assistant\n<think>\n` (chat_template.jinja defaults
     # enable_thinking=True and NemotronModelBase::RenderNemotronConversation
@@ -653,6 +657,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         import dory_oracle
         lm = dory_oracle.load(model, opts.get("device_map"))
         print("device:", next(lm.parameters()).device)
+    elif opts.get("loader") == "muse_text":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import muse_golden_oracle
+        lm = muse_golden_oracle.load(model, opts.get("device_map"))
+        print("device:", next(lm.parameters()).device)
     elif opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)
     else:
@@ -682,8 +691,10 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
                   add_special_tokens=opts.get("add_special_tokens", True)
                   ).input_ids.to(lm.device)
         with torch.no_grad():
-            out_ids = lm.generate(ids, do_sample=False,
-                                  max_new_tokens=max_new_tokens)
+            gen_kwargs = {"do_sample": False, "max_new_tokens": max_new_tokens}
+            if opts.get("ignore_eos"):
+                gen_kwargs["eos_token_id"] = None
+            out_ids = lm.generate(ids, **gen_kwargs)
         gen = out_ids[0][ids.shape[1]:].tolist()
         raw = tok.decode(gen, skip_special_tokens=True)
         got = extract(p["kind"], p["anchor"], raw)
@@ -701,6 +712,7 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         cases.append({"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
                       "input_ids": ids[0].tolist(),
                       "max_new_tokens": max_new_tokens,
+                      "ignore_eos": bool(opts.get("ignore_eos")),
                       "body": p["body"], "expected": got, "raw": raw})
 
     golden = {"format": "logestix-code-golden", "version": 1,

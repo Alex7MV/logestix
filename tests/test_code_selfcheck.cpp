@@ -312,3 +312,47 @@ TEST_CASE("code: golden expected values are self-consistent", "[code][unit]")
     CHECK(canon(code::CodeKind::kRegex, "[0-9A-F]", "\\b[0-9A-F]{4}\\b") ==
           "\\b[0-9A-F]{4}\\b");
 }
+
+TEST_CASE("code: ATEM answer channel is selected from a reasoning loop",
+          "[code][unit]")
+{
+    // Muse-Glimmer emits its answer in an "assistant to=user" ATEM channel,
+    // then loops back into "assistant to=self" reasoning. The channel markers
+    // are special tokens (decode drops them), so the text carries the literal
+    // "assistant to=user" / "assistant to=self" headers. The extractor must
+    // read the answer channel, not the reasoning tail (which can be truncated
+    // by the token budget mid-answer).
+    FakeCodeModel m;
+    code::CodeGolden g = OneCaseGolden();
+    g.cases[0].answer_channel = "assistant to=user";
+    g.cases[0].reasoning_channel = "assistant to=self";
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string(
+            "assistant to=selfWe need m=l+((h-l)/2). Probably."
+            "assistant to=userm=l+((h-l)/2)"
+            "assistant to=selfDone.assistant to=userm=l+((h-l)/2)"
+            "assistant to=selfOk.");
+    };
+    const code::CodeResult r = code::RunCodeSelfCheck(m, g, decode);
+    REQUIRE(r.all_passed);
+    CHECK(r.cases[0].extracted == "m=l+((h-l)/2)");
+}
+
+TEST_CASE("code: ATEM channel selection tolerates a truncated last channel",
+          "[code][unit]")
+{
+    // The LAST answer channel can be cut mid-answer by the token budget; the
+    // first COMPLETE answer channel is the model's answer.
+    FakeCodeModel m;
+    code::CodeGolden g = OneCaseGolden();
+    g.cases[0].answer_channel = "assistant to=user";
+    g.cases[0].reasoning_channel = "assistant to=self";
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string(
+            "assistant to=userm=l+((h-l)/2)"
+            "assistant to=selfAgain.assistant to=userm=l+((h-l)");
+    };
+    const code::CodeResult r = code::RunCodeSelfCheck(m, g, decode);
+    REQUIRE(r.all_passed);
+    CHECK(r.cases[0].extracted == "m=l+((h-l)/2)");
+}

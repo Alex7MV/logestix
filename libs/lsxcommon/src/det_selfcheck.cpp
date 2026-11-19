@@ -223,6 +223,12 @@ bool ParseDetGolden(std::string_view json, DetGolden &out, std::string *error)
         std::string_view body;
         if (o["body"].get_string().get(body) == simdjson::SUCCESS)
             c.body = std::string(body);
+        std::string_view ach;
+        if (o["answer_channel"].get_string().get(ach) == simdjson::SUCCESS)
+            c.answer_channel = std::string(ach);
+        std::string_view rch;
+        if (o["reasoning_channel"].get_string().get(rch) == simdjson::SUCCESS)
+            c.reasoning_channel = std::string(rch);
         out.cases.push_back(std::move(c));
     }
     if (out.cases.empty()) {
@@ -274,6 +280,40 @@ std::string CutPromptEcho(std::string_view text, std::string_view body)
     return s;
 }
 
+// ATEM channel selection (same rule as CODE): the FIRST complete answer
+// channel, not the raw tail (the last channel can be budget-truncated).
+std::string SelectAnswerChannel(std::string_view text,
+                                std::string_view answer_channel,
+                                std::string_view reasoning_channel)
+{
+    if (answer_channel.empty()) return std::string(text);
+    const std::string_view s = text;
+    std::size_t pos = 0;
+    std::string first_complete;
+    while (pos < s.size()) {
+        const std::size_t a = s.find(answer_channel, pos);
+        if (a == std::string_view::npos) break;
+        const std::size_t body = a + answer_channel.size();
+        std::size_t end = s.size();
+        const std::size_t next_a = s.find(answer_channel, body);
+        const std::size_t next_r = reasoning_channel.empty()
+                                       ? std::string_view::npos
+                                       : s.find(reasoning_channel, body);
+        if (next_a != std::string_view::npos) end = std::min(end, next_a);
+        if (next_r != std::string_view::npos) end = std::min(end, next_r);
+        const std::string_view seg = s.substr(body, end - body);
+        const bool complete = (end < s.size());
+        if (complete && first_complete.empty())
+            first_complete = std::string(seg);
+        pos = end;
+    }
+    if (!first_complete.empty()) return first_complete;
+    const std::size_t last = s.rfind(answer_channel);
+    if (last != std::string_view::npos)
+        return std::string(s.substr(last + answer_channel.size()));
+    return std::string(text);
+}
+
 DetCaseResult RunDetCase(IModel &model, const DetGoldenCase &c,
                          const DetDecodeFn &decode, int stress_runs_override)
 {
@@ -314,7 +354,9 @@ DetCaseResult RunDetCase(IModel &model, const DetGoldenCase &c,
     }
     const std::string text = decode(tail);
     r.raw = text;
-    r.extracted = ExtractDetAnswer(c.kind, CutPromptEcho(text, c.body));
+    const std::string channel =
+        SelectAnswerChannel(text, c.answer_channel, c.reasoning_channel);
+    r.extracted = ExtractDetAnswer(c.kind, CutPromptEcho(channel, c.body));
     r.passed = r.deterministic && (r.extracted == c.expected);
     return r;
 }
