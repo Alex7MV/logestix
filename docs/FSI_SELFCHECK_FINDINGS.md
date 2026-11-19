@@ -650,3 +650,56 @@ balanced expression. The gate stays red, consistent with the 26B.
 
 The converted model's CODE gate is fully green (3/3) and the DET gate is green
 (3/3, `deterministic=true` on every case) — see the CODE/DET findings docs.
+
+## Muse-Glimmer-30B (2026-11-19) — captured at `reasoning_strength: low`, one prompt at a time
+
+The ingestion (2026-11-19, `docs/model-reports/2026-11-19-Muse-Glimmer-30B.md`)
+landed every gate except FSI, which was declared debt after two failed captures.
+Both failures had the same cause and it was **not** the token budget:
+
+- the checkpoint's `chat_template.jinja` renders `Reasoning strength: <value>.`
+  into the system block, defaulting to `high` (`reasoning_strength` is the
+  template's own kwarg);
+- at `high` the model answers inside `assistant to=user` and then loops
+  `assistant to=self` for the rest of the budget, re-emitting the answer, so the
+  512-token run aborted on FSI-03 (the raw was a wall of repeated "So output
+  Drawdown>Threshold" inside the reasoning channel) and the 1024-token run never
+  finished (>1.5 h for 3 cases on CPU, killed).
+
+Passing `reasoning_strength: low` removes the loop. Captured one prompt per run
+through the CPU text tower (`tools/muse_golden_oracle.py`, 627 text tensors,
+809 vision tensors skipped), 512 tokens, `~27 min/case` (400-470 CPU-min):
+`raw` 1.7-2.0 kB, answer channel 18-71 characters, **no repeated channel**, and
+no "model answer differs from the template" warning on any case.
+
+| case | source golden | converted (kOff, 512) | verdict |
+|---|---|---|---|
+| FSI-TEST-01 | `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` | `PV=CF*(1-exp(-r*n))/(1-exp(-r))` | pass (canonicalized) |
+| FSI-TEST-02 | `Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C` | same (canonicalized) | pass |
+| FSI-TEST-03 | `Drawdown>Threshold` | same | pass |
+
+`test_muse_dense_fsi_selfcheck`: **3/3**, 11 s/case.
+
+**The harness change this needed.** Muse writes its answer in an ATEM channel
+(`<|start|>assistant to=user<|message|>…<|eot|>`); the markers are special
+tokens, so the decoder leaves the headers as literal text, and the model
+re-emits the answer after looping, so the LAST answer channel can be truncated
+by the budget (measured on its CODE/DET goldens: `PARADOX_ANTINOM`). The golden
+therefore carries `answer_channel`/`reasoning_channel`, and the harness reads
+the FIRST COMPLETE channel — one implementation,
+`atem::SelectAnswerChannel` in `libs/lsxcommon/include/lsxcommon/atem_channel.h`,
+shared by FSI/CODE/DET, with the capture-side twin in
+`tools/muse_golden_oracle.py::select_answer_channel` (both pinned by tests).
+
+**Capture tool change** (the reason a 3-case run is now safe to kill):
+`tools/fsi_capture.py` saves each completed case atomically, `--only` captures a
+single id and `--resume` merges into the file an earlier run wrote. A failed
+case dumps its raw beside the golden and the process exits 3 with the ids to
+retry, keeping the partial file.
+
+**Two artifacts recorded, not masked:** the captured `input_ids` begin with a
+doubled `<|begin_of_text|>` (the template already emits `bos_token` and the tool
+also asks for special tokens; the CODE/DET goldens have it too, and the verifier
+replays the exact ids so parity is unaffected), and no caller sets
+`MuseRenderPolicy::reasoning_strength`, so the engine serves `high` while this
+golden verifies `low`.

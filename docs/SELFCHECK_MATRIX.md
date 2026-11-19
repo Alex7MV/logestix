@@ -16,6 +16,11 @@ captured in reasoning mode: the letter-match probe answers CRITICAL without a
 reasoning trace and CATASTROPHIC with it),
 extended **2026-11-15** (Inkling-2-Small: 594B total / 17B active, mixed
 NVFP4+MXFP8 experts, all four gates measured on the real 366 GB tree),
+closed **2026-11-19** (Muse-Glimmer-30B: the FSI golden that had been declared
+debt was captured from the source text tower at `reasoning_strength: low` — the
+chat template's own off switch for its `to=self` loop — one prompt per run, and
+the converted model reproduces all three answers; Code/DET came from the same
+oracle the day before),
 on the reference host (RTX 5090, CUDA 13.4, `linux-release-znver4-aocc`),
 one test at a time (GPU exclusivity). Commit at capture: `f38fba84`;
 GigaChat row measured on `feat/model-GigaChat3.5-432B-A28B-Reasoning`;
@@ -73,7 +78,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 | **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
 | **inkling** (base) | PASS (x3, framed, inline-reasoning) | 3/3 (template) | 3/3 (template) | 3/3 |
-| **muse-glimmer-30b** | PASS (x3, `3374b7bc94231955`, raw) | SKIP (debt: capture) | 3/3 | 3/3 |
+| **muse-glimmer-30b** | PASS (x3, `3374b7bc94231955`, raw) | 3/3 | 3/3 | 3/3 |
 
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
   was restored** (120 min, `-j1`, one GPU). The list is
@@ -309,7 +314,6 @@ one in a ctest summary, which is why the debt rows are called out below.
 
 | model | SelfCheck | FSI | CODE | DET | why |
 |---|---|---|---|---|---|
-| muse-glimmer-30b | PASS (x3, `3374b7bc94231955`) | SKIP | 3/3 | 3/3 | dense gated-attention 30B (52 layers, hidden 6656, NoPE full layers), BF16 -> NVFP4 + FP16 embed/head. CODE/DET goldens captured from the EXECUTED source via the text-tower CPU oracle (`tools/muse_golden_oracle.py`, 627 text tensors / 809 vision skipped); both gates green after the ATEM answer-channel selection fix (the model loops answer/reasoning channels; the last answer channel can be budget-truncated). FSI is declared debt: the capture was attempted twice — 512 tokens aborts on FSI-03 (the source loops in its `to=self` reasoning channel and never emits a clean comparison line), 1024 tokens ran >1.5 h for 3 cases on CPU and was killed. The gate is wired and SKIPs for the golden, not the tree. Perf 52.9/53.3 t/s @2048 — `docs/model-reports/2026-11-19-Muse-Glimmer-30B.md` |
 | mistral-small-4-119b | PASS | 1/3 | 0/3 | 0/3 | the three gates were **run** on 2026-11-06 with prompt-derived goldens and measured, not SKIPped; they stay declared debt because a prompt-derived expected value cannot establish parity. The model is coherent but off-format (DET is deterministic across three runs). A source-faithful golden is blocked by the checkpoint's tensor names/expert layout (50 missing / 3118 unexpected vs `Mistral4ForCausalLM`), not by its config — `docs/OPEN_TASKS.md` §T.1, tool `tools/mistral_small4_oracle.py` |
 | flint | PASS | SKIP | SKIP | SKIP | source runs only on CPU (`tools/flint_oracle.py`, ~3-5 s/token); the capture set is hours long. The converted model is additionally parity-limited: the 4-bit routed-expert plane is the dominant residual error (an 8-bit expert set needs +21 GB, the card has ~9 GB free) — `docs/OPEN_TASKS.md` §R6 |
 | beam | PASS | SKIP | SKIP | SKIP | the 934 GB BF16 source (501B) exceeds this host's 750 GB RAM, so the reference cannot be loaded for a capture; kernel parity + SelfCheck are the instruments. Two real-weight defects (the lost `<|call|>` stop id and a reserved-id decode failure) were found and fixed — `docs/OPEN_TASKS.md` §R8 |

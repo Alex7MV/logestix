@@ -116,9 +116,7 @@
   "selfcheck_frame_prompt": false,
   "selfcheck_max_gen": 2,
   "selfcheck_bit_exact": true,
-  "golden_debt": {
-    "fsi": "source capture attempted twice (512: FSI-03 reasoning loop aborts; 1024: >1.5h/3 cases on CPU, killed); golden pending, gate wired"
-  },
+  "golden_debt": {},
   "aliases": [
     "muse-glimmer-30b"
   ],

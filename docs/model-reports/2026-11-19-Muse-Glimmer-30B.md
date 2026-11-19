@@ -66,7 +66,7 @@ so text decode drops them). A real-weight round-trip produces
 | Cooperative cancel | **PASS** |
 | CODE (compiler strictness, 3 prompts) | **3/3** vs source-captured golden |
 | DET (determinism + near-tie, 3 prompts ×3 runs) | **3/3**, byte-identical runs |
-| FSI (financial formulas, 3 prompts) | **debt** — capture attempted twice, see below |
+| FSI (financial formulas, 3 prompts) | **3/3** vs source golden, captured at `reasoning_strength: low` |
 | Throughput @2048 tokens | **52.9 t/s** (perf) / **53.3 t/s** (r3), ttft 554 ms |
 
 ### A defect the gates caught (and we fixed)
@@ -80,15 +80,29 @@ We added ATEM answer-channel selection to the CODE/DET harnesses (select the
 first *complete* answer channel), with unit tests written failing-first. Both
 gates then passed on the converted weights.
 
-### What was not measured, and why
+### The FSI capture, and what actually unblocked it
 
-**FSI** is declared debt, not a pass. The source runs (a text-tower CPU oracle
-answers the Paris probe and the CODE/DET sets), but the FSI capture did not
-complete: at 512 tokens FSI-03 aborts because the source loops inside its
-reasoning channel and never emits a clean comparison line; at 1024 tokens the
-3-case capture ran >1.5 h on CPU without finishing. The gate is wired and skips
-for the golden, not the tree. A longer unattended capture (or a
-`reasoning_strength: low` framing) is the next step.
+FSI was declared debt after two failed captures and was closed on 2026-11-19.
+The cause was not the token budget: the checkpoint's own chat template exposes
+`reasoning_strength` and renders `Reasoning strength: <value>.` into the system
+block, defaulting to `high` — and at `high` the model loops its
+`assistant to=self` channel for the rest of the budget instead of answering.
+`reasoning_strength: low` stops the loop, and the answer channel is 18-71
+characters.
+
+The capture then ran one prompt at a time on the CPU text tower, 512 tokens,
+~27 min/case, with each completed case written to the golden immediately — the
+tool used to write only after the third case, which is why the earlier kill lost
+everything. The converted model reproduces all three answers (`3/3`, 11 s/case),
+so the last declared debt is gone: `golden_debt` is empty and `MODELS.md` reads
+`fsi: yes`.
+
+Two artifacts are recorded rather than hidden: the captured `input_ids` carry a
+doubled `<|begin_of_text|>` (the template emits `bos_token` and the tool also
+adds special tokens; the CODE/DET goldens share it and the verifier replays the
+exact ids, so parity is unaffected), and `MuseRenderPolicy::reasoning_strength`
+exists but nothing sets it — serving runs at the looping `high` while the gate
+verifies `low`. A serve-time knob is the follow-up.
 
 Vision execution and the DFlash speculative drafter are out of scope (the
 drafter is not in this checkpoint's index).
@@ -97,9 +111,11 @@ drafter is not in this checkpoint's index).
 
 - **Design / plan:** `docs/superpowers/specs/2026-11-18-muse-glimmer-30b-ingest-design.md`,
   `docs/superpowers/plans/2026-11-18-muse-glimmer-30b-ingest.md`.
-- **Open tasks:** `docs/OPEN_TASKS.md` §R21 (FSI capture open).
+- **Open tasks:** R21 closed 2026-11-19 —
+  `docs/open-tasks/2026-11-19-muse-glimmer-30b-fsi-capture.md` (capture recipe,
+  measured per-case cost, the two recorded artifacts).
 - **SelfCheck matrix:** `docs/SELFCHECK_MATRIX.md` §1 row `muse-glimmer-30b`
-  (SelfCheck/CODE/DET) and §2 (FSI debt with the measured capture attempts).
+  (SelfCheck/FSI/CODE/DET — all four measured, no debt row).
 - **Perf rows:** `tests/perf/perf_baselines.json` — `muse-glimmer-30b`,
   rtx 5090, linux: perf 52.86 t/s (ttft 554.41 ms, avg 468.55 W), r3 53.34 t/s
   (ttft 553.54 ms, avg 491.22 W), max_gen 2048, seeded 2026-11-19 through
@@ -113,14 +129,19 @@ drafter is not in this checkpoint's index).
   - `test_muse_dense_code_selfcheck`: 6 assertions, 1 case, PASS.
   - `test_muse_dense_det_selfcheck`: 6 assertions, 1 case, PASS (3×3 runs
     byte-identical).
-  - `test_muse_dense_fsi_selfcheck`: SKIP (golden debt).
+  - `test_muse_dense_fsi_selfcheck`: 3/3 passed, 11 s/case (golden captured
+    2026-11-19 at `reasoning_strength: low`, source text tower, 512-token
+    budget; `tools/fsi_capture.py --only ... --resume`, one prompt per run).
 - **Synthetic suite (TDD evidence):** constants 108, convert 257, loader 207,
   model 24, kernels 12 047, pipeline 27, tool framing 3 725 assertions; all
   green. Guards: manifest_sync 1669, suite_guard 218, independence 1992,
   labels 39, naming 80. Fast sweep 153/153.
-- **Goldens:** `tests/fixtures/{code,det}/muse-glimmer-30b.json` captured from
+- **Goldens:** `tests/fixtures/{fsi,code,det}/muse-glimmer-30b.json` captured from
   the executed source via `tools/muse_golden_oracle.py` (627 text tensors
-  loaded, 809 vision skipped; CPU, eager attention). HF render goldens:
+  loaded, 809 vision skipped; CPU, eager attention). FSI is framed at
+  `reasoning_strength: low` (the template's own switch); its golden carries
+  `answer_channel`/`reasoning_channel` so the harness reads the first complete
+  ATEM channel. HF render goldens:
   `tests/data/muse/hf_render_{tools,full}.txt`.
 - **Harness fix:** `libs/lsxcommon/src/{code,det}_selfcheck.cpp`
   `SelectAnswerChannel`; unit tests in `tests/test_{code,det}_selfcheck.cpp`.
