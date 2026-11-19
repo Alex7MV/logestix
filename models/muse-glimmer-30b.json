@@ -117,11 +117,11 @@
   "selfcheck_max_gen": 2,
   "selfcheck_bit_exact": true,
   "golden_debt": {
-    "fsi": "source golden pending (CPU text-tower oracle capture)"
+    "fsi": "source capture attempted twice (512: FSI-03 reasoning loop aborts; 1024: >1.5h/3 cases on CPU, killed); golden pending, gate wired"
   },
   "aliases": [
     "muse-glimmer-30b"
   ],
   "notes": "Dense gated attention: 52 layers, hidden 6656, 32Q/2KV x128, [sliding x3, full-NoPE] x13, centered norms, untied FP16 head, softcap 20. BF16 -> NVFP4.",
-  "report": ""
+  "report": "docs/model-reports/2026-11-19-Muse-Glimmer-30B.md"
 }

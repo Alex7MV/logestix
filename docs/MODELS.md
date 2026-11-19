@@ -389,8 +389,8 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - lifecycle TUs: `muse_dense_model.cpp`, `muse_dense_inference.cu`
 - gates: selfcheck: yes; fsi: debt; code: yes; det: yes
 - perf: 53.34 t/s (r3, 2026-11-19)
-- debt: fsi — source golden pending (CPU text-tower oracle capture)
-- report: **not written** (stage-9 debt)
+- debt: fsi — source capture attempted twice (512: FSI-03 reasoning loop aborts; 1024: >1.5h/3 cases on CPU, killed); golden pending, gate wired
+- report: `docs/model-reports/2026-11-19-Muse-Glimmer-30B.md`
 - notes: Dense gated attention: 52 layers, hidden 6656, 32Q/2KV x128, [sliding x3, full-NoPE] x13, centered norms, untied FP16 head, softcap 20. BF16 -> NVFP4.
 
 ## nemotron-3.5-lightning-30b-a3b
