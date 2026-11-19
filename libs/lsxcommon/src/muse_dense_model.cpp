@@ -11,6 +11,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
+#include "muse_tool_format.h"
 
 namespace lsxcommon {
 
@@ -196,6 +197,27 @@ gpu::InferenceResult MuseGlimmer30BModel::Infer(const ModelRequest &req)
 gpu::InferenceResult MuseGlimmer30BModel::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+bool MuseGlimmer30BModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                              std::string_view raw_prompt,
+                                              std::vector<int32_t> &out_ids) const
+{
+    return muse::MusePromptInputIds(tok, raw_prompt, out_ids);
+}
+
+bool MuseGlimmer30BModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    return muse::RenderMuseConversation(tok, conv, out_ids);
+}
+
+bool MuseGlimmer30BModel::ParseToolCalls(const ArrowTokenizerDb &tok,
+                                         const std::vector<int32_t> &gen_tokens,
+                                         std::vector<ToolCall> &out_calls) const
+{
+    return muse::ParseMuseToolCalls(tok, gen_tokens, out_calls);
 }
 
 } // namespace lsxcommon

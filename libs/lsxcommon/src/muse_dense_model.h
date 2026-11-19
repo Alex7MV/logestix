@@ -30,6 +30,17 @@ public:
 
     const std::string &Type() const override { return kType; }
 
+    // ATEM framing (stages 4/4b): native channel markers + tool codec.
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
+
 protected:
     // Hard geometry gate (protocol step 3): false when the loaded topology
     // does not match the frozen compile-time constants (synthetic tests

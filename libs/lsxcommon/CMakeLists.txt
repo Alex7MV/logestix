@@ -29,6 +29,7 @@ add_library(lsxcommon STATIC
     src/muse_dense_convert.cpp
     src/muse_dense_load.cpp
     src/muse_dense_model.cpp
+    src/muse_tool_format.cpp
     src/gemma_dense_load.cpp
     src/granite_dense_convert.cpp
     src/granite_dense_load.cpp
