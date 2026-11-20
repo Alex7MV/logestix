@@ -59,7 +59,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
         pw.hidden = static_cast<int>(embed->shape[1]);
         cudaError_t e = cudaMalloc(&pw.d_embed,
             static_cast<size_t>(pw.vocab_size) * pw.hidden * 2);
-        if (e != cudaSuccess) return e;
+        if (e != cudaSuccess) { pw.Free(); return e; }
         e = ring.UploadRaw(embed->data, pw.d_embed,
                                   static_cast<size_t>(pw.vocab_size) *
                                       pw.hidden * 2,
@@ -67,6 +67,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
         if (e != cudaSuccess) {
             log::error(std::string("[kimi_load] embed upload failed: ")
                        + cudaGetErrorString(e));
+            pw.Free();
             return e;
         }
     } else {
@@ -81,13 +82,14 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
                 static_cast<size_t>(head->shape[1]) * 2) {
         int64_t numel = head->shape[0] * head->shape[1];
         cudaError_t e = cudaMalloc(&pw.d_head, static_cast<size_t>(numel) * 2);
-        if (e != cudaSuccess) return e;
+        if (e != cudaSuccess) { pw.Free(); return e; }
         e = ring.UploadRaw(head->data, pw.d_head,
                                   static_cast<size_t>(numel) * 2,
                                   stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[kimi_load] head upload failed: ")
                        + cudaGetErrorString(e));
+            pw.Free();
             return e;
         }
     }
@@ -97,18 +99,20 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
         norm->bytes >= static_cast<size_t>(norm->shape[0]) * 2) {
         cudaError_t e = cudaMalloc(&pw.d_final_norm,
                                    static_cast<size_t>(norm->shape[0]) * 2);
-        if (e != cudaSuccess) return e;
+        if (e != cudaSuccess) { pw.Free(); return e; }
         e = ring.UploadRaw(norm->data, pw.d_final_norm,
                                   static_cast<size_t>(norm->shape[0]) * 2,
                                   stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[kimi_load] model.norm upload failed: ")
                        + cudaGetErrorString(e));
+            pw.Free();
             return e;
         }
     } else {
         log::error("[kimi_load] norm.weight missing/malformed in "
                    "global.arrow — final RMSNorm cannot run without it");
+        pw.Free();
         return cudaErrorInvalidValue;
     }
     return cudaSuccess;
@@ -444,7 +448,7 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
     if (!ring.ok()) return cudaErrorMemoryAllocation;
 
     auto err = LoadGlobal(pinned_dir, pw, stream, pw.resident_bytes, ring);
-    if (err != cudaSuccess) return err;
+    if (err != cudaSuccess) { pw.Free(); return err; }
 
     for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
         auto fn = absl::StrCat("layer_", l, ".arrow");

@@ -11,9 +11,15 @@
 #include <lsxcommon/inkling_moe_load.h>
 #include <lsxcommon/schema.h>
 
+#include <cuda_runtime.h>
+
+#include <atomic>
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <mutex>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -23,6 +29,53 @@
 
 namespace fs = std::filesystem;
 using namespace inklingtest;
+
+// ── A3.1 probe: array new/delete interposition ─────────────────────────────
+// Tracks live array allocations: pointer → byte size, plus a per-size live
+// count. Global interposition affects the whole test binary, so the probe
+// reads DELTAS around load/free cycles, never absolute counts. Both delete
+// forms are intercepted (the unsized one looks the size up in the map), so
+// the accounting is exact regardless of which form the compiler emits.
+namespace {
+std::mutex g_arr_mutex;
+std::map<void *, std::size_t> g_arr_sizes;
+std::map<std::size_t, std::int64_t> g_arr_live;
+
+std::int64_t LiveIntArrayCount(std::size_t bytes)
+{
+    std::lock_guard<std::mutex> lk(g_arr_mutex);
+    auto it = g_arr_live.find(bytes);
+    return it == g_arr_live.end() ? 0 : it->second;
+}
+
+void ArrFree(void *p)
+{
+    if (!p) return;
+    {
+        std::lock_guard<std::mutex> lk(g_arr_mutex);
+        auto it = g_arr_sizes.find(p);
+        if (it != g_arr_sizes.end()) {
+            g_arr_live[it->second] -= 1;
+            g_arr_sizes.erase(it);
+        }
+    }
+    std::free(p);
+}
+}  // namespace
+
+void *operator new[](std::size_t n)
+{
+    void *p = std::malloc(n ? n : 1);
+    if (!p) throw std::bad_alloc();
+    std::lock_guard<std::mutex> lk(g_arr_mutex);
+    g_arr_sizes[p] = n;
+    g_arr_live[n] += 1;
+    return p;
+}
+
+void operator delete[](void *p) noexcept { ArrFree(p); }
+
+void operator delete[](void *p, std::size_t) noexcept { ArrFree(p); }
 
 namespace {
 
@@ -114,6 +167,59 @@ TEST_CASE("inkling topology reader reads a converted tree",
         REQUIRE(pe->w2_scales.size() ==
                 static_cast<size_t>(kHidden) * (kMoeInter / 16));
     }
+}
+
+TEST_CASE("inkling pinned load releases the query-offset array (A3.1)",
+          "[inkling][load][leak]")
+{
+    // LoadInklingPinnedWeights allocates pw.attn_query_offset with
+    // new int[num_layers]; FreeInklingPinnedWeights must release it.
+    // The array is tiny (kLayers*4 B), so RSS probes cannot see it —
+    // interpose the array new/delete pair in this TU and count live
+    // allocations of exactly that size across load/free cycles.
+    if (std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") == nullptr)
+        SKIP("synthetic-geometry fixture not enabled");
+    const fs::path in = fs::temp_directory_path() / "inkling_leak_in";
+    const fs::path out = fs::temp_directory_path() / "inkling_leak_out";
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+    WriteCheckpoint(in);
+    auto st = lsxcommon::inkling::ConvertInklingModel(in.string(), out.string());
+    if (!st.ok()) FAIL(st.ToString());
+
+    lsxcommon::inkling::InklingTopology top;
+    REQUIRE(lsxcommon::inkling::LoadInklingTopology(out.string(), top).ok());
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    const size_t want_bytes = static_cast<size_t>(top.num_layers) * sizeof(int);
+    // Warm-up cycle: settle any one-time allocations of the same size.
+    {
+        lsxcommon::inkling::InklingPinnedWeights warm;
+        warm.top = top;
+        REQUIRE(lsxcommon::inkling::LoadInklingPinnedWeights(out.string(), warm,
+                                                             stream));
+        lsxcommon::inkling::FreeInklingPinnedWeights(warm);
+    }
+    const std::int64_t baseline = LiveIntArrayCount(want_bytes);
+    for (int i = 0; i < 3; ++i) {
+        lsxcommon::inkling::InklingPinnedWeights pw;
+        pw.top = top;
+        REQUIRE(lsxcommon::inkling::LoadInklingPinnedWeights(out.string(), pw,
+                                                             stream));
+        REQUIRE(pw.attn_query_offset != nullptr);
+        lsxcommon::inkling::FreeInklingPinnedWeights(pw);
+        INFO("cycle " << i << ": live int[" << top.num_layers
+                      << "] delta = "
+                      << LiveIntArrayCount(want_bytes) - baseline);
+        REQUIRE(LiveIntArrayCount(want_bytes) == baseline);
+    }
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    cudaStreamDestroy(stream);
+    fs::remove_all(in);
+    fs::remove_all(out);
 }
 
 TEST_CASE("inkling real vault expert store reads both codecs", "[inkling][load]")

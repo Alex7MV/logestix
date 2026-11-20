@@ -537,3 +537,75 @@ TEST_CASE("Kimi cached FFN bit-identical to staging FFN (real expert file)",
     cudaFree(d_x); cudaFree(d_out_s); cudaFree(d_out_c);
     cudaStreamDestroy(stream);
 }
+
+TEST_CASE("RunKimiGeneration error path releases its scratch (A3.4)",
+          "[kimi][experts][leak]")
+{
+    // RunKimiGeneration allocates ~15 per-call device buffers (d_states is
+    // 61 × sizeof(KimiMlaState) ≈ 70 MiB alone) plus pinned router staging.
+    // An early error return must release every one of them: the caller has
+    // no handle to any of these pointers. Drive the error with a minimal
+    // embed table and null layer weights: the embed gather runs, then
+    // KimiLayerStack fails at the first MLA attention call — after every
+    // per-call allocation succeeded, with no illegal access.
+    KimiPinnedWeights pw;
+    pw.layers.resize(kKimiNumLayers);   // null MLA pointers: stack fails
+    __nv_bfloat16 *d_embed = nullptr;
+    REQUIRE(cudaMalloc(&d_embed, 4 * kKimiHidden * sizeof(__nv_bfloat16)) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_embed, 0, 4 * kKimiHidden * sizeof(__nv_bfloat16)) ==
+            cudaSuccess);
+    pw.d_embed = d_embed;
+    pw.d_head = d_embed;   // presence only; never reached before the failure
+    // The layer-stack's first kernel (input rmsnorm) dereferences
+    // d_input_norm on device BEFORE the MLA null check runs — give it a
+    // real zero buffer so the failure is the clean cudaErrorInvalidValue
+    // from RunKimiMlaAttention, not an illegal address.
+    __nv_bfloat16 *d_norm = nullptr;
+    REQUIRE(cudaMalloc(&d_norm, kKimiHidden * sizeof(__nv_bfloat16)) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_norm, 0, kKimiHidden * sizeof(__nv_bfloat16)) ==
+            cudaSuccess);
+    for (auto &lw : pw.layers) lw.d_input_norm = d_norm;
+
+    KimiExpertDb db;
+    db.num_layers = kKimiNumLayers;
+    db.experts_per_layer = kKimiNumRouted;
+
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    // Warm-up: settle context/allocator bookkeeping (and the MLA static
+    // workspace, which is process-lifetime by design and not under test).
+    {
+        KimiGenerationResult warm;
+        (void)RunKimiGeneration(stream, pw, db, {1, 2, 3}, 2, warm,
+                                /*cache=*/nullptr, /*eos_id=*/-1);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        (void)cudaGetLastError();
+    }
+
+    size_t free_before = 0, total = 0;
+    REQUIRE(cudaMemGetInfo(&free_before, &total) == cudaSuccess);
+    for (int i = 0; i < 3; ++i) {
+        KimiGenerationResult gen;
+        const cudaError_t e =
+            RunKimiGeneration(stream, pw, db, {1, 2, 3}, 2, gen,
+                              /*cache=*/nullptr, /*eos_id=*/-1);
+        REQUIRE(e != cudaSuccess);   // null layer weights: must fail
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        (void)cudaGetLastError();
+    }
+    size_t free_after = 0;
+    REQUIRE(cudaMemGetInfo(&free_after, &total) == cudaSuccess);
+    const std::int64_t delta = static_cast<std::int64_t>(free_before) -
+                               static_cast<std::int64_t>(free_after);
+    INFO("free VRAM delta over 3 failed generations: " << delta << " bytes");
+    // One leaked d_states is ~70 MiB; three failed calls leak ~210 MiB.
+    // 8 MiB slack absorbs allocator granularity, not the leak.
+    REQUIRE(delta < 8ll * 1024 * 1024);
+
+    cudaFree(d_norm);
+    cudaFree(d_embed);
+    cudaStreamDestroy(stream);
+}

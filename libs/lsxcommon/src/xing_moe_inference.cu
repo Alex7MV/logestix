@@ -656,7 +656,34 @@ void FreeXingSession(XingSession &s)
     cudaFree(s.d_scalars);
     if (s.h_scalars) cudaFreeHost(s.h_scalars); d(s.d_half_big); d(s.d_expert_out); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
     d(s.d_embed_table); d(s.d_router_act); d(s.d_router_scores);
-    s = XingSession{};
+    // Null the fields in place. `s = XingSession{}` would construct a
+    // temporary whose ~XingSession re-enters this function (infinite
+    // recursion) now that the session owns its teardown (A3.5, the
+    // MistralSession pattern).
+    s.d_k = nullptr; s.d_v = nullptr; s.d_hidden = nullptr;
+    s.d_collapsed = nullptr; s.d_post = nullptr; s.d_comb = nullptr;
+    s.d_rows = nullptr; s.d_attn_m = nullptr; s.d_attn_l = nullptr;
+    s.d_attn_part = nullptr; s.d_act = nullptr; s.d_norm = nullptr;
+    s.d_q = nullptr; s.d_kv_latent = nullptr; s.d_kv_b = nullptr;
+    s.d_attn = nullptr; s.d_scores = nullptr; s.d_logits = nullptr;
+    s.d_gate = nullptr; s.d_expert_ids = nullptr;
+    s.d_half = nullptr; s.d_half2 = nullptr; s.d_half_up = nullptr;
+    s.d_rows_gate = nullptr; s.d_rows_down = nullptr; s.d_rows_up = nullptr;
+    s.d_scalars = nullptr; s.h_scalars = nullptr;
+    s.d_half_big = nullptr; s.d_expert_out = nullptr;
+    s.d_epacked = nullptr; s.d_escales = nullptr; s.d_egs = nullptr;
+    s.d_embed_table = nullptr; s.d_router_act = nullptr;
+    s.d_router_scores = nullptr;
+    // Scalars and geometry the old `s = XingSession{}` used to reset: leaving
+    // them stale would let a freed session report a live capacity/length
+    // (the model's continuation check reads exactly those).
+    s.capacity = 0; s.length = 0; s.logit_count = 0;
+    s.kv_layers = 0; s.kv_layer_k = 0; s.kv_layer_v = 0;
+    s.kgeom = KvCacheGeometry{};
+    s.vgeom = KvCacheGeometry{};
+    s.token_id = 0;
+    s.last_routed_ids.clear();
+    s.expert_tables_uploaded = false;
 }
 
 cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,

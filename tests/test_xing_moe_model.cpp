@@ -438,3 +438,50 @@ TEST_CASE("xing continuation matches a fresh prefill", "[xing][model]")
     INFO("max logit delta = " << max_abs);
     CHECK(max_abs < 1e-3);
 }
+
+TEST_CASE("XingSession destructor releases the session (A3.5)",
+          "[xing][model][leak]")
+{
+    // XingMoeModel owns the session as std::unique_ptr<XingSession> and
+    // drops it with session_.reset() (TeardownWeights, non-continuation
+    // Infer). XingSession has Free() but NO destructor, so every reset
+    // leaked the whole session: KV caches, the FP16 embed table
+    // (vocab*hidden*2 B ≈ 900 MiB on the real geometry) and ~30 scratch
+    // buffers. MistralSession's ~MistralSession() { Free(); } is the
+    // pattern this must follow. Probe: construct/allocate/destroy cycles
+    // through the unique_ptr exactly like the model does; free VRAM must
+    // return to the warm-up level.
+    ConvertedFixture f = BuildFixture();
+    const auto dims = xing::XingDimsFromWeights(f.pw);
+
+    // Warm-up: one allocate/destroy cycle settles allocator bookkeeping.
+    {
+        auto warm = std::make_unique<lsxcommon::xing::XingSession>();
+        REQUIRE(xing::AllocateXingSession(*warm, dims, kCapacity,
+                                          lsxcommon::KvCacheLayout::kHeadMajor,
+                                          f.stream) == cudaSuccess);
+    }
+    REQUIRE(cudaStreamSynchronize(f.stream) == cudaSuccess);
+
+    size_t free_before = 0, total = 0;
+    REQUIRE(cudaMemGetInfo(&free_before, &total) == cudaSuccess);
+    for (int i = 0; i < 3; ++i) {
+        auto s = std::make_unique<lsxcommon::xing::XingSession>();
+        REQUIRE(xing::AllocateXingSession(*s, dims, kCapacity,
+                                          lsxcommon::KvCacheLayout::kHeadMajor,
+                                          f.stream) == cudaSuccess);
+        // No explicit Free(): the model's reset() path relies on the
+        // destructor alone.
+    }
+    REQUIRE(cudaStreamSynchronize(f.stream) == cudaSuccess);
+    size_t free_after = 0;
+    REQUIRE(cudaMemGetInfo(&free_after, &total) == cudaSuccess);
+    const std::int64_t delta = static_cast<std::int64_t>(free_before) -
+                               static_cast<std::int64_t>(free_after);
+    INFO("free VRAM delta over 3 unique_ptr session cycles: "
+         << delta << " bytes");
+    // One leaked session at capacity 8 is ~2 MiB (3-layer KV + scratch,
+    // cudaMalloc granularity included); three leaked sessions read ~6 MiB.
+    // 1 MiB slack absorbs allocator bookkeeping, not a session.
+    REQUIRE(delta < 1024 * 1024);
+}
