@@ -200,6 +200,10 @@ struct XingSession {
     float *d_egs = nullptr;                // [4]
 
     void Free();
+    // The model owns the session as a unique_ptr and drops it with reset()
+    // (TeardownWeights, non-continuation Infer); without this destructor
+    // every reset leaked the whole session (A3.5). MistralSession parity.
+    ~XingSession() { Free(); }
 };
 
 // Allocates every scratch buffer for a `capacity`-token context.
