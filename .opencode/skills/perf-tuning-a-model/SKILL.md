@@ -218,7 +218,7 @@ Rules that bite:
   temperature to **plateau at its running minimum** (~2–3 min back to the
   ~40 °C floor). `LSX_PERF_COOLDOWN_TIMEOUT_S` caps it (default 300; 0
   disables). It removes the back-to-back component only — a genuinely warm room
-  whose plateau is above the reference stays unreachable (`docs/OPEN_TASKS.md`
+  whose plateau is above the reference stays unreachable (`docs/open-tasks/2026-10-23-sampling-neutral-session-and-environment-oracle.md`
   §W).
 - **Missing vault → SKIP, not fail** (`SKIP_RETURN_CODE 4` per target). A model
   with a JSON entry but no ctest target is unguarded — when you ingest a model,
