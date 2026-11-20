@@ -233,7 +233,7 @@ Known placements (measured, do not re-derive from scratch):
 |---|---|---|---|
 | phi-4 (14.7B dense) | every projection; `embed_tokens`/`lm_head` stay FP16 | — | 16.6 GiB, 71 t/s |
 | gemma-4-26b-a4b-it (MoE) | attention projections + dense MLP | routed experts, tied table | +1.5 GiB, 157 -> 128 t/s |
-| gemma-4-31b-it (dense) | needs *every* linear (~33.7 GiB) -> does not fit; partial placements move away from the source | — | gate stays red (`OPEN_TASKS.md` §R) |
+| gemma-4-31b-it (dense) | needs *every* linear (~33.7 GiB) -> does not fit; partial placements move away from the source | — | gate stays red (`docs/open-tasks/live/models/gemma-4-31b-it.md` §R) |
 
 Implementation checklist (all of it is exercised by tests in the phi-4 and
 gemma-4 changes — copy their shape):
@@ -429,7 +429,7 @@ It has two clearly separated parts:
   numbers (gates, determinism, tool round-trip, perf); and what was **not**
   measured and why.
 - **`Evidence`** — internal references: the stage-0 design and plan,
-  `docs/OPEN_TASKS.md` section, `docs/SELFCHECK_MATRIX.md` row, perf rows,
+  the `docs/OPEN_TASKS.md` row + its `docs/open-tasks/live/` file, `docs/SELFCHECK_MATRIX.md`, perf rows,
   and the exact gate results. A SKIP/debt entry stays a gap; never rewrite it
   as a pass.
 
@@ -625,7 +625,7 @@ are shared drivers parameterised by the manifest:
   `logits_hash`, and the math mode decides it too. Declare all three from
   measurement of the SOURCE family — never copy a sibling's numbers, and never
   "normalise" them, which is exactly how 35 families' hashes were silently
-  re-baselined in the 2026-11-06 migration (`docs/OPEN_TASKS.md` §G5). Prove a
+  re-baselined in the 2026-11-06 migration (`docs/open-tasks/2026-11-20-open-tasks-index-split-closed.md` §G5). Prove a
   probe change by replaying a binary built BEFORE it: same top-1, same `n`, same
   hash.
 
