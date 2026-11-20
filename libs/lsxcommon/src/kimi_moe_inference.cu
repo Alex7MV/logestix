@@ -1742,14 +1742,70 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
     if (getenv("KIMI_NOEVICTION")) db.max_open = 1000000;
     const auto t0 = std::chrono::steady_clock::now();
 
+    // Per-call scratch (A3.4): every buffer below is owned by THIS call and
+    // must be released on every exit, success or error. The caller holds no
+    // handle to any of them. The teardown drains the stream first so async
+    // copies into d_bias_all / d_ids cannot still be in flight.
     KimiMlaState *d_states = nullptr;
+    float *d_bias_all = nullptr;
+    void *d_staging = nullptr;
+    int *d_ids = nullptr;
+    __nv_bfloat16 *d_hidden = nullptr, *d_scratch_b = nullptr;
+    __nv_bfloat16 *d_mlp_g = nullptr, *d_mlp_u = nullptr, *d_mlp_h = nullptr;
+    float *d_scores = nullptr, *d_logits = nullptr, *d_bestv = nullptr;
+    float *d_top_w = nullptr;
+    int *d_top_ids = nullptr, *d_best = nullptr;
+    int *h_ids = nullptr;
+    float *h_w = nullptr;
+    cudaEvent_t route_ev = nullptr;
+    cudaEvent_t ev_start = nullptr, ev_ttft = nullptr, step_ev = nullptr;
+    void *d_tc_scratch = nullptr;
+    lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl = nullptr;
+    lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl = nullptr;
+    struct KimiGenScratch {
+        cudaStream_t stream;
+        KimiMlaState **d_states; float **d_bias_all; void **d_staging;
+        int **d_ids;
+        __nv_bfloat16 **d_hidden, **d_scratch_b, **d_mlp_g, **d_mlp_u,
+            **d_mlp_h;
+        float **d_scores, **d_logits, **d_bestv, **d_top_w;
+        int **d_top_ids, **d_best;
+        int **h_ids; float **h_w;
+        cudaEvent_t *route_ev, *ev_start, *ev_ttft, *step_ev;
+        void **d_tc_scratch;
+        lsxcommon::lsx_tc::LsxTcBatchSlot **d_tc_tbl, **h_tc_tbl;
+        ~KimiGenScratch()
+        {
+            cudaStreamSynchronize(stream);
+            auto F = [](void **p) { if (*p) { cudaFree(*p); *p = nullptr; } };
+            F((void **)d_states); F((void **)d_bias_all); F(d_staging);
+            F((void **)d_ids);
+            F((void **)d_hidden); F((void **)d_scratch_b);
+            F((void **)d_mlp_g); F((void **)d_mlp_u); F((void **)d_mlp_h);
+            F((void **)d_scores); F((void **)d_logits); F((void **)d_bestv);
+            F((void **)d_top_w); F((void **)d_top_ids); F((void **)d_best);
+            F(d_tc_scratch); F((void **)d_tc_tbl);
+            if (*h_ids) { cudaFreeHost(*h_ids); *h_ids = nullptr; }
+            if (*h_w) { cudaFreeHost(*h_w); *h_w = nullptr; }
+            if (*h_tc_tbl) { cudaFreeHost(*h_tc_tbl); *h_tc_tbl = nullptr; }
+            if (*route_ev) cudaEventDestroy(*route_ev);
+            if (*ev_start) cudaEventDestroy(*ev_start);
+            if (*ev_ttft) cudaEventDestroy(*ev_ttft);
+            if (*step_ev) cudaEventDestroy(*step_ev);
+        }
+    } scratch{stream,
+              &d_states, &d_bias_all, &d_staging, &d_ids,
+              &d_hidden, &d_scratch_b, &d_mlp_g, &d_mlp_u, &d_mlp_h,
+              &d_scores, &d_logits, &d_bestv, &d_top_w, &d_top_ids, &d_best,
+              &h_ids, &h_w, &route_ev, &ev_start, &ev_ttft, &step_ev,
+              &d_tc_scratch, &d_tc_tbl, &h_tc_tbl};
+
     if (cudaMalloc(&d_states, kKimiNumLayers * sizeof(KimiMlaState)) !=
         cudaSuccess)
         return cudaErrorMemoryAllocation;
     for (int l = 0; l < kKimiNumLayers; ++l)
         KimiMlaReset(d_states + l, stream);
 
-    float *d_bias_all = nullptr;
     if (cudaMalloc(&d_bias_all,
                    (size_t)kKimiNumLayers * kKimiNumRouted * sizeof(float)) !=
         cudaSuccess)
@@ -1762,7 +1818,6 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
                             cudaMemcpyHostToDevice, stream);
     }
 
-    void *d_staging = nullptr;
     const size_t staging_bytes = KimiExpertFfnStagingBytes();
     if (cudaMalloc(&d_staging, staging_bytes) != cudaSuccess)
         return cudaErrorMemoryAllocation;
@@ -1883,18 +1938,12 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
     const int prefill_seq = static_cast<int>(ids.size());
     const int max_total = prefill_seq + max_gen_tokens;
 
-    int *d_ids = nullptr;
     if (cudaMalloc(&d_ids, (size_t)max_total * sizeof(int)) !=
         cudaSuccess)
         return cudaErrorMemoryAllocation;
     cudaMemcpyAsync(d_ids, ids.data(), ids.size() * sizeof(int),
                     cudaMemcpyHostToDevice, stream);
 
-    __nv_bfloat16 *d_hidden = nullptr, *d_scratch_b = nullptr;
-    __nv_bfloat16 *d_mlp_g = nullptr, *d_mlp_u = nullptr, *d_mlp_h = nullptr;
-    float *d_scores = nullptr, *d_logits = nullptr, *d_bestv = nullptr;
-    float *d_top_w = nullptr;
-    int *d_top_ids = nullptr, *d_best = nullptr;
     cudaError_t e = cudaSuccess;
 #define KIMI_ALLOC(var, count)                                             \
     if (e == cudaSuccess)                                                  \
@@ -1927,9 +1976,6 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
     const bool kTcBatch = fast_math
                           && std::getenv("LSX_KIMI_TC") != nullptr
                           && lsxcommon::lsx_tc::LsxTcRuntimeSupported();
-    void *d_tc_scratch = nullptr;
-    lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl = nullptr;
-    lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl = nullptr;
     if (kTcBatch) {
         if (cudaMalloc(&d_tc_scratch, KimiTcBatchScratchBytes()) !=
             cudaSuccess) {
@@ -1944,6 +1990,7 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
         } else {
             if (d_tc_scratch) cudaFree(d_tc_scratch);
             if (d_tc_tbl) cudaFree(d_tc_tbl);
+            if (h_tc_tbl) cudaFreeHost(h_tc_tbl);
             d_tc_scratch = nullptr;
             d_tc_tbl = nullptr;
             h_tc_tbl = nullptr;
@@ -1951,11 +1998,8 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
     }
 
     // Router split fence state (F-11): ONE pinned staging pair + event for
-    // the whole generation. Allocated here (never while copies pending) and
-    // released after the final drain.
-    int *h_ids = nullptr;
-    float *h_w = nullptr;
-    cudaEvent_t route_ev = nullptr;
+    // the whole generation. Allocated here (never while copies pending);
+    // the scratch guard releases it on every exit.
     if (cudaHostAlloc(&h_ids, kKimiTopK * sizeof(int),
                       cudaHostAllocDefault) != cudaSuccess ||
         cudaHostAlloc(&h_w, kKimiTopK * sizeof(float),
@@ -1963,14 +2007,10 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
         cudaEventCreateWithFlags(&route_ev, cudaEventDisableTiming) !=
             cudaSuccess) {
         gen.error_msg = "router fence alloc failed";
-        cudaFreeHost(h_ids);
-        cudaFreeHost(h_w);
-        if (route_ev) cudaEventDestroy(route_ev);
         return cudaErrorMemoryAllocation;
     }
 
     int generated = 0;
-    cudaEvent_t ev_start = nullptr, ev_ttft = nullptr, step_ev = nullptr;
     if (cudaEventCreate(&ev_start) != cudaSuccess ||
         cudaEventCreate(&ev_ttft) != cudaSuccess ||
         cudaEventCreateWithFlags(&step_ev,
@@ -2063,13 +2103,7 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
         }
         if (next_id < 0) {
             gen.error_msg = "argmax failed";
-            cudaFreeHost(h_ids);
-            cudaFreeHost(h_w);
-            cudaEventDestroy(route_ev);
-            cudaEventDestroy(step_ev);
-            cudaEventDestroy(ev_start);
-            cudaEventDestroy(ev_ttft);
-            return cudaErrorUnknown;
+            return cudaErrorUnknown;   // scratch guard releases everything
         }
         gen.tokens.push_back(next_id);
         if (gs) gs->Emit(static_cast<std::uint32_t>(next_id),
@@ -2086,9 +2120,6 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
     float ms_ttft = 0.f;
     cudaEventElapsedTime(&ms_ttft, ev_start, ev_ttft);
     gen.ttft_ms = static_cast<double>(ms_ttft);
-    cudaEventDestroy(ev_start);
-    cudaEventDestroy(ev_ttft);
-    cudaEventDestroy(step_ev);
 
     const KimiEosCut cut = TruncateAtEos(gen.tokens, eos_id);
     gen.tokens = std::move(cut.tokens);
@@ -2102,13 +2133,7 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
     gen.total_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t0).count();
-    cudaFreeHost(h_ids);
-    cudaFreeHost(h_w);
-    cudaEventDestroy(route_ev);
-    if (d_tc_scratch) cudaFree(d_tc_scratch);
-    if (d_tc_tbl) cudaFree(d_tc_tbl);
-    if (h_tc_tbl) cudaFreeHost(h_tc_tbl);
-    return cudaSuccess;
+    return cudaSuccess;   // scratch guard releases everything
 }
 
 } // namespace kimi
