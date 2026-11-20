@@ -556,13 +556,14 @@ cudaError_t load_pinned_weights(
             static_cast<int64_t>(embed_t->shape[0]) * embed_t->shape[1];
         cudaError_t ge = cudaMalloc(&pw.d_embed,
                                     static_cast<size_t>(numel) * 2);
-        if (ge != cudaSuccess) return ge;
+        if (ge != cudaSuccess) { pw.Free(); return ge; }
         rb += static_cast<std::uint64_t>(numel) * 2;
         ge = ring.UploadBf16AsFp16(embed_t->data, numel,
                                    pw.d_embed, stream, rb);
         if (ge != cudaSuccess) {
             log::error(std::string("[load_pinned] embed upload failed: ")
                        + cudaGetErrorString(ge));
+            pw.Free();
             return ge;
         }
     }
@@ -571,13 +572,14 @@ cudaError_t load_pinned_weights(
             static_cast<int64_t>(head_t->shape[0]) * head_t->shape[1];
         cudaError_t ge = cudaMalloc(&pw.d_head,
                                     static_cast<size_t>(numel) * 2);
-        if (ge != cudaSuccess) return ge;
+        if (ge != cudaSuccess) { pw.Free(); return ge; }
         rb += static_cast<std::uint64_t>(numel) * 2;
         ge = ring.UploadBf16AsFp16(head_t->data, numel,
                                    pw.d_head, stream, rb);
         if (ge != cudaSuccess) {
             log::error(std::string("[load_pinned] head upload failed: ")
                        + cudaGetErrorString(ge));
+            pw.Free();
             return ge;
         }
     }
@@ -585,13 +587,14 @@ cudaError_t load_pinned_weights(
         int64_t numel = norm_t->shape[0];
         cudaError_t ge = cudaMalloc(&pw.d_final_norm,
                                     static_cast<size_t>(numel) * 2);
-        if (ge != cudaSuccess) return ge;
+        if (ge != cudaSuccess) { pw.Free(); return ge; }
         rb += static_cast<std::uint64_t>(numel) * 2;
         ge = ring.UploadBf16AsFp16(norm_t->data, numel,
                                    pw.d_final_norm, stream, rb);
         if (ge != cudaSuccess) {
             log::error(std::string("[load_pinned] final_norm upload failed: ")
                        + cudaGetErrorString(ge));
+            pw.Free();
             return ge;
         }
     }
@@ -606,15 +609,17 @@ cudaError_t load_pinned_weights(
         if (!t || t->bytes == 0) {
             log::error(std::string("[load_pinned] hc head tensor missing: ")
                        + suffix);
+            pw.Free();
             return cudaErrorInvalidValue;
         }
         cudaError_t he = cudaMalloc(dst, t->bytes);
-        if (he != cudaSuccess) return he;
+        if (he != cudaSuccess) { pw.Free(); return he; }
         rb += t->bytes;
         he = ring.UploadRaw(t->data, *dst, t->bytes, stream, rb);
         if (he != cudaSuccess) {
             log::error(std::string("[load_pinned] upload failed for ")
                        + suffix + ": " + cudaGetErrorString(he));
+            pw.Free();
             return he;
         }
     }

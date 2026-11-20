@@ -396,6 +396,79 @@ TEST_CASE("DeepSeek loader errors on malformed tensor",
     fs::remove_all(base);
 }
 
+TEST_CASE("DeepSeek loader releases partial globals on a failed load (A3.3)",
+          "[deepseek][loader][strict][leak]")
+{
+    // The missing-hc_head_scale load fails AFTER embed/head/norm/hc_fn/
+    // hc_base were cudaMalloc'd. The loader's contract (LayerWeights::Free
+    // comment) is that load_pinned_weights releases its partial allocation
+    // on error paths — a direct loader caller must not have to know which
+    // globals made it in. Probe: free VRAM after the failed load +
+    // pw.Free() must return to the pre-load level.
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_ds_loader_partial";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
+    {
+        auto recs = dsfixtest::GlobalRecords();
+        recs.pop_back();   // hc_head_scale missing: batch stays valid, so
+                           // embed/head/norm/hc_fn/hc_base are cudaMalloc'd
+                           // before the strict presence check fails.
+        REQUIRE(dsfixtest::WriteGlobalArrow(model, recs).ok());
+    }
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    // Warm-up: one failed load + Free so allocator/context bookkeeping
+    // settles before the measured cycles.
+    {
+        lsxcommon::gpu::PinnedWeights warm;
+        (void)lsxcommon::gpu::load_pinned_weights(model.string(), warm, stream);
+        warm.Free();
+        (void)cudaGetLastError();
+    }
+
+    // Cycle 1: the failed load must release its own partial globals. If it
+    // does not, pw.Free() here frees them and the VRAM probe reads clean —
+    // but cycle 2 uses a FRESH struct with no Free(), so any allocation the
+    // loader left behind accumulates in free-VRAM terms.
+    lsxcommon::gpu::PinnedWeights pw;
+    CHECK(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
+          == cudaErrorInvalidValue);
+    (void)cudaGetLastError();
+    pw.Free();
+
+    size_t free_before = 0, total = 0;
+    REQUIRE(cudaMemGetInfo(&free_before, &total) == cudaSuccess);
+
+    lsxcommon::gpu::PinnedWeights pw2;
+    CHECK(lsxcommon::gpu::load_pinned_weights(model.string(), pw2, stream)
+          == cudaErrorInvalidValue);
+    (void)cudaGetLastError();
+    // Contract (LayerWeights::Free comment): the loader releases its
+    // partial allocation on error paths; the caller's Free() is a no-op.
+    REQUIRE(pw2.d_embed == nullptr);
+    REQUIRE(pw2.d_head == nullptr);
+    REQUIRE(pw2.d_final_norm == nullptr);
+    REQUIRE(pw2.d_hc_head_fn == nullptr);
+    REQUIRE(pw2.d_hc_head_base == nullptr);
+
+    size_t free_after = 0;
+    REQUIRE(cudaMemGetInfo(&free_after, &total) == cudaSuccess);
+    const std::int64_t delta = static_cast<std::int64_t>(free_before) -
+                               static_cast<std::int64_t>(free_after);
+    INFO("free VRAM delta after a second failed load: " << delta << " bytes");
+    // embed+head are kVocab*kHidden*2 B each (~64 KiB here); the leaked
+    // set is >128 KiB. 64 KiB slack absorbs allocator granularity only.
+    REQUIRE(delta < 64 * 1024);
+    pw2.Free();
+
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
 TEST_CASE("DeepSeek model Load rejects topology mismatching the passport",
           "[deepseek][loader][passport]")
 {

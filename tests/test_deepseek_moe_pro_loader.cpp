@@ -183,6 +183,67 @@ TEST_CASE("deepseek-v4-pro loader errors on a missing layer file",
     fs::remove_all(base);
 }
 
+TEST_CASE("deepseek-v4-pro loader releases partial globals on failure (A3.3)",
+          "[deepseek][pro][loader][strict][leak]")
+{
+    // Same contract as the V4-Flash loader (A3.3): a failed load releases
+    // its own partial globals. Dropping hc_head_scale keeps the batch
+    // valid, so embed/head/norm/hc_fn/hc_base are cudaMalloc'd before the
+    // strict presence check fails. Cycle 1 frees via pw.Free(); cycle 2
+    // uses a fresh struct — a loader that skips its error-path release
+    // leaks the whole set into free-VRAM terms on cycle 2.
+    auto base = fs::temp_directory_path() / "logestix_ds_pro_loader_partial";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsprofixtest::BuildSyntheticModel(model).ok());
+    {
+        auto recs = dsprofixtest::GlobalRecords();
+        recs.pop_back();   // hc_head_scale missing
+        REQUIRE(dsprofixtest::WriteGlobalArrow(model, recs).ok());
+    }
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    {
+        lsxcommon::deepseek_pro::gpu::PinnedWeights warm;
+        (void)lsxcommon::deepseek_pro::gpu::load_pinned_weights(
+            model.string(), warm, stream);
+        warm.Free();
+        (void)cudaGetLastError();
+    }
+
+    lsxcommon::deepseek_pro::gpu::PinnedWeights pw;
+    CHECK(lsxcommon::deepseek_pro::gpu::load_pinned_weights(
+              model.string(), pw, stream) == cudaErrorInvalidValue);
+    (void)cudaGetLastError();
+    pw.Free();
+
+    size_t free_before = 0, total = 0;
+    REQUIRE(cudaMemGetInfo(&free_before, &total) == cudaSuccess);
+
+    lsxcommon::deepseek_pro::gpu::PinnedWeights pw2;
+    CHECK(lsxcommon::deepseek_pro::gpu::load_pinned_weights(
+              model.string(), pw2, stream) == cudaErrorInvalidValue);
+    (void)cudaGetLastError();
+    REQUIRE(pw2.d_embed == nullptr);
+    REQUIRE(pw2.d_head == nullptr);
+    REQUIRE(pw2.d_final_norm == nullptr);
+    REQUIRE(pw2.d_hc_head_fn == nullptr);
+    REQUIRE(pw2.d_hc_head_base == nullptr);
+
+    size_t free_after = 0;
+    REQUIRE(cudaMemGetInfo(&free_after, &total) == cudaSuccess);
+    const std::int64_t delta = static_cast<std::int64_t>(free_before) -
+                               static_cast<std::int64_t>(free_after);
+    INFO("free VRAM delta after a second failed load: " << delta << " bytes");
+    REQUIRE(delta < 64 * 1024);
+    pw2.Free();
+
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
 TEST_CASE("deepseek-v4-pro topology reads the converted layout",
           "[deepseek][pro][loader]")
 {

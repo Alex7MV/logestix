@@ -367,6 +367,8 @@ void FreeInklingPinnedWeights(InklingPinnedWeights &pw)
     release(pw.attn_queries);
     release(pw.mlp_queries);
     release(pw.out_query);
+    delete[] pw.attn_query_offset;
+    pw.attn_query_offset = nullptr;
     for (auto &l : pw.layers) {
         for (auto *w : {&l.wq, &l.wk, &l.wv, &l.wo, &l.wr, &l.attn_gate,
                         &l.ksconv_proj, &l.vsconv_proj}) {

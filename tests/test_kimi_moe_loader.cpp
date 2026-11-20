@@ -97,6 +97,72 @@ TEST_CASE("LoadKimiPinnedWeights errors on missing layer file",
     cudaStreamDestroy(stream);
 }
 
+TEST_CASE("LoadKimiPinnedWeights releases partial globals on failure (A3.2)",
+          "[kimi][loader][leak]")
+{
+    // LoadGlobal uploads embed, head, then norm. Removing norm.weight from
+    // global.arrow keeps the batch valid, so embed+head are cudaMalloc'd
+    // before the strict presence check fails. Contract: the loader
+    // releases its partial allocation on error paths (the missing-layer
+    // case above pins pw.layers.empty()); the globals must follow it.
+    // Cycle 1 frees via pw.Free(); cycle 2 uses a fresh struct — a loader
+    // that skips the release leaks embed+head into free-VRAM terms.
+    namespace fs = std::filesystem;
+    auto model = BuildConvertedFixture();
+    const fs::path global = fs::path(model) / "logestix" / "pinned" /
+                            "global.arrow";
+    {
+        auto batch = lsxcommon::ReadRecordBatchFromFile(global);
+        REQUIRE(batch.ok());
+        auto recs = lsxcommon::PinnedSchema::UnpackBatch(*batch);
+        REQUIRE(recs.ok());
+        std::vector<lsxcommon::TensorRecord> keep;
+        for (auto &r : *recs)
+            if (r.name.find("norm.weight") == std::string::npos)
+                keep.push_back(std::move(r));
+        REQUIRE(keep.size() == recs->size() - 1);
+        auto out = lsxcommon::PinnedSchema::MakeBatch(keep);
+        REQUIRE(out.ok());
+        REQUIRE(lsxcommon::WriteRecordBatchToFile(*out, global).ok());
+    }
+
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    {
+        lsxcommon::kimi::KimiPinnedWeights warm;
+        (void)LoadKimiPinnedWeights(model, warm, stream);
+        warm.Free();
+        (void)cudaGetLastError();
+    }
+
+    lsxcommon::kimi::KimiPinnedWeights pw;
+    CHECK(LoadKimiPinnedWeights(model, pw, stream) == cudaErrorInvalidValue);
+    (void)cudaGetLastError();
+    pw.Free();
+
+    size_t free_before = 0, total = 0;
+    REQUIRE(cudaMemGetInfo(&free_before, &total) == cudaSuccess);
+
+    lsxcommon::kimi::KimiPinnedWeights pw2;
+    CHECK(LoadKimiPinnedWeights(model, pw2, stream) == cudaErrorInvalidValue);
+    (void)cudaGetLastError();
+    REQUIRE(pw2.d_embed == nullptr);
+    REQUIRE(pw2.d_head == nullptr);
+
+    size_t free_after = 0;
+    REQUIRE(cudaMemGetInfo(&free_after, &total) == cudaSuccess);
+    const std::int64_t delta = static_cast<std::int64_t>(free_before) -
+                               static_cast<std::int64_t>(free_after);
+    INFO("free VRAM delta after a second failed load: " << delta << " bytes");
+    // Fixture embed/head are 64*16*2 B each; cudaMalloc granularity is
+    // ~2 MiB per block, so the leaked pair reads ~4 MiB. 1 MiB slack.
+    REQUIRE(delta < 1024 * 1024);
+    pw2.Free();
+
+    cudaStreamDestroy(stream);
+}
+
 TEST_CASE("Kimi expert index resolves routed experts", "[kimi][loader]")
 {
     auto model = BuildConvertedFixture();
