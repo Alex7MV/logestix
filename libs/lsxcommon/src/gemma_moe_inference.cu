@@ -1521,6 +1521,10 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
         cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
         cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
+        // A3.6: the chain short-circuits mid-way; every buffer allocated
+        // before the failing one must be released here. The caller cannot
+        // know which allocs succeeded, and ws_ready stays false.
+        ws.Free();
         return e != cudaSuccess ? e : cudaErrorMemoryAllocation;
     }
     ctx.seq0_cap = S; ctx.q_rows_cap = q_rows_max;

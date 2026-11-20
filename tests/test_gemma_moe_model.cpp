@@ -136,3 +136,98 @@ TEST_CASE("gemma expert index parsed once across Infers", "[gemma][model]") {
     model->Unload();
     fs::remove_all(out.parent_path());
 }
+
+TEST_CASE("gemma failed generation leaves no workspace behind (A3.6)",
+          "[gemma][model][leak]") {
+    // EnsureWorkspace's alloc chain short-circuits on the first failure and
+    // returns WITHOUT ws.Free(): every buffer allocated before the failing
+    // one stays live in the context. Drive a real mid-chain failure: fill
+    // VRAM with a ballast so d_logits (alloc #11, V*4 B) fails after ~10
+    // smaller buffers succeeded, then destroy the context exactly like
+    // DestroyGemmaGenContext does. Free VRAM must return to the baseline.
+    auto out = MakeConvertedSynthetic();
+    lsxcommon::gemma::GemmaPinnedWeights pw;
+    REQUIRE(lsxcommon::gemma::LoadGemmaPinnedWeights(out.string(), pw,
+                                                     nullptr) == cudaSuccess);
+    lsxcommon::gemma::GemmaExpertDb db;
+    db.num_layers = pw.top.num_layers;
+    db.experts_per_layer = pw.top.num_experts;
+    db.entries.resize(static_cast<size_t>(db.num_layers) *
+                      static_cast<size_t>(db.experts_per_layer));
+    lsxcommon::gemma::GemmaKvCache kv;
+    REQUIRE(kv.Allocate(pw, 16) == cudaSuccess);
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    // Mid-chain failure at the LAST device alloc (d_gemv_o, #47): raise
+    // q_rows/kv_rows so the three tail GEMV buffers are ~64 MB each, and
+    // ballast VRAM down to ~96 MiB free. Every earlier buffer (tens of KiB
+    // on the synthetic geometry) plus the first two tail buffers fit; the
+    // last one fails. This leaves the MAXIMAL partial set live when
+    // EnsureWorkspace returns without ws.Free().
+    pw.vocab_size = 1000000;
+    pw.top.vocab_size = 1000000;
+    for (auto &lw : pw.layers) {
+        lw.q_rows = 16000000;   // d_gemv_q/o: 32 MB each
+        lw.kv_rows = 16000000;  // d_gemv_kv: 32 MB
+    }
+    size_t fb = 0, tb = 0;
+    REQUIRE(cudaMemGetInfo(&fb, &tb) == cudaSuccess);
+    void *ballast = nullptr;
+    REQUIRE(fb > (64u << 20));
+    size_t ballast_bytes = fb - (96u << 20);
+    cudaError_t be = cudaMalloc(&ballast, ballast_bytes);
+    while (be != cudaSuccess && ballast_bytes > (1u << 30)) {
+        (void)cudaGetLastError();
+        ballast_bytes -= 64u << 20;
+        be = cudaMalloc(&ballast, ballast_bytes);
+    }
+    REQUIRE(be == cudaSuccess);
+
+    // Warm-up: one failed generation + context destroy settles bookkeeping.
+    {
+        auto *warm = lsxcommon::gemma::CreateGemmaGenContext();
+        lsxcommon::gemma::GemmaGenerationResult gen;
+        (void)lsxcommon::gemma::RunGemmaGeneration(
+            stream, pw, db, {1, 2, 3}, 2, {-1}, 0.f, gen, kv, warm);
+        lsxcommon::gemma::DestroyGemmaGenContext(warm);
+        (void)cudaGetLastError();
+    }
+
+    size_t free_before = 0;
+    REQUIRE(cudaMemGetInfo(&free_before, &tb) == cudaSuccess);
+    for (int i = 0; i < 3; ++i) {
+        auto *ctx = lsxcommon::gemma::CreateGemmaGenContext();
+        lsxcommon::gemma::GemmaGenerationResult gen;
+        const auto e = lsxcommon::gemma::RunGemmaGeneration(
+            stream, pw, db, {1, 2, 3}, 2, {-1}, 0.f, gen, kv, ctx);
+        INFO("gen rc=" << static_cast<int>(e) << " err=" << gen.error_msg);
+        REQUIRE(e == cudaErrorMemoryAllocation);
+        (void)cudaGetLastError();
+        // Contract: a failed EnsureWorkspace leaves NO live workspace
+        // pointer behind (the caller cannot know which allocs succeeded).
+        REQUIRE(ctx->ws.d_x == nullptr);
+        REQUIRE(ctx->ws.d_normed == nullptr);
+        REQUIRE(ctx->ws.d_logits == nullptr);
+        REQUIRE(ctx->ws.d_gemv_q == nullptr);
+        REQUIRE(ctx->ws.d_gemv_kv == nullptr);
+        REQUIRE(ctx->ws.h_sel == nullptr);
+        lsxcommon::gemma::DestroyGemmaGenContext(ctx);
+    }
+    size_t free_after = 0;
+    REQUIRE(cudaMemGetInfo(&free_after, &tb) == cudaSuccess);
+    const std::int64_t delta = static_cast<std::int64_t>(free_before) -
+                               static_cast<std::int64_t>(free_after);
+    INFO("free VRAM delta over 3 failed gemma generations: "
+         << delta << " bytes");
+    // The pre-logits set is a few hundred KiB per call; three leaked sets
+    // exceed 1 MiB. 512 KiB slack for allocator granularity.
+    REQUIRE(delta < 512 * 1024);
+
+    cudaFree(ballast);
+    kv.Free();
+    pw.Free();
+    cudaStreamDestroy(stream);
+    fs::remove_all(out.parent_path());
+}
