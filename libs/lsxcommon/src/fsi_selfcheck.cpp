@@ -25,6 +25,24 @@ bool IsComparisonOp(char c)
     return c == '<' || c == '>' || c == '=' || c == '!';
 }
 
+// True when the requirement on a candidate at `at` can actually be satisfied:
+// for a comparison, `anchor` <op>+ `identifier` (the same bound the extraction
+// then applies); for arithmetic, `anchor` `=` ... at all.
+bool IsBoundableCandidate(const std::string &line, std::size_t at,
+                          std::string_view anchor, FsiKind kind)
+{
+    if (at == std::string::npos) return false;
+    std::size_t i = at + anchor.size();
+    while (i < line.size() && std::isspace((unsigned char)line[i])) ++i;
+    if (i >= line.size()) return false;
+    if (kind == FsiKind::kArithmetic) return line[i] == '=';
+    if (!IsComparisonOp(line[i])) return false;
+    while (i < line.size() && IsComparisonOp(line[i])) ++i;
+    while (i < line.size() && std::isspace((unsigned char)line[i])) ++i;
+    return i < line.size() &&
+           (std::isalpha((unsigned char)line[i]) || line[i] == '_');
+}
+
 std::string SelectAnswerLine(const std::string &s, std::string_view anchor,
                              FsiKind kind, bool prefer_last = false)
 {
@@ -52,9 +70,15 @@ std::string SelectAnswerLine(const std::string &s, std::string_view anchor,
             while (i < line.size() && std::isspace((unsigned char)line[i]))
                 ++i;
             if (i >= line.size()) continue;
-            if (kind == FsiKind::kArithmetic && line[i] == '=') return line;
-            if (kind == FsiKind::kComparison && IsComparisonOp(line[i]))
-                return line;
+            if (kind == FsiKind::kComparison) {
+                // ANY occurrence on this line that survives the bound makes the
+                // line a candidate; the position is resolved by AnswerAnchorPos.
+                for (std::size_t at = line.find(anchor); at != std::string::npos;
+                     at = line.find(anchor, at + anchor.size()))
+                    if (IsBoundableCandidate(line, at, anchor, kind)) return line;
+                continue;
+            }
+            if (line[i] == '=') return line;
         }
     }
     for (std::size_t k = 0; k < lines.size(); ++k) {
@@ -269,7 +293,26 @@ std::size_t AnswerAnchorPos(const std::string &line, std::string_view anchor,
                             FsiKind kind, bool prefer_last)
 {
     const std::size_t first = line.find(anchor);
-    if (!prefer_last) return first;
+    if (!prefer_last) {
+        // A COMPARISON occurrence the bound cannot accept is skipped rather than
+        // fatal. A reasoning stream restates the prompt, and the echo's anchor is
+        // followed by an operator too (`Drawdown = 14.999991` — an assignment,
+        // not a comparison), so the first occurrence is exactly the one the
+        // comparison bound rejects. The capture-side reference has always
+        // searched past it (tools/fsi_capture.py's regex over the line), and
+        // every committed golden's `expected` came from THAT rule.
+        //
+        // Arithmetic keeps the first occurrence: its capture-side rule takes the
+        // `=` line and a character run with no such search, and the historical
+        // forward behaviour is pinned by
+        // "fsi: prefer_last picks the LAST anchor on an unbroken reasoning line".
+        if (kind != FsiKind::kComparison) return first;
+        for (std::size_t a = first; a != std::string::npos;
+             a = line.find(anchor, a + anchor.size())) {
+            if (IsBoundableCandidate(line, a, anchor, kind)) return a;
+        }
+        return first;
+    }
     std::size_t best = std::string::npos;
     for (std::size_t a = first; a != std::string::npos;
          a = line.find(anchor, a + anchor.size()))

@@ -45,6 +45,30 @@ TEST_CASE("fsi: comparison extraction is bounded", "[fsi][unit]")
           "```\nDrawdown>Threshold\n```") == "Drawdown>Threshold");
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kComparison, "Drawdown",
           "no answer").empty());
+    // A candidate that CANNOT be bounded is skipped, not fatal: a reasoning
+    // stream restates the prompt before answering, and the echo's anchor is
+    // followed by an operator too (`Drawdown = 14.999991` — an assignment, not
+    // a comparison). The capture-side reference (`tools/fsi_capture.py`) has
+    // always skipped such candidates with a regex search over the line, so the
+    // committed goldens were produced by the skip rule; bailing instead
+    // reported an EMPTY answer for a model that answered correctly
+    // (measured: inkling-2-mini FSI-TEST-03).
+    CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kComparison, "Drawdown",
+          "Variables: Drawdown = 14.999991; Threshold = 15.000000. "
+          "Answer: Drawdown>Threshold") == "Drawdown>Threshold");
+    // ... and when the echo owns its own line, the line is SKIPPED: the answer
+    // is on the next one. This legal because no committed comparison golden can
+    // expect an empty answer (the capture aborts on empty extraction), so
+    // reaching further for a candidate cannot contradict one. It is REQUIRED
+    // because the engine's decode of the same tokens breaks lines differently
+    // from HF's `skip_special_tokens` decode (measured: inkling-2-mini
+    // FSI-TEST-03 — the echo landed on its own line).
+    CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kComparison, "Drawdown",
+          "Variables: Drawdown = 14.999991\nDrawdown>Threshold") ==
+          "Drawdown>Threshold");
+    // A stream with NO boundable candidate is still empty, not the echo.
+    CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kComparison, "Drawdown",
+          "Variables: Drawdown = 14.999991").empty());
 }
 
 namespace {
