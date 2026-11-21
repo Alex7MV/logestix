@@ -73,26 +73,76 @@ everything → compute-bound. Full BF16 source (~53 GB) fits host RAM →
 **source-derived FSI/CODE/DET goldens** via HF 5.24 on CPU (operator approved
 the slower capture over Small's template-derived debt).
 
-## 0.6 Semantics to verify (trail below)
+## 0.6 Semantics verified (2026-11-21, against transformers 5.24.0 + real shards)
 
-1. Loop scheduling / per-pass cache_offset — read from
-   `Inkling2LoopTextModel.forward`: passes 2/3 restart from pre-loop
-   hidden+block states; messages retrieved per loop layer from the PREVIOUS
-   pass's block stack (skipping the first appended state) + final hidden.
-2. MessageGate: `(1-tanh(forget(down)))*h + tanh(gain(down))*msg`, down input
-   = concat(unweighted-RMSnorm(h), RMSnorm(msg)); applies AFTER the AttnRes
-   mix, BEFORE input norm; mlp gate after mlp_input mix.
-3. w13 row-interleave — conversion table confirms `Interleave(dim=1)` for
-   Mini (both weights and scales), same trap as Small.
-4. Cross-pass query merge: `middle_cycle_cross_pass_queries` holds q+mlp,
-   `..._kv_queries` holds k+v (conversion table comment); exact row order
-   verified in Task 3 against `Inkling2LoopMergeMessageQueries`.
-5. NVFP4 invariant `6*max(scale)*amax/2688 == amax`; MXFP8 ue8m0 per 32 —
-   verified on real shards in Task 3.
-6. Attention scale head_dim**-0.5, sinks, gated output, clip-after-sconv,
-   log-scaling from 8192.
+1. **Loop scheduling** — `Inkling2LoopTextModel.forward`: pass 0 runs layers
+   [6,18) inline with the growing block stack; passes 1/2 restart from the
+   pre-loop hidden + block snapshots; per loop layer, messages are retrieved
+   by `message_input` (single-head softmax attention, unweighted RMSnorm on
+   the stacked states, scale hidden**-0.5) over the PREVIOUS pass's block
+   states **skipping the first appended state** (`num_pre_loop_blocks + 1:`)
+   plus the previous pass's final hidden. Cache offset for pass p (1-based):
+   `24 + (p-1)*12 - 6`, i.e. CacheSlot(layer, p) as in the passport.
+2. **MessageGate** — `(1-tanh(forget(down)))*h + tanh(gain(down))*msg`;
+   down input = concat(unweighted-RMSnorm(h), RMSnorm(msg)) cast to the down
+   weight dtype (BF16), gates computed in FP32. Applies AFTER the AttnRes mix
+   and BEFORE the input norm (q/k/v separately on loop passes ≥ 1); the mlp
+   gate applies after the mlp_input mix, before post_attention_layernorm.
+   On pass 0 the loop layers behave exactly like non-loop layers (messages
+   None → single input norm).
+3. **w13 row-interleave** — conversion table `inkling2_loop_experts` applies
+   `Inkling2LoopDequantizeExperts()` then `Interleave(dim=1)` to w13 (weights
+   AND scales via the same op chain): source rows alternate gate/up.
+4. **Cross-pass query merge — VERIFIED NUMERICALLY** on the real tensors with
+   the release's own `Inkling2LoopMergeMessageQueries`: merged (12,4,2304)
+   order is [q, k, v, mlp] with q=queries[2i], mlp=queries[2i+1],
+   k=kv_queries[2i], v=kv_queries[2i+1]; inverse round-trip byte-exact.
+5. **NVFP4 invariant — VERIFIED** on layers 0/10/19, w13+w2:
+   `6*max(block_scale_e)*amax_e/2688 == amax_e` exactly (rel err 0).
+   MXFP8 layers 20–23: E4M3 bytes + ue8m0 scale per 32 (byte range 113–117 on
+   L20 w13), decode `2**(scale-127)`.
+6. **Attention** — scale head_dim**-0.5; sink = one extra logit per head from
+   `sink_proj(hidden)`, zero value; output gated by sigmoid(gate_proj(hidden))
+   computed in FP32; q: learned per-head scale THEN L2 clip (then log-scale on
+   full layers); k: sconv FIRST then weight-free L2 clip; v: sconv then
+   unweighted RMSnorm; rel states: wr_du → learned scale → clip 8.0 (→
+   log-scale on full layers) → proj[d_rel, extent] → gather by distance,
+   zero outside [0, extent). Log-scale factor
+   `1 + 0.1*log(max((pos+1)/8192, 1))` — ACTIVE within this card's contexts.
+   Static sconv normalizer sqrt(k+1), dynamic sqrt(2k+1); dynamic taps =
+   static_w.T + weight_proj(hidden) per kv head.
+7. **MoE** — router FP32 sigmoid, bias added for SELECTION only, weights
+   renormalized (sum + 1e-20) then ×8.0; expert = softcapped SwiGLU
+   (tanh(g/4)*4 · sigmoid(g) · tanh(u/25)*25) in FP32; gate_up rows after
+   de-interleave: first half gate, second half up.
+8. **Norms** — T5-style RMSnorm (no mean subtraction, no bias), eps 1e-6,
+   weight applied in FP32 then cast back; embed_norm applied to embeddings.
+
+## Source probe results (real weights, CPU bf16, release code)
+
+`tools/inkling_loop_transformers.py` (transformers 5.24.0, eager attention,
+64 threads, ~0.9 s/token):
+
+- **Framed Paris probe** (native user turn, effort line "Thinking effort
+  level: 0.9"): prompt ids
+  `[200002,200004,34182,279,154554,150628,25,220,15,13,24,200010,200000,200004,371,151451,149879,151194,149884,200010]`;
+  32-token greedy continuation opens
+  `<|message_model|><|content_thinking|>The user asks: "The capital of France
+  is". This is a simple factual question. The capital of France is Paris. I
+  should answer` — ids in
+  `/mnt/fast_storage/tmp/inkling2-mini/probes/paris.json` (+ last-step logits
+  .npy). The stream opens with the model's OWN opener, as Small's does.
+- **Raw knowledge probe** "The capital of France is" (ids
+  `[371,151451,149879,151194,149884]`): top-1 continuation **" Paris"**
+  (152717), then `.`, `\n\n` — `probes/paris_raw.json`.
+- Probe decision for the engine SelfCheck: framed prompt, bit-exact mode;
+  `selfcheck_max_gen` to be fixed from the engine's own decode budget at
+  Task 9 (the source confirms "Paris" appears within the first 32 tokens).
 
 ## Trail
 
 - 2026-11-21: stage 0 complete; design approved by operator; plan written;
   branch created; naming guard accepts the `loop` variant token (RED→GREEN).
+- 2026-11-21: frozen passport + constants test green (Task 2); reference
+  harness ran the release code on real weights — Paris confirmed both framed
+  and raw; merge order + NVFP4 invariant verified numerically (Task 3).
