@@ -131,6 +131,8 @@ add_library(lsxcommon STATIC
     src/inkling_moe_convert.cpp
     src/inkling_moe_loop_convert.cpp
     src/inkling_moe_loop_load.cpp
+    src/inkling_moe_loop_model.cpp
+    src/inkling_moe_loop_tool_format.cpp
     src/inkling_moe_base_convert.cpp
     src/inkling_moe_base_load.cpp
     src/inkling_moe_base_model.cpp

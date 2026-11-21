@@ -335,6 +335,30 @@ set_tests_properties(test_inkling_moe_loop_pipeline PROPERTIES
     LABELS inference RESOURCE_LOCK "gpu"
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
     SKIP_RETURN_CODE 4)
+# Native conversation/tool codec: host-only, synthetic tokenizer, no CUDA.
+add_executable(test_inkling_moe_loop_tool_framing
+    test_inkling_moe_loop_tool_framing.cpp)
+target_include_directories(test_inkling_moe_loop_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_inkling_moe_loop_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_inkling_moe_loop_tool_framing PRIVATE lsxcommon
+    arrow_shared Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_loop_tool_framing
+    COMMAND test_inkling_moe_loop_tool_framing)
+set_tests_properties(test_inkling_moe_loop_tool_framing PROPERTIES
+    LABELS fast)
+# Model stage: the whole engine on the synthetic converted tree.
+add_executable(test_inkling_moe_loop_model test_inkling_moe_loop_model.cpp)
+target_include_directories(test_inkling_moe_loop_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_inkling_moe_loop_model PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_loop_model COMMAND test_inkling_moe_loop_model)
+set_tests_properties(test_inkling_moe_loop_model PROPERTIES
+    LABELS inference RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+    SKIP_RETURN_CODE 4)
 # Kernel/session test: CUDA OBJECT lib + CXX executable (the Small shape).
 add_library(test_inkling_loop_cu OBJECT
     test_inkling_moe_loop_kernels.cu
