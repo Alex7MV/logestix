@@ -359,6 +359,16 @@ set_tests_properties(test_inkling_moe_loop_model PROPERTIES
     LABELS inference RESOURCE_LOCK "gpu"
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
     SKIP_RETURN_CODE 4)
+# SelfCheck gate: the real converted tree in the vault; SKIP 4 when absent.
+# The label set is fast|convert|inference|perf (a real-weight gate is an
+# inference test); RESOURCE_LOCK/SKIP stay spelled out because the guards read
+# the registration TEXT, not the resolved properties.
+lsx_add_test(NAME test_inkling_moe_loop_selfcheck
+    LINK lsxcommon simdjson::simdjson
+    INCLUDE "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    LABEL inference TIMEOUT 3600 SKIP)
+set_tests_properties(test_inkling_moe_loop_selfcheck PROPERTIES
+    RESOURCE_LOCK "gpu" SKIP_RETURN_CODE 4 TIMEOUT 3600)
 # Kernel/session test: CUDA OBJECT lib + CXX executable (the Small shape).
 add_library(test_inkling_loop_cu OBJECT
     test_inkling_moe_loop_kernels.cu

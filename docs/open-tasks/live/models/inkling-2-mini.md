@@ -139,6 +139,28 @@ the slower capture over Small's template-derived debt).
   `selfcheck_max_gen` to be fixed from the engine's own decode budget at
   Task 9 (the source confirms "Paris" appears within the first 32 tokens).
 
+## Engine-side parity (real weights, `logestix`, Task 9)
+
+Conversion: `lsxforge --inkling_loop` → 24 layers (4 full / 20 sliding), loop
+`[6,18) x 3`, 128 experts x 24 layers, 645 pinned tensors, 3072 expert files,
+422 vision tensors stripped, tiktoken built; artifact **18 GiB**, conversion
+under a minute.
+
+`test_inkling_moe_loop_selfcheck`, first run, no iteration:
+
+- **Paris, framed, greedy, 32 tokens, 3 cycles**: prompt_len 20 (identical to
+  the source's `prompt_ids` above) and the stream opens
+  `200001 200008 371 150409 171960 25 196980 371 151451 149879 151194 149884`
+  — the SAME ids, in the same order, as the source's `generated_ids`, i.e. the
+  engine reproduces the release's greedy continuation token for token.
+  `logits_hash = 0x12e684ecd27e40d7`, bit-identical across all three cycles.
+- **Knowledge probe** (teacher-forced, ids `371,151451,149879,151194,149884,152717`):
+  top-1 **152717 (" Paris")**, mean NLL 3.458 → perplexity **31.8** (gate < 100).
+- Engine-side SelfCheck options therefore measured, not copied:
+  `selfcheck_frame_prompt: true`, `selfcheck_bit_exact: true`,
+  `selfcheck_max_gen: 32` (the answer lands at token 27; a 2-token window would
+  fail a correct model).
+
 ## Trail
 
 - 2026-11-21: stage 0 complete; design approved by operator; plan written;
@@ -146,3 +168,5 @@ the slower capture over Small's template-derived debt).
 - 2026-11-21: frozen passport + constants test green (Task 2); reference
   harness ran the release code on real weights — Paris confirmed both framed
   and raw; merge order + NVFP4 invariant verified numerically (Task 3).
+- 2026-11-21: engine green on the real converted tree — Paris bit-exact x3 and
+  the greedy stream matches the source's ids (Task 9).

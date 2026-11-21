@@ -165,10 +165,15 @@ gpu::InferenceResult InklingMoeLoopModel::Infer(const ModelRequest &req)
 
 gpu::InferenceResult InklingMoeLoopModel::SelfCheck(const ModelRequest &req)
 {
+    // Measured from the source (see the selfcheck TU header): the framed prompt
+    // emits the assistant/thinking markers first and reaches " Paris" at token
+    // 27 of a 32-token window, without EOS — so the answer is matched as a
+    // substring of the whole window rather than as a stripped prefix.
     runtime::ParisSelfCheckOptions opts;
-    opts.frame_prompt = false;
-    opts.min_tokens = 2;
-    opts.answer_window = 8;
+    opts.frame_prompt = true;
+    opts.min_tokens = 32;
+    opts.answer_window = 32;
+    opts.substring_match = true;
     return runtime::RunParisSelfCheck(*this, req, opts);
 }
 
