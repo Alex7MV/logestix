@@ -298,6 +298,13 @@ lsx_add_test(NAME test_inkling_moe_loop_convert
 # same shape the generated model_targets.cmake fragment emits.
 set_tests_properties(test_inkling_moe_loop_convert PROPERTIES
     TIMEOUT 300 RESOURCE_LOCK "gpu")
+lsx_add_test(NAME test_inkling_moe_loop_loader
+    LINK lsxcommon simdjson::simdjson
+    INCLUDE "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    LABEL inference SKIP
+    ENV "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_inkling_moe_loop_loader PROPERTIES
+    RESOURCE_LOCK "gpu" SKIP_RETURN_CODE 4)
 
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the

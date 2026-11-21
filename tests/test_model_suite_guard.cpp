@@ -679,6 +679,7 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
         // model class; delete this entry in that same commit.
         "test_inkling_moe_loop_constants",
         "test_inkling_moe_loop_convert",
+        "test_inkling_moe_loop_loader",
     };
 
     std::set<std::string> claimed;
