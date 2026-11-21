@@ -499,6 +499,31 @@ target_link_libraries(lsxcommon_inkling_cu
     lsx_dep_includes
 )
 
+# Inkling-2-Mini (inkling2_loop): the loop deltas (MessageGate, message
+# retrieval, 3-pass scheduling, per-pass KV/conv state). The inkling2
+# attention/MoE arithmetic is geometry-parameterized and shared with Small.
+add_library(lsxcommon_inkling_loop_cu OBJECT
+    src/inkling_moe_loop_kernels.cu
+    src/inkling_moe_loop_inference_pipeline.cu
+)
+set_target_properties(lsxcommon_inkling_loop_cu PROPERTIES
+    CUDA_ARCHITECTURES OFF
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_inkling_loop_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(lsxcommon_inkling_loop_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_inkling_loop_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_inkling_loop_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_inkling_loop_cu
+    "${CUDA_CUDART_LIBRARY}"
+    lsx_dep_includes
+)
+
 # Beam-1.0 kernels + generation pipeline (gated GQA, SWA/NoPE-SSMax hybrid,
 # sandwich norms + depth-scaled residual, group-limited sigmoid-router MoE).
 add_library(lsxcommon_beam_cu OBJECT
@@ -906,6 +931,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_hy_cu
     lsxcommon_flint_cu
     lsxcommon_inkling_cu
+    lsxcommon_inkling_loop_cu
     lsxcommon_inkling_base_cu
     lsxcommon_beam_cu
     lsxcommon_ling_cu
