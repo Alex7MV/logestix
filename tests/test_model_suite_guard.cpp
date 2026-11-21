@@ -674,7 +674,11 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     // that is mid-flight adds its targets here and deletes them in the same
     // commit that lands the row (Inkling-2-Small did exactly that on
     // 2026-11-15).
-    static const std::set<std::string> kPendingSuiteTargets = {};
+    static const std::set<std::string> kPendingSuiteTargets = {
+        // Inkling-2-Mini ingestion in flight: the manifest row lands with the
+        // model class; delete this entry in that same commit.
+        "test_inkling_moe_loop_constants",
+    };
 
     std::set<std::string> claimed;
     for (const auto &s : Suites())

@@ -279,6 +279,16 @@ target_compile_definitions(test_inkling_moe_base_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"inkling\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 
+# ── Inkling-2-Mini (ingestion in flight, feat/inkling-2-mini-ingest) ───────
+# The manifest row lands with the model class (Task 8 of the ingestion plan);
+# until then this target is registered by hand and declared in
+# test_model_suite_guard.cpp::kPendingSuiteTargets + the generator's
+# _NON_MODEL_TESTS, with delete-on-row instructions (the Inkling-2-Small
+# precedent, commit 6b6a4d39).
+lsx_add_test(NAME test_inkling_moe_loop_constants
+    LINK lsxcommon
+    LABEL fast)
+
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the
 # generated model_targets.cmake fragment; what stays here is per-target BUILD
