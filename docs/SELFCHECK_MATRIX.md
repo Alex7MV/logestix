@@ -83,7 +83,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 | **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
 | **inkling** (base) | PASS (x3, framed, inline-reasoning) | 3/3 (template) | 3/3 (template) | 3/3 |
-| **inkling-2-mini** | PASS (x3, `12e684ecd27e40d7`, framed) | 3/3 (source) | see report | see report |
+| **inkling-2-mini** | PASS (x3, `12e684ecd27e40d7`, framed) | 3/3 (source) | 3/3 (source) | 3/3 |
 | **muse-glimmer-30b** | PASS (x3, `3374b7bc94231955`, raw) | 3/3 | 3/3 | 3/3 |
 
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe

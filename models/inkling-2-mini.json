@@ -112,5 +112,6 @@
   "cooperative_cancel": true,
   "selfcheck_max_gen": 32,
   "selfcheck_bit_exact": true,
-  "selfcheck_frame_prompt": true
+  "selfcheck_frame_prompt": true,
+  "report": "docs/model-reports/2026-11-21-Inkling-2-Mini.md"
 }

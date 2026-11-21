@@ -254,8 +254,8 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - vault `Inkling-2-Mini` (override `LSX_TEST_INKLING_2_MINI_ROOT`)
 - lifecycle TUs: `inkling_moe_loop_model.cpp`, `inkling_moe_loop_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: not seeded
-- report: **not written** (stage-9 debt)
+- perf: 6.05 t/s (r3, 2026-11-21)
+- report: `docs/model-reports/2026-11-21-Inkling-2-Mini.md`
 - notes: Looped inkling2: 24 layers, [6,18) x3 passes, per-pass KV/conv slots. NVFP4 experts 0-19, MXFP8 20-23, BF16 dense; no RoPE.
 
 ## inkling-2-small
