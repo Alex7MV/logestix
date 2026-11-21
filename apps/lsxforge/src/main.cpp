@@ -18,6 +18,7 @@
 #include "lsxcommon/kimi_moe_pro_convert.h"
 #include "lsxcommon/inkling_moe_convert.h"
 #include "lsxcommon/inkling_moe_base_convert.h"
+#include "lsxcommon/inkling_moe_loop_convert.h"
 #include "lsxcommon/muse_dense_convert.h"
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
@@ -125,6 +126,10 @@ ABSL_FLAG(bool, inkling, false,
 ABSL_FLAG(bool, inkling_base, false,
           "Inkling base (hybrid sliding/full + relative-bias MoE with 2 "
           "shared-sink experts, pure-BF16 source) conversion pipeline");
+ABSL_FLAG(bool, inkling_loop, false,
+          "Inkling-2-Mini (looped inkling2_loop: 24 layers, middle 12 x 3 "
+          "passes, MessageGate controllers, mixed NVFP4/MXFP8 expert source) "
+          "conversion pipeline");
 ABSL_FLAG(bool, muse, false,
           "Muse-Glimmer-30B (dense gated attention, NoPE full layers, "
           "centered norms, pure-BF16 source) conversion pipeline");
@@ -226,6 +231,7 @@ int main(int argc, char* argv[]) {
     bool kimi_k31_pro = absl::GetFlag(FLAGS_kimi_k31_pro);
     bool inkling = absl::GetFlag(FLAGS_inkling);
     bool inkling_base = absl::GetFlag(FLAGS_inkling_base);
+    bool inkling_loop = absl::GetFlag(FLAGS_inkling_loop);
     bool muse = absl::GetFlag(FLAGS_muse);
     bool alice = absl::GetFlag(FLAGS_alice);
     bool xing = absl::GetFlag(FLAGS_xing);
@@ -315,6 +321,7 @@ int main(int argc, char* argv[]) {
     flags.kimi_k31_pro = kimi_k31_pro;
     flags.inkling = inkling;
     flags.inkling_base = inkling_base;
+    flags.inkling_loop = inkling_loop;
     flags.muse = muse;
     flags.alice = alice;
     flags.xing = xing;
@@ -752,6 +759,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Inkling base conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kInklingLoop: {
+        lsxcommon::log::info(
+            "Inkling-2-Mini pipeline (logestix-inkling-2-mini layout)");
+        auto st = lsxcommon::inkling::ConvertInklingLoopModel(input_path,
+                                                             output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "Inkling-2-Mini conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Inkling-2-Mini conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

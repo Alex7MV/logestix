@@ -136,6 +136,25 @@ TEST_CASE("forge cli: --inkling_base selects the Inkling base pipeline",
     CHECK(rb.error.find("--inkling") != std::string::npos);
 }
 
+TEST_CASE("forge cli: --inkling_loop selects the Inkling-2-Mini pipeline",
+          "[lsxforge][cli]")
+{
+    Flags f = Base();
+    f.inkling_loop = true;
+    const auto r = ResolvePipeline(f);
+    CHECK(r.error.empty());
+    CHECK(r.pipeline == Pipeline::kInklingLoop);
+
+    // The looped converter is a third architecture: combining it with either
+    // of the other inkling flags is ambiguous, never first-flag-wins.
+    Flags both = Base();
+    both.inkling = true;
+    both.inkling_loop = true;
+    const auto rb = ResolvePipeline(both);
+    CHECK(rb.pipeline == Pipeline::kError);
+    CHECK(rb.error.find("--inkling") != std::string::npos);
+}
+
 TEST_CASE("forge cli: --muse selects the Muse-Glimmer pipeline",
           "[lsxforge][cli]")
 {

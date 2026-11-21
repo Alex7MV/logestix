@@ -288,6 +288,16 @@ target_compile_definitions(test_inkling_moe_base_det_selfcheck PRIVATE
 lsx_add_test(NAME test_inkling_moe_loop_constants
     LINK lsxcommon
     LABEL fast)
+lsx_add_test(NAME test_inkling_moe_loop_convert
+    LINK lsxcommon simdjson::simdjson
+    INCLUDE "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    LABEL convert TIMEOUT 300
+    ENV "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+# The guards read the registration TEXT (not the resolved properties), so the
+# lock and the timeout are also spelled as explicit properties calls — the
+# same shape the generated model_targets.cmake fragment emits.
+set_tests_properties(test_inkling_moe_loop_convert PROPERTIES
+    TIMEOUT 300 RESOURCE_LOCK "gpu")
 
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the

@@ -59,6 +59,7 @@ enum class Pipeline {
     kStep,
     kInkling,
     kInklingBase,
+    kInklingLoop,
     kMuse,
     kGeneric,
     kError,
@@ -112,6 +113,7 @@ struct Flags {
     bool step = false;
     bool inkling = false;
     bool inkling_base = false;
+    bool inkling_loop = false;
     bool muse = false;
 };
 

@@ -595,6 +595,7 @@ _NON_MODEL_TESTS = frozenset({
     # Inkling-2-Mini ingestion in flight: claimed here until the manifest row
     # lands with the model class; DELETE these entries in that same commit.
     "test_inkling_moe_loop_constants",
+    "test_inkling_moe_loop_convert",
     "test_absl_container_guard", "test_absl_format_guard", "test_anthropic_endpoint", "test_arrow_tree_integrity",
     "test_arrow_usage_guard", "test_arrow_validation", "test_attnres_kernels", "test_blackwell_micro_gemm", "test_blackwell_perf_deepseek",
     "test_blackwell_perf_dense", "test_blackwell_perf_glm", "test_blackwell_perf_kimi", "test_blackwell_perf_moe",
