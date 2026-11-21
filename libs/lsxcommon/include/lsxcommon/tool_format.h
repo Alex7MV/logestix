@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <simdjson.h>
+
 #include "lsxcommon/chat_conversation.h"
+#include "lsxcommon/tokenizer.h"
 
 namespace lsxcommon {
 namespace tools {
@@ -35,6 +39,87 @@ std::vector<ToolCall> ParseBareToolCallJson(std::string_view text);
 /// Pass the same marker set the family's id-builder scans for.
 std::string NeutralizeControlMarkers(
     std::string_view text, const std::vector<std::string_view> &markers);
+
+// ── Shared JSON/framing primitives (dedup phase 4) ──────────────────────
+// Moved verbatim from the byte-identical per-family copies. The three escape
+// semantics are DISTINCT and must not be merged into one another:
+//   * PyJson*  — Python json.dumps(ensure_ascii=True) shape (flint/hy/muse).
+//   * SerializeJson — compact JSON via lsxnetwork JsonEscape, %.17g doubles
+//     (deepseek/gemma/gigachat).
+//   * AppendJinjaString — Jinja tojson (dory/qwen).
+// Goldens: tests/test_tool_format_json.cpp.
+
+/// Escapes one string as a Python json.dumps(ensure_ascii=True) literal.
+void PyJsonString(std::string_view s, std::string &out);
+/// Serializes a simdjson DOM element in the Python tojson shape.
+void PyJsonValue(const simdjson::dom::element &v, std::string &out);
+/// Parses @p json and re-emits it in the Python tojson shape; {} on parse error.
+std::string PyJsonDumps(std::string_view json);
+
+/// Compact JSON serializer (JsonEscape, %.17g doubles) — the deepseek/gemma/
+/// gigachat tool-format shape. NOT the Python shape above.
+std::string SerializeJson(simdjson::dom::element e);
+
+/// Jinja `tojson` string escaping: control chars \u00XX, everything else
+/// (including UTF-8 and HTML-significant bytes) verbatim.
+void AppendJinjaString(std::string &out, std::string_view s);
+
+/// Decodes generated token ids to text with the shared retry-doubling buffer
+/// (4096 start, 8 attempts, cap 1<<20) and hands the text to @p parse.
+/// Returns false on decode failure; empty gen_tokens is a success with no
+/// calls. The kimi-k3/k3.1-pro ParseToolCalls copy (dedup Ф5 residual).
+bool DecodeAndParseToolCalls(const ArrowTokenizerDb &tok,
+                             const std::vector<int32_t> &gen_tokens,
+                             std::vector<ToolCall> &out_calls,
+                             std::vector<ToolCall> (*parse)(std::string_view));
+
+/// BPE-encodes @p text and appends the ids, stripping an auto-prepended BOS
+/// only when actually present. Retry-doubling buffer up to 65536 ids
+/// (the glm/granite/granite-switch/mimo/qwen copy).
+bool AppendEncoded(const ArrowTokenizerDb &tok, std::string_view text,
+                   std::vector<int32_t> &ids);
+/// Same, empty-text fast path and buffer up to 1<<20 ids
+/// (the hy/minimax/muse/step copy — a distinct body, kept distinct).
+bool AppendEncodedLarge(const ArrowTokenizerDb &tok, std::string_view text,
+                        std::vector<int32_t> &ids);
+
+/// Splits @p text on @p sentinels and injects each marker as its own token id;
+/// the runs between markers go through AppendEncodedLarge. The sentinel table
+/// stays family-owned (passed in); the body is the shared flint/hy/minimax/
+/// step copy.
+bool AppendTextWithSentinels(const ArrowTokenizerDb &tok,
+                             const std::string &text,
+                             const std::vector<std::string_view> &sentinels,
+                             std::vector<int32_t> &ids);
+
+/// Appends ids for a segment list: control segments become single token ids,
+/// text segments are BPE-encoded with a per-segment sized buffer. Templated on
+/// the family's segment struct ({std::string text; bool is_control;}) — the
+/// inkling pair's bodies were identical modulo the struct name.
+template <class Segment>
+bool AppendSegmentIds(const ArrowTokenizerDb &tok,
+                      const std::vector<Segment> &segs,
+                      std::vector<int32_t> &out_ids)
+{
+    for (const auto &s : segs) {
+        if (s.text.empty()) continue;
+        if (s.is_control) {
+            const int32_t id = arrow_tokenizer_lookup(tok, s.text.data(),
+                                                      s.text.size());
+            if (id < 0) return false;
+            out_ids.push_back(id);
+            continue;
+        }
+        std::vector<int32_t> tmp(s.text.size() * 4 + 64, 0);
+        std::size_t cap = tmp.size();
+        const int32_t n = arrow_tokenizer_encode(tok, s.text.data(),
+                                                 s.text.size(), tmp.data(), &cap);
+        if (n < 0) return false;
+        out_ids.insert(out_ids.end(), tmp.begin(),
+                       tmp.begin() + static_cast<std::size_t>(n));
+    }
+    return true;
+}
 
 }  // namespace tools
 }  // namespace lsxcommon

@@ -1,4 +1,5 @@
 #include "kimi_moe_k3_model.h"
+#include "lsxcommon/tool_format.h"
 
 #include "lsxcommon/kimi_moe_k3_tool_format.h"
 
@@ -181,25 +182,9 @@ bool KimiK3Model::ParseToolCalls(const ArrowTokenizerDb &tok,
                                  const std::vector<int32_t> &gen_tokens,
                                  std::vector<ToolCall> &out_calls) const
 {
-    out_calls.clear();
-    if (gen_tokens.empty()) return true;
-    std::string text(4096, '\0');
-    std::size_t cap = text.size();
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        const int rc = arrow_tokenizer_decode(
-            tok, gen_tokens.data(), gen_tokens.size(), text.data(), &cap);
-        if (rc == 0) {
-            text.resize(cap);
-            out_calls = ParseKimiK3ToolCalls(text);
-            return true;
-        }
-        if (rc == -2 && cap > text.size() && cap <= (1u << 20)) {
-            text.resize(cap);
-            continue;
-        }
-        break;
-    }
-    return false;
+    // Dedup Ф5: the decode-retry wrapper is the shared lsxcommon::tools body.
+    return tools::DecodeAndParseToolCalls(tok, gen_tokens, out_calls,
+                                          ParseKimiK3ToolCalls);
 }
 
 void KimiK3Model::TeardownWeights()

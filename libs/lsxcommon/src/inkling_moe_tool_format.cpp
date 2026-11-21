@@ -5,11 +5,13 @@
 // expected frames in tests/test_inkling_moe_tool_framing.cpp are the template's
 // own output, not a paraphrase.
 #include "lsxcommon/inkling_moe_tool_format.h"
+#include "lsxcommon/tool_format.h"
 
 #include <algorithm>
 
 namespace lsxcommon {
 namespace {
+
 
 // ── markers (added_tokens, all special:true) ──────────────────────────────
 constexpr char kUser[] = "<|message_user|>";
@@ -263,24 +265,7 @@ bool AppendInklingIds(const ArrowTokenizerDb &tok,
                      const std::vector<InklingSegment> &segs,
                      std::vector<int32_t> &out_ids)
 {
-    for (const auto &s : segs) {
-        if (s.text.empty()) continue;
-        if (s.is_control) {
-            const int32_t id = arrow_tokenizer_lookup(tok, s.text.data(),
-                                                     s.text.size());
-            if (id < 0) return false;
-            out_ids.push_back(id);
-            continue;
-        }
-        std::vector<int32_t> tmp(s.text.size() * 4 + 64, 0);
-        std::size_t cap = tmp.size();
-        const int32_t n = arrow_tokenizer_encode(tok, s.text.data(),
-                                                 s.text.size(), tmp.data(), &cap);
-        if (n < 0) return false;
-        out_ids.insert(out_ids.end(), tmp.begin(),
-                       tmp.begin() + static_cast<std::size_t>(n));
-    }
-    return true;
+    return lsxcommon::tools::AppendSegmentIds<InklingSegment>(tok, segs, out_ids);
 }
 
 }  // namespace lsxcommon

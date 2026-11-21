@@ -13,6 +13,21 @@
 
 namespace lsxcommon::hy {
 namespace {
+// Dedup Ф4: BPE append (cap 1<<20, empty fast path) is the shared tools body.
+using lsxcommon::tools::AppendEncodedLarge;
+using lsxcommon::tools::AppendEncodedLarge;
+inline bool AppendEncoded(const ArrowTokenizerDb &tok, std::string_view text,
+                          std::vector<int32_t> &ids)
+{
+    return AppendEncodedLarge(tok, text, ids);
+}
+
+// Dedup Ф4: the Python-tojson helpers are the shared lsxcommon::tools
+// implementations (byte-identical move); local aliases keep call sites stable.
+using lsxcommon::tools::PyJsonString;
+using lsxcommon::tools::PyJsonValue;
+using lsxcommon::tools::PyJsonDumps;
+
 
 using lsxnetwork::json::JsonEscape;
 
@@ -41,14 +56,17 @@ constexpr const char *kToolResponseEnd = "</tool_response>";
 // The template's default when the caller does not ask for thinking.
 constexpr const char *kDefaultEffort = "no_think";
 
-constexpr const char *kSentinels[] = {
-    kBos,       kEos,           kUser,             kAssistant,
-    kThinkBegin, kThinkEnd,     kReasoningMode,    kToolCallsBegin,
-    kToolCallsEnd, kToolCallBegin, kToolCallEnd,   kToolSep,
-    kArgKeyBegin, kArgKeyEnd,   kArgValueBegin,    kArgValueEnd,
-    kToolResponsesBegin, kToolResponsesEnd, kToolResponseBegin,
-    kToolResponseEnd,
-};
+const std::vector<std::string_view> kSentinelVec = {
+    kBos, kEos, kUser, kAssistant, kThinkBegin, kThinkEnd, kReasoningMode, kToolCallsBegin, kToolCallsEnd, kToolCallBegin, kToolCallEnd, kToolSep, kArgKeyBegin, kArgKeyEnd, kArgValueBegin, kArgValueEnd, kToolResponsesBegin, kToolResponsesEnd, kToolResponseBegin, kToolResponseEnd};
+
+bool AppendTextWithSentinels(const ArrowTokenizerDb &tok,
+                             const std::string &text,
+                             std::vector<int32_t> &ids)
+{
+    return lsxcommon::tools::AppendTextWithSentinels(tok, text, kSentinelVec,
+                                                     ids);
+}
+
 
 std::string_view TrimAscii(std::string_view s)
 {
@@ -59,196 +77,6 @@ std::string_view TrimAscii(std::string_view s)
                           s.back() == '\r' || s.back() == '\n'))
         s.remove_suffix(1);
     return s;
-}
-
-// Python json.dumps string escaping with ensure_ascii=True (what Jinja's
-// `tojson` produces for the tool blobs; `<`, `>`, `&`, `'` are additionally
-// escaped by Jinja's html-safe wrapper).
-void PyJsonString(std::string_view s, std::string &out)
-{
-    out += '"';
-    for (size_t i = 0; i < s.size(); ++i) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        switch (c) {
-        case '"': out += "\\\""; continue;
-        case '\\': out += "\\\\"; continue;
-        case '\n': out += "\\n"; continue;
-        case '\r': out += "\\r"; continue;
-        case '\t': out += "\\t"; continue;
-        case '\b': out += "\\b"; continue;
-        case '\f': out += "\\f"; continue;
-        case '<': out += "\\u003c"; continue;
-        case '>': out += "\\u003e"; continue;
-        case '&': out += "\\u0026"; continue;
-        case '\'': out += "\\u0027"; continue;
-        default: break;
-        }
-        if (c < 0x20) {
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-            out += buf;
-        } else if (c < 0x80) {
-            out += static_cast<char>(c);
-        } else {
-            // Decode one UTF-8 codepoint and emit \uXXXX (surrogate pair above
-            // the BMP), matching json.dumps(ensure_ascii=True).
-            int len = 1;
-            unsigned cp = c;
-            if ((c & 0xE0) == 0xC0) { len = 2; cp = c & 0x1F; }
-            else if ((c & 0xF0) == 0xE0) { len = 3; cp = c & 0x0F; }
-            else if ((c & 0xF8) == 0xF0) { len = 4; cp = c & 0x07; }
-            for (int k = 1; k < len && i + k < s.size(); ++k)
-                cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
-            i += static_cast<size_t>(len - 1);
-            char buf[16];
-            if (cp >= 0x10000) {
-                const unsigned v = cp - 0x10000;
-                std::snprintf(buf, sizeof(buf), "\\u%04x\\u%04x",
-                              static_cast<unsigned>(0xD800 + (v >> 10)),
-                              static_cast<unsigned>(0xDC00 + (v & 0x3FF)));
-            } else {
-                std::snprintf(buf, sizeof(buf), "\\u%04x", cp);
-            }
-            out += buf;
-        }
-    }
-    out += '"';
-}
-
-// Re-emits a JSON value in Python's json.dumps style (", " / ": " separators,
-// insertion order preserved) so the rendered tool block is byte-identical to
-// the template's `tool | tojson`.
-void PyJsonValue(const simdjson::dom::element &v, std::string &out)
-{
-    switch (v.type()) {
-    case simdjson::dom::element_type::OBJECT: {
-        out += '{';
-        bool first = true;
-        for (auto [k, val] : v.get_object()) {
-            if (!first) out += ", ";
-            first = false;
-            PyJsonString(k, out);
-            out += ": ";
-            PyJsonValue(val, out);
-        }
-        out += '}';
-        break;
-    }
-    case simdjson::dom::element_type::ARRAY: {
-        out += '[';
-        bool first = true;
-        for (auto e : v.get_array()) {
-            if (!first) out += ", ";
-            first = false;
-            PyJsonValue(e, out);
-        }
-        out += ']';
-        break;
-    }
-    case simdjson::dom::element_type::STRING: {
-        std::string_view s;
-        if (v.get_string().get(s) != simdjson::SUCCESS) s = {};
-        PyJsonString(s, out);
-        break;
-    }
-    case simdjson::dom::element_type::INT64: {
-        int64_t x = 0;
-        if (v.get_int64().get(x) != simdjson::SUCCESS) x = 0;
-        out += std::to_string(x);
-        break;
-    }
-    case simdjson::dom::element_type::UINT64: {
-        uint64_t x = 0;
-        if (v.get_uint64().get(x) != simdjson::SUCCESS) x = 0;
-        out += std::to_string(x);
-        break;
-    }
-    case simdjson::dom::element_type::DOUBLE: {
-        double d = 0.0;
-        if (v.get_double().get(d) != simdjson::SUCCESS) d = 0.0;
-        char buf[40];
-        std::snprintf(buf, sizeof(buf), "%g", d);
-        out += buf;
-        break;
-    }
-    case simdjson::dom::element_type::BOOL: {
-        bool b = false;
-        if (v.get_bool().get(b) != simdjson::SUCCESS) b = false;
-        out += b ? "true" : "false";
-        break;
-    }
-    case simdjson::dom::element_type::BIGINT:
-        out += simdjson::to_string(v);
-        break;
-    case simdjson::dom::element_type::NULL_VALUE:
-        out += "null";
-        break;
-    }
-}
-
-// Appends the BPE encoding of `text` (never a marker).
-bool AppendEncoded(const ArrowTokenizerDb &tok, std::string_view text,
-                   std::vector<int32_t> &ids)
-{
-    if (text.empty()) return true;
-    for (size_t cap = 256; cap <= (1u << 20); cap *= 2) {
-        std::vector<int32_t> buf(cap, 0);
-        size_t enc_cap = cap;
-        const int32_t n = arrow_tokenizer_encode(tok, text.data(), text.size(),
-                                                 buf.data(), &enc_cap);
-        if (n == -2) continue;
-        if (n < 0) return false;
-        // Strip the auto-prepended BOS only when it is actually there: the
-        // single-stage tokenizer kinds (7..10) do not prepend one, and
-        // an unconditional strip would eat the first real token.
-        const size_t begin =
-            (tok.bos_id >= 0 && n > 0 && buf[0] == tok.bos_id) ? 1 : 0;
-        ids.insert(ids.end(), buf.begin() + begin, buf.begin() + n);
-        return true;
-    }
-    return false;
-}
-
-// Splits `text` on the known markers and injects each marker as its own id.
-bool AppendTextWithSentinels(const ArrowTokenizerDb &tok,
-                             const std::string &text,
-                             std::vector<int32_t> &ids)
-{
-    size_t i = 0;
-    size_t run = 0;
-    auto flush = [&](size_t end) -> bool {
-        if (end > run)
-            return AppendEncoded(
-                tok, std::string_view(text).substr(run, end - run), ids);
-        return true;
-    };
-    while (i < text.size()) {
-        bool matched = false;
-        for (const char *s : kSentinels) {
-            const size_t n = std::strlen(s);
-            if (text.compare(i, n, s) != 0) continue;
-            if (!flush(i)) return false;
-            const int32_t id = arrow_tokenizer_lookup(tok, s, n);
-            if (id < 0) return false;
-            ids.push_back(id);
-            i += n;
-            run = i;
-            matched = true;
-            break;
-        }
-        if (!matched) ++i;
-    }
-    return flush(text.size());
-}
-
-std::string PyJsonDumps(std::string_view json)
-{
-    simdjson::dom::parser parser;
-    simdjson::dom::element doc;
-    if (parser.parse(json).get(doc) != simdjson::SUCCESS) return {};
-    std::string out;
-    PyJsonValue(doc, out);
-    return out;
 }
 
 // One `<tool_call>` block: name<tool_sep>\n<arg_key>..</arg_key>\n...

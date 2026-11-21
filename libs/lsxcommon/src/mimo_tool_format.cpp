@@ -13,30 +13,14 @@ namespace lsxcommon {
 using lsxnetwork::json::JsonEscape;
 namespace mimo {
 namespace {
-
-// Appends the BPE encoding of `text` to `ids`. arrow_tokenizer_encode
-// auto-prepends bos_id when the tokenizer defines one; ChatML frames turns with
-// <|im_start|> instead, so the prepended BOS is dropped.
-bool AppendMimoEncoded(const ArrowTokenizerDb &tok, std::string_view text,
-                       std::vector<int32_t> &ids)
+// Dedup Ф4: BPE append (cap 65536) is the shared lsxcommon::tools body.
+using lsxcommon::tools::AppendEncoded;
+inline bool AppendMimoEncoded(const ArrowTokenizerDb &tok, std::string_view text,
+                              std::vector<int32_t> &ids)
 {
-    for (size_t cap = 256; cap <= 65536; cap *= 2) {
-        std::vector<int32_t> buf(cap, 0);
-        size_t enc_cap = cap;
-        const int32_t n = arrow_tokenizer_encode(tok, text.data(), text.size(),
-                                                 buf.data(), &enc_cap);
-        if (n == -2) continue;
-        if (n < 0) return false;
-        // Strip the auto-prepended BOS only when it is actually there: the
-        // single-stage tokenizer kinds (7..10) do not prepend one, and
-        // an unconditional strip would eat the first real token.
-        const size_t begin =
-            (tok.bos_id >= 0 && n > 0 && buf[0] == tok.bos_id) ? 1 : 0;
-        ids.insert(ids.end(), buf.begin() + begin, buf.begin() + n);
-        return true;
-    }
-    return false;
+    return AppendEncoded(tok, text, ids);
 }
+
 
 // Control sentinels injected as their own vocab ids.
 constexpr const char *kMimoSentinels[] = {

@@ -12,6 +12,15 @@
 
 namespace lsxcommon::minimax {
 namespace {
+// Dedup Ф4: BPE append (cap 1<<20, empty fast path) is the shared tools body.
+using lsxcommon::tools::AppendEncodedLarge;
+using lsxcommon::tools::AppendEncodedLarge;
+inline bool AppendEncoded(const ArrowTokenizerDb &tok, std::string_view text,
+                          std::vector<int32_t> &ids)
+{
+    return AppendEncodedLarge(tok, text, ids);
+}
+
 
 using lsxnetwork::json::JsonEscape;
 
@@ -35,10 +44,17 @@ constexpr const char *kDefaultDeveloper = "You are a helpful assistant.";
 // `<tool>` / `<response>` are ordinary text in the template (BPE-encoded), and
 // the tool-call wrapper is the concatenation of two added tokens
 // (`]<]minimax[>[` + `<tool_call>`), so it is matched as a prefix pair.
-constexpr const char *kSentinels[] = {
-    kBod,        kBos,          kEos,          kNs,
-    "<tool_call>", "</tool_call>", kThinkBegin, kThinkEnd,
-};
+const std::vector<std::string_view> kSentinelVec = {
+    kBod, kBos, kEos, kNs, "<tool_call>", "</tool_call>", kThinkBegin, kThinkEnd};
+
+bool AppendTextWithSentinels(const ArrowTokenizerDb &tok,
+                             const std::string &text,
+                             std::vector<int32_t> &ids)
+{
+    return lsxcommon::tools::AppendTextWithSentinels(tok, text, kSentinelVec,
+                                                     ids);
+}
+
 
 std::string_view TrimAscii(std::string_view s)
 {
@@ -49,63 +65,6 @@ std::string_view TrimAscii(std::string_view s)
                           s.back() == '\r' || s.back() == '\n'))
         s.remove_suffix(1);
     return s;
-}
-
-// Appends the BPE encoding of `text` (never a marker).
-bool AppendEncoded(const ArrowTokenizerDb &tok, std::string_view text,
-                   std::vector<int32_t> &ids)
-{
-    if (text.empty()) return true;
-    for (size_t cap = 256; cap <= (1u << 20); cap *= 2) {
-        std::vector<int32_t> buf(cap, 0);
-        size_t enc_cap = cap;
-        const int32_t n = arrow_tokenizer_encode(tok, text.data(), text.size(),
-                                                 buf.data(), &enc_cap);
-        if (n == -2) continue;
-        if (n < 0) return false;
-        // The engine never auto-prepends BOS for this checkpoint (the
-        // template spells `]~b]` out); drop one defensively if a db carries it.
-        // Strip the auto-prepended BOS only when it is actually there: the
-        // single-stage tokenizer kinds (7..10) do not prepend one, and
-        // an unconditional strip would eat the first real token.
-        const size_t begin =
-            (tok.bos_id >= 0 && n > 0 && buf[0] == tok.bos_id) ? 1 : 0;
-        ids.insert(ids.end(), buf.begin() + begin, buf.begin() + n);
-        return true;
-    }
-    return false;
-}
-
-// Splits `text` on the known markers and injects each marker as its own id.
-bool AppendTextWithSentinels(const ArrowTokenizerDb &tok,
-                             const std::string &text,
-                             std::vector<int32_t> &ids)
-{
-    size_t i = 0;
-    size_t run = 0;
-    auto flush = [&](size_t end) -> bool {
-        if (end > run)
-            return AppendEncoded(
-                tok, std::string_view(text).substr(run, end - run), ids);
-        return true;
-    };
-    while (i < text.size()) {
-        bool matched = false;
-        for (const char *s : kSentinels) {
-            const size_t n = std::strlen(s);
-            if (text.compare(i, n, s) != 0) continue;
-            if (!flush(i)) return false;
-            const int32_t id = arrow_tokenizer_lookup(tok, s, n);
-            if (id < 0) return false;
-            ids.push_back(id);
-            i += n;
-            run = i;
-            matched = true;
-            break;
-        }
-        if (!matched) ++i;
-    }
-    return flush(text.size());
 }
 
 // Recursive XML -> JSON (the inverse of the template's `to_xml` macro).

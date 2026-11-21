@@ -8,11 +8,13 @@
 // header carries the tool name, resolved from message.name or the matching
 // assistant tool_call id.
 #include "lsxcommon/inkling_moe_base_tool_format.h"
+#include "lsxcommon/tool_format.h"
 
 #include <algorithm>
 
 namespace lsxcommon::inkling::base {
 namespace {
+
 
 // ── markers (added_tokens, all special:true) ──────────────────────────────
 constexpr char kUser[] = "<|message_user|>";
@@ -270,27 +272,11 @@ int32_t MarkerId(const ArrowTokenizerDb &tok, std::string_view spelling)
     return arrow_tokenizer_lookup(tok, spelling.data(), spelling.size());
 }
 
-bool AppendIds(const ArrowTokenizerDb &tok, const std::vector<Segment> &segs,
-               std::vector<int32_t> &out_ids)
+bool AppendIds(const ArrowTokenizerDb &tok,
+                     const std::vector<Segment> &segs,
+                     std::vector<int32_t> &out_ids)
 {
-    for (const auto &s : segs) {
-        if (s.text.empty()) continue;
-        if (s.is_control) {
-            const int32_t id = arrow_tokenizer_lookup(tok, s.text.data(),
-                                                      s.text.size());
-            if (id < 0) return false;
-            out_ids.push_back(id);
-            continue;
-        }
-        std::vector<int32_t> tmp(s.text.size() * 4 + 64, 0);
-        std::size_t cap = tmp.size();
-        const int32_t n = arrow_tokenizer_encode(tok, s.text.data(),
-                                                 s.text.size(), tmp.data(), &cap);
-        if (n < 0) return false;
-        out_ids.insert(out_ids.end(), tmp.begin(),
-                       tmp.begin() + static_cast<std::size_t>(n));
-    }
-    return true;
+    return lsxcommon::tools::AppendSegmentIds<Segment>(tok, segs, out_ids);
 }
 
 }  // namespace lsxcommon::inkling::base

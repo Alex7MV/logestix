@@ -14,6 +14,9 @@
 namespace lsxcommon {
 
 namespace {
+// Dedup Ф4: Jinja tojson string escaping is the shared lsxcommon::tools body.
+using lsxcommon::tools::AppendJinjaString;
+
 
 using lsxnetwork::json::JsonEscape;
 
@@ -26,33 +29,6 @@ std::string_view TrimAscii(std::string_view s)
                           s.back() == '\r' || s.back() == '\n'))
         s.remove_suffix(1);
     return s;
-}
-
-// jinja `tojson` = json.dumps(obj, ensure_ascii=False): ", " / ": " separators.
-void AppendJinjaString(std::string &out, std::string_view s)
-{
-    out.push_back('"');
-    for (char ch : s) {
-        const unsigned char c = static_cast<unsigned char>(ch);
-        switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\b': out += "\\b"; break;
-        case '\f': out += "\\f"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-            if (c < 0x20) {
-                char buf[8];
-                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-                out += buf;
-            } else {
-                out.push_back(ch);
-            }
-        }
-    }
-    out.push_back('"');
 }
 
 void AppendJinjaJson(std::string &out, simdjson::dom::element e)

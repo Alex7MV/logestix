@@ -15,6 +15,9 @@
 
 namespace lsxcommon {
 namespace {
+// Dedup Ф4: compact JSON serializer is the shared lsxcommon::tools body.
+using lsxcommon::tools::SerializeJson;
+
 
 // All Gemma control markers are special tokens (injected via lookup; the BPE
 // encoder never resolves added tokens and the decoder drops them).
@@ -38,52 +41,6 @@ std::string_view Trim(std::string_view s)
 
 using lsxnetwork::json::JsonEscape;
 
-std::string SerializeJson(simdjson::dom::element e);
-
-std::string SerializeJson(simdjson::dom::element e)
-{
-    using simdjson::dom::element_type;
-    switch (e.type()) {
-        case element_type::OBJECT: {
-            std::string out = "{";
-            bool first = true;
-            for (auto [k, v] : e.get_object()) {
-                if (!first) out += ",";
-                first = false;
-                out += "\"" + JsonEscape(k) + "\":" + SerializeJson(v);
-            }
-            out += "}";
-            return out;
-        }
-        case element_type::ARRAY: {
-            std::string out = "[";
-            bool first = true;
-            for (auto v : e.get_array()) {
-                if (!first) out += ",";
-                first = false;
-                out += SerializeJson(v);
-            }
-            out += "]";
-            return out;
-        }
-        case element_type::STRING:
-            return "\"" + JsonEscape(e.get_string().value_unsafe()) + "\"";
-        case element_type::INT64:
-            return std::to_string(e.get_int64().value_unsafe());
-        case element_type::UINT64:
-            return std::to_string(e.get_uint64().value_unsafe());
-        case element_type::DOUBLE: {
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "%.17g",
-                          e.get_double().value_unsafe());
-            return std::string(buf);
-        }
-        case element_type::BOOL:
-            return e.get_bool().value_unsafe() ? "true" : "false";
-        default:
-            return "null";
-    }
-}
 
 bool AppendGemmaEncoded(const ArrowTokenizerDb &tok, std::string_view text,
                         std::vector<int32_t> &ids)
