@@ -21,6 +21,7 @@
 // `block_sparse_moe.experts.{0..895}.w{1,2,3}`; the vision tower and the
 // projector are stripped and counted, never applied.
 #include "lsxcommon/kimi_moe_k3_convert.h"
+#include "lsxcommon/config_json.h"
 
 #include "kimi_moe_k3_constants.h"
 #include "kimi_moe_pro_constants.h"
@@ -50,6 +51,12 @@
 
 namespace lsxcommon::kimi_k3 {
 namespace {
+// Dedup Ф5: layer-name splitter is the shared lsxcommon::config body.
+inline bool parse_layer_body(const std::string &name, int &layer, std::string &body)
+{
+    return lsxcommon::config::ParseLayerBody(name, layer, body);
+}
+
 
 namespace fs = std::filesystem;
 
@@ -71,26 +78,6 @@ auto get_b = [](simdjson::ondemand::object &o, const char *k, bool dflt) {
     if (o[k].get_bool().get(v) != simdjson::SUCCESS) return dflt;
     return v;
 };
-
-
-// Parses "model.layers.<N>." (after the `language_model.` scope) and returns
-// the body after it.
-bool parse_layer_body(const std::string &name, int &layer, std::string &body)
-{
-    const std::string prefix = "model.layers.";
-    if (name.rfind(prefix, 0) != 0) return false;
-    const size_t digits_start = prefix.size();
-    const size_t dot = name.find('.', digits_start);
-    if (dot == std::string::npos) return false;
-    int v = 0;
-    for (size_t i = digits_start; i < dot; ++i) {
-        if (name[i] < '0' || name[i] > '9') return false;
-        v = v * 10 + (name[i] - '0');
-    }
-    layer = v;
-    body = name.substr(dot + 1);
-    return true;
-}
 
 // "block_sparse_moe.experts.<E>.<rest>" -> expert + rest.
 bool parse_expert_body(const std::string &body, int &expert, std::string &rest)

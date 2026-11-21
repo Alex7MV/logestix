@@ -1,4 +1,5 @@
 #include "lsxcommon/inkling_moe_load.h"
+#include "lsxcommon/config_json.h"
 
 #include "inkling_moe_constants.h"
 
@@ -19,6 +20,13 @@
 
 namespace lsxcommon::inkling {
 namespace {
+// Dedup Ф5: numeric config field reader is the shared lsxcommon::config body.
+using lsxcommon::config::GetDouble;
+inline bool get_d(simdjson::ondemand::object &o, const char *k, double &out)
+{
+    return GetDouble(o, k, out);
+}
+
 
 namespace fs = std::filesystem;
 
@@ -28,21 +36,6 @@ bool get_i(simdjson::ondemand::object &o, const char *k, int &out)
     if (o[k].get_int64().get(v) != simdjson::SUCCESS) return false;
     out = static_cast<int>(v);
     return true;
-}
-
-bool get_d(simdjson::ondemand::object &o, const char *k, double &out)
-{
-    simdjson::ondemand::value x;
-    if (o[k].get(x) != simdjson::SUCCESS) return false;
-    if (auto d = x.get_double(); d.error() == simdjson::SUCCESS) {
-        out = d.value();
-        return true;
-    }
-    if (auto i = x.get_int64(); i.error() == simdjson::SUCCESS) {
-        out = static_cast<double>(i.value());
-        return true;
-    }
-    return false;
 }
 
 bool get_b(simdjson::ondemand::object &o, const char *k, bool &out)

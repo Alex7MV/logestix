@@ -111,6 +111,10 @@ struct HyPassportGeometry {
     int first_moe_layer = 0;
 };
 
+// The frozen passport as a geometry struct (one definition shared by the
+// converter and the loader; dedup Ф5).
+HyPassportGeometry HyMemoryPassportGeometry();
+
 // Model identity + policy for one conversion. The default is Hy-Memory's;
 // Hy-SimulMT supplies its own identity and audio-ballast policy.
 struct HyConvertSpec {

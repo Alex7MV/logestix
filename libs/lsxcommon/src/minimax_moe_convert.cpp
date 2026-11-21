@@ -1,4 +1,5 @@
 #include "lsxcommon/minimax_moe_convert.h"
+#include "lsxcommon/config_json.h"
 
 #include "minimax_moe_constants.h"
 
@@ -28,6 +29,28 @@
 
 namespace lsxcommon::minimax {
 namespace {
+void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
+                       int &pad)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return;
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (json.empty()) return;
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad_json(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad_json).get(doc) != simdjson::SUCCESS) return;
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) return;
+    const int b = lsxcommon::config::GetInt(root, "bos_token_id", -1);
+    const int e = lsxcommon::config::GetInt(root, "eos_token_id", -1);
+    const int p = lsxcommon::config::GetInt(root, "pad_token_id", -1);
+    if (b >= 0) bos = b;
+    if (e >= 0) eos = e;
+    if (p >= 0) pad = p;
+}
+
 
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
@@ -95,33 +118,6 @@ bool CheckFrozenGeometry(const MinimaxTopology &top, std::string &why)
             return bad("mlp_layer_types[i]", i, 0);
     }
     return true;
-}
-
-// Quantizes a contiguous BF16/FP32/F8_E4M3 slice to NVFP4. An E8M0 scale
-// tile (`e8m0` non-null) makes the shared quantizer dequantize the payload
-// with `float * 2^(u-127)` per tile first (MXFP8 -> NVFP4). Returns false on
-// GPU failure.
-// Reads a light JSON file's "text_config"-less top level for token ids.
-void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
-                       int &pad)
-{
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return;
-    std::string json((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
-    if (json.empty()) return;
-    simdjson::ondemand::parser parser;
-    simdjson::padded_string pad_json(json.data(), json.size());
-    simdjson::ondemand::document doc;
-    if (parser.iterate(pad_json).get(doc) != simdjson::SUCCESS) return;
-    simdjson::ondemand::object root;
-    if (doc.get_object().get(root) != simdjson::SUCCESS) return;
-    const int b = get_i(root, "bos_token_id", -1);
-    const int e = get_i(root, "eos_token_id", -1);
-    const int p = get_i(root, "pad_token_id", -1);
-    if (b >= 0) bos = b;
-    if (e >= 0) eos = e;
-    if (p >= 0) pad = p;
 }
 
 } // namespace

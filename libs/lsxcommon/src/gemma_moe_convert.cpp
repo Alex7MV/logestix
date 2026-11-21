@@ -1,4 +1,5 @@
 #include "lsxcommon/gemma_moe_convert.h"
+#include "lsxcommon/config_json.h"
 #include "lsxcommon/converter.h"
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
@@ -26,6 +27,11 @@ namespace lsxcommon {
 namespace gemma {
 
 namespace {
+void MergeGenerationConfigEos(const std::string &dir, GemmaTopology &top)
+{
+    lsxcommon::config::MergeGenerationConfigEos(dir, top.eos_ids);
+}
+
 
 std::optional<ParsedTensor> match_layer(const std::string &name,
                                         const std::regex &re, TensorKind kind)
@@ -279,32 +285,6 @@ std::vector<std::string> generate_gemma_expected_names(const GemmaTopology &top)
         }
     }
     return expected;
-}
-
-// HF uses generation_config's eos_token_id for stopping; add any ids beyond
-// the config array (the real checkpoint ends a turn on 106).
-void MergeGenerationConfigEos(const std::string &dir, GemmaTopology &top)
-{
-    std::ifstream gf(std::filesystem::path(dir) / "generation_config.json");
-    if (!gf) return;
-    std::string gjson((std::istreambuf_iterator<char>(gf)),
-                      std::istreambuf_iterator<char>());
-    simdjson::ondemand::parser gp;
-    simdjson::padded_string gpad(gjson.data(), gjson.size());
-    simdjson::ondemand::document gdoc;
-    if (gp.iterate(gpad).get(gdoc) != simdjson::SUCCESS) return;
-    simdjson::ondemand::object go;
-    if (gdoc.get_object().get(go) != simdjson::SUCCESS) return;
-    if (auto arr = go["eos_token_id"].get_array(); arr.error() == simdjson::SUCCESS) {
-        for (auto x : arr.value()) {
-            int64_t e;
-            if (x.get_int64().get(e) != simdjson::SUCCESS) continue;
-            const int id = static_cast<int>(e);
-            if (std::find(top.eos_ids.begin(), top.eos_ids.end(), id) ==
-                top.eos_ids.end())
-                top.eos_ids.push_back(id);
-        }
-    }
 }
 
 } // namespace

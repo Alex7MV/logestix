@@ -11,6 +11,7 @@
 // loudly instead of silently falling back to streaming.
 
 #include "lsxcommon/xing_moe_load.h"
+#include "fast_load_internal.h"
 
 #include "xing_moe_constants.h"
 #include "lsxcommon/log.h"
@@ -36,31 +37,15 @@
 
 namespace lsxcommon::xing {
 namespace {
+// Dedup Ф5: byte upload is the shared lsxcommon::fastload body.
+using lsxcommon::fastload::UploadBytes;
+
 
 namespace fs = std::filesystem;
 
 int64_t AlignUp(int64_t v, int64_t a)
 {
     return (v + a - 1) / a * a;
-}
-
-cudaError_t UploadBytes(const uint8_t *src, size_t n, const uint8_t **dst,
-                        std::size_t &accounted)
-{
-    if (n == 0) return cudaSuccess;
-    void *p = nullptr;
-    const cudaError_t err = cudaMalloc(&p, n);
-    if (err != cudaSuccess) return err;
-    const cudaError_t cp =
-        cudaMemcpy(p, src, n, cudaMemcpyHostToDevice);
-    if (cp != cudaSuccess)
-    {
-        cudaFree(p);
-        return cp;
-    }
-    *dst = static_cast<const uint8_t *>(p);
-    accounted += n;
-    return cudaSuccess;
 }
 
 // Dense NVFP4 record -> device. packed and scales are SEPARATE Arrow columns,

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 #include <cstring>
 #include <string_view>
 #include <fstream>
@@ -14,6 +15,46 @@
 
 namespace lsxcommon {
 namespace fastload {
+
+// ── Shared upload/conversion helpers (dedup phase 5) ────────────────────
+// Byte-identical per-family copies moved here: UploadBytes (mistral/mistral-
+// large4/xing load.cpp), Bf16ToHalf (alice/kimi-k3 load.cpp).
+
+// Allocates device memory, copies @p n bytes H2D synchronously, accounts the
+// bytes; on copy failure the allocation is freed. n == 0 is a no-op success.
+inline cudaError_t UploadBytes(const uint8_t *src, size_t n,
+                               const uint8_t **dst, std::size_t &accounted)
+{
+    if (n == 0) return cudaSuccess;
+    void *p = nullptr;
+    const cudaError_t err = cudaMalloc(&p, n);
+    if (err != cudaSuccess) return err;
+    const cudaError_t cp = cudaMemcpy(p, src, n, cudaMemcpyHostToDevice);
+    if (cp != cudaSuccess)
+    {
+        cudaFree(p);
+        return cp;
+    }
+    *dst = static_cast<const uint8_t *>(p);
+    accounted += n;
+    return cudaSuccess;
+}
+
+// Host BF16 (little-endian byte pairs) → FP16 vector, bit-exact widening.
+inline std::vector<__half> Bf16ToHalf(const std::vector<uint8_t> &data)
+{
+    const size_t n = data.size() / 2;
+    std::vector<__half> out(n);
+    for (size_t i = 0; i < n; ++i) {
+        const uint16_t b =
+            static_cast<uint16_t>(data[2 * i] | (data[2 * i + 1] << 8));
+        const uint32_t f = static_cast<uint32_t>(b) << 16;
+        float v;
+        std::memcpy(&v, &f, 4);
+        out[i] = __float2half(v);
+    }
+    return out;
+}
 
 // Double-buffered pinned staging for async H2D uploads on one stream.
 // Buffer parity is guarded by a recorded event: before the host refills a
@@ -366,6 +407,31 @@ inline cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
     }
     if (error) error->clear();
     return cudaSuccess;
+}
+
+// Single-tensor upload through the shared job engine (the nemotron/nemotron-
+// ultra UploadOne copy; dedup phase 5). Missing tensor / upload failure fills
+// @p error with the tensor's role (@p what).
+inline bool UploadOne(const TensorView *t, CvKind kind, void **dst,
+                      const std::string &what, cudaStream_t stream,
+                      PinnedStagingRing &ring, std::uint64_t &acc,
+                      std::string &error)
+{
+    if (!t) {
+        error = "missing tensor: " + what;
+        return false;
+    }
+    std::vector<UploadJob> jobs = {{t, dst, kind, nullptr, nullptr}};
+    void *arena = nullptr;
+    size_t arena_bytes = 0;
+    std::string e2;
+    cudaError_t e = RunUploadJobs(std::move(jobs), &arena, &arena_bytes, stream,
+                                  ring, acc, &e2);
+    if (e != cudaSuccess) {
+        error = "upload failed: " + what + ": " + e2;
+        return false;
+    }
+    return true;
 }
 
 } // namespace fastload

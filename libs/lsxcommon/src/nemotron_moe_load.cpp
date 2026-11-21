@@ -22,6 +22,9 @@
 
 namespace lsxcommon::nemotron_moe {
 namespace {
+// Dedup Ф5: single-tensor upload is the shared lsxcommon::fastload body.
+using lsxcommon::fastload::UploadOne;
+
 
 constexpr const char *kFormatTag = "logestix-nemotron-nvfp4";
 
@@ -272,28 +275,6 @@ using fastload::FindTensorSuffix;
 using fastload::PinnedStagingRing;
 using fastload::UploadJob;
 using fastload::UploadNvfp4Weight;
-
-bool UploadOne(const TensorView *t, CvKind kind, void **dst,
-               const std::string &what, cudaStream_t stream,
-               PinnedStagingRing &ring, std::uint64_t &acc, std::string &error)
-{
-    if (!t) {
-        error = "missing tensor: " + what;
-        return false;
-    }
-    std::vector<UploadJob> jobs = {{t, dst, kind, nullptr, nullptr}};
-    void *arena = nullptr;
-    size_t arena_bytes = 0;
-    std::string e2;
-    cudaError_t e = fastload::RunUploadJobs(std::move(jobs), &arena,
-                                            &arena_bytes, stream, ring, acc,
-                                            &e2);
-    if (e != cudaSuccess) {
-        error = "upload failed: " + what + ": " + e2;
-        return false;
-    }
-    return true;
-}
 
 } // namespace
 

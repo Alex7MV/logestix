@@ -1,4 +1,5 @@
 #include "lsxcommon/alice_moe_convert.h"
+#include "lsxcommon/config_json.h"
 
 #include "alice_moe_constants.h"
 
@@ -25,6 +26,12 @@
 
 namespace lsxcommon::alice {
 namespace {
+// Dedup Ф5: layer-name splitter is the shared lsxcommon::config body.
+inline bool parse_layer_body(const std::string &name, int &layer, std::string &body)
+{
+    return lsxcommon::config::ParseLayerBody(name, layer, body);
+}
+
 
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
@@ -77,24 +84,6 @@ bool ends_with(const std::string &s, std::string_view suffix)
 {
     return s.size() >= suffix.size() &&
            s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-// Parses "model.layers.<N>." and returns the body after it.
-bool parse_layer_body(const std::string &name, int &layer, std::string &body)
-{
-    const std::string prefix = "model.layers.";
-    if (name.rfind(prefix, 0) != 0) return false;
-    const size_t digits_start = prefix.size();
-    const size_t dot = name.find('.', digits_start);
-    if (dot == std::string::npos) return false;
-    int v = 0;
-    for (size_t i = digits_start; i < dot; ++i) {
-        if (name[i] < '0' || name[i] > '9') return false;
-        v = v * 10 + (name[i] - '0');
-    }
-    layer = v;
-    body = name.substr(dot + 1);
-    return true;
 }
 
 } // namespace

@@ -1,4 +1,6 @@
 #include "lsxcommon/alice_moe_load.h"
+#include "fast_load_internal.h"
+#include "lsxcommon/config_json.h"
 
 #include "alice_moe_constants.h"
 
@@ -12,6 +14,16 @@
 
 namespace lsxcommon::alice {
 namespace {
+// Dedup Ф5: BF16→FP16 host conversion is the shared lsxcommon::fastload body.
+using lsxcommon::fastload::Bf16ToHalf;
+
+// Dedup Ф5: numeric config field reader is the shared lsxcommon::config body.
+using lsxcommon::config::GetDouble;
+inline bool get_d(simdjson::ondemand::object &o, const char *k, double &out)
+{
+    return GetDouble(o, k, out);
+}
+
 
 namespace fs = std::filesystem;
 
@@ -21,21 +33,6 @@ bool get_i(simdjson::ondemand::object &o, const char *k, int &out)
     if (o[k].get_int64().get(v) != simdjson::SUCCESS) return false;
     out = static_cast<int>(v);
     return true;
-}
-
-bool get_d(simdjson::ondemand::object &o, const char *k, double &out)
-{
-    simdjson::ondemand::value x;
-    if (o[k].get(x) != simdjson::SUCCESS) return false;
-    if (auto d = x.get_double(); d.error() == simdjson::SUCCESS) {
-        out = d.value();
-        return true;
-    }
-    if (auto i = x.get_int64(); i.error() == simdjson::SUCCESS) {
-        out = static_cast<double>(i.value());
-        return true;
-    }
-    return false;
 }
 
 } // namespace
@@ -116,21 +113,6 @@ arrow::Status LoadAliceTopology(const std::string &model_path,
 namespace {
 
 namespace fs = std::filesystem;
-
-std::vector<__half> Bf16ToHalf(const std::vector<uint8_t> &data)
-{
-    const size_t n = data.size() / 2;
-    std::vector<__half> out(n);
-    for (size_t i = 0; i < n; ++i) {
-        const uint16_t b =
-            static_cast<uint16_t>(data[2 * i] | (data[2 * i + 1] << 8));
-        const uint32_t f = static_cast<uint32_t>(b) << 16;
-        float v;
-        std::memcpy(&v, &f, 4);
-        out[i] = __float2half(v);
-    }
-    return out;
-}
 
 __half *UploadHalf(const std::vector<uint8_t> &data, cudaStream_t s)
 {

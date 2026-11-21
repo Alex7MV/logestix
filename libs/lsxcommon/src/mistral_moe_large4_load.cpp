@@ -4,6 +4,7 @@
 // them through a device slot LRU.
 
 #include "lsxcommon/mistral_moe_large4_load.h"
+#include "fast_load_internal.h"
 
 #include "mistral_moe_large4_constants.h"
 #include "lsxcommon/log.h"
@@ -25,27 +26,12 @@
 namespace lsxcommon {
 namespace mistral_large4 {
 namespace {
+// Dedup Ф5: byte upload is the shared lsxcommon::fastload body.
+using lsxcommon::fastload::UploadBytes;
+
 
 namespace fs = std::filesystem;
 namespace frozen = lsxcommon::mistral_large4::frozen;
-
-cudaError_t UploadBytes(const uint8_t *src, size_t n, const uint8_t **dst,
-                        std::size_t &accounted)
-{
-    if (n == 0) return cudaSuccess;
-    void *p = nullptr;
-    const cudaError_t err = cudaMalloc(&p, n);
-    if (err != cudaSuccess) return err;
-    const cudaError_t cp = cudaMemcpy(p, src, n, cudaMemcpyHostToDevice);
-    if (cp != cudaSuccess)
-    {
-        cudaFree(p);
-        return cp;
-    }
-    *dst = static_cast<const uint8_t *>(p);
-    accounted += n;
-    return cudaSuccess;
-}
 
 const TensorView *Find(const TensorBatchViews &b, std::string_view name)
 {

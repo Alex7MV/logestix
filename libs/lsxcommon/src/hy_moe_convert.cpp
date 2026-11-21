@@ -1,4 +1,5 @@
 #include "lsxcommon/hy_moe_convert.h"
+#include "lsxcommon/config_json.h"
 
 #include "hy_moe_constants.h"
 
@@ -28,6 +29,28 @@
 
 namespace lsxcommon::hy {
 namespace {
+void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
+                       int &pad)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return;
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (json.empty()) return;
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad_json(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad_json).get(doc) != simdjson::SUCCESS) return;
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) return;
+    const int b = lsxcommon::config::GetInt(root, "bos_token_id", -1);
+    const int e = lsxcommon::config::GetInt(root, "eos_token_id", -1);
+    const int p = lsxcommon::config::GetInt(root, "pad_token_id", -1);
+    if (b >= 0) bos = b;
+    if (e >= 0) eos = e;
+    if (p >= 0) pad = p;
+}
+
 
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
@@ -89,26 +112,6 @@ bool IsAudioBallast(const std::string &name)
     return name.rfind("audio_tower.", 0) == 0;
 }
 
-HyPassportGeometry HyMemoryPassportGeometry()
-{
-    using namespace frozen;
-    return HyPassportGeometry{
-        .layers = kLayers,
-        .hidden = kHidden,
-        .heads = kHeads,
-        .kv_heads = kKvHeads,
-        .head_dim = kHeadDim,
-        .rotary_dim = kRotaryDim,
-        .vocab = kVocab,
-        .dense_intermediate = kDenseIntermediate,
-        .moe_intermediate = kMoeIntermediate,
-        .shared_intermediate = kSharedIntermediate,
-        .num_experts = kNumExperts,
-        .top_k = kTopK,
-        .first_moe_layer = kFirstMoeLayer,
-    };
-}
-
 // Quantizes a contiguous BF16/FP32 slice to NVFP4. Returns false on GPU failure.
 // Appends one `eos_token_id` value, which the checkpoints encode either as a
 // single int or as an array (Hy-SimulMT: [120025, 120008]).
@@ -150,28 +153,6 @@ void ReadEosIdsFile(const std::filesystem::path &path, std::vector<int> &out)
     simdjson::ondemand::object root;
     if (doc.get_object().get(root) != simdjson::SUCCESS) return;
     ReadEosIdsFromObject(root, out);
-}
-
-void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
-                       int &pad)
-{
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return;
-    std::string json((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
-    if (json.empty()) return;
-    simdjson::ondemand::parser parser;
-    simdjson::padded_string pad_json(json.data(), json.size());
-    simdjson::ondemand::document doc;
-    if (parser.iterate(pad_json).get(doc) != simdjson::SUCCESS) return;
-    simdjson::ondemand::object root;
-    if (doc.get_object().get(root) != simdjson::SUCCESS) return;
-    const int b = get_i(root, "bos_token_id", -1);
-    const int e = get_i(root, "eos_token_id", -1);
-    const int p = get_i(root, "pad_token_id", -1);
-    if (b >= 0) bos = b;
-    if (e >= 0) eos = e;
-    if (p >= 0) pad = p;
 }
 
 } // namespace
@@ -862,6 +843,27 @@ arrow::Status ConvertHyMoeModel(const std::string &input_dir,
     HyConvertSpec spec;
     spec.geometry = HyMemoryPassportGeometry();
     return ConvertHyMoeModelWithSpec(input_dir, output_root, spec);
+}
+
+// Dedup Ф5: one definition, shared with the loader (hy_moe_load.cpp).
+HyPassportGeometry HyMemoryPassportGeometry()
+{
+    using namespace frozen;
+    return HyPassportGeometry{
+        .layers = kLayers,
+        .hidden = kHidden,
+        .heads = kHeads,
+        .kv_heads = kKvHeads,
+        .head_dim = kHeadDim,
+        .rotary_dim = kRotaryDim,
+        .vocab = kVocab,
+        .dense_intermediate = kDenseIntermediate,
+        .moe_intermediate = kMoeIntermediate,
+        .shared_intermediate = kSharedIntermediate,
+        .num_experts = kNumExperts,
+        .top_k = kTopK,
+        .first_moe_layer = kFirstMoeLayer,
+    };
 }
 
 } // namespace lsxcommon::hy

@@ -1,4 +1,5 @@
 #include "lsxcommon/hy_moe_load.h"
+#include "lsxcommon/hy_moe_convert.h"
 
 #include "hy_moe_constants.h"
 #include "fast_load_internal.h"
@@ -683,26 +684,6 @@ bool LoadHyDenseWeights(const std::string &model_path,
 }
 
 namespace {
-
-HyPassportGeometry HyMemoryPassportGeometry()
-{
-    using namespace frozen;
-    return HyPassportGeometry{
-        .layers = kLayers,
-        .hidden = kHidden,
-        .heads = kHeads,
-        .kv_heads = kKvHeads,
-        .head_dim = kHeadDim,
-        .rotary_dim = kRotaryDim,
-        .vocab = kVocab,
-        .dense_intermediate = kDenseIntermediate,
-        .moe_intermediate = kMoeIntermediate,
-        .shared_intermediate = kSharedIntermediate,
-        .num_experts = kNumExperts,
-        .top_k = kTopK,
-        .first_moe_layer = kFirstMoeLayer,
-    };
-}
 
 } // namespace
 
