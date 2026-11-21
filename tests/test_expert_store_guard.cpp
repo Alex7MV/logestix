@@ -134,6 +134,11 @@ const char *const kLegacyConsumers[] = {
     "libs/lsxcommon/src/ornith_moe_model.cpp",
     "libs/lsxcommon/include/lsxcommon/ornith_moe_inference_pipeline.h",
     "libs/lsxcommon/src/ornith_moe_inference_pipeline.cu",
+    // shared qwen/ornith contour (dedup Ф6): the MoEExpertStore& parameter
+    // moved here verbatim from the two family pipelines above — same legacy
+    // consumer, new address. See docs/open-tasks/2026-11-20-dedup-full-audit-closed.md.
+    "libs/lsxcommon/include/lsxcommon/lsx_moe_inference_pipeline.h",
+    "libs/lsxcommon/src/lsx_moe_inference_pipeline.cu",
     // mistral (61 GiB)
     "libs/lsxcommon/include/lsxcommon/mistral_moe_load.h",
     "libs/lsxcommon/src/mistral_moe_load.cpp",

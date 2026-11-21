@@ -360,14 +360,8 @@ const std::vector<AllowedFile> &Allowlist()
              {"fprintf(stderr, \"[flint-debug] prompt_ids=%s\\n\", pids.c_str());", 1},
              {"fprintf(stderr, \"[flint-debug] step=%d top5=%s\\n\", generated,", 1},
          }},
-        {"libs/lsxcommon/src/qwen_moe_inference_pipeline.cu", "env-gated-diagnostic",
-         "LSX_AUDIT_STAGES stage attribution",
-         {
-             {"fprintf(stderr,", 1},
-             {"fprintf(stderr, \"[AUDIT] top%d %s L=%d %.3f ms (%.1f%%)\\n\",", 1},
-         }},
-        {"libs/lsxcommon/src/ornith_moe_inference_pipeline.cu", "env-gated-diagnostic",
-         "LSX_AUDIT_STAGES stage attribution",
+        {"libs/lsxcommon/src/lsx_moe_inference_pipeline.cu", "env-gated-diagnostic",
+         "LSX_AUDIT_STAGES stage attribution (shared qwen/ornith driver, dedup Ф6)",
          {
              {"fprintf(stderr,", 1},
              {"fprintf(stderr, \"[AUDIT] top%d %s L=%d %.3f ms (%.1f%%)\\n\",", 1},

@@ -89,6 +89,7 @@ add_library(lsxcommon STATIC
     src/model_runtime.cpp
     src/incremental_detokenizer.cpp
     src/tool_format.cpp
+    src/selfcheck_common.cpp
     src/qwen_tool_format.cpp
     src/deepseek_moe_tool_format.cpp
     src/gemma_tool_format.cpp
@@ -161,6 +162,7 @@ add_library(lsxcommon STATIC
     src/qwen_moe_exp_model.cpp
     src/qwen_moe_load.cpp
     src/ornith_moe_load.cpp
+    src/lsx_moe_load.cpp
     src/qwen_inference_load.cpp
     src/qwen_dense_model.cpp
     src/qwen_base_model.cpp
@@ -317,6 +319,7 @@ target_link_libraries(lsxcommon_qwen_cu
 add_library(lsxcommon_moe_cu OBJECT
     src/lsx_moe_inference.cu
     src/qwen_moe_inference_pipeline.cu
+    src/lsx_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_moe_cu PROPERTIES
     CUDA_ARCHITECTURES OFF

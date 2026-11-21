@@ -11,7 +11,8 @@
 #include <cuda_runtime.h>
 
 #include "lsxcommon/lsx_moe_inference.h"    // MoEExpertStore, kernel entry points
-#include "lsxcommon/ornith_moe_load.h"      // OrnithMoePinnedWeights
+#include "lsxcommon/ornith_moe_load.h"
+#include "lsxcommon/lsx_moe_inference_pipeline.h"      // OrnithMoePinnedWeights
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/lsx_attn_inference.h"       // GenerationResult
 #include "lsxcommon/qwen_inference_load.h"  // KvCache
@@ -21,35 +22,41 @@
 namespace lsxcommon {
 namespace ornith {
 
-// Persistent generation scratch owned by the model: the dequantized FP16
-// embedding table (computed once, byte-identical to per-call dequant) and a
-// capacity-grown workspace arena reused across Infer calls.
-struct OrnithMoeGenScratch {
-    __half *d_embed = nullptr;      // [V*H]
-    int64_t table_elems = 0;
-    void *arena = nullptr;
-    size_t arena_capacity = 0;
-    int64_t dequant_runs = 0;       // diagnostics/tests
-    int64_t arena_allocs = 0;       // diagnostics/tests
-};
+// Dedup Ф6: the scratch struct and the driver are the neutral
+// lsxcommon::moe template (lsx_moe_inference_pipeline.h); public names stay.
+using OrnithMoeGenScratch = lsxcommon::moe::MoeGenScratch;
 
-cudaError_t EnsureOrnithMoeScratch(cudaStream_t stream,
-                                 const OrnithMoePinnedWeights &pw,
-                                 OrnithMoeGenScratch &scratch);
-cudaError_t ReserveOrnithMoeArena(OrnithMoeGenScratch &scratch, size_t bytes);
-void FreeOrnithMoeGenScratch(OrnithMoeGenScratch &scratch);
+inline cudaError_t EnsureOrnithMoeScratch(cudaStream_t stream,
+                                          const OrnithMoePinnedWeights &pw,
+                                          OrnithMoeGenScratch &scratch)
+{
+    return lsxcommon::moe::EnsureMoeScratch(stream, pw, scratch);
+}
+inline cudaError_t ReserveOrnithMoeArena(OrnithMoeGenScratch &scratch, size_t bytes)
+{
+    return lsxcommon::moe::ReserveMoeArena(scratch, bytes);
+}
+inline void FreeOrnithMoeGenScratch(OrnithMoeGenScratch &scratch)
+{
+    lsxcommon::moe::FreeMoeGenScratch(scratch);
+}
 
 // Incremental single-stream generation driver (MoE FFN call site). Requires
-// a KV cache session (kv != nullptr); mirrors RunQwenGeneration's per-token
-// handshake and final-logits publication.
-cudaError_t RunOrnithMoeGeneration(
+// a KV cache session (kv != nullptr). AbortStream=false: ornith never had
+// the qwen diagnostic flag; the abort break itself is identical.
+inline cudaError_t RunOrnithMoeGeneration(
     cudaStream_t stream, const OrnithMoePinnedWeights &pw,
     moe::MoEExpertStore &store, OrnithMoeExpertDeviceCache &cache,
     OrnithMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     lsxcommon::qwen::GenerationResult &result,
     lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::KvCache *kv,
-    const lsxcommon::GenerationStream *gs = nullptr);
+    const lsxcommon::GenerationStream *gs = nullptr)
+{
+    return lsxcommon::moe::RunMoeGeneration<ornith::OrnithMoeTopology, false>(
+        stream, pw, store, cache, scratch, prompt, max_new, eos_id, result,
+        sampler, kv, gs);
+}
 
 } // namespace ornith
 } // namespace lsxcommon

@@ -8,46 +8,29 @@
 #include "lsxcommon/qwen_dense_convert.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/qwen_moe_convert.h"
+#include "lsxcommon/lsx_moe_load.h"
 #include "lsxcommon/qwen_moe_expert_cache.h"
 #include "lsxcommon/lsx_moe_inference.h"  // moe::MoEExpertStore, lsxcommon::moe::EnsureMoEExpertResident
 
 namespace lsxcommon::qwen_moe {
 
-// Per-layer device weights: reused dense attention block + MoE extras
-// (router kept BF16 on device; shared expert NVFP4 trio + FP16 scalar gate).
-struct QwenMoeLayerWeights {
-    lsxcommon::attn::LayerWeights attn;             // norms + attention (no dense MLP)
-    uint8_t *d_router = nullptr;             // raw BF16 bits [E, H]
-    int64_t router_bytes = 0;
-    lsx_nvfp4::LsxNvfp4Weight shared_w1;         // gate_proj  [SI, H]
-    lsx_nvfp4::LsxNvfp4Weight shared_w2;         // down_proj  [H, SI]
-    lsx_nvfp4::LsxNvfp4Weight shared_w3;         // up_proj    [SI, H]
-    __half *d_shared_gate = nullptr;         // [H] fp16
-    bool moe_loaded = false;
-};
-
-struct QwenMoePinnedWeights {
-    qwen::QwenTopology top;                  // dense view for kernel reuse
-    QwenMoeTopology moe_top;                 // full topology incl. MoE fields
-    lsx_nvfp4::LsxNvfp4Weight embed;
-    lsx_nvfp4::LsxNvfp4Weight head;
-    __half *d_final_norm = nullptr;
-    int final_norm_size = 0;
-    std::vector<QwenMoeLayerWeights> layers;
-    std::size_t resident_bytes = 0;
-
-    void Free();
-};
+// Dedup Ф6: the weights structs and the loader are the neutral
+// lsxcommon::moe template (lsx_moe_load.h); the public family names stay.
+using QwenMoeLayerWeights = lsxcommon::moe::MoeLayerWeights;
+using QwenMoePinnedWeights = lsxcommon::moe::MoePinnedWeights<QwenMoeTopology>;
 
 // Loads dense parts (globals, attention, norms, router, shared expert) from
 // <model_path>/logestix/ (legacy logestix-qwen35moe/ still read). Routed experts are NOT resident; they go
 // through lsxcommon::moe::MoEExpertStore separately. Strict: returns false and fills
 // `error` on any missing/malformed input.
-bool LoadQwenMoeDenseWeights(const std::string &model_path,
-                             QwenMoePinnedWeights &pw, cudaStream_t stream,
-                             std::string &error);
+inline bool LoadQwenMoeDenseWeights(const std::string &model_path,
+                                    QwenMoePinnedWeights &pw,
+                                    cudaStream_t stream, std::string &error)
+{
+    return lsxcommon::moe::LoadMoeDenseWeights(model_path, pw, stream, error);
+}
 
-void FreeQwenMoePinnedWeights(QwenMoePinnedWeights &pw);
+inline void FreeQwenMoePinnedWeights(QwenMoePinnedWeights &pw) { pw.Free(); }
 
 
 // Ensures expert `eid` of `layer` is resident in the device cache; stages its

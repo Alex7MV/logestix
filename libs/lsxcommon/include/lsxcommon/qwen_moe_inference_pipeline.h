@@ -14,7 +14,8 @@
 #include "lsxcommon/lsx_attn_inference.h"         // GenerationResult
 #include "lsxcommon/qwen_inference_load.h"    // KvCache
 #include "lsxcommon/qwen_moe_expert_cache.h"  // QwenMoeExpertDeviceCache
-#include "lsxcommon/qwen_moe_load.h"          // QwenMoePinnedWeights
+#include "lsxcommon/qwen_moe_load.h"
+#include "lsxcommon/lsx_moe_inference_pipeline.h"          // QwenMoePinnedWeights
 #include "lsxcommon/lsx_moe_inference.h"     // kernel entry points
 #include "lsxcommon/sampling.h"               // ISampler
 #include "lsxcommon/token_stream.h"           // GenerationStream
@@ -22,35 +23,41 @@
 namespace lsxcommon {
 namespace qwen_moe {
 
-// Persistent generation scratch owned by the model: the dequantized FP16
-// embedding table (computed once, byte-identical to per-call dequant) and a
-// capacity-grown workspace arena reused across Infer calls.
-struct QwenMoeGenScratch {
-    __half *d_embed = nullptr;      // [V*H]
-    int64_t table_elems = 0;
-    void *arena = nullptr;
-    size_t arena_capacity = 0;
-    int64_t dequant_runs = 0;       // diagnostics/tests
-    int64_t arena_allocs = 0;       // diagnostics/tests
-};
+// Dedup Ф6: the scratch struct and the driver are the neutral
+// lsxcommon::moe template (lsx_moe_inference_pipeline.h); public names stay.
+using QwenMoeGenScratch = lsxcommon::moe::MoeGenScratch;
 
-cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
-                                 const QwenMoePinnedWeights &pw,
-                                 QwenMoeGenScratch &scratch);
-cudaError_t ReserveQwenMoeArena(QwenMoeGenScratch &scratch, size_t bytes);
-void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch);
+inline cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
+                                        const QwenMoePinnedWeights &pw,
+                                        QwenMoeGenScratch &scratch)
+{
+    return lsxcommon::moe::EnsureMoeScratch(stream, pw, scratch);
+}
+inline cudaError_t ReserveQwenMoeArena(QwenMoeGenScratch &scratch, size_t bytes)
+{
+    return lsxcommon::moe::ReserveMoeArena(scratch, bytes);
+}
+inline void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch)
+{
+    lsxcommon::moe::FreeMoeGenScratch(scratch);
+}
 
 // Incremental single-stream generation driver (MoE FFN call site). Requires
 // a KV cache session (kv != nullptr); mirrors RunQwenGeneration's per-token
 // handshake and final-logits publication.
-cudaError_t RunQwenMoeGeneration(
+inline cudaError_t RunQwenMoeGeneration(
     cudaStream_t stream, const QwenMoePinnedWeights &pw,
     lsxcommon::moe::MoEExpertStore &store, QwenMoeExpertDeviceCache &cache,
     QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     lsxcommon::qwen::GenerationResult &result,
     lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::KvCache *kv,
-    const lsxcommon::GenerationStream *gs = nullptr);
+    const lsxcommon::GenerationStream *gs = nullptr)
+{
+    return lsxcommon::moe::RunMoeGeneration<qwen_moe::QwenMoeTopology, true>(
+        stream, pw, store, cache, scratch, prompt, max_new, eos_id, result,
+        sampler, kv, gs);
+}
 
 } // namespace qwen_moe
 } // namespace lsxcommon

@@ -16,7 +16,7 @@
   },
   "lifecycle_tu": [
     "ornith_moe_model.cpp",
-    "ornith_moe_inference_pipeline.cu"
+    "lsx_moe_inference_pipeline.cu"
   ],
   "stages": {
     "convert": [
