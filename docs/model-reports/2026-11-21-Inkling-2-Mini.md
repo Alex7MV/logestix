@@ -97,12 +97,11 @@ was written:
 | decode throughput, 2048 tokens, strict/bit-exact | **6.05 tok/s** (TTFT 3.38 s, 139.5 W average, 142.0 W peak) |
 
 **The parity goldens are source-derived, which is new for this family.** The
-sibling's goldens are template-derived because its 594B source cannot run on one
-card. Mini's 18 GiB BF16 source fits the host, so `tools/inkling_loop_oracle.py`
-loads the release's own `inkling2_loop` text tower on the CPU (bf16, 64 threads,
-~0.9 s/token) and the three capture scripts reach it through a per-model
-`loader` override. The FSI and CODE goldens are therefore the model's own
-answers, and the converted engine reproduces all six.
+sibling's goldens are template-derived because its far larger source cannot run
+on one card. This checkpoint's 18 GiB BF16 source fits the host, so the capture
+path loads the release's own `inkling2_loop` text tower on the CPU (bf16, 64
+threads, ~0.9 s/token). The FSI, CODE and DET goldens are therefore the model's
+own answers, and the converted engine reproduces all nine.
 
 **One shared-harness fix came out of this ingestion, and it is disclosed.** The
 FSI comparison extractor used to bail on the FIRST `anchor` occurrence on the
@@ -110,8 +109,8 @@ chosen line, while the capture-side reference (which produced every committed
 `expected`) searches past candidates that cannot satisfy the
 `anchor operator identifier` bound. A reasoning stream restates the prompt, so
 the echo `Drawdown = 14.999991` — an *assignment*, not a comparison — is exactly
-such a candidate: the C++ reported an EMPTY answer for a model that answered
-correctly. The line chooser now also requires a bounded candidate. This is
+such a candidate: the extractor reported an EMPTY answer for a model that
+answered correctly. The line chooser now also requires a bounded candidate. This is
 provably non-regressive (a line with a bounded candidate also contains
 `anchor` + operator, so it was the line the old scan picked first) and it is
 pinned by two new unit cases plus the existing "arithmetic keeps the historical
