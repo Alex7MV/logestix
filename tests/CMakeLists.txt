@@ -305,6 +305,36 @@ lsx_add_test(NAME test_inkling_moe_loop_loader
     ENV "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_inkling_moe_loop_loader PROPERTIES
     RESOURCE_LOCK "gpu" SKIP_RETURN_CODE 4)
+# Generation pipeline (the three-pass scheduler): needs the same converted
+# synthetic tree, so it carries the same fixture env and skip code.
+add_library(test_inkling_loop_pipeline_cu OBJECT
+    test_inkling_moe_loop_pipeline.cu
+)
+set_target_properties(test_inkling_loop_pipeline_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_inkling_loop_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_inkling_loop_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_inkling_loop_pipeline_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_loop_pipeline_cu PRIVATE Catch2::Catch2WithMain
+    lsx_dep_includes arrow_shared)
+add_executable(test_inkling_moe_loop_pipeline)
+set_target_properties(test_inkling_moe_loop_pipeline PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_inkling_moe_loop_pipeline PRIVATE
+    test_inkling_loop_pipeline_cu lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_inkling_moe_loop_pipeline
+    COMMAND test_inkling_moe_loop_pipeline)
+set_tests_properties(test_inkling_moe_loop_pipeline PROPERTIES
+    LABELS inference RESOURCE_LOCK "gpu"
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+    SKIP_RETURN_CODE 4)
 # Kernel/session test: CUDA OBJECT lib + CXX executable (the Small shape).
 add_library(test_inkling_loop_cu OBJECT
     test_inkling_moe_loop_kernels.cu
@@ -330,7 +360,8 @@ target_link_libraries(test_inkling_moe_loop_kernels PRIVATE
 add_test(NAME test_inkling_moe_loop_kernels
     COMMAND test_inkling_moe_loop_kernels)
 set_tests_properties(test_inkling_moe_loop_kernels PROPERTIES
-    LABELS inference RESOURCE_LOCK "gpu")
+    LABELS inference RESOURCE_LOCK "gpu"
+    SKIP_RETURN_CODE 4)
 
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the

@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/inkling_moe_kernels.h"
 #include "lsxcommon/inkling_moe_loop_kernels.h"
 #include "lsxcommon/inkling_moe_loop_load.h"
 #include "lsxcommon/lsx_kv_cache.h"
@@ -107,9 +108,12 @@ struct InklingLoopScratch {
     float *pre_loop_hidden = nullptr;   // [hidden]
     float *pre_loop_stack = nullptr;    // [kAttnResMaxSources][hidden]
     int pre_loop_sources = 0;           // host mirror of the snapshot depth
-    // Previous pass's block stack + final hidden (the message sources).
+    // The message sources of the previous pass, packed as ONE contiguous
+    // [prev_sources][hidden] array for the retrieval kernel: its block states
+    // (skipping the first one it appended, which merely re-states the pre-loop
+    // hidden) followed by its final hidden state.
     float *prev_stack = nullptr;        // [kAttnResMaxSources][hidden]
-    float *prev_hidden = nullptr;       // [hidden]
+    float *prev_hidden = nullptr;       // [hidden] the same final hidden, alone
     int prev_sources = 0;
     // Retrieved messages [4][hidden] and the MessageGate intermediates.
     float *msg = nullptr;               // [4*hidden]
@@ -123,7 +127,9 @@ struct InklingLoopScratch {
     uint8_t *fp8_stage = nullptr;
     int64_t fp8_stage_bytes = 0;
     int32_t *d_ids = nullptr;
-    InklingLoopRoutedSlot *d_slots = nullptr;
+    // The shared inkling2 router/accumulate kernels consume InklingRoutedSlot
+    // (eid, coeff) directly.
+    InklingRoutedSlot *d_slots = nullptr;
     int32_t *d_token = nullptr;
     float *d_maxv = nullptr;
 
@@ -143,9 +149,9 @@ struct InklingLoopGenerationResult {
     double total_ms = 0.0;
 };
 
-// Decodes `input_ids` and then up to `max_gen_tokens` tokens. `forbidden_id`
-// (when >= 0) is masked out of the first step's logits. The session's conv
-// rings are per-sequence state and are reset at the start of every request.
+// Decodes `input_ids` and then up to `max_gen_tokens` tokens. The session's
+// conv rings and KV bookkeeping are per-sequence state and are reset at the
+// start of every request.
 cudaError_t RunInklingLoopGeneration(cudaStream_t stream,
                                      InklingLoopPinnedWeights &pw,
                                      InklingLoopExpertDb &experts,

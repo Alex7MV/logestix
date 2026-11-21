@@ -21,12 +21,6 @@
 
 namespace lsxcommon::inkling {
 
-// ── routed slot (router output) ────────────────────────────────────────────
-struct InklingLoopRoutedSlot {
-    int eid;
-    float coeff;
-};
-
 // ── 1. MessageGate ─────────────────────────────────────────────────────────
 // h, msg: [hidden] FP32. down: [rank, 2*hidden] FP16; forget/gain:
 // [hidden, rank] FP32. out: [hidden] FP32.
