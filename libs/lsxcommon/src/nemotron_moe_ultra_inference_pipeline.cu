@@ -14,6 +14,8 @@
 // identical to the reference chunk scan). Router expert selection is read back to
 // the host per MoE layer to drive the per-expert NVFP4 GEMVs.
 #include "lsxcommon/nemotron_moe_ultra_inference.h"
+#include "nemotron_moe_shared_kernels.cuh"
+#include "lsx_kernels_common.cuh"
 
 #include "nemotron_moe_ultra_kernels.h"
 
@@ -38,71 +40,11 @@ namespace lsxcommon::nemotron_ultra {
 
 namespace {
 
-__global__ void embed_gather_kernel(const __half *__restrict__ e, int H, int token,
-                                    __half *__restrict__ out)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= H) return;
-    out[i] = e[static_cast<size_t>(token) * H + i];
-}
 
-__global__ void rmsnorm_half_kernel(const __half *__restrict__ x,
-                                    const __half *__restrict__ w, int n, float eps,
-                                    __half *__restrict__ out)
-{
-    __shared__ float red[256];
-    const int t = threadIdx.x;
-    float s = 0.0f;
-    for (int i = t; i < n; i += blockDim.x) {
-        const float v = __half2float(x[i]);
-        s += v * v;
-    }
-    red[t] = s;
-    __syncthreads();
-    for (int st = blockDim.x / 2; st > 0; st >>= 1) {
-        if (t < st) red[t] += red[t + st];
-        __syncthreads();
-    }
-    const float inv = rsqrtf(red[0] / static_cast<float>(n) + eps);
-    for (int i = t; i < n; i += blockDim.x)
-        out[i] = __float2half(__half2float(x[i]) * inv * __half2float(w[i]));
-}
 
-__global__ void half_to_float_kernel(const __half *__restrict__ src, int n,
-                                     float *__restrict__ dst)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __half2float(src[i]);
-}
 
-__global__ void float_to_half_kernel(const float *__restrict__ src, int n,
-                                     __half *__restrict__ dst)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __float2half(src[i]);
-}
 
-__global__ void residual_add_kernel(__half *__restrict__ h,
-                                    const __half *__restrict__ sub, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    h[i] = __float2half(__half2float(h[i]) + __half2float(sub[i]));
-}
 
-__global__ void kv_store_kernel(float *__restrict__ cache,
-                                const float *__restrict__ src, int seq_pos,
-                                int max_seq, int head_dim)
-{
-    // cache [kv_heads, max_seq, head_dim]; copy one row per head.
-    const int row = blockIdx.x;
-    const int d = threadIdx.x;
-    if (d >= head_dim) return;
-    cache[(static_cast<size_t>(row) * max_seq + seq_pos) * head_dim + d] =
-        src[static_cast<size_t>(row) * head_dim + d];
-}
 
 inline int Grid1D(int n, int threads) { return (n + threads - 1) / threads; }
 
@@ -152,12 +94,12 @@ void DumpLayerRow(const __half *h, int n, int layer, int pos, cudaStream_t strea
 
 void HalfToFloat(const __half *src, int n, float *dst, cudaStream_t s)
 {
-    half_to_float_kernel<<<Grid1D(n, 256), 256, 0, s>>>(src, n, dst);
+    lsxcommon::kernels::F16ToF32Kernel<<<Grid1D(n, 256), 256, 0, s>>>(src, dst, n);
 }
 
 void FloatToHalf(const float *src, int n, __half *dst, cudaStream_t s)
 {
-    float_to_half_kernel<<<Grid1D(n, 256), 256, 0, s>>>(src, n, dst);
+    lsxcommon::kernels::F32ToF16Kernel<<<Grid1D(n, 256), 256, 0, s>>>(src, dst, n);
 }
 
 } // namespace
@@ -326,12 +268,12 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
     const int LAT = s.moe_latent > 0 ? s.moe_latent : H;
     const int I = idx.moe_intermediate_size;
 
-    embed_gather_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(w.d_embed, H, token,
+    nemotron_shared::embed_gather_kernel<> <<<Grid1D(H, 256), 256, 0, stream>>>(w.d_embed, H, token,
                                                             s.h);
 
     for (int l = 0; l < idx.num_layers; ++l) {
         const UltraLayerWeights &lw = w.layers[static_cast<std::size_t>(l)];
-        rmsnorm_half_kernel<<<1, 256, 0, stream>>>(s.h, lw.d_norm, H, eps,
+        nemotron_shared::rmsnorm_half_kernel<> <<<1, 256, 0, stream>>>(s.h, lw.d_norm, H, eps,
                                                   s.normed);
 
         if (idx.layer_types[static_cast<std::size_t>(l)] == "mamba") {
@@ -360,7 +302,7 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
                                 lw.out_proj.d_scales, lw.out_proj.global_scale,
                                 s.out16, 1, d_inner, H);
             if (e != cudaSuccess) return e;
-            residual_add_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.out16, H);
+            nemotron_shared::residual_add_kernel<> <<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.out16, H);
         } else if (idx.layer_types[static_cast<std::size_t>(l)] == "attention") {
             const int ai = s.attn_slot[static_cast<std::size_t>(l)];
             cudaError_t e = RunLsxNvfp4Gemm(stream, s.normed, lw.q.d_packed,
@@ -383,9 +325,9 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
             // outside Mamba-2, and applying rotate_half RoPE here is the exact
             // defect the 30B sibling shipped and fixed on 2026-11-01 (per-layer
             // relL2 0.09 -> 1.20 by position 284 against a BF16 reference).
-            kv_store_kernel<<<s.kv_heads, attn_hd, 0, stream>>>(
+            nemotron_shared::kv_store_kernel<> <<<s.kv_heads, attn_hd, 0, stream>>>(
                 s.k_cache[ai], s.k, pos, s.max_seq, attn_hd);
-            kv_store_kernel<<<s.kv_heads, attn_hd, 0, stream>>>(
+            nemotron_shared::kv_store_kernel<> <<<s.kv_heads, attn_hd, 0, stream>>>(
                 s.v_cache[ai], s.v, pos, s.max_seq, attn_hd);
             RunUltraAttnDecode(s.q, s.k_cache[ai], s.v_cache[ai], attn_heads,
                                s.kv_heads, attn_hd, pos + 1, s.max_seq, attn_scale,
@@ -394,7 +336,7 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
             e = RunLsxNvfp4Gemm(stream, s.proj16, lw.o.d_packed, lw.o.d_scales,
                                 lw.o.global_scale, s.out16, 1, attn_out, H);
             if (e != cudaSuccess) return e;
-            residual_add_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.out16, H);
+            nemotron_shared::residual_add_kernel<> <<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.out16, H);
         } else {  // moe
             cudaError_t e = gemv::RunLxGemmVec(stream, lw.d_router, s.normed, 1,
                                                s.num_experts, H, gemv::LxDtype::kF16,
@@ -508,7 +450,7 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
             if (e != cudaSuccess) return e;
             RunUltraAddHalfToF32(s.out16, H, s.moe_acc, stream);
             FloatToHalf(s.moe_acc, H, s.sub, stream);
-            residual_add_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.sub, H);
+            nemotron_shared::residual_add_kernel<> <<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.sub, H);
         }
         DumpLayerRow(s.h, H, l, pos, stream);
     }
@@ -526,7 +468,7 @@ cudaError_t UltraForwardToken(const UltraIndex &idx, const UltraWeights &w,
                          static_cast<std::streamsize>(hh.size() * sizeof(__half)));
         }
     }
-    rmsnorm_half_kernel<<<1, 256, 0, stream>>>(s.h, w.d_final_norm, H, eps,
+    nemotron_shared::rmsnorm_half_kernel<> <<<1, 256, 0, stream>>>(s.h, w.d_final_norm, H, eps,
                                               s.normed);
     return gemv::RunLxGemmVec(stream, w.d_head, s.normed, 1, idx.vocab_size, H,
                               gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,

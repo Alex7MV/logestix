@@ -4,6 +4,7 @@
 // [ceil(R/128), ceil(C/128)] tiles. Partial last tiles are clamped (e.g.
 // kv_a_proj_with_mqa [576,4096] with scale [5,32]).
 #include "lsxcommon/ling_moe_convert.h"
+#include "lsx_kernels_misc.cuh"
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -18,21 +19,6 @@
 namespace lsxcommon::ling {
 namespace {
 
-__global__ void ling_fp8_tile128_to_bf16_kernel(
-    const uint8_t *__restrict__ fp8, const float *__restrict__ scale,
-    __nv_bfloat16 *__restrict__ out, long long numel, int cols,
-    int scale_cols)
-{
-    const long long i = blockIdx.x * static_cast<long long>(blockDim.x) +
-                        threadIdx.x;
-    if (i >= numel) return;
-    const int r = static_cast<int>(i / cols);
-    const int c = static_cast<int>(i % cols);
-    const int tile = (r >> 7) * scale_cols + (c >> 7);
-
-    const __half h = __half(__nv_cvt_fp8_to_halfraw(fp8[i], __NV_E4M3));
-    out[i] = __float2bfloat16(__half2float(h) * scale[tile]);
-}
 
 struct DevGuard {
     uint8_t *d_fp8 = nullptr;
@@ -107,7 +93,7 @@ arrow::Status LingDequantFp8Block128ToBf16Gpu(
     const long long grid64 = (numel + threads - 1) / threads;
     const int blocks =
         static_cast<int>(std::min<long long>(grid64, 65535LL * 16));
-    ling_fp8_tile128_to_bf16_kernel<<<blocks, threads, 0, stream>>>(
+    lsxcommon::kernels::Fp8Tile128ToBf16Kernel<><<<blocks, threads, 0, stream>>>(
         g.d_fp8, g.d_scale, reinterpret_cast<__nv_bfloat16 *>(g.d_out), numel,
         static_cast<int>(cols), static_cast<int>(sc));
     if (cudaError_t ke = cudaGetLastError(); ke != cudaSuccess)

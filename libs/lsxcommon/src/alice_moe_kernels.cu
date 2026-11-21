@@ -4,6 +4,8 @@
 // NVFP4 GEMV layer, not here.
 #include "lsxcommon/alice_moe_kernels.h"
 
+#include "lsx_kernels_attnres.cuh"
+
 #include <cuda_runtime.h>
 
 namespace lsxcommon::alice {
@@ -48,49 +50,6 @@ __global__ void zc_rmsnorm_kernel(const __half *__restrict__ x,
         const float wt = __half2float(w[i]);
         const float scale = zero_centered ? (1.0f + wt) : wt;
         orr[i] = __float2half(v * rstd * scale);
-    }
-}
-
-__global__ void depth_mix_kernel(const __half *__restrict__ sources, int n_src,
-                                 const __half *__restrict__ norm_w,
-                                 const __half *__restrict__ proj_w,
-                                 __half *__restrict__ out, int hidden, float eps)
-{
-    __shared__ float scratch[kBlock];
-    __shared__ float logits[64];
-    for (int s = 0; s < n_src; ++s) {
-        const __half *p = sources + static_cast<size_t>(s) * hidden;
-        float sq = 0.0f;
-        for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-            const float v = __half2float(p[i]);
-            sq += v * v;
-        }
-        const float rstd = rsqrtf(block_sum(sq, scratch) / hidden + eps);
-        float dot = 0.0f;
-        for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-            const float v = __half2float(p[i]) * rstd * __half2float(norm_w[i]);
-            dot += v * __half2float(proj_w[i]);
-        }
-        const float total = block_sum(dot, scratch);
-        if (threadIdx.x == 0) logits[s] = total;
-        __syncthreads();
-    }
-    if (threadIdx.x == 0) {
-        float mx = logits[0];
-        for (int s = 1; s < n_src; ++s) mx = fmaxf(mx, logits[s]);
-        float sum = 0.0f;
-        for (int s = 0; s < n_src; ++s) {
-            logits[s] = __expf(logits[s] - mx);
-            sum += logits[s];
-        }
-        for (int s = 0; s < n_src; ++s) logits[s] /= sum;
-    }
-    __syncthreads();
-    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-        float acc = 0.0f;
-        for (int s = 0; s < n_src; ++s)
-            acc += logits[s] * __half2float(sources[static_cast<size_t>(s) * hidden + i]);
-        out[i] = __float2half(acc);
     }
 }
 
@@ -194,8 +153,8 @@ cudaError_t RunAliceDepthMix(cudaStream_t stream, const __half *sources,
                              float eps)
 {
     if (n_sources > 64) return cudaErrorInvalidValue;
-    depth_mix_kernel<<<1, kBlock, 0, stream>>>(sources, n_sources, norm_w,
-                                               proj_w, out, hidden, eps);
+    kernels::AttnResDepthMixKernel<64><<<1, kBlock, 0, stream>>>(
+        sources, n_sources, norm_w, proj_w, out, hidden, eps);
     return cudaGetLastError();
 }
 

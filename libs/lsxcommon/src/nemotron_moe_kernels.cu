@@ -3,6 +3,7 @@
 // barriers; no atomics feed logits. Math is pinned by
 // nemotron_moe_device_math.h (host reference).
 #include "nemotron_moe_kernels.h"
+#include "nemotron_moe_shared_kernels.cuh"
 
 #include "nemotron_moe_constants.h"
 
@@ -17,65 +18,7 @@ __device__ __forceinline__ float silu_f(float x)
     return x / (1.0f + expf(-x));
 }
 
-__global__ void conv_step_kernel(const float *__restrict__ xBC,
-                                 const float *__restrict__ w,
-                                 const float *__restrict__ bias,
-                                 const float *__restrict__ state_in,
-                                 float *__restrict__ state_out,
-                                 float *__restrict__ out, int conv_dim, int K)
-{
-    const int c = blockIdx.x * blockDim.x + threadIdx.x;
-    if (c >= conv_dim) return;
-    const int S = K - 1;
-    float acc = bias ? bias[c] : 0.0f;
-    for (int k = 0; k < S; ++k)
-        acc += w[c * K + k] * state_in[c * S + k];
-    acc += w[c * K + (K - 1)] * xBC[c];
-    for (int k = 0; k < S - 1; ++k)
-        state_out[c * S + k] = state_in[c * S + k + 1];
-    state_out[c * S + (S - 1)] = xBC[c];
-    out[c] = silu_f(acc);
-}
 
-__global__ void ssm_step_kernel(const float *__restrict__ state_in,
-                                const float *__restrict__ xs,
-                                const float *__restrict__ B,
-                                const float *__restrict__ C,
-                                const float *__restrict__ D,
-                                const float *__restrict__ dt,
-                                const float *__restrict__ dt_bias,
-                                const float *__restrict__ A_log, int heads,
-                                int head_dim, int groups, int state_size,
-                                int clamp_dt, float *__restrict__ state_out,
-                                float *__restrict__ out)
-{
-    const int h = blockIdx.x;
-    const int d = threadIdx.x;
-    if (h >= heads || d >= head_dim) return;
-
-    float dth = dt[h] + dt_bias[h];
-    // softplus, numerically stable
-    dth = dth > 20.0f ? dth : log1pf(expf(dth));
-    // Reference split: the chunk scan (prefill) clamps dt, the single-token
-    // selective update (decode) does not.
-    if (clamp_dt && dth < frozen::kDtMin) dth = frozen::kDtMin;
-    const float A = -expf(A_log[h]);
-    const float dA = expf(dth * A);
-    const int hpg = heads / groups;
-    const int g = h / hpg;
-    const float xsd = xs[h * head_dim + d];
-    const float *Bg = B + g * state_size;
-    const float *Cg = C + g * state_size;
-    const size_t base =
-        (static_cast<size_t>(h) * head_dim + d) * state_size;
-    float acc = 0.0f;
-    for (int s = 0; s < state_size; ++s) {
-        const float st = state_in[base + s] * dA + dth * Bg[s] * xsd;
-        state_out[base + s] = st;
-        acc += st * Cg[s];
-    }
-    out[h * head_dim + d] = acc + xsd * D[h];
-}
 
 __global__ void gated_rmsnorm_kernel(const float *__restrict__ x,
                                      const float *__restrict__ gate,
@@ -167,35 +110,8 @@ __global__ void relu2_kernel(const float *__restrict__ x, int n,
     out[i] = r * r;
 }
 
-__global__ void relu2_half_kernel(__half *__restrict__ x, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    const float v = __half2float(x[i]);
-    const float r = v > 0.0f ? v : 0.0f;
-    x[i] = __float2half(r * r);
-}
 
-__global__ void moe_weighted_sum_kernel(const __half *__restrict__ y,
-                                        const float *__restrict__ w, int count,
-                                        int n, float *__restrict__ acc,
-                                        int add)
-{
-    const int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j >= n) return;
-    float s = add ? acc[j] : 0.0f;
-    for (int e = 0; e < count; ++e)
-        s += w[e] * __half2float(y[static_cast<size_t>(e) * n + j]);
-    acc[j] = s;
-}
 
-__global__ void add_half_to_f32_kernel(const __half *__restrict__ x, int n,
-                                       float *__restrict__ acc)
-{
-    const int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j >= n) return;
-    acc[j] += __half2float(x[j]);
-}
 
 } // namespace
 
@@ -219,7 +135,7 @@ void RunNemotronRelu2(const float *x, int n, float *out, cudaStream_t stream)
 void RunNemotronRelu2Half(__half *x, int n, cudaStream_t stream)
 {
     const int threads = 256;
-    relu2_half_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(x,
+    nemotron_shared::relu2_half_kernel<> <<<(n + threads - 1) / threads, threads, 0, stream>>>(x,
                                                                            n);
 }
 
@@ -228,7 +144,7 @@ void RunNemotronMoeWeightedSum(const __half *y, const float *weights, int count,
                                cudaStream_t stream)
 {
     const int threads = 256;
-    moe_weighted_sum_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(
+    nemotron_shared::moe_weighted_sum_kernel<> <<<(n + threads - 1) / threads, threads, 0, stream>>>(
         y, weights, count, n, acc, add ? 1 : 0);
 }
 
@@ -236,7 +152,7 @@ void RunNemotronAddHalfToF32(const __half *x, int n, float *acc,
                              cudaStream_t stream)
 {
     const int threads = 256;
-    add_half_to_f32_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(
+    nemotron_shared::add_half_to_f32_kernel<> <<<(n + threads - 1) / threads, threads, 0, stream>>>(
         x, n, acc);
 }
 
@@ -246,7 +162,7 @@ void RunNemotronConvStep(const float *xBC, const float *w, const float *bias,
 {
     const int threads = 256;
     const int blocks = (conv_dim + threads - 1) / threads;
-    conv_step_kernel<<<blocks, threads, 0, stream>>>(
+    nemotron_shared::conv_step_kernel<> <<<blocks, threads, 0, stream>>>(
         xBC, w, bias, state_in, state_out, out, conv_dim, K);
 }
 
@@ -258,9 +174,9 @@ void RunNemotronSelectiveStateStep(const float *state_in, const float *xs,
                                    int state_size, int clamp_dt, float *state_out,
                                    float *out, cudaStream_t stream)
 {
-    ssm_step_kernel<<<heads, head_dim, 0, stream>>>(
+    nemotron_shared::ssm_step_kernel<> <<<heads, head_dim, 0, stream>>>(
         state_in, xs, B, C, D, dt, dt_bias, A_log, heads, head_dim, groups,
-        state_size, clamp_dt, state_out, out);
+        state_size, clamp_dt, frozen::kDtMin, state_out, out);
 }
 
 void RunNemotronGatedRmsNorm(const float *x, const float *gate,

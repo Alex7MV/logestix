@@ -19,6 +19,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#if defined(LOGESTIX_HAS_CUDA) || defined(__CUDACC__)
+#include <cuda_runtime.h>
+#endif
+
 namespace lsxcommon {
 namespace gpu {
 
@@ -151,6 +155,33 @@ struct ExpertDeviceCache {
         return slot;
     }
 };
+
+// ── Shared cache teardown (dedup phase 5) ───────────────────────────────
+// The Free*ExpertCache bodies in gigachat/mimo/nemotron/nemotron-ultra were
+// byte-identical: free the device block, delete the host bookkeeping arrays,
+// reset the cache struct, zero cache_bytes, free the host store. Templated on
+// the family cache struct ({store, device, cache_bytes, ...}); the store's
+// Free() and the device struct are the shared neutral types.
+// CUDA-guarded like kimi_moe_expert_cache.h: this header stays host-safe.
+#if defined(LOGESTIX_HAS_CUDA) || defined(__CUDACC__)
+template <class Cache>
+void FreeExpertCacheCommon(Cache &cache)
+{
+    if (cache.device.d_base) {
+        cudaFree(cache.device.d_base);
+        cache.device.d_base = nullptr;
+    }
+    delete[] cache.device.h_slot_of;
+    delete[] cache.device.h_slot_owner;
+    delete[] cache.device.h_lru;
+    delete[] cache.device.h_prev;
+    delete[] cache.device.h_next;
+    delete[] cache.device.h_free;
+    cache.device = gpu::ExpertDeviceCache{};
+    cache.cache_bytes = 0;
+    cache.store.Free();
+}
+#endif
 
 } // namespace gpu
 } // namespace lsxcommon

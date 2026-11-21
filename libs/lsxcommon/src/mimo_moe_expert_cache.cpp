@@ -154,20 +154,7 @@ bool AllocateMimoExpertCache(MimoExpertCache &cache, int slots, std::string &err
 
 void FreeMimoExpertCache(MimoExpertCache &cache)
 {
-    if (cache.device.d_base)
-    {
-        cudaFree(cache.device.d_base);
-        cache.device.d_base = nullptr;
-    }
-    delete[] cache.device.h_slot_of;
-    delete[] cache.device.h_slot_owner;
-    delete[] cache.device.h_lru;
-    delete[] cache.device.h_prev;
-    delete[] cache.device.h_next;
-    delete[] cache.device.h_free;
-    cache.device = gpu::ExpertDeviceCache{};
-    cache.cache_bytes = 0;
-    cache.store.Free();
+    gpu::FreeExpertCacheCommon(cache);
 }
 
 cudaError_t PrewarmMimoExpertCache(MimoExpertCache &cache, cudaStream_t stream,

@@ -3,6 +3,7 @@
 //     grid with spare row blocks, the GA qkv_proj quirk).
 //   * MXFP4 packed E2M1 nibbles + F8_E8M0 per-32 -> BF16 (repack fallback).
 #include "lsxcommon/mimo_moe_convert.h"
+#include "lsx_kernels_misc.cuh"
 
 #include "nvfp4_codec.h"
 
@@ -27,21 +28,6 @@ __device__ __forceinline__ float MimoE8m0ToFloat(uint8_t b)
     return v;
 }
 
-__global__ void fp8_tile128_to_bf16_kernel(const uint8_t *__restrict__ fp8,
-                                           const float *__restrict__ scale,
-                                           __nv_bfloat16 *__restrict__ out,
-                                           long long numel, int cols,
-                                           int scale_cols)
-{
-    const long long i = blockIdx.x * static_cast<long long>(blockDim.x) +
-                        threadIdx.x;
-    if (i >= numel) return;
-    const int r = static_cast<int>(i / cols);
-    const int c = static_cast<int>(i % cols);
-    const int tile = (r >> 7) * scale_cols + (c >> 7);
-    const __half h = __half(__nv_cvt_fp8_to_halfraw(fp8[i], __NV_E4M3));
-    out[i] = __float2bfloat16(__half2float(h) * scale[tile]);
-}
 
 __global__ void mxfp4_to_bf16_kernel(const uint8_t *__restrict__ packed,
                                      const uint8_t *__restrict__ e8m0,
@@ -113,7 +99,7 @@ arrow::Status DequantFp8Block128ToBf16Gpu(const std::vector<uint8_t> &fp8,
                                       cudaGetErrorString(cudaGetLastError()));
 
     const int threads = 256;
-    fp8_tile128_to_bf16_kernel<<<LaunchBlocks(numel, threads), threads, 0, stream>>>(
+    lsxcommon::kernels::Fp8Tile128ToBf16Kernel<><<<LaunchBlocks(numel, threads), threads, 0, stream>>>(
         g.d_a, reinterpret_cast<const float *>(g.d_b),
         reinterpret_cast<__nv_bfloat16 *>(g.d_out), numel, static_cast<int>(cols),
         static_cast<int>(sc));

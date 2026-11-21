@@ -8,6 +8,8 @@
 // Numeric contract per kernel is stated in inkling_moe_kernels.h; the host
 // references that pin them are tests/test_inkling_moe_kernels.cu.
 #include "lsxcommon/inkling_moe_kernels.h"
+#include "lsx_kernels_common.cuh"
+#include "lsx_kernels_misc.cuh"
 
 #include "nvfp4_codec.h"
 
@@ -160,26 +162,6 @@ __global__ void inkling_unweighted_norm_kernel(float *__restrict__ x, int dim,
 // ── 4. relative-position bias ─────────────────────────────────────────────
 // One block per head; each thread owns a key position and computes its own
 // d_rel-length dot, so the whole gather is one pass with no scratch.
-__global__ void inkling_rel_bias_kernel(const float *__restrict__ rel_states,
-                                        const float *__restrict__ proj,
-                                        float *__restrict__ bias, int d_rel,
-                                        int rel_extent, int q_pos, int kv_len)
-{
-    const int h = blockIdx.x;
-    const int tid = threadIdx.x;
-    const float *r = rel_states + static_cast<int64_t>(h) * d_rel;
-    for (int j = tid; j < kv_len; j += blockDim.x) {
-        const int d = q_pos - j;
-        float val = 0.0f;
-        if (d >= 0 && d < rel_extent) {
-            for (int c = 0; c < d_rel; ++c)
-                val = __fadd_rn(val, __fmul_rn(r[c],
-                                               proj[static_cast<int64_t>(c) *
-                                                        rel_extent + d]));
-        }
-        bias[static_cast<int64_t>(h) * kv_len + j] = val;
-    }
-}
 
 // ── 5. attention with learned sinks ───────────────────────────────────────
 __global__ void inkling_kv_append_kernel(const __half *__restrict__ k_new,
@@ -276,14 +258,6 @@ __global__ void inkling_gate_mul_kernel(const __half *__restrict__ x,
     out[i] = __float2half(__fmul_rn(__half2float(x[i]), 1.0f / (1.0f + expf(-g))));
 }
 
-__global__ void inkling_log_scale_kernel(float *__restrict__ q, int64_t nq,
-                                        float *__restrict__ rel, int64_t nrel,
-                                        float tau)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i < nq) q[i] = __fmul_rn(q[i], tau);
-    if (i < nrel) rel[i] = __fmul_rn(rel[i], tau);
-}
 
 __global__ void inkling_dynamic_taps_kernel(const float *__restrict__ static_w,
                                             const float *__restrict__ proj_out,
@@ -460,38 +434,9 @@ __global__ void inkling_expert_accumulate_kernel(float *__restrict__ acc,
     acc[i] = v;
 }
 
-__global__ void inkling_cast_half_kernel(const float *__restrict__ acc,
-                                         __half *__restrict__ out, int64_t n)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= n) return;
-    out[i] = __float2half(acc[i]);
-}
 
-__global__ void inkling_add_f32_kernel(float *__restrict__ acc,
-                                       const float *__restrict__ add, int64_t n)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= n) return;
-    acc[i] = __fadd_rn(acc[i], add[i]);
-}
 
-__global__ void inkling_half_to_f32_kernel(const __half *__restrict__ src,
-                                           float *__restrict__ dst, int64_t n)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __half2float(src[i]);
-}
 
-__global__ void inkling_scale_to_half_kernel(const float *__restrict__ src,
-                                             __half *__restrict__ dst, int64_t n,
-                                             float scale)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __float2half(__fmul_rn(src[i], scale));
-}
 
 __global__ void inkling_logit_softcap_kernel(const float *__restrict__ logits,
                                              float *__restrict__ out, int n,
@@ -520,34 +465,7 @@ __global__ void inkling_matvec_f16_h_kernel(const __half *__restrict__ w,
     if (tid == 0) y[r] = __float2half(acc);
 }
 
-__global__ void inkling_embed_gather_kernel(const __half *__restrict__ table,
-                                            const int32_t *__restrict__ d_id,
-                                            __half *__restrict__ out, int hidden)
-{
-    const int64_t row = d_id[0];
-    const __half *src = table + row * hidden;
-    for (int i = threadIdx.x; i < hidden; i += blockDim.x) out[i] = src[i];
-}
 
-__global__ void inkling_norm_f32in_kernel(const float *__restrict__ x,
-                                          const __half *__restrict__ w,
-                                          __half *__restrict__ out, int hidden,
-                                          float eps)
-{
-    extern __shared__ float scratch[];
-    const int row = blockIdx.x;
-    const int tid = threadIdx.x;
-    const float *xr = x + static_cast<int64_t>(row) * hidden;
-    __half *orow = out + static_cast<int64_t>(row) * hidden;
-    float ss = 0.0f;
-    for (int i = tid; i < hidden; i += blockDim.x)
-        ss = __fadd_rn(ss, __fmul_rn(xr[i], xr[i]));
-    ss = BlockSum(ss, scratch);
-    const float inv = rsqrtf(ss / static_cast<float>(hidden) + eps);
-    for (int i = tid; i < hidden; i += blockDim.x)
-        orow[i] = __float2half(__fmul_rn(__fmul_rn(xr[i], inv),
-                                         __half2float(w[i])));
-}
 
 __global__ void inkling_matvec_f16_kernel(const __half *__restrict__ w,
                                           const __half *__restrict__ x,
@@ -697,7 +615,7 @@ cudaError_t RunInklingRelBias(cudaStream_t stream, const float *rel_states,
     if (!rel_states || !proj || !bias) return cudaErrorInvalidValue;
     if (heads <= 0 || d_rel <= 0 || rel_extent <= 0 || kv_len <= 0)
         return cudaErrorInvalidValue;
-    inkling_rel_bias_kernel<<<heads, kThreads, 0, stream>>>(
+    lsxcommon::kernels::RelBiasKernel<><<<heads, kThreads, 0, stream>>>(
         rel_states, proj, bias, d_rel, rel_extent, q_pos, kv_len);
     return cudaGetLastError();
 }
@@ -766,7 +684,7 @@ cudaError_t RunInklingLogScale(cudaStream_t stream, float *q, float *rel,
 {
     if (!q || nq <= 0) return cudaErrorInvalidValue;
     const int64_t n = std::max<int64_t>(nq, nrel);
-    inkling_log_scale_kernel<<<Blocks(n), kThreads, 0, stream>>>(q, nq, rel, nrel,
+    lsxcommon::kernels::LogScaleKernel<><<<Blocks(n), kThreads, 0, stream>>>(q, nq, rel, nrel,
                                                                 tau);
     return cudaGetLastError();
 }
@@ -827,7 +745,7 @@ cudaError_t RunInklingCastToHalf(cudaStream_t stream, const float *acc,
 {
     if (!acc || !out) return cudaErrorInvalidValue;
     if (n <= 0) return cudaSuccess;
-    inkling_cast_half_kernel<<<Blocks(n), kThreads, 0, stream>>>(acc, out, n);
+    lsxcommon::kernels::F32ToF16Kernel<><<<Blocks(n), kThreads, 0, stream>>>(acc, out, n);
     return cudaGetLastError();
 }
 
@@ -836,7 +754,7 @@ cudaError_t RunInklingAddF32(cudaStream_t stream, float *acc, const float *add,
 {
     if (!acc || !add) return cudaErrorInvalidValue;
     if (n <= 0) return cudaSuccess;
-    inkling_add_f32_kernel<<<Blocks(n), kThreads, 0, stream>>>(acc, add, n);
+    lsxcommon::kernels::AddF32Kernel<><<<Blocks(n), kThreads, 0, stream>>>(acc, add, n);
     return cudaGetLastError();
 }
 
@@ -845,7 +763,7 @@ cudaError_t RunInklingHalfToF32(cudaStream_t stream, const __half *src,
 {
     if (!src || !dst) return cudaErrorInvalidValue;
     if (n <= 0) return cudaSuccess;
-    inkling_half_to_f32_kernel<<<Blocks(n), kThreads, 0, stream>>>(src, dst, n);
+    lsxcommon::kernels::F16ToF32Kernel<><<<Blocks(n), kThreads, 0, stream>>>(src, dst, n);
     return cudaGetLastError();
 }
 
@@ -854,7 +772,7 @@ cudaError_t RunInklingScaleToHalf(cudaStream_t stream, const float *src,
 {
     if (!src || !dst) return cudaErrorInvalidValue;
     if (n <= 0) return cudaSuccess;
-    inkling_scale_to_half_kernel<<<Blocks(n), kThreads, 0, stream>>>(src, dst, n,
+    lsxcommon::kernels::ScaleToHalfKernel<><<<Blocks(n), kThreads, 0, stream>>>(src, dst, n,
                                                                     scale);
     return cudaGetLastError();
 }
@@ -885,7 +803,7 @@ cudaError_t RunInklingEmbedGather(cudaStream_t stream, const __half *table,
 {
     if (table == nullptr || d_id == nullptr || out == nullptr || hidden <= 0)
         return cudaErrorInvalidValue;
-    inkling_embed_gather_kernel<<<1, 512, 0, stream>>>(table, d_id, out, hidden);
+    lsxcommon::kernels::EmbedGatherRowKernel<><<<1, 512, 0, stream>>>(table, d_id, out, hidden);
     return cudaGetLastError();
 }
 
@@ -895,7 +813,7 @@ cudaError_t RunInklingNormF32In(cudaStream_t stream, const float *x,
 {
     if (!x || !w || !out || rows <= 0 || hidden <= 0) return cudaErrorInvalidValue;
     const size_t shmem = static_cast<size_t>(kThreads) * sizeof(float);
-    inkling_norm_f32in_kernel<<<rows, kThreads, shmem, stream>>>(x, w, out,
+    lsxcommon::kernels::NormF32InKernel<><<<rows, kThreads, shmem, stream>>>(x, w, out,
                                                                   hidden, eps);
     return cudaGetLastError();
 }

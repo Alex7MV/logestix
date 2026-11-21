@@ -4,6 +4,7 @@
 // GEMV, causal GQA attention) come from the shared layers; only the family's
 // own arithmetic lives here.
 #include "lsxcommon/hy_moe_kernels.h"
+#include "lsx_kernels_misc.cuh"
 
 #include "lsx_kernels_common.cuh"
 #include "lsx_kernels_norm.cuh"
@@ -122,18 +123,6 @@ __global__ void hy_rope_kernel(__half *__restrict__ x, int heads, int head_dim,
     x[base + j + half] = __float2half(x1 * s + x2 * c);
 }
 
-__global__ void hy_embed_kernel(const __half *__restrict__ table,
-                                const int32_t *__restrict__ ids,
-                                __half *__restrict__ out, int hidden)
-{
-    const int t = blockIdx.y;
-    const int id = ids[t];
-    const int64_t src = static_cast<int64_t>(id) * hidden;
-    const int64_t dst = static_cast<int64_t>(t) * hidden;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < hidden;
-         i += blockDim.x * gridDim.x)
-        out[dst + i] = table[src + i];
-}
 
 __global__ void hy_expert_accumulate_kernel(float *__restrict__ acc,
                                             const __half *__restrict__ y,
@@ -239,7 +228,7 @@ cudaError_t RunHyEmbed(cudaStream_t stream, const __half *table,
     if (seq <= 0 || hidden <= 0) return cudaSuccess;
     const int bx = (hidden + kThreads - 1) / kThreads;
     dim3 grid(bx, seq);
-    hy_embed_kernel<<<grid, kThreads, 0, stream>>>(table, ids, out, hidden);
+    lsxcommon::kernels::EmbedGatherRowsKernel<><<<grid, kThreads, 0, stream>>>(table, ids, out, hidden);
     return cudaGetLastError();
 }
 

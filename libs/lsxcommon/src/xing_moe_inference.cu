@@ -150,20 +150,8 @@ inline cudaError_t GvF32(const XingNvfp4Weight &w, const __half *x, float *y,
 }
 
 // F32 -> FP16 (NVFP4 consumes FP16 activations).
-__global__ void f32_to_f16_kernel(const float *__restrict__ x,
-                                  __half *__restrict__ y, int64_t n)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i < n) y[i] = __float2half(x[i]);
-}
 
 // FP16 -> F32 (the norm/attention stages run in F32).
-__global__ void f16_to_f32_kernel(const __half *__restrict__ x,
-                                  float *__restrict__ y, int64_t n)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i < n) y[i] = __half2float(x[i]);
-}
 
 // Weighted RMSNorm in F32 (Xing4_0RMSNorm): one block.
 //
@@ -557,7 +545,7 @@ inline cudaError_t ToHalf(const float *src, __half *dst, int64_t n,
                           cudaStream_t s)
 {
     if (n <= 0) return cudaSuccess;
-    f32_to_f16_kernel<<<static_cast<int>((n + 255) / 256), 256, 0, s>>>(src, dst, n);
+    lsxcommon::kernels::F32ToF16Kernel<<<static_cast<int>((n + 255) / 256), 256, 0, s>>>(src, dst, n);
     return cudaGetLastError();
 }
 
@@ -565,7 +553,7 @@ inline cudaError_t ToF32(const __half *src, float *dst, int64_t n,
                          cudaStream_t s)
 {
     if (n <= 0) return cudaSuccess;
-    f16_to_f32_kernel<<<static_cast<int>((n + 255) / 256), 256, 0, s>>>(src, dst, n);
+    lsxcommon::kernels::F16ToF32Kernel<<<static_cast<int>((n + 255) / 256), 256, 0, s>>>(src, dst, n);
     return cudaGetLastError();
 }
 

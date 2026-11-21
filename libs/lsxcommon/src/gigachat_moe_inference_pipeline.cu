@@ -2,6 +2,7 @@
 // GatedDeltaNet launchers, the gated norms, the MoE/MLP and lm_head. Session
 // state (caches, tables, scratch) lives in GcPipeline::Impl.
 #include "lsxcommon/gigachat_moe_inference_pipeline.h"
+#include "lsx_kernels_common.cuh"
 
 #include "gigachat_moe_constants.h"
 #include "gigachat_moe_device_math.h"
@@ -41,26 +42,8 @@ __global__ void embed_row_f32_kernel(const __nv_bfloat16 *__restrict__ row,
     if (i < hidden) h[i] = __bfloat162float(row[i]);
 }
 
-__global__ void f32_to_f16_kernel(const float *__restrict__ x,
-                                  __half *__restrict__ y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) y[i] = __float2half(x[i]);
-}
 
-__global__ void f16_to_f32_kernel(const __half *__restrict__ x,
-                                  float *__restrict__ y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) y[i] = __half2float(x[i]);
-}
 
-__global__ void f32_to_bf16_kernel(const float *__restrict__ x,
-                                   __nv_bfloat16 *__restrict__ y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) y[i] = __float2bfloat16_rn(x[i]);
-}
 
 // a and out may alias (in-place residual add).
 __global__ void add_f32_kernel(const float *a, const float *__restrict__ b,
@@ -102,14 +85,14 @@ inline cudaError_t PLaunchGemm(const lsx_nvfp4::LsxNvfp4Weight &w,
 inline cudaError_t PToF16(const float *x, __half *y, int n, cudaStream_t s)
 {
     if (n <= 0) return cudaSuccess;
-    f32_to_f16_kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
+    lsxcommon::kernels::F32ToF16Kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
     return cudaGetLastError();
 }
 
 inline cudaError_t PToF32(const __half *x, float *y, int n, cudaStream_t s)
 {
     if (n <= 0) return cudaSuccess;
-    f16_to_f32_kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
+    lsxcommon::kernels::F16ToF32Kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
     return cudaGetLastError();
 }
 
@@ -599,7 +582,7 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
         p.h, 1, hidden, w.final_norm.rank, w.final_norm.d_weight,
         w.final_norm.d_gate_up,
         w.final_norm.d_gate_down, p.d.rms_eps, p.buf, stream));
-    f32_to_bf16_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.buf, p.xb,
+    lsxcommon::kernels::F32ToBf16Kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.buf, p.xb,
                                                                 hidden);
     GC_TRY(cudaGetLastError());
     GC_TRY(gemv::RunLxGemmVec(stream, w.d_lm_head, p.xb, 1, w.vocab, hidden,

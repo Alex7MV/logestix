@@ -5,6 +5,7 @@
 // sigmoid router, the FP32 SwiGLU product, the depth-scaled residual add, the
 // embedding lookup and the final-logit softcap.
 #include "lsxcommon/beam_moe_kernels.h"
+#include "lsx_kernels_misc.cuh"
 
 #include "beam_moe_constants.h"
 
@@ -273,18 +274,6 @@ __global__ void beam_softcap_kernel(float *__restrict__ logits, int n)
     logits[i] = tanhf(logits[i] / kSoftcap) * kSoftcap;
 }
 
-__global__ void beam_embed_kernel(const __half *__restrict__ table,
-                                  const int32_t *__restrict__ ids,
-                                  __half *__restrict__ out, int hidden)
-{
-    const int t = blockIdx.y;
-    const int id = ids[t];
-    const int64_t src = static_cast<int64_t>(id) * hidden;
-    const int64_t dst = static_cast<int64_t>(t) * hidden;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < hidden;
-         i += blockDim.x * gridDim.x)
-        out[dst + i] = table[src + i];
-}
 
 } // namespace
 
@@ -424,7 +413,7 @@ cudaError_t RunBeamEmbed(cudaStream_t stream, const __half *table,
     if (seq <= 0 || hidden <= 0) return cudaSuccess;
     const int bx = (hidden + kThreads - 1) / kThreads;
     dim3 grid(bx, seq);
-    beam_embed_kernel<<<grid, kThreads, 0, stream>>>(table, ids, out, hidden);
+    lsxcommon::kernels::EmbedGatherRowsKernel<><<<grid, kThreads, 0, stream>>>(table, ids, out, hidden);
     return cudaGetLastError();
 }
 

@@ -27,20 +27,8 @@ namespace gpu {
 
 // Forward declarations from other .cu files
 
-// half_to_float_kernel / float_to_half_kernel are defined once in
-// deepseek_moe_load.cuh (included above) and shared by every .cu
-// file in this pipeline — see that header for why.
-
-// half → float conversion kernel (local pipeline copy; the canonical
-// half_to_float_kernel lives in deepseek_moe_inference_moe.cu)
-__global__ void half_to_float_f2h_kernel(const __half* __restrict__ src,
-                                          float* __restrict__ dst, int n)
-{
-    // half→float conversion (for shared FFN FP16→FP32)
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __half2float(src[i]);
-}
+// half→float / float→half casts are the neutral kernels::F16ToF32Kernel /
+// kernels::F32ToF16Kernel (lsx_kernels_common.cuh, via load.cuh).
 
 // Clamp float → half with overflow protection (prevents Inf/NaN from FP16 range)
 __global__ void clamp_f32_to_fp16(const float* __restrict__ src,
@@ -71,11 +59,11 @@ static __host__ cudaError_t run_rmsnorm(
     // The residual is FP32 on V4-Pro (its HC sum exceeds the FP16 range, so the
     // combine stage must not round-trip through half before the norm) and FP16
     // on V4-Flash, which converts here exactly as it always has.
-    half_to_float_kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, n);
+    lsxcommon::kernels::F16ToF32Kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, n);
 
     const float* src = nullptr;
     if constexpr (is_half_residual<T>) {
-        half_to_float_f2h_kernel<<<grid, block, 0, stream>>>(
+        lsxcommon::kernels::F16ToF32Kernel<<<grid, block, 0, stream>>>(
             static_cast<const __half*>(static_cast<const void*>(d_input)),
             d_scratch, n);
         if (cudaGetLastError() != cudaSuccess) return cudaGetLastError();
@@ -636,7 +624,7 @@ InferenceResult RunInferenceModel(
                 {
                     int b = 256;
                     int g = (T::kHidden + b - 1) / b;
-                    half_to_float_kernel<<<g, b, 0, stream>>>(d_attn_out_h, d_attn_out, T::kHidden);
+                    lsxcommon::kernels::F16ToF32Kernel<<<g, b, 0, stream>>>(d_attn_out_h, d_attn_out, T::kHidden);
                 }
 INFER_CHECK(run_hc_post<T>(stream, d_attn_out, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
@@ -673,7 +661,7 @@ INFER_CHECK(run_hc_post<T>(stream, d_attn_out, d_hidden,
                         static_cast<size_t>(T::kHidden) * sizeof(__half),
                         cudaMemcpyDeviceToDevice, stream));
                 else
-                    float_to_half_kernel<<<(T::kHidden + 255) / 256, 256, 0,
+                    lsxcommon::kernels::F32ToF16Kernel<<<(T::kHidden + 255) / 256, 256, 0,
                                            stream>>>(d_resid, d_normed,
                                                      T::kHidden);
             }
@@ -735,7 +723,7 @@ INFER_CHECK(run_hc_post<T>(stream, d_attn_out, d_hidden,
                 {
                     int block = 256;
                     int grid = (T::kHidden + block - 1) / block;
-                    half_to_float_f2h_kernel<<<grid, block, 0, stream>>>(
+                    lsxcommon::kernels::F16ToF32Kernel<<<grid, block, 0, stream>>>(
                         d_ffn_out, d_ffn_accum, T::kHidden);
                 }
             } else {
@@ -815,7 +803,7 @@ INFER_CHECK(run_hc_post<T>(stream, d_attn_out, d_hidden,
                 static_cast<size_t>(T::kHidden) * sizeof(__half),
                 cudaMemcpyDeviceToDevice, stream));
         } else {
-            float_to_half_kernel<<<(T::kHidden + 255) / 256, 256, 0, stream>>>(
+            lsxcommon::kernels::F32ToF16Kernel<<<(T::kHidden + 255) / 256, 256, 0, stream>>>(
                 d_resid, d_normed, T::kHidden);
         }
 

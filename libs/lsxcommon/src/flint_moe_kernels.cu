@@ -4,6 +4,7 @@
 // (RMSNorm tree, SwiGLU, GEMV) come from the shared layers; only the family's
 // own arithmetic lives here.
 #include "lsxcommon/flint_moe_kernels.h"
+#include "lsx_kernels_misc.cuh"
 
 #include "lsx_kernels_common.cuh"
 #include "lsx_kernels_norm.cuh"
@@ -170,18 +171,6 @@ __global__ void flint_add_half_f32_kernel(float *__restrict__ acc,
     acc[i] = __fadd_rn(acc[i], __fmul_rn(__half2float(add[i]), scale));
 }
 
-__global__ void flint_embed_kernel(const __half *__restrict__ table,
-                                   const int32_t *__restrict__ ids,
-                                   __half *__restrict__ out, int hidden)
-{
-    const int t = blockIdx.y;
-    const int id = ids[t];
-    const int64_t src = static_cast<int64_t>(id) * hidden;
-    const int64_t dst = static_cast<int64_t>(t) * hidden;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < hidden;
-         i += blockDim.x * gridDim.x)
-        out[dst + i] = table[src + i];
-}
 
 __global__ void flint_expert_accumulate_kernel(
     float *__restrict__ acc, const __half *__restrict__ y,
@@ -229,13 +218,6 @@ __global__ void flint_moe_combine_kernel(const float *__restrict__ acc,
     out[i] = __fadd_rn(acc[i], __fmul_rn(__half2float(shared[i]), shared_scale));
 }
 
-__global__ void flint_add_f32_kernel(float *__restrict__ acc,
-                                     const float *__restrict__ add, int64_t n)
-{
-    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= n) return;
-    acc[i] = __fadd_rn(acc[i], add[i]);
-}
 
 } // namespace
 
@@ -348,7 +330,7 @@ cudaError_t RunFlintEmbed(cudaStream_t stream, const __half *table,
     if (seq <= 0 || hidden <= 0) return cudaSuccess;
     const int bx = (hidden + kThreads - 1) / kThreads;
     dim3 grid(bx, seq);
-    flint_embed_kernel<<<grid, kThreads, 0, stream>>>(table, ids, out, hidden);
+    lsxcommon::kernels::EmbedGatherRowsKernel<><<<grid, kThreads, 0, stream>>>(table, ids, out, hidden);
     return cudaGetLastError();
 }
 
@@ -400,7 +382,7 @@ cudaError_t RunFlintAddF32(cudaStream_t stream, float *acc, const float *add,
 {
     if (n <= 0) return cudaSuccess;
     const int blocks = static_cast<int>((n + kThreads - 1) / kThreads);
-    flint_add_f32_kernel<<<blocks, kThreads, 0, stream>>>(acc, add, n);
+    lsxcommon::kernels::AddF32Kernel<><<<blocks, kThreads, 0, stream>>>(acc, add, n);
     return cudaGetLastError();
 }
 

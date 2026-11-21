@@ -1,4 +1,6 @@
 #include "lsxcommon/qwen_moe_exp_inference.h"
+#include "lsx_kernels_misc.cuh"
+#include "lsx_kernels_common.cuh"
 
 #include "lsxcommon/core.h"
 
@@ -632,12 +634,6 @@ cudaError_t RunExpQsaAttention(cudaStream_t stream, const __half *d_q,
 
 namespace {
 
-__global__ void half_to_float_kernel(const __half *__restrict__ src,
-                                     float *__restrict__ dst, int total)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < total) dst[i] = __half2float(src[i]);
-}
 
 } // namespace
 
@@ -646,7 +642,7 @@ void launch_half_to_float(const __half *src, float *dst, int total,
 {
     const int block = 256;
     const int grid = (total + block - 1) / block;
-    half_to_float_kernel<<<grid, block, 0, stream>>>(src, dst, total);
+    lsxcommon::kernels::F16ToF32Kernel<<<grid, block, 0, stream>>>(src, dst, total);
 }
 
 namespace {
@@ -1337,12 +1333,6 @@ __global__ void half_to_float_rows_kernel(const __half *__restrict__ src,
     if (i < total) dst[i] = __half2float(src[i]);
 }
 
-__global__ void float_to_half_kernel(const float *__restrict__ src,
-                                     __half *__restrict__ dst, int total)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < total) dst[i] = __float2half(src[i]);
-}
 
 cudaError_t RunExpHcGatedResidual(
     cudaStream_t stream, const __half *d_hyper_input,
@@ -1462,7 +1452,7 @@ cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
         nullptr, d_mixer_norm);
     if (e == cudaSuccess) {
         // Float->half conversion for the mixed output.
-        float_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
+        lsxcommon::kernels::F32ToF16Kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
                                                                   d_out, H);
         e = cudaGetLastError();
     }
@@ -1493,7 +1483,7 @@ cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
     e = RunExpHcGatedResidualCached(stream, d_hidden, w, d_mixer_norm, seq, H,
                                     hc, lowrank, d_mixed, d_inj, nullptr);
     if (e == cudaSuccess) {
-        float_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
+        lsxcommon::kernels::F32ToF16Kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
                                                                   d_out, H);
         e = cudaGetLastError();
     }
@@ -1526,14 +1516,6 @@ __global__ void exp_feed_token_kernel(int32_t *__restrict__ slot,
 }
 
 // hidden [n] (fp16) -> repeat x hc streams (fp32 identity replication).
-__global__ void exp_repeat_hc_kernel(const __half *__restrict__ in, int H,
-                                     int hc, __half *__restrict__ out)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= H) return;
-    const __half v = in[i];
-    for (int c = 0; c < hc; ++c) out[c * H + i] = v;
-}
 
 // hyper stream mean: out[i] = mean_c hyper[c*H+i]; folds the hc mixer
 // epilogue when the caller has already applied the input-mix gate (the
@@ -1949,7 +1931,7 @@ cudaError_t RunExpGeneration(
         e = qwen::RunAttnEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
         if (e != cudaSuccess) { result.error_msg = "embed"; break; }
         // hidden -> 4 streams.
-        exp_repeat_hc_kernel<<<(H + threads - 1) / threads, threads, 0, stream>>>(
+        lsxcommon::kernels::RepeatHcKernel<><<<(H + threads - 1) / threads, threads, 0, stream>>>(
             d_act, H, hc, d_hyper);
 
         // PLE n-gram context: previous tokens (eos-padded), host mirror.

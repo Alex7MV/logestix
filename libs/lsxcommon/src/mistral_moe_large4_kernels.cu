@@ -3,6 +3,7 @@
 // the shared-memory sandbox rule (thread-0 RMW behind __syncthreads()).
 
 #include "lsxcommon/mistral_moe_large4_kernels.h"
+#include "lsx_kernels_common.cuh"
 
 #include "lsxcommon/log.h"
 #include "nvfp4_codec.h"
@@ -408,11 +409,6 @@ __global__ void value_project_kernel(const __nv_bfloat16 *__restrict__ wkv_b,
 }
 
 // ── elementwise ───────────────────────────────────────────────────────────
-__global__ void bf16_to_f32_kernel(const __nv_bfloat16 *src, float *dst, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __bfloat162float(src[i]);
-}
 __global__ void acc_add_scaled_f16_kernel(float *acc, const __half *src,
                                           const float *scale, int n)
 {
@@ -423,27 +419,6 @@ __global__ void logit_softcap_kernel(float *logits, int n, float cap)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) logits[i] = tanhf(logits[i] / cap) * cap;
-}
-__global__ void bf16_to_f16_kernel(const __nv_bfloat16 *src, __half *dst,
-                                   int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __float2half(__bfloat162float(src[i]));
-}
-__global__ void f16_to_f32_kernel(const __half *src, float *dst, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __half2float(src[i]);
-}
-__global__ void f32_to_f16_kernel(const float *src, __half *dst, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __float2half(src[i]);
-}
-__global__ void f32_to_bf16_kernel(const float *src, __nv_bfloat16 *dst, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __float2bfloat16(src[i]);
 }
 __global__ void add_inplace_kernel(float *a, const float *b, int n)
 {
@@ -642,7 +617,7 @@ cudaError_t LaunchLarge4ValueProject(const __nv_bfloat16 *wkv_b,
 cudaError_t LaunchLarge4Bf16ToF32(const __nv_bfloat16 *src, float *dst,
                                   int n, cudaStream_t stream)
 {
-    bf16_to_f32_kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
+    lsxcommon::kernels::Bf16ToF32Kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
     return cudaGetLastError();
 }
 cudaError_t LaunchLarge4AccAddScaledF16ToF32(float *acc, const __half *src,
@@ -662,25 +637,25 @@ cudaError_t LaunchLarge4LogitSoftcap(float *logits, int n, float cap,
 cudaError_t LaunchLarge4Bf16ToF16(const __nv_bfloat16 *src, __half *dst,
                                   int n, cudaStream_t stream)
 {
-    bf16_to_f16_kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
+    lsxcommon::kernels::Bf16ToF16Kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
     return cudaGetLastError();
 }
 cudaError_t LaunchLarge4F16ToF32(const __half *src, float *dst, int n,
                                  cudaStream_t stream)
 {
-    f16_to_f32_kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
+    lsxcommon::kernels::F16ToF32Kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
     return cudaGetLastError();
 }
 cudaError_t LaunchLarge4F32ToF16(const float *src, __half *dst, int n,
                                  cudaStream_t stream)
 {
-    f32_to_f16_kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
+    lsxcommon::kernels::F32ToF16Kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
     return cudaGetLastError();
 }
 cudaError_t LaunchLarge4F32ToBf16(const float *src, __nv_bfloat16 *dst, int n,
                                   cudaStream_t stream)
 {
-    f32_to_bf16_kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
+    lsxcommon::kernels::F32ToBf16Kernel<<<Grid(n), kBlock, 0, stream>>>(src, dst, n);
     return cudaGetLastError();
 }
 cudaError_t LaunchLarge4AddInPlace(float *a, const float *b, int n,

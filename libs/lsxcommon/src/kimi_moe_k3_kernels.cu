@@ -2,6 +2,8 @@
 // geometry (run-to-run deterministic), thread-0 RMW behind barriers.
 #include "lsxcommon/kimi_moe_k3_kernels.h"
 
+#include "lsx_kernels_attnres.cuh"
+
 #include "nvfp4_codec.h"
 
 #include <cuda_fp16.h>
@@ -145,51 +147,6 @@ __global__ void router_topk_kernel(const float *__restrict__ sel,
     for (int i = 0; i < n; ++i) {
         idx[i] = best[i];
         wts[i] = raw[best[i]] / denom * scale;
-    }
-}
-
-// ── AttnRes depth mixer ─────────────────────────────────────────────────────
-__global__ void depth_mix_kernel(const __half *__restrict__ sources, int n_src,
-                                 const __half *__restrict__ norm_w,
-                                 const __half *__restrict__ proj_w,
-                                 __half *__restrict__ out, int hidden, float eps)
-{
-    __shared__ float scratch[kBlock];
-    __shared__ float logits[16];
-    for (int s = 0; s < n_src; ++s) {
-        const __half *p = sources + static_cast<size_t>(s) * hidden;
-        float sq = 0.0f;
-        for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-            const float v = __half2float(p[i]);
-            sq += v * v;
-        }
-        const float rstd = rsqrtf(block_sum(sq, scratch) / hidden + eps);
-        float dot = 0.0f;
-        for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-            const float v = __half2float(p[i]) * rstd * __half2float(norm_w[i]);
-            dot += v * __half2float(proj_w[i]);
-        }
-        const float total = block_sum(dot, scratch);
-        if (threadIdx.x == 0) logits[s] = total;
-        __syncthreads();
-    }
-    if (threadIdx.x == 0) {
-        float mx = logits[0];
-        for (int s = 1; s < n_src; ++s) mx = fmaxf(mx, logits[s]);
-        float sum = 0.0f;
-        for (int s = 0; s < n_src; ++s) {
-            logits[s] = __expf(logits[s] - mx);
-            sum += logits[s];
-        }
-        for (int s = 0; s < n_src; ++s) logits[s] /= sum;
-    }
-    __syncthreads();
-    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-        float acc = 0.0f;
-        for (int s = 0; s < n_src; ++s)
-            acc += logits[s] *
-                   __half2float(sources[static_cast<size_t>(s) * hidden + i]);
-        out[i] = __float2half(acc);
     }
 }
 
@@ -605,8 +562,8 @@ cudaError_t RunKimiK3DepthMix(cudaStream_t stream, const __half *sources,
                               float eps)
 {
     if (n_src <= 0 || n_src > 16) return cudaErrorInvalidValue;
-    depth_mix_kernel<<<1, kBlock, 0, stream>>>(sources, n_src, norm_w, proj_w,
-                                               out, hidden, eps);
+    kernels::AttnResDepthMixKernel<16><<<1, kBlock, 0, stream>>>(
+        sources, n_src, norm_w, proj_w, out, hidden, eps);
     return cudaGetLastError();
 }
 

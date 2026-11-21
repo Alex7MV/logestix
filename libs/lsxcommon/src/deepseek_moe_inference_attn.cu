@@ -612,9 +612,8 @@ static cudaError_t f8_gemm_1d(cudaStream_t stream,
 }
 
 // ── RMSNorm bridge (half → float → rmsnorm_float → half) ─────────────────────
-// half_to_float_kernel / float_to_half_kernel are defined once in
-// deepseek_moe_load.cuh (included above) and shared across this
-// pipeline's .cu files.
+// half→float / float→half casts are the neutral kernels::F16ToF32Kernel /
+// kernels::F32ToF16Kernel (lsx_kernels_common.cuh, via load.cuh).
 
 template <class T>
 static cudaError_t run_rmsnorm_attn(

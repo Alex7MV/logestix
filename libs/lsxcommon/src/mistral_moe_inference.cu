@@ -3,6 +3,7 @@
 // the neutral MoE store for the routed experts. See the header for the graph.
 
 #include "lsxcommon/mistral_moe_inference.h"
+#include "lsx_kernels_common.cuh"
 
 #include "mistral_moe_constants.h"
 #include "lsx_device_math.h"
@@ -54,41 +55,11 @@ __device__ __forceinline__ float ToF32(__half v) { return __half2float(v); }
 __device__ __forceinline__ float ToF32(__nv_bfloat16 v) { return __bfloat162float(v); }
 
 // ── elementwise ─────────────────────────────────────────────────────────────
-__global__ void bf16_to_f16_kernel(const __nv_bfloat16 *src, __half *dst, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x)
-        dst[i] = __float2half(__bfloat162float(src[i]));
-}
-__global__ void bf16_to_f32_kernel(const __nv_bfloat16 *src, float *dst, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x)
-        dst[i] = __bfloat162float(src[i]);
-}
 __global__ void f32_copy_kernel(const float *src, float *dst, int n)
 {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
          i += gridDim.x * blockDim.x)
         dst[i] = src[i];
-}
-__global__ void f32_to_f16_kernel(const float *src, __half *dst, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x)
-        dst[i] = __float2half(src[i]);
-}
-__global__ void f32_to_bf16_kernel(const float *src, __nv_bfloat16 *dst, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x)
-        dst[i] = __float2bfloat16(src[i]);
-}
-__global__ void f16_to_bf16_kernel(const __half *src, __nv_bfloat16 *dst, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x)
-        dst[i] = __float2bfloat16(__half2float(src[i]));
 }
 
 // Mistral router: softmax over ALL experts, top-K (value desc, index asc),
@@ -132,12 +103,6 @@ __global__ void mistral_router_kernel(const float *logits, int E, int K,
         slots[k].eid = chosen[k];
         slots[k].coeff = p[chosen[k]] / sm;
     }
-}
-__global__ void f16_to_f32_kernel(const __half *src, float *dst, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
-         i += gridDim.x * blockDim.x)
-        dst[i] = __half2float(src[i]);
 }
 __global__ void add_f32_inplace_kernel(float *a, const float *b, int n)
 {
@@ -686,7 +651,7 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
     const auto grid = [&](int n) { return (n + t256 - 1) / t256; };
 
     // Embedding row (BF16) -> FP16 hidden.
-    MISTRAL_LAUNCH(bf16_to_f32_kernel<<<grid(H), t256, 0, stream>>>(
+    MISTRAL_LAUNCH(lsxcommon::kernels::Bf16ToF32Kernel<<<grid(H), t256, 0, stream>>>(
         pw.embed.data + static_cast<int64_t>(token_id) * H, s.d_h, H));
 
     // llama-4 logit temperature for this query position.
@@ -749,7 +714,7 @@ cudaError_t MistralDecodeStep(MistralPinnedWeights &pw,
             s.d_q, s.d_k, s.d_v, s.kgeom, s.vgeom, l, pos, s.capacity,
             dims.attn_scale, temp, s.d_scores, s.d_attn));
         // o_proj + residual
-        MISTRAL_LAUNCH(f32_to_bf16_kernel<<<grid(heads * vh), t256, 0, stream>>>(
+        MISTRAL_LAUNCH(lsxcommon::kernels::F32ToBf16Kernel<<<grid(heads * vh), t256, 0, stream>>>(
             s.d_attn, s.d_attn16, heads * vh));
         MISTRAL_CK(lsxcommon::gemv::RunLxGemmVec(
             stream, lw.wo.data, s.d_attn16, 1, H, heads * vh,

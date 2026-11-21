@@ -4,6 +4,7 @@
 // NVFP4 GEMV boundary converts to/from FP16. Mirrors modeling_gigachat3_5.py
 // GigaChat35Attention.forward.
 #include "lsxcommon/gigachat_moe_inference_attn.h"
+#include "lsx_kernels_common.cuh"
 
 #include "gigachat_moe_device_math.h"
 #include "gigachat_moe_kernels.h"
@@ -26,26 +27,8 @@ inline int64_t AlignUp(int64_t v)
     return (v + kAlign - 1) / kAlign * kAlign;
 }
 
-__global__ void f32_to_f16_kernel(const float *__restrict__ x,
-                                  __half *__restrict__ y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) y[i] = __float2half(x[i]);
-}
 
-__global__ void f16_to_f32_kernel(const __half *__restrict__ x,
-                                  float *__restrict__ y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) y[i] = __half2float(x[i]);
-}
 
-__global__ void f32_to_bf16_kernel(const float *__restrict__ x,
-                                   __nv_bfloat16 *__restrict__ y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) y[i] = __float2bfloat16_rn(x[i]);
-}
 
 __global__ void scale_f32_to_f16_kernel(const float *__restrict__ x,
                                         __half *__restrict__ y, int n,
@@ -205,7 +188,7 @@ inline cudaError_t LaunchF32ToF16(const float *x, __half *y, int n,
                                   cudaStream_t s)
 {
     if (n <= 0) return cudaSuccess;
-    f32_to_f16_kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
+    lsxcommon::kernels::F32ToF16Kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
     return cudaGetLastError();
 }
 
@@ -213,7 +196,7 @@ inline cudaError_t LaunchF16ToF32(const __half *x, float *y, int n,
                                   cudaStream_t s)
 {
     if (n <= 0) return cudaSuccess;
-    f16_to_f32_kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
+    lsxcommon::kernels::F16ToF32Kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
     return cudaGetLastError();
 }
 
@@ -221,7 +204,7 @@ inline cudaError_t LaunchF32ToBf16(const float *x, __nv_bfloat16 *y, int n,
                                    cudaStream_t stream)
 {
     if (n <= 0) return cudaSuccess;
-    f32_to_bf16_kernel<<<(n + 255) / 256, 256, 0, stream>>>(x, y, n);
+    lsxcommon::kernels::F32ToBf16Kernel<<<(n + 255) / 256, 256, 0, stream>>>(x, y, n);
     return cudaGetLastError();
 }
 

@@ -28,20 +28,8 @@ using lsxcommon::gpu::InferenceResult;
 
 // Forward declarations from other .cu files
 
-// half_to_float_kernel / float_to_half_kernel are defined once in
-// deepseek_moe_load.cuh (included above) and shared by every .cu
-// file in this pipeline — see that header for why.
-
-// half → float conversion kernel (local pipeline copy; the canonical
-// half_to_float_kernel lives in deepseek_moe_inference_moe.cu)
-__global__ void half_to_float_f2h_kernel(const __half* __restrict__ src,
-                                          float* __restrict__ dst, int n)
-{
-    // half→float conversion (for shared FFN FP16→FP32)
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __half2float(src[i]);
-}
+// half→float / float→half casts are the neutral kernels::F16ToF32Kernel /
+// kernels::F32ToF16Kernel (lsx_kernels_common.cuh, via load.cuh).
 
 // Clamp float → half with overflow protection (prevents Inf/NaN from FP16 range)
 __global__ void clamp_f32_to_fp16(const float* __restrict__ src,
@@ -65,7 +53,7 @@ static __host__ cudaError_t run_rmsnorm(
 
     // d_input is FP32: V4-Pro's HC residual can exceed the FP16 range, so the
     // combine stage must not round-trip through half before the norm.
-    half_to_float_kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, n);
+    lsxcommon::kernels::F16ToF32Kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, n);
 
     cudaError_t err = lsxcommon::gpu::rmsnorm_float(stream, 1, dim, d_input,
                                      d_gamma_scratch, eps, d_scratch);
@@ -620,7 +608,7 @@ InferenceResult RunInferenceModel(
                 {
                     int b = 256;
                     int g = (kHiddenDim + b - 1) / b;
-                    half_to_float_kernel<<<g, b, 0, stream>>>(d_attn_out_h, d_attn_out, kHiddenDim);
+                    lsxcommon::kernels::F16ToF32Kernel<<<g, b, 0, stream>>>(d_attn_out_h, d_attn_out, kHiddenDim);
                 }
 INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
@@ -651,7 +639,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                          d_norm_gamma_scratch,
                                          kHiddenDim, rms_eps));
             } else {
-                float_to_half_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+                lsxcommon::kernels::F32ToF16Kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
                     d_single_f32, d_normed, kHiddenDim);
             }
 
@@ -712,7 +700,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 {
                     int block = 256;
                     int grid = (kHiddenDim + block - 1) / block;
-                    half_to_float_f2h_kernel<<<grid, block, 0, stream>>>(
+                    lsxcommon::kernels::F16ToF32Kernel<<<grid, block, 0, stream>>>(
                         d_ffn_out, d_ffn_accum, kHiddenDim);
                 }
             } else {
@@ -787,7 +775,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                      d_norm_gamma_scratch,
                                      kHiddenDim, rms_eps));
         } else {
-            float_to_half_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+            lsxcommon::kernels::F32ToF16Kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
                 d_single_f32, d_normed, kHiddenDim);
         }
 

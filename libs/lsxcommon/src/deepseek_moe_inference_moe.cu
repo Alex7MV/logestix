@@ -215,9 +215,8 @@ __global__ void scale_float_kernel(float* d_buf, float scalar, int n)
     d_buf[i] *= scalar;
 }
 
-// float_to_half_kernel / half_to_float_kernel are defined once in
-// deepseek_moe_load.cuh (included above) and shared across this
-// pipeline's .cu files.
+// half→float / float→half casts are the neutral kernels::F16ToF32Kernel /
+// kernels::F32ToF16Kernel (lsx_kernels_common.cuh, via load.cuh).
 
 // SwiGLU with swiglu_limit: gate clamped to (-inf, limit], up to [-limit, limit].
 // d_gate_vec = silu(clamp(d_gate_vec, max=limit)) * clamp(d_up_vec, +/-limit)

@@ -3,6 +3,7 @@
 // Per-channel decay mirrors the FLA kimi-delta semantics: decay applies to
 // the KEY dim (l) of the state column, unlike qwen GDN's scalar head decay.
 #include "lsxcommon/glm_moe_flash_inference.h"
+#include "lsx_kernels_misc.cuh"
 
 #include "glm_moe_flash_device_math.h"
 #include "lsx_kernels_quant.cuh"
@@ -512,14 +513,6 @@ __global__ void flash_add_kernel(const __half *__restrict__ x,
 }
 
 // repeat hidden -> hc streams (FP16 x4)
-__global__ void flash_repeat_hc_kernel(const __half *__restrict__ in, int H,
-                                       int hc, __half *__restrict__ out)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= H) return;
-    const __half v = in[i];
-    for (int c = 0; c < hc; ++c) out[c * H + i] = v;
-}
 
 // Gating activation over [heads*dim] in place: sigmoid (default) or silu.
 __global__ void flash_gate_act_kernel(__half *__restrict__ g, int n,
@@ -1735,19 +1728,7 @@ __global__ void bf16_to_f16_kernel(const uint8_t *__restrict__ src,
     dst[i] = __float2half(f);
 }
 
-__global__ void f16_to_f32_kernel(const __half *__restrict__ src,
-                                  float *__restrict__ dst, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __half2float(src[i]);
-}
 
-__global__ void f32_to_f16_kernel(const float *__restrict__ src,
-                                  __half *__restrict__ dst, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __float2half(src[i]);
-}
 
 __device__ int flash_dbg_id = 0;
 
@@ -2788,7 +2769,7 @@ cudaError_t RunGlmFlashGeneration(
                              l, hmean / H, nan);
             }
             // ── attn hc_post (module out FP32) ──
-            f16_to_f32_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+            lsxcommon::kernels::F16ToF32Kernel<<<(H + 255) / 256, 256, 0, stream>>>(
                 d_act2, d_module_f, H);
             gpu::run_hc_post(stream, d_module_f, d_state, d_hc_post, d_hc_comb,
                         d_state);
@@ -2862,7 +2843,7 @@ cudaError_t RunGlmFlashGeneration(
                                       d_gemv_tbl) != cudaSuccess)
                     { result.error_msg = "routed ffn: " + ffn_err; break; }
                 // acc -> f16 into d_act2, add shared expert.
-                f32_to_f16_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+                lsxcommon::kernels::F32ToF16Kernel<<<(H + 255) / 256, 256, 0, stream>>>(
                     d_moe_acc, d_act2, H);
                 if (RunFlashSharedFFN(stream, lw, d_single, H, SI, d_yg, d_yu,
                                       d_y2, d_act2) != cudaSuccess)
@@ -2916,7 +2897,7 @@ cudaError_t RunGlmFlashGeneration(
                              hmean / H, nan);
             }
             // ── ffn hc_post ──
-            f16_to_f32_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+            lsxcommon::kernels::F16ToF32Kernel<<<(H + 255) / 256, 256, 0, stream>>>(
                 d_act2, d_module_f, H);
             gpu::run_hc_post(stream, d_module_f, d_state, d_hc_post, d_hc_comb,
                         d_state);
