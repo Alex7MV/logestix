@@ -1,9 +1,15 @@
 # Inkling-2-Mini ingestion — stage 0 triage, plan and trail
 
-**Status: IN PROGRESS (started 2026-11-21).** Branch
-`feat/inkling-2-mini-ingest`. Design:
+**Status: COMPLETE (2026-11-21).** All nine lifecycle stages are green on the
+real converted tree; the report is
+`docs/model-reports/2026-11-21-Inkling-2-Mini.md` and the matrix row is in
+`docs/SELFCHECK_MATRIX.md`. Branch `feat/inkling-2-mini-ingest`. Design:
 `docs/superpowers/specs/2026-11-21-inkling-2-mini-ingest-design.md`; plan:
 `docs/superpowers/plans/2026-11-21-inkling-2-mini-ingest.md`.
+
+What this file still owns: the **verified semantics** (the reference's own
+behaviour, measured before the engine existed) and the **trail**. Stage-0
+triage is historical; the report is the artifact.
 
 Source checkpoint: `/mnt/fast_storage/huggingface/Inkling-2-Mini`
 (`thinkingmachines/Inkling-2-Mini`, released 2026-11-20, downloaded 2026-11-21
@@ -170,3 +176,16 @@ under a minute.
   and raw; merge order + NVFP4 invariant verified numerically (Task 3).
 - 2026-11-21: engine green on the real converted tree — Paris bit-exact x3 and
   the greedy stream matches the source's ids (Task 9).
+- 2026-11-21: FSI/CODE/DET green with SOURCE-captured goldens (the family's
+  first): `tools/inkling_loop_oracle.py` runs the release's own transformers
+  5.24 text tower on the CPU, so the goldens are the model's own answers. DET is
+  byte-identical over three runs per probe. One shared-harness bug surfaced and
+  was fixed red-first (the FSI comparison extractor bailed on a prompt echo that
+  cannot satisfy its own bound; see the report's disclosure).
+- 2026-11-21: perf seeded at the canonical protocol — 6.10 t/s auto / 6.05 t/s
+  bit-exact, TTFT 3.4 s, 135-140 W. The artifact fits in VRAM, so the expert LRU
+  pins all 3072 records and the decode is compute-bound; the loop's 48
+  applications per token are why the rate is what it is.
+- 2026-11-21: **stage 9 complete** — full fast/convert/inference sweeps and every
+  guard green, `gen_model_manifest.py --strict --check` clean, report published,
+  catalogue and matrix regenerated.

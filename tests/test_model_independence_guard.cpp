@@ -319,6 +319,11 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "kimi_moe_k3_model.cpp",       // kimi-k3 (KDA + gated NoPE MLA + LatentMoE)
         "kimi_moe_pro_model.cpp",      // kimi-k3.1-pro (the same tower + Gated DSA)
         "inkling_moe_base_model.cpp",  // inkling base (rel-bank + shared-sink MoE)
+        // Inkling-2-Small was missing from this list while carrying both
+        // markers: the list is hand-written, so a family that landed without
+        // touching it was never checked. Found while adding the looped sibling.
+        "inkling_moe_model.cpp",       // inkling-2-small (rel-bank + AttnRes MoE)
+        "inkling_moe_loop_model.cpp",  // inkling-2-mini (the looped SAME tower)
         "muse_dense_model.cpp",        // muse-glimmer-30b (gated GQA + NoPE dense)
     };
     for (const char *f : consumers) {
