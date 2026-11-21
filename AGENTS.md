@@ -93,7 +93,13 @@ a gate whose golden was never captured is declared debt in the manifest, and
 
 Shared kernel layers exist so families do not copy each other: `lsx_nvfp4`
 (the only NVFP4 path), `lsx_gemv` (**the only GEMM path** — cuBLAS is not linked),
-`lsxcommon::attn` / `dense` / `moe`, `lsx_device_math.h`, `lsx_reduce.cuh`.
+`lsxcommon::attn` / `dense` / `moe`, `lsx_device_math.h`, `lsx_reduce.cuh`,
+`lsx_kernels_common.cuh` (one grid-stride cast per direction),
+`lsx_kernels_attnres.cuh` (AttnRes depth mixer, alice/kimi-k3),
+`lsx_kernels_misc.cuh` (small shared kernels), `lsx_moe_load.{h,cpp}` /
+`lsx_moe_inference_pipeline.{h,cu}` (templated qwen/ornith MoE contour),
+`lsxcommon::tools` (shared tool-format JSON helpers), `config_json.h`,
+`selfcheck_common.h`. `tools/dedup_scan.py` measures the duplication residue.
 `test_model_independence_guard` enforces unique frozen geometry per model and
 forbids cross-family borrowing; `test_model_suite_guard` enforces that each
 family's suite is complete and self-contained.

@@ -7,6 +7,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- Full duplication audit across all 41 models (branch
+  `refactor/dedup-audit-2026-11`): provable body moves into neutral layers
+  inside `libs/lsxcommon`, bit-identical behaviour criterion. Net −4.3k LOC.
+  Phase 3 closed (AttnRes depth mixer shared alice/kimi-k3; one grid-stride
+  cast kernel per direction in `lsx_kernels_common.cuh`); tool-format JSON
+  helpers shared via `lsxcommon::tools`; qwen/ornith MoE loader + generation
+  driver templated on the passport (`lsx_moe_load`, `lsx_moe_inference_pipeline`);
+  nemotron lightning/ultra kernels + expert cache shared. New instrument
+  `tools/dedup_scan.py` (kernel dup groups 52→21, host 26→8). Reports:
+  `docs/open-tasks/2026-11-20-kernel-primitives-closed.md`,
+  `docs/open-tasks/2026-11-20-dedup-full-audit-closed.md`.
+
 ### Added
 
 - `LSX_MODEL_ROOT` environment override for the model vault root
