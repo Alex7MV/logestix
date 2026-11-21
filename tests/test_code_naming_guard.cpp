@@ -73,6 +73,8 @@ bool AllowedCommon(const std::string& stem)
         "qwen_reduce",
         "gemma_base_model",
         "deepseek_moe_tool_format", "kimi_moe_tool_format",  // V4/V4.1 DSML codec shared by both
+        "nemotron_moe_shared_kernels",  // lightning/ultra shared kernels (dedup Ф7)
+        "nemotron_moe_expert_cache_impl",  // lightning/ultra shared cache engine (dedup Ф7)
         "qwen_tool_format",          // ChatML codec shared by dense + MoE
         "dory_tool_format",          // Nemotron-v3 ChatML + XML tool codec
         "gemma_tool_format",         // Gemma-4 tool codec

@@ -50,6 +50,12 @@ lsx_add_test(NAME test_safetensors LINK lsxcommon)
 # ── Shared converter write helpers (host-only, synthetic batches) ──────
 lsx_add_test(NAME test_converter_helpers LINK lsxcommon)
 
+# ── Neutral tool-format JSON helpers (dedup Ф4, host-only goldens) ─────
+lsx_add_test(NAME test_tool_format_json LINK lsxcommon)
+
+# ── Neutral config/selfcheck host helpers (dedup Ф5, host-only) ────────
+lsx_add_test(NAME test_config_json LINK lsxcommon)
+
 # Opt-in libFuzzer harness for the safetensors header parser (tests/fuzz/ is
 # outside the naming/label guards because it is not a ctest). Off by default:
 # a fuzzer needs a corpus, a time budget and an instrumented library build —
@@ -812,6 +818,14 @@ lsx_add_test(NAME test_pread_pool LINK lsxcommon)
 # guard is not the fix, and a comment that quotes the scanned pattern counts as
 # a registration to it.
 set_tests_properties(test_pread_pool PROPERTIES LABELS fast)
+
+# ── Neutral elementwise cast kernels (dedup Ф3, one per direction) ──────
+lsx_add_cuda_test(NAME test_kernels_common LABEL inference)
+
+# ── Neutral AttnRes depth mixer (shared by alice / kimi-k3, dedup Ф3) ───
+# FMAD_OFF mirrors the family TUs; the kernel itself uses explicit *_rn so
+# the result is flag-independent (pinned by the CPU-reference cases).
+lsx_add_cuda_test(NAME test_attnres_kernels FMAD_OFF LABEL inference)
 
 # ── Staging-ring bandwidth floor (pinned pread + DMA) ─────────────────
 # A budget test: it SKIPs without a record for this GPU and takes the shared gpu
@@ -3880,6 +3894,8 @@ set_tests_properties(
     test_fast_load
     test_safetensors
     test_converter_helpers
+    test_tool_format_json
+    test_config_json
     test_geometry_guard
     test_gpu_perf
     test_gpu_power
@@ -5294,6 +5310,16 @@ add_test(NAME test_manifest_generator_selftest
                  --self-test --root "${PROJECT_SOURCE_DIR}")
 set_tests_properties(test_manifest_generator_selftest PROPERTIES LABELS fast)
 set_tests_properties(test_manifest_generator_selftest PROPERTIES TIMEOUT 120)
+
+# ── Duplication-residue instrument self-test (host-only, label fast) ──────
+# tools/dedup_scan.py measures the absolute duplication residue before/after
+# a consolidation phase. Synthetic fixtures pin its grouping rules; without
+# them an instrument that silently stops grouping would report "0 duplicates".
+add_test(NAME test_dedup_scan
+         COMMAND "${LSX_PYTHON3}" "${PROJECT_SOURCE_DIR}/tools/test_dedup_scan.py"
+         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+set_tests_properties(test_dedup_scan PROPERTIES LABELS fast)
+set_tests_properties(test_dedup_scan PROPERTIES TIMEOUT 120)
 
 # ── Model manifest sync (the generated registries cannot drift) ───────────
 # models/<model_type>.json is the single source of truth; this target proves the

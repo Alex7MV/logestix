@@ -441,7 +441,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--ornith`
 - tokenizer kind 7
 - vault `Ornith-1.5-35B-A3B` (override `LSX_TEST_ORNITH_1_5_35B_A3B_ROOT`)
-- lifecycle TUs: `ornith_moe_model.cpp`, `ornith_moe_inference_pipeline.cu`
+- lifecycle TUs: `ornith_moe_model.cpp`, `lsx_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 72.48 t/s (r3, 2026-10-23)
 - report: **not written** (stage-9 debt)
@@ -467,7 +467,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format `logestix-qwen35moe`, forge `--qwen35moe`
 - tokenizer kind 7
 - vault `Qwen3.5-35B-A3B` (override `LSX_TEST_QWEN3_5_35B_A3B_ROOT`)
-- lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
+- lifecycle TUs: `qwen_moe_model.cpp`, `lsx_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 77.56 t/s (r3, 2026-11-04)
 - report: **not written** (stage-9 debt)
@@ -491,7 +491,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - geometry: `libs/lsxcommon/src/qwen_moe_36_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-qwen36moe`, forge `--qwen36moe`
 - vault `Qwen3.6-35B-A3B` (override `LSX_TEST_QWEN3_6_35B_A3B_ROOT`)
-- lifecycle TUs: `qwen_moe_model.cpp`, `qwen_moe_inference_pipeline.cu`
+- lifecycle TUs: `qwen_moe_model.cpp`, `lsx_moe_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
 - perf: 73.39 t/s (r3, 2026-10-23)
 - report: **not written** (stage-9 debt)
