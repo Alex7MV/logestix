@@ -256,3 +256,34 @@ Two candidate fixes, in order of preference:
 Do not "fix" it by widening `kSlack`: 300 MiB of foreign churn would still fail,
 and a slack large enough to absorb it also hides the 1 GiB leak the case exists
 to catch.
+
+### I1. The CODE gate's regex anchor is order-sensitive (2026-11-22, open)
+
+**Status: open — an instruments gap that produces a false red, no defect in any
+model.**
+
+`deepseek-v4.1-flash-1017` CODE-TEST-03 asks for a PCRE pattern and the model
+answers `\b[A-F0-9]{4}\b`; the prompt's Expected Template is
+`\b[0-9A-F]{4}\b`. Those are the *same expression* — the member order inside a
+character class carries no meaning — but `ExtractRegex`
+(`libs/lsxcommon/src/code_selfcheck.cpp`) locates its answer by the **literal
+anchor** `[0-9A-F]`, finds nothing, and returns an empty string, which the gate
+reports as `passed=false extracted=''`. Measured 2026-11-22 on the AOCC Release
+tree: CODE 2/3 for that row (01 and 02 pass), while its parent
+`deepseek-v4.1-flash` fails CODE-03 differently (the anchor matches and the
+model appends a stray `?`), so the two rows look alike for unrelated reasons.
+
+Why it is not fixed here: the anchor is the *shared* extractor for all 43 rows,
+and making it canonical (normalize a bracketed class by sorting its members, or
+match the anchor as a set rather than a substring) changes what every row is
+measured against. That needs its own commit, a re-run of `ctest -L inference -R
+"_code_selfcheck"` across the corpus, and a diff of the verdict grid — not a
+side effect of ingesting one model, and not something to smuggle in under a
+model row. Until then the row records its measured verdict (2/3) with this
+mechanism, which is the honest form: a red that names its cause beats a green
+that hides one.
+
+The one thing not to do is to loosen the *comparison* (accept any textual
+near-miss): the extractor is deliberately a form check, and FSI-02 on the Pro row
+— a genuinely wrong symbolic form that a tolerant comparator would accept — is
+the case it exists for.

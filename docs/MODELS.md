@@ -82,8 +82,8 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - vault `DeepSeek-V4.1-Flash-1017` (override `LSX_TEST_DEEPSEEK_V4_1_FLASH_1017_ROOT`)
 - lifecycle TUs: `deepseek_moe_v41_model.cpp`, `deepseek_moe_v41_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: not seeded
-- report: **not written** (stage-9 debt)
+- perf: 16.27 t/s (r3, 2026-11-22)
+- report: `docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md`
 - notes: Sibling of deepseek-v4.1-flash: identical config/tokenizer/index, re-trained weights
 
 ## dory-1.0-4b
