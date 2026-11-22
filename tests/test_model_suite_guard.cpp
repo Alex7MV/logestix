@@ -732,6 +732,10 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"glm-5.3-flash", {"test_glm_flash_tool_framing"}},
         {"deepseek-v4-flash", {"test_deepseek_tool_framing"}},
         {"deepseek-v4.1-flash", {"test_deepseek_tool_framing"}},
+        // The 1017 update ships a chat_template.jinja whose chat-mode rendering
+        // is the parent's DSML transcript (verified in the plan's stage-0 note),
+        // so the shared codec target proves render+parse for it too.
+        {"deepseek-v4.1-flash-1017", {"test_deepseek_tool_framing"}},
         {"deepseek-v4-pro-0813", {"test_deepseek_tool_framing"}},
         {"qwen3.5-9b", {"test_qwen_tool_framing"}},
         // The 27B adds a real-weight round-trip case to its selfcheck target

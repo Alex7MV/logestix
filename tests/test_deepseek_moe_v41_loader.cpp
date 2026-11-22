@@ -67,3 +67,31 @@ TEST_CASE("deepseek-v41 topology rejects foreign geometry and format",
     CHECK_FALSE(err.empty());
     fs::remove_all(dir);
 }
+
+TEST_CASE("deepseek-v41 card name resolves each sibling tree to its own model",
+          "[deepseek-v41][load][sibling]")
+{
+    // Two checkpoints of this contour share one architecture, so the card name
+    // in the index is the ONLY thing that tells the trees apart. It must fold
+    // (exactly as gpu::detect_model_type folds it) to that checkpoint's kType:
+    // a 1017 tree resolving to the parent's kType loads the parent's class and
+    // silently compares two models' outputs.
+    using namespace lsxcommon::deepseek_v41;
+    CHECK(NormalizeCardName("DeepSeek-V4.1-Flash") == "deepseek-v4.1-flash");
+    CHECK(NormalizeCardName("DeepSeek-V4.1-Flash-1017") ==
+          "deepseek-v4.1-flash-1017");
+
+    const auto dir = fs::temp_directory_path() / "lsx_v41_topo_card";
+    fs::remove_all(dir);
+    REQUIRE(v41fixtest::BuildSyntheticIndex(dir).ok());
+    const auto topo = LoadTopology(dir.string());
+    CHECK(MatchesModelType(topo, "deepseek-v4.1-flash"));
+    CHECK_FALSE(MatchesModelType(topo, "deepseek-v4.1-flash-1017"));
+
+    // An index that names no model cannot be disproved here; the format and
+    // frozen-geometry gates still run.
+    ModelTopology anonymous = topo;
+    anonymous.model.clear();
+    CHECK(MatchesModelType(anonymous, "deepseek-v4.1-flash-1017"));
+    fs::remove_all(dir);
+}

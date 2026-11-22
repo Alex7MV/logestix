@@ -118,5 +118,23 @@ bool ValidateGeometry(const ModelTopology &topo, std::string *error)
     return true;
 }
 
+std::string NormalizeCardName(std::string_view card)
+{
+    std::string out(card);
+    for (char &c : out) {
+        if (c == ' ')
+            c = '-';
+        else if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
+bool MatchesModelType(const ModelTopology &topo, std::string_view model_type)
+{
+    if (topo.model.empty()) return true;
+    return NormalizeCardName(topo.model) == model_type;
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon
