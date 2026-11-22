@@ -115,8 +115,29 @@ template.
 | 7 | conversion of the real 18 GiB tree | **17 s**, 645 pinned tensors, 3072 experts, format `logestix-inkling-2-varloop`, `loop_passes_max` 5 |
 | 8 | SelfCheck on real weights | **green first run**: Paris in 32 tokens, `logits_hash 98a2c3c532c9b013` bit-identical ×3 at passes=3; knowledge probe top-1 `152717` (" Paris"), perplexity 29.98 |
 | 8b | FSI/CODE/DET source-captured goldens | in progress (release code on CPU, 3 gates × 3 prompts) |
-| 8c | perf row at the canonical 2048 protocol | pending |
+| 8c | perf row at the canonical 2048 protocol | **32.33 t/s auto / 30.13 bit-exact**, TTFT 0.32/0.45 s, 18 291 MiB resident (seeded through `test_perf_baseline_tml_d24_varloop_research`) |
 | 9 | report + catalogue + matrix | pending |
+
+## Pass-count sweep on real weights
+
+The knob is a real dial, because the loop is the work. 128-token decode, one GPU
+target at a time, Release/AOCC tree:
+
+| passes | applications | decode rate | Paris SelfCheck | `logits_hash` |
+|---|---|---|---|---|
+| 1 | 24 | **100.8 t/s** | **fails** | `ccc087283987df2d` |
+| 3 (default) | 48 | **48.2 t/s** | passes | `b50b3e494ffc7a9f` |
+| 5 | 72 | **33.5 t/s** | passes | `f70488dc8822c290` |
+
+Cost per layer application is ~24 ms at every count: the passes replay the same
+kernels over the same weights, so the rate scales with the count and neither the
+KV/conv slab nor the expert window moves with it.
+
+The 1-pass failure is the model card's caveat made concrete — training sampled
+1:2:6:2:1 but post-trained at 3, and at 1 pass this checkpoint does not reach the
+answer inside the 32-token framed window. It is a property of the WEIGHTS, not of
+the engine (the same engine is correct at 3 and 5), so the default stays the
+checkpoint's declared 3 and the report states the limitation.
 
 Engine-side SelfCheck detail (`test_inkling_moe_varloop_selfcheck`, real tree):
 
