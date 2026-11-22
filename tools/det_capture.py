@@ -78,6 +78,11 @@ OVERRIDES = {
     # own encoding/encoding.py, in the reasoning model's default thinking mode.
     "deepseek-v4.1-flash": {"framing": "deepseek_v41",
                             "thinking_mode": "thinking"},
+    # The 1017 update of the same checkpoint: same release encoder, same
+    # thinking mode (its chat_template.jinja injects a reasoning-effort system
+    # line the release encoder does not, so the encoder is the frame of record).
+    "deepseek-v4.1-flash-1017": {"framing": "deepseek_v41",
+                                 "thinking_mode": "thinking"},
     "deepseek-v4-pro-0813": {
         "framing": "deepseek_v4", "thinking_mode": "chat",
         "unrunnable": "TP-4 FP8 reference (inference/generate.py, MP=4) over an 892.7 GB checkpoint; this 32 GB card cannot execute it",

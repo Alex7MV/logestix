@@ -1,0 +1,120 @@
+{
+  "model_type": "deepseek-v4.1-flash-1017",
+  "display_name": "deepseek-v4.1-flash-1017",
+  "family": "deepseek",
+  "variant": "1017",
+  "model_class": "DeepSeekV41Flash1017Model",
+  "model_header": "deepseek_moe_v41_model.h",
+  "passport": "libs/lsxcommon/src/deepseek_moe_v41_1017_constants.h",
+  "namespace": "lsxcommon::deepseek_v41_flash1017",
+  "format_tag": "",
+  "forge_flag": "--deepseek_v41",
+  "tokenizer_kind": 0,
+  "vault": {
+    "dir": "DeepSeek-V4.1-Flash-1017",
+    "env": "LSX_TEST_DEEPSEEK_V4_1_FLASH_1017_ROOT"
+  },
+  "lifecycle_tu": [
+    "deepseek_moe_v41_model.cpp",
+    "deepseek_moe_v41_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_deepseek_moe_v41_convert"
+    ],
+    "load": [
+      "test_deepseek_moe_v41_loader",
+      "test_deepseek_moe_v41_load_fast"
+    ],
+    "model": [
+      "test_deepseek_moe_v41_model",
+      "test_deepseek_tool_framing"
+    ],
+    "kernels": [
+      "test_deepseek_moe_v41_dequant",
+      "test_deepseek_moe_v41_kernels",
+      "test_deepseek_moe_v41_actquant",
+      "test_deepseek_moe_v41_pipeline"
+    ],
+    "selfcheck": [
+      "test_deepseek_moe_v41_1017_selfcheck"
+    ],
+    "fsi": [
+      "test_deepseek_moe_v41_1017_fsi_selfcheck"
+    ],
+    "code": [
+      "test_deepseek_moe_v41_1017_code_selfcheck"
+    ],
+    "det": [
+      "test_deepseek_moe_v41_1017_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_deepseek_v41_flash_1017"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_deepseek_v41_flash_1017",
+    "vault_subdir": "DeepSeek-V4.1-Flash-1017",
+    "timeout": 3000
+  },
+  "target_overrides": {
+    "test_deepseek_moe_v41_convert": {
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_deepseek_moe_v41_loader": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_deepseek_moe_v41_load_fast": {
+      "skip": false,
+      "env": []
+    },
+    "test_deepseek_moe_v41_model": {
+      "label": "fast",
+      "env": []
+    },
+    "test_deepseek_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_deepseek_moe_v41_dequant": {
+      "skip": false
+    },
+    "test_deepseek_moe_v41_kernels": {
+      "skip": false
+    },
+    "test_deepseek_moe_v41_actquant": {
+      "skip": false
+    },
+    "test_deepseek_moe_v41_pipeline": {
+      "skip": false
+    },
+    "test_deepseek_moe_v41_1017_selfcheck": {
+      "form": "selfcheck"
+    },
+    "test_deepseek_moe_v41_1017_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_deepseek_moe_v41_1017_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_deepseek_moe_v41_1017_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md",
+  "notes": "Sibling of deepseek-v4.1-flash: identical config/tokenizer/index, re-trained weights",
+  "cooperative_cancel": true,
+  "selfcheck_frame_prompt": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false
+}

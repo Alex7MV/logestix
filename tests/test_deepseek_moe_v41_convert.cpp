@@ -152,7 +152,9 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
 {
     const auto base = fs::temp_directory_path() / "lsx_v41_convert";
     fs::remove_all(base);
-    const auto in = BuildSource(base / "model");
+    // Named after the card: the converter stamps the input directory's name as
+    // the index `model` field (see the sibling case below).
+    const auto in = BuildSource(base / "DeepSeek-V4.1-Flash");
     const auto out = base / "converted";
 
     const auto st =
@@ -213,6 +215,37 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
         CHECK(pe->w3_global_scale == 0.25f);
         CHECK(pe->w1_packed[0] == 0xB0);
     }
+
+    fs::remove_all(base);
+}
+
+TEST_CASE("deepseek-v41 converter stamps the input card name",
+          "[deepseek-v41][convert][pipeline][sibling]")
+{
+    // The V4.1 contour has two checkpoints of the same architecture
+    // (DeepSeek-V4.1-Flash and its 1017 update). The index's `model` field is
+    // what `gpu::detect_model_type` normalizes into the LsxModelFactory key, so
+    // it must be the CARD name of the tree being converted: a hardcoded parent
+    // name makes the sibling tree resolve to the PARENT's kType, which loads
+    // the wrong class (and, once the parent's gates are re-seeded, silently
+    // compares two models' outputs).
+    const auto base = fs::temp_directory_path() / "lsx_v41_convert_card";
+    fs::remove_all(base);
+    const auto in = BuildSource(base / "DeepSeek-V4.1-Flash-1017");
+    const auto out = base / "converted";
+
+    const auto st =
+        lsxcommon::deepseek_v41::ConvertDeepSeekV41Model(in.string(),
+                                                         out.string());
+    INFO("convert status: " << st.ToString());
+    REQUIRE(st.ok());
+
+    std::ifstream f(out / "logestix" / "model.index.json");
+    REQUIRE(f.good());
+    const std::string json((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+    CHECK(json.find("\"model\": \"DeepSeek-V4.1-Flash-1017\"") !=
+          std::string::npos);
 
     fs::remove_all(base);
 }

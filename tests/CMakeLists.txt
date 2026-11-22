@@ -4780,6 +4780,26 @@ target_link_libraries(test_deepseek_moe_v41_det_selfcheck PRIVATE lsxcommon Catc
 target_compile_definitions(test_deepseek_moe_v41_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"deepseek-v4.1-flash\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+# DeepSeek-V4.1-Flash-1017: the sibling checkpoint's own gates (same drivers,
+# its own golden files).
+add_executable(test_deepseek_moe_v41_1017_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_v41_1017_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_1017_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_1017_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4.1-flash-1017\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_deepseek_moe_v41_1017_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_v41_1017_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_1017_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_1017_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4.1-flash-1017\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_deepseek_moe_v41_1017_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_deepseek_moe_v41_1017_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_1017_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_1017_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"deepseek-v4.1-flash-1017\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_flint_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_flint_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_flint_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -5384,6 +5404,10 @@ add_executable(test_deepseek_moe_v41_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_deepseek_moe_v41_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_deepseek_moe_v41_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_deepseek_moe_v41_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"deepseek-v4.1-flash\"")
+add_executable(test_deepseek_moe_v41_1017_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_deepseek_moe_v41_1017_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_v41_1017_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_deepseek_moe_v41_1017_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"deepseek-v4.1-flash-1017\"")
 add_executable(test_flint_moe_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_flint_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_flint_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)

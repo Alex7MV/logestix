@@ -97,6 +97,12 @@ const PerfModel kDeepseek = {
 const PerfModel kDeepseekV41 = {
     "deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", "The capital of France is",
     2048};
+// The 1017 update of the same checkpoint: identical geometry, re-trained
+// weights, so it is measured at the same canonical 2048-token protocol against
+// its own row (a shared row would hide whichever of the two got slower).
+const PerfModel kDeepseekV41Flash1017 = {
+    "deepseek-v4.1-flash-1017", "DeepSeek-V4.1-Flash-1017",
+    "The capital of France is", 2048};
 const PerfModel kDeepseekPro = {
     "deepseek-v4-pro-0813", "DeepSeek-V4-Pro-0813",
     "The capital of France is", 2048};
@@ -617,6 +623,11 @@ TEST_CASE("perf baseline: deepseek-v4-flash", "[perf]")
 TEST_CASE("perf baseline: deepseek-v4.1-flash", "[perf]")
 {
     RunPerfModel(kDeepseekV41);
+}
+
+TEST_CASE("perf baseline: deepseek-v4.1-flash-1017", "[perf]")
+{
+    RunPerfModel(kDeepseekV41Flash1017);
 }
 
 TEST_CASE("perf baseline: deepseek-v4-pro-0813", "[perf]")

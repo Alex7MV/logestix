@@ -18,15 +18,28 @@
 namespace lsxcommon {
 
 const std::string DeepSeekV41FlashModel::kType = "deepseek-v4.1-flash";
+const std::string DeepSeekV41Flash1017Model::kType =
+    "deepseek-v4.1-flash-1017";
 
-DeepSeekV41FlashModel::DeepSeekV41FlashModel(ModelInitConfig cfg)
-    : ModelBase{std::move(cfg)}
+DeepSeekV41BackboneModel::DeepSeekV41BackboneModel(ModelInitConfig cfg,
+                                                   const std::string &type)
+    : ModelBase{std::move(cfg)}, type_(type)
 {
 }
 
-DeepSeekV41FlashModel::~DeepSeekV41FlashModel() { Unload(); }
+DeepSeekV41FlashModel::DeepSeekV41FlashModel(ModelInitConfig cfg)
+    : DeepSeekV41BackboneModel{std::move(cfg), kType}
+{
+}
 
-void DeepSeekV41FlashModel::TeardownWeights()
+DeepSeekV41Flash1017Model::DeepSeekV41Flash1017Model(ModelInitConfig cfg)
+    : DeepSeekV41BackboneModel{std::move(cfg), kType}
+{
+}
+
+DeepSeekV41BackboneModel::~DeepSeekV41BackboneModel() { Unload(); }
+
+void DeepSeekV41BackboneModel::TeardownWeights()
 {
     if (expert_db_ready_) {
         deepseek_v41::gpu::free_expert_index(expert_db_);
@@ -36,7 +49,7 @@ void DeepSeekV41FlashModel::TeardownWeights()
     TeardownContext();
 }
 
-bool DeepSeekV41FlashModel::Load()
+bool DeepSeekV41BackboneModel::Load()
 {
     Unload();  // idempotent re-load support
     if (!BeginLoad(cfg_.model_path)) return false;
@@ -55,6 +68,17 @@ bool DeepSeekV41FlashModel::Load()
     if (!deepseek_v41::ValidateGeometry(topo, &geo_err) &&
         !SyntheticGeometryAllowed()) {
         log::error("[v41-model] frozen geometry mismatch: " + geo_err);
+        return AbortLoad();
+    }
+    // The index stamps the CARD name of the tree it was converted from, which
+    // is what path auto-detection resolves to this object's kType. A mismatch
+    // means the tree belongs to a sibling checkpoint (or was hand-edited); the
+    // weights would load, and the model would then answer as a different
+    // model.
+    if (!SyntheticGeometryAllowed() &&
+        !deepseek_v41::MatchesModelType(topo, type_)) {
+        log::error("[v41-model] converted tree is '" + topo.model +
+                   "', this model is '" + type_ + "'");
         return AbortLoad();
     }
     vram_ = topo.vram;
@@ -78,7 +102,7 @@ bool DeepSeekV41FlashModel::Load()
     return true;
 }
 
-gpu::InferenceResult DeepSeekV41FlashModel::Infer(const ModelRequest &req)
+gpu::InferenceResult DeepSeekV41BackboneModel::Infer(const ModelRequest &req)
 {
     // Model independence: assert THIS model's fast-math policy for the call.
     const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
@@ -100,7 +124,8 @@ gpu::InferenceResult DeepSeekV41FlashModel::Infer(const ModelRequest &req)
     });
 }
 
-gpu::InferenceResult DeepSeekV41FlashModel::SelfCheck(const ModelRequest &req)
+gpu::InferenceResult DeepSeekV41BackboneModel::SelfCheck(
+    const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
 }
@@ -112,7 +137,7 @@ constexpr DsmlTags kV41DsmlTags{" calls", " invoke", " parameter",
 constexpr const char *kDsmlUserToken = "<｜User｜>";
 } // namespace
 
-bool DeepSeekV41FlashModel::BuildConversationInputIds(
+bool DeepSeekV41BackboneModel::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const
 {
@@ -125,7 +150,7 @@ bool DeepSeekV41FlashModel::BuildConversationInputIds(
     return AppendDeepSeekIds(tok, text, kV41DsmlTags, out_ids);
 }
 
-bool DeepSeekV41FlashModel::ParseToolCalls(
+bool DeepSeekV41BackboneModel::ParseToolCalls(
     const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
     std::vector<ToolCall> &out_calls) const
 {

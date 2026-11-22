@@ -1,12 +1,35 @@
 // tests/test_deepseek_moe_v41_model.cpp — DeepSeek-V4.1-Flash model-stage
-// (host-only): frozen passport geometry and the CED per-layer classification.
+// (host-only): frozen passport geometry, the CED per-layer classification and
+// the SIBLING checkpoint's (V4.1-Flash-1017) passport/registry identity.
 // The model class itself lands in Plan 6; this stage pins the constants the
 // whole contour compiles against (Model Ingestion Protocol step 3).
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
+
+#include <lsxcommon/model.h>
+#include <lsxcommon/model_factory.h>
+
+#include "deepseek_moe_v41_1017_constants.h"
 #include "deepseek_moe_v41_constants.h"
 
 using namespace lsxcommon::deepseek_v41;
+
+namespace {
+
+// `gpu::detect_model_type` (deepseek_moe_load.cu): spaces -> '-', lower case.
+std::string NormalizeCardName(std::string s)
+{
+    for (char &c : s) {
+        if (c == ' ')
+            c = '-';
+        else if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    }
+    return s;
+}
+
+} // namespace
 
 TEST_CASE("deepseek-v41 frozen geometry is locked", "[deepseek-v41][model]")
 {
@@ -77,4 +100,86 @@ TEST_CASE("deepseek-v41 CED layer classification matches config",
     CHECK(m.is_kv_source);
     CHECK(m.is_index_source);
     CHECK(m.is_candidate_source);
+}
+
+// ── Sibling checkpoint: DeepSeek-V4.1-Flash-1017 ───────────────────────────
+//
+// Stage 0 triage (2026-11-22): the 1017 tree ships a byte-identical config.json,
+// tokenizer.json and model.safetensors.index.json against the parent, and
+// re-trained payload bytes. It is therefore a SIBLING VARIANT, not a new family:
+// it owns its frozen passport (model independence: one namespace per registered
+// model) and reuses the parent's converter, loader, kernels and pipeline.
+
+TEST_CASE("deepseek-v41-1017 passport is the parent checkpoint's geometry",
+          "[deepseek-v41][model][sibling]")
+{
+    namespace sibling = lsxcommon::deepseek_v41_flash1017;
+
+    // Registry identity: detect_model_type normalizes the index's `model`
+    // field, which the converter stamps from the input directory's card name.
+    CHECK(std::string(sibling::kType) == "deepseek-v4.1-flash-1017");
+    CHECK(NormalizeCardName(sibling::kModelName) ==
+          std::string(sibling::kType));
+
+    // The source configs are byte-identical, so every frozen number must agree
+    // with the parent's passport field by field. A drift here means the sibling
+    // is validated against geometry its checkpoint does not have.
+    CHECK(sibling::kHidden == kHidden);
+    CHECK(sibling::kLayers == kLayers);
+    CHECK(sibling::kMoeIntermediate == kMoeIntermediate);
+    CHECK(sibling::kSharedIntermediate == kSharedIntermediate);
+    CHECK(sibling::kNumRouted == kNumRouted);
+    CHECK(sibling::kTopK == kTopK);
+    CHECK(sibling::kHeads == kHeads);
+    CHECK(sibling::kHeadDim == kHeadDim);
+    CHECK(sibling::kRopeHeadDim == kRopeHeadDim);
+    CHECK(sibling::kQLoraRank == kQLoraRank);
+    CHECK(sibling::kOLoraRank == kOLoraRank);
+    CHECK(sibling::kOGroups == kOGroups);
+    CHECK(sibling::kIndexNHeads == kIndexNHeads);
+    CHECK(sibling::kIndexHeadDim == kIndexHeadDim);
+    CHECK(sibling::kIndexTopk == kIndexTopk);
+    CHECK(sibling::kWindow == kWindow);
+    CHECK(sibling::kVocab == kVocab);
+    CHECK(sibling::kHcMult == kHcMult);
+    CHECK(sibling::kSinkhornIters == kSinkhornIters);
+    CHECK(sibling::kCandidateBlockSize == kCandidateBlockSize);
+    CHECK(sibling::kCandidateTopkBlocks == kCandidateTopkBlocks);
+    CHECK(sibling::kMtpLayers == kMtpLayers);
+    CHECK(sibling::kRmsEps == kRmsEps);
+    CHECK(sibling::kRouteScale == kRouteScale);
+    CHECK(sibling::kCompressRopeTheta == kCompressRopeTheta);
+    CHECK(sibling::kRopeTheta == kRopeTheta);
+    CHECK(sibling::kRopeFactor == kRopeFactor);
+    CHECK(sibling::kOriginalSeqLen == kOriginalSeqLen);
+
+    // Same CED classification: the sibling runs the parent's contour verbatim.
+    for (int l = 0; l < kLayers; ++l) {
+        CHECK(sibling::CompressRatio(l) == CompressRatio(l));
+        CHECK(sibling::IsKvSource(l) == IsKvSource(l));
+        CHECK(sibling::IsIndexSource(l) == IsIndexSource(l));
+        CHECK(sibling::IsCandidateSource(l) == IsCandidateSource(l));
+    }
+}
+
+TEST_CASE("deepseek-v41-1017 is a registered model of its own type",
+          "[deepseek-v41][model][sibling]")
+{
+    // The factory is the only way an operator reaches a model; a kType that is
+    // not registered resolves to nullptr and the CLI reports "that model does
+    // not exist" — the exact failure two sibling trees collapse into when they
+    // share one registry entry.
+    lsxcommon::ModelInitConfig sibling_cfg;
+    sibling_cfg.model_type = lsxcommon::deepseek_v41_flash1017::kType;
+    auto sibling = lsxcommon::LsxModelFactory::Create(sibling_cfg);
+    REQUIRE(sibling != nullptr);
+    CHECK(sibling->Type() == "deepseek-v4.1-flash-1017");
+
+    // ... and the parent row still resolves to its own class.
+    lsxcommon::ModelInitConfig parent_cfg;
+    parent_cfg.model_type = lsxcommon::deepseek_v41::kType;
+    auto parent = lsxcommon::LsxModelFactory::Create(parent_cfg);
+    REQUIRE(parent != nullptr);
+    CHECK(parent->Type() == "deepseek-v4.1-flash");
+    CHECK(parent->Type() != sibling->Type());
 }

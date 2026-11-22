@@ -104,6 +104,19 @@ OVERRIDES = {
         "framing": "deepseek_v4", "thinking_mode": "chat",
         "unrunnable": "TP-4 FP8 reference (inference/generate.py, MP=4) over an 892.7 GB checkpoint; this 32 GB card cannot execute it",
     },
+    # DeepSeek-V4.1-Flash and its 1017 update: no HF chat template in
+    # tokenizer_config.json; framed with the release's encoding/encoding.py in
+    # the reasoning model's default thinking mode (reproduces the committed
+    # v4.1-flash golden exactly). The 552B FP8/FP4 tilelang reference targets
+    # 2x80 GB, so the golden is the prompt's Expected Template.
+    "deepseek-v4.1-flash": {
+        "framing": "deepseek_v41", "thinking_mode": "thinking",
+        "unrunnable": "552B FP8/FP4 tilelang tensor-parallel reference (2x80 GB target) over a 500 GB checkpoint; this 32 GB card cannot execute it",
+    },
+    "deepseek-v4.1-flash-1017": {
+        "framing": "deepseek_v41", "thinking_mode": "thinking",
+        "unrunnable": "552B FP8/FP4 tilelang tensor-parallel reference (2x80 GB target) over a 500 GB checkpoint; this 32 GB card cannot execute it",
+    },
 }
 
 # MiniMax-M3 (428B / 796 GB BF16, 60-layer MSA + MoE): the source model does
@@ -464,10 +477,32 @@ def _frame_deepseek_v4(model_dir, body, thinking_mode):
                                thinking_mode=thinking_mode)
 
 
+def _frame_deepseek_v41(model_dir, body, thinking_mode):
+    """Frame with DeepSeek-V4.1's release encoder (encoding/encoding.py).
+
+    The V4.1 trees ship no HF chat template in `tokenizer_config.json`, and the
+    1017 update ships a `chat_template.jinja` whose *thinking* mode injects a
+    "Reasoning Effort: 75" system line the release encoder does not — so both
+    V4.1 checkpoints are framed through the release encoder, which is what
+    reproduces the committed deepseek-v4.1-flash golden byte for byte
+    (verified 2026-11-22)."""
+    import importlib.util
+
+    enc_path = os.path.join(model_dir, "encoding", "encoding.py")
+    spec = importlib.util.spec_from_file_location("dsv41_encoding", enc_path)
+    enc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(enc)
+    return enc.encode_messages([{"role": "user", "content": body}],
+                               thinking_mode=thinking_mode)
+
+
 def frame(model, tok, body, opts):
     if opts.get("framing") == "deepseek_v4":
         return _frame_deepseek_v4(model, body,
                                   opts.get("thinking_mode", "chat"))
+    if opts.get("framing") == "deepseek_v41":
+        return _frame_deepseek_v41(model, body,
+                                   opts.get("thinking_mode", "thinking"))
     return None
 
 
@@ -540,6 +575,9 @@ def capture_from_template(tok, opts, prompts, model, model_type, out,
         "runtime": ("encoding/encoding_dsv4.py + tokenizer.json (transformers %s)"
                     % transformers.__version__)
                    if opts.get("framing") == "deepseek_v4" else
+                   ("encoding/encoding.py + tokenizer.json (transformers %s)"
+                    % transformers.__version__)
+                   if opts.get("framing") == "deepseek_v41" else
                    ("tokenizer.json + chat_template.jinja (transformers %s / torch %s)"
                     % (transformers.__version__, torch.__version__)),
         "prompts": cases}

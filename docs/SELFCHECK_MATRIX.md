@@ -78,6 +78,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 |
 | deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
 | **deepseek-v4.1-flash** | PASS (x3, `b759bc84b820b4de`) ‡ | **1/3** | **1/3** | **2/3** (DET-03) |
+| **deepseek-v4.1-flash-1017** | PASS (x3, `94974df500455a90`, framed) § | 3/3 | **2/3** (CODE-03) § | 3/3 (deterministic=true) |
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
@@ -320,6 +321,30 @@ one in a ctest summary, which is why the debt rows are called out below.
   answer. See `docs/model-reports/2026-11-18-Inkling.md`.
 - gemma-4-26b went green in this session (second NVFP4 plane on attn + dense
   MLP, routed experts left 4-bit): FSI/CODE/DET were 1/3, 2/3, 3/3 before.
+- § **deepseek-v4.1-flash-1017** (the 1017 update of the V4.1 checkpoint;
+  sibling, so it reuses the parent's converter/loader/kernels/pipeline and owns
+  a re-declared passport) was measured serially on 2026-11-22 on the AOCC
+  Release tree, 294 GB tree:
+  SelfCheck Paris ×3 bit-exact, `logits_hash 94974df500455a90`, top-1 11111;
+  native DSML tool round-trip `get_weather {"city":"Paris"}`;
+  cooperative cancel green (the §A2 class the parent's row records);
+  **FSI 3/3, DET 3/3 (`deterministic=true` over three runs), CODE 2/3.**
+  Its goldens are **template-derived** — the 552B FP8/FP4 tilelang reference
+  targets 2×80 GB and cannot execute on one 32 GB card — so they pin the
+  converted path only, never source parity, exactly like the parent's.
+  The CODE red is a **measurement artifact, not a wrong answer**: CODE-TEST-03
+  asks for a regex and the model answers `\b[A-F0-9]{4}\b`, which is the same
+  PCRE expression as the template's `\b[0-9A-F]{4}\b` (character-class member
+  order carries no meaning), while `ExtractCodeAnswer`'s literal anchor is
+  `[0-9A-F]`, so it extracts `''` and reports a failure. It is recorded red
+  rather than papered over: a canonicalizing extractor is an **instruments**
+  change that must re-measure all 43 rows' CODE gates, and it is filed as
+  [`open-tasks/live/instruments-and-guards.md`](open-tasks/live/instruments-and-guards.md)
+  §I1 instead of being smuggled in under a model row.
+  Perf by the harness at the canonical 2048-token protocol: **16.27 t/s
+  (perf and r3), TTFT 488 ms, 231 W** — the parent's shape (16.43 perf), which
+  is what an identical geometry with re-trained weights should produce
+  (`docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md`).
 
 ## 2. Converted tree present, **no committed golden** — declared debt (FSI/CODE/DET SKIP or measured red)
 
