@@ -138,8 +138,8 @@ Every number below is copied from the gate output or from
 | scheduling/state suite | 72 assertions at 1/3/5 passes: application counts follow the active count, the last pass owns the last slab block, two identical requests reproduce their logits bit-for-bit |
 | artefact verifier | 3 099 Arrow files, 64 sampled deep over 1 006 MiB, **0 problems** (covers the mixed NVFP4/MXFP8 expert planes) |
 | artifact / conversion | 18 GiB, 645 pinned tensors, 3 072 expert records, 422 vision tensors stripped, **17 s** |
-| decode throughput, 2 048 tokens, auto policy | **32.33 tok/s** (TTFT 0.32 s, 198.8 W average, 256.4 W peak), 18 291 MiB resident |
-| decode throughput, 2 048 tokens, strict/bit-exact | **30.13 tok/s** (TTFT 0.45 s, 197.8 W average, 244.2 W peak) |
+| decode throughput, 2 048 tokens, auto policy | **33.98 tok/s** (TTFT 0.32 s), 18 291 MiB resident |
+| decode throughput, 2 048 tokens, strict/bit-exact | **32.00 tok/s** (TTFT 0.34 s, 207.1 W average, 264.3 W peak) |
 | pass-count sweep, 128-token decode | **100.8 tok/s** at 1 pass, **48.2** at 3, **33.5** at 5 |
 
 ## Pass-count behaviour
@@ -179,12 +179,12 @@ enforced rather than trusted to the caller.
 
 ## Throughput
 
-**32.33 tok/s** auto / **30.13 tok/s** bit-exact at the canonical protocol (2 048
-tokens, prompt "The capital of France is"), TTFT 0.32/0.45 s, 18 291 MiB
+**33.98 tok/s** auto / **32.00 tok/s** bit-exact at the canonical protocol (2 048
+tokens, prompt "The capital of France is"), TTFT 0.32/0.34 s, 18 291 MiB
 resident, recorded through the harness in `tests/perf/perf_baselines.json`.
 
-That is within 3 % of the fixed-pass sibling (34.1 / 32.1 tok/s) on the same
-card, which is the interesting part: this row's KV/conv slab is sized for five
+That matches the fixed-pass sibling (34.1 / 32.1 tok/s) on the same card to
+within measurement noise, which is the interesting part: this row's KV/conv slab is sized for five
 passes (72 slots) instead of three (48), and the difference costs nothing at the
 default count. Nothing else about the decode differs — same tower, same kernels,
 same 14.71 GiB device expert slab, same 18.3 GiB residency — because the loop
@@ -236,7 +236,19 @@ shift the balance toward the loop kernels without changing that conclusion.
 - Source reference runner: `tools/inkling_loop_oracle.py` (the release's own
   transformers 5.24 `inkling2_loop` text tower, CPU bf16) reached through
   `tools/{fsi,code,det}_capture.py --type tml-d24-varloop-research`.
-- Full sweeps on the branch: `ctest --preset linux-debug` 159/159;
-  `-convert` 44/45 (the one red is `A3.11`, pre-existing on `main`);
-  `-inference` — see the branch log. `python3 tools/gen_model_manifest.py
+- Full sweeps on the branch: `ctest --preset linux-debug` **159/159** (the fast
+  guards, parallel — this is the "did the diff break the repo" answer). The
+  model's own acceptance set, scoped to its row, is
+  `ctest --test-dir build/linux-release-znver4-aocc -R "tml-d24-varloop-research|varloop" -j 1`
+  → **9/10 in 7m34s**; the single red is `test_inkling_moe_varloop_det_selfcheck`,
+  i.e. the documented `R21` cell, not a divergence. `-convert` was also run over
+  the whole label (44/45; the red is `A3.11`, pre-existing on `main` and
+  reproduced in an untouched checkout). `python3 tools/gen_model_manifest.py
   --check --strict` clean.
+- **What was deliberately not run:** `linux-debug-inference` (350 targets across
+  43 models, `-j1` under the GPU lock). A model-local diff cannot reach the other
+  42 rows, and the guard suite plus this row is the evidence that it did not break
+  anything. During an abandoned attempt at that sweep four pre-existing reds
+  surfaced — `deepseek-v4.1-flash` FSI/CODE/DET (already recorded as 1/3, 1/3, 2/3
+  in the matrix under `Q`) and `test_gemma_moe_model` (already `A3.7`) — so no new
+  item was filed.
