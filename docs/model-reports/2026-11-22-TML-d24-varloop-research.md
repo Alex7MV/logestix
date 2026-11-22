@@ -213,16 +213,30 @@ shift the balance toward the loop kernels without changing that conclusion.
   card name, `varloop`/`loop_passes_max` and that `is_varloop` is enforced in
   **both** directions.
 - Loader/topology: `tests/test_inkling_moe_varloop_loader.cpp` (capability,
-  ceiling, slab-vs-application split, format gate).
+  ceiling, slab-vs-application split, format gate, expert-window floor across
+  every legal count).
 - Pipeline: `tests/test_inkling_moe_varloop_pipeline.cu`.
 - Model: `libs/lsxcommon/src/inkling_moe_varloop_model.cpp`,
   `tests/test_inkling_moe_varloop_model.cpp` (kType, pass resolution and
   clamping, sibling-artifact refusal, tool bridge).
-- SelfCheck: `tests/test_inkling_moe_varloop_selfcheck.cpp`.
+- SelfCheck: `tests/test_inkling_moe_varloop_selfcheck.cpp` (real weights,
+  SKIP 4 when the vault is absent).
+- Parity gates: `tests/test_parity_gate.cpp` compiled per (model, kind); goldens
+  `tests/fixtures/{fsi,code,det}/tml-d24-varloop-research.json`, all captured by
+  running the source.
 - Manifest row: `models/tml-d24-varloop-research.json`; catalogue
-  `docs/MODELS.md`; gates `docs/SELFCHECK_MATRIX.md`; stage-0 trail and the
-  verified semantics: `docs/open-tasks/live/models/tml-d24-varloop-research.md`;
-  design `docs/superpowers/specs/2026-11-22-tml-varloop-ingest-design.md`.
+  `docs/MODELS.md`; gates `docs/SELFCHECK_MATRIX.md`; stage-0 trail, the verified
+  semantics and the DET-02 finding (`R21`):
+  `docs/open-tasks/live/models/tml-d24-varloop-research.md`; design
+  `docs/superpowers/specs/2026-11-22-tml-varloop-ingest-design.md`.
+- Perf rows: `tests/perf/perf_baselines.json` (`tml-d24-varloop-research`, modes
+  `perf` and `r3`, 2026-11-22), seeded by
+  `ctest -R test_perf_baseline_tml_d24_varloop_research` on the
+  `linux-release-znver4-aocc` tree.
 - Source reference runner: `tools/inkling_loop_oracle.py` (the release's own
   transformers 5.24 `inkling2_loop` text tower, CPU bf16) reached through
   `tools/{fsi,code,det}_capture.py --type tml-d24-varloop-research`.
+- Full sweeps on the branch: `ctest --preset linux-debug` 159/159;
+  `-convert` 44/45 (the one red is `A3.11`, pre-existing on `main`);
+  `-inference` — see the branch log. `python3 tools/gen_model_manifest.py
+  --check --strict` clean.
