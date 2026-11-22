@@ -266,9 +266,19 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 | `LSX_V41_EXPERT_CACHE` | DeepSeek-V4.1 expert-cache override |
 | `LSX_*_EXPERT_CACHE_SLOTS` | per-model LRU slot override (`GLM`, `QWEN_MOE`, `QWEN38`, `GEMMA`, `KIMI`, `DEEPSEEK`, `NEMOTRON`, `GIGACHAT`, `ORNITH_MOE`, `MIMO`) |
 | `LSX_KIMI_CACHE_BYPASS` | bypass the Kimi expert cache |
+| `LSX_INKLING_LOOP_DEVICE_EXPERTS` / `LSX_INKLING_VARLOOP_DEVICE_EXPERTS` | `=0` forces the host-staging path for the inkling2_loop trees (A/B switch for the 14.71 GiB device expert slab) |
+| `LSX_INKLING_LOOP_MAX_OPEN` / `LSX_INKLING_VARLOOP_MAX_OPEN` | routed-expert window floor override for the inkling2_loop trees. The floor is the ARTIFACT's pass ceiling (72 applications × top-8 = 576 at the maximum), not the active pass count, so a run at a smaller count never drops out of the window when the count changes |
 | `LSX_KIMI_K3_MAX_OPEN` / `LSX_KIMI_K31_PRO_MAX_OPEN` | routed-expert window for the KimiLinear trees (default 65 536). Values below one token's working set (1472 = 92 MoE layers × top-16) are clamped up: the layers are visited once each per token, so a smaller window is a cyclic scan whose hit rate is provably zero. The window is retention, not memory — experts stay mmap'd, and re-reads become page-cache hits. These trees also set `warm_on_load=false`: `Load()`'s eager pre-parse walks experts in path order at ~2.4 ms each, which cost 156 s at a 65 536 window and bought nothing (measured 3.01 s/token warm with it, 2.96 without) |
 
 **Prod — numeric / model toggles** (A/B switches; leave unset in production)
+
+`LSX_INKLING_VARLOOP_PASSES` is a SEMANTIC knob, not a speed knob: it selects how
+many times the looped layers of TML-d24-varloop-research run (1..5; the
+checkpoint's own default is 3, values outside the trained range are clamped with a
+warning). It changes the model's answers, so it is not a `--flag` — the CLI speed-flag
+ban exists so a run cannot be measured in a different numeric class than it serves.
+Measured at the canonical protocol: 100.8 t/s at 1 pass, 48.2 at 3, 33.5 at 5, and
+the Paris selfcheck passes at 3 and 5 but NOT at 1.
 
 `LSX_KIMI_TC`, `LSX_GEMMA_GEMV`, `LSX_GEMMA_MLP_BF16`, `LSX_GEMMA_ATTN_BF16`,
 `LSX_GEMMA_INLINE_UPLOADS`, `LSX_GEMMA_MOE_BATCH`, `LSX_FLASH_GATE`,
@@ -316,8 +326,8 @@ PRODUCTION code and must stay unset in a real run:
 
 | variable | meaning |
 |---|---|
-| `LSX_TEST_<MODEL>_SELFCHECK_CYCLES` | selfcheck stress-cycle count. One per family, and the stem is NOT the kType: `QWEN` (dense), `QWEN27`, `QWEN_MOE`, `QWEN36`, `QWEN38`, `GLM` (GLM-5.2; GLM-5.3-Flash reuses `LSX_TEST_GLM_SELFCHECK_CYCLES`), `GEMMA`, `KIMI`, `DEEPSEEK`, `DEEPSEEK_V41`, `GIGACHAT`, `GRANITE`, `PHI`, `ORNITH`, `NEMOTRON`, `MIMO` |
-| `LSX_TEST_<MODEL>_MODEL_PATH` / `_ROOT` / `_MODEL_DIR` | converted-model directory. Same stems as above, suffix varies: `_MODEL_PATH` = `QWEN`, `QWEN27`, `QWEN_MOE`, `QWEN36`, `DEEPSEEK`, `GEMMA`, `GRANITE`, `KIMI`, `MIMO`, `ORNITH`, `PHI`; `_ROOT` = `ALICE`, `DEEPSEEK_V41`, `GIGACHAT`, `GLM_FLASH`, `NEMOTRON`; `_MODEL_DIR` = `QWEN38`; unprefixed `LSX_TEST_MODEL_PATH` = the `test_model_factory` real-model case |
+| `LSX_TEST_<MODEL>_SELFCHECK_CYCLES` | selfcheck stress-cycle count. One per family, and the stem is NOT the kType: `QWEN` (dense), `QWEN27`, `QWEN_MOE`, `QWEN36`, `QWEN38`, `GLM` (GLM-5.2; GLM-5.3-Flash reuses `LSX_TEST_GLM_SELFCHECK_CYCLES`), `GEMMA`, `KIMI`, `DEEPSEEK`, `DEEPSEEK_V41`, `GIGACHAT`, `GRANITE`, `PHI`, `ORNITH`, `NEMOTRON`, `MIMO`, `INKLING`, `INKLING_BASE`, `INKLING_2_MINI`, `TML_D24_VARLOOP_RESEARCH` (the vault-derived stems the inkling trees use) |
+| `LSX_TEST_<MODEL>_MODEL_PATH` / `_ROOT` / `_MODEL_DIR` | converted-model directory. Same stems as above, suffix varies: `_MODEL_PATH` = `QWEN`, `QWEN27`, `QWEN_MOE`, `QWEN36`, `DEEPSEEK`, `GEMMA`, `GRANITE`, `KIMI`, `MIMO`, `ORNITH`, `PHI`; `_ROOT` = `ALICE`, `DEEPSEEK_V41`, `GIGACHAT`, `GLM_FLASH`, `NEMOTRON`; `_MODEL_DIR` = `QWEN38`; `_ROOT` also for `INKLING`, `INKLING_BASE`, `INKLING_2_MINI`, `TML_D24_VARLOOP_RESEARCH`; unprefixed `LSX_TEST_MODEL_PATH` = the `test_model_factory` real-model case |
 | `LSX_TEST_<MODEL>_SOURCE_PATH` | source safetensors dir for the parity captures: `QWEN_MOE`, `QWEN36`, `ORNITH` |
 | `LSX_TEST_PERF_GEN_TOKENS` | generated length for the `test_blackwell_perf_*` targets |
 | `LSX_TEST_KIMI_GEN_TOKENS` | generated length for `test_kimi_moe_model` |
