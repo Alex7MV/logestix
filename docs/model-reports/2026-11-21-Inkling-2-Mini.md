@@ -143,6 +143,20 @@ meant repairing an unrelated dependency. The baseline is a floor with a -3 %
 tolerance and self-updates upward, so a later znver4 measurement can only raise
 it.
 
+**A second shared-harness defect, found by the tree verifier.** The routed-expert
+scale check assumed every expert plane is NVFP4 (two elements per packed byte).
+This checkpoint's last four layers are MXFP8 — one element per byte — so
+`lsxforge --verify` rejected them as "165888 scales for 2654208 packed bytes,
+expected 331776". The sibling has been shipping in exactly that state without
+anyone noticing: its MXFP8 files never failed because the deep-sample budget
+(256 MiB of a 366 GB tree) never reached one, and raising the budget on its own
+tree reproduces the same rejection. The check now takes the packing from the
+converted index's per-layer codec table instead of guessing it, and maps each
+`experts/layer_<n>/` file onto its layer. Both trees verify clean afterwards
+(3099 files / 50 deep and 18483 files / 100 deep respectively), and a scale
+plane matching neither convention is still rejected — the defect class the check
+exists for.
+
 ## What was not measured, and why
 
 - **Context beyond 2048 tokens.** The engine bound is 8192 positions
