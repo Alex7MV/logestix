@@ -263,3 +263,135 @@ TEST_CASE("inkling loop expert store reads both codecs as views",
     lsxcommon::inkling::FreeInklingLoopExpertIndex(db);
     fs::remove_all(out);
 }
+
+// The device-resident slab must hold a byte-exact copy of every expert block:
+// the GEMV then reads it in place, so a misplaced byte becomes wrong text with
+// no staging step left to catch it. This copies each block back and compares it
+// against the store's planes.
+TEST_CASE("inkling loop device expert slab is a byte-exact copy of the store",
+          "[inkling][load]")
+{
+    if (std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") == nullptr)
+        SKIP("synthetic-geometry fixture not enabled");
+    const fs::path out = ConvertFixture("devslab");
+
+    auto db = lsxcommon::inkling::LoadInklingLoopExpertIndex(
+        out.string(), kLayers, kExperts, /*max_open=*/4096,
+        /*warm_on_load=*/true);
+    lsxcommon::inkling::InklingLoopTopology top;
+    REQUIRE(lsxcommon::inkling::LoadInklingLoopTopology(out.string(), top)
+                .ok());
+
+    auto cache = lsxcommon::inkling::LoadInklingLoopDeviceExperts(
+        db, top, kMoeInter, kHidden, /*stream=*/nullptr);
+    REQUIRE(cache.Enabled());
+    REQUIRE(cache.experts ==
+            static_cast<size_t>(kLayers) * static_cast<size_t>(kExperts));
+    REQUIRE(cache.total_bytes > 0);
+
+    for (int layer = 0; layer < kLayers; ++layer) {
+        const bool mxfp8 = top.ExpertIsFp8(layer);
+        const auto off = lsxcommon::inkling::InklingLoopExpertPlaneOffsets(
+            kMoeInter, kHidden, mxfp8);
+        REQUIRE(cache.block_bytes[static_cast<size_t>(layer)] ==
+                off.block_bytes);
+        for (int e = 0; e < kExperts; ++e) {
+            db.EnsureResident(layer, e, nullptr);
+            const auto &en =
+                db.entries[static_cast<size_t>(layer * kExperts + e)];
+            const int64_t at = cache.ExpertOffset(layer, e);
+            REQUIRE(at >= 0);
+            // One plane at a time is enough to catch an off-by-one in the
+            // layer/plane arithmetic, and keeps the fixture cheap.
+            for (const auto &probe :
+                 {std::pair<int64_t, const uint8_t *>{off.w1, en.host_w1},
+                  std::pair<int64_t, const uint8_t *>{off.w2, en.host_w2},
+                  std::pair<int64_t, const uint8_t *>{off.w3, en.host_w3},
+                  std::pair<int64_t, const uint8_t *>{off.w1_scales,
+                                                      en.host_w1_scales},
+                  std::pair<int64_t, const uint8_t *>{off.w2_scales,
+                                                      en.host_w2_scales},
+                  std::pair<int64_t, const uint8_t *>{off.w3_scales,
+                                                      en.host_w3_scales}}) {
+                const int64_t bytes = mxfp8
+                    ? (probe.first == off.w1_scales || probe.first == off.w2_scales ||
+                       probe.first == off.w3_scales ? int64_t(kMoeInter) * kHidden / 16
+                                                    : int64_t(kMoeInter) * kHidden)
+                    : (probe.first == off.w1_scales || probe.first == off.w2_scales ||
+                       probe.first == off.w3_scales ? int64_t(kMoeInter) * kHidden / 16
+                                                    : int64_t(kMoeInter) * kHidden / 2);
+                REQUIRE(probe.second != nullptr);
+                std::vector<uint8_t> got(static_cast<size_t>(bytes));
+                REQUIRE(cudaMemcpy(got.data(), cache.base + at + probe.first,
+                                   static_cast<size_t>(bytes),
+                                   cudaMemcpyDeviceToHost) == cudaSuccess);
+                INFO("layer " << layer << " expert " << e << " plane at "
+                              << probe.first);
+                REQUIRE(std::memcmp(got.data(), probe.second,
+                                    static_cast<size_t>(bytes)) == 0);
+            }
+        }
+    }
+    cache.Free();
+    REQUIRE_FALSE(cache.Enabled());
+    lsxcommon::inkling::FreeInklingLoopExpertIndex(db);
+    fs::remove_all(out);
+}
+
+// The single-DMA staging path (StageExperts) copies ONE aligned block per
+// expert instead of six planes, which is only legal if the pinned store lays an
+// expert out contiguously in exactly the order the device slab expects. That is
+// a cross-header contract — ExpertStore::PinChunked decides the offsets, the
+// inference pipeline derives the pointer planes from them — so it is pinned
+// here: if either side changes, this fails instead of silently multiplying
+// padding bytes into a weight plane.
+TEST_CASE("inkling loop pinned expert store is one contiguous block per expert",
+          "[inkling][load]")
+{
+    if (std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") == nullptr)
+        SKIP("synthetic-geometry fixture not enabled");
+    const fs::path out = ConvertFixture("pin");
+
+    // PinChunked only sees entries that are already parsed, so the pinning
+    // loader warms first (the vault path does the same).
+    auto db = lsxcommon::inkling::LoadInklingLoopExpertIndex(
+        out.string(), kLayers, kExperts, /*max_open=*/4096,
+        /*warm_on_load=*/true);
+    REQUIRE(db.PinChunked<lsxcommon::inkling::InklingLoopExpertDb::
+                              PinLayout::kStream>());
+
+    for (int layer : {0, kNovfp4Layers}) {
+        const auto offsets = lsxcommon::inkling::InklingLoopExpertPlaneOffsets(
+            kMoeInter, kHidden, /*mxfp8=*/layer >= kNovfp4Layers);
+        for (int e = 0; e < kExperts; ++e) {
+            db.EnsureResident(layer, e, nullptr);
+            const auto &entry =
+                db.entries[static_cast<size_t>(layer * kExperts + e)];
+            REQUIRE(entry.host_w1 != nullptr);
+            INFO("layer " << layer << " expert " << e);
+            REQUIRE(entry.w1_bytes ==
+                    static_cast<int64_t>(kMoeInter) * kHidden /
+                        (layer < kNovfp4Layers ? 2 : 1));
+            // The pinned block starts at host_w1 and every other plane sits at
+            // its documented offset from that base.
+            REQUIRE(entry.host_w3 == entry.host_w1 + offsets.w3);
+            REQUIRE(entry.host_w2 == entry.host_w1 + offsets.w2);
+            REQUIRE(entry.host_w1_scales == entry.host_w1 + offsets.w1_scales);
+            REQUIRE(entry.host_w3_scales == entry.host_w1 + offsets.w3_scales);
+            REQUIRE(entry.host_w2_scales == entry.host_w1 + offsets.w2_scales);
+            // ... and the last plane ends inside the block, with less than one
+            // alignment step of slack, so one DMA of `block_bytes` carries every
+            // byte StageExperts reads.
+            INFO("w2_scales " << offsets.w2_scales << " + "
+                              << entry.w2_scales_bytes << " vs block "
+                              << offsets.block_bytes);
+            REQUIRE(offsets.w2_scales + entry.w2_scales_bytes <=
+                    offsets.block_bytes);
+            REQUIRE(offsets.block_bytes -
+                        (offsets.w2_scales + entry.w2_scales_bytes) <
+                    256);
+        }
+    }
+    lsxcommon::inkling::FreeInklingLoopExpertIndex(db);
+    fs::remove_all(out);
+}

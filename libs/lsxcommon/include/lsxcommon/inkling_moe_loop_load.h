@@ -134,6 +134,81 @@ static_assert(sizeof(InklingLoopExpertEntry) <= 128,
 
 using InklingLoopExpertDb = gpu::expert_store::ExpertStore<InklingLoopExpertEntry>;
 
+// ── an expert's six planes inside one 256-byte-aligned block ────────────────
+// ExpertStore::PinChunked<kStream> packs a pinned expert as
+// [w1 | w3 | w2 | w1_scales | w3_scales | w2_scales], each plane starting on a
+// 256-byte boundary, and re-points the entry at those offsets. The inference
+// pipeline lays its device staging slab out identically, which is what lets it
+// move an expert with ONE cudaMemcpyAsync instead of six. Both sides compute
+// the geometry here so the contract has a single definition; the loader test
+// pins it against the real pinned pointers.
+struct InklingLoopExpertPlanes {
+    int64_t w1 = 0;
+    int64_t w3 = 0;
+    int64_t w2 = 0;
+    int64_t w1_scales = 0;
+    int64_t w3_scales = 0;
+    int64_t w2_scales = 0;
+    int64_t block_bytes = 0;
+};
+
+// `inter` is the MoE intermediate width (I), `hidden` the model width (H).
+// `mxfp8` selects one byte per element (E4M3) instead of packed NVFP4 nibbles;
+// the per-16 scale plane is the same shape either way.
+InklingLoopExpertPlanes InklingLoopExpertPlaneOffsets(int inter, int hidden,
+                                                     bool mxfp8);
+
+// ── device-resident routed experts ─────────────────────────────────────────
+// Mini's whole routed set is 14.7 GiB and the dense plane is 3.2 GiB, so both
+// fit on a 32 GiB card with room for the KV cache. Keeping the experts in VRAM
+// turns the per-token expert traffic from PCIe H2D into HBM reads: the measured
+// profile before this cache (nsys 2026-11-22) showed 1.79 s of H2D inside a
+// 5.3 s span, i.e. the copies were a third of the wall, because 48 layer
+// applications x top_k 8 experts is 384 expert fetches per token.
+//
+// When the card cannot hold them the cache stays disabled and the staging path
+// falls back to host-memory copies, so this is a residency decision, not a
+// correctness one.
+struct InklingLoopDeviceExperts {
+    uint8_t *base = nullptr;
+    // Per-LAYER block geometry: the NVFP4 layers pack two elements per byte and
+    // the MXFP8 layers one, so the two classes have different block sizes.
+    std::vector<int64_t> block_bytes;   // [num_layers]
+    std::vector<int64_t> layer_offset;  // [num_layers], base-relative
+    std::vector<int32_t> layer_experts; // [num_layers], experts per layer
+    int64_t total_bytes = 0;
+    size_t experts = 0;                 // resident expert blocks in total
+
+    bool Enabled() const { return base != nullptr; }
+    // Byte offset of one expert's block inside `base`, or -1 when out of range.
+    int64_t ExpertOffset(int layer, int expert) const
+    {
+        if (layer < 0 || layer >= static_cast<int>(block_bytes.size())) return -1;
+        if (expert < 0 || expert >= layer_experts[static_cast<size_t>(layer)])
+            return -1;
+        return layer_offset[static_cast<size_t>(layer)] +
+               block_bytes[static_cast<size_t>(layer)] *
+                   static_cast<int64_t>(expert);
+    }
+    void Free()
+    {
+        if (base) cudaFree(base);
+        base = nullptr;
+        total_bytes = 0;
+        experts = 0;
+        block_bytes.clear();
+        layer_offset.clear();
+        layer_experts.clear();
+    }
+};
+
+// Uploads every routed expert of every layer into one device slab. Returns an
+// empty (disabled) cache when the allocation does not fit, so the caller can
+// keep streaming instead of failing the load.
+InklingLoopDeviceExperts LoadInklingLoopDeviceExperts(
+    InklingLoopExpertDb &db, const InklingLoopTopology &top, int64_t inter,
+    int64_t hidden, cudaStream_t stream);
+
 // ── pinned weights (device-resident for the whole session) ──────────────────
 // One FP16 dense projection: [rows, cols], row-major.
 struct InklingLoopDenseF16 {
@@ -203,6 +278,9 @@ struct InklingLoopPinnedWeights {
     // order [q, k, v, mlp] per loop layer.
     float *message_queries = nullptr;
     std::vector<InklingLoopLayerWeights> layers;
+    // The routed experts, device-resident for the whole session when the card
+    // can hold them (see InklingLoopDeviceExperts). Disabled = host streaming.
+    InklingLoopDeviceExperts device_experts;
     std::uint64_t resident_bytes = 0;
 };
 
@@ -227,7 +305,8 @@ InklingLoopExpertDb LoadInklingLoopExpertIndex(const std::string &model_path,
                                                int num_layers,
                                                int experts_per_layer,
                                                size_t max_open,
-                                               bool warm_on_load = false);
+                                               bool warm_on_load = false,
+                                               bool pin_host_memory = true);
 // One decode token's working set: top_k draws from every layer APPLICATION
 // (the loop layers are visited once per pass).
 size_t InklingLoopExpertWindowFloor(const InklingLoopTopology &top);

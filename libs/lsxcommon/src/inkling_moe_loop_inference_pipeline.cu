@@ -310,13 +310,13 @@ bool InklingLoopScratch::Allocate(const InklingLoopTopology &top,
     gate_out = reinterpret_cast<float *>(at(o_go));
 
     // Expert staging: gate/up [I, H] + down [H, I], each with a per-16 E4M3
-    // scale plane; six planes per expert, one contiguous slab.
-    const int64_t w1 = int64_t(I) * H / 2;
-    const int64_t s1 = int64_t(I) * H / 16;
-    const int64_t w2 = int64_t(H) * I / 2;
-    const int64_t s2 = int64_t(H) * I / 16;
-    const int64_t per = w1 + s1 + w1 + s1 + w2 + s2;
-    expert_stage_bytes = per * topk;
+    // scale plane; six planes per expert in one 256-byte-aligned block, matching
+    // the pinned store layout so an expert moves with a single DMA. The MXFP8
+    // layers hold one byte per element, so the NVFP4 and FP8 blocks differ in
+    // size; the slab is sized for the larger of the two.
+    const int64_t b_nv = InklingLoopExpertPlaneOffsets(I, H, false).block_bytes;
+    const int64_t b_fp8 = InklingLoopExpertPlaneOffsets(I, H, true).block_bytes;
+    expert_stage_bytes = std::max(b_nv, b_fp8) * topk;
     if (cudaMalloc(&expert_stage, static_cast<size_t>(expert_stage_bytes)) !=
         cudaSuccess)
         return false;
@@ -385,23 +385,63 @@ struct ExpertStage {
 // Stages the top-k experts of one layer into the reusable slab and fills the
 // pointer planes the batch GEMV consumes. A missing plane is a hard error: a
 // half-staged expert multiplies garbage and would surface as text.
+//
+// Copies per expert: ONE when the store is pinned (its expert block is
+// contiguous and already in this layout, see InklingLoopExpertPlaneOffsets),
+// six when it is still a file mmap (the planes live in different file
+// locations). The single-copy path is the measured lever: 2 304 pageable copies
+// per token cost 5.11 s of host stall per 32-token profile, and a pinned source
+// removes it.
 cudaError_t StageExperts(InklingLoopExpertDb &db, int layer, const int32_t *ids,
                          int count, InklingLoopScratch &ws, int I, int H,
-                         cudaStream_t stream, ExpertStage &out,
-                         std::string &err)
+                         bool mxfp8, cudaStream_t stream, ExpertStage &out,
+                         std::string &err,
+                         const InklingLoopDeviceExperts *device = nullptr)
 {
-    const int64_t w1 = int64_t(I) * H / 2;
-    const int64_t s1 = int64_t(I) * H / 16;
-    const int64_t w2 = int64_t(H) * I / 2;
-    const int64_t s2 = int64_t(H) * I / 16;
-    const int64_t per = w1 + s1 + w1 + s1 + w2 + s2;
-    if (per * count > ws.expert_stage_bytes) {
+    const InklingLoopExpertPlanes off = InklingLoopExpertPlaneOffsets(I, H, mxfp8);
+    // Device-resident experts: no copy at all, the GEMV reads the slab in place.
+    // This is the measured lever for the family (see InklingLoopDeviceExperts):
+    // 384 expert fetches per token over PCIe dominated the wall.
+    if (device != nullptr && device->Enabled()) {
+        for (int k = 0; k < count; ++k) {
+            const int eid = ids[k];
+            const int64_t at = device->ExpertOffset(layer, eid);
+            if (at < 0) {
+                err = absl::StrFormat("routed expert %d of layer %d is not in "
+                                      "the device slab",
+                                      eid, layer);
+                return cudaErrorInvalidValue;
+            }
+            uint8_t *base = device->base + at;
+            out.gate_p[k] = base + off.w1;
+            out.gate_s[k] = base + off.w1_scales;
+            out.up_p[k] = base + off.w3;
+            out.up_s[k] = base + off.w3_scales;
+            out.down_p[k] = base + off.w2;
+            out.down_s[k] = base + off.w2_scales;
+            db.EnsureResident(layer, eid, stream);
+            const InklingLoopExpertEntry &e =
+                db.entries[static_cast<size_t>(layer) *
+                               static_cast<size_t>(db.experts_per_layer) +
+                           static_cast<size_t>(eid)];
+            out.w13_gs[k] = e.w1_global_scale;
+            out.w2_gs[k] = e.w2_global_scale;
+        }
+        return cudaSuccess;
+    }
+    if (off.block_bytes * count > ws.expert_stage_bytes) {
         err = absl::StrFormat(
             "expert staging slab too small (need %lld, have %lld)",
-            static_cast<long long>(per * count),
+            static_cast<long long>(off.block_bytes * count),
             static_cast<long long>(ws.expert_stage_bytes));
         return cudaErrorInvalidValue;
     }
+    // A pinned store holds each expert as one contiguous, already-aligned block,
+    // so the whole expert moves with a single DMA. A file-mmap store keeps its
+    // planes in different file locations and needs one copy per plane.
+    const bool contiguous = !db.pinned_pools.empty();
+    const int64_t plane = mxfp8 ? int64_t(I) * H : int64_t(I) * H / 2;
+    const int64_t sc = int64_t(I) * H / 16;
     for (int k = 0; k < count; ++k) {
         const int eid = ids[k];
         if (eid < 0 || eid >= db.experts_per_layer) {
@@ -422,49 +462,60 @@ cudaError_t StageExperts(InklingLoopExpertDb &db, int layer, const int32_t *ids,
                 eid, layer);
             return cudaErrorInvalidValue;
         }
-        if (e.w1_bytes != w1 || e.w3_bytes != w1 || e.w2_bytes != w2 ||
-            e.w1_scales_bytes != s1 || e.w3_scales_bytes != s1 ||
-            e.w2_scales_bytes != s2) {
+        if (e.w1_bytes != plane || e.w3_bytes != plane || e.w2_bytes != plane ||
+            e.w1_scales_bytes != sc || e.w3_scales_bytes != sc ||
+            e.w2_scales_bytes != sc) {
             err = absl::StrFormat(
                 "routed expert %d of layer %d has an unexpected plane geometry "
                 "(w1 %lld/%lld, w2 %lld/%lld, scales %lld,%lld/%lld,%lld)",
                 eid, layer, static_cast<long long>(e.w1_bytes),
-                static_cast<long long>(w1), static_cast<long long>(e.w2_bytes),
-                static_cast<long long>(w2),
+                static_cast<long long>(plane),
+                static_cast<long long>(e.w2_bytes),
+                static_cast<long long>(plane),
                 static_cast<long long>(e.w1_scales_bytes),
                 static_cast<long long>(e.w3_scales_bytes),
-                static_cast<long long>(s1), static_cast<long long>(s2));
+                static_cast<long long>(sc), static_cast<long long>(sc));
             return cudaErrorInvalidValue;
         }
-        uint8_t *dst = ws.expert_stage + per * k;
-        // gate (w1)
-        cudaMemcpyAsync(dst, e.host_w1, static_cast<size_t>(w1),
-                        cudaMemcpyHostToDevice, stream);
-        out.gate_p[k] = dst;
-        cudaMemcpyAsync(dst + w1, e.host_w1_scales, static_cast<size_t>(s1),
-                        cudaMemcpyHostToDevice, stream);
-        out.gate_s[k] = dst + w1;
-        // up (w3)
-        dst += w1 + s1;
-        cudaMemcpyAsync(dst, e.host_w3, static_cast<size_t>(w1),
-                        cudaMemcpyHostToDevice, stream);
-        out.up_p[k] = dst;
-        cudaMemcpyAsync(dst + w1, e.host_w3_scales, static_cast<size_t>(s1),
-                        cudaMemcpyHostToDevice, stream);
-        out.up_s[k] = dst + w1;
-        // down (w2)
-        dst += w1 + s1;
-        cudaMemcpyAsync(dst, e.host_w2, static_cast<size_t>(w2),
-                        cudaMemcpyHostToDevice, stream);
-        out.down_p[k] = dst;
-        cudaMemcpyAsync(dst + w2, e.host_w2_scales, static_cast<size_t>(s2),
-                        cudaMemcpyHostToDevice, stream);
-        out.down_s[k] = dst + w2;
+        uint8_t *dst = ws.expert_stage + off.block_bytes * k;
+        if (contiguous) {
+            // Padding travels with the block: the pinned layout is exactly the
+            // slab layout, and the GEMV only ever reads the documented spans.
+            cudaMemcpyAsync(dst, e.host_w1,
+                            static_cast<size_t>(off.block_bytes),
+                            cudaMemcpyHostToDevice, stream);
+        } else {
+            cudaMemcpyAsync(dst + off.w1, e.host_w1,
+                            static_cast<size_t>(e.w1_bytes),
+                            cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(dst + off.w1_scales, e.host_w1_scales,
+                            static_cast<size_t>(e.w1_scales_bytes),
+                            cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(dst + off.w3, e.host_w3,
+                            static_cast<size_t>(e.w3_bytes),
+                            cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(dst + off.w3_scales, e.host_w3_scales,
+                            static_cast<size_t>(e.w3_scales_bytes),
+                            cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(dst + off.w2, e.host_w2,
+                            static_cast<size_t>(e.w2_bytes),
+                            cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(dst + off.w2_scales, e.host_w2_scales,
+                            static_cast<size_t>(e.w2_scales_bytes),
+                            cudaMemcpyHostToDevice, stream);
+        }
+        out.gate_p[k] = dst + off.w1;
+        out.gate_s[k] = dst + off.w1_scales;
+        out.up_p[k] = dst + off.w3;
+        out.up_s[k] = dst + off.w3_scales;
+        out.down_p[k] = dst + off.w2;
+        out.down_s[k] = dst + off.w2_scales;
         out.w13_gs[k] = e.w1_global_scale;
         out.w2_gs[k] = e.w2_global_scale;
     }
     return cudaSuccess;
 }
+
 
 // The four conv rings of ONE cache slot: [k][kv_dim] for k, [k][kv_dim] for v,
 // then [k][hidden] for the post-attention and post-MLP convolutions. The
@@ -489,7 +540,8 @@ cudaError_t RunLoopLayer(cudaStream_t stream, InklingLoopPinnedWeights &pw,
                          InklingLoopExpertDb &experts,
                          InklingLoopSession &session, InklingLoopScratch &ws,
                          int l, int pass, int pos, const float *messages,
-                         int &n_blocks, std::string &stage_err)
+                         int &n_blocks, std::string &stage_err,
+                         const InklingLoopDeviceExperts *device = nullptr)
 {
     const InklingLoopTopology &top = pw.top;
     const int H = top.hidden;
@@ -832,6 +884,28 @@ cudaError_t RunLoopLayer(cudaStream_t stream, InklingLoopPinnedWeights &pw,
                     static_cast<long long>(gate_s));
                 return cudaErrorInvalidValue;
             }
+            // Device-resident experts need no staging: point the FP8 GEMV at
+            // the slab. The offsets are the same contract the pinned store and
+            // the loader use (InklingLoopExpertPlaneOffsets).
+            if (device != nullptr && device->Enabled()) {
+                const int64_t at_dev = device->ExpertOffset(l, eid);
+                if (at_dev < 0) {
+                    stage_err = absl::StrFormat(
+                        "[%s] expert %d of layer %d is not in the device slab",
+                        stage, eid, l);
+                    return cudaErrorInvalidValue;
+                }
+                const InklingLoopExpertPlanes off =
+                    InklingLoopExpertPlaneOffsets(I, H, /*mxfp8=*/true);
+                const uint8_t *d_base = device->base + at_dev;
+                gate_ptrs.packed[k] = d_base + off.w1;
+                gate_ptrs.scales[k] = d_base + off.w1_scales;
+                up_ptrs.packed[k] = d_base + off.w3;
+                up_ptrs.scales[k] = d_base + off.w3_scales;
+                down_ptrs.packed[k] = d_base + off.w2;
+                down_ptrs.scales[k] = d_base + off.w2_scales;
+                continue;
+            }
             uint8_t *dst = ws.fp8_stage + per * k;
             int64_t at = 0;
             auto put = [&](const uint8_t *src, int64_t n) {
@@ -876,7 +950,8 @@ cudaError_t RunLoopLayer(cudaStream_t stream, InklingLoopPinnedWeights &pw,
         if (e != cudaSuccess) return fail("expert accumulate", e);
     } else {
         ExpertStage st;
-        e = StageExperts(experts, l, ids, topk, ws, I, H, stream, st, stage_err);
+        e = StageExperts(experts, l, ids, topk, ws, I, H, /*mxfp8=*/false,
+                         stream, st, stage_err, device);
         if (e != cudaSuccess) return e;
 
         // gate: [I, H] x hh; up: [I, H] x hh; both share w13's global scale.
@@ -987,7 +1062,7 @@ cudaError_t Forward(cudaStream_t stream, InklingLoopPinnedWeights &pw,
     // ── pre-loop layers ────────────────────────────────────────────────────
     for (int l = 0; l < loop_start; ++l) {
         e = RunLoopLayer(stream, pw, experts, session, ws, l, 0, pos, nullptr,
-                         n_blocks, stage_err);
+                         n_blocks, stage_err, &pw.device_experts);
         if (e != cudaSuccess) return e;
         e = record(row++);
         if (e != cudaSuccess) return fail("trace row", e);
@@ -1011,7 +1086,7 @@ cudaError_t Forward(cudaStream_t stream, InklingLoopPinnedWeights &pw,
     // ── pass 0 over the loop core (messages = none) ────────────────────────
     for (int l = loop_start; l < loop_end; ++l) {
         e = RunLoopLayer(stream, pw, experts, session, ws, l, 0, pos, nullptr,
-                         n_blocks, stage_err);
+                         n_blocks, stage_err, &pw.device_experts);
         if (e != cudaSuccess) return e;
         e = record(row++);
         if (e != cudaSuccess) return fail("trace row", e);
@@ -1062,7 +1137,7 @@ cudaError_t Forward(cudaStream_t stream, InklingLoopPinnedWeights &pw,
                                          eps);
             if (e != cudaSuccess) return fail("message retrieval", e);
             e = RunLoopLayer(stream, pw, experts, session, ws, l, p, pos, ws.msg,
-                             n_blocks, stage_err);
+                             n_blocks, stage_err, &pw.device_experts);
             if (e != cudaSuccess) return e;
             e = record(row++);
             if (e != cudaSuccess) return fail("trace row", e);
@@ -1074,7 +1149,7 @@ cudaError_t Forward(cudaStream_t stream, InklingLoopPinnedWeights &pw,
     // ── post-loop layers ───────────────────────────────────────────────────
     for (int l = loop_end; l < top.num_layers; ++l) {
         e = RunLoopLayer(stream, pw, experts, session, ws, l, 0, pos, nullptr,
-                         n_blocks, stage_err);
+                         n_blocks, stage_err, &pw.device_experts);
         if (e != cudaSuccess) return e;
         e = record(row++);
         if (e != cudaSuccess) return fail("trace row", e);

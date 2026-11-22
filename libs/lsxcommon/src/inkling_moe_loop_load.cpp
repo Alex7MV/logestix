@@ -300,6 +300,123 @@ bool RequireRaw(const TensorBatchViews &v, int layer, const char *rest,
 
 }  // namespace
 
+InklingLoopDeviceExperts LoadInklingLoopDeviceExperts(
+    InklingLoopExpertDb &db, const InklingLoopTopology &top, int64_t inter,
+    int64_t hidden, cudaStream_t stream)
+{
+    InklingLoopDeviceExperts cache;
+    const int layers = top.num_layers;
+    if (layers <= 0 || db.experts_per_layer <= 0) return cache;
+
+    cache.block_bytes.assign(static_cast<size_t>(layers), 0);
+    cache.layer_offset.assign(static_cast<size_t>(layers), 0);
+    cache.layer_experts.assign(static_cast<size_t>(layers),
+                               db.experts_per_layer);
+    int64_t total = 0;
+    for (int l = 0; l < layers; ++l) {
+        const bool mxfp8 = top.ExpertIsFp8(l);
+        const int64_t block =
+            InklingLoopExpertPlaneOffsets(static_cast<int>(inter),
+                                          static_cast<int>(hidden), mxfp8)
+                .block_bytes;
+        cache.block_bytes[static_cast<size_t>(l)] = block;
+        cache.layer_offset[static_cast<size_t>(l)] = total;
+        total += block * db.experts_per_layer;
+    }
+    if (total <= 0) return cache;
+
+    if (cudaMalloc(&cache.base, static_cast<size_t>(total)) != cudaSuccess) {
+        (void)cudaGetLastError();
+        cache.base = nullptr;
+        log::warn(absl::StrFormat(
+            "[inkling_loop] routed experts stay host-resident: %.2f GiB does "
+            "not fit in VRAM",
+            static_cast<double>(total) / (1 << 30)));
+        cache.block_bytes.clear();
+        cache.layer_offset.clear();
+        cache.layer_experts.clear();
+        return cache;
+    }
+    cache.total_bytes = total;
+
+    // One DMA per expert, straight from the (pinned) store block into the slab.
+    // The store and the slab share InklingLoopExpertPlaneOffsets by contract
+    // (pinned-loader test), so no per-plane gather is needed.
+    const bool contiguous = !db.pinned_pools.empty();
+    for (int l = 0; l < layers; ++l) {
+        const int64_t block = cache.block_bytes[static_cast<size_t>(l)];
+        for (int e = 0; e < db.experts_per_layer; ++e) {
+            db.EnsureResident(l, e, stream);
+            const InklingLoopExpertEntry &en =
+                db.entries[static_cast<size_t>(l) *
+                               static_cast<size_t>(db.experts_per_layer) +
+                           static_cast<size_t>(e)];
+            if (en.host_w1 == nullptr) continue;
+            uint8_t *dst = cache.base + cache.layer_offset[static_cast<size_t>(l)] +
+                           block * static_cast<int64_t>(e);
+            if (contiguous) {
+                cudaMemcpyAsync(dst, en.host_w1, static_cast<size_t>(block),
+                                cudaMemcpyHostToDevice, stream);
+            } else {
+                const InklingLoopExpertPlanes off =
+                    InklingLoopExpertPlaneOffsets(static_cast<int>(inter),
+                                                  static_cast<int>(hidden),
+                                                  top.ExpertIsFp8(l));
+                cudaMemcpyAsync(dst + off.w1, en.host_w1,
+                                static_cast<size_t>(en.w1_bytes),
+                                cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(dst + off.w3, en.host_w3,
+                                static_cast<size_t>(en.w3_bytes),
+                                cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(dst + off.w2, en.host_w2,
+                                static_cast<size_t>(en.w2_bytes),
+                                cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(dst + off.w1_scales, en.host_w1_scales,
+                                static_cast<size_t>(en.w1_scales_bytes),
+                                cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(dst + off.w3_scales, en.host_w3_scales,
+                                static_cast<size_t>(en.w3_scales_bytes),
+                                cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(dst + off.w2_scales, en.host_w2_scales,
+                                static_cast<size_t>(en.w2_scales_bytes),
+                                cudaMemcpyHostToDevice, stream);
+            }
+            ++cache.experts;
+        }
+    }
+    const cudaError_t e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) {
+        log::warn(absl::StrFormat("[inkling_loop] device expert upload failed "
+                                  "(cuda %d) — falling back to host copies",
+                                  static_cast<int>(e)));
+        cache.Free();
+        return cache;
+    }
+    log::info(absl::StrFormat(
+        "[inkling_loop] routed experts device-resident: %zu experts, %.2f GiB",
+        cache.experts, static_cast<double>(cache.total_bytes) / (1 << 30)));
+    return cache;
+}
+
+InklingLoopExpertPlanes InklingLoopExpertPlaneOffsets(int inter, int hidden,
+                                                     bool mxfp8)
+{
+    // Same 256-byte rounding ExpertStore::PinChunked applies (its `aln`).
+    const auto aln = [](int64_t v) { return (v + 255) / 256 * 256; };
+    const int64_t elems = static_cast<int64_t>(inter) * hidden;
+    const int64_t scales = elems / 16;   // per-16 E4M3 descriptors, both codecs
+    const int64_t packed = mxfp8 ? elems : elems / 2;
+    InklingLoopExpertPlanes p;
+    p.w1 = 0;
+    p.w3 = p.w1 + aln(packed);
+    p.w2 = p.w3 + aln(packed);
+    p.w1_scales = p.w2 + aln(packed);
+    p.w3_scales = p.w1_scales + aln(scales);
+    p.w2_scales = p.w3_scales + aln(scales);
+    p.block_bytes = p.w2_scales + aln(scales);
+    return p;
+}
+
 size_t InklingLoopExpertWindowFloor(const InklingLoopTopology &top)
 {
     // One token touches top_k experts in every layer APPLICATION: the loop
@@ -321,7 +438,8 @@ InklingLoopExpertDb LoadInklingLoopExpertIndex(const std::string &model_path,
                                                int num_layers,
                                                int experts_per_layer,
                                                size_t max_open,
-                                               bool warm_on_load)
+                                               bool warm_on_load,
+                                               bool pin_host_memory)
 {
     InklingLoopExpertDb db;
     db.num_layers = num_layers;
@@ -338,6 +456,33 @@ InklingLoopExpertDb LoadInklingLoopExpertIndex(const std::string &model_path,
     db.warm_on_load = warm_on_load;
     if (!db.Load(model_path, /*fallback=*/false))
         log::error("[inkling_loop_load] routed-expert store failed to load");
+    // Pin the routed-expert store into locked host memory (shared
+    // ExpertStore::PinChunked). This is the measured lever for THIS family:
+    // 48 layer applications x top_k 8 x 6 planes = 2 304 H2D copies per token,
+    // and a pageable source makes each one cost ~43 us of HOST stall (nsys
+    // 2026-11-22: 118 155 copies, 5.11 s of GPU-idle gaps, 89% of the decode
+    // wall). From a pinned source the same copies are genuinely asynchronous,
+    // so the stall leaves the critical path. LSX_EXPERT_PIN=0 keeps mmap views.
+    if (!pin_host_memory ||
+        (std::getenv("LSX_EXPERT_PIN") != nullptr &&
+         std::getenv("LSX_EXPERT_PIN")[0] == '0')) {
+        return db;
+    }
+    // PinChunked only pins entries whose planes are already parsed, so the
+    // window must be warmed first (the store hands out mmap views lazily).
+    for (size_t idx = 0; idx < db.paths.size(); ++idx) {
+        if (db.entries[idx].host_w1 != nullptr) continue;
+        if (idx / static_cast<size_t>(db.experts_per_layer) <
+            static_cast<size_t>(db.first_moe_layer))
+            continue;
+        (void)db.EnsureResident(
+            static_cast<int>(idx / static_cast<size_t>(db.experts_per_layer)),
+            static_cast<int>(idx % static_cast<size_t>(db.experts_per_layer)),
+            nullptr);
+    }
+    if (!db.PinChunked<InklingLoopExpertDb::PinLayout::kStream>())
+        log::warn("[inkling_loop_load] expert pinning unavailable — keeping "
+                  "file-backed mmap sources");
     return db;
 }
 
@@ -427,6 +572,7 @@ void FreeInklingLoopPinnedWeights(InklingLoopPinnedWeights &pw)
         l.conv_state_bytes = 0;
     }
     pw.layers.clear();
+    pw.device_experts.Free();
     pw.resident_bytes = 0;
 }
 

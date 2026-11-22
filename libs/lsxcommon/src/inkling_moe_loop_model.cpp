@@ -80,6 +80,17 @@ bool InklingMoeLoopModel::Load()
                 top_, EnvInt("LSX_INKLING_LOOP_MAX_OPEN", 4096)),
             /*warm_on_load=*/false));
 
+    // The routed set is 14.7 GiB and the dense plane 3.2 GiB: on a card that
+    // holds both, the experts live in VRAM and a token's 384 expert fetches
+    // become HBM reads instead of PCIe copies. When the allocation does not fit
+    // the cache stays disabled and the host staging path is used unchanged, so
+    // this is a residency decision, not a correctness one.
+    if (EnvInt("LSX_INKLING_LOOP_DEVICE_EXPERTS", 1) != 0) {
+        pw_.device_experts = inkling::LoadInklingLoopDeviceExperts(
+            *experts_, top_, top_.moe_intermediate, top_.hidden, stream());
+        cudaStreamSynchronize(stream());
+    }
+
     // Decode scratch is fixed-size; allocating it here means a card that cannot
     // hold the working set fails Load instead of failing the first request.
     if (!scratch_.Allocate(top_, inkling::kLoopMaxContext, stream())) {
@@ -88,13 +99,15 @@ bool InklingMoeLoopModel::Load()
     }
 
     weights_loaded_ = true;
-    resident_bytes_ = pw_.resident_bytes + static_cast<std::uint64_t>(
-                                               scratch_.arena_bytes +
-                                               scratch_.expert_stage_bytes +
-                                               scratch_.fp8_stage_bytes);
+    resident_bytes_ =
+        pw_.resident_bytes + pw_.device_experts.total_bytes +
+        static_cast<std::uint64_t>(scratch_.arena_bytes +
+                                   scratch_.expert_stage_bytes +
+                                   scratch_.fp8_stage_bytes);
 
-    // Governor accounting: the pinned dense plane plus the decode scratch are
-    // the permanent lease; the routed stores are host mmaps.
+    // Governor accounting: the pinned dense plane, the device expert slab when
+    // it fits, and the decode scratch are the permanent lease. Without the slab
+    // the routed stores stay host mmaps and are not part of this lease.
     if (!AcquirePermanentWeights(resident_bytes_)) return AbortLoad();
     FinishLoad();
     return true;
