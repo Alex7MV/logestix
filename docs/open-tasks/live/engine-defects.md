@@ -227,3 +227,17 @@ Checked and clean by inspection:
   `ZMQ_RCVTIMEO`, and is joined before `Serve()` returns; message payloads
   are closed on every branch (`zmq_msg_close` before `continue`/`break`).
 - `taskmosaic` chat watcher: joined at the end of the scope that spawns it.
+
+### A3.11. `test_qwen_dense_converter_integrity` red on `main` (pre-existing)
+- `Qwen: tokenizer without bos special still converts` fails with
+  `ConvertQwenModel error: Invalid: tokenizer: no model object` — the test
+  deletes a property from a copy of `tokenizer.json` and the qwen converter's
+  parser then rejects the whole document instead of treating the missing `model`
+  object as "no bos special". Reproduced 2026-11-22 in the untouched
+  `/mnt/fast_storage/projects/cuda/logestix` checkout at `3bdff5f6`, so it is not
+  caused by any branch under review.
+- Filed for the same reason as `A3.7`/`A3.8`: a red `convert` label on `main`
+  makes any later "the converter sweep is green" claim false unless it is named.
+- **Next step:** decide which side is wrong — the fixture's edit (it removes more
+  than the bos entry) or the converter's failure mode (a tokenizer without a
+  `model` object should convert, since `bos` is optional by construction).
