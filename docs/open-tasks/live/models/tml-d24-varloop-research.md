@@ -1,6 +1,6 @@
 # TML-d24-varloop-research ingestion — stage 0 triage, plan and trail
 
-**Status: IN PROGRESS (2026-11-22).** Branch `feat/inkling-2-varloop-ingest`.
+**Status: COMPLETE (2026-11-22).** Branch `feat/inkling-2-varloop-ingest`.
 Design: `docs/superpowers/specs/2026-11-22-tml-varloop-ingest-design.md`.
 
 Source checkpoint: `/mnt/fast_storage/huggingface/TML-d24-varloop-research`
@@ -114,9 +114,38 @@ template.
 | 6 | model class + generated registry + tool bridge from the shared codec | red → green (5 cases, 103 assertions) |
 | 7 | conversion of the real 18 GiB tree | **17 s**, 645 pinned tensors, 3072 experts, format `logestix-inkling-2-varloop`, `loop_passes_max` 5 |
 | 8 | SelfCheck on real weights | **green first run**: Paris in 32 tokens, `logits_hash 98a2c3c532c9b013` bit-identical ×3 at passes=3; knowledge probe top-1 `152717` (" Paris"), perplexity 29.98 |
-| 8b | FSI/CODE/DET source-captured goldens | in progress (release code on CPU, 3 gates × 3 prompts) |
+| 8b | FSI/CODE/DET source-captured goldens | **FSI 3/3, CODE 3/3, DET 2/3** — see the DET-02 finding below |
 | 8c | perf row at the canonical 2048 protocol | **32.33 t/s auto / 30.13 bit-exact**, TTFT 0.32/0.45 s, 18 291 MiB resident (seeded through `test_perf_baseline_tml_d24_varloop_research`) |
-| 9 | report + catalogue + matrix | pending |
+| 9 | report + catalogue + matrix | report written; matrix row added |
+
+## R21. DET-02: the DET gate's extractor resolves the prompt echo, on BOTH sides
+
+**Measured, open, not an engine defect.** `test_inkling_moe_varloop_det_selfcheck`
+is 2/3 on the real tree; the red cell is DET-TEST-02.
+
+- the SOURCE (release code, CPU) answers `DET`: the capture warns
+  `source answer differs from the prompt template: 'DET' != 'CATASTROPHIC'`;
+- the ENGINE answers `DET` too, deterministically (`runs=3 deterministic=true`),
+  so the two agree exactly;
+- both reasoning streams echo the prompt identifier `DET-Validation-Core-02`
+  before stating the correct word `CATASTROPHIC`, and the shared extractor
+  (`tools/det_capture.py::_extract_token` on the capture side, the C++ extractor
+  on the gate side) returns the first standalone uppercase token — the echo's
+  first segment. The `-` that follows it is not a word character, so `DET` looks
+  like a complete token.
+
+The golden's `expected` is the prompt template's canonical answer, which neither
+the source nor the engine produces under this extractor. Same class as
+Granite-Switch 4.1 30B's DET-02 (`R10`) and the FSI extractor defect fixed during
+the Inkling-2-Mini ingestion (`docs/model-reports/2026-11-21-Inkling-2-Mini.md`).
+
+**Why it is not fixed here.** Teaching the extractor to reject a hyphen-delimited
+identifier segment changes a gate shared by 40 models and would need every
+committed DET golden re-validated — the DET prompts embed their own id in the
+body, so the class is latent for every family whose model echoes the prompt. The
+fix belongs with the other harness work (`K`/`M`), and the sibling precedent
+(`R10`) is to leave the cell measured-red and record the mechanism.
+
 
 ## Pass-count sweep on real weights
 

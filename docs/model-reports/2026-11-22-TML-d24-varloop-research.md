@@ -92,6 +92,18 @@ was post-trained at) plus a documented range would let an inference stack serve
 this model without reading the model card. The same applies to the trained pass
 range itself: it exists only in prose.
 
+**One DET probe is red, and it is not an engine defect.** The determinism gate
+runs three long-form probes and compares the extracted answer with a fixed
+expectation. On DET-02 the checkpoint echoes the probe's own identifier
+(`DET-Validation-Core-02`) at the head of its reasoning, then answers
+`CATASTROPHIC` correctly; the harness's extractor takes the first standalone
+upper-case token, so it resolves the echo's `DET` on BOTH the source and the
+engine. The two agree exactly and both are deterministic across three runs, so
+what the gate records is a limitation of its extraction rule, not a divergence
+between the model and its reference. It is left measured rather than repaired:
+the rule is shared by every model in the corpus and would need all of their
+goldens re-validated.
+
 **What was not measured, and why.**
 
 - **Context beyond 2 048 tokens.** The engine bound is 8 192 positions and the
@@ -106,19 +118,22 @@ range itself: it exists only in prose.
   so the multimodal numbers in the model card do not apply to this build.
 - **The MTP head.** Counted, never applied; speculative decoding is not
   implemented for this family.
+- **Multi-request concurrency.** One `Infer` per instance at a time, as for every
+  family here; the loop's per-pass KV/conv state is per-sequence and is reset at
+  each request start, which the bit-identical repeat case pins.
 
 ## Measured numbers
 
-_This section is filled from the gate runs below; every number is copied from the
-gate output or from `tests/perf/perf_baselines.json`._
+Every number below is copied from the gate output or from
+`tests/perf/perf_baselines.json`.
 
 | measurement | result |
 |---|---|
 | SelfCheck ("The capital of France is" → "Paris") | PASS, 3 bit-identical cycles, `logits_hash=98a2c3c532c9b013`, 32-token window, 3 passes |
 | knowledge probe (teacher-forced, one prefill per position) | mean NLL 3.4006 → perplexity **29.98**, top-1 `152717` (" Paris") |
 | FSI parity gate | **3/3, source-captured** — the release's own 512-token answers, produced by running its code |
-| CODE parity gate | PENDING |
-| DET determinism gate | PENDING |
+| CODE parity gate | **3/3, source-captured** — exact-match JSON / assignment / regex answers |
+| DET determinism gate | **2/3** — DET-01 and DET-03 green; DET-02 measured red, see below. All three are deterministic across 3 runs |
 | native tool round-trip | shared with Inkling-2-Mini (byte-identical tokenizer + template): 56 framing assertions |
 | scheduling/state suite | 72 assertions at 1/3/5 passes: application counts follow the active count, the last pass owns the last slab block, two identical requests reproduce their logits bit-for-bit |
 | artefact verifier | 3 099 Arrow files, 64 sampled deep over 1 006 MiB, **0 problems** (covers the mixed NVFP4/MXFP8 expert planes) |
