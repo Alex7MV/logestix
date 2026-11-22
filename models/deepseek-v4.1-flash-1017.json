@@ -59,7 +59,9 @@
   },
   "target_overrides": {
     "test_deepseek_moe_v41_convert": {
-      "env": ["LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"]
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
     },
     "test_deepseek_moe_v41_loader": {
       "label": "fast",
@@ -109,7 +111,7 @@
   "tool_roundtrip": true,
   "auto_path_determinism": false,
   "golden_debt": {},
-  "report": "",
+  "report": "docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md",
   "notes": "Sibling of deepseek-v4.1-flash: identical config/tokenizer/index, re-trained weights",
   "cooperative_cancel": true,
   "selfcheck_frame_prompt": true,
