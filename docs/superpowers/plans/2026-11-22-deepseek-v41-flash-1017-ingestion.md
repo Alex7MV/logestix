@@ -105,3 +105,23 @@ ctest --test-dir build/linux-debug -R "deepseek" -j 1  # this row + siblings
 ```
 
 Real-weight gates run on the Release/AOCC tree, not Debug.
+
+## Execution record (2026-11-22)
+
+| stage | outcome |
+|---|---|
+| 0 triage | sibling variant decided on file-by-file evidence |
+| 1–2 convert/NVFP4 | no new pipeline; the index card name now derives from the input tree; real conversion of the 1017 vault finished in 4 min 41 s → 294 GB, 1246 pinned tensors, 15360 experts, deferred `engram=12 mtp=2401 vision=266` (the parent's counts exactly) |
+| 3 registry | `DeepSeekV41Flash1017Model` registered; factory resolves both siblings to distinct `Type()` |
+| 4/4b tokenizer + tools | byte-identical tokenizer ⇒ parent's arrows; DSML codec shared, real-weight round-trip `get_weather {"city":"Paris"}` |
+| 5 kernels | parent's kernel set reused verbatim (identical geometry); no new `.cu` |
+| 6 sandbox | unchanged (parent implementation) |
+| 7 retired | — |
+| 8 gates | SelfCheck PASS ×3 (`94974df500455a90`), FSI 3/3, DET 3/3 deterministic, CODE 2/3 (extractor artifact `I1`), perf 16.27 t/s seeded through the harness |
+| 9 report | `docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md` |
+
+Deliberate deviation from "one model per converter run": the sibling reuses the
+parent's converter *by design* (stage 0: identical architecture), so the
+converter learned to stamp the input tree's card name instead of gaining a
+second entry point. The load-time gate that rejects a foreign card name is what
+makes the shared converter safe.
