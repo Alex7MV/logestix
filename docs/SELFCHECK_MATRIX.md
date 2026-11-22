@@ -21,6 +21,10 @@ sibling — 24 layers of which 12 run three passes, so 48 applications per token
 SelfCheck reproduces the release's own greedy ids, and its FSI golden is the
 first in the family captured by RUNNING the source rather than from its
 template),
+extended **2026-11-22** (TML-d24-varloop-research: the `is_varloop` sibling of
+Inkling-2-Mini — same tower and artifact layout, with the pass count chosen at
+load time from the trained range 1..5; the row's SelfCheck is at the checkpoint's
+declared 3 passes, and its goldens are source-captured like the sibling's),
 closed **2026-11-19** (Muse-Glimmer-30B: the FSI golden that had been declared
 debt was captured from the source text tower at `reasoning_strength: low` — the
 chat template's own switch, which makes the answer channel the canonical formula
@@ -84,6 +88,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
 | **inkling** (base) | PASS (x3, framed, inline-reasoning) | 3/3 (template) | 3/3 (template) | 3/3 |
 | **inkling-2-mini** | PASS (x3, `12e684ecd27e40d7`, framed) | 3/3 (source) | 3/3 (source) | 3/3 |
+| **tml-d24-varloop-research** | PASS (x3, `98a2c3c532c9b013`, framed, 3 passes) | PENDING | PENDING | PENDING |
 | **muse-glimmer-30b** | PASS (x3, `3374b7bc94231955`, raw) | 3/3 | 3/3 | 3/3 |
 
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
