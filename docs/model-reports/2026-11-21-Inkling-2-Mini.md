@@ -1,5 +1,13 @@
 # Inkling-2-Mini — ingestion report (2026-11-21)
 
+> **Amended 2026-11-22.** The ingest itself is unchanged (all nine stages, the
+> goldens, the semantics verifications). The throughput section and the residency
+> sentence above were corrected by a measurement-driven perf pass that found the
+> first explanation of the decode rate to be wrong: 6.10 tok/s -> **34.1 tok/s**,
+> bit-exact outputs unchanged (`logits_hash` `12e684ecd27e40d7`). The falsified
+> claim, the three measured causes and the new device-resident expert slab are
+> documented under "Throughput"; the design spec carries the matching addendum.
+
 ## Publish-ready post
 
 **What was converted.** *Inkling-2-Mini* (architecture `inkling2_loop`) is the
@@ -9,8 +17,10 @@ applications drawn from 24 layers of weights. The source ships as a single
 18.19 GiB BF16 safetensors shard (plus a 0.59 GiB `mtp.safetensors` that the
 index does not list) and converts to a **17.7 GiB** tree with 645 pinned tensors
 and 3 072 routed-expert records. The dense plane is device-resident (3.0 GiB
-minimum, 4.2 GiB at the planner's preferred layout); the experts stay
-memory-mapped on the host.
+minimum, 4.2 GiB at the planner's preferred layout), and since 2026-11-22 the
+routed experts are too: one 14.71 GiB device slab holds all 3 072 of them
+(18.3 GiB resident in total), with the host-side pinned store kept as the
+fallback for cards that cannot hold it.
 
 **The loop is the architecture, not an optimization.** A pass is not a residual
 stack that runs again: passes 1 and 2 **restart from the pre-loop hidden state
@@ -91,10 +101,10 @@ was written:
 | DET determinism gate | see the matrix row; byte-identical repeat runs |
 | native tool round-trip | 56 framing assertions, byte-exact against the checkpoint's `chat_template.jinja` rendered by jinja2 |
 | scheduling/state suite | 46 assertions: per-pass rows differ at every loop layer, pass 1's KV slot is neither pass 0's nor untouched, two identical requests reproduce their logits bit-for-bit |
-| kernel numeric suite | 14 014 assertions over 8 cases (MessageGate and message retrieval vs host references, GQA-3 attention with sinks/window/bias, MXFP8 GEMV at K = 1152, router 128/top-8, SwiGLU 1152) |
+| kernel numeric suite | 14 493 assertions over 10 cases (MessageGate and message retrieval vs host references, GQA-3 attention with sinks/window/bias, MXFP8 GEMV at K = 1152, router 128/top-8, SwiGLU 1152, two latency budgets) |
 | artifact / conversion | 17.7 GiB, 645 pinned tensors, 3 072 expert records, 422 vision tensors stripped; **16 s** wall for the whole conversion |
-| decode throughput, 2048 tokens, auto policy | **6.10 tok/s** (TTFT 3.41 s, 135.3 W average, 138.8 W peak) |
-| decode throughput, 2048 tokens, strict/bit-exact | **6.05 tok/s** (TTFT 3.38 s, 139.5 W average, 142.0 W peak) |
+| decode throughput, 2048 tokens, auto policy | **34.1 tok/s** (TTFT 0.30 s, 202.4 W average, 262.8 W peak), 18 291 MiB resident |
+| decode throughput, 2048 tokens, strict/bit-exact | **32.1 tok/s** (TTFT 0.34 s, 201.5 W average, 253.3 W peak) |
 
 **The parity goldens are source-derived, which is new for this family.** The
 sibling's goldens are template-derived because its far larger source cannot run
@@ -118,22 +128,67 @@ first-occurrence behaviour" case.
 
 ## Throughput
 
-**6.10 tok/s** auto / **6.05 tok/s** bit-exact at the canonical protocol (2048
-tokens, prompt "The capital of France is"), TTFT 3.4 s, recorded in
-`tests/perf/perf_baselines.json`.
+**34.1 tok/s** auto / **32.1 tok/s** bit-exact at the canonical protocol (2048
+tokens, prompt "The capital of France is"), TTFT 0.30/0.34 s, recorded in
+`tests/perf/perf_baselines.json`. That is **5.6x** the first honest measurement
+of this model (6.10 tok/s, same protocol, 2026-11-21) and 23x the sibling's
+1.47 tok/s, at 18 291 MiB resident.
 
-The number is 4× the sibling's 1.47 tok/s and the reason is memory residency, not
-arithmetic: the whole 17.7 GiB artifact fits in 32 GiB of VRAM, so the expert LRU
-pins all 3 072 records and a token is a cache hit rather than a first-touch read
-of a 366 GB tree. What remains is compute: the loop makes one token cost **48
-layer applications** — twice a 24-layer model of this width — which is why the
-rate sits far below what a 3B-active dense model of the same size would reach.
+The three changes that produced it were each measured, not guessed. The before
+and after columns below are the **same instrument** — `nsys cuda_gpu_kern_sum`
+over a 32-token profile — because a microbenchmark and a profile do not measure
+the same kernel time (the profile sees the real weights' cache behaviour and a
+different clock state). The regression guards are separate:
 
-Two corroborations that the decode is compute-bound and not latency-bound: the
-auto and bit-exact modes are within **0.8 %** of each other (there is almost no
-fast-math-sensitive arithmetic left to change), and average power is 135 W on a
-575 W card with the SMs busy — the opposite signature of the sibling's 95 W
-read-bound idle.
+| what | before (nsys) | after (nsys) | guard (`kernel_budgets.json`) | why it was the wall |
+|---|---|---|---|---|
+| `message_gate_down_kernel` | 416.2 us | 7.1 us | 16.5 us | One block ran the rank-64 row loop, and thread 0 summed 128 partials **per row**: 70 % of all kernel time on the token, for 96 launches |
+| routed-expert staging | 2 304 pageable H2D/token | 0 | — | The experts were streamed from a **file mmap** every application; the driver stages a pageable source through an internal buffer, so every copy blocked the host (measured: 5.11 s of GPU-idle gaps in a 5.3 s span) |
+| `inkling_router_kernel` | 120.1 us | 28.8 us | 34.9 us | 256 threads put 16 experts per warp, then one thread did the whole K x E selection scan |
+
+The guards are the stricter of the two readings on purpose: a 200-iteration loop
+on a hot L2 measures 12.2 us for the MessageGate and 25.8 us for the router,
+against 7.1 us and 28.8 us inside a real token, so the budgets sit above the
+worst of both rather than tracking one. Calibration notes are in the JSON rows.
+
+Two of those were **bit-identical** rewrites: the MessageGate now launches one
+block per rank row and the router selection is a block-parallel pairwise tree,
+but neither changes a reduction order, so `logits_hash` is unchanged
+(`12e684ecd27e40d7`) — verified, not assumed.
+
+**The biggest single lever was residency, and it was not what the first report
+claimed.** The first version of this section asserted that "the whole 17.7 GiB
+artifact fits in 32 GiB of VRAM, so the expert LRU pins all 3 072 records". That
+was wrong: `ExpertStore::EnsureResident` manages **host** mmap residency (an LRU
+over open mappings), not VRAM. `resident : 3195 MiB` in the benchmark output was
+the tell — the dense plane was on the card and all 14.7 GiB of routed experts
+were on the host, re-copied on every one of the 384 expert fetches a token makes
+(48 layer applications x top_k 8).
+
+The family now owns `InklingLoopDeviceExperts`: one device slab for every routed
+expert of every layer (14.71 GiB, allotted per-layer because the NVFP4 and MXFP8
+layers have different block sizes), built after the host store is pinned and
+freed with the dense plane. A token's expert traffic becomes HBM reads. When the
+slab does not fit, the cache stays disabled and the old staging path runs
+unchanged — residency is a decision, not a correctness requirement.
+`LSX_INKLING_LOOP_DEVICE_EXPERTS=0` forces the streaming path for A/B
+measurement.
+
+A pinned-host path was implemented first and kept, because it is what makes the
+fallback usable rather than 6 tok/s: `PinChunked` into locked memory plus one
+`cudaMemcpyAsync` per expert (down from six). The single-copy form is possible
+only because the pinned store and the device slab share
+`InklingLoopExpertPlaneOffsets`; the loader test pins that contract against the
+real pinned pointers, and a second test compares the device slab against the
+store plane by plane.
+
+What remains, in order (nsys 2026-11-22, 32-token profile, 3.69 s span, 1.10 s
+GPU-busy): the decode is now **kernel-bound**, and the two largest kernels are
+row-block `matvec` launches (`inkling_matvec_f16_h_kernel`, 15 504 launches,
+10.3 us each) plus `inkling_depth_mix_kernel` (6 120 launches, 13.7 us). Both are
+one-block-per-row with a 256-thread reduction, so the next lever is batching
+rows per block rather than adding streams. No change is proposed here without a
+measurement.
 
 The measurement ran on the `linux-release` preset (NDEBUG, generic `-O3`), not
 the `linux-release-znver4-aocc` reference build used for the earlier catalogue
@@ -186,9 +241,15 @@ exists for.
 - Manifest: `models/inkling-2-mini.json`; matrix row:
   `docs/SELFCHECK_MATRIX.md`.
 - Full-lifecycle sweeps (2026-11-22): fast 158/158 serial; convert 44 targets;
-  inference 343 targets, in which all eight of this family's targets passed
-  (loader 0.5 s, model 0.4 s, pipeline 0.5 s, kernels 0.3 s, SelfCheck 118 s,
-  FSI 354 s, CODE 339 s, DET 909 s). Every guard green. The inference sweep's
+  inference 343 targets, in which all of this family's targets passed
+  (loader 0.6 s, model 0.6 s, pipeline 0.5 s, kernels 0.3 s, constants 0.01 s,
+  tool framing 0.06 s, convert 0.02 s). Every guard green. The inference sweep's
   other reds are pre-existing and belong to families this work does not touch
   (five documented in `docs/OPEN_TASKS.md`: DeepSeek-V4.1-Flash's `Q`, Gemma's
   FSI-01, both Granite-Switch DET-02 rows, and Nemotron's `R20`).
+- Re-run after the perf pass (2026-11-22, `linux-release`, `ctest -R
+  inkling_moe_loop`): 11/11 green — constants, model, pipeline, tool framing,
+  kernels, convert, SelfCheck 16.5 s, FSI 51.0 s, CODE 48.6 s, DET 129.0 s. The
+  three parity gates are 5-7x faster than the pre-perf run (354/339/909 s)
+  because they were bound by the same two kernels and the same pageable expert
+  staging; the goldens themselves did not move.

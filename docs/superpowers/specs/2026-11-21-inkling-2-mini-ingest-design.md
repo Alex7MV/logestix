@@ -143,3 +143,37 @@ FSI/CODE/DET goldens are possible** via transformers 5.24.0
 - Session/cache growth strategy for 48 cache slots (reuse Small's session
   pattern, fix its known EnsureCapacity trap from day one).
 - Golden capture prompt framing details per fsi/code/det skills.
+## Addendum 2026-11-22 — the feasibility residency claim was falsified
+
+The Feasibility section above predicted "whole model fits in VRAM (~20 GiB incl.
+KV at 2048 ctx): expert cache will effectively pin everything → compute-bound,
+unlike Small's host streaming". The first half was arithmetic and correct; the
+inference from it was wrong, and the measured decode was **6.10 t/s**, i.e. the
+same host-streaming regime the section claimed to have avoided.
+
+Cause: `ExpertStore::EnsureResident` is an LRU over **host mmap windows**. It
+decides which expert FILES stay mapped, never which experts sit in VRAM. The
+family shipped with the dense plane on the card (3195 MiB resident) and all
+14.7 GiB of routed experts on the host, re-copied 384 times per token (48 layer
+applications x top_k 8) as 2304 pageable H2D copies that blocked the host for
+5.11 s of a 5.3 s nsys profile.
+
+Deltas the builder had to add that this spec did not anticipate:
+
+- `InklingLoopDeviceExperts` — one device slab for every routed expert, built
+  after the host store is pinned, allotted per layer (NVFP4 and MXFP8 blocks
+  differ in size). 14.71 GiB, freed with the dense plane; disabled when the
+  allocation does not fit, so streaming stays the fallback.
+- `InklingLoopExpertPlaneOffsets` — the pinned-store layout and the device slab
+  layout are now ONE definition, because the single-DMA staging path is only
+  legal if both agree. Two loader tests pin it (pinned pointers, then a
+  plane-by-plane comparison of the slab against the store).
+- Two latency budgets (`inkling_loop.message_gate.decode`,
+  `inkling_loop.router.decode`) because both kernels were launched in shapes
+  whose serial span dominated the token (416 us and 120.8 us per launch, 70 % and
+  32 % of kernel time). Both rewrites are bit-identical: `logits_hash`
+  `12e684ecd27e40d7` before and after.
+
+Result: **34.1 t/s** auto / 32.1 bit-exact at the canonical protocol, 18291 MiB
+resident. The prediction in the Feasibility section only became true once the
+device slab existed; it was never a property of the artifact fitting on the card.

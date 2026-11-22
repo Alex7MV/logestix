@@ -1,11 +1,15 @@
 # Inkling-2-Mini ingestion — stage 0 triage, plan and trail
 
-**Status: COMPLETE (2026-11-21).** All nine lifecycle stages are green on the
-real converted tree; the report is
+**Status: COMPLETE (2026-11-21), perf amended 2026-11-22.** All nine lifecycle
+stages are green on the real converted tree; the report is
 `docs/model-reports/2026-11-21-Inkling-2-Mini.md` and the matrix row is in
 `docs/SELFCHECK_MATRIX.md`. Branch `feat/inkling-2-mini-ingest`. Design:
 `docs/superpowers/specs/2026-11-21-inkling-2-mini-ingest-design.md`; plan:
 `docs/superpowers/plans/2026-11-21-inkling-2-mini-ingest.md`.
+
+The 2026-11-22 amendment is a measured perf pass (6.10 -> 34.1 t/s, experts moved
+to a device slab) that also **falsified the residency claim in §0.5**; both are
+recorded in the trail below and in the report's Throughput section.
 
 What this file still owns: the **verified semantics** (the reference's own
 behaviour, measured before the engine existed) and the **trail**. Stage-0
@@ -73,11 +77,30 @@ and re-verified against Mini's own template.
 
 ## 0.5 Feasibility (RTX 5090 32 GiB, host 750 GB)
 
-Artifact 18.2 GiB (dense 3.0 + NVFP4 9.6 + MXFP8 5.0 + vision 0.6). Whole
-model fits in VRAM (~20 GiB with KV at 2048): expert cache effectively pins
-everything → compute-bound. Full BF16 source (~53 GB) fits host RAM →
-**source-derived FSI/CODE/DET goldens** via HF 5.24 on CPU (operator approved
-the slower capture over Small's template-derived debt).
+Artifact 18.2 GiB (dense 3.0 + NVFP4 9.6 + MXFP8 5.0 + vision 0.6). Full BF16
+source (~53 GB) fits host RAM → **source-derived FSI/CODE/DET goldens** via HF
+5.24 on CPU (operator approved the slower capture over Small's template-derived
+debt).
+
+**The residency conclusion first written here was wrong (corrected 2026-11-22).**
+It read "whole model fits in VRAM (~20 GiB with KV at 2048): expert cache
+effectively pins everything → compute-bound". The arithmetic was right and the
+mechanism was not: `ExpertStore::EnsureResident` is an LRU over **host mmap
+windows**, not VRAM. Nothing puts routed experts on the card, so the 14.7 GiB of
+experts stayed on the host and were re-copied on every one of the 384 expert
+fetches a token makes — 2304 pageable H2D copies blocking the host for 5.11 s of
+a 5.3 s profile. Measured decode was 6.10 t/s, not the compute-bound rate the
+prediction implied.
+
+The rule this model establishes for the next ingest: **"the artifact fits in
+VRAM" is not a residency claim.** Check which structure actually holds device
+memory (a device slab, an `ExpertDeviceCache`, a pinned plane) before writing
+"compute-bound" into a feasibility section. `resident : N MiB` in the benchmark
+output is the check — 3195 MiB against an 18.2 GiB artifact was the tell that
+14.7 GiB were on the host.
+
+With `InklingLoopDeviceExperts` (14.71 GiB device slab, 2026-11-22) the original
+prediction now holds: 34.1 t/s and the decode is kernel-bound.
 
 ## 0.6 Semantics verified (2026-11-21, against transformers 5.24.0 + real shards)
 
@@ -183,9 +206,20 @@ under a minute.
   was fixed red-first (the FSI comparison extractor bailed on a prompt echo that
   cannot satisfy its own bound; see the report's disclosure).
 - 2026-11-21: perf seeded at the canonical protocol — 6.10 t/s auto / 6.05 t/s
-  bit-exact, TTFT 3.4 s, 135-140 W. The artifact fits in VRAM, so the expert LRU
-  pins all 3072 records and the decode is compute-bound; the loop's 48
-  applications per token are why the rate is what it is.
+  bit-exact, TTFT 3.4 s, 135-140 W. **The explanation recorded here was wrong**
+  and is corrected on 2026-11-22: the artifact does NOT put the experts in VRAM.
+  `ExpertStore::EnsureResident` is an LRU over HOST mmap windows; `resident :
+  3195 MiB` in the benchmark output was the dense plane only.
+- 2026-11-22: perf investigation (measurement, not prose) — 6.10 -> **34.1 t/s**
+  auto / 32.1 bit-exact at the same protocol, 18 291 MiB resident, TTFT 0.30 s.
+  Three measured causes, each with a kernel budget: MessageGate 416 -> 12.2 us
+  (one block looped the rank rows and thread 0 summed per row, 70% of kernel
+  time), expert staging 2 304 pageable H2D/token -> 0 (file-mmap source blocked
+  the host 5.11 s in a 5.3 s span), router 120.8 -> 25.8 us (16 experts/warp +
+  serial K x E selection in thread 0). The two arithmetic rewrites are
+  bit-identical: `logits_hash` still `12e684ecd27e40d7`. New device-resident
+  expert slab (`InklingLoopDeviceExperts`, 14.71 GiB) with the pinned-host path
+  kept as the fallback for cards that cannot hold it.
 - 2026-11-21: **stage 9 complete** — full fast/convert/inference sweeps and every
   guard green, `gen_model_manifest.py --strict --check` clean, report published,
   catalogue and matrix regenerated.
