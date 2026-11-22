@@ -51,6 +51,41 @@
 #include <string_view>
 
 namespace lsxcommon::inkling {
+
+InklingLoopConvertSpec MiniConvertSpec()
+{
+    using namespace lsxcommon::inkling::loop::frozen;
+    InklingLoopConvertSpec spec;
+    spec.model_name = "Inkling-2-Mini";
+    spec.format_tag = kFormatTag;
+    spec.varloop = false;
+    spec.max_passes = kLoopPasses;
+    spec.frozen.hidden = kHidden;
+    spec.frozen.layers = kLayers;
+    spec.frozen.vocab = kVocab;
+    spec.frozen.base_vocab = kBaseVocab;
+    spec.frozen.heads = kHeads;
+    spec.frozen.kv_heads = kKvHeads;
+    spec.frozen.head_dim = kHeadDim;
+    spec.frozen.d_rel = kDRel;
+    spec.frozen.rel_extent = kRelExtent;
+    spec.frozen.sliding_window = kSlidingWindow;
+    spec.frozen.conv_kernel = kConvKernel;
+    spec.frozen.attn_res_block = kAttnResBlock;
+    spec.frozen.experts = kExperts;
+    spec.frozen.top_k = kTopK;
+    spec.frozen.moe_intermediate = kMoeIntermediate;
+    spec.frozen.shared_experts = kSharedExperts;
+    spec.frozen.loop_start = kLoopStart;
+    spec.frozen.loop_end = kLoopEnd;
+    spec.frozen.loop_passes = kLoopPasses;
+    spec.frozen.loop_gate_rank = kLoopGateRank;
+    spec.frozen.log_scaling_floor = kLogScaleFloor;
+    spec.frozen.nvfp4_expert_layers = kNovfp4ExpertLayerCount;
+    spec.frozen.full_layers.assign(kFullLayers.begin(), kFullLayers.end());
+    return spec;
+}
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -150,79 +185,89 @@ bool IsExpertKind(InklingLoopTensorKind k)
 }
 
 // Frozen passport cross-check; relaxed under LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY.
-bool CheckFrozenGeometry(const InklingLoopConvertTopology &top, std::string &why)
+// The numbers come from the SPEC (the model row's own passport) and never from
+// a shared header: converting a tree under one model's identity must not
+// validate it against another model's geometry.
+bool CheckFrozenGeometry(const InklingLoopConvertTopology &top,
+                         const InklingLoopFrozenGeometry &want,
+                         const InklingLoopConvertSpec &spec, std::string &why)
 {
     auto bad = [&why](const char *field, long long got, long long want) {
         why = absl::StrFormat("%s: got %lld, want %lld", field, got, want);
         return false;
     };
-    if (top.hidden_size != frozen::kHidden)
-        return bad("hidden_size", top.hidden_size, frozen::kHidden);
-    if (top.num_layers != frozen::kLayers)
-        return bad("num_hidden_layers", top.num_layers, frozen::kLayers);
-    if (top.vocab_size != frozen::kVocab)
-        return bad("vocab_size", top.vocab_size, frozen::kVocab);
-    if (top.unpadded_vocab_size != frozen::kBaseVocab)
-        return bad("unpadded_vocab_size", top.unpadded_vocab_size,
-                   frozen::kBaseVocab);
-    if (top.num_attention_heads != frozen::kHeads)
-        return bad("num_attention_heads", top.num_attention_heads, frozen::kHeads);
-    if (top.num_key_value_heads != frozen::kKvHeads)
-        return bad("num_key_value_heads", top.num_key_value_heads,
-                   frozen::kKvHeads);
-    if (top.head_dim != frozen::kHeadDim)
-        return bad("head_dim", top.head_dim, frozen::kHeadDim);
-    if (top.d_rel != frozen::kDRel)
-        return bad("d_rel", top.d_rel, frozen::kDRel);
-    if (top.rel_extent != frozen::kRelExtent)
-        return bad("rel_extent", top.rel_extent, frozen::kRelExtent);
-    if (top.sliding_window_size != frozen::kSlidingWindow)
+    if (top.hidden_size != want.hidden)
+        return bad("hidden_size", top.hidden_size, want.hidden);
+    if (top.num_layers != want.layers)
+        return bad("num_hidden_layers", top.num_layers, want.layers);
+    if (top.vocab_size != want.vocab)
+        return bad("vocab_size", top.vocab_size, want.vocab);
+    if (top.unpadded_vocab_size != want.base_vocab)
+        return bad("unpadded_vocab_size", top.unpadded_vocab_size, want.base_vocab);
+    if (top.num_attention_heads != want.heads)
+        return bad("num_attention_heads", top.num_attention_heads, want.heads);
+    if (top.num_key_value_heads != want.kv_heads)
+        return bad("num_key_value_heads", top.num_key_value_heads, want.kv_heads);
+    if (top.head_dim != want.head_dim)
+        return bad("head_dim", top.head_dim, want.head_dim);
+    if (top.d_rel != want.d_rel) return bad("d_rel", top.d_rel, want.d_rel);
+    if (top.rel_extent != want.rel_extent)
+        return bad("rel_extent", top.rel_extent, want.rel_extent);
+    if (top.sliding_window_size != want.sliding_window)
         return bad("sliding_window_size", top.sliding_window_size,
-                   frozen::kSlidingWindow);
-    if (top.conv_kernel != frozen::kConvKernel)
-        return bad("sconv_kernel_size", top.conv_kernel, frozen::kConvKernel);
-    if (top.attn_res_block != frozen::kAttnResBlock)
+                   want.sliding_window);
+    if (top.conv_kernel != want.conv_kernel)
+        return bad("sconv_kernel_size", top.conv_kernel, want.conv_kernel);
+    if (top.attn_res_block != want.attn_res_block)
         return bad("n_layers_per_attn_res_block", top.attn_res_block,
-                   frozen::kAttnResBlock);
-    if (top.num_experts != frozen::kExperts)
-        return bad("n_routed_experts", top.num_experts, frozen::kExperts);
-    if (top.num_experts_per_tok != frozen::kTopK)
-        return bad("num_experts_per_tok", top.num_experts_per_tok, frozen::kTopK);
-    if (top.moe_intermediate_size != frozen::kMoeIntermediate)
+                   want.attn_res_block);
+    if (top.num_experts != want.experts)
+        return bad("n_routed_experts", top.num_experts, want.experts);
+    if (top.num_experts_per_tok != want.top_k)
+        return bad("num_experts_per_tok", top.num_experts_per_tok, want.top_k);
+    if (top.moe_intermediate_size != want.moe_intermediate)
         return bad("moe_intermediate_size", top.moe_intermediate_size,
-                   frozen::kMoeIntermediate);
-    if (top.num_shared_experts != frozen::kSharedExperts)
+                   want.moe_intermediate);
+    if (top.num_shared_experts != want.shared_experts)
         return bad("n_shared_experts", top.num_shared_experts,
-                   frozen::kSharedExperts);
-    if (top.loop_start != frozen::kLoopStart)
-        return bad("loop_config.core_start", top.loop_start, frozen::kLoopStart);
-    if (top.loop_end != frozen::kLoopEnd)
-        return bad("loop_config.core_end", top.loop_end, frozen::kLoopEnd);
-    if (top.loop_passes != frozen::kLoopPasses)
-        return bad("loop_config.num_passes", top.loop_passes, frozen::kLoopPasses);
-    if (top.loop_gate_rank != frozen::kLoopGateRank)
+                   want.shared_experts);
+    if (top.loop_start != want.loop_start)
+        return bad("loop_config.core_start", top.loop_start, want.loop_start);
+    if (top.loop_end != want.loop_end)
+        return bad("loop_config.core_end", top.loop_end, want.loop_end);
+    // The DECLARED count is the checkpoint's own, so it is checked exactly in
+    // both pipelines; a varloop tree additionally carries a ceiling.
+    if (top.loop_passes != want.loop_passes)
+        return bad("loop_config.num_passes", top.loop_passes, want.loop_passes);
+    if (spec.varloop && (top.loop_passes < 1 ||
+                         top.loop_passes > spec.max_passes)) {
+        why = absl::StrFormat(
+            "loop_config.num_passes %d is outside the varloop range 1..%d",
+            top.loop_passes, spec.max_passes);
+        return false;
+    }
+    if (top.loop_gate_rank != want.loop_gate_rank)
         return bad("loop_config.gate_rank", top.loop_gate_rank,
-                   frozen::kLoopGateRank);
-    if (top.log_scaling_n_floor != frozen::kLogScaleFloor)
+                   want.loop_gate_rank);
+    if (top.log_scaling_n_floor != want.log_scaling_floor)
         return bad("log_scaling_n_floor", top.log_scaling_n_floor,
-                   frozen::kLogScaleFloor);
-    if (top.full_layers.size() !=
-        static_cast<size_t>(frozen::kFullLayerCount)) {
-        why = absl::StrFormat("full-attention layers: got %zu, want %d",
-                              top.full_layers.size(), frozen::kFullLayerCount);
+                   want.log_scaling_floor);
+    if (top.full_layers.size() != want.full_layers.size()) {
+        why = absl::StrFormat("full-attention layers: got %zu, want %zu",
+                              top.full_layers.size(), want.full_layers.size());
         return false;
     }
     for (size_t i = 0; i < top.full_layers.size(); ++i)
-        if (top.full_layers[i] != frozen::kFullLayers[i]) {
+        if (top.full_layers[i] != want.full_layers[i]) {
             why = absl::StrFormat("full-attention layer %zu: got %d, want %d", i,
-                                  top.full_layers[i], frozen::kFullLayers[i]);
+                                  top.full_layers[i], want.full_layers[i]);
             return false;
         }
     int nvfp4_layers = 0;
     for (bool b : top.expert_nvfp4) nvfp4_layers += b ? 1 : 0;
-    if (nvfp4_layers != frozen::kNovfp4ExpertLayerCount)
+    if (nvfp4_layers != want.nvfp4_expert_layers)
         return bad("nvfp4 expert layers", nvfp4_layers,
-                   frozen::kNovfp4ExpertLayerCount);
+                   want.nvfp4_expert_layers);
     return true;
 }
 
@@ -252,7 +297,8 @@ std::vector<float> ToF32(const std::vector<uint8_t> &data, const std::string &dt
 
 }  // namespace
 
-InklingLoopConvertTopology ParseInklingLoopConfig(const std::string &input_dir)
+InklingLoopConvertTopology ParseInklingLoopConfig(
+    const std::string &input_dir, const InklingLoopConvertSpec &spec)
 {
     InklingLoopConvertTopology top;
     const fs::path cfg_path = fs::path(input_dir) / "config.json";
@@ -321,9 +367,28 @@ InklingLoopConvertTopology ParseInklingLoopConfig(const std::string &input_dir)
         GetInt(loop, "num_passes", top.loop_passes);
         GetInt(loop, "gate_rank", top.loop_gate_rank);
         bool varloop = false;
-        if (loop["is_varloop"].get_bool().get(varloop) == simdjson::SUCCESS &&
-            varloop) {
-            top.error_msg = "is_varloop=true checkpoints are not supported";
+        if (loop["is_varloop"].get_bool().get(varloop) != simdjson::SUCCESS)
+            varloop = false;
+        // The declared capability IS the identity of the two rows: the same
+        // architecture, one trained at a fixed count and one trained across a
+        // range. Accepting the mismatch would publish a tree whose pass count
+        // (and, for the varloop row, whose whole point) is wrong — and the
+        // resulting model still answers fluently, so nothing downstream
+        // catches it.
+        if (varloop != spec.varloop) {
+            top.error_msg = absl::StrFormat(
+                "loop_config.is_varloop=%s does not match this pipeline (this "
+                "row converts is_varloop=%s checkpoints)",
+                varloop ? "true" : "false", spec.varloop ? "true" : "false");
+            return top;
+        }
+        top.varloop = varloop;
+        top.loop_passes_max = spec.varloop ? spec.max_passes : top.loop_passes;
+        if (top.loop_passes_max < top.loop_passes || top.loop_passes_max < 1) {
+            top.error_msg = absl::StrFormat(
+                "loop_passes_max %d cannot be below the declared "
+                "loop_config.num_passes %d",
+                top.loop_passes_max, top.loop_passes);
             return top;
         }
     } else {
@@ -567,14 +632,27 @@ ParsedInklingLoopTensor ClassifyInklingLoopTensor(const std::string &name)
 arrow::Status ConvertInklingLoopModel(const std::string &input_dir,
                                       const std::string &output_root)
 {
-    InklingLoopConvertTopology top = ParseInklingLoopConfig(input_dir);
+    return ConvertInklingLoopModelWithSpec(input_dir, output_root,
+                                           MiniConvertSpec());
+}
+
+InklingLoopConvertTopology ParseInklingLoopConfig(const std::string &input_dir)
+{
+    return ParseInklingLoopConfig(input_dir, MiniConvertSpec());
+}
+
+arrow::Status ConvertInklingLoopModelWithSpec(const std::string &input_dir,
+                                              const std::string &output_root,
+                                              const InklingLoopConvertSpec &spec)
+{
+    InklingLoopConvertTopology top = ParseInklingLoopConfig(input_dir, spec);
     if (!top.error_msg.empty())
         return arrow::Status::Invalid("Inkling loop config error: ", top.error_msg);
     if (top.num_experts_per_tok > top.num_experts)
         return arrow::Status::Invalid("num_experts_per_tok > n_routed_experts");
     if (!SyntheticGeometryAllowed()) {
         std::string why;
-        if (!CheckFrozenGeometry(top, why))
+        if (!CheckFrozenGeometry(top, spec.frozen, spec, why))
             return arrow::Status::Invalid("Inkling loop frozen geometry mismatch: ",
                                           why);
     }
@@ -976,9 +1054,11 @@ arrow::Status ConvertInklingLoopModel(const std::string &input_dir,
     VramGeometry geom;
     geom.hidden_dim = top.hidden_size;
     geom.kv_dim = top.num_key_value_heads * top.head_dim;
-    // Every pass owns its own KV slots: 24 + 2*12 = 48 cache layers.
-    geom.num_attn_layers =
-        top.num_layers + (top.loop_passes - 1) * (top.loop_end - top.loop_start);
+    // Every pass owns its own KV slots: the slab sizes for the MAXIMUM count
+    // this row can run (72 for a varloop tree, 48 for the fixed-pass one), and a
+    // smaller active count addresses a prefix of it.
+    geom.num_attn_layers = top.num_layers + (top.loop_passes_max - 1) *
+                                                (top.loop_end - top.loop_start);
     geom.num_moe_layers = top.num_layers;
     geom.experts_per_layer = top.num_experts;
     geom.context_length =
@@ -1010,10 +1090,10 @@ arrow::Status ConvertInklingLoopModel(const std::string &input_dir,
             }
             j << "]" << (trailing ? ",\n" : "\n");
         };
-        j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n";
+        j << "{\n  \"format\": \"" << spec.format_tag << "\",\n";
         // The CARD name: gpu::detect_model_type normalizes it into the factory
-        // key, so it must normalize to exactly "inkling-2-mini".
-        j << "  \"model\": \"Inkling-2-Mini\",\n";
+        // key, so it must normalize to exactly this row's model_type.
+        j << "  \"model\": \"" << spec.model_name << "\",\n";
         j << "  \"source_model_type\": \"" << top.model_type << "\",\n";
         j << "  \"num_layers\": " << top.num_layers << ",\n";
         j << "  \"hidden_size\": " << top.hidden_size << ",\n";
@@ -1047,6 +1127,11 @@ arrow::Status ConvertInklingLoopModel(const std::string &input_dir,
         j << "  \"loop_start\": " << top.loop_start << ",\n";
         j << "  \"loop_end\": " << top.loop_end << ",\n";
         j << "  \"loop_passes\": " << top.loop_passes << ",\n";
+        // The pass ceiling and the capability flag. A fixed-pass tree records
+        // its own count as the ceiling, so the loader's slab arithmetic has one
+        // shape for both rows.
+        j << "  \"loop_passes_max\": " << top.loop_passes_max << ",\n";
+        j << "  \"varloop\": " << (top.varloop ? "true" : "false") << ",\n";
         j << "  \"loop_gate_rank\": " << top.loop_gate_rank << ",\n";
         j << "  \"bos_id\": " << top.bos_id << ",\n";
         j << "  \"eos_id\": " << top.eos_id << ",\n";

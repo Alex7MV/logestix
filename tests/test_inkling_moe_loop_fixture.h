@@ -279,7 +279,7 @@ inline void RenderSaneValues(std::vector<synthtest::FakeTensor> &ts)
     }
 }
 
-inline void WriteConfig(const std::filesystem::path &dir)
+inline void WriteConfig(const std::filesystem::path &dir, bool varloop = false)
 {
     std::string local;
     for (int l = 0; l < kLayers; ++l) {
@@ -324,7 +324,10 @@ inline void WriteConfig(const std::filesystem::path &dir)
                      ", \"core_end\": ", kLoopEnd,
                      ", \"num_passes\": ", kLoopPasses,
                      ", \"gate_rank\": ", kLoopGateRank,
-                     ", \"is_varloop\": false}\n",
+                     // The varloop sibling's ONLY config delta: the same
+                     // architecture, declaring that the pass count may be
+                     // chosen at inference time.
+                     ", \"is_varloop\": ", (varloop ? "true" : "false"), "}\n",
                      "  }\n}\n");
     std::ofstream f(dir / "config.json");
     f << text;
@@ -355,9 +358,10 @@ inline void WriteQuantConfig(const std::filesystem::path &dir)
 // Writes the whole synthetic checkpoint into `dir`. `sane` renders a bounded
 // field (see RenderSaneValues); the artifact-layout tests keep the raw byte
 // pattern so their exact pass-through bytes stay pinned.
-inline void WriteCheckpoint(const std::filesystem::path &dir, bool sane = false)
+inline void WriteCheckpoint(const std::filesystem::path &dir, bool sane = false,
+                            bool varloop = false)
 {
-    WriteConfig(dir);
+    WriteConfig(dir, varloop);
     WriteQuantConfig(dir);
 
     std::vector<synthtest::FakeTensor> t;

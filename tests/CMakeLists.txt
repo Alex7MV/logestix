@@ -412,8 +412,23 @@ target_compile_definitions(test_inkling_moe_loop_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"inkling-2-mini\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 
+# ── TML-d24-varloop-research (models/tml-d24-varloop-research.json) ────────
+# The looped sibling of Inkling-2-Mini with a runtime-chosen pass count. It
+# reuses the parent's loader, kernels, generation pipeline and tool codec, so
+# only the varloop-specific stages have build wiring here; the ctest
+# registrations for every target the manifest row claims are generated.
+add_executable(test_inkling_moe_varloop_constants
+    test_inkling_moe_varloop_constants.cpp)
+target_link_libraries(test_inkling_moe_varloop_constants PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_varloop_convert test_inkling_moe_varloop_convert.cpp)
+target_include_directories(test_inkling_moe_varloop_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_moe_varloop_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
-# The ctest registrations for every manifest-claimed target come from the
 # generated model_targets.cmake fragment; what stays here is per-target BUILD
 # reality (sources, link libraries, compile definitions).
 #
