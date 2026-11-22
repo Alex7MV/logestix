@@ -185,3 +185,10 @@ exists for.
   `docs/open-tasks/live/models/inkling-2-mini.md`.
 - Manifest: `models/inkling-2-mini.json`; matrix row:
   `docs/SELFCHECK_MATRIX.md`.
+- Full-lifecycle sweeps (2026-11-22): fast 158/158 serial; convert 44 targets;
+  inference 343 targets, in which all eight of this family's targets passed
+  (loader 0.5 s, model 0.4 s, pipeline 0.5 s, kernels 0.3 s, SelfCheck 118 s,
+  FSI 354 s, CODE 339 s, DET 909 s). Every guard green. The inference sweep's
+  other reds are pre-existing and belong to families this work does not touch
+  (five documented in `docs/OPEN_TASKS.md`: DeepSeek-V4.1-Flash's `Q`, Gemma's
+  FSI-01, both Granite-Switch DET-02 rows, and Nemotron's `R20`).
