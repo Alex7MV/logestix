@@ -156,18 +156,23 @@ developer-side checklist is `ingesting-a-model` § Definition of done):
 | # | Gate | Command |
 |---|---|---|
 | 1 | the shared fast suite (guards included) | `ctest --preset linux-debug` |
-| 2 | convert/load/model/kernels stages registered and green | `ctest --test-dir build/linux-debug -R "<model_type>" -j 1` (the model's own row — never a label sweep) |
-| 3 | SelfCheck: Paris + ≥3 bit-exact cycles | `LSX_TEST_<MODEL>_MODEL_PATH=<root> ctest -R <family>_selfcheck` |
-| 4 | FSI / CODE / DET goldens recorded and green | `ctest -R "<family>_(fsi|code|det)_selfcheck"` with the model's path env |
-| 5 | tool calling: native render + parse round-trip | `ctest -R <family>_tool_framing` |
-| 6 | perf baseline entry + perf-labelled target green (Release only) | `ctest --preset linux-release-znver4-perf` |
+| 2 | the model's own row: convert/load/model/kernels/selfcheck/parity | `ctest --test-dir build/linux-release-znver4-aocc -R "<model_type>" -j 1` |
+| 3 | SelfCheck: Paris + ≥3 bit-exact cycles | same set — the `_selfcheck` target is part of the row |
+| 4 | FSI / CODE / DET goldens recorded and green | same set — one target per (model, gate) |
+| 5 | tool calling: native render + parse round-trip | `ctest -R "<model_type>|<family>_tool_framing"` |
+| 6 | perf baseline entry + perf-labelled target green (Release only) | `ctest --test-dir build/linux-release-znver4-aocc -R test_perf_baseline_<model>` |
 | 7 | no HIGH item open for the family | `docs/OPEN_TASKS.md` |
 
-Stages 3–4 need real weights and `SKIP` (exit 4) without them: a green sweep
+Stages 3–4 need real weights and `SKIP` (exit 4) without them: a green run
 that skipped every selfcheck is not acceptance, it is absence of evidence.
 Steps 2–5 are enforced structurally by `test_model_suite_guard` (`Suites()`),
 which fails if a stage target is missing, unclaimed, or if a loader/model stage
 touches the vault.
+
+Rows 2–6 are all one `-R` over the model's manifest row, so the whole acceptance
+set is a single command in one build tree. Do not widen it to a label sweep:
+`linux-debug-inference` is 350 targets across 43 models and runs `-j1` under the
+GPU lock (see `test-lifecycle` § Running the suites).
 
 ## 3. Engine lifecycle
 
@@ -402,14 +407,24 @@ on real weights). There memory and GPU are critical:
 
 ## Verification
 
-Binaries land at `build/<preset>/apps/<app>/<app>`.
+Binaries land at `build/<preset>/apps/<app>/<app>`. Point the apps at a
+**Release** tree when you want numbers: a Debug build answers correctly but its
+throughput is not comparable, and `test_perf_baseline*` `SKIP`s in Debug.
 
 ```bash
-cmake --build --preset linux-debug                       # build the app target
-./build/linux-debug/apps/lsxcli/lsxcli --model <root> --info     # inspect
-./build/linux-debug/apps/lsxfabric/lsxfabric --localmodel <root> --testprompt
-./build/linux-debug/apps/lsxbenchmark/lsxbenchmark --model <root> --selfcheck
-# perf (Release, GPU-exclusive, last):
-./build/linux-release-znver4-aocc/apps/lsxbenchmark/lsxbenchmark \
-    --model <root> --bench --max-gen 2048 --prompt "<recorded>"
+B=./build/linux-release-znver4-aocc/apps
+
+$B/lsxcli/lsxcli --model <root> --info                    # inspect
+$B/lsxfabric/lsxfabric --localmodel <root> --validate     # engine load path
+$B/lsxbenchmark/lsxbenchmark --model <root> --selfcheck   # Paris + logits_hash
+# perf (GPU-exclusive, last):
+$B/lsxbenchmark/lsxbenchmark --model <root> --bench --max-gen 2048 \
+    --prompt "<the prompt recorded in perf_baselines.json>"
+```
+
+The model's own ctest targets are the acceptance evidence, and they are scoped by
+design — `-R "<model_type>"`, never a label sweep:
+
+```bash
+ctest --test-dir build/linux-release-znver4-aocc -R "<model_type>" -j 1
 ```
