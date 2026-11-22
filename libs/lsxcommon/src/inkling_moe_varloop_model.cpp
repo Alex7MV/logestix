@@ -154,22 +154,22 @@ bool InklingMoeVarloopModel::Load()
     // The pass count: the declared default unless the operator asked for another
     // one, clamped into the trained range. Applied BEFORE anything is sized, so
     // the slab, the expert window and the decode all see the same number.
+    const int declared = top_.loop_passes;
     const int requested = RequestedPasses();
-    const int passes = frozen::ResolvePasses(requested, top_.loop_passes);
+    const int passes = frozen::ResolvePasses(requested, declared);
     if (requested > 0 && passes != requested) {
         log::warn(absl::StrFormat(
             "[varloop] requested %d passes, clamped to %d (trained range %d..%d)",
             requested, passes, frozen::kLoopPassesMin, frozen::kLoopPassesMax));
     }
-    if (passes != top_.loop_passes) {
-        log::info(absl::StrFormat(
-            "[varloop] running %d passes (checkpoint default %d), %d layer "
-            "applications per token, %d cache slots",
-            passes, top_.loop_passes,
-            frozen::LayerApplications(passes),
-            top_.num_layers + (frozen::kLoopPassesMax - 1) *
-                                  (top_.loop_end - top_.loop_start)));
+    if (passes != declared) {
         top_.loop_passes = passes;
+        // The slab is the ceiling's and does not move with the count, so the
+        // line reports what actually ran against what was allocated.
+        log::info(absl::StrFormat(
+            "[varloop] running %d passes (checkpoint declares %d), %d layer "
+            "applications per token, %d cache slots",
+            passes, declared, top_.LayerApplications(), top_.CacheLayers()));
     }
 
     if (!EnsureContext()) {
