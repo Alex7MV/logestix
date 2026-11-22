@@ -17,9 +17,12 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "lsxcommon/expert_store.h"
@@ -61,7 +64,14 @@ struct InklingLoopTopology {
     // the loop core
     int loop_start = 0;
     int loop_end = 0;
+    // The count this run actually executes (the checkpoint's declared default,
+    // or the operator's override inside `loop_passes_max`).
     int loop_passes = 1;
+    // The trained ceiling recorded by the converter. A fixed-pass tree records
+    // its own declared count here, so the slab arithmetic has ONE shape.
+    int loop_passes_max = 0;
+    // `loop_config.is_varloop`: the pass count may be chosen at inference time.
+    bool varloop = false;
     int loop_gate_rank = 0;
     int bos_id = -1;
     int eos_id = -1;
@@ -86,10 +96,20 @@ struct InklingLoopTopology {
         return layer >= loop_start && layer < loop_end;
     }
     int LoopLayers() const { return loop_end - loop_start; }
-    // 24 physical + (passes-1) * loop_layers cache slots.
-    int CacheLayers() const
+    // Layer APPLICATIONS per token under the ACTIVE pass count: what the trace
+    // records and what a decode really executes.
+    int LayerApplications() const
     {
         return num_layers + (loop_passes - 1) * LoopLayers();
+    }
+    // KV + conv STATE SLOTS. Sized for the MAXIMUM pass count the artifact can
+    // run (equal to LayerApplications() for a fixed-pass tree), because the slab
+    // must not be re-allocated when the count changes between requests. The
+    // active count addresses a prefix: slot(l, p) is num_layers + (p-1)*L + ...
+    int CacheLayers() const
+    {
+        return num_layers +
+               (std::max(loop_passes, loop_passes_max) - 1) * LoopLayers();
     }
     // Cache slot of (physical layer, pass); pass 0 uses the physical slot.
     int CacheSlot(int layer, int pass) const
@@ -285,12 +305,27 @@ struct InklingLoopPinnedWeights {
 };
 
 // ── API ────────────────────────────────────────────────────────────────────
+// Reads <model_path>/logestix/model.index.json. The FORMAT TAG is the first
+// gate and it is the caller's: two artifacts can share this architecture and
+// differ in what the rest of the index means (a fixed pass count vs a trained
+// range), so a loader that hard-codes one tag can silently drive the other.
+arrow::Status LoadInklingLoopTopology(const std::string &model_path,
+                                      InklingLoopTopology &out,
+                                      std::string_view expected_format);
+
+// The fixed-pass row's entry point (the family passport's tag).
 arrow::Status LoadInklingLoopTopology(const std::string &model_path,
                                       InklingLoopTopology &out);
 
 // Cross-checks the loaded index against the frozen passport (relaxed under
-// LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY).
+// LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY). The pass count is checked SEPARATELY by
+// the model row that owns the pass policy: `MatchesFrozenGeometry` holds the
+// numbers every row of this architecture shares, `LoopCoreMatches` the range a
+// row accepts.
 bool InklingLoopTopologyMatchesFrozen(const InklingLoopTopology &top);
+bool InklingLoopTopologyMatchesFrozenGeometry(const InklingLoopTopology &top);
+bool InklingLoopLoopCoreMatches(const InklingLoopTopology &top, int passes_min,
+                                int passes_max);
 
 // Uploads the pinned plane. Returns false on any missing/short tensor (a
 // partially loaded model is never left behind).
@@ -307,8 +342,11 @@ InklingLoopExpertDb LoadInklingLoopExpertIndex(const std::string &model_path,
                                                size_t max_open,
                                                bool warm_on_load = false,
                                                bool pin_host_memory = true);
-// One decode token's working set: top_k draws from every layer APPLICATION
-// (the loop layers are visited once per pass).
+// The routed-expert window floor: top_k draws from every layer APPLICATION of
+// the artifact's MAXIMUM pass count (the KV/conv slab's), so a varloop tree that
+// changes its count between loads never falls out of the window. The window is
+// retention (mapped mmap views capped by `max_open`), so a floor above this
+// run's working set costs page-cache, not correctness.
 size_t InklingLoopExpertWindowFloor(const InklingLoopTopology &top);
 size_t InklingLoopResolveExpertWindow(const InklingLoopTopology &top,
                                       long requested);

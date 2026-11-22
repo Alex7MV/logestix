@@ -95,6 +95,60 @@ struct ParsedInklingLoopTensor {
     int message = -1;
 };
 
+// The frozen numbers a conversion validates the source against. Each model row
+// supplies its OWN passport's values (an identity header per model is the
+// independence rule), so a sibling with identical geometry repeats them rather
+// than sharing a header. Only the fields this architecture cannot vary are
+// here: everything else (softcaps, scales, eps) is read from the checkpoint and
+// recorded, not gated.
+struct InklingLoopFrozenGeometry {
+    int hidden = 0;
+    int layers = 0;
+    int vocab = 0;
+    int base_vocab = 0;
+    int heads = 0;
+    int kv_heads = 0;
+    int head_dim = 0;
+    int d_rel = 0;
+    int rel_extent = 0;
+    int sliding_window = 0;
+    int conv_kernel = 0;
+    int attn_res_block = 0;
+    int experts = 0;
+    int top_k = 0;
+    int moe_intermediate = 0;
+    int shared_experts = 0;
+    int loop_start = 0;
+    int loop_end = 0;
+    // The checkpoint's own declared pass count (the model's default).
+    int loop_passes = 0;
+    int loop_gate_rank = 0;
+    int log_scaling_floor = 0;
+    int nvfp4_expert_layers = 0;
+    std::vector<int> full_layers;
+};
+
+// One model row's conversion contract: the card name (`model` in the index is
+// what `gpu::detect_model_type` resolves into a factory key), the format tag,
+// the geometry to gate on, and — for a varloop tree — the trained pass ceiling
+// that the checkpoint's config does not carry.
+struct InklingLoopConvertSpec {
+    std::string model_name;
+    std::string format_tag;
+    InklingLoopFrozenGeometry frozen;
+    // `is_varloop` in the checkpoint must equal this. A mismatch is an error in
+    // BOTH directions: the fixed-pass weights were trained at exactly
+    // `num_passes`, and a varloop tree converted here would publish a range it
+    // does not have.
+    bool varloop = false;
+    // Legal MAXIMUM pass count for a varloop tree (the model card's range).
+    // Ignored when `varloop` is false.
+    int max_passes = 1;
+};
+
+// The fixed-pass row's spec (Inkling-2-Mini): its own frozen passport.
+InklingLoopConvertSpec MiniConvertSpec();
+
 // config.json (+ hf_quant_config.json for the codec split) parsed into the
 // topology the converter writes into model.index.json. The loader re-reads the
 // index and cross-checks it against the frozen passport.
@@ -136,6 +190,10 @@ struct InklingLoopConvertTopology {
     int loop_end = 0;
     int loop_passes = 1;
     int loop_gate_rank = 0;
+    // `loop_config.is_varloop` as declared by the checkpoint, and the ceiling
+    // this pipeline is allowed to advertise (== loop_passes for a fixed tree).
+    bool varloop = false;
+    int loop_passes_max = 1;
     // 0-based; full-attention layers derived from `local_layer_ids`.
     std::vector<int> full_layers;
     std::vector<int> sliding_layers;
@@ -147,6 +205,8 @@ struct InklingLoopConvertTopology {
     std::string error_msg;
 };
 
+InklingLoopConvertTopology ParseInklingLoopConfig(
+    const std::string &input_dir, const InklingLoopConvertSpec &spec);
 InklingLoopConvertTopology ParseInklingLoopConfig(const std::string &input_dir);
 ParsedInklingLoopTensor ClassifyInklingLoopTensor(const std::string &name);
 
@@ -154,5 +214,12 @@ ParsedInklingLoopTensor ClassifyInklingLoopTensor(const std::string &name);
 // <output_root>/logestix.
 arrow::Status ConvertInklingLoopModel(const std::string &input_dir,
                                       const std::string &output_root);
+
+// The same conversion, parameterised by the model row's spec. A varloop tree
+// records `varloop: true` and the pass ceiling in its index; everything else in
+// the artifact is identical, because the architecture is.
+arrow::Status ConvertInklingLoopModelWithSpec(const std::string &input_dir,
+                                              const std::string &output_root,
+                                              const InklingLoopConvertSpec &spec);
 
 }  // namespace lsxcommon::inkling

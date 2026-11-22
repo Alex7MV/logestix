@@ -324,6 +324,10 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         // touching it was never checked. Found while adding the looped sibling.
         "inkling_moe_model.cpp",       // inkling-2-small (rel-bank + AttnRes MoE)
         "inkling_moe_loop_model.cpp",  // inkling-2-mini (the looped SAME tower)
+        // tml-d24-varloop-research: the same tower with is_varloop (a runtime
+        // pass count). Its own class and passport; the pipeline TU is the
+        // sibling's, which is where the loop actually runs.
+        "inkling_moe_varloop_model.cpp",
         "muse_dense_model.cpp",        // muse-glimmer-30b (gated GQA + NoPE dense)
     };
     for (const char *f : consumers) {

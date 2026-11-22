@@ -86,4 +86,26 @@ std::size_t ParseToolCalls(std::string_view text,
 // carry it (a synthetic fixture without the markers).
 int32_t MarkerId(const ArrowTokenizerDb &tok, std::string_view spelling);
 
+// ── model-level glue (Model Ingestion Protocol step 4b) ────────────────────
+// Both rows of this architecture (the fixed-pass Mini and the varloop sibling)
+// ship the same template byte for byte, so they must share the glue as well:
+// one framing path and one id-scanning parser, never two that drift.
+//
+// Frames a raw prompt as the native single user turn. Falls back to the raw BPE
+// encode when the tokenizer lacks the markers (a synthetic fixture).
+bool EncodePromptIds(const ArrowTokenizerDb &tok, std::string_view raw_prompt,
+                     std::vector<int32_t> &out_ids);
+
+// Frames a conversation (tool declarations, effort line, turns, tool calls).
+bool EncodeConversationIds(const ArrowTokenizerDb &tok, const ChatConversation &conv,
+                           std::vector<int32_t> &out_ids);
+
+// Extracts native tool calls from GENERATED IDS. Every marker is a
+// special:true added token, so decoding drops it; the call is found by scanning
+// the ids for the invoke marker and decoding only the span after it. Falls back
+// to the generic text parser when the tokenizer carries no markers.
+bool ParseGeneratedCalls(const ArrowTokenizerDb &tok,
+                         const std::vector<int32_t> &gen_tokens,
+                         std::vector<ToolCall> &out_calls);
+
 }  // namespace lsxcommon::inkling::loop::tools

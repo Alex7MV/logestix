@@ -139,6 +139,17 @@ family's suite is complete and self-contained.
   (`lsx_add_test`/`lsx_add_cuda_test`); every target carries one label
   (`fast|convert|inference|perf`) and every skip-capable target sets
   `SKIP_RETURN_CODE 4` (`test_ctest_labels_guard`).
+- **Scope the tests to what you changed.** A model-local change (ingesting,
+  porting, fixing one family) is verified with `ctest --preset linux-debug` (the
+  parallel `fast` guards, ~3 min) plus that model's own targets:
+  `ctest --test-dir build/<preset> -R "<model_type>" -j 1`. The label **sweeps**
+  are for infrastructure work (shared kernel layer, schema, router, manifest
+  generator): `linux-debug-inference` is 350 targets over 43 models and must run
+  `-j1` because every device target holds `RESOURCE_LOCK "gpu"`, so a model
+  ingestion that runs it spends hours on targets its diff cannot reach. Real-weight
+  gates belong on the Release/AOCC tree (15 s vs minutes in Debug). If you scope
+  the verification, name what you did not run — and check `docs/OPEN_TASKS.md`
+  before filing a pre-existing red you happened to see.
 - **NVIDIA documentation is not vendored** — load current docs from the
   `nvidia-cuda-docs` MCP before editing NVFP4/CUDA kernels
   (`docs/NVIDIA_DOCS.md`); if it is unavailable, stop and ask.

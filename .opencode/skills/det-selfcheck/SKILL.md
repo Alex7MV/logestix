@@ -166,7 +166,7 @@ python tools/det_capture.py --template-golden \
 
 ```bash
 lsxbenchmark --model <vault-model-root> --det-selfcheck   # forces kOff
-ctest --preset linux-debug-inference -R "_det_selfcheck"
+ctest --test-dir build/linux-debug -R "_det_selfcheck" -j 1
 LSX_DET_STRESS_RUNS=5 LSX_DET_GOLDEN_DIR=<dir> <test-binary>
 ```
 
@@ -205,7 +205,7 @@ assuming a kernel bug.
 
 ```bash
 ctest --preset linux-debug -R test_det_selfcheck                 # host unit tests (fast)
-ctest --preset linux-debug-inference -R "_det_selfcheck"         # all real-model DET
+ctest --preset linux-debug-inference -R "_det_selfcheck"         # EVERY model: infra only
 ctest --preset linux-debug -R "test_model_suite_guard|test_ctest_labels_guard"
 python3 tools/det_capture.py --selftest
 ```

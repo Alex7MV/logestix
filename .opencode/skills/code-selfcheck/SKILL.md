@@ -173,7 +173,7 @@ source; it still guards the converted path (e.g. GLM-5.3-Flash). See
 
 ```bash
 lsxbenchmark --model <vault-model-root> --code-selfcheck   # forces kOff
-ctest --preset linux-debug-inference -R "<family>_code_selfcheck"
+ctest --test-dir build/linux-debug -R "<family>_code_selfcheck" -j 1
 LSX_CODE_GOLDEN_DIR=<dir> <test-binary>                    # ad-hoc golden
 ```
 
@@ -237,7 +237,7 @@ Implemented in `RunCodeCase`; unit-tested in `tests/test_code_selfcheck.cpp`.
 
 ```bash
 ctest --preset linux-debug -R test_code_selfcheck                 # host unit tests (fast)
-ctest --preset linux-debug-inference -R "_code_selfcheck"         # all real-model CODE
+ctest --preset linux-debug-inference -R "_code_selfcheck"         # EVERY model: infra only
 ctest --preset linux-debug -R "test_model_suite_guard|test_ctest_labels_guard"
 ```
 

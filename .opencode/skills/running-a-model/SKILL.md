@@ -156,18 +156,23 @@ developer-side checklist is `ingesting-a-model` § Definition of done):
 | # | Gate | Command |
 |---|---|---|
 | 1 | the shared fast suite (guards included) | `ctest --preset linux-debug` |
-| 2 | convert/load/model/kernels stages registered and green | `ctest --preset linux-debug-convert`, then the family's `inference` targets |
-| 3 | SelfCheck: Paris + ≥3 bit-exact cycles | `LSX_TEST_<MODEL>_MODEL_PATH=<root> ctest -R <family>_selfcheck` |
-| 4 | FSI / CODE / DET goldens recorded and green | `ctest -R "<family>_(fsi|code|det)_selfcheck"` with the model's path env |
-| 5 | tool calling: native render + parse round-trip | `ctest -R <family>_tool_framing` |
-| 6 | perf baseline entry + perf-labelled target green (Release only) | `ctest --preset linux-release-znver4-perf` |
+| 2 | the model's own row: convert/load/model/kernels/selfcheck/parity | `ctest --test-dir build/linux-release-znver4-aocc -R "<model_type>" -j 1` |
+| 3 | SelfCheck: Paris + ≥3 bit-exact cycles | same set — the `_selfcheck` target is part of the row |
+| 4 | FSI / CODE / DET goldens recorded and green | same set — one target per (model, gate) |
+| 5 | tool calling: native render + parse round-trip | `ctest -R "<model_type>|<family>_tool_framing"` |
+| 6 | perf baseline entry + perf-labelled target green (Release only) | `ctest --test-dir build/linux-release-znver4-aocc -R test_perf_baseline_<model>` |
 | 7 | no HIGH item open for the family | `docs/OPEN_TASKS.md` |
 
-Stages 3–4 need real weights and `SKIP` (exit 4) without them: a green sweep
+Stages 3–4 need real weights and `SKIP` (exit 4) without them: a green run
 that skipped every selfcheck is not acceptance, it is absence of evidence.
 Steps 2–5 are enforced structurally by `test_model_suite_guard` (`Suites()`),
 which fails if a stage target is missing, unclaimed, or if a loader/model stage
 touches the vault.
+
+Rows 2–6 are all one `-R` over the model's manifest row, so the whole acceptance
+set is a single command in one build tree. Do not widen it to a label sweep:
+`linux-debug-inference` is 350 targets across 43 models and runs `-j1` under the
+GPU lock (see `test-lifecycle` § Running the suites).
 
 ## 3. Engine lifecycle
 
@@ -266,9 +271,19 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 | `LSX_V41_EXPERT_CACHE` | DeepSeek-V4.1 expert-cache override |
 | `LSX_*_EXPERT_CACHE_SLOTS` | per-model LRU slot override (`GLM`, `QWEN_MOE`, `QWEN38`, `GEMMA`, `KIMI`, `DEEPSEEK`, `NEMOTRON`, `GIGACHAT`, `ORNITH_MOE`, `MIMO`) |
 | `LSX_KIMI_CACHE_BYPASS` | bypass the Kimi expert cache |
+| `LSX_INKLING_LOOP_DEVICE_EXPERTS` / `LSX_INKLING_VARLOOP_DEVICE_EXPERTS` | `=0` forces the host-staging path for the inkling2_loop trees (A/B switch for the 14.71 GiB device expert slab) |
+| `LSX_INKLING_LOOP_MAX_OPEN` / `LSX_INKLING_VARLOOP_MAX_OPEN` | routed-expert window floor override for the inkling2_loop trees. The floor is the ARTIFACT's pass ceiling (72 applications × top-8 = 576 at the maximum), not the active pass count, so a run at a smaller count never drops out of the window when the count changes |
 | `LSX_KIMI_K3_MAX_OPEN` / `LSX_KIMI_K31_PRO_MAX_OPEN` | routed-expert window for the KimiLinear trees (default 65 536). Values below one token's working set (1472 = 92 MoE layers × top-16) are clamped up: the layers are visited once each per token, so a smaller window is a cyclic scan whose hit rate is provably zero. The window is retention, not memory — experts stay mmap'd, and re-reads become page-cache hits. These trees also set `warm_on_load=false`: `Load()`'s eager pre-parse walks experts in path order at ~2.4 ms each, which cost 156 s at a 65 536 window and bought nothing (measured 3.01 s/token warm with it, 2.96 without) |
 
 **Prod — numeric / model toggles** (A/B switches; leave unset in production)
+
+`LSX_INKLING_VARLOOP_PASSES` is a SEMANTIC knob, not a speed knob: it selects how
+many times the looped layers of TML-d24-varloop-research run (1..5; the
+checkpoint's own default is 3, values outside the trained range are clamped with a
+warning). It changes the model's answers, so it is not a `--flag` — the CLI speed-flag
+ban exists so a run cannot be measured in a different numeric class than it serves.
+Measured at the canonical protocol: 100.8 t/s at 1 pass, 48.2 at 3, 33.5 at 5, and
+the Paris selfcheck passes at 3 and 5 but NOT at 1.
 
 `LSX_KIMI_TC`, `LSX_GEMMA_GEMV`, `LSX_GEMMA_MLP_BF16`, `LSX_GEMMA_ATTN_BF16`,
 `LSX_GEMMA_INLINE_UPLOADS`, `LSX_GEMMA_MOE_BATCH`, `LSX_FLASH_GATE`,
@@ -316,8 +331,8 @@ PRODUCTION code and must stay unset in a real run:
 
 | variable | meaning |
 |---|---|
-| `LSX_TEST_<MODEL>_SELFCHECK_CYCLES` | selfcheck stress-cycle count. One per family, and the stem is NOT the kType: `QWEN` (dense), `QWEN27`, `QWEN_MOE`, `QWEN36`, `QWEN38`, `GLM` (GLM-5.2; GLM-5.3-Flash reuses `LSX_TEST_GLM_SELFCHECK_CYCLES`), `GEMMA`, `KIMI`, `DEEPSEEK`, `DEEPSEEK_V41`, `GIGACHAT`, `GRANITE`, `PHI`, `ORNITH`, `NEMOTRON`, `MIMO` |
-| `LSX_TEST_<MODEL>_MODEL_PATH` / `_ROOT` / `_MODEL_DIR` | converted-model directory. Same stems as above, suffix varies: `_MODEL_PATH` = `QWEN`, `QWEN27`, `QWEN_MOE`, `QWEN36`, `DEEPSEEK`, `GEMMA`, `GRANITE`, `KIMI`, `MIMO`, `ORNITH`, `PHI`; `_ROOT` = `ALICE`, `DEEPSEEK_V41`, `GIGACHAT`, `GLM_FLASH`, `NEMOTRON`; `_MODEL_DIR` = `QWEN38`; unprefixed `LSX_TEST_MODEL_PATH` = the `test_model_factory` real-model case |
+| `LSX_TEST_<MODEL>_SELFCHECK_CYCLES` | selfcheck stress-cycle count. One per family, and the stem is NOT the kType: `QWEN` (dense), `QWEN27`, `QWEN_MOE`, `QWEN36`, `QWEN38`, `GLM` (GLM-5.2; GLM-5.3-Flash reuses `LSX_TEST_GLM_SELFCHECK_CYCLES`), `GEMMA`, `KIMI`, `DEEPSEEK`, `DEEPSEEK_V41`, `GIGACHAT`, `GRANITE`, `PHI`, `ORNITH`, `NEMOTRON`, `MIMO`, `INKLING`, `INKLING_BASE`, `INKLING_2_MINI`, `TML_D24_VARLOOP_RESEARCH` (the vault-derived stems the inkling trees use) |
+| `LSX_TEST_<MODEL>_MODEL_PATH` / `_ROOT` / `_MODEL_DIR` | converted-model directory. Same stems as above, suffix varies: `_MODEL_PATH` = `QWEN`, `QWEN27`, `QWEN_MOE`, `QWEN36`, `DEEPSEEK`, `GEMMA`, `GRANITE`, `KIMI`, `MIMO`, `ORNITH`, `PHI`; `_ROOT` = `ALICE`, `DEEPSEEK_V41`, `GIGACHAT`, `GLM_FLASH`, `NEMOTRON`; `_MODEL_DIR` = `QWEN38`; `_ROOT` also for `INKLING`, `INKLING_BASE`, `INKLING_2_MINI`, `TML_D24_VARLOOP_RESEARCH`; unprefixed `LSX_TEST_MODEL_PATH` = the `test_model_factory` real-model case |
 | `LSX_TEST_<MODEL>_SOURCE_PATH` | source safetensors dir for the parity captures: `QWEN_MOE`, `QWEN36`, `ORNITH` |
 | `LSX_TEST_PERF_GEN_TOKENS` | generated length for the `test_blackwell_perf_*` targets |
 | `LSX_TEST_KIMI_GEN_TOKENS` | generated length for `test_kimi_moe_model` |
@@ -392,14 +407,24 @@ on real weights). There memory and GPU are critical:
 
 ## Verification
 
-Binaries land at `build/<preset>/apps/<app>/<app>`.
+Binaries land at `build/<preset>/apps/<app>/<app>`. Point the apps at a
+**Release** tree when you want numbers: a Debug build answers correctly but its
+throughput is not comparable, and `test_perf_baseline*` `SKIP`s in Debug.
 
 ```bash
-cmake --build --preset linux-debug                       # build the app target
-./build/linux-debug/apps/lsxcli/lsxcli --model <root> --info     # inspect
-./build/linux-debug/apps/lsxfabric/lsxfabric --localmodel <root> --testprompt
-./build/linux-debug/apps/lsxbenchmark/lsxbenchmark --model <root> --selfcheck
-# perf (Release, GPU-exclusive, last):
-./build/linux-release-znver4-aocc/apps/lsxbenchmark/lsxbenchmark \
-    --model <root> --bench --max-gen 2048 --prompt "<recorded>"
+B=./build/linux-release-znver4-aocc/apps
+
+$B/lsxcli/lsxcli --model <root> --info                    # inspect
+$B/lsxfabric/lsxfabric --localmodel <root> --validate     # engine load path
+$B/lsxbenchmark/lsxbenchmark --model <root> --selfcheck   # Paris + logits_hash
+# perf (GPU-exclusive, last):
+$B/lsxbenchmark/lsxbenchmark --model <root> --bench --max-gen 2048 \
+    --prompt "<the prompt recorded in perf_baselines.json>"
+```
+
+The model's own ctest targets are the acceptance evidence, and they are scoped by
+design — `-R "<model_type>"`, never a label sweep:
+
+```bash
+ctest --test-dir build/linux-release-znver4-aocc -R "<model_type>" -j 1
 ```

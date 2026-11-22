@@ -19,6 +19,7 @@
 #include "lsxcommon/inkling_moe_convert.h"
 #include "lsxcommon/inkling_moe_base_convert.h"
 #include "lsxcommon/inkling_moe_loop_convert.h"
+#include "lsxcommon/inkling_moe_varloop_convert.h"
 #include "lsxcommon/muse_dense_convert.h"
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mistral_moe_convert.h"
@@ -130,6 +131,10 @@ ABSL_FLAG(bool, inkling_loop, false,
           "Inkling-2-Mini (looped inkling2_loop: 24 layers, middle 12 x 3 "
           "passes, MessageGate controllers, mixed NVFP4/MXFP8 expert source) "
           "conversion pipeline");
+ABSL_FLAG(bool, inkling_varloop, false,
+          "TML-d24-varloop-research (inkling2_loop with is_varloop: the same "
+          "tower and mixed NVFP4/MXFP8 expert source, pass count chosen at "
+          "inference time from 1..5) conversion pipeline");
 ABSL_FLAG(bool, muse, false,
           "Muse-Glimmer-30B (dense gated attention, NoPE full layers, "
           "centered norms, pure-BF16 source) conversion pipeline");
@@ -232,6 +237,7 @@ int main(int argc, char* argv[]) {
     bool inkling = absl::GetFlag(FLAGS_inkling);
     bool inkling_base = absl::GetFlag(FLAGS_inkling_base);
     bool inkling_loop = absl::GetFlag(FLAGS_inkling_loop);
+    bool inkling_varloop = absl::GetFlag(FLAGS_inkling_varloop);
     bool muse = absl::GetFlag(FLAGS_muse);
     bool alice = absl::GetFlag(FLAGS_alice);
     bool xing = absl::GetFlag(FLAGS_xing);
@@ -322,6 +328,7 @@ int main(int argc, char* argv[]) {
     flags.inkling = inkling;
     flags.inkling_base = inkling_base;
     flags.inkling_loop = inkling_loop;
+    flags.inkling_varloop = inkling_varloop;
     flags.muse = muse;
     flags.alice = alice;
     flags.xing = xing;
@@ -775,6 +782,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Inkling-2-Mini conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kInklingVarloop: {
+        lsxcommon::log::info(
+            "TML-d24-varloop-research pipeline "
+            "(logestix-inkling-2-varloop layout)");
+        auto st = lsxcommon::inkling::ConvertInklingVarloopModel(input_path,
+                                                                output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "TML-d24-varloop-research conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("TML-d24-varloop-research conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

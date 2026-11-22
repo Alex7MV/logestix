@@ -60,6 +60,7 @@ enum class Pipeline {
     kInkling,
     kInklingBase,
     kInklingLoop,
+    kInklingVarloop,
     kMuse,
     kGeneric,
     kError,
@@ -114,6 +115,7 @@ struct Flags {
     bool inkling = false;
     bool inkling_base = false;
     bool inkling_loop = false;
+    bool inkling_varloop = false;
     bool muse = false;
 };
 

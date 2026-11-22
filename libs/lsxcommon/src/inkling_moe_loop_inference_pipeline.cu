@@ -1048,7 +1048,11 @@ cudaError_t Forward(cudaStream_t stream, InklingLoopPinnedWeights &pw,
         return cudaSuccess;
     };
     if (trace != nullptr) {
-        trace->assign(static_cast<size_t>(top.CacheLayers() + 1) * H, 0.0f);
+        // One row per ACTIVE application (not per slab slot): for a varloop
+        // tree the slab is sized for the maximum count, so using CacheLayers()
+        // here would over-allocate rows AND let a 5-pass run write past the end
+        // of a buffer sized for the 3-pass default.
+        trace->assign(static_cast<size_t>(top.LayerApplications() + 1) * H, 0.0f);
         e = record(0);
         if (e != cudaSuccess) return fail("trace row 0", e);
     }
