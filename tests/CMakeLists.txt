@@ -374,6 +374,11 @@ set_target_properties(test_inkling_moe_loop_kernels PROPERTIES
     LINKER_LANGUAGE CXX)
 target_link_libraries(test_inkling_moe_loop_kernels PRIVATE
     test_inkling_loop_cu lsxcommon Catch2::Catch2WithMain)
+# Latency budgets (tests/test_kernel_budget.h) resolve the JSON by this path;
+# without it the header falls back to a cwd-relative name, finds nothing and
+# turns every budget case into a silent SKIP.
+target_compile_definitions(test_inkling_loop_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 # The three parity gates: ONE shared driver TU, one binary per (model, kind).
 # The model and the kind are compile-time constants; the vault path, the SKIP

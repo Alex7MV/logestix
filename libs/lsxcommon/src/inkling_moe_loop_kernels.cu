@@ -16,10 +16,20 @@
 namespace lsxcommon::inkling {
 namespace {
 
-// One block computes the whole gate vector g[rank]: each thread accumulates a
-// strided subset of the 2*hidden inputs for every rank row, then a shared
-// reduction sums the partials in a FIXED order (thread 0 only RMW behind
-// __syncthreads — the shared-memory sandbox rule).
+// One block per RANK ROW, 128 threads each. Every row's arithmetic is exactly
+// the historical single-block form — thread t accumulates the inputs c = t,
+// t+128, ..., then thread 0 sums partial[0..127] in thread order — so the
+// result is bit-identical to the serial-row version; only the row loop, which
+// used to run inside one block, is spread across the grid. The norms are
+// recomputed by every block (same code, same thread count, same inputs, hence
+// the same bits) instead of being shared through global memory, which keeps the
+// launch count at one per gate.
+//
+// Why this shape: measured on the Mini decode path (2026-11-22 nsys), the
+// serial-row version was 416 us per launch and 70% of ALL kernel time on the
+// token, because rank=64 rows each ended in a 128-add chain executed by a
+// single thread. The row-independent split removes 63/64 of that serialization
+// without touching the reduction order.
 __global__ void message_gate_down_kernel(const float *h, const float *msg,
                                          const __half *down, float *g,
                                          int hidden, int rank, float eps)
@@ -31,6 +41,7 @@ __global__ void message_gate_down_kernel(const float *h, const float *msg,
 
     const int t = threadIdx.x;
     const int n = blockDim.x;
+    const int r = blockIdx.x;
 
     // Unweighted RMSNorm of h and msg (FP32), computed cooperatively.
     float ss_h = 0.0f, ss_m = 0.0f;
@@ -65,21 +76,18 @@ __global__ void message_gate_down_kernel(const float *h, const float *msg,
     __syncthreads();
 
     // g[r] = sum_c down[r][c] * concat[c], FP32 accumulate over FP16 weights.
-    for (int r = 0; r < rank; ++r) {
-        float acc = 0.0f;
-        const __half *row = down + static_cast<int64_t>(r) * (2 * hidden);
-        for (int c = t; c < 2 * hidden; c += n) {
-            const float x = c < hidden ? norm_h[c] : norm_m[c - hidden];
-            acc += __half2float(row[c]) * x;
-        }
-        partial[t] = acc;
-        __syncthreads();
-        if (t == 0) {
-            float s = 0.0f;
-            for (int i = 0; i < n; ++i) s += partial[i];
-            g[r] = s;
-        }
-        __syncthreads();
+    float acc = 0.0f;
+    const __half *row = down + static_cast<int64_t>(r) * (2 * hidden);
+    for (int c = t; c < 2 * hidden; c += n) {
+        const float x = c < hidden ? norm_h[c] : norm_m[c - hidden];
+        acc += __half2float(row[c]) * x;
+    }
+    partial[t] = acc;
+    __syncthreads();
+    if (t == 0) {
+        float s = 0.0f;
+        for (int i = 0; i < n; ++i) s += partial[i];
+        g[r] = s;
     }
 }
 
@@ -119,9 +127,12 @@ cudaError_t RunInklingLoopMessageGate(cudaStream_t stream, const float *h,
     const int threads = 128;
     const size_t smem =
         static_cast<size_t>(2 * hidden + threads) * sizeof(float);
-    message_gate_down_kernel<<<1, threads, smem, stream>>>(h, msg, down,
-                                                         rank_scratch, hidden,
-                                                         rank, eps);
+    // One block per rank row (see the kernel comment): the row loop that used to
+    // serialize inside a single block is what the decode profile showed as the
+    // token's dominant kernel cost.
+    message_gate_down_kernel<<<rank, threads, smem, stream>>>(h, msg, down,
+                                                             rank_scratch,
+                                                             hidden, rank, eps);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
     const int blocks = (hidden + 127) / 128;

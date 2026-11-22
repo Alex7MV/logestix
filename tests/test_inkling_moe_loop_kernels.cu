@@ -23,6 +23,8 @@
 #include "lsxcommon/inkling_moe_loop_inference_pipeline.h"
 #include "lsxcommon/inkling_moe_loop_load.h"
 
+#include "test_kernel_budget.h"
+
 using Catch::Approx;
 
 using lsxcommon::inkling::InklingLoopScratch;
@@ -411,6 +413,136 @@ TEST_CASE("inkling loop MessageGate matches the host reference",
     cudaFree(d_out);
     cudaFree(d_concat);
     cudaFree(d_rank);
+}
+
+TEST_CASE("inkling loop MessageGate decode latency budget at Mini width",
+          "[inkling][kernels][budget]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+#if defined(NDEBUG)
+#else
+    SKIP("latency budget requires an optimized build (NDEBUG)");
+#endif
+    // The real Mini geometry: hidden 2304, gate rank 64, four gates per loop
+    // layer of every pass >= 1. A token runs 2 passes x 12 loop layers x 4
+    // gates = 96 of these, so the launch is on the token's critical path 96
+    // times and its shape (one block, serial rows, thread-0 reduction) is what
+    // the E2E profile sees as 70% of all kernel time — 416 us against a
+    // rank-64 dot product of 64 x 4608 MACs.
+    constexpr int kHidden = 2304;
+    constexpr int kRank = 64;
+    constexpr float kEps = 1e-6f;
+    const auto h = FPattern(kHidden, 0.5f, 1);
+    const auto msg = FPattern(kHidden, 0.5f, 2);
+    const auto down = HPattern(kRank * 2 * kHidden, 0.05f, 3);
+    const auto forget = FPattern(kHidden * kRank, 0.1f, 4);
+    const auto gain = FPattern(kHidden * kRank, 0.1f, 5);
+
+    float *d_h = ToDevice(h);
+    float *d_msg = ToDevice(msg);
+    __half *d_down = ToDevice(down);
+    float *d_forget = ToDevice(forget);
+    float *d_gain = ToDevice(gain);
+    float *d_out = nullptr;
+    float *d_concat = nullptr;
+    float *d_rank = nullptr;
+    REQUIRE(cudaMalloc(&d_out, sizeof(float) * kHidden) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_concat, sizeof(float) * 2 * kHidden) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_rank, sizeof(float) * kRank) == cudaSuccess);
+
+    auto once = [&]() {
+        REQUIRE(lsxcommon::inkling::RunInklingLoopMessageGate(
+                    nullptr, d_h, d_msg, d_down, d_forget, d_gain, d_out,
+                    kHidden, kRank, kEps, d_concat, d_rank) == cudaSuccess);
+    };
+    for (int i = 0; i < 20; ++i) once();  // warm clocks + L2
+    Sync();
+    cudaEvent_t a = nullptr, b = nullptr;
+    REQUIRE(cudaEventCreate(&a) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&b) == cudaSuccess);
+    constexpr int kIters = 200;
+    REQUIRE(cudaEventRecord(a) == cudaSuccess);
+    for (int i = 0; i < kIters; ++i) once();
+    REQUIRE(cudaEventRecord(b) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, a, b) == cudaSuccess);
+    const double us = static_cast<double>(ms) * 1e3 / kIters;
+    kernel_budget::Require(
+        "inkling_loop.message_gate.decode", us, kernel_budget::Kind::kMax,
+        "hidden 2304 x rank 64 down-projection + blend, Mini decode geometry "
+        "(96 launches per token)");
+
+    cudaEventDestroy(a);
+    cudaEventDestroy(b);
+    cudaFree(d_h);
+    cudaFree(d_msg);
+    cudaFree(d_down);
+    cudaFree(d_forget);
+    cudaFree(d_gain);
+    cudaFree(d_out);
+    cudaFree(d_concat);
+    cudaFree(d_rank);
+}
+
+TEST_CASE("inkling loop router decode latency budget at Mini width",
+          "[inkling][kernels][budget]")
+{
+    if (!HaveCuda()) SKIP("no CUDA device");
+#if defined(NDEBUG)
+#else
+    SKIP("latency budget requires an optimized build (NDEBUG)");
+#endif
+    // Mini's routed mixture: E=128 experts, top_k=8, hidden 2304, one launch per
+    // layer APPLICATION (48 per token). The kernel was the single largest cost
+    // on the token after the expert staging was fixed (nsys 2026-11-22: 120 us
+    // per launch, 32% of all kernel time) because one block did the per-expert
+    // dots AND a serial K*E selection in thread 0.
+    constexpr int kHid = 2304;
+    constexpr int kE = 128;
+    constexpr int kK = 8;
+    const auto w = FPattern(int64_t(kE) * kHid, 0.01f, 11);
+    const auto bias = FPattern(kE, 0.02f, 12);
+    const auto x = HPattern(kHid, 0.5f, 13);
+    float *d_w = ToDevice(w);
+    float *d_b = ToDevice(bias);
+    __half *d_x = ToDevice(x);
+    lsxcommon::inkling::InklingRoutedSlot *d_slots = nullptr;
+    int32_t *d_ids = nullptr;
+    REQUIRE(cudaMalloc(&d_slots, sizeof(lsxcommon::inkling::InklingRoutedSlot) *
+                                     kK) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ids, sizeof(int32_t) * kK) == cudaSuccess);
+
+    auto once = [&]() {
+        REQUIRE(lsxcommon::inkling::RunInklingRouter(
+                    nullptr, d_w, d_b, d_x, kE, kK, kHid, 2.5f, d_slots,
+                    d_ids) == cudaSuccess);
+    };
+    for (int i = 0; i < 20; ++i) once();
+    Sync();
+    cudaEvent_t a = nullptr, b = nullptr;
+    REQUIRE(cudaEventCreate(&a) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&b) == cudaSuccess);
+    constexpr int kIters = 200;
+    REQUIRE(cudaEventRecord(a) == cudaSuccess);
+    for (int i = 0; i < kIters; ++i) once();
+    REQUIRE(cudaEventRecord(b) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, a, b) == cudaSuccess);
+    const double us = static_cast<double>(ms) * 1e3 / kIters;
+    kernel_budget::Require("inkling_loop.router.decode", us,
+                           kernel_budget::Kind::kMax,
+                           "E=128, top_k=8, hidden 2304 at Mini decode geometry "
+                           "(48 launches per token)");
+
+    cudaEventDestroy(a);
+    cudaEventDestroy(b);
+    cudaFree(d_w);
+    cudaFree(d_b);
+    cudaFree(d_x);
+    cudaFree(d_slots);
+    cudaFree(d_ids);
 }
 
 TEST_CASE("inkling loop message retrieval matches the depth-mix reference",
