@@ -860,6 +860,34 @@ TEST_CASE("CheckExpertScaleCount enforces one scale per NVFP4 block",
     CHECK_FALSE(av::CheckExpertScaleCount(16, 2, 0, "w").ok());
 }
 
+TEST_CASE("CheckExpertScaleCount validates both expert packings",
+          "[arrow][expert][scale]")
+{
+    // A routed-expert tree may be MIXED-CODEC: Inkling-2-Mini stores NVFP4 on
+    // layers 0..19 and MXFP8 on 20..23 — E4M3, ONE ELEMENT per packed byte, one
+    // exponent per 16 (the source's per-32 ue8m0 duplicated pair-wise). The
+    // packed-byte count is a property of the LAYER, so the caller states the
+    // packing; deriving it from the numbers is ambiguous for small payloads and
+    // made the check reject every MXFP8 file. Real numbers from both trees:
+    //   MXFP8: 2654208 bytes / 165888 scales   (Mini L20), 10616832 / 663552 (Small L40)
+    //   NVFP4: 1327104 bytes / 165888 scales   (Mini L0, the same element count)
+    CHECK(av::CheckExpertScaleCountBits(2654208, 165888, 16, 1, "L20 w1").ok());
+    CHECK(av::CheckExpertScaleCountBits(10616832, 663552, 16, 1, "L40 w1").ok());
+    CHECK(av::CheckExpertScaleCountBits(1327104, 165888, 16, 2, "L0 w1").ok());
+    // The packing is enforced, not merely accepted: an 8-bit plane read as
+    // NVFP4 (and the reverse) is exactly the "half the scales" defect class.
+    CHECK_FALSE(av::CheckExpertScaleCountBits(2654208, 165888, 16, 2, "x").ok());
+    CHECK_FALSE(av::CheckExpertScaleCountBits(1327104, 165888, 16, 1, "x").ok());
+    // Unknown packing (a tree whose index predates the codec table): either
+    // exact convention is accepted, and anything else still fails.
+    CHECK(av::CheckExpertScaleCountBits(2654208, 165888, 16, 0, "u").ok());
+    CHECK(av::CheckExpertScaleCountBits(1327104, 165888, 16, 0, "u").ok());
+    CHECK_FALSE(av::CheckExpertScaleCountBits(2654208, 90000, 16, 0, "u").ok());
+    // The NVFP4-only spelling keeps its pinned behaviour.
+    CHECK(av::CheckExpertScaleCount(16, 2, 16, "w").ok());
+    CHECK_FALSE(av::CheckExpertScaleCount(16, 1, 16, "w").ok());
+}
+
 TEST_CASE("ExpertSchema::UnpackBatch checks the scale count when asked",
           "[arrow][expert][scale]")
 {

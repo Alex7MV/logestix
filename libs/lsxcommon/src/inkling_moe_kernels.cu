@@ -369,32 +369,66 @@ __global__ void inkling_router_kernel(const float *__restrict__ w,
     }
     __syncthreads();
 
-    if (tid == 0) {
-        bool taken[512];
-        int sel[32];
-        for (int e = 0; e < E && e < 512; ++e) taken[e] = false;
-        for (int k = 0; k < K && k < 32; ++k) sel[k] = k;
-        for (int k = 0; k < K && k < 32; ++k) {
-            int best = -1;
-            float best_v = -INFINITY;
-            for (int e = 0; e < E; ++e) {
-                if (e < 512 && taken[e]) continue;
-                // Ties resolve to the lower id; a NaN selection score is never
-                // chosen, so it can only fall back to an untouched expert (in
-                // bounds), which surfaces as text rather than an illegal access.
-                if (select_score[e] > best_v) {
-                    best_v = select_score[e];
-                    best = e;
+    // ── top-K selection, block-parallel ─────────────────────────────────────
+    // The historical form ran the whole K x E scan in thread 0. "Greater value
+    // wins, equal value resolves to the LOWER expert id, NaN is never chosen" is
+    // a max over a join-semilattice, so a pairwise tree in a fixed layout
+    // returns exactly what the serial first-occurrence scan returned — the
+    // selection is bit-identical, it just stops being one thread's serial work.
+    const int taken_words = (E + 31) / 32;
+    int *taken = reinterpret_cast<int *>(xs + H);   // [taken_words] bitmask
+    int *sel = taken + taken_words;                 // [K] selected ids
+    float *cand_v = reinterpret_cast<float *>(sel + 32);  // [blockDim.x]
+    int *cand_i = reinterpret_cast<int *>(cand_v + blockDim.x);
+
+    for (int i = tid; i < taken_words; i += blockDim.x) taken[i] = 0;
+    __syncthreads();
+
+    for (int k = 0; k < K && k < 32; ++k) {
+        float cv = -INFINITY;
+        int ci = -1;
+        for (int e = tid; e < E; e += blockDim.x) {
+            if (taken[e >> 5] & (1 << (e & 31))) continue;
+            const float v = select_score[e];
+            if (isnan(v)) continue;
+            if (v > cv) {
+                cv = v;
+                ci = e;
+            }
+        }
+        cand_v[tid] = cv;
+        cand_i[tid] = ci;
+        __syncthreads();
+        for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                const float bv = cand_v[tid + stride];
+                const int bi = cand_i[tid + stride];
+                const float av = cand_v[tid];
+                const int ai = cand_i[tid];
+                // Strictly-greater keeps the lower id on a tie; the left operand
+                // is the lower thread index, whose candidates are the lower ids
+                // for the strided scan above.
+                if (bi >= 0 && (bv > av || (bv == av && (ai < 0 || bi < ai)))) {
+                    cand_v[tid] = bv;
+                    cand_i[tid] = bi;
                 }
             }
+            __syncthreads();
+        }
+        int best = cand_i[0];
+        if (tid == 0) {
             if (best < 0) {
                 best = 0;
-                while (best < E && taken[best]) ++best;
-                if (best >= E) break;
+                while (best < E && (taken[best >> 5] & (1 << (best & 31)))) ++best;
+                if (best >= E) best = -1;
             }
-            taken[best] = true;
-            sel[k] = best;
+            if (best >= 0) taken[best >> 5] |= 1 << (best & 31);
+            sel[k] = best < 0 ? -1 : best;
         }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
         for (int i = 1; i < K; ++i) {
             const int v = sel[i];
             int j = i - 1;
@@ -719,11 +753,21 @@ cudaError_t RunInklingRouter(cudaStream_t stream, const float *router_w,
     if (!router_w || !x || !d_slots) return cudaErrorInvalidValue;
     if (E <= 0 || E > 512 || K <= 0 || K > 32 || K > E || H <= 0)
         return cudaErrorInvalidValue;
+    // One warp per expert, and 32 warps per block: with E=128 that is four
+    // experts per warp instead of sixteen, and the per-expert dot keeps its
+    // exact 32-lane stride + shfl reduction, so the scores are bit-identical
+    // while the block's serial span shrinks by 4x.
+    const int threads = E >= 32 ? 1024 : 256;
+    // score[E] + select_score[E] + xs[H] halves + the selection workspace
+    // (taken bitmask, K ids, and a (value,id) pair per thread).
+    const size_t taken_words = static_cast<size_t>((E + 31) / 32);
     const size_t shmem = 2 * static_cast<size_t>(E) * sizeof(float) +
-                         static_cast<size_t>(kThreads) * sizeof(float) +
-                         static_cast<size_t>(H) * sizeof(__half);
+                         static_cast<size_t>(threads) * sizeof(float) +
+                         static_cast<size_t>(H) * sizeof(__half) +
+                         taken_words * sizeof(int) + 32 * sizeof(int) +
+                         static_cast<size_t>(threads) * (sizeof(float) + sizeof(int));
     if (shmem > 48 * 1024) return cudaErrorInvalidValue;
-    inkling_router_kernel<<<1, kThreads, shmem, stream>>>(
+    inkling_router_kernel<<<1, threads, shmem, stream>>>(
         router_w, router_bias, x, E, K, H, route_scale, d_slots, d_ids);
     return cudaGetLastError();
 }

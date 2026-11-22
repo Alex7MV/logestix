@@ -714,3 +714,49 @@ also asks for special tokens; the CODE/DET goldens have it too, and the verifier
 replays the exact ids so parity is unaffected), and no caller sets
 `MuseRenderPolicy::reasoning_strength`, so the engine serves `high` while this
 golden verifies `low`.
+
+## Inkling-2-Mini (2026-11-21) — the prompt-echo defect, fixed in the core instead of worked around
+
+The second source-run capture in the family (the sibling's goldens are
+template-derived), and the first to reach the extractor with a stream whose
+answer sits mid-reasoning. FSI-TEST-03 failed on the FIRST engine run with
+`extracted=''` while the raw plainly contained `Drawdown>Threshold`.
+
+The cause is the defect recorded above in the Muse section, reached from a
+different direction. The stream restates the prompt before answering, so the
+chosen line is
+
+```
+Variables: Drawdown = 14.999991; Threshold = 15.000000.
+```
+
+`Drawdown` there is followed by `=`, an operator, so `SelectAnswerLine` returned
+that line as a comparison candidate — but the bound then requires
+`anchor <op>+ identifier` and the character after `=` is a digit, so the whole
+extraction returned empty. Muse had the same input shape and was rescued by the
+ATEM first-complete-channel rule, which is a Muse-shaped fix for a general
+defect: a checkpoint without channels had nothing to rescue it.
+
+So the CORE extractor was fixed, red-first
+(`tests/test_fsi_selfcheck.cpp`): a comparison candidate now has to survive the
+bound, both when the LINE is chosen and when the position inside it is resolved.
+This cannot regress a passing case — a line holding a bounded candidate also
+contains `anchor` + operator, so it was the line the old scan selected first
+anyway — and arithmetic is untouched, because the capture-side arithmetic rule
+(`tools/fsi_capture.py`: take the `=` line, then a character run) never searched
+for a later candidate, and its historical forward behaviour is pinned by an
+existing case.
+
+**Rejected alternative, measured first:** `prefer_last_answer: true` (the
+setting the Small and base Inkling goldens carry). It fixes FSI-TEST-03 but
+corrupts the other two on this stream — FSI-TEST-02 becomes
+`Balance_Alpha=100` (the last `Balance_Alpha=` is inside a partial reasoning
+line) and FSI-TEST-03 becomes `Drawdown>ThresholdThe` (the answer runs into the
+next sentence without a separator). The option is a model-shape hint, not a
+repair, and this entry records why it was not used here.
+
+Capture: `tools/inkling_loop_oracle.py` (release's own transformers 5.24 text
+tower, CPU bf16, 64 threads, ~0.9 s/token). 512 tokens per case,
+`ignore_eos=true` (the stream does not reach EOS inside the window). All three
+cases are the model's own answers, and the converted engine reproduces all
+three at `kOff`.

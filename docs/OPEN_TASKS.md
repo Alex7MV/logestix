@@ -36,6 +36,7 @@ through the `Retired IDs` table in `open-tasks/README.md`.
 | Granite-Switch 4.1 30B | [`granite-switch-4.1-30b`](open-tasks/live/models/granite-switch-4.1-30b.md) | `R10` DET-02 red because the source answers `CRITICAL` where the template says `CATASTROPHIC`; 131k context is card-bound |
 | Hy-Memory-30B-A3B | [`hy-memory-30b-a3b`](open-tasks/live/models/hy-memory-30b-a3b.md) | `R5` 87 t/s against a ~750 t/s roofline — the weight-streaming GEMV; prefill is token-by-token |
 | Hy-SimulMT-30B-A3B | [`hy-simulmt-30b-a3b`](open-tasks/live/models/hy-simulmt-30b-a3b.md) | `R11` the speech encoder is not implemented (text translator only); the Hy perf debt applies unchanged |
+| Inkling-2-Mini | [`inkling-2-mini`](open-tasks/live/models/inkling-2-mini.md) | COMPLETE (2026-11-21): looped `inkling2_loop`, all 9 stages green on real weights; goldens source-derived (first in the family); **34.1 t/s** (2026-11-22, experts device-resident) |
 | Kimi-K2.7-Code | [`kimi-k2.7-code`](open-tasks/live/models/kimi-k2.7-code.md) | `R2` goldens infeasible here (~2.0 TB decompressed against 750 GB of RAM); KV capped at 1024 slots |
 | Kimi-K3 | [`kimi-k3`](open-tasks/live/models/kimi-k3.md) | `R15` FSI/CODE/DET not run (multi-hour at 2.13 s/token); `A_log` read per channel; 4096 context; load flaky under VRAM pressure |
 | Kimi-K3.1-Pro | [`kimi-k3.1-pro`](open-tasks/live/models/kimi-k3.1-pro.md) | `R17` the DSA indexer's arithmetic is reconstructed, not verified; the parity sweep is ~7 h of exclusive GPU, unrun |

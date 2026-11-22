@@ -79,6 +79,11 @@ const PerfModel kInkling = {
 // and the expected band is low (~0.5-1.5 t/s, read-bound like the sibling).
 const PerfModel kInklingBase = {
     "inkling", "Inkling", "The capital of France is", 2048};
+// Inkling-2-Mini: 24 physical layers but 48 applications per token (the middle
+// 12 run three times), so its per-token read is the loop core's expert draw
+// twice over — the read-bound band of the family, scaled by the loop.
+const PerfModel kInklingLoop = {
+    "inkling-2-mini", "Inkling-2-Mini", "The capital of France is", 2048};
 const PerfModel kDeepseek = {
     "deepseek-v4-flash", "DeepSeek-V4-Flash", "The capital of France is",
     2048};
@@ -580,6 +585,11 @@ TEST_CASE("perf baseline: inkling-2-small", "[perf]")
 TEST_CASE("perf baseline: inkling", "[perf]")
 {
     RunPerfModel(kInklingBase);
+}
+
+TEST_CASE("perf baseline: inkling-2-mini", "[perf]")
+{
+    RunPerfModel(kInklingLoop);
 }
 
 TEST_CASE("perf baseline: muse-glimmer-30b", "[perf]")

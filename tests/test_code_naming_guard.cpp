@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|dory|alice|xing|mistral|minimax|hy|flint|ling|beam|step|inkling|muse)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra|base)";
+    const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra|base|loop)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -193,6 +193,20 @@ TEST_CASE("naming guard accepts granite_dense_switch_* stems", "[naming][guard]"
     CHECK(m("granite_dense_switch_model"));
     CHECK(m("granite_dense_switch_inference"));
     CHECK(m("granite_dense_switch_kernels"));
+}
+
+TEST_CASE("naming guard accepts inkling_moe_loop_* stems", "[naming][guard]")
+{
+    const auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("inkling_moe_loop_constants"));
+    CHECK(m("inkling_moe_loop_convert"));
+    CHECK(m("inkling_moe_loop_load"));
+    CHECK(m("inkling_moe_loop_model"));
+    CHECK(m("inkling_moe_loop_inference"));
+    CHECK(m("inkling_moe_loop_inference_pipeline"));
+    CHECK(m("inkling_moe_loop_kernels"));
 }
 
 TEST_CASE("naming guard accepts deepseek_moe_pro_* stems", "[naming][guard]")

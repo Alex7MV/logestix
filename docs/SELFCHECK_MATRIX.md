@@ -16,6 +16,11 @@ captured in reasoning mode: the letter-match probe answers CRITICAL without a
 reasoning trace and CATASTROPHIC with it),
 extended **2026-11-15** (Inkling-2-Small: 594B total / 17B active, mixed
 NVFP4+MXFP8 experts, all four gates measured on the real 366 GB tree),
+extended **2026-11-21** (Inkling-2-Mini: the looped `inkling2_loop`
+sibling — 24 layers of which 12 run three passes, so 48 applications per token;
+SelfCheck reproduces the release's own greedy ids, and its FSI golden is the
+first in the family captured by RUNNING the source rather than from its
+template),
 closed **2026-11-19** (Muse-Glimmer-30B: the FSI golden that had been declared
 debt was captured from the source text tower at `reasoning_strength: low` — the
 chat template's own switch, which makes the answer channel the canonical formula
@@ -78,6 +83,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 | **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
 | **inkling** (base) | PASS (x3, framed, inline-reasoning) | 3/3 (template) | 3/3 (template) | 3/3 |
+| **inkling-2-mini** | PASS (x3, `12e684ecd27e40d7`, framed) | 3/3 (source) | 3/3 (source) | 3/3 |
 | **muse-glimmer-30b** | PASS (x3, `3374b7bc94231955`, raw) | 3/3 | 3/3 | 3/3 |
 
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe

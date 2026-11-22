@@ -496,6 +496,13 @@ def template_golden(model, model_type, out, max_new_tokens):
 # that lets every one of the three probes close its think block; the FSI and
 # CODE gates capture with thinking off because this model's trace on those
 # prompts is long and self-repeating.
+# Inkling-2-Mini (looped inkling2_loop, 24 layers x 3 passes over one half):
+# the release's own transformers 5.24 implementation runs on the HOST CPU (the
+# 53 GB BF16 tree fits the 750 GB box; tools/inkling_loop_oracle.py is the
+# loader). Its decoded stream does not reach EOS inside a 32-token window, so
+# ignore_eos keeps the answer line inside the captured budget.
+OVERRIDES["inkling-2-mini"] = {"loader": "inkling_loop", "ignore_eos": True,
+                               "threads": 64}
 OVERRIDES["dory-1.0-4b"] = {"loader": "dory", "tokenizer": "fast",
                             "enable_thinking": True}
 
@@ -554,6 +561,16 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         import muse_golden_oracle
         lm = muse_golden_oracle.load(model, opts.get("device_map"))
         print("device:", next(lm.parameters()).device)
+    elif opts.get("loader") == "inkling_loop":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import inkling_loop_oracle
+        tok, lm = inkling_loop_oracle.load(model, opts.get("dtype"),
+                                           opts.get("threads", 64))
+        # The loader owns its checkpoint's capture facts: this stream does not
+        # reach EOS inside the answer window, so the budget is fixed.
+        opts.update(inkling_loop_oracle.capture_opts())
+        print("device:", lm.device, "threads:", opts.get("threads", 64),
+              file=sys.stderr)
     elif opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)
     else:

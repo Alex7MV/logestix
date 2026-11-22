@@ -34,6 +34,7 @@ was run for each of them. Results on the converted model at `kOff`:
 | Inkling-2-Small | PASS | template-derived (`--template-golden`, 512), committed — source is 594B with its own NVFP4/MXFP8 stack and 500 GB of aggregated VRAM, so it cannot be executed here | **PASS 3/3** |
 | granite-4.2-30b | PASS | source-captured (not committed) | **FAIL 1/3** (CODE-01) |
 | phi-4 | PASS | source-captured, committed | **PASS 3/3** |
+| Inkling-2-Mini | PASS | source-captured (`inkling_loop`, 512), committed — the sibling's 594B source cannot run here, but Mini's 18 GiB BF16 tower does, so this row is the model's own answer | **PASS 3/3** |
 | Qwen3.8-27B | PASS | source-captured (`qwen3_5`), committed | **PASS 3/3** |
 
 Committed goldens:

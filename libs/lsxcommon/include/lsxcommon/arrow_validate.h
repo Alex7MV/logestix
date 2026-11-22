@@ -183,15 +183,26 @@ inline arrow::Status CheckPinnedTensor(std::string_view name,
     return CheckTensorSize(shape, rank, bytes, dtype, name);
 }
 
-// Routed/shared experts carry E2M1 nibbles (2 per byte) and one scale per
-// NVFP4 block. The converted trees are uniformly per-16 (measured over all 26
-// vault trees), the pre-repack DeepSeek sources are per-32; the caller states
-// which contract it is reading (0 disables the check). An all-empty payload is
+// Routed/shared experts carry quantized weights and one scale per block. The
+// number of elements per packed byte is a property of the LAYER, not of the
+// format: NVFP4 packs E2M1 nibbles two per byte, MXFP8 stores E4M3 one per byte.
+// A single tree may mix them (Inkling-2-Mini: NVFP4 layers 0..13 of its stack,
+// MXFP8 the last four), so the caller states `elements_per_byte` — the tree
+// verifier reads it from the index, which is where the converter records the
+// per-layer codec.
+//
+// This parameter is not optional pedantry: deriving the convention from the
+// byte counts is ambiguous for small payloads and made the check reject every
+// MXFP8 file. `elements_per_byte == 0` means "unknown" and accepts either
+// convention (the permissive reading is still exact — a scale plane that
+// matches NEITHER packing is rejected, which is the defect class this check
+// exists for). `scale_block == 0` disables the check; an all-empty payload is
 // an inactive slot and is allowed.
-inline arrow::Status CheckExpertScaleCount(int64_t packed_bytes,
-                                           int64_t scale_bytes,
-                                           int32_t scale_block,
-                                           std::string_view name)
+inline arrow::Status CheckExpertScaleCountBits(int64_t packed_bytes,
+                                               int64_t scale_bytes,
+                                               int32_t scale_block,
+                                               int32_t elements_per_byte,
+                                               std::string_view name)
 {
     if (packed_bytes == 0 && scale_bytes == 0)
         return arrow::Status::OK();
@@ -202,14 +213,39 @@ inline arrow::Status CheckExpertScaleCount(int64_t packed_bytes,
     if (scale_block <= 0)
         return arrow::Status::Invalid(
             "expert '", name, "' scale block must be positive");
-    const int64_t want =
-        (packed_bytes * 2 + scale_block - 1) / scale_block;
-    if (scale_bytes != want)
+    const int64_t want_nvfp4 = (packed_bytes * 2 + scale_block - 1) / scale_block;
+    const int64_t want_fp8 = (packed_bytes + scale_block - 1) / scale_block;
+    if (elements_per_byte == 2) {
+        if (scale_bytes == want_nvfp4) return arrow::Status::OK();
         return arrow::Status::Invalid(
             "expert '", name, "' has ", scale_bytes, " scales for ",
-            packed_bytes, " packed bytes, expected ", want,
-            " (block=", scale_block, ")");
-    return arrow::Status::OK();
+            packed_bytes, " packed bytes, expected ", want_nvfp4,
+            " (block=", scale_block, ", NVFP4)");
+    }
+    if (elements_per_byte == 1) {
+        if (scale_bytes == want_fp8) return arrow::Status::OK();
+        return arrow::Status::Invalid(
+            "expert '", name, "' has ", scale_bytes, " scales for ",
+            packed_bytes, " packed bytes, expected ", want_fp8,
+            " (block=", scale_block, ", MXFP8)");
+    }
+    if (scale_bytes == want_nvfp4 || scale_bytes == want_fp8)
+        return arrow::Status::OK();
+    return arrow::Status::Invalid(
+        "expert '", name, "' has ", scale_bytes, " scales for ",
+        packed_bytes, " packed bytes, expected ", want_nvfp4,
+        " (block=", scale_block, ", NVFP4) or ", want_fp8,
+        " (block=", scale_block, ", MXFP8)");
+}
+
+// The uniform-NVFP4 spelling every pre-existing caller uses.
+inline arrow::Status CheckExpertScaleCount(int64_t packed_bytes,
+                                           int64_t scale_bytes,
+                                           int32_t scale_block,
+                                           std::string_view name)
+{
+    return CheckExpertScaleCountBits(packed_bytes, scale_bytes, scale_block, 2,
+                                     name);
 }
 
 // R-A5 for NVFP4: E2M1 nibbles (2 per byte) plus one E4M3 scale per 16

@@ -808,6 +808,13 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // the same marker family, but the tool-result header carries the tool
         // name — verified against the base checkpoint's chat_template.jinja.
         {"inkling", {"test_inkling_moe_base_tool_framing"}},
+        // Inkling-2-Mini has its OWN codec (inkling_moe_loop_tool_format.cpp)
+        // derived from Mini's own chat_template.jinja and pinned byte for byte
+        // against a jinja2 render. One deliberate difference from Small: the
+        // tool-result header repeats the tool NAME
+        // (`<|message_tool|>get_weather<|content_text|>`), resolved through the
+        // tool_call_id of an earlier assistant turn.
+        {"inkling-2-mini", {"test_inkling_moe_loop_tool_framing"}},
         // Muse-Glimmer has a native ATEM codec (muse_tool_format.cpp): channel
         // markers <|start|>/<|message|>/<|eot|> + <atem:function_calls> XML,
         // proven byte-identical to the checkpoint's chat_template.jinja render.

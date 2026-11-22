@@ -279,6 +279,139 @@ target_compile_definitions(test_inkling_moe_base_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"inkling\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 
+# ── Inkling-2-Mini (models/inkling-2-mini.json) ────────────────────────────
+# The ctest registrations for every target this row claims come from the
+# generated model_targets.cmake fragment (label, timeout, skip code, env and the
+# gpu lock all live in the manifest). What stays here is per-target BUILD
+# reality: sources, link libraries, compile definitions, and the CUDA object
+# libraries the two device suites are compiled through. The row's perf stage
+# registers `test_perf_baseline_inkling_2_mini` over the shared
+# `test_perf_baseline` binary built further down.
+add_executable(test_inkling_moe_loop_constants test_inkling_moe_loop_constants.cpp)
+target_link_libraries(test_inkling_moe_loop_constants PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_loop_convert test_inkling_moe_loop_convert.cpp)
+target_include_directories(test_inkling_moe_loop_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_moe_loop_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_loop_loader test_inkling_moe_loop_loader.cpp)
+target_include_directories(test_inkling_moe_loop_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_moe_loop_loader PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+# Generation pipeline (the three-pass scheduler): CUDA OBJECT lib + CXX
+# executable, the same shape the kernel suite uses.
+add_library(test_inkling_loop_pipeline_cu OBJECT
+    test_inkling_moe_loop_pipeline.cu
+)
+set_target_properties(test_inkling_loop_pipeline_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_inkling_loop_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_inkling_loop_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_inkling_loop_pipeline_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_loop_pipeline_cu PRIVATE Catch2::Catch2WithMain
+    lsx_dep_includes arrow_shared)
+add_executable(test_inkling_moe_loop_pipeline)
+set_target_properties(test_inkling_moe_loop_pipeline PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_inkling_moe_loop_pipeline PRIVATE
+    test_inkling_loop_pipeline_cu lsxcommon Catch2::Catch2WithMain)
+
+# Native conversation/tool codec: host-only, synthetic tokenizer, no CUDA.
+add_executable(test_inkling_moe_loop_tool_framing
+    test_inkling_moe_loop_tool_framing.cpp)
+target_include_directories(test_inkling_moe_loop_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_inkling_moe_loop_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_inkling_moe_loop_tool_framing PRIVATE lsxcommon
+    arrow_shared Catch2::Catch2WithMain)
+
+# Model stage: the whole engine on the synthetic converted tree.
+add_executable(test_inkling_moe_loop_model test_inkling_moe_loop_model.cpp)
+target_include_directories(test_inkling_moe_loop_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_moe_loop_model PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+# SelfCheck gate: the real converted tree in the vault; SKIP 4 when absent.
+add_executable(test_inkling_moe_loop_selfcheck test_inkling_moe_loop_selfcheck.cpp)
+target_include_directories(test_inkling_moe_loop_selfcheck PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_moe_loop_selfcheck PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+# Kernel/session/numeric suite: CUDA OBJECT lib + CXX executable.
+add_library(test_inkling_loop_cu OBJECT
+    test_inkling_moe_loop_kernels.cu
+)
+set_target_properties(test_inkling_loop_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_inkling_loop_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_inkling_loop_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_inkling_loop_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_loop_cu PRIVATE Catch2::Catch2WithMain
+    lsx_dep_includes arrow_shared)
+add_executable(test_inkling_moe_loop_kernels)
+set_target_properties(test_inkling_moe_loop_kernels PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_inkling_moe_loop_kernels PRIVATE
+    test_inkling_loop_cu lsxcommon Catch2::Catch2WithMain)
+# Latency budgets (tests/test_kernel_budget.h) resolve the JSON by this path;
+# without it the header falls back to a cwd-relative name, finds nothing and
+# turns every budget case into a silent SKIP.
+target_compile_definitions(test_inkling_loop_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
+
+# The three parity gates: ONE shared driver TU, one binary per (model, kind).
+# The model and the kind are compile-time constants; the vault path, the SKIP
+# text and the declared debt come from this model's manifest row. The three
+# blocks are spelled out rather than looped: test_ctest_labels_guard reads a
+# `foreach(var item...)` as a list of registered test names.
+add_executable(test_inkling_moe_loop_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_loop_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_loop_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_loop_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-mini\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+
+add_executable(test_inkling_moe_loop_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_loop_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_loop_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_loop_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-mini\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+
+add_executable(test_inkling_moe_loop_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_loop_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_loop_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_loop_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"inkling-2-mini\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # The ctest registrations for every manifest-claimed target come from the
 # generated model_targets.cmake fragment; what stays here is per-target BUILD
