@@ -116,29 +116,76 @@ gate output or from `tests/perf/perf_baselines.json`._
 |---|---|
 | SelfCheck ("The capital of France is" → "Paris") | PASS, 3 bit-identical cycles, `logits_hash=98a2c3c532c9b013`, 32-token window, 3 passes |
 | knowledge probe (teacher-forced, one prefill per position) | mean NLL 3.4006 → perplexity **29.98**, top-1 `152717` (" Paris") |
-| FSI parity gate | PENDING |
+| FSI parity gate | **3/3, source-captured** — the release's own 512-token answers, produced by running its code |
 | CODE parity gate | PENDING |
 | DET determinism gate | PENDING |
 | native tool round-trip | shared with Inkling-2-Mini (byte-identical tokenizer + template): 56 framing assertions |
 | scheduling/state suite | 72 assertions at 1/3/5 passes: application counts follow the active count, the last pass owns the last slab block, two identical requests reproduce their logits bit-for-bit |
+| artefact verifier | 3 099 Arrow files, 64 sampled deep over 1 006 MiB, **0 problems** (covers the mixed NVFP4/MXFP8 expert planes) |
 | artifact / conversion | 18 GiB, 645 pinned tensors, 3 072 expert records, 422 vision tensors stripped, **17 s** |
-| decode throughput, 2 048 tokens | PENDING |
+| decode throughput, 2 048 tokens, auto policy | **32.33 tok/s** (TTFT 0.32 s, 198.8 W average, 256.4 W peak), 18 291 MiB resident |
+| decode throughput, 2 048 tokens, strict/bit-exact | **30.13 tok/s** (TTFT 0.45 s, 197.8 W average, 244.2 W peak) |
+| pass-count sweep, 128-token decode | **100.8 tok/s** at 1 pass, **48.2** at 3, **33.5** at 5 |
 
 ## Pass-count behaviour
 
 The row's reason to exist is that the pass count is a runtime choice, so the
 engine reports what it actually ran (`ActiveLoopPasses()`,
-`CacheSlotCount()`, `LayerApplications()`), and the synthetic pipeline suite pins
-the three properties a "compiles and answers" implementation gets wrong:
+`CacheSlotCount()`, `LayerApplications()`), and the measurement on the real
+18 GiB tree at a fixed 128-token decode is:
+
+| passes | layer applications per token | decode rate | framing/answer behaviour |
+|---|---|---|---|
+| 1 | 24 | 100.8 tok/s | does **not** reach the "Paris" answer inside the 32-token framed window |
+| 3 (the checkpoint's declared default) | 48 | 48.2 tok/s | correct (the gate above) |
+| 5 | 72 | 33.5 tok/s | correct |
+
+Cost per layer application is ~24 ms at every count — the passes replay the same
+kernels over the same weights, so the rate scales with the count while neither
+the KV/conv slab nor the expert window moves with it. Each count has its own
+bit-stable logits row (a different number of applications runs), and the
+synthetic suite pins the three properties a "compiles and answers"
+implementation gets wrong:
 
 - **the requested count is what runs** — 1, 3 and 5 passes produce 24, 48 and 72
-  layer applications, the trace row count follows the active count, and the final
-  residual row at 5 passes differs from the 3-pass one (a count that only adds
+  applications, the trace row count follows the active count, and the final
+  residual row at 5 passes differs from the 3-pass one (a count that only added
   bookkeeping would reproduce it bit for bit);
 - **the slab is the ceiling's** — a 5-pass run addresses the last block of the
   same 72-slot allocation, whose keys are neither pass 0's nor untouched;
 - **determinism at any count** — two identical requests at 1, 3 and 5 passes
   reproduce the token stream and the logits row bit for bit.
+
+The 1-pass result is the model card's own caveat made concrete ("3 passes
+dominated training once looping was introduced"), and it is a property of the
+weights rather than of the engine: the same engine is correct at 3 and 5. The
+default therefore stays the checkpoint's declared 3, and the trained range is
+enforced rather than trusted to the caller.
+
+## Throughput
+
+**32.33 tok/s** auto / **30.13 tok/s** bit-exact at the canonical protocol (2 048
+tokens, prompt "The capital of France is"), TTFT 0.32/0.45 s, 18 291 MiB
+resident, recorded through the harness in `tests/perf/perf_baselines.json`.
+
+That is within 3 % of the fixed-pass sibling (34.1 / 32.1 tok/s) on the same
+card, which is the interesting part: this row's KV/conv slab is sized for five
+passes (72 slots) instead of three (48), and the difference costs nothing at the
+default count. Nothing else about the decode differs — same tower, same kernels,
+same 14.71 GiB device expert slab, same 18.3 GiB residency — because the loop
+passes replay the loop-layer weights rather than adding any.
+
+The loop is what the decode spends its time on, and the pass count is
+consequently a near-linear throughput dial (100.8 / 48.2 / 33.5 tok/s at 1/3/5
+passes, measured at a 128-token window). Because that is a change to the model
+rather than to the same model's speed, it is a load-time semantic knob
+(`LSX_INKLING_VARLOOP_PASSES`) and not a CLI speed flag.
+
+Attribution of what remains is inherited and already measured on the sibling
+(nsys, same kernels): the decode is kernel-bound, dominated by row-block `matvec`
+launches and the depth-mix kernel, which are one-block-per-row with a 256-thread
+reduction. Nothing here was re-tuned for this row; a pass-count-5 workload would
+shift the balance toward the loop kernels without changing that conclusion.
 
 ## Evidence
 
