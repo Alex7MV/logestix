@@ -282,7 +282,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - vault `TML-d24-varloop-research` (override `LSX_TEST_TML_D24_VARLOOP_RESEARCH_ROOT`)
 - lifecycle TUs: `inkling_moe_varloop_model.cpp`, `inkling_moe_loop_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: not seeded
+- perf: 30.13 t/s (r3, 2026-11-22)
 - report: **not written** (stage-9 debt)
 - notes: Varloop sibling of inkling-2-mini: same 24-layer inkling2_loop tower, pass count chosen at load time from the trained range 1..5 (default 3), 72-slot KV/conv slab; mixed NVFP4/MXFP8 experts.
 

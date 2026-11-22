@@ -116,8 +116,7 @@ TEST_CASE("the fixed-pass engine refuses a varloop tree by format",
 }
 
 TEST_CASE("a fixed-pass tree keeps its own single-pass-count shape",
-          "[inkling][varloop][loader]")
-{
+          "[inkling][varloop][loader]"){
     // The parent's artifact must be untouched by the varloop plumbing: its
     // ceiling equals its declared count, so the slab and the application count
     // are the same number, and `varloop` is false.
@@ -173,15 +172,34 @@ TEST_CASE("varloop pinned weights and expert planes load unchanged",
     CHECK(pw.resident_bytes > 0);
 
     // The routed store is the neutral ExpertStore, geometry-driven: the loop
-    // layers are visited once per pass, so the window floor follows the
-    // APPLICATION count of the active pass count, not the slab.
+    // layers are visited once per pass, so the window floor covers the
+    // ARTIFACT's maximum pass count (the slab), not this run's active count —
+    // otherwise asking for 5 passes after a 1-pass load would fall out of the
+    // window into a cyclic expert scan.
     InklingLoopExpertDb db =
         LoadInklingLoopExpertIndex(dir.string(), top.num_layers, top.num_experts,
                                    /*max_open=*/64);
     CHECK(db.num_layers == inklinglooptest::kLayers);
     CHECK(db.experts_per_layer == inklinglooptest::kExperts);
-    CHECK(InklingLoopExpertWindowFloor(top) ==
-          static_cast<size_t>(top.CacheLayers()) * static_cast<size_t>(top.top_k));
+    {
+        const size_t floor = InklingLoopExpertWindowFloor(top);
+        CHECK(floor == static_cast<size_t>(top.CacheLayers()) *
+                           static_cast<size_t>(top.top_k));
+        for (int passes = vf::kLoopPassesMin; passes <= vf::kLoopPassesMax;
+             ++passes) {
+            InklingLoopTopology t = top;
+            t.loop_passes = passes;
+            INFO("passes " << passes);
+            // Every legal count's working set fits inside the one window...
+            // (the FIXTURE's geometry, not the real passport's).
+            const int slab = inklinglooptest::kLayers +
+                             (passes - 1) * inklinglooptest::kLoopLayers;
+            CHECK(static_cast<size_t>(slab) * static_cast<size_t>(t.top_k) <=
+                  floor);
+            // ...and the floor itself does not move with the count.
+            CHECK(InklingLoopExpertWindowFloor(t) == floor);
+        }
+    }
 
     FreeInklingLoopExpertIndex(db);
     FreeInklingLoopPinnedWeights(pw);

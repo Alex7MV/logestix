@@ -17,9 +17,12 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "lsxcommon/expert_store.h"
@@ -339,8 +342,11 @@ InklingLoopExpertDb LoadInklingLoopExpertIndex(const std::string &model_path,
                                                size_t max_open,
                                                bool warm_on_load = false,
                                                bool pin_host_memory = true);
-// One decode token's working set: top_k draws from every layer APPLICATION
-// (the loop layers are visited once per pass).
+// The routed-expert window floor: top_k draws from every layer APPLICATION of
+// the artifact's MAXIMUM pass count (the KV/conv slab's), so a varloop tree that
+// changes its count between loads never falls out of the window. The window is
+// retention (mapped mmap views capped by `max_open`), so a floor above this
+// run's working set costs page-cache, not correctness.
 size_t InklingLoopExpertWindowFloor(const InklingLoopTopology &top);
 size_t InklingLoopResolveExpertWindow(const InklingLoopTopology &top,
                                       long requested);

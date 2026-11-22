@@ -458,11 +458,21 @@ InklingLoopExpertPlanes InklingLoopExpertPlaneOffsets(int inter, int hidden,
 
 size_t InklingLoopExpertWindowFloor(const InklingLoopTopology &top)
 {
-    // One token touches top_k experts in every layer APPLICATION: the loop
-    // layers are visited once per pass, so the working set is the application
+    // One token draws top_k experts in every layer APPLICATION: the loop layers
+    // are visited once per pass, so the working set follows the application
     // count, not the physical layer count.
-    return static_cast<size_t>(top.CacheLayers()) *
-           static_cast<size_t>(top.top_k);
+    //
+    // The floor is the SLAB's application count, i.e. the artifact's maximum
+    // pass count, not the count this run happens to use. Two reasons: the window
+    // is retention (mapped mmap views, bounded by `max_open`, not by resident
+    // bytes), and a varloop tree can change its count between loads — a window
+    // sized for 3 passes would then fall into a cyclic scan the moment someone
+    // asks for 5, which is the provably-zero-hit case recorded for the Kimi
+    // trees. Over-mapping costs page-cache, not correctness.
+    const int slab_layers =
+        top.num_layers + (std::max(top.loop_passes, top.loop_passes_max) - 1) *
+                             top.LoopLayers();
+    return static_cast<size_t>(slab_layers) * static_cast<size_t>(top.top_k);
 }
 
 size_t InklingLoopResolveExpertWindow(const InklingLoopTopology &top,
