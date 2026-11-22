@@ -84,6 +84,13 @@ const PerfModel kInklingBase = {
 // twice over — the read-bound band of the family, scaled by the loop.
 const PerfModel kInklingLoop = {
     "inkling-2-mini", "Inkling-2-Mini", "The capital of France is", 2048};
+// TML-d24-varloop-research: the same tower with a runtime-chosen pass count. The
+// baseline is seeded at the checkpoint's declared 3 passes (the engine's
+// default), so the row is comparable with the fixed-pass sibling's; the report
+// carries the 1/3/5-pass sweep.
+const PerfModel kInklingVarloop = {
+    "tml-d24-varloop-research", "TML-d24-varloop-research",
+    "The capital of France is", 2048};
 const PerfModel kDeepseek = {
     "deepseek-v4-flash", "DeepSeek-V4-Flash", "The capital of France is",
     2048};
@@ -590,6 +597,11 @@ TEST_CASE("perf baseline: inkling", "[perf]")
 TEST_CASE("perf baseline: inkling-2-mini", "[perf]")
 {
     RunPerfModel(kInklingLoop);
+}
+
+TEST_CASE("perf baseline: tml-d24-varloop-research", "[perf]")
+{
+    RunPerfModel(kInklingVarloop);
 }
 
 TEST_CASE("perf baseline: muse-glimmer-30b", "[perf]")

@@ -156,15 +156,22 @@ constexpr int CacheSlot(int layer, int pass)
                      : kLayers + (pass - 1) * kLoopLayers + (layer - kLoopStart);
 }
 
-// Requested pass count -> the one the engine will run. Absent or non-positive
-// means the checkpoint's own default; out-of-range values clamp into the
-// trained range rather than running a count the weights never saw.
-constexpr int ResolvePasses(int requested)
+// Requested pass count -> the one the engine will run. A non-positive request
+// means "no override": the caller keeps the count the checkpoint itself
+// declares, which is what `loop_config.num_passes` records. Out-of-range
+// requests clamp into the trained range rather than running a count the weights
+// never saw (nothing above 5, and never zero passes).
+constexpr int ResolvePasses(int requested, int declared)
 {
-    if (requested <= 0) return kLoopPassesDefault;
+    if (requested <= 0) return declared;
     if (requested < kLoopPassesMin) return kLoopPassesMin;
     if (requested > kLoopPassesMax) return kLoopPassesMax;
     return requested;
+}
+
+constexpr bool PassesInTrainedRange(int passes)
+{
+    return passes >= kLoopPassesMin && passes <= kLoopPassesMax;
 }
 
 // ── AttnRes depth mixer ───────────────────────────────────────────────────

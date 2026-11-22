@@ -815,6 +815,12 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // (`<|message_tool|>get_weather<|content_text|>`), resolved through the
         // tool_call_id of an earlier assistant turn.
         {"inkling-2-mini", {"test_inkling_moe_loop_tool_framing"}},
+        // TML-d24-varloop-research ships tokenizer.json, tokenizer_config.json
+        // and chat_template.jinja BYTE-IDENTICAL to Inkling-2-Mini's (sha256
+        // verified at stage 0), so the same codec target proves its render +
+        // parse round-trip; the runtime glue is shared, not copied
+        // (inkling_moe_loop_tool_format's Encode*/ParseGeneratedCalls).
+        {"tml-d24-varloop-research", {"test_inkling_moe_loop_tool_framing"}},
         // Muse-Glimmer has a native ATEM codec (muse_tool_format.cpp): channel
         // markers <|start|>/<|message|>/<|eot|> + <atem:function_calls> XML,
         // proven byte-identical to the checkpoint's chat_template.jinja render.

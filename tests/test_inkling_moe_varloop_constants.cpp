@@ -97,20 +97,29 @@ TEST_CASE("tml-d24-varloop passport: the loop core and its pass bounds",
 TEST_CASE("tml-d24-varloop passport: a requested pass count resolves safely",
           "[inkling][varloop][constants]")
 {
-    // Absent / non-positive request: the checkpoint's own default.
-    CHECK(ResolvePasses(0) == 3);
-    CHECK(ResolvePasses(-4) == 3);
+    // No request: the count the CHECKPOINT declares (3 for this release, and
+    // the shipped `loop_config.num_passes`). The override never invents a
+    // default — that would silently change a re-converted tree's behaviour.
+    CHECK(ResolvePasses(0, kLoopPassesDefault) == 3);
+    CHECK(ResolvePasses(-4, kLoopPassesDefault) == 3);
+    CHECK(ResolvePasses(0, 2) == 2);
     // Legal requests pass through unchanged.
     for (int p = kLoopPassesMin; p <= kLoopPassesMax; ++p)
-        CHECK(ResolvePasses(p) == p);
+        CHECK(ResolvePasses(p, kLoopPassesDefault) == p);
     // Out of range clamps instead of running an untrained count (the weights
     // were trained with 1..5 passes) or zero passes (no loop at all).
-    CHECK(ResolvePasses(6) == 5);
-    CHECK(ResolvePasses(64) == 5);
-    CHECK(ResolvePasses(1) == 1);
+    CHECK(ResolvePasses(6, kLoopPassesDefault) == 5);
+    CHECK(ResolvePasses(64, kLoopPassesDefault) == 5);
+    CHECK(ResolvePasses(1, kLoopPassesDefault) == 1);
     // Every resolved value indexes a slot the slab actually has.
     for (int p = -2; p < 10; ++p)
-        CHECK(LayerApplications(ResolvePasses(p)) <= kCacheLayersMax);
+        CHECK(LayerApplications(ResolvePasses(p, kLoopPassesDefault)) <=
+              kCacheLayersMax);
+    CHECK(PassesInTrainedRange(kLoopPassesMin));
+    CHECK(PassesInTrainedRange(kLoopPassesDefault));
+    CHECK(PassesInTrainedRange(kLoopPassesMax));
+    CHECK_FALSE(PassesInTrainedRange(0));
+    CHECK_FALSE(PassesInTrainedRange(kLoopPassesMax + 1));
 }
 
 TEST_CASE("tml-d24-varloop passport: per-pass cache slots inside the slab",

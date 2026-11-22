@@ -6,6 +6,7 @@
 // template's own output rendered with jinja2, not a paraphrase.
 #include "lsxcommon/inkling_moe_loop_tool_format.h"
 
+#include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tool_format.h"
 
 namespace lsxcommon::inkling::loop::tools {
@@ -272,6 +273,93 @@ bool AppendIds(const ArrowTokenizerDb &tok, const std::vector<Segment> &segs,
                std::vector<int32_t> &out_ids)
 {
     return lsxcommon::tools::AppendSegmentIds<Segment>(tok, segs, out_ids);
+}
+
+bool EncodePromptIds(const ArrowTokenizerDb &tok, std::string_view raw_prompt,
+                     std::vector<int32_t> &out_ids)
+{
+    ChatConversation conv;
+    conv.messages.push_back(
+        {"user", std::string(raw_prompt), std::string(), {}});
+    std::vector<Segment> segs;
+    if (!RenderConversation(conv, segs)) return false;
+    // Without the template markers (a synthetic fixture) fall back to the raw
+    // encode rather than emitting an unframed ChatML string.
+    if (MarkerId(tok, kUser) < 0)
+        return lsxcommon::prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+    return AppendIds(tok, segs, out_ids);
+}
+
+bool EncodeConversationIds(const ArrowTokenizerDb &tok,
+                           const ChatConversation &conv,
+                           std::vector<int32_t> &out_ids)
+{
+    std::vector<Segment> segs;
+    if (!RenderConversation(conv, segs)) return false;
+    if (MarkerId(tok, kUser) < 0)
+        return EncodePromptIds(tok, SegmentsText(segs), out_ids);
+    return AppendIds(tok, segs, out_ids);
+}
+
+bool ParseGeneratedCalls(const ArrowTokenizerDb &tok,
+                         const std::vector<int32_t> &gen_tokens,
+                         std::vector<ToolCall> &out_calls)
+{
+    out_calls.clear();
+    if (gen_tokens.empty()) return true;
+    // Every marker is special:true, so decode drops it. A tool call is therefore
+    // found by SCANNING THE IDS for the invoke marker and decoding only the span
+    // after it.
+    const int32_t invoke = MarkerId(tok, kInvokeJson);
+    const int32_t end_msg = MarkerId(tok, kEndMessage);
+    if (invoke < 0) {
+        // No native markers: fall back to the generic parser over the text.
+        std::string text(4096, '\0');
+        std::size_t cap = text.size();
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            const int rc = arrow_tokenizer_decode(tok, gen_tokens.data(),
+                                                 gen_tokens.size(), text.data(),
+                                                 &cap);
+            if (rc == 0) {
+                text.resize(cap);
+                out_calls = lsxcommon::tools::ParseToolCallsText(text);
+                return true;
+            }
+            if (rc == -2 && cap > text.size() && cap <= (1u << 20)) {
+                text.resize(cap);
+                continue;
+            }
+            break;
+        }
+        return false;
+    }
+
+    std::size_t i = 0;
+    while (i < gen_tokens.size()) {
+        if (gen_tokens[i] != invoke) {
+            ++i;
+            continue;
+        }
+        std::size_t j = i + 1;
+        while (j < gen_tokens.size() && gen_tokens[j] != end_msg &&
+               gen_tokens[j] != invoke)
+            ++j;
+        if (j <= i + 1) {
+            i = j;
+            continue;
+        }
+        std::string text((j - i) * 8 + 16, '\0');
+        std::size_t cap = text.size();
+        if (arrow_tokenizer_decode(tok, gen_tokens.data() + i + 1, j - i - 1,
+                                   text.data(), &cap) == 0) {
+            text.resize(cap);
+            // Re-attach the marker spelling so the shared parser sees the native
+            // payload shape it expects.
+            ParseToolCalls(std::string(kInvokeJson) + text, out_calls);
+        }
+        i = j;
+    }
+    return true;
 }
 
 }  // namespace lsxcommon::inkling::loop::tools

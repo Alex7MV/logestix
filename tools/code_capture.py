@@ -605,6 +605,10 @@ def template_golden(model, model_type, out, max_new_tokens):
 # ignore_eos keeps the answer line inside the captured budget.
 OVERRIDES["inkling-2-mini"] = {"loader": "inkling_loop", "ignore_eos": True,
                                "threads": 64}
+# TML-d24-varloop-research (the same inkling2_loop tower with is_varloop):
+# same loader, same 53 GB BF16 host tree, same fixed budget.
+OVERRIDES["tml-d24-varloop-research"] = {"loader": "inkling_loop",
+                                         "ignore_eos": True, "threads": 64}
 OVERRIDES["dory-1.0-4b"] = {"loader": "dory", "tokenizer": "fast",
                             "enable_thinking": False}
 

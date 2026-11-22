@@ -428,6 +428,81 @@ target_include_directories(test_inkling_moe_varloop_convert PRIVATE
 target_link_libraries(test_inkling_moe_varloop_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
+add_executable(test_inkling_moe_varloop_loader test_inkling_moe_varloop_loader.cpp)
+target_include_directories(test_inkling_moe_varloop_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_moe_varloop_loader PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_inkling_moe_varloop_model test_inkling_moe_varloop_model.cpp)
+target_include_directories(test_inkling_moe_varloop_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_inkling_moe_varloop_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_inkling_moe_varloop_model PRIVATE lsxcommon
+    simdjson::simdjson arrow_shared Catch2::Catch2WithMain)
+
+# The runtime pass-count scheduler: CUDA OBJECT lib + CXX executable, the same
+# shape the parent's pipeline suite uses.
+add_library(test_inkling_varloop_pipeline_cu OBJECT
+    test_inkling_moe_varloop_pipeline.cu
+)
+set_target_properties(test_inkling_varloop_pipeline_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_inkling_varloop_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_options(test_inkling_varloop_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>)
+target_include_directories(test_inkling_varloop_pipeline_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_varloop_pipeline_cu PRIVATE
+    Catch2::Catch2WithMain lsx_dep_includes arrow_shared)
+add_executable(test_inkling_moe_varloop_pipeline)
+set_target_properties(test_inkling_moe_varloop_pipeline PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_inkling_moe_varloop_pipeline PRIVATE
+    test_inkling_varloop_pipeline_cu lsxcommon Catch2::Catch2WithMain)
+
+# SelfCheck gate: the real converted tree in the vault; SKIP 4 when absent.
+add_executable(test_inkling_moe_varloop_selfcheck
+    test_inkling_moe_varloop_selfcheck.cpp)
+target_include_directories(test_inkling_moe_varloop_selfcheck PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_inkling_moe_varloop_selfcheck PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+# The three parity gates: ONE shared driver TU, one binary per (model, kind).
+add_executable(test_inkling_moe_varloop_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_varloop_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_varloop_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_varloop_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"tml-d24-varloop-research\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+
+add_executable(test_inkling_moe_varloop_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_varloop_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_varloop_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_varloop_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"tml-d24-varloop-research\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+
+add_executable(test_inkling_moe_varloop_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_inkling_moe_varloop_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_varloop_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_inkling_moe_varloop_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"tml-d24-varloop-research\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+
 # ── Inkling-2-Small (models/inkling-2-small.json) ──────────────────────────
 # generated model_targets.cmake fragment; what stays here is per-target BUILD
 # reality (sources, link libraries, compile definitions).

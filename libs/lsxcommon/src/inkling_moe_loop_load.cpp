@@ -51,6 +51,13 @@ bool get_b(simdjson::ondemand::object &o, const char *k, bool &out)
 arrow::Status LoadInklingLoopTopology(const std::string &model_path,
                                       InklingLoopTopology &out)
 {
+    return LoadInklingLoopTopology(model_path, out, frozen::kFormatTag);
+}
+
+arrow::Status LoadInklingLoopTopology(const std::string &model_path,
+                                      InklingLoopTopology &out,
+                                      std::string_view expected_format)
+{
     out = InklingLoopTopology{};
     const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
     std::ifstream f(idx);
@@ -72,10 +79,10 @@ arrow::Status LoadInklingLoopTopology(const std::string &model_path,
     std::string_view s;
     if (root["format"].get_string().get(s) == simdjson::SUCCESS)
         out.format.assign(s.data(), s.size());
-    if (out.format != frozen::kFormatTag) {
+    if (out.format != expected_format) {
         out.error_msg = "unexpected format: " + out.format;
         return arrow::Status::Invalid("inkling loop loader: expected format ",
-                                      frozen::kFormatTag, ", got ", out.format);
+                                      expected_format, ", got ", out.format);
     }
     if (root["source_model_type"].get_string().get(s) == simdjson::SUCCESS)
         out.source_model_type.assign(s.data(), s.size());
@@ -100,6 +107,12 @@ arrow::Status LoadInklingLoopTopology(const std::string &model_path,
     get_i(root, "loop_start", out.loop_start);
     get_i(root, "loop_end", out.loop_end);
     get_i(root, "loop_passes", out.loop_passes);
+    // The slab ceiling and the capability flag. An index without them is a
+    // fixed-pass tree from before varloop existed: its own count IS its
+    // ceiling, so both defaults reproduce the previous behaviour exactly.
+    if (!get_i(root, "loop_passes_max", out.loop_passes_max))
+        out.loop_passes_max = out.loop_passes;
+    get_b(root, "varloop", out.varloop);
     get_i(root, "loop_gate_rank", out.loop_gate_rank);
     get_i(root, "bos_id", out.bos_id);
     get_i(root, "eos_id", out.eos_id);
@@ -161,10 +174,18 @@ arrow::Status LoadInklingLoopTopology(const std::string &model_path,
         out.error_msg = "index is missing a valid loop core";
         return arrow::Status::Invalid("inkling loop index: ", out.error_msg);
     }
+    // The slab must cover the run: a ceiling below the active count would write
+    // past the allocation, and a non-varloop tree has no separate ceiling.
+    if (out.loop_passes_max < out.loop_passes || out.loop_passes_max < 1) {
+        out.error_msg = absl::StrFormat(
+            "loop_passes_max %d cannot be below loop_passes %d",
+            out.loop_passes_max, out.loop_passes);
+        return arrow::Status::Invalid("inkling loop index: ", out.error_msg);
+    }
     return arrow::Status::OK();
 }
 
-bool InklingLoopTopologyMatchesFrozen(const InklingLoopTopology &top)
+bool InklingLoopTopologyMatchesFrozenGeometry(const InklingLoopTopology &top)
 {
     if (SyntheticGeometryAllowed()) return true;
     return top.num_layers == frozen::kLayers && top.hidden == frozen::kHidden &&
@@ -182,10 +203,28 @@ bool InklingLoopTopologyMatchesFrozen(const InklingLoopTopology &top)
            top.shared_experts == frozen::kSharedExperts &&
            top.loop_start == frozen::kLoopStart &&
            top.loop_end == frozen::kLoopEnd &&
-           top.loop_passes == frozen::kLoopPasses &&
            top.loop_gate_rank == frozen::kLoopGateRank &&
            top.log_scaling_n_floor == frozen::kLogScaleFloor &&
            static_cast<int>(top.full_layers.size()) == frozen::kFullLayerCount;
+}
+
+bool InklingLoopLoopCoreMatches(const InklingLoopTopology &top, int passes_min,
+                                int passes_max)
+{
+    if (SyntheticGeometryAllowed()) return true;
+    return top.loop_passes >= passes_min && top.loop_passes <= passes_max &&
+           top.loop_passes_max >= top.loop_passes &&
+           top.loop_passes_max <= passes_max;
+}
+
+bool InklingLoopTopologyMatchesFrozen(const InklingLoopTopology &top)
+{
+    // The fixed-pass row: exactly one legal count, no capability flag, and the
+    // ceiling is that same count.
+    return InklingLoopTopologyMatchesFrozenGeometry(top) &&
+           InklingLoopLoopCoreMatches(top, frozen::kLoopPasses,
+                                      frozen::kLoopPasses) &&
+           (!top.varloop || SyntheticGeometryAllowed());
 }
 
 namespace {

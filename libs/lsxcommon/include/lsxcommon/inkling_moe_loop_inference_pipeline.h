@@ -13,8 +13,10 @@
 // Pass 0 runs inline; every later pass restarts from the pre-loop hidden +
 // block snapshots and receives per-layer messages retrieved from the PREVIOUS
 // pass's block stack + final hidden. Each pass owns its OWN KV and conv-state
-// slots: `top.CacheLayers()` = num_layers + (passes-1)*loop_layers slots,
-// addressed through KvCacheGeometry (pos-major) and the session's conv ring.
+// slots: `top.CacheLayers()` = num_layers + (max_passes-1)*loop_layers slots
+// (sized for the artifact's ceiling, so a varloop tree can change its pass
+// count without re-allocating), addressed through KvCacheGeometry (pos-major)
+// and the session's conv ring. `top.LayerApplications()` is the ACTIVE count.
 //
 // The prompt is decoded token by token (the reference's conv/AttnRes state
 // machine is single-position), bounded by kMaxContext.
@@ -167,9 +169,11 @@ cudaError_t RunInklingLoopGeneration(cudaStream_t stream,
 
 // ── parity diagnostic ──────────────────────────────────────────────────────
 // Runs ONE token through the stack and copies the residual stream after each
-// layer APPLICATION into `out_states`: (CacheLayers() + 1) rows of `hidden`
-// FP32 values, row 0 = post-embed_norm, then the applications in execution
-// order (pre-loop layers, loop pass 0, loop pass 1, ..., post-loop layers).
+// layer APPLICATION into `out_states`: (LayerApplications() + 1) rows of
+// `hidden` FP32 values, row 0 = post-embed_norm, then the applications in
+// execution order (pre-loop layers, loop pass 0, loop pass 1, ...,
+// post-loop layers). LayerApplications() follows the ACTIVE pass count; the
+// KV/conv slab (`CacheLayers()`) is sized for the artifact's maximum.
 cudaError_t RunInklingLoopForwardTrace(cudaStream_t stream,
                                        InklingLoopPinnedWeights &pw,
                                        InklingLoopExpertDb &experts,
