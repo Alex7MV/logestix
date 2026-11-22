@@ -287,3 +287,32 @@ The one thing not to do is to loosen the *comparison* (accept any textual
 near-miss): the extractor is deliberately a form check, and FSI-02 on the Pro row
 — a genuinely wrong symbolic form that a tolerant comparator would accept — is
 the case it exists for.
+
+### I2. Global-`cudaMemGetInfo` leak probes are red inside a parallel sweep (2026-11-22)
+
+**Status: open — the same defect class as `G9`, now with two more victims.**
+
+Three `fast` targets assert a leak by comparing the **device-wide** free-VRAM
+figures taken around their own alloc/free:
+
+| target | assertion |
+|---|---|
+| `test_gpu_perf` (bandwidth probe) | free-before minus free-after, bounded |
+| `test_deepseek_moe_loader` | "a failed second load leaks nothing": `delta < 64 KiB` |
+| `test_deepseek_moe_pro_loader` | the same check |
+
+Measured 2026-11-22 during ingestion verification of
+`deepseek-v4.1-flash-1017`: consecutive `ctest --preset linux-debug -j 24` runs
+of an unchanged tree reported **green / `test_gpu_perf` only / all three**, and
+every one of them passes in isolation (`-j 1` or `-R '^name$'`). The card was
+otherwise idle — one process was measured against another's allocator churn,
+which is exactly what `G9` describes for the perf probe.
+
+Why it matters more than a flake: a reader sees "loader leak" in a red test
+name, and the actual cause is a neighbour process. It also means a real 128 KiB
+leak would be indistinguishable from this noise whenever the sweep is busy.
+
+The fix direction is the one `G9` already argues for: attribute the delta to the
+process (a pool snapshot, or an alloc/free of a same-sized sentinel *inside* the
+case, so the slack belongs to the sentinel). Widening `kSlack` is explicitly not
+the answer.
