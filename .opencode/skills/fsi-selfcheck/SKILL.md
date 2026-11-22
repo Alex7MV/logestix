@@ -223,7 +223,7 @@ budget is not a substitute for it (R21's 1024-token retry burned 1.5 h).
 
 ```bash
 lsxbenchmark --model <vault-model-root> --fsi-selfcheck   # model type from the dir; forces kOff
-ctest --preset linux-debug-inference -R "<family>_fsi_selfcheck"
+ctest --test-dir build/linux-debug -R "<family>_fsi_selfcheck" -j 1
 LSX_FSI_GOLDEN_DIR=<dir> <test-binary>                    # ad-hoc golden
 ```
 
@@ -274,7 +274,7 @@ correctly. If a case fails this way, inspect `raw` before assuming a kernel bug.
 
 ```bash
 ctest --preset linux-debug -R test_fsi_selfcheck                 # host unit tests (fast)
-ctest --preset linux-debug-inference -R "_fsi_selfcheck"         # all real-model FSI
+ctest --preset linux-debug-inference -R "_fsi_selfcheck"         # EVERY model: infra only
 ctest --preset linux-debug -R "test_model_suite_guard|test_ctest_labels_guard"
 ```
 

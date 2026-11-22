@@ -17,6 +17,10 @@ Related: converter test *rules* (synthetic checkpoint, TIMEOUT) live in
 `ingesting-a-model`; the perf suite and baselines live in `perf-tuning-a-model`;
 the guard tests' registries also appear in `logestix-repo-map`.
 
+**The one rule that costs the most time:** a model-local change is verified with
+the `fast` preset plus that model's own targets — never with a label sweep. See
+"Running the suites" below for the measured reason.
+
 ## Categories
 
 | Label | What it is | When it runs |
@@ -96,13 +100,29 @@ to hand-edit. What a manifest needs is skill `ingesting-a-model`.
 
 ## Running the suites
 
+**Scope a model change to that model.** Ingesting or fixing one model means:
+
 ```bash
-ctest --preset linux-debug                  # fast only (Ubuntu 26.04)
+ctest --preset linux-debug                      # the fast guards (parallel, ~3 min)
+ctest --test-dir build/linux-debug -R "<model_type>" -j 1   # that model's targets
+```
+
+The label sweeps below are for **infrastructure** changes (a shared kernel layer,
+a schema, the router, the manifest generator) — not for a model-local diff:
+
+```bash
 ctest --preset linux-debug-convert          # convert sweep
 ctest --preset linux-debug-inference        # inference sweep
 ctest --preset linux-release-znver4-perf    # perf; Release-only
 ctest -L "^(fast|convert|inference|perf)$"  # full run
 ```
+
+Measured 2026-11-22: `linux-debug-inference` is **350 targets across 43 models**
+(qwen 225, gemma 77, kimi 29, inkling 29, glm 25, deepseek 25, …). Because every
+device target carries `RESOURCE_LOCK "gpu"` the sweep must run `-j1`, so a model
+ingestion that runs "the sweep" spends hours on targets its diff cannot reach.
+Run the model's own row instead — the targets are derived from
+`models/<model_type>.json`, so `-R` on the model_type is the whole set.
 
 Other OS profiles: `ctest --preset windows-debug` (fast) — the same label
 filters as Linux; a model test is not skipped or filtered by OS. Preset names are built
@@ -176,6 +196,11 @@ coverage, FP8 tiles) are the **Converter test rules** section of
 
 ## Common mistakes
 
+- **Running a full label sweep while ingesting ONE model.** `linux-debug-inference`
+  is 350 targets across 43 models and must run `-j1` (GPU lock), i.e. hours of
+  work on targets the diff cannot reach. Use `ctest --preset linux-debug` (the
+  fast guards) plus `ctest -R "<model_type>"` for the model itself; the full
+  sweeps are for infrastructure changes.
 - Adding a test without a label in the same commit → `test_ctest_labels_guard` red.
 - Forgetting `SKIP_RETURN_CODE 4` on a test that cannot find real weights → the
   skip is reported as a failure.

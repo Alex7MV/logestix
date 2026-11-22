@@ -643,6 +643,11 @@ are shared drivers parameterised by the manifest:
 ## Definition of done
 
 - [ ] `kType` registered; `Load` forbids a frozen-geometry mismatch.
+- [ ] Verification **scoped to this model**: `ctest --preset linux-debug` (fast
+      guards, parallel) green, and every target of this row green —
+      `ctest --test-dir build/linux-debug -R "<model_type>" -j 1`. The label
+      sweeps are NOT part of a model ingestion (see "Verification"); if you ran
+      one anyway, or skipped one, say which and why.
 - [ ] Converter test (label `convert`, bounded TIMEOUT, synthetic checkpoint).
 - [ ] Loader/model/kernels tests present and labelled.
 - [ ] Streaming + cancellation wired: one `Emit` per decoded token through
@@ -684,19 +689,65 @@ are shared drivers parameterised by the manifest:
 
 ## Verification
 
+**Scope the sweeps to the model you are ingesting.** A model-local change cannot
+regress another family, and the label sweeps are enormous: on 2026-11-22
+`linux-debug-inference` held **350 targets across 43 models** (qwen 225, gemma 77,
+…) and every device target carries `RESOURCE_LOCK "gpu"`, so the sweep is `-j1`
+and runs for hours. Ingesting one model and then running all of it measures 340
+targets the diff cannot touch, which is why a "full sweep" was once started three
+times and abandoned three times. What a model ingestion actually has to prove:
+
 ```bash
 cmake --preset linux-debug && cmake --build --preset linux-debug
+
+# 1. The guards that CAN be broken by any diff (parallel, ~3 min, no GPU lock).
+#    This is the whole "did I break the repo" question, and it is label `fast`.
+ctest --preset linux-debug -j 24
+
+# 2. YOUR row's own lifecycle targets, by the manifest's model_type. This is the
+#    model's convert → load → model → kernels → selfcheck → fsi/code/det → perf
+#    set, derived from models/<model_type>.json — there is nothing to look up.
+ctest --test-dir build/linux-debug -R "<model_type>" -j 1
+
+# 3. Optionally the immediate siblings that share the TUs you edited. Name them
+#    explicitly; never widen this to "the family" or "the sweep".
+ctest --test-dir build/linux-debug -R "<model_type>|<sibling>" -j 1
+```
+
+Real weights: run the model's selfcheck/parity targets on the **Release/AOCC
+tree**, not Debug. A Debug real-weight gate is 5-20x slower for the same verdict
+(the varloop selfcheck is 15 s in `linux-release-znver4-aocc` and minutes in
+`linux-debug`), and perf targets `SKIP` in Debug anyway.
+
+```
 ctest --preset linux-debug                                  # fast only
-ctest --preset linux-debug-convert                          # converter sweep
-ctest --preset linux-debug-inference                        # model/CUDA sweep
+ctest --test-dir build/linux-debug -R "<model_type>" -j 1   # this model
 cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake   # dry-run router
 ```
 
+The full sweeps stay available and are the right tool for **infrastructure**
+work (a shared kernel layer, a schema, the router, the manifest generator):
+
+```bash
+ctest --preset linux-debug-convert      # converter sweep (infra changes)
+ctest --preset linux-debug-inference    # every model/CUDA target (infra changes)
+```
+
+**Report what you did not run.** If you scope the sweeps, say so in the report
+and name any red you saw in a scope you skipped — a green `-R <model_type>` is
+not evidence about the other 42 rows, and a pre-existing red discovered during a
+cancelled sweep belongs in `docs/OPEN_TASKS.md` (or in an existing row, if it is
+already there — check before filing).
+
 The guard tests above MUST be green before the model is considered
-ingested.
+ingested. They are all label `fast`, so `ctest --preset linux-debug` is what
+proves them — no sweep is needed for that, and none was ever needed.
 
 ## Common mistakes
 
+- **Running a full label sweep to verify one model.** It is hours of GPU-serialised
+  work on 340 targets the diff cannot touch; use the fast preset plus
+  `-R "<model_type>"`.
 - Adding kernels or a converter without the failing test first (TDD violation).
 - Reading geometry from `config.json` at runtime instead of frozen constants.
 - Violating a kernel-level rule that already lives in

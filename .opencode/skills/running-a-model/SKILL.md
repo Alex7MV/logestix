@@ -156,7 +156,7 @@ developer-side checklist is `ingesting-a-model` § Definition of done):
 | # | Gate | Command |
 |---|---|---|
 | 1 | the shared fast suite (guards included) | `ctest --preset linux-debug` |
-| 2 | convert/load/model/kernels stages registered and green | `ctest --preset linux-debug-convert`, then the family's `inference` targets |
+| 2 | convert/load/model/kernels stages registered and green | `ctest --test-dir build/linux-debug -R "<model_type>" -j 1` (the model's own row — never a label sweep) |
 | 3 | SelfCheck: Paris + ≥3 bit-exact cycles | `LSX_TEST_<MODEL>_MODEL_PATH=<root> ctest -R <family>_selfcheck` |
 | 4 | FSI / CODE / DET goldens recorded and green | `ctest -R "<family>_(fsi|code|det)_selfcheck"` with the model's path env |
 | 5 | tool calling: native render + parse round-trip | `ctest -R <family>_tool_framing` |
