@@ -8,6 +8,12 @@ namespace deepseek_v41 {
 // Registry id (detect_model_type normalization of "DeepSeek-V4.1-Flash").
 inline constexpr char kType[] = "deepseek-v4.1-flash";
 
+// The CARD name, i.e. the vault directory name. `gpu::detect_model_type`
+// normalizes this into exactly `kType`; the converter stamps it as the index
+// `model` field (a directory that carries the name wins over this default, see
+// CardNameFor in deepseek_moe_v41_convert.cpp).
+inline constexpr char kModelName[] = "DeepSeek-V4.1-Flash";
+
 // ── Frozen text-backbone geometry (source: config.json text_config +
 //    inference/config.json). Locked compile-time per MODEL INGEST step 3.
 inline constexpr int kHidden = 5120;

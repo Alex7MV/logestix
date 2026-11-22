@@ -208,9 +208,27 @@ VramTensorClass V41MemClass(const std::string &name)
 
 // ── Index writer ────────────────────────────────────────────────────────────
 
+// The index `model` field is the CARD name of the tree being converted:
+// `gpu::detect_model_type` normalizes it (spaces -> '-', lower case) into the
+// LsxModelFactory key, and the V4.1 contour serves two checkpoints of the same
+// architecture (DeepSeek-V4.1-Flash, DeepSeek-V4.1-Flash-1017). A hardcoded
+// parent name would make the sibling tree resolve to the parent's kType.
+// An input path whose last segment is empty or a dot entry falls back to the
+// parent card name, which is the only checkpoint whose directory is not
+// guaranteed to carry it.
+std::string CardNameFor(const std::string &input_path)
+{
+    const fs::path p(input_path);
+    std::string name = p.filename().string();
+    if (name.empty() || name == "." || name == "..")
+        return kModelName;
+    return name;
+}
+
 arrow::Status WriteIndex(const V41Config &cfg, int64_t total_pinned,
                          int64_t total_experts, const VramProfile &vram,
                          const absl::flat_hash_map<std::string, int> &cuts,
+                         const std::string &card_name,
                          const fs::path &log_root)
 {
     std::ofstream f(log_root / "model.index.json");
@@ -218,7 +236,7 @@ arrow::Status WriteIndex(const V41Config &cfg, int64_t total_pinned,
 
     f << "{\n";
     f << "  \"format\": \"" << kIndexFormat << "\",\n";
-    f << "  \"model\": \"DeepSeek-V4.1-Flash\",\n";
+    f << "  \"model\": \"" << card_name << "\",\n";
     f << "  \"num_layers\": " << cfg.num_layers << ",\n";
     f << "  \"experts_per_layer\": " << cfg.experts << ",\n";
     f << "  \"total_pinned_tensors\": " << total_pinned << ",\n";
@@ -451,8 +469,8 @@ arrow::Status ConvertDeepSeekV41Model(const std::string &input_path,
     policy.mem_class = &V41MemClass;
     VramProfile vram = EstimateVram(inventory, policy, geom);
 
-    ARROW_RETURN_NOT_OK(
-        WriteIndex(cfg, total_pinned, total_experts, vram, cuts, log_root));
+    ARROW_RETURN_NOT_OK(WriteIndex(cfg, total_pinned, total_experts, vram,
+                                   cuts, CardNameFor(input_path), log_root));
 
     // Tokenizer bridge (BPE vocab/merges); optional for synthetic fixtures.
     auto tok_json = fs::path(input_path) / "tokenizer.json";
