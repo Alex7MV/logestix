@@ -4,27 +4,42 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 
 ### Verified end-to-end C++/CUDA inference
 
-logestix is a deterministic C++20/CUDA runtime for native NVFP4 inference,
-verified across **39 registered model profiles** and **555 CTest targets**
-(see `docs/MODELS.md` and the Test section below). Model ingestion — converter,
-frozen geometry, tokenizer bridge, parity goldens — is largely agent-driven,
-but every claim rests on a measured oracle, not on the agent's word.
+logestix is a deterministic C++20/CUDA runtime for native NVFP4 inference. The
+catalogue holds **44 registered model profiles** at the time of writing, and
+`docs/MODELS.md` — generated from the per-model manifests — is the count to
+trust, not this line. Model ingestion — converter, frozen geometry, tokenizer
+bridge, parity goldens — is largely agent-driven, but every claim rests on a
+measured oracle, not on the agent's word.
 
-The reference milestone: **GLM-5.3-Flash**, ingested from its raw distributed
-`safetensors` checkpoint (306 GB FP8 → 177 GB NVFP4 K64-slab format; 45 layers
-of linear and sparse attention; ~13.9 GB VRAM dense layer-block). Its SelfCheck
-is bit-exact — token, text and last-logits determinism across ≥ 3 stress cycles
-of the canonical "The capital of France is" prompt, decoding `' Paris'` — with
-FSI/CODE/DET parity 3/3 against goldens captured from the source checkpoint
-(`docs/SELFCHECK_MATRIX.md`). Decode on RTX 5090 reached **17.8 t/s** (5.6× over
-the 3.2 t/s baseline) via VRAM-sized LRU expert caching, weight-streaming NVFP4
-GEMV and kernel tuning. What is *not* guaranteed is enumerated as
-reproducibility levels in [`docs/numeric-contract.md`](docs/numeric-contract.md).
+What an ingestion has to establish — and what each manifest records either as
+done or as declared **debt** — is the same for every profile:
+
+- **SelfCheck** — the canonical `"The capital of France is"` probe answers
+  `Paris`, with bit-exact token/text/last-logits determinism across ≥ 3 stress
+  cycles.
+- **Parity gates** — FSI, CODE and DET, each a separate target with its own
+  golden. A gate whose golden was never captured is declared **debt** in the
+  manifest; it is not silently absent.
+- **Native tool round-trip** — the checkpoint's own chat/tool template, rendered
+  and parsed on real weights, not the generic fallback.
+- **A seeded throughput row** at the canonical 2048-token protocol.
+
+Measured verdicts, including the red and debt cells, live in
+[`docs/SELFCHECK_MATRIX.md`](docs/SELFCHECK_MATRIX.md); throughput in
+`tests/perf/perf_baselines.json`. **A SKIP is not a pass**, and a registry row
+beats anything written in prose here.
+
+The reference milestone is **GLM-5.3-Flash** (registry `glm-5.3-flash`): ingested
+from its raw distributed `safetensors` checkpoint into the K64-slab NVFP4
+layout, bit-exact SelfCheck, FSI/CODE/DET 3/3 against goldens captured from the
+source checkpoint, and decode accelerated by VRAM-sized LRU expert caching,
+weight-streaming NVFP4 GEMV and kernel tuning. Its current numbers — and every
+other model's — are in the two registries named above. What is *not* guaranteed
+is enumerated as reproducibility levels in
+[`docs/numeric-contract.md`](docs/numeric-contract.md).
 
 Thanks to the **GLM-5.3-Flash** authors for the architecture, to **NVIDIA** for
-Blackwell and the RTX 5090, and to **AMD** for the EPYC 9V74 host. The
-`feat/glm53-flash` branch is frozen for the ledger; registry name:
-`glm-5.3-flash`.
+Blackwell and the RTX 5090, and to **AMD** for the EPYC 9V74 host.
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
@@ -37,6 +52,9 @@ Blackwell and the RTX 5090, and to **AMD** for the EPYC 9V74 host. The
 | abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.1 | FetchContent (test only) | Header-only |
 | cpp-httplib | v0.66.0 | FetchContent (host-only HTTP) | Header-only |
+
+The pins are enforced by `tests/test_core.cpp` → `TEST_CASE("pinned dependency
+versions")`; the bump procedure is skill `cuda-cmake-build-gotchas`.
 
 ### 📐 Why there is no "finished" state
 
@@ -53,7 +71,8 @@ as reproducibility levels with their "not guaranteed" cells written down in
 ## Prerequisites
 
 - CMake 3.25+ (for CMakePresets)
-- C++20 / C23 compiler (GCC 15+ on Ubuntu 26.04, MSVC in Visual Studio 2026)
+- C++20 / C23 compiler (GCC 15+ on Ubuntu 26.04, MSVC in Visual Studio 2026;
+  AMD's AOCC clang is supported as an alternative host compiler)
 - Ninja build system (required on Ubuntu; optional on Windows)
 - Git
 - **NVIDIA CUDA Toolkit 13.5 — required, not optional.** The build enables
@@ -91,7 +110,8 @@ cmake --preset windows-debug
 cmake --build --preset windows-debug
 ```
 
-Binaries land in `build/windows-debug/bin/Debug/`.
+Binaries land in `build/windows-debug/bin/Debug/`, and `arrow.dll` /
+`arrow_cuda.dll` are auto-copied there via `POST_BUILD`.
 
 ### Ubuntu 26.04 (Ninja + GCC)
 
@@ -100,7 +120,10 @@ cmake --preset linux-debug
 cmake --build --preset linux-debug
 ```
 
-Binaries land in `build/linux-debug/bin/`.
+Binaries land next to their target: `build/linux-debug/apps/<app>/<binary>`
+(e.g. `build/linux-debug/apps/lsxfabric/lsxfabric`) and
+`build/linux-debug/tests/<test-target>`. On Linux there is no `bin/` — that
+directory is a Windows-only `CMAKE_RUNTIME_OUTPUT_DIRECTORY` convention.
 
 Linux release, tuned for AMD EPYC 9V74 (Zen 4), with LTO:
 
@@ -110,7 +133,18 @@ cmake --build --preset linux-release-znver4   # Ninja -j160
 ctest --preset linux-release-znver4
 ```
 
-`arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD` on Windows.
+The same configuration with **AOCC clang 17 as the host compiler** is
+`linux-release-znver4-aocc`. It reads `AOCC_ROOT` from the environment, so the
+preset cannot be configured without it:
+
+```bash
+export AOCC_ROOT=/path/to/aocc-compiler-5.2.0
+cmake --preset linux-release-znver4-aocc
+cmake --build --preset linux-release-znver4-aocc -j64
+```
+
+Real-weight gates are 5–20× faster on a Release tree than on `linux-debug`, so
+selfcheck/parity/perf runs belong here rather than in a debug build.
 
 ## Test
 
@@ -129,18 +163,17 @@ The one CUDA-aware `fast` target, `test_cuda_toolkit_guard`, allocates no
 device memory — it reads toolkit/driver versions and device properties, and
 its device case SKIPs where no GPU exists.
 
-As of 2026-11-16 the tree registers **555 CTest targets: 149 `fast`,
-41 `convert`, 318 `inference`, 47 `perf`**. Counts move as models are
-ingested, so re-read them instead of trusting this paragraph:
-`ctest --preset linux-debug -N` (the fast default) or
-`ctest --test-dir <build-dir> -N` (the full tree).
+Counts move with every ingestion, so read them instead of trusting this page:
+`ctest --test-dir <build-dir> -N` prints the target total, and `-L <label>`
+narrows to one label. For orientation only, the tree on 2026-11-22 registered
+**610 targets: 159 `fast`, 45 `convert`, 354 `inference`, 52 `perf`**.
 
 ```powershell
 ctest --preset windows-debug    # Windows 11 — fast label only
 ```
 
 ```bash
-ctest --preset linux-debug               # Ubuntu 26.04 — fast label only (149 targets)
+ctest --preset linux-debug               # Ubuntu 26.04 — fast label only
 ctest --preset linux-debug-convert       # converter sweep
 ctest --preset linux-debug-inference     # CUDA / model-contour sweep
 ctest --preset linux-release-znver4-perf # perf sweep; Release-only
@@ -152,11 +185,20 @@ Every base test preset also exists with a `-fast` / `-convert` / `-inference`
 resource lock: run **one GPU workload at a time**. The lock is per `ctest`
 process, not per machine — two concurrent `ctest` invocations both acquire it
 and share the GPU, so never start a second GPU-labelled sweep while one is in
-flight.
+flight (`nvidia-smi --query-compute-apps` first).
 
-Family sweeps work by name regex, e.g. `ctest -R glm` (GLM-5.2 and
-GLM-5.3-Flash) or `ctest -R deepseek` (all DeepSeek variants). The suites are
-autonomous and run independently.
+Narrow a run by name regex when working on one model or family — the regex is
+the model's `model_type` (or its family prefix), not a list this file keeps:
+
+```bash
+ctest --test-dir build/linux-debug -R "<model_type>" -j 1   # one model's row
+ctest --test-dir build/linux-debug -R "<family>" -j 1       # its siblings too
+```
+
+Each model's `model_type` and every target it owns are the manifest's
+(`models/<model_type>.json`, projected into `docs/MODELS.md`), so there is
+nothing to look up by hand and no reason to sweep the label to verify one
+model.
 
 ### Model vault (`LSX_MODEL_ROOT`)
 
@@ -173,10 +215,10 @@ export LSX_MODEL_ROOT=/data/models   # your vault root
 
 Converted models live in `<LSX_MODEL_ROOT>/<Model>/logestix/` (produced by
 `lsxforge`). Individual model tests also accept a per-model root override
-declared in `models/<model_type>.json` (`vault.env`, e.g.
-`LSX_TEST_GLM_5_2_ROOT`); the full per-model list is in `docs/MODELS.md`.
-When the converted tree or a parity golden is absent, the test SKIPs
-gracefully (exit code 4) — a SKIP is **not** a pass.
+declared in `models/<model_type>.json` (`vault.env`); `docs/MODELS.md` lists
+the directory and the variable per model. When the converted tree or a parity
+golden is absent, the test SKIPs gracefully (exit code 4) — a SKIP is **not**
+a pass.
 
 ## Structure
 
@@ -191,12 +233,15 @@ gracefully (exit code 4) — a SKIP is **not** a pass.
   `apps/lsxbenchmark/` — speed measurement and bit-exactness.
 - `models/<model_type>.json` — the manifest: one file per ingested model, the
   single source of truth for its vault directory, passport namespace, format tag,
-  tokenizer kind and lifecycle-stage targets.
+  tokenizer kind and lifecycle-stage targets. Everything derived from it
+  (target registration, registry list, `docs/MODELS.md`) is generated at
+  configure time; `test_manifest_sync` fails on any drift.
 - `tests/` — Catch2 suite (labels `fast`/`convert`/`inference`/`perf`).
 
 Per-file inventory and which file owns what — skill `logestix-repo-map`.
-What each model is (geometry, gates, throughput, debt) — **`docs/MODELS.md`**,
-generated from the manifests.
+What each model *is* (geometry, vault, gates, throughput, debt) —
+**`docs/MODELS.md`**, generated from the manifests. Per-model narrative —
+`docs/model-reports/`.
 
 ## TaskMosaic OpenAI bridge
 
@@ -226,31 +271,44 @@ curl -N -X POST http://127.0.0.1:8080/v1/messages \
 
 The bridge accepts OpenAI `tools`/`tool_choice` and returns `tool_calls`
 (non-streaming) or `delta.tool_calls` (streaming, buffered until the turn
-completes). Per-family native render/parse is implemented where the checkpoint's
-own template is known and verified against its tokenizer/card:
+completes). Every model renders and parses through **its own** chat template:
+a native codec where the checkpoint's template is known and verified against
+its tokenizer, the generic Hermes format (`<tools>` block +
+`<tool_call>{json}</tool_call>`) as the floor otherwise.
 
-| family | native tool format |
-|---|---|
-| Qwen3.5/3.6 | ChatML `# Tools` block; `<tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>` |
-| GLM-5.3-Flash | `<\|system\|>` tools block; `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>` |
-| DeepSeek-V4 | `## Tools`; `<｜DSML｜tool_calls>` / `<｜DSML｜invoke>` / `<｜DSML｜parameter>` |
-| DeepSeek-V4.1 | `## Tools`; `<｜DSML｜ calls>` / `<｜DSML｜ invoke>` / `<｜DSML｜ parameter>` |
-| Gemma-4 | `<\|tool>declaration:…<tool\|>`; `<\|tool_call>call:NAME{k:v}<tool_call\|>` |
-| Nemotron-3.5 | ChatML XML call syntax (Qwen-style); own declaration block — codec verified, real-weight call not obtained under greedy sampling |
-| GigaChat-3.5 | chatml-v5 `｜GCML｜tool_calls` / `｜GCML｜invoke` / `｜GCML｜parameter` + TypeScript tool namespace |
-| Granite-4.2 | generic Hermes `<tools>` + `<tool_call>{json}</tool_call>` fallback |
+The per-family wire formats are **not** listed here on purpose — they are
+checkpoint properties, they change with each ingestion, and there are two
+authorities instead:
 
-Kimi and GLM-5.2 (non-Flash) have no converted checkpoint in the vault, so their
-native formats are not yet implemented.
+- `libs/lsxcommon/src/*_tool_format.{h,cpp}` — the codecs, one per family; the
+  header's comment states the exact markers and where they came from
+  (the checkpoint's `chat_template.jinja` or vendor encoder).
+- `tests/test_model_suite_guard.cpp` → `kTooling` — one row per registered
+  model: the targets that prove its render+parse round-trip, or an empty row
+  meaning "generic fallback, nothing claimed".
+
+Example — DeepSeek-V4.1's native DSML dialect, verified on real weights:
+
+```
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="get_weather">
+<｜DSML｜ parameter name="city" string="true">Paris</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls>
+```
+
+`ParseToolCalls` returns this as an OpenAI-shaped `ToolCall`; the same codec
+renders assistant tool calls and tool results back into the transcript, so a
+multi-turn agent loop round-trips through one template.
 
 ### Streaming
 
-Every family emits `ModelRequest::token_callback` per decoded token (the
-qwen-MoE/Ornith bulk drivers emit at the existing every-8-token EOS fence, and
-qwen3.8-flash-next drains at turn end). Per-family order parity against
-`gen_results.gen_tokens` is asserted by `tests/test_streaming_assert.h`, wired
-into the model/selfcheck tests and verified on the RTX 5090.
-
+Every family emits `ModelRequest::token_callback` once per decoded token,
+through a `GenerationStream` that also polls `abort_flag` between steps, so a
+cancelled request stops instead of running to its budget. Per-family order
+parity against `gen_results.gen_tokens` — no invented and no dropped tokens —
+is asserted by `tests/test_streaming_assert.h`, wired into each model's
+model/selfcheck targets.
 
 ## Licensing
 
