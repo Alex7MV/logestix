@@ -501,6 +501,14 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         meta.tokenizer_kind = 12;
         meta.base_vocab_size = model_vocab_count;
     }
+    if (policy.pretokenizer == 11) {
+        // Hy4-flash (Hunyuan): three-split Sequence (\p{N}{1,3}, CJK run) over
+        // the Hunyuan main pattern (punctuation+ASCII-letters, optional-prefix
+        // letter run, punctuation run, then the three whitespace forms).
+        // Written as tokenizer_kind = 13.
+        meta.tokenizer_kind = 13;
+        meta.base_vocab_size = model_vocab_count;
+    }
     if (policy.pretokenizer == 9) {
         // Gemma-4: raw-text BPE (vocabulary + merges verbatim), normalizer
         // Replace(" " -> U+2581), ByteFallback, no dummy prefix. Written as

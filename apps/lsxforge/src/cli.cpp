@@ -76,6 +76,7 @@ Resolution ResolvePipeline(const Flags &flags)
              {Pipeline::kMinimaxFlash, flags.minimax_flash}},
             {"--hy", {Pipeline::kHy, flags.hy}},
             {"--hy_simulmt", {Pipeline::kHySimulMT, flags.hy_simulmt}},
+            {"--hy4_flash", {Pipeline::kHy4Flash, flags.hy4_flash}},
             {"--flint", {Pipeline::kFlint, flags.flint}},
             {"--ling", {Pipeline::kLing, flags.ling}},
             {"--beam", {Pipeline::kBeam, flags.beam}},

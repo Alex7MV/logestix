@@ -146,6 +146,10 @@ add_library(lsxcommon STATIC
     src/flint_moe_load.cpp
     src/flint_moe_model.cpp
     src/flint_moe_tool_format.cpp
+    src/hy_moe_flash_convert.cpp
+    src/hy_moe_flash_load.cpp
+    src/hy_moe_flash_model.cpp
+    src/hy_moe_flash_tool_format.cpp
     src/ling_moe_convert.cpp
     src/ling_moe_load.cpp
     src/ling_moe_model.cpp
@@ -241,6 +245,8 @@ add_library(lsxcommon_cu OBJECT
     src/deepseek_moe_inference_pipeline.cu
     src/bf16_convert.cu
     src/deepseek_moe_norm_kernels.cu
+    src/hy_moe_flash_kernels.cu
+    src/hy_moe_flash_inference_pipeline.cu
     src/shared_experts.cu
     src/sampling.cu
 )

@@ -53,6 +53,7 @@ enum class Pipeline {
     kMinimaxFlash,
     kHy,
     kHySimulMT,
+    kHy4Flash,
     kFlint,
     kLing,
     kBeam,
@@ -108,6 +109,7 @@ struct Flags {
     bool minimax_flash = false;
     bool hy = false;
     bool hy_simulmt = false;
+    bool hy4_flash = false;
     bool flint = false;
     bool ling = false;
     bool beam = false;

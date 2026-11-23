@@ -1,0 +1,34 @@
+{"text": "The capital of France is", "ids": [802, 8778, 299, 12749, 341]}
+{"text": "What is the present value of a 10-year annuity", "ids": [3462, 341, 269, 2292, 1702, 299, 259, 220, 560, 11592, 87027]}
+{"text": "don't won't it's I'LL we'VE", "ids": [22849, 1241, 4666, 1241, 442, 715, 356, 6, 3111, 632, 6, 10605]}
+{"text": "a'b abc'def", "ids": [64, 68576, 59569, 6, 2345]}
+{"text": "1234567 12345 1 12 123", "ids": [6636, 17243, 22, 220, 6636, 2208, 220, 16, 220, 757, 220, 6636]}
+{"text": "v2beta FooBarBaz _call __init__ 2.5e-3", "ids": [85, 17, 5311, 52746, 11563, 33, 1834, 2666, 13017, 5586, 3798, 603, 220, 17, 13, 20, 68, 12, 18]}
+{"text": "2026-10-30T18:42:00Z", "ids": [983, 21, 12, 560, 12, 1097, 51, 1004, 25, 3668, 25, 467, 57]}
+{"text": "中文ab 日本語テキスト", "ids": [10629, 402, 220, 96698, 114739, 18854]}
+{"text": "abcあいうえお", "ids": [22354, 5630, 70592, 9425, 7544]}
+{"text": "汉字。 mixed, 漢字!", "ids": [34841, 320, 11480, 11, 220, 28591, 1435, 0]}
+{"text": "hello  world   two", "ids": [18925, 220, 3048, 256, 1404]}
+{"text": "  leading", "ids": [220, 7007]}
+{"text": "trailing  ", "ids": [376, 16833, 256]}
+{"text": "\n\n\n", "ids": [1340]}
+{"text": "a\n\nb", "ids": [64, 268, 65]}
+{"text": "line\r\nnext\r\n", "ids": [1861, 201, 198, 7326, 201, 198]}
+{"text": "a \n b", "ids": [64, 220, 198, 289]}
+{"text": "x x x x ", "ids": [87, 1142, 1142, 1142, 220]}
+{"text": "— “quotes” — naïve café", "ids": [1193, 1209, 388, 7816, 596, 2227, 112325, 75970]}
+{"text": "a+=b>>2 50% #tag @user", "ids": [64, 28830, 65, 2109, 17, 220, 1310, 4, 1439, 16668, 1650, 3717]}
+{"text": "/((^&%$#@!", "ids": [14, 5988, 61, 5, 18568, 2, 31, 0]}
+{"text": "/\n/", "ids": [2778, 14]}
+{"text": "a...b", "ids": [64, 1605, 65]}
+{"text": "(x, y) => { return x[\"y\"] }", "ids": [2533, 11, 389, 8, 2638, 566, 1315, 1142, 7266, 88, 7081, 652]}
+{"text": "Emoji 😀🚀 done", "ids": [6192, 62420, 31309, 222, 58095, 222, 4152]}
+{"text": "→ ≈ ≠ ±", "ids": [7666, 36189, 84675, 8209]}
+{"text": "<｜hy_start:opensource｜>user<｜hy_middle:opensource｜>hi<｜hy_end:opensource｜>", "ids": [120000, 3717, 120001, 7032, 120025]}
+{"text": "<think:opensource>ok</think:opensource>", "ids": [120029, 816, 120030]}
+{"text": "<tool_calls:opensource><tool_call:opensource>get_weather<arg_key:opensource>city</arg_key:opensource><arg_value:opensource>Paris</arg_value:opensource></tool_call:opensource></tool_calls:opensource>", "ids": [120035, 120033, 998, 62, 49005, 120040, 38090, 120041, 120042, 65431, 120043, 120034, 120036]}
+{"text": "<tool_response:opensource>{\"ok\": true}</tool_response:opensource>", "ids": [120037, 16249, 816, 2486, 2846, 92, 120038]}
+{"text": "def f(x):\n    return x**2\n", "ids": [2345, 283, 2533, 3894, 326, 1315, 1142, 478, 17, 198]}
+{"text": "{\"a\": 1, \"b\": [1,2,3], \"c\": null}", "ids": [16249, 64, 2486, 220, 16, 11, 549, 65, 2486, 775, 16, 11, 17, 11, 18, 3237, 549, 66, 2486, 3734, 92]}
+{"text": "SELECT * FROM t WHERE id = 42;", "ids": [12492, 843, 12086, 257, 17422, 1678, 416, 220, 3668, 26]}
+{"text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "ids": [9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 9708, 4214]}

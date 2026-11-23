@@ -25,6 +25,7 @@
 #include "lsxcommon/mistral_moe_convert.h"
 #include "lsxcommon/mistral_moe_large4_convert.h"
 #include "lsxcommon/hy_moe_convert.h"
+#include "lsxcommon/hy_moe_flash_convert.h"
 #include "lsxcommon/hy_moe_simulmt_convert.h"
 #include "lsxcommon/step_moe_convert.h"
 #include "lsxcommon/beam_moe_convert.h"
@@ -156,6 +157,9 @@ ABSL_FLAG(bool, ling, false,
 ABSL_FLAG(bool, beam, false,
           "Beam-1.0-501B-A23B (gated GQA SWA/NoPE + 256-expert MoE) conversion "
           "pipeline");
+ABSL_FLAG(bool, hy4_flash, false,
+          "convert Hy4-flash (hybrid sparse/SWA MLA + LatentMoE + iHC; Engram, "
+          "ViT and the DFly2 drafter stripped) to logestix-hy4-nvfp4");
 ABSL_FLAG(bool, hy, false,
           "convert Hy-Memory-30B-A3B (GQA + sigmoid-router MoE) to logestix-hy-nvfp4");
 ABSL_FLAG(bool, hy_simulmt, false,
@@ -247,6 +251,7 @@ int main(int argc, char* argv[]) {
     bool minimax_flash = absl::GetFlag(FLAGS_minimax_flash);
     bool hy = absl::GetFlag(FLAGS_hy);
     bool hy_simulmt = absl::GetFlag(FLAGS_hy_simulmt);
+    bool hy4_flash = absl::GetFlag(FLAGS_hy4_flash);
     bool flint = absl::GetFlag(FLAGS_flint);
     bool ling = absl::GetFlag(FLAGS_ling);
     bool beam = absl::GetFlag(FLAGS_beam);
@@ -338,6 +343,7 @@ int main(int argc, char* argv[]) {
     flags.minimax_flash = minimax_flash;
     flags.hy = hy;
     flags.hy_simulmt = hy_simulmt;
+    flags.hy4_flash = hy4_flash;
     flags.flint = flint;
     flags.ling = ling;
     flags.beam = beam;
@@ -1000,6 +1006,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Step-5 conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kHy4Flash: {
+        lsxcommon::log::info(
+            "Hy4-flash pipeline (logestix-hy4-nvfp4 layout; Engram/ViT/DFly2 "
+            "stripped and counted)");
+        auto st = lsxcommon::hy4::ConvertHy4FlashModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("hy4-flash conversion failed: %s",
+                                st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("hy4-flash conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

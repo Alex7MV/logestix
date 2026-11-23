@@ -94,6 +94,7 @@ bool AllowedCommon(const std::string& stem)
         "nemotron_ultra_tool_format", // Nemotron-Ultra ChatML + <function=> codec
         "granite_switch_tool_format", // Granite-4.1 role markers + aLoRA codec
         "muse_tool_format",           // Muse-Glimmer ATEM channel + XML codec
+        "hy_moe_flash_tool_format",    // Hy4-flash Hunyuan <｜hy_*｜> + <arg_key> codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
 }
