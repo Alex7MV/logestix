@@ -39,16 +39,21 @@ be trusted, and it localised the layer in one cheap run.
 | check | before | after |
 |---|---|---|
 | residual reconstruction, all 41 MoE layers | 0.2747 at layer 1 | **0.000000** |
-| engine vs reference-on-the-artifact's-weights, `l0_out` | 0.999875 | 0.999875 |
-| … `l30_out` / `l40_out` / `logits` | — | 0.991 / 0.978 / 0.985 |
+| `l0_out` — the DENSE layer, never affected (control) | 0.999875 | 0.999875 |
+| `l1_out` — the first MoE layer | 0.9647 | **0.999623** |
+| … `l21_out` / `l30_out` / `l41_out` / `logits` | not comparable (the instrument bugs below) | 0.994 / 0.991 / 0.969 / 0.985 |
 | first token, raw `The capital of France is` | `259` (` a`) | `15641` (` Paris`) |
 | first token, reference on the artifact's weights | — | `15641` (same) |
 | SelfCheck (Paris) | red | PASS x3, `923e8ab7c8027eb2` |
 
 The engine and the reference, both fed the artifact's own NVFP4 weights, now
-agree on the first token exactly (`15641`). The residual 1.5–3% divergence at the
-top of the stack is the engine's FP16 activations against the reference's
-bf16-with-fp32-interiors, and it does not move the answer.
+agree on the first token exactly (`15641`). What remains is the engine's FP16
+activations against the reference's bf16-with-fp32-interiors: 3% relative L2 at
+layer 1 growing to 25% at layer 41 and 17% on the logits, without moving the
+argmax of that step. (Only the ONE step was compared against the reference — a
+multi-token comparison would need a cached decode in the reference harness, which
+it does not have; SelfCheck x3 is what covers repeatability.) That is the
+tolerance a parity assertion for this family has to be written against.
 
 **Two further defects the fix exposed.**
 
@@ -79,10 +84,11 @@ bf16-with-fp32-interiors, and it does not move the answer.
 
 **A hypothesis that was measured and refuted.** "The artifact's NVFP4 precision
 is too coarse for this model" was plausible and is wrong as the primary cause:
-every boundary agrees at cos ≥0.9995 *at the artifact's own weights*, and the
-quantization error is uniform (0.094 rms, cos 0.9955) across all ten layer-0
-matrices regardless of shape — the format's theoretical error, not a converter
-defect. It was the pre-norm/post-norm slip that destroyed the model.
+fed the artifact's own weights, engine and reference agree at cos 0.9999–0.9990
+for the first 21 layers and never below 0.969 (0.985 on the logits, same argmax),
+while the quantization error is uniform (0.094 rms, cos 0.9955) across all ten
+layer-0 matrices regardless of shape — the format's theoretical error, not a
+converter defect. It was the pre-norm/post-norm slip that destroyed the model.
 
 ## `H2` — FSI is 2/3: the model numericises where the golden is symbolic
 
@@ -131,8 +137,9 @@ resident, 31.7% of the 20 992 experts). The decode reads 16 experts x 41 layers 
 3.8 MiB = 2.43 GiB of weight per token, so 6 t/s is ~15 GiB/s of host-to-device
 traffic: the model is PCIe-bound, not compute-bound. **Open follow-up with the
 clearest payoff: expert prefetch.** The selection is known one layer ahead, so
-overlapping the next layer's staging with this layer's GEMVs is the lever; a
-larger slot cache cannot help, it is bounded by the same 32 GiB.
+overlapping the next layer's staging with this layer's GEMVs is the lever that
+does not need more VRAM; a *larger* slot cache would also cut the traffic but is
+bounded by the same 32 GiB (6661 of 20 992 experts fit today).
 
 ## `H5` — the balloon the artifact is NOT carrying
 
