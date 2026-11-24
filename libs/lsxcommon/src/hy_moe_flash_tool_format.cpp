@@ -1,5 +1,6 @@
 #include "lsxcommon/hy_moe_flash_tool_format.h"
 
+#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/tool_format.h"
 
 #include <lsxnetwork/json_escape.h>
@@ -513,15 +514,16 @@ bool ParseHy4ToolCalls(const ArrowTokenizerDb &tok,
                        std::vector<ToolCall> &out_calls)
 {
     out_calls.clear();
-    std::string decoded;
-    {
-        std::vector<char> buf(static_cast<size_t>(gen_tokens.size()) * 8 + 64);
-        size_t cap = buf.size();
-        if (arrow_tokenizer_decode(tok, gen_tokens.data(), gen_tokens.size(),
-                                   buf.data(), &cap) != 0)
-            return false;
-        decoded.assign(buf.data(), cap);
-    }
+    // `runtime::DecodeGeneratedText` owns the grow-and-retry loop. A local
+    // `n_ids * 8 + 64` buffer looks generous and is not: the Hunyuan tool frame
+    // spends 22-24 bytes on each of five markers around a one-word function name
+    // and one argument, so a 14-token call decodes to 198 bytes against a 176-byte
+    // cap — the decode reported "buffer too small" and this function turned that
+    // into `false`, i.e. "the model emitted no tool call", for a call that was
+    // perfectly well formed.
+    const std::string decoded =
+        runtime::DecodeGeneratedText(tok, gen_tokens);
+    if (decoded.empty()) return false;
     auto calls = ParseHy4ToolCallText(decoded);
     if (!calls.empty()) {
         out_calls = std::move(calls);

@@ -109,18 +109,13 @@
     }
   },
   "tool_roundtrip": true,
-  "auto_path_determinism": false,
+  "auto_path_determinism": true,
   "cooperative_cancel": true,
-  "golden_debt": {
-    "fsi": "reference runs (transformers PR #50903); engine parity open \u2014 see docs/OPEN_TASKS.md",
-    "code": "same as fsi \u2014 one reference serves all three gates",
-    "det": "same as fsi \u2014 one reference serves all three gates"
-  },
   "aliases": [
     "hy4-flash"
   ],
   "report": "docs/model-reports/2026-11-24-Hy4-flash.md",
-  "notes": "Engram/ViT/DFly2 cut and counted; weight-level reference parity is open.",
+  "notes": "Engram/ViT/DFly2 cut and counted. SelfCheck, CODE and DET green; FSI 2/3 (FSI-TEST-02 numericises where the golden is symbolic).",
   "selfcheck_max_gen": 8,
   "selfcheck_bit_exact": true,
   "selfcheck_frame_prompt": true

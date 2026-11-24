@@ -147,17 +147,36 @@ TEST_CASE("hy4 model: control-prompt diagnostic", "[.hy4diag]")
     REQUIRE(model != nullptr);
     REQUIRE(model->Load());
 
-    std::vector<int32_t> ids(256, 0);
-    size_t cap = ids.size();
-    const char *prompt = "The capital of France is";
-    const int32_t n = lsxcommon::arrow_tokenizer_encode(
-        model->Tokenizer(), prompt, std::strlen(prompt), ids.data(), &cap);
-    REQUIRE(n > 0);
-    ids.resize(static_cast<size_t>(n));
+    // Knobs so this hidden probe can answer the questions the gates ask without
+    // a rebuild: LSX_HY4_DIAG_PROMPT / _MAXGEN / _FRAME (the chat frame the
+    // served path uses, i.e. the same ids the reference is compared against).
+    const char *prompt_env = std::getenv("LSX_HY4_DIAG_PROMPT");
+    const char *prompt = prompt_env ? prompt_env : "The capital of France is";
+    const char *maxgen_env = std::getenv("LSX_HY4_DIAG_MAXGEN");
+    const int max_gen = maxgen_env ? std::atoi(maxgen_env) : 8;
+    const bool framed = std::getenv("LSX_HY4_DIAG_FRAME") != nullptr;
+
+    std::vector<int32_t> ids;
+    if (framed) {
+        REQUIRE(model->BuildPromptInputIds(model->Tokenizer(), prompt, ids));
+    } else {
+        std::vector<int32_t> raw(256, 0);
+        size_t cap = raw.size();
+        const int32_t n = lsxcommon::arrow_tokenizer_encode(
+            model->Tokenizer(), prompt, std::strlen(prompt), raw.data(), &cap);
+        REQUIRE(n > 0);
+        raw.resize(static_cast<size_t>(n));
+        ids = std::move(raw);
+    }
+    WARN("prompt_ids=[" << [&] {
+        std::string s;
+        for (auto i : ids) s += std::to_string(i) + ",";
+        return s;
+    }() << "] (" << ids.size() << " ids)");
 
     lsxcommon::ModelRequest req;
     req.input_ids = ids;
-    req.max_gen_tokens = 8;
+    req.max_gen_tokens = max_gen;
     const auto r = model->Infer(req);
     std::string toks;
     for (auto t : r.gen_tokens) toks += std::to_string(t) + " ";

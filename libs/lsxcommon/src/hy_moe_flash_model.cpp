@@ -2,6 +2,8 @@
 
 #include "hy_moe_flash_constants.h"
 
+#include <chrono>
+
 #include "lsxcommon/hy_moe_flash_tool_format.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
@@ -122,9 +124,30 @@ gpu::InferenceResult Hy4FlashModel::Infer(const ModelRequest &req)
         r.error_msg = "model not loaded";
         return r;
     }
+    // Time origin for BOTH numbers below: `tokens_per_sec` is read by the
+    // perf-baseline harness, and `ttft_ms` by every client that reports speed.
+    const auto t_begin = std::chrono::steady_clock::now();
+    double first_token_ms = -1.0;
+    // Wrap the caller's callback so the FIRST token stamps the clock: the decode
+    // loop emits through `GenerationStream::Emit`, which is the only place that
+    // knows when token 0 exists. The wrapper is installed even when the caller
+    // passed no callback, because TTFT is a property of the request, not of the
+    // observer; its per-token cost is a null check against a 166 ms step.
+    const lsxcommon::TokenCallback caller_cb = req.token_callback;
+    lsxcommon::TokenCallback stamped = [&](const lsxcommon::TokenChunk &c) {
+        if (first_token_ms < 0.0)
+            first_token_ms = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - t_begin)
+                                 .count();
+        if (caller_cb) caller_cb(c);
+    };
     lsxcommon::GenerationStream gs;
-    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.on_token = &stamped;
     gs.abort_flag = req.abort_flag;
+    // The decode loop returns tokens but no timing, and `tokens_per_sec` /
+    // `ttft_ms` are read by the perf-baseline harness (and by every client that
+    // reports speed). Without this the seeded row was 0.0 t/s for a run that
+    // really did decode 2048 tokens — a measurement of nothing.
     r = RunUnderResidencyLock([&] {
         return hy4::gpu::RunHy4Inference(
             cfg_.model_path, req.input_ids, req.max_gen_tokens, eos_ids_, pw_,
@@ -132,6 +155,17 @@ gpu::InferenceResult Hy4FlashModel::Infer(const ModelRequest &req)
             lsxcommon::sample::SamplerFor(req.sampling), stream(),
             req.ignore_eos, &gs);
     });
+    const auto t_end = std::chrono::steady_clock::now();
+    r.total_time_ms =
+        std::chrono::duration<double, std::milli>(t_end - t_begin).count();
+    if (r.total_time_ms > 0.0 && !r.gen_tokens.empty()) {
+        r.tokens_per_sec = static_cast<double>(r.gen_tokens.size()) /
+                           (r.total_time_ms / 1000.0);
+        // TTFT: time to the first emitted token (prefill + the first decode
+        // step together, which is exactly what a one-token-per-step driver can
+        // measure honestly).
+        r.ttft_ms = first_token_ms > 0.0 ? first_token_ms : 0.0;
+    }
     if (r.ok) {
         r.output_text = runtime::DecodeGeneratedText(
             *tok_db_, r.gen_tokens.data(), r.gen_tokens.size());

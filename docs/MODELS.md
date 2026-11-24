@@ -252,11 +252,10 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 13
 - vault `Hy4-flash` (override `LSX_TEST_HY4_FLASH_ROOT`)
 - lifecycle TUs: `hy_moe_flash_model.cpp`, `hy_moe_flash_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt
-- perf: not seeded
-- debt: code — same as fsi — one reference serves all three gates; det — same as fsi — one reference serves all three gates; fsi — reference runs (transformers PR #50903); engine parity open — see docs/OPEN_TASKS.md
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes
+- perf: 6.03 t/s (r3, 2026-11-24)
 - report: `docs/model-reports/2026-11-24-Hy4-flash.md`
-- notes: Engram/ViT/DFly2 cut and counted; weight-level reference parity is open.
+- notes: Engram/ViT/DFly2 cut and counted. SelfCheck, CODE and DET green; FSI 2/3 (FSI-TEST-02 numericises where the golden is symbolic).
 
 ## inkling
 

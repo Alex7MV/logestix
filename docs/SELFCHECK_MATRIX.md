@@ -82,6 +82,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
 | **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
+| **hy4-flash** | PASS (x3, `923e8ab7c8027eb2`, framed) ‖ | **2/3** (FSI-02) | 3/3 (template) | 3/3 (template) |
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
@@ -321,6 +322,22 @@ one in a ctest summary, which is why the debt rows are called out below.
   answer. See `docs/model-reports/2026-11-18-Inkling.md`.
 - gemma-4-26b went green in this session (second NVFP4 plane on attn + dense
   MLP, routed experts left 4-bit): FSI/CODE/DET were 1/3, 2/3, 3/3 before.
+- ‖ **hy4-flash**: the row's first measurement, 2026-11-24. `framed` because the
+  checkpoint is a chat model (its template renders `<｜hy_start:opensource｜>` and
+  the model continues a bare fragment instead of answering it). The hash is
+  under `FastMathMode::kOff` with `selfcheck_max_gen=8`, three cycles, all three
+  bit-identical. FSI/CODE/DET are `template` goldens (`tools/{fsi,code,det}_prompts.json`
+  canonical answers + ids from the checkpoint's own chat template with
+  `reasoning_effort=no_think`): the source *runs* — `tools/hy4_flash_reference.py`
+  drives transformers PR #50903 and was used to validate the stack layer by layer
+  — but its decode is full-prefix and costs ~6 min/step, so a 512-token
+  generation is not affordable. FSI-02 is the same failure this family shows
+  elsewhere: the model substitutes the prompt's numeric rates where the canonical
+  template is symbolic, which is instruction-following, not arithmetic. The three
+  stages came up only after the iHC post-term defect was fixed — before that the
+  model produced a degenerate bracket loop
+  (`docs/open-tasks/live/models/hy4-flash.md` H1).
+
 - § **deepseek-v4.1-flash-1017** (the 1017 update of the V4.1 checkpoint;
   sibling, so it reuses the parent's converter/loader/kernels/pipeline and owns
   a re-declared passport) was measured serially on 2026-11-22 on the AOCC

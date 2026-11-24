@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -167,6 +168,15 @@ void Scratch::Free()
     if (arena) cudaFree(arena);
     arena = nullptr;
     arena_bytes = 0;
+    // The expert device-slot cache is a SEPARATE allocation (see EnsureScratch:
+    // it is sized from the VRAM left after the arena) and it is by far the
+    // biggest thing this family holds — ~25 GB of a 32 GiB card. Nulling the
+    // pointer without freeing leaked the whole card on every teardown, so a
+    // process that loads a second model (a test binary with two cases, a server
+    // swapping models) then failed with "scratch allocation failed" and 965 MiB
+    // free. Free it before the field is cleared.
+    if (d_slots) cudaFree(d_slots);
+    d_slots = nullptr;
     streams = agg = pre = post = mix = rsqrt = nullptr;
     x = q = qr = kv = latent = nullptr;
     qk = scores = acc = nullptr;
@@ -343,11 +353,23 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                                                         static_cast<size_t>(want_slots))
                                      : 0);
     if (slots < 8) {
+        // Say WHY. "scratch allocation failed" sent a whole debugging session
+        // looking for a leak when the answer was "the previous model's arena was
+        // still resident" or "the expert slot cache took every free byte".
+        lsxcommon::log::error(absl::StrFormat(
+            "[hy4] expert slot cache does not fit: free=%zu MiB, reserve=%zu MiB, "
+            "one slot=%zu KiB -> %d slots (need >= 8)",
+            free_b >> 20, reserve >> 20, sl.block >> 10, slots));
         sc.Free();
         return cudaErrorMemoryAllocation;
     }
     void *sl_buf = nullptr;
     if (cudaMalloc(&sl_buf, static_cast<size_t>(slots) * sl.block) != cudaSuccess) {
+        lsxcommon::log::error(absl::StrFormat(
+            "[hy4] expert slot cache alloc failed: %d slots x %zu KiB = %zu MiB "
+            "against %zu MiB free",
+            slots, sl.block >> 10, (static_cast<size_t>(slots) * sl.block) >> 20,
+            free_b >> 20));
         sc.Free();
         return cudaGetLastError();
     }
@@ -357,6 +379,69 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
     if (free_mib) *free_mib = static_cast<int>(free_b >> 20);
     return cudaSuccess;
 }
+
+} // namespace
+
+// ── Debug instrument ──────────────────────────────────────────────────────
+//
+// LSX_HY4_DUMP_DIR=<dir> writes every layer boundary as raw little-endian fp32
+// (last position only, because the decode loop is one token per step). It is
+// how a divergence is localised to a component instead of guessed at: the
+// reference (tools/hy4_flash_reference.py --dump) writes the same names from
+// its own hooks. Off unless the env var is set, so a normal run pays one
+// getenv. See docs/open-tasks/live/models/hy4-flash.md.
+namespace {
+
+struct Dumper {
+    const char *dir = nullptr;
+    bool active = false;
+
+    void Init() { dir = std::getenv("LSX_HY4_DUMP_DIR"); }
+    // Only the step that consumed the LAST prompt token is dumped: that is the
+    // teacher-forced prefix the reference's single forward computes, so the two
+    // sides are the same computation rather than the same shape.
+    void AtPromptEnd(bool is_prompt_end) { active = is_prompt_end; }
+    bool On() const { return dir != nullptr && *dir != '\0' && active; }
+
+    void F32(const char *name, const float *d_src, int64_t n,
+             cudaStream_t stream) const
+    {
+        if (!On()) return;
+        std::vector<float> host(static_cast<size_t>(n));
+        if (cudaMemcpyAsync(host.data(), d_src, static_cast<size_t>(n) * 4,
+                            cudaMemcpyDeviceToHost, stream) != cudaSuccess ||
+            cudaStreamSynchronize(stream) != cudaSuccess)
+            return;
+        Write(name, host.data(), n);
+    }
+
+    // Half-precision buffers (the activations between kernels) are widened on
+    // the host so every dumped boundary is the same fp32 format.
+    void H(const char *name, const __half *d_src, int64_t n,
+           cudaStream_t stream) const
+    {
+        if (!On()) return;
+        std::vector<__half> raw(static_cast<size_t>(n));
+        if (cudaMemcpyAsync(raw.data(), d_src, static_cast<size_t>(n) * 2,
+                            cudaMemcpyDeviceToHost, stream) != cudaSuccess ||
+            cudaStreamSynchronize(stream) != cudaSuccess)
+            return;
+        std::vector<float> host(static_cast<size_t>(n));
+        for (int64_t i = 0; i < n; ++i)
+            host[static_cast<size_t>(i)] =
+                __half2float(raw[static_cast<size_t>(i)]);
+        Write(name, host.data(), n);
+    }
+
+    void Write(const char *name, const float *host, int64_t n) const
+    {
+        const std::string path = absl::StrFormat("%s/%s.f32", dir, name);
+        if (std::FILE *f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(host, 4, static_cast<size_t>(n), f);
+            std::fclose(f);
+        }
+    }
+};
 
 } // namespace
 
@@ -397,6 +482,9 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
         result.error_msg = "kv session allocation failed";
         return result;
     }
+
+    Dumper dumper;
+    dumper.Init();
 
     // RoPE tables for both regimes (the token positions are absolute).
     const int table_seq = total_steps + 2;
@@ -458,6 +546,7 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
             release_rope();
             return result;
         }
+        dumper.AtPromptEnd(step + 1 == prompt_len);
         if (cudaMemcpyAsync(scratch.d_tok, &cur_tok, 4, cudaMemcpyHostToDevice,
                             stream) != cudaSuccess) {
             result.error_msg = "token upload failed";
@@ -480,6 +569,7 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                 release_rope();
                 return result;
             }
+        dumper.F32("embed", scratch.streams, kHcMult * kHidden, stream);
 
         for (int lay = 0; lay < num_layers; ++lay) {
             const LayerWeights &lw = pw.layers[static_cast<size_t>(lay)];
@@ -494,9 +584,20 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                 scratch.rsqrt, stream);
             if (e == cudaSuccess)
                 e = RunCastF32ToHalf(scratch.agg, scratch.x, kHidden, stream);
+            if (e == cudaSuccess) {
+                dumper.F32(absl::StrFormat("l%d_attn_hc", lay).c_str(),
+                           scratch.agg, kHidden, stream);
+                dumper.F32(absl::StrFormat("l%d_attn_pre", lay).c_str(),
+                           scratch.pre, 2 * kHcMult, stream);
+                dumper.F32(absl::StrFormat("l%d_attn_post", lay).c_str(),
+                           scratch.post, 2 * kHcMult, stream);
+            }
             if (e == cudaSuccess)
                 e = RunRmsNormHalf(scratch.x, lw.d_input_norm, kHidden, kRmsEps,
                                    stream);
+            if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_attn_in", lay).c_str(),
+                         scratch.x, kHidden, stream);
             if (e == cudaSuccess)
                 e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, scratch.x,
                                                lw.attn.q_a.d_packed,
@@ -506,6 +607,9 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
             if (e == cudaSuccess)
                 e = RunRmsNormHalf(scratch.qr, lw.attn.d_q_norm, kQLora, kRmsEps,
                                    stream);
+            if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_q_resid", lay).c_str(),
+                         scratch.qr, kQLora, stream);
             if (e == cudaSuccess)
                 e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, scratch.qr,
                                                lw.attn.q_b.d_packed,
@@ -525,6 +629,9 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                                                lw.attn.gate.d_scales,
                                                lw.attn.gate.global_scale,
                                                scratch.gate, 1, kHidden, q_dim);
+            if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_gate", lay).c_str(),
+                         scratch.gate, q_dim, stream);
             // RoPE: two regimes, rotate-half over the last 64 lanes of each row.
             const float *cos_t = lw.shape.is_dsa ? d_cos_dsa + step * (kQkRope / 2)
                                                  : d_cos_swa + step * (kQkRope / 2);
@@ -544,6 +651,9 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
             if (e == cudaSuccess)
                 e = RunRmsNormHalf(scratch.latent, lw.attn.d_kv_norm, kKvLora,
                                    kRmsEps, stream);
+            if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_kv_pass", lay).c_str(),
+                         scratch.latent, kKvLora, stream);
             if (e == cudaSuccess)
                 e = RunRopeHalf(scratch.latent, 1, kKvLora + kQkRope, kQkRope,
                                 cos_t, sin_t, false, stream);
@@ -719,9 +829,20 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                     kQkRope, lw.attn.d_sink,
                     1.0f / std::sqrt(static_cast<float>(kQkHead)), scratch.scores,
                     scratch.acc, stream);
+            if (e == cudaSuccess) {
+                dumper.F32(absl::StrFormat("l%d_probs", lay).c_str(),
+                           scratch.scores, static_cast<int64_t>(heads) * npos,
+                           stream);
+                dumper.F32(absl::StrFormat("l%d_acc", lay).c_str(),
+                           scratch.acc, static_cast<int64_t>(heads) * kKvLora,
+                           stream);
+            }
             if (e == cudaSuccess)
                 e = RunMlaValueProject(scratch.acc, lw.attn.kv_b_value, heads,
                                        kVHead, kKvLora, scratch.o, stream);
+            if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_o", lay).c_str(), scratch.o,
+                         static_cast<int64_t>(heads) * kVHead, stream);
             if (e == cudaSuccess)
                 e = RunGatedScale(scratch.o, scratch.gate, q_dim, stream);
             if (e == cudaSuccess)
@@ -732,8 +853,14 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                                                scratch.attn_out, 1, q_dim,
                                                kHidden);
             if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_o_proj", lay).c_str(),
+                         scratch.attn_out, kHidden, stream);
+            if (e == cudaSuccess)
                 e = RunRmsNormHalf(scratch.attn_out, lw.attn.d_post_proj_norm,
                                    kHidden, kRmsEps, stream);
+            if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_attn_out", lay).c_str(),
+                         scratch.attn_out, kHidden, stream);
             if (e == cudaSuccess)
                 e = RunCastHalfToF32(scratch.attn_out, scratch.agg, kHidden,
                                      stream);
@@ -752,11 +879,22 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                           lw.hc_mlp.d_scale, kHcMult, kHidden, kHcEps,
                           kHcMagnitude, scratch.agg, scratch.pre, scratch.post,
                           scratch.mix, scratch.rsqrt, stream);
+            if (e == cudaSuccess) {
+                dumper.F32(absl::StrFormat("l%d_ffn_hc", lay).c_str(),
+                           scratch.agg, kHidden, stream);
+                dumper.F32(absl::StrFormat("l%d_ffn_pre", lay).c_str(),
+                           scratch.pre, 2 * kHcMult, stream);
+                dumper.F32(absl::StrFormat("l%d_ffn_post", lay).c_str(),
+                           scratch.post, 2 * kHcMult, stream);
+            }
             if (e == cudaSuccess)
                 e = RunCastF32ToHalf(scratch.agg, scratch.x, kHidden, stream);
             if (e == cudaSuccess)
                 e = RunRmsNormHalf(scratch.x, lw.d_post_attn_norm, kHidden,
                                    kRmsEps, stream);
+            if (e == cudaSuccess)
+                dumper.H(absl::StrFormat("l%d_ffn_in", lay).c_str(),
+                         scratch.x, kHidden, stream);
             if (e != cudaSuccess) {
                 result.error_msg = "ffn prelude failed";
                 release_rope();
@@ -770,12 +908,19 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                                                lw.d_gate.global_scale, scratch.d_gu,
                                                1, kHidden, kDenseIntermediate);
                 if (e == cudaSuccess)
+                    dumper.H(absl::StrFormat("l%d_d_gate", lay).c_str(),
+                             scratch.d_gu, kDenseIntermediate, stream);
+                if (e == cudaSuccess)
                     e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, scratch.x,
                                                    lw.d_up.d_packed,
                                                    lw.d_up.d_scales,
                                                    lw.d_up.global_scale,
                                                    scratch.d_gu + kDenseIntermediate,
                                                    1, kHidden, kDenseIntermediate);
+                if (e == cudaSuccess)
+                    dumper.H(absl::StrFormat("l%d_d_up", lay).c_str(),
+                             scratch.d_gu + kDenseIntermediate,
+                             kDenseIntermediate, stream);
                 if (e == cudaSuccess)
                     e = RunSwigluClamp(scratch.d_gu, scratch.d_gu + kDenseIntermediate,
                                        scratch.d_act, kDenseIntermediate,
@@ -788,8 +933,14 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                                                    scratch.ffn_out, 1,
                                                    kDenseIntermediate, kHidden);
                 if (e == cudaSuccess)
+                    dumper.H(absl::StrFormat("l%d_mlp_raw", lay).c_str(),
+                             scratch.ffn_out, kHidden, stream);
+                if (e == cudaSuccess)
                     e = RunRmsNormHalf(scratch.ffn_out, lw.d_post_fc2_norm, kHidden,
                                        kRmsEps, stream);
+                if (e == cudaSuccess)
+                    dumper.H(absl::StrFormat("l%d_mlp_out", lay).c_str(),
+                             scratch.ffn_out, kHidden, stream);
                 if (e != cudaSuccess) {
                     result.error_msg = "dense ffn failed";
                     release_rope();
@@ -959,8 +1110,14 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                     e = RunCastF32ToHalf(scratch.agg, scratch.ffn_out, kHidden,
                                          stream);
                 if (e == cudaSuccess)
+                    dumper.H(absl::StrFormat("l%d_mlp_raw", lay).c_str(),
+                             scratch.ffn_out, kHidden, stream);
+                if (e == cudaSuccess)
                     e = RunRmsNormHalf(scratch.ffn_out, lw.d_combine_norm, kHidden,
                                        kRmsEps, stream);
+                if (e == cudaSuccess)
+                    dumper.H(absl::StrFormat("l%d_mlp_out", lay).c_str(),
+                             scratch.ffn_out, kHidden, stream);
                 if (e != cudaSuccess) {
                     result.error_msg = "moe failed";
                     release_rope();
@@ -972,7 +1129,24 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                 release_rope();
                 return result;
             }
-            if (!lw.shape.is_moe)
+            // The iHC post term multiplies the SUBLAYER OUTPUT AFTER ITS SANDWICH
+            // NORM — that is what the norm is for ("sandwich"), and it is what the
+            // reference does (`post * post_mlp_layernorm(mlp(x)) + residual`).
+            //
+            // `agg` is the buffer `RunIhcPost` reads, and the two branches leave
+            // the normed value in DIFFERENT buffers:
+            //   * dense layer: `ffn_out` was normed, then cast down into `agg`;
+            //   * MoE layer:   `agg` still holds the routed+shared sum from
+            //                  `RunAccumulateScaled`, i.e. the PRE-norm value,
+            //                  while the normed output sits in `ffn_out`.
+            // The cast below used to be guarded by `!is_moe`, so on all 41 MoE
+            // layers `post` multiplied the pre-norm sum — whose rms is ~240x
+            // below the normed output (0.0027 vs 0.66 at layer 0) — and the MLP
+            // contribution to the residual was effectively dropped. The residual
+            // reconstruction invariant (out == prev + post*attn + post*mlp) failed
+            // by 27% at layer 1 while the reference held it to 0.2%; see
+            // docs/open-tasks/live/models/hy4-flash.md H1.
+            if (e == cudaSuccess)
                 e = RunCastHalfToF32(scratch.ffn_out, scratch.agg, kHidden,
                                      stream);
             if (e == cudaSuccess)
@@ -984,6 +1158,8 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                 release_rope();
                 return result;
             }
+            dumper.F32(absl::StrFormat("l%d_out", lay).c_str(),
+                       scratch.streams, kHcMult * kHidden, stream);
         }
 
         // ── head ───────────────────────────────────────────────────────────
@@ -992,13 +1168,21 @@ cudaError_t EnsureScratch(const PinnedWeights &pw, Scratch &sc, int want_slots,
                                    scratch.agg, scratch.pre, scratch.mix,
                                    scratch.rsqrt, stream);
         if (e == cudaSuccess)
+            dumper.F32("hc_head", scratch.agg, kHidden, stream);
+        if (e == cudaSuccess)
             e = RunCastF32ToHalf(scratch.agg, scratch.x, kHidden, stream);
         if (e == cudaSuccess)
             e = RunRmsNormHalf(scratch.x, pw.d_final_norm, kHidden, kRmsEps,
                                stream);
+        if (e == cudaSuccess && dumper.On())
+            e = RunCastHalfToF32(scratch.x, scratch.agg, kHidden, stream);
+        if (e == cudaSuccess)
+            dumper.F32("norm", scratch.agg, kHidden, stream);
         if (e == cudaSuccess)
             e = RunHeadLogits(pw.d_lm_head, scratch.x, pw.vocab_size, kHidden,
                               scratch.logits, stream);
+        if (e == cudaSuccess)
+            dumper.F32("logits", scratch.logits, pw.vocab_size, stream);
         if (e != cudaSuccess) {
             result.error_msg = "head failed";
             release_rope();
