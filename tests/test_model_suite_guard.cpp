@@ -793,6 +793,10 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"minimax-m3", {"test_minimax_moe_tool_framing"}},
         {"minimax-m3.1-flash", {"test_minimax_moe_flash_tool_framing"}},
         {"hy-memory-30b-a3b", {"test_hy_moe_tool_framing"}},
+        // Hy4-flash renders its own Hunyuan frame (<｜hy_start｜>{role} →
+        // <tool_calls:opensource> + <arg_key>/<arg_value>) from the
+        // checkpoint's chat_template.jinja; the host target proves render+parse.
+        {"hy4-flash", {"test_hy_moe_flash_tool_framing"}},
         {"hy-simulmt-30b-a3b", {"test_hy_moe_simulmt_tool_framing"}},
         {"flint", {"test_flint_moe_tool_framing"}},
         {"ling", {"test_ling_tool_framing"}},

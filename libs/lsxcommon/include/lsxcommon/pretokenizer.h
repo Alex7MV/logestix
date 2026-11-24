@@ -126,6 +126,44 @@ private:
     bool stage_valid_ = false;
 };
 
+// Hunyuan 3-split pre-tokenizer (tokenizer_kind 13). Hy4-flash. A three-split
+// Sequence like Flint's, with a DIFFERENT main pattern:
+//
+//   1. \p{N}{1,3} Isolated                    (as in WordStream)
+//   2. [Han|Hiragana|Katakana]+ Isolated      (as in WordStream)
+//   3. [!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~][A-Za-z]+
+//    | [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+
+//    | ' '?[\p{P}\p{S}]+[\r\n]*
+//    | \s*[\r\n]+ | \s+(?!\S) | \s+
+//
+// There is no contraction alternative: the first alternative swallows
+// apostrophe + ASCII letters instead, which is why "don't" splits as
+// ["don", "'t"] here but as ["don", "'t"] in Flint too for a different reason.
+// The optional prefix of the letter alternative is a bare single codepoint
+// (so " hello" is one piece while "  中" keeps the CJK isolation).
+class HunyuanWordStream {
+public:
+    HunyuanWordStream(const char *text, size_t length);
+
+    bool next(WordSpan &word);
+    uint32_t error() const { return error_; }
+
+private:
+    // The main pattern runs on the GAP text (`[pos, gap_end)`) only: the digit
+    // and CJK splits have already claimed their runs.
+    bool match(size_t pos, const char *gap_end, size_t &len) const;
+    bool next_number(WordSpan &word);   // split 1 (<= 3 \p{N} codepoints)
+    bool next_cjk(WordSpan &word);      // split 2 (one CJK-run word)
+    bool next_main(WordSpan &word);     // split 3
+
+    const char *const begin_;
+    const char *const end_;
+    size_t pos_ = 0;
+    uint32_t error_ = 0;
+    size_t stage_next_ = 0;   // cached digit/CJK boundary, see WordStream
+    bool stage_valid_ = false;
+};
+
 // Qwen2/3-style single-run pre-tokenizer (tokenizer_kind 7). Qwen3.5/3.6/3.8,
 // Qwen3.8-Flash-Next, Ornith. The reference pattern is ONE stage (no digit or
 // CJK isolation):

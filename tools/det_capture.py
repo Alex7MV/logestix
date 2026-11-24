@@ -444,10 +444,23 @@ def template_golden(model, model_type, out, max_new_tokens):
     cases = []
     for p in load_prompts():
         prompt_text = frame(model, tok, p["body"], opts)
-        ids = tok(
-            prompt_text,
-            add_special_tokens=opts.get("add_special_tokens", True),
-        ).input_ids
+        if opts.get("template_tokenize") and getattr(tok, "chat_template", None):
+            # Ask the template for IDS: rendering to text and re-tokenizing is
+            # not equivalent when the frame is carried by SPECIAL tokens (hy4's
+            # `<|hy_start:opensource|>` markers), and the text route also
+            # re-applies add_special_tokens and prepends a second start marker
+            # the served frame never has.
+            kwargs = {"tokenize": True, "add_generation_prompt": True,
+                      "return_dict": False}
+            for k, v in (opts.get("template_kwargs") or {}).items():
+                kwargs[k] = v
+            ids = tok.apply_chat_template(
+                [{"role": "user", "content": p["body"]}], **kwargs)
+        else:
+            ids = tok(
+                prompt_text,
+                add_special_tokens=opts.get("add_special_tokens", True),
+            ).input_ids
         got = extract(p["kind"], p["expected"])
         assert got == p["expected"], (p["id"], got, p["expected"])
         cases.append({"id": p["id"], "kind": p["kind"],
@@ -513,6 +526,14 @@ OVERRIDES["inkling-2-mini"] = {"loader": "inkling_loop", "ignore_eos": True,
 # compares.
 OVERRIDES["tml-d24-varloop-research"] = {"loader": "inkling_loop",
                                          "ignore_eos": True, "threads": 64}
+# Hy4-flash: canonical answers come from tools/det_prompts.json and the ids from
+# the checkpoint's own template via `tokenize=True`. The source runs
+# (tools/hy4_flash_reference.py) but a long generation is O(n^2) full-prefix
+# decoding (~6 min/step here); see docs/open-tasks/live/models/hy4-flash.md.
+OVERRIDES["hy4-flash"] = {
+    "template_tokenize": True,
+    "template_kwargs": {"reasoning_effort": "no_think"},
+}
 OVERRIDES["dory-1.0-4b"] = {"loader": "dory", "tokenizer": "fast",
                             "enable_thinking": True}
 

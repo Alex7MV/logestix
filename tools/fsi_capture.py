@@ -540,8 +540,23 @@ def capture_from_template(tok, opts, prompts, model, model_type, out,
     for p in prompts:
         prompt_text = p["body"]
         framed = frame(model, tok, p["body"], opts)
+        ids = None
         if framed is not None:
             prompt_text = framed
+        elif opts.get("template_tokenize") and getattr(tok, "chat_template", None):
+            # Ask the template for IDS. Rendering to text and re-tokenizing is
+            # not equivalent for a checkpoint whose frame is carried by SPECIAL
+            # tokens: hy4-flash's `<|hy_start:opensource|>` markers are added
+            # tokens, and the text route also re-applies `add_special_tokens`,
+            # which prepends a second start marker the served frame never has.
+            # `tokenize=True` returns the ids the engine is actually fed (pinned
+            # equal to Hy4FlashModel::BuildPromptInputIds by
+            # tests/test_hy_moe_flash_tool_framing.cpp).
+            kwargs = {"tokenize": True, "add_generation_prompt": True,
+                      "return_dict": False}
+            _apply_template_kwargs(kwargs, opts)
+            ids = tok.apply_chat_template(_frame_messages(opts, p["body"]),
+                                          **kwargs)
         elif getattr(tok, "chat_template", None):
             kwargs = {"tokenize": False, "add_generation_prompt": True}
             if opts.get("enable_thinking") is not None:
@@ -556,9 +571,10 @@ def capture_from_template(tok, opts, prompts, model, model_type, out,
                 kwargs.pop("enable_thinking", None)
                 prompt_text = tok.apply_chat_template(
                     _frame_messages(opts, p["body"]), **kwargs)
-        ids = tok(prompt_text, return_tensors="pt",
-                  add_special_tokens=opts.get("add_special_tokens", True)
-                  ).input_ids[0].tolist()
+        if ids is None:
+            ids = tok(prompt_text, return_tensors="pt",
+                      add_special_tokens=opts.get("add_special_tokens", True)
+                      ).input_ids[0].tolist()
         got = extract(p["kind"], p["anchor"], p["expected"])
         if not got:
             raise SystemExit("%s: empty template extraction" % p["id"])
@@ -612,6 +628,22 @@ OVERRIDES["inkling-2-mini"] = {"loader": "inkling_loop", "ignore_eos": True,
 # at the checkpoint's declared 3 passes, which is what the capture uses.
 OVERRIDES["tml-d24-varloop-research"] = {"loader": "inkling_loop",
                                          "ignore_eos": True, "threads": 64}
+# Hy4-flash: the SOURCE is runnable (tools/hy4_flash_reference.py drives
+# transformers PR #50903 and was used to validate the architecture layer by
+# layer), but a full FSI generation costs hours: that harness feeds the whole
+# prefix per step, so 512 new tokens over a ~700-token prompt is O(n^2) at
+# ~6 min/step on this host. The golden is therefore the canonical answer from
+# tools/fsi_prompts.json (the same `expected` every other family records) with
+# the ids taken from the checkpoint's own template via `tokenize=True`, and
+# `reasoning_effort=no_think` so the frame is the one the engine serves by
+# default. Recorded as a deviation, not passed off as a source run.
+OVERRIDES["hy4-flash"] = {
+    "template_tokenize": True,
+    "template_kwargs": {"reasoning_effort": "no_think"},
+    "unrunnable": "canonical answers recorded from tools/fsi_prompts.json; the "
+                  "source runs (tools/hy4_flash_reference.py) but a 512-token "
+                  "generation is O(n^2) full-prefix decoding (~6 min/step here)",
+}
 OVERRIDES["dory-1.0-4b"] = {"loader": "dory", "tokenizer": "fast",
                             "enable_thinking": False}
 

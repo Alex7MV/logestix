@@ -59,3 +59,4 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | Inkling-2-Mini | `2026-11-21-Inkling-2-Mini.md` |
 | TML-d24-varloop-research | `2026-11-22-TML-d24-varloop-research.md` |
 | DeepSeek-V4.1-Flash-1017 | `2026-11-22-DeepSeek-V4.1-Flash-1017.md` |
+| Hy4-flash | `2026-11-24-Hy4-flash.md` |

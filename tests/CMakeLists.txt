@@ -5580,3 +5580,85 @@ lsx_add_test(NAME test_manifest_sync
            "LSX_GENERATED_DIR=\"${LSX_MANIFEST_GENERATED_DIR}\""
            "LSX_PYTHON3=\"${LSX_PYTHON3}\""
     LABEL fast)
+
+# ── Hy4-flash (hy4-flash): one executable per lifecycle stage ───────────────
+add_executable(test_hy_moe_flash_constants test_hy_moe_flash_constants.cpp)
+target_include_directories(test_hy_moe_flash_constants PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_hy_moe_flash_constants PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_hy_moe_flash_convert test_hy_moe_flash_convert.cpp)
+target_include_directories(test_hy_moe_flash_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_hy_moe_flash_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_hy_moe_flash_loader test_hy_moe_flash_loader.cpp)
+target_include_directories(test_hy_moe_flash_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_hy_moe_flash_loader PRIVATE lsxcommon
+    arrow_shared Catch2::Catch2WithMain)
+
+add_executable(test_hy_moe_flash_tokenizer_parity
+    test_hy_moe_flash_tokenizer_parity.cpp)
+target_compile_definitions(test_hy_moe_flash_tokenizer_parity PRIVATE
+    LSX_HY4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy4")
+target_link_libraries(test_hy_moe_flash_tokenizer_parity PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_hy_moe_flash_model test_hy_moe_flash_model.cpp)
+target_include_directories(test_hy_moe_flash_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_hy_moe_flash_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_hy_moe_flash_tool_framing test_hy_moe_flash_tool_framing.cpp)
+target_include_directories(test_hy_moe_flash_tool_framing PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_hy_moe_flash_tool_framing PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+
+add_executable(test_hy_moe_flash_kernels test_hy_moe_flash_kernels.cpp)
+target_include_directories(test_hy_moe_flash_kernels PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_hy_moe_flash_kernels PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+
+add_executable(test_hy_moe_flash_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_hy_moe_flash_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_flash_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_flash_selfcheck PRIVATE
+    "LSX_SELFCHECK_MODEL=\"hy4-flash\"")
+
+# The three parity gates are spelled out rather than looped: the ctest-labels
+# guard reads `foreach(<var> <items...>)` as a list of registered TEST names, so a
+# loop here reports "fsi/code/det" as unlabeled tests.
+add_executable(test_hy_moe_flash_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_flash_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_flash_fsi_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_flash_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy4-flash\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+
+add_executable(test_hy_moe_flash_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_flash_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_flash_code_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_flash_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy4-flash\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+
+add_executable(test_hy_moe_flash_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_hy_moe_flash_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_flash_det_selfcheck PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+target_compile_definitions(test_hy_moe_flash_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"hy4-flash\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")

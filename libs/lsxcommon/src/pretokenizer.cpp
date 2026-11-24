@@ -1124,6 +1124,210 @@ size_t ConsumeDigits(const char *begin, const char *end, size_t pos,
 
 } // namespace
 
+// ── Hunyuan 3-split (tokenizer_kind 13) ────────────────────────────────────
+
+HunyuanWordStream::HunyuanWordStream(const char *text, size_t length)
+    : begin_(text), end_(text + length)
+{
+}
+
+bool HunyuanWordStream::next_number(WordSpan &word)
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    size_t p = pos_;
+    int count = 0;
+    while (p < n && count < 3) {
+        size_t q = 0;
+        const uint32_t cp = decode_utf8(begin_ + p, n - p, &q);
+        if (cp == kInvalid || unicode::classify(cp) != unicode::CharClass::Number)
+            break;
+        p += q;
+        ++count;
+    }
+    word = WordSpan{begin_ + pos_, p - pos_};
+    pos_ = p;
+    return true;
+}
+
+bool HunyuanWordStream::next_cjk(WordSpan &word)
+{
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    size_t p = pos_;
+    while (p < n) {
+        size_t q = 0;
+        const uint32_t cp = decode_utf8(begin_ + p, n - p, &q);
+        if (cp == kInvalid || !is_cjk_run(cp)) break;
+        p += q;
+    }
+    word = WordSpan{begin_ + pos_, p - pos_};
+    pos_ = p;
+    return true;
+}
+
+namespace {
+
+// The explicit ASCII punctuation set of the reference pattern's first
+// alternative: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
+bool IsAsciiPunctLead(uint32_t cp)
+{
+    if (cp < 0x21 || cp > 0x7E) return false;
+    const char c = static_cast<char>(cp);
+    return std::strchr("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", c) != nullptr;
+}
+
+// [A-Za-z]+
+size_t ConsumeAsciiLetters(const char *begin, const char *end, size_t pos)
+{
+    const size_t n = static_cast<size_t>(end - begin);
+    size_t p = pos;
+    while (p < n) {
+        const char c = begin[p];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) break;
+        ++p;
+    }
+    return p;
+}
+
+// [^\r\n\p{L}\p{P}\p{S}]?  — one codepoint that may prefix a letter run
+// (a space is the case that matters: " hello" stays one piece, "  中" does not
+// because stage 2 already isolated the Han run).
+bool IsLetterRunPrefix(uint32_t cp)
+{
+    if (cp == 0x0D || cp == 0x0A) return false;
+    const unicode::CharClass k = unicode::classify(cp);
+    return k != unicode::CharClass::Letter && k != unicode::CharClass::Mark &&
+           k != unicode::CharClass::Punct && k != unicode::CharClass::Symbol;
+}
+
+} // namespace
+
+bool HunyuanWordStream::match(size_t pos, const char *gap_end,
+                             size_t &len) const
+{
+    const size_t n = static_cast<size_t>(gap_end - begin_);
+    if (pos >= n) return false;
+
+    // alt1: [punct][A-Za-z]+  — this is where contractions land ("'s", "'ll"),
+    // because there is no contraction alternative in this pattern.
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos, n - pos, &cl);
+    if (cp == kInvalid) return false;
+    if (IsAsciiPunctLead(cp)) {
+        const size_t letters = ConsumeAsciiLetters(begin_, gap_end, pos + cl);
+        if (letters > pos + cl) {
+            len = letters - pos;
+            return true;
+        }
+    }
+
+    // alt2: [prefix]?[\p{L}\p{M}]+
+    //
+    // A failing prefix check must NOT abort the alternation: " _call" is alt3's
+    // (space + punctuation run) and "   m" is alt6's, and returning early here
+    // is what made both split into single characters.
+    {
+        size_t p = pos;
+        const unicode::CharClass k0 = unicode::classify(cp);
+        bool prefix_ok = true;
+        if (k0 != unicode::CharClass::Letter && k0 != unicode::CharClass::Mark) {
+            if (!IsLetterRunPrefix(cp) || pos + cl >= n) {
+                prefix_ok = false;
+            } else {
+                size_t cl2 = 0;
+                const uint32_t cp2 =
+                    decode_utf8(begin_ + pos + cl, n - pos - cl, &cl2);
+                const unicode::CharClass k1 =
+                    cp2 == kInvalid ? unicode::CharClass::Other
+                                    : unicode::classify(cp2);
+                if (k1 == unicode::CharClass::Letter ||
+                    k1 == unicode::CharClass::Mark)
+                    p = pos + cl;
+                else
+                    prefix_ok = false;
+            }
+        }
+        if (prefix_ok) {
+            size_t q = p;
+            while (q < n) {
+                size_t cq = 0;
+                const uint32_t c2 = decode_utf8(begin_ + q, n - q, &cq);
+                if (c2 == kInvalid) break;
+                const unicode::CharClass k = unicode::classify(c2);
+                if (k != unicode::CharClass::Letter &&
+                    k != unicode::CharClass::Mark)
+                    break;
+                q += cq;
+            }
+            if (q > p) {
+                len = q - pos;
+                return true;
+            }
+        }
+    }
+
+    // alt3: ' '?[\p{P}\p{S}]+[\r\n]*
+    {
+        size_t p = pos;
+        if (cp == 0x20) p += cl;
+        size_t q = p;
+        while (q < n) {
+            size_t cq = 0;
+            const uint32_t c2 = decode_utf8(begin_ + q, n - q, &cq);
+            if (c2 == kInvalid) break;
+            const unicode::CharClass k = unicode::classify(c2);
+            if (k != unicode::CharClass::Punct &&
+                k != unicode::CharClass::Symbol)
+                break;
+            q += cq;
+        }
+        if (q > p) {
+            while (q < n && (begin_[q] == '\r' || begin_[q] == '\n')) ++q;
+            len = q - pos;
+            return true;
+        }
+    }
+
+    // alt4-6: \s*[\r\n]+ | \s+(?!\S) | \s+
+    return MatchWhitespaceAlts(begin_, gap_end, pos, len);
+}
+
+bool HunyuanWordStream::next_main(WordSpan &word)
+{
+    if (!stage_valid_ || stage_next_ < pos_) {
+        stage_next_ = StageGapEnd(begin_, end_, pos_);
+        stage_valid_ = true;
+    }
+    const size_t gap_n = stage_next_;
+    size_t len = 0;
+    // The main pattern runs on the GAP text only: the digit and CJK splits have
+    // already claimed their runs, and a match that crossed `gap_n` would have to
+    // be discarded (that is what split "abc" into a, b, c before "あいうえお").
+    const char *const gap_end = begin_ + gap_n;
+    if (!match(pos_, gap_end, len) || len == 0) {
+        size_t cl = 0;
+        const uint32_t cp = decode_utf8(begin_ + pos_, gap_n - pos_, &cl);
+        len = (cp == kInvalid) ? 1 : cl;   // unmatched text: its own piece
+    }
+    word = WordSpan{begin_ + pos_, len};
+    pos_ += len;
+    return true;
+}
+
+bool HunyuanWordStream::next(WordSpan &word)
+{
+    if (error_) return false;
+    const size_t n = static_cast<size_t>(end_ - begin_);
+    if (pos_ >= n) return false;
+    size_t cl = 0;
+    const uint32_t cp = decode_utf8(begin_ + pos_, n - pos_, &cl);
+    if (cp == kInvalid) { error_ = 1; return false; }
+    if (unicode::classify(cp) == unicode::CharClass::Number)
+        return next_number(word);
+    if (is_cjk_run(cp)) return next_cjk(word);
+    return next_main(word);
+}
+
+
 QwenWordStream::QwenWordStream(const char *text, size_t length)
     : begin_(text), end_(text + length)
 {

@@ -182,6 +182,12 @@ const PerfModel kHySimulMT = {
     2048};
 const PerfModel kFlint = {
     "flint", "flint", "The capital of France is", 2048};
+// Hy4-flash: the canonical 2048-token protocol, like every streamed-expert
+// family. The row is seeded by RUNNING this target (never by editing the JSON):
+// f0e8bebe/c0a30d1c are the two commits that show what "seeded through the
+// harness" means.
+const PerfModel kHy4Flash = {
+    "hy4-flash", "Hy4-flash", "The capital of France is", 2048};
 const PerfModel kLing = {
     "ling", "Ling-3.1-flash", "The capital of France is", 2048};
 const PerfModel kBeam = {
@@ -778,6 +784,11 @@ TEST_CASE("perf baseline: hy-simulmt-30b-a3b", "[perf]")
 TEST_CASE("perf baseline: flint", "[perf]")
 {
     RunPerfModel(kFlint);
+}
+
+TEST_CASE("perf baseline: hy4-flash", "[perf]")
+{
+    RunPerfModel(kHy4Flash);
 }
 
 TEST_CASE("perf baseline: ling", "[perf]")
