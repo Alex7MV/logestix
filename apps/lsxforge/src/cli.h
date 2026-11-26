@@ -39,6 +39,7 @@ enum class Pipeline {
     kNemotronNvfp4,
     kNemotronUltra,
     kGigachat,
+    kGigachat4,
     kGlmFlash,
     kGranite,
     kGraniteSwitch,
@@ -95,6 +96,7 @@ struct Flags {
     bool nemotron_nvfp4 = false;
     bool nemotron_ultra = false;
     bool gigachat = false;
+    bool gigachat4 = false;
     bool glmflash = false;
     bool granite = false;
     bool granite_switch = false;

@@ -65,6 +65,9 @@ add_library(lsxcommon STATIC
     src/gigachat_moe_load.cpp
     src/gigachat_moe_model.cpp
     src/gigachat_moe_expert_cache.cpp
+    src/gigachat_moe_37b_convert.cpp
+    src/gigachat_moe_37b_load.cpp
+    src/gigachat_moe_37b_model.cpp
     src/mimo_moe_convert.cpp
     src/mimo_moe_load.cpp
     src/mimo_moe_expert_cache.cpp
@@ -1007,6 +1010,7 @@ add_library(lsxcommon_gigachat_cu OBJECT
     src/gigachat_moe_kernels.cu
     src/gigachat_moe_inference_attn.cu
     src/gigachat_moe_inference_pipeline.cu
+    src/gigachat_moe_37b_inference_indexer.cu
 )
 set_target_properties(lsxcommon_gigachat_cu PROPERTIES
     CUDA_ARCHITECTURES OFF

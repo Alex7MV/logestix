@@ -13,6 +13,7 @@
 #include "lsxcommon/gemma_dense_convert.h"
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gigachat_moe_convert.h"
+#include "lsxcommon/gigachat_moe_37b_convert.h"
 #include "lsxcommon/alice_moe_convert.h"
 #include "lsxcommon/kimi_moe_k3_convert.h"
 #include "lsxcommon/kimi_moe_pro_convert.h"
@@ -104,6 +105,8 @@ ABSL_FLAG(bool, nemotron_nvfp4, false,
           "ModelOpt W4A16_NVFP4 source) conversion pipeline");
 ABSL_FLAG(bool, gigachat, false,
           "GigaChat3.5-432B-A28B-Reasoning (hybrid MLA+GDN+MoE) conversion pipeline");
+ABSL_FLAG(bool, gigachat4, false,
+          "GigaChat4-37B-A4B (hybrid GDN + DSA MLA + MoE) conversion pipeline");
 ABSL_FLAG(bool, glmflash, false,
           "GLM-5.3-Flash (glm5_next) conversion pipeline");
 ABSL_FLAG(bool, granite, false,
@@ -230,6 +233,7 @@ int main(int argc, char* argv[]) {
     bool nemotron_ultra = absl::GetFlag(FLAGS_nemotron_ultra);
     const std::string layers = absl::GetFlag(FLAGS_layers);
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
+    bool gigachat4 = absl::GetFlag(FLAGS_gigachat4);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     bool granite = absl::GetFlag(FLAGS_granite);
     bool granite_switch = absl::GetFlag(FLAGS_granite_switch);
@@ -322,6 +326,7 @@ int main(int argc, char* argv[]) {
         return 2;
     }
     flags.gigachat = gigachat;
+    flags.gigachat4 = gigachat4;
     flags.glmflash = glmflash;
     flags.granite = granite;
     flags.granite_switch = granite_switch;
@@ -619,8 +624,8 @@ int main(int argc, char* argv[]) {
             // tokenizer_kind 5.
             tok_policy.pretokenizer = 3;
         }
-        if (flags.gigachat) {
-            // GigaChat3.5: the Llama-3/o200k 7-alternative case-run pattern
+        if (flags.gigachat || flags.gigachat4) {
+            // GigaChat3.5 / GigaChat4: the Llama-3/o200k 7-alternative case-run pattern
             // (contraction suffix, \p{N}{1,3}, CJK inside the letter runs).
             // tokenizer_kind 3; `<s>`/`</s>`/pad resolve from
             // tokenizer_config.json. The chat framing prepends the single BOS.
@@ -1162,6 +1167,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("GigaChat conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kGigachat4: {
+        lsxcommon::log::info(
+            "GigaChat4-37B-A4B pipeline (unified logestix layout)");
+        auto st = lsxcommon::gigachat4::ConvertGigaChat4Model(input_path,
+                                                             output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "GigaChat4 conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("GigaChat4 conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

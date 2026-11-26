@@ -226,6 +226,7 @@ void GcLayerWeights::Free()
     kv_b.Free();
     o_proj.Free();
     attn_gate.Free();
+    indexer.Free();
     gdn_in_qkvz.Free();
     gdn_out_proj.Free();
     cudaFree(const_cast<uint8_t *>(d_conv1d));

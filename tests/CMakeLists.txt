@@ -3677,6 +3677,137 @@ target_include_directories(test_gigachat_moe_load_fast PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 lsx_copy_arrow_dlls(test_gigachat_moe_load_fast ARROW_ONLY)
 
+# ── GigaChat4-37B-A4B tests (hybrid GDN + DSA MLA + MoE) ──────────────────
+add_executable(test_gigachat_moe_37b_convert test_gigachat_moe_37b_convert.cpp)
+target_link_libraries(test_gigachat_moe_37b_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_37b_convert PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+lsx_copy_arrow_dlls(test_gigachat_moe_37b_convert ARROW_ONLY)
+
+add_executable(test_gigachat_moe_37b_tokenizer_parity
+    test_gigachat_moe_37b_tokenizer_parity.cpp)
+target_link_libraries(test_gigachat_moe_37b_tokenizer_parity PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_37b_tokenizer_parity PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_gigachat_moe_37b_tokenizer_parity ARROW_ONLY)
+
+add_executable(test_gigachat_tool_framing_37b test_gigachat_tool_framing_37b.cpp)
+target_link_libraries(test_gigachat_tool_framing_37b PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_tool_framing_37b PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_gigachat_tool_framing_37b ARROW_ONLY)
+
+add_executable(test_gigachat_moe_37b_model test_gigachat_moe_37b_model.cpp)
+target_link_libraries(test_gigachat_moe_37b_model PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_37b_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_gigachat_moe_37b_model ARROW_ONLY)
+
+add_executable(test_gigachat_moe_37b_loader test_gigachat_moe_37b_loader.cpp)
+target_link_libraries(test_gigachat_moe_37b_loader PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_37b_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+add_executable(test_gigachat_moe_37b_weight_graph
+    test_gigachat_moe_37b_weight_graph.cpp)
+target_link_libraries(test_gigachat_moe_37b_weight_graph PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_37b_weight_graph PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_gigachat_moe_37b_weight_graph ARROW_ONLY)
+
+# Host reference math (header-only, no CUDA).
+add_executable(test_gigachat_moe_37b_kernels test_gigachat_moe_37b_kernels.cpp)
+target_link_libraries(test_gigachat_moe_37b_kernels PRIVATE
+    Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_37b_kernels PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+# Device kernels (standalone .cu object + link lsxcommon at the exe).
+add_library(test_gigachat_moe_37b_devkernels_cu OBJECT
+    test_gigachat_moe_37b_devkernels.cu)
+set_target_properties(test_gigachat_moe_37b_devkernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_gigachat_moe_37b_devkernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    ${LSX_CUDA_GENCODE_FLAGS};
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_gigachat_moe_37b_devkernels_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
+    "${CMAKE_BINARY_DIR}/third_party/libzmq"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
+)
+target_compile_definitions(test_gigachat_moe_37b_devkernels_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+    SPDLOG_COMPILED_LIB
+    ZMQ_STATIC
+    SIMDJSON_THREADS_ENABLED=1
+)
+target_link_libraries(test_gigachat_moe_37b_devkernels_cu PRIVATE
+    Catch2::Catch2WithMain lsx_dep_includes)
+
+add_executable(test_gigachat_moe_37b_devkernels)
+set_target_properties(test_gigachat_moe_37b_devkernels PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_gigachat_moe_37b_devkernels PRIVATE
+    test_gigachat_moe_37b_devkernels_cu lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_gigachat_moe_37b_devkernels ARROW_ONLY)
+
+# DSA lightning indexer (rope / k-norm / scores / exact top-k / composite step).
+add_library(test_gigachat_moe_37b_indexer_cu OBJECT
+    test_gigachat_moe_37b_indexer.cu)
+set_target_properties(test_gigachat_moe_37b_indexer_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_gigachat_moe_37b_indexer_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    ${LSX_CUDA_GENCODE_FLAGS};
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_gigachat_moe_37b_indexer_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
+    "${CMAKE_BINARY_DIR}/third_party/libzmq"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
+)
+target_compile_definitions(test_gigachat_moe_37b_indexer_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+    SPDLOG_COMPILED_LIB
+    ZMQ_STATIC
+    SIMDJSON_THREADS_ENABLED=1
+)
+target_link_libraries(test_gigachat_moe_37b_indexer_cu PRIVATE
+    Catch2::Catch2WithMain lsx_dep_includes)
+
+add_executable(test_gigachat_moe_37b_indexer)
+set_target_properties(test_gigachat_moe_37b_indexer PROPERTIES
+    LINKER_LANGUAGE CXX)
+target_link_libraries(test_gigachat_moe_37b_indexer PRIVATE
+    test_gigachat_moe_37b_indexer_cu lsxcommon Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_gigachat_moe_37b_indexer ARROW_ONLY)
+
 # test_gigachat_moe_devkernels — device-kernel parity (standalone .cu object +
 # link lsxcommon at the exe; same pattern as test_nemotron_moe_kernels).
 add_library(test_gigachat_moe_devkernels_cu OBJECT test_gigachat_moe_devkernels.cu)
@@ -4872,6 +5003,24 @@ target_link_libraries(test_gigachat_moe_det_selfcheck PRIVATE lsxcommon Catch2::
 target_compile_definitions(test_gigachat_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_gigachat_moe_37b_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_37b_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-37b-a4b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_gigachat_moe_37b_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_37b_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-37b-a4b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_gigachat_moe_37b_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_37b_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-37b-a4b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_glm_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -5424,6 +5573,10 @@ add_executable(test_gigachat_moe_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_gigachat_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gigachat_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gigachat_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gigachat3.5-432b-a28b-reasoning\"")
+add_executable(test_gigachat_moe_37b_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_gigachat_moe_37b_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gigachat4-37b-a4b\"")
 add_executable(test_glm_moe_flash_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_glm_moe_flash_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)

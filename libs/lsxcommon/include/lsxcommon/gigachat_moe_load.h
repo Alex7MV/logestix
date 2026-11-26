@@ -10,6 +10,7 @@
 
 #include <cuda_runtime.h>
 
+#include "lsxcommon/gigachat_moe_37b_inference_indexer.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/vram_estimate.h"
 
@@ -79,6 +80,10 @@ struct GcLayerWeights {
     GcGatedNorm q_a_norm;
     GcGatedNorm kv_a_norm;
     lsx_nvfp4::LsxNvfp4Weight q_a, q_b, kv_a, kv_b, o_proj, attn_gate;
+    // DSA lightning indexer of the full-attention layers. Empty (null planes)
+    // for a checkpoint that has none (GigaChat3.5); the pipeline keys the DSA
+    // step off `dims.index_topk`, not off this member.
+    GcDsaIndexerWeights indexer;
 
     // GatedDeltaNet (linear_attention layers). in_proj_ba stays BF16 (the only
     // non-NVFP4 projection, dims are tiny); conv/A_log/dt_bias stay F32.

@@ -105,10 +105,13 @@ struct SuiteSpec
 const std::vector<SuiteSpec> &Suites()
 {
     // `SuiteSpec` holds `const char*`, so the builder needs storage that
-    // outlives it: a reserved vector keeps the addresses stable for the process
-    // lifetime (a local std::string's c_str() here is a dangling pointer).
-    static std::vector<std::string> names;
-    names.reserve(1024);
+    // outlives it AND whose element addresses never move: `std::deque` keeps
+    // references valid on push_back, `std::vector` does not — a reserved vector
+    // silently dangles every earlier c_str() the moment a new model's row pushes
+    // the count past the reservation (found 2026-11-26 when the GigaChat4 row
+    // tipped it over 1024 strings and this guard started reading garbage model
+    // names).
+    static std::deque<std::string> names;
     // One row per model, stages in lifecycle order, targets from the manifest.
     // The hand-written table this replaces had to be extended by hand in every
     // ingest commit; the generated one cannot fall behind the registrations
@@ -779,6 +782,11 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"nemotron-ultra-550b-a55b",
          {"test_nemotron_ultra_tool_framing", "test_nemotron_ultra_selfcheck"}},
         {"gigachat3.5-432b-a28b-reasoning", {"test_gigachat_tool_framing"}},
+        // GigaChat4 ships the SAME chatml-v5 template and the same GCML wire
+        // format as 3.5 (the template diff is attachments/text-block plumbing),
+        // so the family codec target proves render+parse for it too; the model
+        // overrides delegate to that codec.
+        {"gigachat4-37b-a4b", {"test_gigachat_tool_framing_37b"}},
         {"mimo-v2.6-flash-rl", {"test_mimo_tool_framing"}},
         {"alice-foundation-80b-a3b", {"test_alice_tool_framing"}},
         // Xing has a native renderer verified against its chat_template.jinja

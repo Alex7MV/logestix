@@ -22,19 +22,60 @@ LSX_HD float Silu(float v) { return v * Sigmoid(v); }
 // gating weight is 2.0 (config `layernorm_gating_weight`). Callers pass the
 // already-computed `gate = W_down . silu(W_up . x_norm)` and the already
 // RMS-normalized `x_norm`.
-LSX_HD float ZeroCenteredGatedNormElement(float x_norm, float w,
-                                                 float gate)
+//
+// `w_offset` selects the norm variant: 1.0 for GigaChat3.5's
+// ZeroCenteredGatedNorm (scale `1+w`), 0.0 for GigaChat4's GatedNorm (scale
+// `w`).
+//
+// `scaled` is the state the gate was computed FROM. It matters which one:
+//   GigaChat3.5: gate = Wdown . silu(Wup . xn)        -> scaled = xn
+//   GigaChat4:   gate = Wdown . silu(Wup . (xn*w))    -> scaled = xn*w
+// and the SAME scaled state is the one multiplied by 2*sigmoid(gate). Reading
+// the 4.0 checkpoint the 3.5 way is a 36x error on the measured activation
+// (the post_self_attn_layernorm weight has mean ~0), which grows the residual
+// stream every layer instead of leaving it alone.
+LSX_HD float GatedNormElement(float scaled, float gate)
 {
-    return x_norm * (1.0f + w) * 2.0f * Sigmoid(gate);
+    return scaled * 2.0f * Sigmoid(gate);
 }
 
-// GatedDeltaNet output norm (`gated_rmsnorm_sigmoid_zero_centered`):
-// `x_norm * (1+w) * sigmoid(z) * linear_sigmoid_gate_scale` (scale = 2.0).
-LSX_HD float GdnOutputNormElement(float x_norm, float w, float z,
-                                         float /*eps*/, float scale)
+// Scaling term of the norm: `(w_offset + w) * x_norm`.
+LSX_HD float GatedNormScale(float x_norm, float w, float w_offset)
 {
-    return x_norm * (1.0f + w) * scale * Sigmoid(z);
+    return x_norm * (w_offset + w);
 }
+
+// Legacy 3.5 spelling: zero-centred (`1+w`).
+LSX_HD float ZeroCenteredGatedNormElement(float x_norm, float w, float gate)
+{
+    return GatedNormElement(GatedNormScale(x_norm, w, 1.0f), gate);
+}
+
+// GatedDeltaNet output norm (`gated_rmsnorm_sigmoid[_zero_centered]`):
+// `x_norm * (offset+w) * sigmoid(z) * linear_sigmoid_gate_scale` (scale = 2.0).
+// `w_offset` is 1.0 for the 3.5 checkpoint and 0.0 for GigaChat4.
+LSX_HD float GdnOutputNormElementOffset(float x_norm, float w, float z,
+                                        float /*eps*/, float scale,
+                                        float w_offset)
+{
+    return x_norm * (w_offset + w) * scale * Sigmoid(z);
+}
+
+// Legacy 3.5 spelling: zero-centred (`1+w`).
+LSX_HD float GdnOutputNormElement(float x_norm, float w, float z,
+                                         float eps, float scale)
+{
+    return GdnOutputNormElementOffset(x_norm, w, z, eps, scale, 1.0f);
+}
+
+// Final logit soft cap (`final_logit_softcapping`): `cap * tanh(x / cap)`.
+// `cap <= 0` is the identity (no cap), never a division by zero.
+LSX_HD float LogitSoftcapElement(float x, float cap)
+{
+    if (cap <= 0.0f) return x;
+    return cap * tanhf(x / cap);
+}
+
 
 // swiglu_limit: `gate = clamp(gate, max=L)`, `up = clamp(up, -L, L)`;
 // returns `silu(gate) * up`. `L <= 0` disables clipping.

@@ -14,6 +14,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 
@@ -174,6 +175,36 @@ __global__ void attn_softmax_kernel(const float *__restrict__ scores,
     }
 }
 
+// DSA selection mask: every position in [0, pos] that is NOT in the ascending
+// selection gets -inf, so the softmax attends to the selected keys only.
+// Membership is a binary search over the ascending index list.
+__global__ void dsa_mask_scores_kernel(float *__restrict__ scores,
+                                       const int32_t *__restrict__ sel,
+                                       int n_sel, int pos, int heads,
+                                       int capacity)
+{
+    const int h = blockIdx.x;
+    for (int t = blockIdx.y * blockDim.x + threadIdx.x; t <= pos;
+         t += blockDim.x * gridDim.y)
+    {
+        int lo = 0, hi = n_sel - 1;
+        bool found = false;
+        while (lo <= hi)
+        {
+            const int mid = lo + (hi - lo) / 2;
+            const int v = sel[mid];
+            if (v == t)
+            {
+                found = true;
+                break;
+            }
+            if (v < t) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        if (!found) scores[static_cast<size_t>(h) * capacity + t] = -INFINITY;
+    }
+}
+
 __global__ void gate_attn_kernel(const float *__restrict__ attn,
                                  const __half *__restrict__ gate,
                                  __half *__restrict__ out, int n)
@@ -262,6 +293,7 @@ bool GcMlaScratch::Alloc(const GcMlaDims &d, int capacity)
     need(hv * 2);                                        // attn_g_h
     need(static_cast<int64_t>(d.hidden) * 2);            // out_h
     need(static_cast<int64_t>(d.heads) * capacity * 4);  // scores
+    need(static_cast<int64_t>(d.hidden) * 2);            // x_bf
     if (total <= 0) return false;
 
     void *base = nullptr;
@@ -288,6 +320,7 @@ bool GcMlaScratch::Alloc(const GcMlaDims &d, int capacity)
     attn_g_h = carve(hv * 2);
     out_h = carve(static_cast<int64_t>(d.hidden) * 2);
     scores = carve(static_cast<int64_t>(d.heads) * capacity * 4);
+    x_bf = carve(static_cast<int64_t>(d.hidden) * 2);
     return true;
 }
 
@@ -302,6 +335,7 @@ void GcMlaScratch::Free()
     x_h = q_a_h = q_a_f = q_a_n = q_a_s = q_h = q_f = nullptr;
     kv_h = kv_f = kpass_n = kpass_s = kv_b_h = kv_b_f = k_rot = nullptr;
     gate_h = attn_f = attn_g_h = out_h = scores = nullptr;
+    x_bf = nullptr;
 }
 
 cudaError_t RunGigaChatRopeQk(float *q, float *k, int heads, int qk, int nope,
@@ -320,7 +354,8 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
                                  const float *rope_sin, int pos, int capacity,
                                  float *k_cache, float *v_cache,
                                  GcMlaScratch &sc, float *out,
-                                 cudaStream_t stream)
+                                 cudaStream_t stream,
+                                 const GcAttnVariant &variant)
 {
     const int qk = d.qk_nope + d.rope;
     const int kvw = d.kv_lora + d.rope;
@@ -371,23 +406,48 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
     // Query latent path.
     GC_TRY(LaunchGemm(lw.q_a, x_h, q_a_h, stream));
     GC_TRY(LaunchF16ToF32(q_a_h, q_a_f, d.q_lora, stream));
-    GC_TRY(RunZeroCenteredGatedNorm(q_a_f, 1, d.q_lora, lw.q_a_norm.rank,
-                                    lw.q_a_norm.d_weight,
-                                    lw.q_a_norm.d_gate_up,
-                                    lw.q_a_norm.d_gate_down, norm_eps, q_a_n,
-                                    stream));
+    GC_TRY(RunGigaChatGatedNorm(q_a_f, 1, d.q_lora, lw.q_a_norm.rank,
+                                lw.q_a_norm.d_weight, lw.q_a_norm.d_gate_up,
+                                lw.q_a_norm.d_gate_down, norm_eps,
+                                variant.norm_w_offset, q_a_n, stream,
+                                variant.norm_gate_from_scaled));
     GC_TRY(LaunchScale(q_a_n, q_a_s, d.q_lora, alpha_q, stream));
+
+    // DSA: score the cached keys for this query and select the top-k before the
+    // softmax. Uses the unscaled q latent (the indexer applies alpha_q itself)
+    // and the BF16 normed hidden, which is what the checkpoint's wk /
+    // weights_proj consume.
+    const int32_t *sel = variant.dsa_sel;
+    int n_sel = variant.dsa_n_sel;
+    if (variant.dsa && variant.dsa->run_indexer && variant.dsa->weights &&
+        variant.dsa->scratch && variant.dsa->k_cache && variant.dsa->sel &&
+        variant.dsa->count)
+    {
+        GcDsaHook &hook = *variant.dsa;
+        GC_TRY(LaunchF32ToBf16(x, static_cast<__nv_bfloat16 *>(sc.x_bf),
+                               d.hidden, stream));
+        GcDsaIndexerDims idims = hook.dims;
+        idims.latent_scale = alpha_q;
+        GC_TRY(RunGigaChatDsaIndexerStep(
+            q_a_n, static_cast<const uint8_t *>(sc.x_bf), *hook.weights, idims,
+            cos_t, sin_t, pos, hook.capacity, hook.k_cache, *hook.scratch,
+            hook.sel, hook.count, stream));
+        sel = hook.sel;
+        n_sel = std::min(idims.topk, pos + 1);
+        hook.n_sel = n_sel;
+    }
+
     GC_TRY(LaunchGemm(lw.q_b, q_a_s, q_h, stream));
     GC_TRY(LaunchF16ToF32(q_h, q_f, d.heads * qk, stream));
 
     // Compressed KV path.
     GC_TRY(LaunchGemm(lw.kv_a, x_h, kv_h, stream));
     GC_TRY(LaunchF16ToF32(kv_h, kv_f, kvw, stream));
-    GC_TRY(RunZeroCenteredGatedNorm(kv_f, 1, d.kv_lora, lw.kv_a_norm.rank,
-                                    lw.kv_a_norm.d_weight,
-                                    lw.kv_a_norm.d_gate_up,
-                                    lw.kv_a_norm.d_gate_down, norm_eps, kpass_n,
-                                    stream));
+    GC_TRY(RunGigaChatGatedNorm(kv_f, 1, d.kv_lora, lw.kv_a_norm.rank,
+                                lw.kv_a_norm.d_weight, lw.kv_a_norm.d_gate_up,
+                                lw.kv_a_norm.d_gate_down, norm_eps,
+                                variant.norm_w_offset, kpass_n, stream,
+                                variant.norm_gate_from_scaled));
     GC_TRY(LaunchScale(kpass_n, kpass_s, d.kv_lora, alpha_kv, stream));
     GC_TRY(LaunchGemm(lw.kv_b, kpass_s, kv_b_h, stream));
     GC_TRY(LaunchF16ToF32(kv_b_h, kv_b_f, kvb, stream));
@@ -407,6 +467,20 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
     attn_scores_kernel<<<dim3(d.heads, (pos + 1 + 127) / 128), 128, 0, stream>>>(
         q_f, k_cache, pos, d.heads, qk, attn_scale, scores, capacity);
     GC_TRY(cudaGetLastError());
+    // DSA: the indexer already dropped the keys this query may not attend to.
+    // The selector returns exactly min(topk, pos+1) ascending indices, so the
+    // caller's `dsa_n_sel` is authoritative and nothing is read back.
+    if (sel && n_sel > 0 && n_sel < pos + 1)
+    {
+        const int threads = 128;
+        const int gy = std::max(1, std::min(32, (pos + threads) / threads));
+        dsa_mask_scores_kernel<<<dim3(d.heads, gy), threads, 0, stream>>>(
+            static_cast<float *>(sc.scores), sel, n_sel, pos, d.heads,
+            capacity);
+        const cudaError_t me = cudaGetLastError();
+        if (me != cudaSuccess) return me;
+    }
+
     attn_softmax_kernel<<<d.heads, 256, capacity * sizeof(float), stream>>>(
         scores, v_cache, pos, d.heads, d.v_head, attn_f, capacity);
     GC_TRY(cudaGetLastError());
@@ -637,7 +711,7 @@ cudaError_t RunGigaChatGdnDecode(const float *x, const GcLayerWeights &lw,
                                  const GcGdnDims &d, float norm_eps,
                                  float o_norm_scale, float *conv_state,
                                  float *rec_state, GcGdnScratch &sc, float *out,
-                                 cudaStream_t stream)
+                                 cudaStream_t stream, float w_offset)
 {
     const int key_dim = d.k_heads * d.hk;
     const int value_dim = d.v_heads * d.hv;
@@ -705,8 +779,9 @@ cudaError_t RunGigaChatGdnDecode(const float *x, const GcLayerWeights &lw,
                                                         rec_state, o, d.hk,
                                                         d.hv);
     GC_TRY(cudaGetLastError());
-    GC_TRY(RunGdnOutputNorm(o, z, lw.d_gdn_norm, d.v_heads, d.hv, norm_eps,
-                            o_norm_scale, onorm, stream));
+    GC_TRY(RunGdnOutputNormOffset(o, z, lw.d_gdn_norm, d.v_heads, d.hv,
+                                  norm_eps, o_norm_scale, w_offset, onorm,
+                                  stream));
     GC_TRY(LaunchF32ToF16(onorm, onorm_h, value_dim, stream));
     GC_TRY(LaunchGemm(lw.gdn_out_proj, onorm_h, out_h, stream));
     GC_TRY(LaunchF16ToF32(out_h, out, d.hidden, stream));
