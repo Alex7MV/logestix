@@ -53,6 +53,9 @@ struct GcPipelineDims {
     // Variant knobs (defaults == GigaChat3.5).
     float norm_w_offset = 1.0f;
     float gdn_w_offset = 1.0f;
+    // Which state the GatedNorm's rank-16 gate consumes: false = the normalized
+    // row (3.5), true = the row already scaled by (offset+w) (4.0).
+    bool norm_gate_from_scaled = false;
     float logit_softcap = 0.0f;  // <= 0 disables
     float attn_scale = 0.0f;     // <= 0 derives the 3.5 YaRN value
     GcYarnParams yarn;

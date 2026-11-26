@@ -33,7 +33,7 @@ __global__ void zero_centered_gated_norm_kernel(
     const __nv_bfloat16 *__restrict__ w,
     const __nv_bfloat16 *__restrict__ w_up,
     const __nv_bfloat16 *__restrict__ w_down, float eps, float w_offset,
-    float *__restrict__ out)
+    bool gate_from_scaled, float *__restrict__ out)
 {
     const int r = blockIdx.x;
     const int tid = threadIdx.x;
@@ -60,7 +60,15 @@ __global__ void zero_centered_gated_norm_kernel(
     __syncthreads();
     const float inv = rsqrtf(red[0] / static_cast<float>(dim) + eps);
 
-    for (int i = tid; i < dim; i += nt) smem[i] = xr[i] * inv;
+    // `smem` holds the normalized row; the gate's input is either that row
+    // (3.5) or the same row already scaled by (offset+w) (4.0).
+    for (int i = tid; i < dim; i += nt)
+    {
+        const float xn = xr[i] * inv;
+        smem[i] = gate_from_scaled
+                      ? dev::GatedNormScale(xn, __bfloat162float(w[i]), w_offset)
+                      : xn;
+    }
     __syncthreads();
 
     for (int k = warp; k < rank; k += nwarps)
@@ -80,8 +88,11 @@ __global__ void zero_centered_gated_norm_kernel(
         for (int k = 0; k < rank; ++k)
             g += __bfloat162float(w_down[static_cast<size_t>(i) * rank + k]) *
                  smem[dim + k];
-        orow[i] = dev::GatedNormElement(smem[i], __bfloat162float(w[i]), g,
-                                        w_offset);
+        const float scaled =
+            gate_from_scaled
+                ? smem[i]
+                : dev::GatedNormScale(smem[i], __bfloat162float(w[i]), w_offset);
+        orow[i] = dev::GatedNormElement(scaled, g);
     }
 }
 
@@ -140,7 +151,7 @@ cudaError_t RunGigaChatGatedNorm(const float *x, int rows, int dim, int rank,
                                  const uint8_t *w, const uint8_t *w_up,
                                  const uint8_t *w_down, float eps,
                                  float w_offset, float *out,
-                                 cudaStream_t stream)
+                                 cudaStream_t stream, bool gate_from_scaled)
 {
     if (!x || !w || !w_up || !w_down || !out || rows <= 0 || dim <= 0 ||
         rank <= 0)
@@ -159,7 +170,8 @@ cudaError_t RunGigaChatGatedNorm(const float *x, int rows, int dim, int rank,
     zero_centered_gated_norm_kernel<<<rows, threads, smem, stream>>>(
         x, dim, rank, reinterpret_cast<const __nv_bfloat16 *>(w),
         reinterpret_cast<const __nv_bfloat16 *>(w_up),
-        reinterpret_cast<const __nv_bfloat16 *>(w_down), eps, w_offset, out);
+        reinterpret_cast<const __nv_bfloat16 *>(w_down), eps, w_offset,
+        gate_from_scaled, out);
     return cudaGetLastError();
 }
 

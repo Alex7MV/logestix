@@ -164,9 +164,11 @@
         558,
         24039,
         128000,
-        128014
+        128014,
+        128015,
+        127825
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 2048,
       "expected": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))",
       "raw": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))"
     },
@@ -406,9 +408,11 @@
         558,
         24039,
         128000,
-        128014
+        128014,
+        128015,
+        127825
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 2048,
       "expected": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C",
       "raw": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C"
     },
@@ -539,9 +543,11 @@
         558,
         24039,
         128000,
-        128014
+        128014,
+        128015,
+        127825
       ],
-      "max_new_tokens": 512,
+      "max_new_tokens": 2048,
       "expected": "Drawdown>Threshold",
       "raw": "Drawdown>Threshold"
     }

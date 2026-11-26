@@ -25,18 +25,30 @@ LSX_HD float Silu(float v) { return v * Sigmoid(v); }
 //
 // `w_offset` selects the norm variant: 1.0 for GigaChat3.5's
 // ZeroCenteredGatedNorm (scale `1+w`), 0.0 for GigaChat4's GatedNorm (scale
-// `w`). The gate itself is the same rank-16 SiLU->sigmoid projection in both.
-LSX_HD float GatedNormElement(float x_norm, float w, float gate,
-                              float w_offset)
+// `w`).
+//
+// `scaled` is the state the gate was computed FROM. It matters which one:
+//   GigaChat3.5: gate = Wdown . silu(Wup . xn)        -> scaled = xn
+//   GigaChat4:   gate = Wdown . silu(Wup . (xn*w))    -> scaled = xn*w
+// and the SAME scaled state is the one multiplied by 2*sigmoid(gate). Reading
+// the 4.0 checkpoint the 3.5 way is a 36x error on the measured activation
+// (the post_self_attn_layernorm weight has mean ~0), which grows the residual
+// stream every layer instead of leaving it alone.
+LSX_HD float GatedNormElement(float scaled, float gate)
 {
-    return x_norm * (w_offset + w) * 2.0f * Sigmoid(gate);
+    return scaled * 2.0f * Sigmoid(gate);
+}
+
+// Scaling term of the norm: `(w_offset + w) * x_norm`.
+LSX_HD float GatedNormScale(float x_norm, float w, float w_offset)
+{
+    return x_norm * (w_offset + w);
 }
 
 // Legacy 3.5 spelling: zero-centred (`1+w`).
-LSX_HD float ZeroCenteredGatedNormElement(float x_norm, float w,
-                                                 float gate)
+LSX_HD float ZeroCenteredGatedNormElement(float x_norm, float w, float gate)
 {
-    return GatedNormElement(x_norm, w, gate, 1.0f);
+    return GatedNormElement(GatedNormScale(x_norm, w, 1.0f), gate);
 }
 
 // GatedDeltaNet output norm (`gated_rmsnorm_sigmoid[_zero_centered]`):

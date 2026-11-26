@@ -15,6 +15,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 
@@ -94,6 +96,26 @@ inline cudaError_t PToF32(const __half *x, float *y, int n, cudaStream_t s)
     if (n <= 0) return cudaSuccess;
     lsxcommon::kernels::F16ToF32Kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
     return cudaGetLastError();
+}
+
+// Env-gated stage dump: <dir>/<tag>.bin, F32 [hidden], position 0 only.
+void DumpStageIfAsked(const float *h, int hidden, const char *tag, int pos,
+                      cudaStream_t stream)
+{
+    static const char *dir = std::getenv("LSX_GC4_DUMP_LAYERS");
+    if (dir == nullptr || pos != 0) return;
+    std::vector<float> host(static_cast<size_t>(hidden));
+    if (cudaMemcpyAsync(host.data(), h, host.size() * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return;
+    if (cudaStreamSynchronize(stream) != cudaSuccess) return;
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s/%s.bin", dir, tag);
+    if (FILE *f = std::fopen(path, "wb"))
+    {
+        std::fwrite(host.data(), sizeof(float), host.size(), f);
+        std::fclose(f);
+    }
 }
 
 } // namespace
@@ -540,18 +562,22 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
     for (int l = 0; l < num_layers; ++l)
     {
         const GcLayerWeights &lw = w.layers[static_cast<size_t>(l)];
+        if (l == 0) DumpStageIfAsked(p.h, hidden, "s0_embed", pos, stream);
         GC_TRY(cudaMemcpyAsync(p.res, p.h, static_cast<size_t>(hidden) * 4,
                                cudaMemcpyDeviceToDevice, stream));
         GC_TRY(RunGigaChatGatedNorm(p.h, 1, hidden, lw.input_norm.rank,
                                     lw.input_norm.d_weight,
                                     lw.input_norm.d_gate_up,
                                     lw.input_norm.d_gate_down, p.d.rms_eps,
-                                    p.d.norm_w_offset, p.buf, stream));
+                                    p.d.norm_w_offset, p.buf, stream,
+                                    p.d.norm_gate_from_scaled));
+        if (l == 0) DumpStageIfAsked(p.buf, hidden, "s0_in_norm", pos, stream);
         GC_TRY(PToF16(p.buf, p.n_h, hidden, stream));
         if (lw.full_attention)
         {
             GcAttnVariant var;
             var.norm_w_offset = p.d.norm_w_offset;
+            var.norm_gate_from_scaled = p.d.norm_gate_from_scaled;
             GcDsaHook hook;
             if (p.index_w[l] && p.d.index_topk > 0)
             {
@@ -579,12 +605,13 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
                                         frozen::kLinearSigmoidGateScale,
                                         p.conv[l], p.rec[l], p.gdn, p.attn,
                                         stream, p.d.gdn_w_offset));
+        if (l == 0) DumpStageIfAsked(p.attn, hidden, "s0_attn", pos, stream);
         GC_TRY(RunGigaChatGatedNorm(
             p.attn, 1, hidden, lw.post_self_attn_norm.rank,
             lw.post_self_attn_norm.d_weight,
             lw.post_self_attn_norm.d_gate_up,
             lw.post_self_attn_norm.d_gate_down, p.d.rms_eps,
-            p.d.norm_w_offset, p.buf, stream));
+            p.d.norm_w_offset, p.buf, stream, p.d.norm_gate_from_scaled));
         add_f32_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.res, p.buf,
                                                                  p.h, hidden);
         GC_TRY(cudaGetLastError());
@@ -596,9 +623,10 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
                                     lw.post_attn_norm.d_gate_up,
                                     lw.post_attn_norm.d_gate_down,
                                     p.d.rms_eps, p.d.norm_w_offset, p.buf,
-                                    stream));
+                                    stream, p.d.norm_gate_from_scaled));
         GC_TRY(PToF16(p.buf, p.n_h, hidden, stream));
 
+        if (l == 0) DumpStageIfAsked(p.buf, hidden, "s0_pre_mlp", pos, stream);
         if (lw.moe)
         {
             const int E = p.d.num_experts, K = p.d.top_k,
@@ -666,21 +694,31 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
             GC_TRY(PToF32(p.ff0_h, p.mlp, hidden, stream));
         }
 
+        if (l == 0) DumpStageIfAsked(p.mlp, hidden, "s0_mlp", pos, stream);
         GC_TRY(RunGigaChatGatedNorm(p.mlp, 1, hidden, lw.post_ffw_norm.rank,
                                     lw.post_ffw_norm.d_weight,
                                     lw.post_ffw_norm.d_gate_up,
                                     lw.post_ffw_norm.d_gate_down,
                                     p.d.rms_eps, p.d.norm_w_offset, p.buf,
-                                    stream));
+                                    stream, p.d.norm_gate_from_scaled));
         add_f32_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.res, p.buf,
                                                                  p.h, hidden);
         GC_TRY(cudaGetLastError());
+
+        // Stage-9 ingestion probe (inert unless LSX_GC4_DUMP_LAYERS is set): the
+        // post-layer residual stream, so the source oracle can be compared layer
+        // by layer instead of only at the logits.
+        {
+            char tag[32];
+            std::snprintf(tag, sizeof(tag), "layer_%02d", l);
+            DumpStageIfAsked(p.h, hidden, tag, pos, stream);
+        }
     }
 
     GC_TRY(RunGigaChatGatedNorm(
         p.h, 1, hidden, w.final_norm.rank, w.final_norm.d_weight,
         w.final_norm.d_gate_up, w.final_norm.d_gate_down, p.d.rms_eps,
-        p.d.norm_w_offset, p.buf, stream));
+        p.d.norm_w_offset, p.buf, stream, p.d.norm_gate_from_scaled));
     lsxcommon::kernels::F32ToBf16Kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.buf, p.xb,
                                                                 hidden);
     GC_TRY(cudaGetLastError());

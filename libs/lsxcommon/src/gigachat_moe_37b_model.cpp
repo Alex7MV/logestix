@@ -136,6 +136,11 @@ bool GigaChat4MoeModel::BuildPipelineDims(gigachat::GcPipelineDims &d) const
     // the eight full-attention layers run the DSA lightning indexer.
     d.norm_w_offset = 0.0f;
     d.gdn_w_offset = 0.0f;
+    // The 4.0 GatedNorm computes its gate from the ALREADY SCALED state
+    // (s = xn*w, out = s * 2*sigmoid(Wdown@silu(Wup@s))), unlike 3.5's
+    // gate-from-xn. Measured on the checkpoint's own post_self_attn_layernorm:
+    // the 3.5 form is 36x too large.
+    d.norm_gate_from_scaled = true;
     d.logit_softcap = static_cast<float>(idx_.logit_softcap);
     d.attn_scale = static_cast<float>(idx_.attn_scale);
     d.yarn.theta = kRopeTheta;

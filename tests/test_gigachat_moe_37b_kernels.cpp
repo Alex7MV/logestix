@@ -42,17 +42,18 @@ TEST_CASE("gigachat4 derived geometry matches the reference", "[gigachat4][fast]
 TEST_CASE("gigachat4 GatedNorm is not zero-centred", "[gigachat4][fast]")
 {
     namespace dev = lsxcommon::gigachat::dev;
-    // x_norm=1, w=2, gate=0 -> x_norm*(offset+w)*2*sigmoid(0).
-    // GC4 (offset 0): 1*2*2*0.5 = 2. The 3.5 offset-1 form would give 3.
-    CHECK(dev::GatedNormElement(1.0f, 2.0f, 0.0f, 0.0f) ==
-          Catch::Approx(2.0f).margin(1e-6f));
-    CHECK(dev::GatedNormElement(1.0f, 2.0f, 0.0f, 1.0f) ==
-          Catch::Approx(3.0f).margin(1e-6f));
-    // The legacy 3.5 entry point must stay bit-identical to the offset-1 form.
+    // The norm is `scaled * 2*sigmoid(gate)` where the scale is
+    // `xn*(offset+w)`: GC4 offset 0 with w=2 gives 2, the 3.5 offset-1 form 3.
+    CHECK(dev::GatedNormScale(1.0f, 2.0f, 0.0f) == Catch::Approx(2.0f));
+    CHECK(dev::GatedNormScale(1.0f, 2.0f, 1.0f) == Catch::Approx(3.0f));
+    CHECK(dev::GatedNormElement(2.0f, 0.0f) == Catch::Approx(2.0f).margin(1e-6f));
+    CHECK(dev::GatedNormElement(3.0f, 0.0f) == Catch::Approx(3.0f).margin(1e-6f));
+    // The legacy 3.5 entry point keeps the gate-from-xn form: gate 0 -> the
+    // scale is halved by 2*sigmoid(0) = 1.
     CHECK(dev::ZeroCenteredGatedNormElement(1.0f, 2.0f, 0.0f) ==
-          dev::GatedNormElement(1.0f, 2.0f, 0.0f, 1.0f));
+          Catch::Approx(3.0f).margin(1e-6f));
     // Large negative gate drives the gating to ~0, not to a sign flip.
-    CHECK(dev::GatedNormElement(1.0f, 2.0f, -60.0f, 0.0f) ==
+    CHECK(dev::GatedNormElement(2.0f, -60.0f) ==
           Catch::Approx(0.0f).margin(1e-6f));
 }
 

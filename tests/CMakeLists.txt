@@ -4995,6 +4995,24 @@ target_link_libraries(test_gigachat_moe_det_selfcheck PRIVATE lsxcommon Catch2::
 target_compile_definitions(test_gigachat_moe_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gigachat3.5-432b-a28b-reasoning\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_gigachat_moe_37b_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_37b_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-37b-a4b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_gigachat_moe_37b_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_37b_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-37b-a4b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_gigachat_moe_37b_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_37b_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-37b-a4b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_glm_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_glm_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -5547,6 +5565,10 @@ add_executable(test_gigachat_moe_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_gigachat_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gigachat_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gigachat_moe_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gigachat3.5-432b-a28b-reasoning\"")
+add_executable(test_gigachat_moe_37b_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_gigachat_moe_37b_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_37b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_37b_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gigachat4-37b-a4b\"")
 add_executable(test_glm_moe_flash_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_glm_moe_flash_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)

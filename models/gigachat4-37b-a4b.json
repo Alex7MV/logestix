@@ -93,5 +93,6 @@
   "aliases": [
     "gigachat4-37b-a4b"
   ],
-  "notes": "GDN + DSA MLA + MoE; GatedNorm is not zero-centred; softcap 30"
+  "notes": "GDN + DSA MLA + MoE; GatedNorm is not zero-centred; softcap 30",
+  "report": "docs/model-reports/2026-11-26-GigaChat4-37B-A4B.md"
 }

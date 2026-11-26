@@ -409,7 +409,8 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
     GC_TRY(RunGigaChatGatedNorm(q_a_f, 1, d.q_lora, lw.q_a_norm.rank,
                                 lw.q_a_norm.d_weight, lw.q_a_norm.d_gate_up,
                                 lw.q_a_norm.d_gate_down, norm_eps,
-                                variant.norm_w_offset, q_a_n, stream));
+                                variant.norm_w_offset, q_a_n, stream,
+                                variant.norm_gate_from_scaled));
     GC_TRY(LaunchScale(q_a_n, q_a_s, d.q_lora, alpha_q, stream));
 
     // DSA: score the cached keys for this query and select the top-k before the
@@ -445,7 +446,8 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
     GC_TRY(RunGigaChatGatedNorm(kv_f, 1, d.kv_lora, lw.kv_a_norm.rank,
                                 lw.kv_a_norm.d_weight, lw.kv_a_norm.d_gate_up,
                                 lw.kv_a_norm.d_gate_down, norm_eps,
-                                variant.norm_w_offset, kpass_n, stream));
+                                variant.norm_w_offset, kpass_n, stream,
+                                variant.norm_gate_from_scaled));
     GC_TRY(LaunchScale(kpass_n, kpass_s, d.kv_lora, alpha_kv, stream));
     GC_TRY(LaunchGemm(lw.kv_b, kpass_s, kv_b_h, stream));
     GC_TRY(LaunchF16ToF32(kv_b_h, kv_b_f, kvb, stream));

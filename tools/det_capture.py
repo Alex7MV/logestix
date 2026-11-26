@@ -133,6 +133,15 @@ OVERRIDES["gigachat3.5-432b-a28b-reasoning"] = {
 # exactly one BOS, like the engine's chatml-v5 framing.
 OVERRIDES["gigachat4-37b-a4b"] = {
     "add_special_tokens": False,
+    # Instant mode, which the checkpoint's template selects with `reasoning=False`
+    # (it then ends the generation prompt with `<think></think>\n\n`). The
+    # reasoning default leaves the think block open, the model narrates a long
+    # chain in plain text, and the `<\think>` marker that closes it is a SPECIAL
+    # token that `arrow_tokenizer_decode` drops — so the gate's `</think>` cut
+    # never fires and the answer extractor latches onto the first capitalised
+    # token of the prose (measured 2026-11-26: DET extracted `DET` from the
+    # quoted context while the model's own last line was the right answer).
+    "template_kwargs": {"reasoning": False},
     "unrunnable": "template-derived by operator decision (2026-11-26): the FP8 "
                   "source needs a host-side dequant to BF16 (74 GB) to execute; "
                   "the short oracle probe is recorded in the model report",

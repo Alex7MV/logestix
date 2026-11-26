@@ -9,6 +9,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -222,4 +223,110 @@ TEST_CASE("gigachat4 logit softcap kernel matches the host formula",
         CHECK(std::abs(got[static_cast<size_t>(i)]) <=
               static_cast<float>(kCap) + 1e-4f);
     }
+}
+
+// GigaChat4's GatedNorm feeds the gate from the ALREADY SCALED state, not from
+// the raw normalized one:
+//     s   = xn * (offset + w)
+//     out = s * 2 * sigmoid( Wdown @ silu(Wup @ s) )
+// GigaChat3.5's ZeroCenteredGatedNorm feeds it from `xn`
+//     out = xn * (1 + w) * 2 * sigmoid( Wdown @ silu(Wup @ xn) )
+// The difference is not cosmetic: with the checkpoint's own
+// post_self_attn_layernorm (weight mean ~0) the two forms differ by 36x on the
+// measured activation, and reading it the 3.5 way grows the residual stream
+// every layer (found by the source oracle, 2026-11-26).
+TEST_CASE("gigachat4 gated norm gates on the scaled state",
+          "[gigachat4][devkernels]")
+{
+    if (!HaveDevice()) SKIP("no CUDA device");
+    constexpr int kDim = 128;
+    constexpr int kRank = 16;
+    std::vector<bf16> w(kDim), w_up(kRank * kDim), w_down(kDim * kRank);
+    std::vector<float> x(kDim);
+    for (int i = 0; i < kDim; ++i)
+    {
+        x[i] = 0.02f * static_cast<float>((i % 11) - 5);
+        // Small, signed scale: the GC4 post_self_attn shape.
+        w[i] = F32ToBf16(0.04f * static_cast<float>((i % 9) - 4));
+    }
+    for (int k = 0; k < kRank; ++k)
+        for (int i = 0; i < kDim; ++i)
+        {
+            w_up[k * kDim + i] =
+                F32ToBf16(0.05f * static_cast<float>(((i + k) % 9) - 4));
+            w_down[i * kRank + k] =
+                F32ToBf16(0.03f * static_cast<float>(((i * 3 + k) % 7) - 3));
+        }
+
+    double ss = 0.0;
+    for (int i = 0; i < kDim; ++i) ss += double(x[i]) * x[i];
+    const double inv = 1.0 / std::sqrt(ss / kDim + 1e-6);
+    std::vector<double> xn(kDim);
+    for (int i = 0; i < kDim; ++i) xn[i] = x[i] * inv;
+
+    // Host reference: gate from the scaled state (offset 0 for GigaChat4).
+    std::vector<double> scaled(kDim);
+    for (int i = 0; i < kDim; ++i)
+        scaled[i] = xn[i] * double(Bf16ToF32(w[i]));
+    std::vector<double> gate(kRank, 0.0);
+    for (int k = 0; k < kRank; ++k)
+    {
+        double a = 0.0;
+        for (int i = 0; i < kDim; ++i)
+            a += double(Bf16ToF32(w_up[k * kDim + i])) * scaled[i];
+        gate[k] = a / (1.0 + std::exp(-a));
+    }
+    std::vector<double> want(kDim);
+    for (int i = 0; i < kDim; ++i)
+    {
+        double g = 0.0;
+        for (int k = 0; k < kRank; ++k)
+            g += double(Bf16ToF32(w_down[i * kRank + k])) * gate[k];
+        want[i] = scaled[i] * 2.0 / (1.0 + std::exp(-g));
+    }
+    // The legacy form, for contrast: gate from xn.
+    std::vector<double> gate_xn(kRank, 0.0);
+    for (int k = 0; k < kRank; ++k)
+    {
+        double a = 0.0;
+        for (int i = 0; i < kDim; ++i)
+            a += double(Bf16ToF32(w_up[k * kDim + i])) * xn[i];
+        gate_xn[k] = a / (1.0 + std::exp(-a));
+    }
+    std::vector<double> want_xn(kDim);
+    for (int i = 0; i < kDim; ++i)
+    {
+        double g = 0.0;
+        for (int k = 0; k < kRank; ++k)
+            g += double(Bf16ToF32(w_down[i * kRank + k])) * gate_xn[k];
+        want_xn[i] = xn[i] * double(Bf16ToF32(w[i])) * 2.0 /
+                     (1.0 + std::exp(-g));
+    }
+    double diff = 0.0;
+    for (int i = 0; i < kDim; ++i)
+        diff = std::max(diff, std::abs(want[i] - want_xn[i]));
+    REQUIRE(diff > 1e-3);  // the two forms really differ on this fixture
+
+    DevBuffer d_w(kDim * 2), d_up(kRank * kDim * 2), d_down(kDim * kRank * 2),
+        d_x(kDim * 4), d_out(kDim * 4);
+    cudaMemcpy(d_w.p, w.data(), kDim * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_up.p, w_up.data(), kRank * kDim * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_down.p, w_down.data(), kDim * kRank * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x.p, x.data(), kDim * 4, cudaMemcpyHostToDevice);
+    while (cudaGetLastError() != cudaSuccess)
+    {
+    }
+    REQUIRE(lsxcommon::gigachat::RunGigaChatGatedNorm(
+                d_x.as<float>(), 1, kDim, kRank,
+                static_cast<const uint8_t *>(d_w.p),
+                static_cast<const uint8_t *>(d_up.p),
+                static_cast<const uint8_t *>(d_down.p), 1e-6f, 0.0f,
+                d_out.as<float>(), nullptr,
+                /*gate_from_scaled=*/true) == cudaSuccess);
+    std::vector<float> got(kDim);
+    cudaMemcpy(got.data(), d_out.p, kDim * 4, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < kDim; ++i)
+        CHECK(got[static_cast<size_t>(i)] ==
+              Catch::Approx(want[static_cast<size_t>(i)]).margin(2e-3));
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 }

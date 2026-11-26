@@ -97,6 +97,7 @@ struct GcDsaHook {
 // (`1+w`-free) verification of the zero-centred norm, no DSA selection.
 struct GcAttnVariant {
     float norm_w_offset = 1.0f;  // 3.5 zero-centred `1+w`, 4.0 `w`
+    bool norm_gate_from_scaled = false;  // 4.0 gates on the scaled state
     const int32_t *dsa_sel = nullptr;
     int dsa_n_sel = 0;
     GcDsaHook *dsa = nullptr;

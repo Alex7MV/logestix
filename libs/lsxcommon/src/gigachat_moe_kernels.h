@@ -19,11 +19,18 @@ namespace lsxcommon::gigachat {
 // the gate_up/gate_down buffers.
 // `w_offset` selects the norm variant: 1.0 for GigaChat3.5's zero-centred
 // scale (`1+w`), 0.0 for GigaChat4's GatedNorm (scale `w`).
+//
+// `gate_from_scaled` selects which state feeds the rank-16 gate:
+//   false (GigaChat3.5): out = xn*(offset+w) * 2*sigmoid(gate(xn))
+//   true  (GigaChat4):   s = xn*(offset+w); out = s * 2*sigmoid(gate(s))
+// The 4.0 checkpoint's own template feeds the gate from the scaled state; using
+// the 3.5 form there is a 36x error on the measured activation.
 cudaError_t RunGigaChatGatedNorm(const float *x, int rows, int dim, int rank,
                                  const uint8_t *w, const uint8_t *w_up,
                                  const uint8_t *w_down, float eps,
                                  float w_offset, float *out,
-                                 cudaStream_t stream);
+                                 cudaStream_t stream,
+                                 bool gate_from_scaled = false);
 
 // Legacy 3.5 spelling: zero-centred (`1+w`), bit-identical to
 // RunGigaChatGatedNorm(..., w_offset = 1.0f).

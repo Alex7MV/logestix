@@ -16,7 +16,10 @@
 #include <arrow/io/file.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 using namespace lsxcommon;
 
@@ -144,4 +147,57 @@ TEST_CASE("gigachat4 factory resolves the kType", "[gigachat4][model]")
     auto m = LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
     CHECK(m->Type() == "gigachat4-37b-a4b");
+}
+
+// Source-oracle probe (stage 9, operator-approved): runs the CONVERTED model on
+// an explicit id prefix and writes the last-position logits, so
+// tools/gigachat4_oracle.py can compare them against the BF16-dequantized
+// source. Inert unless both env vars are set, so it never runs in a sweep.
+TEST_CASE("gigachat4 oracle probe dumps the engine logits",
+          "[gigachat4][oracle]")
+{
+    const char *ids_path = std::getenv("LSX_GC4_PROBE_IDS");
+    const char *out_path = std::getenv("LSX_GC4_PROBE_OUT");
+    if (!ids_path || !out_path) SKIP("LSX_GC4_PROBE_IDS/OUT not set");
+
+    const char *root_env = std::getenv("LSX_TEST_GIGACHAT4_37B_A4B_ROOT");
+    std::filesystem::path root = root_env ? root_env
+                                          : "/mnt/fast_storage/huggingface/GigaChat4-37B-A4B";
+    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+        SKIP("converted model absent");
+
+    std::vector<int32_t> ids;
+    {
+        std::ifstream in(ids_path);
+        std::string tok;
+        while (in >> tok)
+        {
+            for (char &c : tok)
+                if (c == ',') c = ' ';
+            std::istringstream ss(tok);
+            int v = 0;
+            while (ss >> v) ids.push_back(v);
+        }
+    }
+    REQUIRE(!ids.empty());
+
+    ModelInitConfig cfg;
+    cfg.model_path = root.string();
+    cfg.model_type = GigaChat4MoeModel::kType;
+    cfg.fast_math_mode = FastMathMode::kOff;
+    GigaChat4MoeModel m(cfg);
+    REQUIRE(m.Load());
+
+    ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = 1;
+    req.ignore_eos = true;
+    auto r = m.Infer(req);
+    INFO("infer error: " << r.error_msg);
+    REQUIRE(r.ok);
+    REQUIRE(r.final_logits.size() > 0);
+    std::ofstream out(out_path, std::ios::binary);
+    out.write(reinterpret_cast<const char *>(r.final_logits.data()),
+              static_cast<std::streamsize>(r.final_logits.size() * sizeof(float)));
+    m.Unload();
 }
