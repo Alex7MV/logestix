@@ -13,6 +13,7 @@
 
 #include <cuda_runtime.h>
 
+#include "lsxcommon/gigachat_moe_37b_inference_indexer.h"
 #include "lsxcommon/gigachat_moe_load.h"
 
 namespace lsxcommon::gigachat {
@@ -54,6 +55,7 @@ struct GcMlaScratch {
     void *attn_g_h = nullptr;
     void *out_h = nullptr;
     void *scores = nullptr;
+    void *x_bf = nullptr;   // __nv_bfloat16 [hidden], the indexer's hidden input
 
     bool Alloc(const GcMlaDims &d, int capacity);
     void Free();
@@ -70,13 +72,50 @@ cudaError_t RunGigaChatRopeQk(float *q, float *k, int heads, int qk, int nope,
 // `rope_cos`/`rope_sin` are the YaRN tables [seqlen, rope/2] F32; row `pos` is
 // used. `k_cache`/`v_cache` are [capacity, heads, qk]/[capacity, heads, vh]
 // F32 row-major; entry `pos` is written before attention. `out` is [hidden] F32.
+//
+// DSA hook: when `dsa` is set the decode first runs the layer's lightning
+// indexer on the alpha_q-scaled q latent (same stream, before the score pass)
+// and then masks the softmax to the selected keys. `dsa->sel`/`n_sel` may be
+// left null/0 when `run_indexer` is false (a pre-computed selection), which is
+// what the unit tests use.
+struct GcDsaHook {
+    GcDsaIndexerWeights *weights = nullptr;
+    GcDsaIndexerDims dims;
+    GcDsaIndexerScratch *scratch = nullptr;
+    float *k_cache = nullptr;   // [capacity, index_head_dim] F32, this layer
+    int32_t *sel = nullptr;     // selection out, ascending
+    int *count = nullptr;       // selection count out (device)
+    int capacity = 0;
+    bool run_indexer = true;
+    // Filled by the decode: min(index_topk, pos + 1), i.e. the number of keys
+    // the softmax may attend to. Computed on the host from the geometry, never
+    // read back from the device.
+    int n_sel = 0;
+};
+
+// Per-variant attention options. Defaults are GigaChat3.5's behaviour: plain
+// (`1+w`-free) verification of the zero-centred norm, no DSA selection.
+struct GcAttnVariant {
+    float norm_w_offset = 1.0f;  // 3.5 zero-centred `1+w`, 4.0 `w`
+    const int32_t *dsa_sel = nullptr;
+    int dsa_n_sel = 0;
+    GcDsaHook *dsa = nullptr;
+};
+
+// `dsa_sel`/`dsa_n_sel` are the DSA lightning-indexer selection for this token
+// (nullptr = attend to the whole causal prefix, which is what every layer of a
+// non-DSA model does). The selector returns exactly min(topk, pos+1) ascending
+// indices, so the caller computes `dsa_n_sel` on the host and never reads the
+// device count back; masked positions are set to -inf before the softmax, which
+// is bit-identical to the unmasked path when nothing is masked.
 cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
                                  const GcMlaDims &d, float norm_eps,
                                  float attn_scale, const float *rope_cos,
                                  const float *rope_sin, int pos, int capacity,
                                  float *k_cache, float *v_cache,
                                  GcMlaScratch &sc, float *out,
-                                 cudaStream_t stream);
+                                 cudaStream_t stream,
+                                 const GcAttnVariant &variant = GcAttnVariant{});
 
 // ── GatedDeltaNet decode ────────────────────────────────────────────────────
 
@@ -116,10 +155,13 @@ struct GcGdnScratch {
 // One-token GatedDeltaNet decode. `conv_state` is [conv_dim, conv_k-1] F32 and
 // `rec_state` is [v_heads, hk, hv] F32; both are updated in place and must be
 // zero-initialized at sequence start. `out` is [hidden] F32.
+// `w_offset` is the GDN output-norm variant: 1.0 for GigaChat3.5's
+// zero-centred scale (`1+w`), 0.0 for GigaChat4's plain `w`.
 cudaError_t RunGigaChatGdnDecode(const float *x, const GcLayerWeights &lw,
                                  const GcGdnDims &d, float norm_eps,
                                  float o_norm_scale, float *conv_state,
                                  float *rec_state, GcGdnScratch &sc, float *out,
-                                 cudaStream_t stream);
+                                 cudaStream_t stream,
+                                 float w_offset = 1.0f);
 
 } // namespace lsxcommon::gigachat

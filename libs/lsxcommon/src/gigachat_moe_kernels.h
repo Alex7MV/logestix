@@ -17,6 +17,16 @@ namespace lsxcommon::gigachat {
 // compute. `rank` is the checkpoint's gate rank (GcGatedNorm::rank), not the
 // frozen constant: the kernel must index by the actual rank or it reads past
 // the gate_up/gate_down buffers.
+// `w_offset` selects the norm variant: 1.0 for GigaChat3.5's zero-centred
+// scale (`1+w`), 0.0 for GigaChat4's GatedNorm (scale `w`).
+cudaError_t RunGigaChatGatedNorm(const float *x, int rows, int dim, int rank,
+                                 const uint8_t *w, const uint8_t *w_up,
+                                 const uint8_t *w_down, float eps,
+                                 float w_offset, float *out,
+                                 cudaStream_t stream);
+
+// Legacy 3.5 spelling: zero-centred (`1+w`), bit-identical to
+// RunGigaChatGatedNorm(..., w_offset = 1.0f).
 cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
                                      int rank, const uint8_t *w,
                                      const uint8_t *w_up,
@@ -28,6 +38,14 @@ cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
 //   xn = rmsnorm(o[h]) ; out[h][d] = GdnOutputNormElement(xn[d], w[d],
 //   z[h][d], eps, scale)
 // `w` BF16 [head_dim]; `z` is the per-head gate [heads, head_dim].
+// `w_offset` as for RunGigaChatGatedNorm: 1.0 zero-centred (3.5),
+// 0.0 plain scale (GigaChat4).
+cudaError_t RunGdnOutputNormOffset(const float *o, const float *z,
+                                   const uint8_t *w, int heads, int head_dim,
+                                   float eps, float scale, float w_offset,
+                                   float *out, cudaStream_t stream);
+
+// Legacy 3.5 spelling: zero-centred (`1+w`).
 cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
                              int heads, int head_dim, float eps, float scale,
                              float *out, cudaStream_t stream);
@@ -44,6 +62,12 @@ cudaError_t RunGigaChatRouterTopK(const float *x, const uint8_t *w,
                                   int top_k, float routed_scaling_factor,
                                   int *out_idx, float *out_weights,
                                   cudaStream_t stream);
+
+// Final logit soft cap in place: `x = cap * tanh(x / cap)` (F32, `cap <= 0`
+// is the identity). Applied before sampling and before final_logits is read
+// back, so every gate compares the quantity the served model produces.
+cudaError_t RunGigaChatSoftcap(float *logits, int n, float cap,
+                               cudaStream_t stream);
 
 // SwiGLU with hard limit: `mid = silu(clamp(g,max=L)) * clamp(u,-L,L)`.
 cudaError_t RunSwigluLimit(const float *gate, const float *up, float limit,

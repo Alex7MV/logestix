@@ -273,6 +273,14 @@ __global__ void router_topk_single_kernel(const float *__restrict__ x,
 
 int GridFor(int n, int threads) { return (n + threads - 1) / threads; }
 
+// Final logit soft cap (GigaChat4 `final_logit_softcapping`). One pass, in
+// place, F32: the value the sampler and final_logits see is post-cap.
+__global__ void softcap_kernel(float *__restrict__ x, int n, float cap)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) x[i] = dev::LogitSoftcapElement(x[i], cap);
+}
+
 } // namespace
 
 cudaError_t RunSwigluLimit(const float *gate, const float *up, float limit,
@@ -283,6 +291,17 @@ cudaError_t RunSwigluLimit(const float *gate, const float *up, float limit,
     const int threads = 256;
     swiglu_limit_kernel<<<GridFor(n, threads), threads, 0, stream>>>(
         gate, up, limit, n, mid);
+    return cudaGetLastError();
+}
+
+cudaError_t RunGigaChatSoftcap(float *logits, int n, float cap,
+                               cudaStream_t stream)
+{
+    if (!logits || n < 0) return cudaErrorInvalidValue;
+    if (n == 0) return cudaSuccess;
+    if (cap <= 0.0f) return cudaSuccess;  // no cap: identity
+    const int threads = 256;
+    softcap_kernel<<<GridFor(n, threads), threads, 0, stream>>>(logits, n, cap);
     return cudaGetLastError();
 }
 

@@ -101,13 +101,26 @@ inline cudaError_t PToF32(const __half *x, float *y, int n, cudaStream_t s)
 bool GcBuildYarnTables(int capacity, int rope_dim, std::vector<float> &cos_t,
                        std::vector<float> &sin_t)
 {
+    // GigaChat3.5's frozen passport values.
+    GcYarnParams p;
+    p.theta = frozen::kRopeTheta;
+    p.factor = frozen::kYarnFactor;
+    p.orig = frozen::kYarnOrig;
+    p.beta_fast = frozen::kYarnBetaFast;
+    p.beta_slow = frozen::kYarnBetaSlow;
+    return GcBuildYarnTables(p, capacity, rope_dim, cos_t, sin_t);
+}
+
+bool GcBuildYarnTables(const GcYarnParams &params, int capacity, int rope_dim,
+                       std::vector<float> &cos_t, std::vector<float> &sin_t)
+{
     if (capacity <= 0 || rope_dim <= 0 || rope_dim % 2 != 0) return false;
     const int half = rope_dim / 2;
-    const double base = frozen::kRopeTheta;
-    const double factor = frozen::kYarnFactor;
-    const double orig = frozen::kYarnOrig;
-    const double beta_fast = frozen::kYarnBetaFast;
-    const double beta_slow = frozen::kYarnBetaSlow;
+    const double base = params.theta;
+    const double factor = params.factor;
+    const double orig = params.orig;
+    const double beta_fast = params.beta_fast;
+    const double beta_slow = params.beta_slow;
     std::vector<double> freqs(static_cast<size_t>(half));
     for (int j = 0; j < half; ++j)
         freqs[static_cast<size_t>(j)] =
@@ -158,6 +171,12 @@ struct GcPipeline::Impl {
     // pointer; carves out of d_base like every other pipeline buffer.
     float *d_rc = nullptr, *d_rs = nullptr;
     std::vector<float *> kcache, vcache, conv, rec;
+    // DSA state (full-attention layers only when dims.index_topk > 0).
+    std::vector<float *> index_k;
+    std::vector<GcDsaIndexerScratch> index_scratch;
+    std::vector<GcDsaIndexerWeights *> index_w;
+    std::vector<int32_t *> index_sel;
+    std::vector<int *> index_cnt;
 
     void *d_base = nullptr;
     int64_t bytes = 0;
@@ -185,10 +204,19 @@ void GcPipeline::Impl::FreeAll()
 {
     for (float *p : kcache) cudaFree(p);
     for (float *p : vcache) cudaFree(p);
+    for (float *p : index_k) cudaFree(p);
+    for (auto *p : index_sel) cudaFree(p);
+    for (auto *p : index_cnt) cudaFree(p);
+    for (auto &s : index_scratch) s.Free();
     for (float *p : conv) cudaFree(p);
     for (float *p : rec) cudaFree(p);
     kcache.clear();
     vcache.clear();
+    index_k.clear();
+    index_sel.clear();
+    index_cnt.clear();
+    index_scratch.clear();
+    index_w.clear();
     conv.clear();
     rec.clear();
     mla.Free();
@@ -238,14 +266,23 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
     p.d = dims;
     p.capacity = capacity;
     const int hidden = dims.mla.hidden;
-    if (!GcBuildYarnTables(capacity, dims.mla.rope, p.rc, p.rs))
+    if (!GcBuildYarnTables(dims.yarn, capacity, dims.mla.rope, p.rc, p.rs))
     {
         error = "gigachat pipeline: rope table build failed";
         return false;
     }
-    const float mscale = 0.1f * std::log(static_cast<float>(frozen::kYarnFactor)) + 1.0f;
-    p.attn_scale =
-        mscale * mscale / std::sqrt(static_cast<float>(dims.mla.qk_nope + dims.mla.rope));
+    if (dims.attn_scale > 0.0f)
+    {
+        p.attn_scale = dims.attn_scale;
+    }
+    else
+    {
+        // 3.5 derivation: YaRN mscale squared over sqrt(qk head dim).
+        const float mscale =
+            0.1f * std::log(static_cast<float>(dims.yarn.factor)) + 1.0f;
+        p.attn_scale = mscale * mscale /
+                       std::sqrt(static_cast<float>(dims.mla.qk_nope + dims.mla.rope));
+    }
 
     for (const auto &lw : w.layers)
         if (!lw.moe) p.dense_inter = lw.mlp_gate.rows;
@@ -280,6 +317,11 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
     p.vcache.assign(num_layers, nullptr);
     p.conv.assign(num_layers, nullptr);
     p.rec.assign(num_layers, nullptr);
+    p.index_k.assign(num_layers, nullptr);
+    p.index_sel.assign(num_layers, nullptr);
+    p.index_cnt.assign(num_layers, nullptr);
+    p.index_w.assign(num_layers, nullptr);
+    p.index_scratch.resize(num_layers);
     for (int l = 0; l < num_layers; ++l)
     {
         const GcLayerWeights &lw = w.layers[static_cast<size_t>(l)];
@@ -292,6 +334,34 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
             {
                 error = "gigachat pipeline: KV cache allocation failed";
                 return false;
+            }
+            if (dims.index_topk > 0)
+            {
+                const size_t ik_bytes = static_cast<size_t>(capacity) *
+                                        dims.index_head_dim * sizeof(float);
+                if (cudaMalloc(&p.index_k[l], ik_bytes) != cudaSuccess ||
+                    cudaMemset(p.index_k[l], 0, ik_bytes) != cudaSuccess ||
+                    cudaMalloc(&p.index_sel[l],
+                               static_cast<size_t>(dims.index_topk) *
+                                   sizeof(int32_t)) != cudaSuccess ||
+                    cudaMalloc(&p.index_cnt[l], sizeof(int)) != cudaSuccess)
+                {
+                    error = "gigachat pipeline: DSA index cache allocation failed";
+                    return false;
+                }
+                GcDsaIndexerDims idims;
+                idims.hidden = hidden;
+                idims.q_lora = dims.mla.q_lora;
+                idims.heads = dims.index_heads;
+                idims.head_dim = dims.index_head_dim;
+                idims.rope = dims.index_rope;
+                idims.topk = dims.index_topk;
+                idims.latent_scale = 1.0f;
+                if (!p.index_scratch[l].Alloc(idims, capacity))
+                {
+                    error = "gigachat pipeline: DSA indexer scratch failed";
+                    return false;
+                }
             }
         }
         else
@@ -375,6 +445,11 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
         error = "gigachat pipeline: rope table upload failed";
         return false;
     }
+
+    for (int l = 0; l < num_layers; ++l)
+        if (w.layers[static_cast<size_t>(l)].full_attention && dims.index_topk > 0)
+            p.index_w[static_cast<size_t>(l)] =
+                const_cast<GcDsaIndexerWeights *>(&w.layers[static_cast<size_t>(l)].indexer);
 
     p.h_idx.assign(static_cast<size_t>(dims.top_k), 0);
     p.h_w.assign(static_cast<size_t>(dims.top_k), 0.0f);
@@ -467,38 +542,61 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
         const GcLayerWeights &lw = w.layers[static_cast<size_t>(l)];
         GC_TRY(cudaMemcpyAsync(p.res, p.h, static_cast<size_t>(hidden) * 4,
                                cudaMemcpyDeviceToDevice, stream));
-        GC_TRY(RunZeroCenteredGatedNorm(p.h, 1, hidden, lw.input_norm.rank,
-                                        lw.input_norm.d_weight,
-                                        lw.input_norm.d_gate_up,
-                                        lw.input_norm.d_gate_down, p.d.rms_eps,
-                                        p.buf, stream));
+        GC_TRY(RunGigaChatGatedNorm(p.h, 1, hidden, lw.input_norm.rank,
+                                    lw.input_norm.d_weight,
+                                    lw.input_norm.d_gate_up,
+                                    lw.input_norm.d_gate_down, p.d.rms_eps,
+                                    p.d.norm_w_offset, p.buf, stream));
         GC_TRY(PToF16(p.buf, p.n_h, hidden, stream));
         if (lw.full_attention)
+        {
+            GcAttnVariant var;
+            var.norm_w_offset = p.d.norm_w_offset;
+            GcDsaHook hook;
+            if (p.index_w[l] && p.d.index_topk > 0)
+            {
+                hook.weights = p.index_w[l];
+                hook.dims.hidden = hidden;
+                hook.dims.q_lora = p.d.mla.q_lora;
+                hook.dims.heads = p.d.index_heads;
+                hook.dims.head_dim = p.d.index_head_dim;
+                hook.dims.rope = p.d.index_rope;
+                hook.dims.topk = p.d.index_topk;
+                hook.scratch = &p.index_scratch[l];
+                hook.k_cache = p.index_k[l];
+                hook.sel = p.index_sel[l];
+                hook.count = p.index_cnt[l];
+                hook.capacity = p.capacity;
+                var.dsa = &hook;
+            }
             GC_TRY(RunGigaChatMlaDecode(p.buf, lw, p.d.mla, p.d.rms_eps,
-                                        p.attn_scale, p.d_rc, p.d_rs,
-                                        pos, p.capacity, p.kcache[l],
-                                        p.vcache[l], p.mla, p.attn, stream));
+                                        p.attn_scale, p.d_rc, p.d_rs, pos,
+                                        p.capacity, p.kcache[l], p.vcache[l],
+                                        p.mla, p.attn, stream, var));
+        }
         else
             GC_TRY(RunGigaChatGdnDecode(p.buf, lw, p.d.gdn, p.d.rms_eps,
                                         frozen::kLinearSigmoidGateScale,
                                         p.conv[l], p.rec[l], p.gdn, p.attn,
-                                        stream));
-        GC_TRY(RunZeroCenteredGatedNorm(
+                                        stream, p.d.gdn_w_offset));
+        GC_TRY(RunGigaChatGatedNorm(
             p.attn, 1, hidden, lw.post_self_attn_norm.rank,
             lw.post_self_attn_norm.d_weight,
             lw.post_self_attn_norm.d_gate_up,
-            lw.post_self_attn_norm.d_gate_down, p.d.rms_eps, p.buf, stream));
+            lw.post_self_attn_norm.d_gate_down, p.d.rms_eps,
+            p.d.norm_w_offset, p.buf, stream));
         add_f32_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.res, p.buf,
                                                                  p.h, hidden);
         GC_TRY(cudaGetLastError());
 
         GC_TRY(cudaMemcpyAsync(p.res, p.h, static_cast<size_t>(hidden) * 4,
                                cudaMemcpyDeviceToDevice, stream));
-        GC_TRY(RunZeroCenteredGatedNorm(p.h, 1, hidden, lw.post_attn_norm.rank,
-                                        lw.post_attn_norm.d_weight,
-                                        lw.post_attn_norm.d_gate_up,
-                                        lw.post_attn_norm.d_gate_down,
-                                        p.d.rms_eps, p.buf, stream));
+        GC_TRY(RunGigaChatGatedNorm(p.h, 1, hidden, lw.post_attn_norm.rank,
+                                    lw.post_attn_norm.d_weight,
+                                    lw.post_attn_norm.d_gate_up,
+                                    lw.post_attn_norm.d_gate_down,
+                                    p.d.rms_eps, p.d.norm_w_offset, p.buf,
+                                    stream));
         GC_TRY(PToF16(p.buf, p.n_h, hidden, stream));
 
         if (lw.moe)
@@ -568,26 +666,31 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
             GC_TRY(PToF32(p.ff0_h, p.mlp, hidden, stream));
         }
 
-        GC_TRY(RunZeroCenteredGatedNorm(p.mlp, 1, hidden, lw.post_ffw_norm.rank,
-                                        lw.post_ffw_norm.d_weight,
-                                        lw.post_ffw_norm.d_gate_up,
-                                        lw.post_ffw_norm.d_gate_down,
-                                        p.d.rms_eps, p.buf, stream));
+        GC_TRY(RunGigaChatGatedNorm(p.mlp, 1, hidden, lw.post_ffw_norm.rank,
+                                    lw.post_ffw_norm.d_weight,
+                                    lw.post_ffw_norm.d_gate_up,
+                                    lw.post_ffw_norm.d_gate_down,
+                                    p.d.rms_eps, p.d.norm_w_offset, p.buf,
+                                    stream));
         add_f32_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.res, p.buf,
                                                                  p.h, hidden);
         GC_TRY(cudaGetLastError());
     }
 
-    GC_TRY(RunZeroCenteredGatedNorm(
+    GC_TRY(RunGigaChatGatedNorm(
         p.h, 1, hidden, w.final_norm.rank, w.final_norm.d_weight,
-        w.final_norm.d_gate_up,
-        w.final_norm.d_gate_down, p.d.rms_eps, p.buf, stream));
+        w.final_norm.d_gate_up, w.final_norm.d_gate_down, p.d.rms_eps,
+        p.d.norm_w_offset, p.buf, stream));
     lsxcommon::kernels::F32ToBf16Kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.buf, p.xb,
                                                                 hidden);
     GC_TRY(cudaGetLastError());
     GC_TRY(gemv::RunLxGemmVec(stream, w.d_lm_head, p.xb, 1, w.vocab, hidden,
                               gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, 1.0f,
                               logits, gemv::LxDtype::kF32, 0.0f));
+    // Variant logit soft cap: applied on the device F32 logits, so the sampler
+    // AND final_logits both see the post-cap value.
+    if (p.d.logit_softcap > 0.0f)
+        GC_TRY(RunGigaChatSoftcap(logits, w.vocab, p.d.logit_softcap, stream));
 #undef GC_TRY
     return cudaSuccess;
 }

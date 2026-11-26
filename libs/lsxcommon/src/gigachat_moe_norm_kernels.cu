@@ -32,7 +32,7 @@ __global__ void zero_centered_gated_norm_kernel(
     const float *__restrict__ x, int dim, int rank,
     const __nv_bfloat16 *__restrict__ w,
     const __nv_bfloat16 *__restrict__ w_up,
-    const __nv_bfloat16 *__restrict__ w_down, float eps,
+    const __nv_bfloat16 *__restrict__ w_down, float eps, float w_offset,
     float *__restrict__ out)
 {
     const int r = blockIdx.x;
@@ -80,15 +80,15 @@ __global__ void zero_centered_gated_norm_kernel(
         for (int k = 0; k < rank; ++k)
             g += __bfloat162float(w_down[static_cast<size_t>(i) * rank + k]) *
                  smem[dim + k];
-        orow[i] = dev::ZeroCenteredGatedNormElement(
-            smem[i], __bfloat162float(w[i]), g);
+        orow[i] = dev::GatedNormElement(smem[i], __bfloat162float(w[i]), g,
+                                        w_offset);
     }
 }
 
 __global__ void gdn_output_norm_kernel(
     const float *__restrict__ o, const float *__restrict__ z,
     const __nv_bfloat16 *__restrict__ w, int hd, float eps, float scale,
-    float *__restrict__ out)
+    float w_offset, float *__restrict__ out)
 {
     const int h = blockIdx.x;
     const float *oh = o + static_cast<size_t>(h) * hd;
@@ -106,16 +106,16 @@ __global__ void gdn_output_norm_kernel(
     __syncthreads();
 
     for (int d = threadIdx.x; d < hd; d += blockDim.x)
-        out_h[d] = dev::GdnOutputNormElement(smem[d],
-                                             __bfloat162float(w[d]), zh[d],
-                                             eps, scale);
+        out_h[d] = dev::GdnOutputNormElementOffset(
+            smem[d], __bfloat162float(w[d]), zh[d], eps, scale, w_offset);
 }
 
 } // namespace
 
-cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
-                             int heads, int head_dim, float eps, float scale,
-                             float *out, cudaStream_t stream)
+cudaError_t RunGdnOutputNormOffset(const float *o, const float *z,
+                                   const uint8_t *w, int heads, int head_dim,
+                                   float eps, float scale, float w_offset,
+                                   float *out, cudaStream_t stream)
 {
     if (!o || !z || !w || !out || heads <= 0 || head_dim <= 0)
         return cudaErrorInvalidValue;
@@ -123,15 +123,24 @@ cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
     const size_t smem = static_cast<size_t>(head_dim) * sizeof(float);
     gdn_output_norm_kernel<<<heads, threads, smem, stream>>>(
         o, z, reinterpret_cast<const __nv_bfloat16 *>(w), head_dim, eps, scale,
-        out);
+        w_offset, out);
     return cudaGetLastError();
 }
 
-cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
-                                     int rank, const uint8_t *w,
-                                     const uint8_t *w_up,
-                                     const uint8_t *w_down, float eps,
-                                     float *out, cudaStream_t stream)
+cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
+                             int heads, int head_dim, float eps, float scale,
+                             float *out, cudaStream_t stream)
+{
+    // Legacy 3.5 entry point: zero-centred (`1+w`).
+    return RunGdnOutputNormOffset(o, z, w, heads, head_dim, eps, scale, 1.0f,
+                                  out, stream);
+}
+
+cudaError_t RunGigaChatGatedNorm(const float *x, int rows, int dim, int rank,
+                                 const uint8_t *w, const uint8_t *w_up,
+                                 const uint8_t *w_down, float eps,
+                                 float w_offset, float *out,
+                                 cudaStream_t stream)
 {
     if (!x || !w || !w_up || !w_down || !out || rows <= 0 || dim <= 0 ||
         rank <= 0)
@@ -150,8 +159,19 @@ cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
     zero_centered_gated_norm_kernel<<<rows, threads, smem, stream>>>(
         x, dim, rank, reinterpret_cast<const __nv_bfloat16 *>(w),
         reinterpret_cast<const __nv_bfloat16 *>(w_up),
-        reinterpret_cast<const __nv_bfloat16 *>(w_down), eps, out);
+        reinterpret_cast<const __nv_bfloat16 *>(w_down), eps, w_offset, out);
     return cudaGetLastError();
+}
+
+cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
+                                     int rank, const uint8_t *w,
+                                     const uint8_t *w_up,
+                                     const uint8_t *w_down, float eps,
+                                     float *out, cudaStream_t stream)
+{
+    // Legacy 3.5 entry point: zero-centred (`1+w`).
+    return RunGigaChatGatedNorm(x, rows, dim, rank, w, w_up, w_down, eps, 1.0f,
+                                out, stream);
 }
 
 } // namespace lsxcommon::gigachat

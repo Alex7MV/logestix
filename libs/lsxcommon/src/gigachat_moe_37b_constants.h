@@ -62,8 +62,8 @@ inline constexpr double kYarnMscaleAllDim = 1.0;
 // get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim) = 1.0 for
 // mscale == mscale_all_dim, so the rope tables are unscaled. The attention
 // scale carries the YaRN mscale squared:
-//   (0.1*ln(32) + 1)^2 / sqrt(192) = 1.813259…/ 13.856406… = 0.130858570…
-inline constexpr float kAttnScale = 0.13085857054230866f;
+//   (0.1*ln(32) + 1)^2 / sqrt(192) = 1.813259…/ 13.856406… = 0.130860799…
+inline constexpr float kAttnScale = 0.13086079996295008f;
 // alpha_q = sqrt(hidden / q_lora), alpha_kv = sqrt(hidden / kv_lora): the
 // latents are scaled BEFORE q_b_proj / kv_b_proj, and the alpha_q-scaled q
 // latent also feeds the indexer's wq_b.
