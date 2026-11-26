@@ -163,7 +163,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - vault `GigaChat4-37B-A4B` (override `LSX_TEST_GIGACHAT4_37B_A4B_ROOT`)
 - lifecycle TUs: `gigachat_moe_37b_model.cpp`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: 55.97 t/s (r3, 2026-11-26)
+- perf: 56.12 t/s (r3, 2026-11-26)
 - report: `docs/model-reports/2026-11-26-GigaChat4-37B-A4B.md`
 - notes: GDN + DSA MLA + MoE; GatedNorm is not zero-centred; softcap 30
 
