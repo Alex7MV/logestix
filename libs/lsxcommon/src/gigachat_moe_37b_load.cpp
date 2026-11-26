@@ -27,6 +27,13 @@ namespace lsxcommon::gigachat4 {
 bool LoadGigaChat4Index(const std::string &model_path, Gc4Index &out,
                         std::string &error)
 {
+    return LoadGigaChat4IndexWithFormat(model_path, frozen::kFormat, out, error);
+}
+
+bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
+                                 const std::string &expected_format,
+                                 Gc4Index &out, std::string &error)
+{
     namespace fs = std::filesystem;
     const fs::path index_path =
         fs::path(model_path) / "logestix" / "model.index.json";
@@ -159,7 +166,7 @@ bool LoadGigaChat4Index(const std::string &model_path, Gc4Index &out,
         error = "index missing 'format' tag";
         return false;
     }
-    if (out.format != frozen::kFormat)
+    if (out.format != expected_format)
     {
         error = "unknown format tag: " + out.format;
         return false;
@@ -183,42 +190,69 @@ bool LoadGigaChat4Index(const std::string &model_path, Gc4Index &out,
     return true;
 }
 
+Gc4FrozenExpect Gc4DefaultExpect()
+{
+    Gc4FrozenExpect e;
+    e.format = frozen::kFormat;
+    const Gc4IngestSpec s = Gc4DefaultIngestSpec();
+    e.geo = s.frozen;
+    e.full_attention_layers = s.full_attention_layers;
+    e.gate_rank = frozen::kGateRank;
+    return e;
+}
+
 bool ValidateGigaChat4Geometry(const Gc4Index &idx, std::string &error)
 {
+    return ValidateGigaChat4GeometryAgainst(idx, Gc4DefaultExpect(), error);
+}
+
+bool ValidateGigaChat4GeometryAgainst(const Gc4Index &idx,
+                                     const Gc4FrozenExpect &expect,
+                                     std::string &error)
+{
     if (SyntheticGeometryAllowed()) return true;
-    using namespace lsxcommon::gigachat4::frozen;
+    const Gc4FrozenGeometry &g = expect.geo;
     auto fail = [&](const char *field, long long expected, long long actual) {
         error = absl::StrFormat("frozen geometry mismatch: %s config=%lld tensor=%lld",
                                 field, expected, actual);
         return false;
     };
-    if (idx.num_layers != kLayers) return fail("num_layers", kLayers, idx.num_layers);
-    if (idx.hidden_size != kHidden) return fail("hidden_size", kHidden, idx.hidden_size);
-    if (idx.vocab_size != kVocab) return fail("vocab_size", kVocab, idx.vocab_size);
-    if (idx.num_attention_heads != kHeads)
-        return fail("num_attention_heads", kHeads, idx.num_attention_heads);
-    if (idx.num_key_value_heads != kKVHeads)
-        return fail("num_key_value_heads", kKVHeads, idx.num_key_value_heads);
-    if (idx.num_experts != kNumRouted) return fail("num_experts", kNumRouted, idx.num_experts);
-    if (idx.num_experts_per_tok != kTopK)
-        return fail("num_experts_per_tok", kTopK, idx.num_experts_per_tok);
-    if (idx.moe_intermediate_size != kMoeIntermediate)
-        return fail("moe_intermediate_size", kMoeIntermediate, idx.moe_intermediate_size);
-    if (idx.first_k_dense_replace != kFirstKDense)
-        return fail("first_k_dense_replace", kFirstKDense, idx.first_k_dense_replace);
-    if (idx.index_heads != kIndexHeads)
-        return fail("index_heads", kIndexHeads, idx.index_heads);
-    if (idx.index_head_dim != kIndexHeadDim)
-        return fail("index_head_dim", kIndexHeadDim, idx.index_head_dim);
-    if (idx.index_topk != kIndexTopk)
-        return fail("index_topk", kIndexTopk, idx.index_topk);
-    if (static_cast<int>(idx.full_attention_layers.size()) != kNumFullAttn)
-        return fail("full_attention_layers", kNumFullAttn,
-                    static_cast<long long>(idx.full_attention_layers.size()));
-    for (int i = 0; i < kNumFullAttn; ++i)
-        if (idx.full_attention_layers[static_cast<size_t>(i)] != kFullAttnLayers[i])
-            return fail("full_attention_layers[i]", kFullAttnLayers[i],
-                        idx.full_attention_layers[static_cast<size_t>(i)]);
+    if (idx.num_layers != g.layers) return fail("num_layers", g.layers, idx.num_layers);
+    if (idx.hidden_size != g.hidden) return fail("hidden_size", g.hidden, idx.hidden_size);
+    if (idx.vocab_size != g.vocab) return fail("vocab_size", g.vocab, idx.vocab_size);
+    if (idx.num_attention_heads != g.heads)
+        return fail("num_attention_heads", g.heads, idx.num_attention_heads);
+    if (idx.num_key_value_heads != g.kv_heads)
+        return fail("num_key_value_heads", g.kv_heads, idx.num_key_value_heads);
+    if (idx.num_experts != g.num_experts)
+        return fail("num_experts", g.num_experts, idx.num_experts);
+    if (idx.num_experts_per_tok != g.top_k)
+        return fail("num_experts_per_tok", g.top_k, idx.num_experts_per_tok);
+    if (idx.moe_intermediate_size != g.moe_intermediate)
+        return fail("moe_intermediate_size", g.moe_intermediate,
+                    idx.moe_intermediate_size);
+    if (idx.first_k_dense_replace != g.first_k_dense)
+        return fail("first_k_dense_replace", g.first_k_dense,
+                    idx.first_k_dense_replace);
+    if (idx.index_heads != g.index_heads)
+        return fail("index_heads", g.index_heads, idx.index_heads);
+    if (idx.index_head_dim != g.index_head_dim)
+        return fail("index_head_dim", g.index_head_dim, idx.index_head_dim);
+    if (idx.index_topk != g.index_topk)
+        return fail("index_topk", g.index_topk, idx.index_topk);
+    if (!expect.full_attention_layers.empty())
+    {
+        const int n = static_cast<int>(expect.full_attention_layers.size());
+        if (static_cast<int>(idx.full_attention_layers.size()) != n)
+            return fail("full_attention_layers", n,
+                        static_cast<long long>(idx.full_attention_layers.size()));
+        for (int i = 0; i < n; ++i)
+            if (idx.full_attention_layers[static_cast<size_t>(i)] !=
+                expect.full_attention_layers[static_cast<size_t>(i)])
+                return fail("full_attention_layers[i]",
+                            expect.full_attention_layers[static_cast<size_t>(i)],
+                            idx.full_attention_layers[static_cast<size_t>(i)]);
+    }
     error.clear();
     return true;
 }
@@ -283,9 +317,9 @@ bool UploadNvfp4(const DenseNvfp4BatchViews &nv, std::string_view suffix,
 // Gated-norm triple (weight + rank-16 gate up/down). Shape contract shared with
 // the 3.5 loader: weight [dim]; gate_up [rank, dim]; gate_down [dim, rank].
 bool UploadNormTriple(const TensorBatchViews &raw, const std::string &prefix,
-                      gigachat::GcGatedNorm &n, cudaStream_t stream,
-                      PinnedStagingRing &ring, std::uint64_t &acc,
-                      std::string &error)
+                      gigachat::GcGatedNorm &n, int expect_rank,
+                      cudaStream_t stream, PinnedStagingRing &ring,
+                      std::uint64_t &acc, std::string &error)
 {
     const TensorView *w = FindTensorSuffix(raw, prefix + ".weight");
     const TensorView *gu =
@@ -313,11 +347,11 @@ bool UploadNormTriple(const TensorBatchViews &raw, const std::string &prefix,
             gd->shape[1]);
         return false;
     }
-    if (!SyntheticGeometryAllowed() && rank != frozen::kGateRank)
+    if (!SyntheticGeometryAllowed() && rank != expect_rank)
     {
         error = absl::StrFormat(
             "gated norm gate rank %lld != frozen %d for %s", rank,
-            frozen::kGateRank, prefix);
+            expect_rank, prefix);
         return false;
     }
     if (!UploadRaw(w, CvKind::kBf16Raw, &n.d_weight, prefix + ".weight", stream,
@@ -350,8 +384,19 @@ bool LayerIsFullAttention(const Gc4Index &idx, int layer)
 bool LoadGigaChat4Weights(const std::string &model_path, const Gc4Index &idx,
                           Gc4Weights &w, cudaStream_t stream, std::string &error)
 {
+    return LoadGigaChat4WeightsWithExpect(model_path, idx, w, stream,
+                                          Gc4DefaultExpect(), error);
+}
+
+bool LoadGigaChat4WeightsWithExpect(const std::string &model_path,
+                                   const Gc4Index &idx, Gc4Weights &w,
+                                   cudaStream_t stream,
+                                   const Gc4FrozenExpect &expect,
+                                   std::string &error)
+{
     namespace fs = std::filesystem;
     const fs::path base = fs::path(model_path) / "logestix";
+    const int gate_rank = expect.gate_rank;
     PinnedStagingRing ring;
     if (!ring.ok())
     {
@@ -396,8 +441,8 @@ bool LoadGigaChat4Weights(const std::string &model_path, const Gc4Index &idx,
     if (!UploadRaw(FindTensorSuffix(*global, "lm_head.weight"),
                    CvKind::kBf16Raw, &w.d_lm_head, "lm_head.weight", stream,
                    ring, acc, error) ||
-        !UploadNormTriple(*global, "model.norm", w.final_norm, stream, ring, acc,
-                          error))
+        !UploadNormTriple(*global, "model.norm", w.final_norm, gate_rank, stream,
+                          ring, acc, error))
     {
         w.Free();
         return false;
@@ -425,14 +470,17 @@ bool LoadGigaChat4Weights(const std::string &model_path, const Gc4Index &idx,
         }
         const std::string lp = absl::StrFormat("layers.%d.", l);
 
-        if (!UploadNormTriple(*raw, lp + "input_layernorm", lw.input_norm, stream,
-                              ring, acc, error) ||
+        if (!UploadNormTriple(*raw, lp + "input_layernorm", lw.input_norm, gate_rank,
+                              stream, ring, acc, error) ||
             !UploadNormTriple(*raw, lp + "post_attention_layernorm",
-                              lw.post_attn_norm, stream, ring, acc, error) ||
+                              lw.post_attn_norm, gate_rank, stream, ring, acc,
+                              error) ||
             !UploadNormTriple(*raw, lp + "post_self_attn_layernorm",
-                              lw.post_self_attn_norm, stream, ring, acc, error) ||
+                              lw.post_self_attn_norm, gate_rank, stream, ring,
+                              acc, error) ||
             !UploadNormTriple(*raw, lp + "post_feedforward_layernorm",
-                              lw.post_ffw_norm, stream, ring, acc, error))
+                              lw.post_ffw_norm, gate_rank, stream, ring, acc,
+                              error))
         {
             w.Free();
             return false;
@@ -441,9 +489,11 @@ bool LoadGigaChat4Weights(const std::string &model_path, const Gc4Index &idx,
         if (lw.full_attention)
         {
             if (!UploadNormTriple(*raw, lp + "self_attn.q_a_layernorm",
-                                  lw.q_a_norm, stream, ring, acc, error) ||
+                                  lw.q_a_norm, gate_rank, stream, ring, acc,
+                                  error) ||
                 !UploadNormTriple(*raw, lp + "self_attn.kv_a_layernorm",
-                                  lw.kv_a_norm, stream, ring, acc, error) ||
+                                  lw.kv_a_norm, gate_rank, stream, ring, acc,
+                                  error) ||
                 !UploadNvfp4(*nv, lp + "self_attn.q_a_proj.weight", lw.q_a,
                              "q_a_proj", stream, ring, acc, error) ||
                 !UploadNvfp4(*nv, lp + "self_attn.q_b_proj.weight", lw.q_b,

@@ -65,6 +65,13 @@ struct GcPipelineDims {
     int index_head_dim = 0;
     int index_topk = 0;
     int index_rope = 0;
+    // Passport values the DSA step consumes; they live here so this TU never
+    // reads another member's constants header. The defaults are the values both
+    // shipped members happen to share (128^-0.5 and eps 1e-6).
+    float index_onorm_eps = 1e-6f;
+    float index_score_scale = 0.08838834764831845f;
+    // GDN output-norm sigmoid gate scale (passport: linear_sigmoid_gate_scale).
+    float gdn_sigmoid_gate_scale = 2.0f;
 };
 
 // Builds the interleaved YaRN cos/sin tables [capacity, rope_dim/2] from the

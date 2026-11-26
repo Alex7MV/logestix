@@ -2,7 +2,6 @@
 // gigachat_moe_37b_inference_indexer.h for the transcribed semantics.
 #include "lsxcommon/gigachat_moe_37b_inference_indexer.h"
 
-#include "gigachat_moe_37b_constants.h"
 #include "lsx_kernels_common.cuh"
 
 #include "lsxcommon/lsx_gemv.h"
@@ -426,7 +425,7 @@ cudaError_t RunGigaChatDsaIndexerStep(const float *q_latent_scaled,
                                gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, 1.0f,
                                k_f, gemv::LxDtype::kF32, 0.0f));
     GC4_TRY(RunGigaChatDsaIndexerKNorm(k_f, w.d_k_norm, d.head_dim,
-                                     gigachat4::frozen::kLinearONormEps, stream));
+                                      d.onorm_eps, stream));
     GC4_TRY(gemv::RunLxGemmVec(stream, w.d_weights_proj, x_bf, 1, d.heads,
                                d.hidden, gemv::LxDtype::kBF16,
                                gemv::LxDtype::kBF16, 1.0f, w_f,
@@ -446,8 +445,7 @@ cudaError_t RunGigaChatDsaIndexerStep(const float *q_latent_scaled,
 
     const int n = pos + 1;
     GC4_TRY(RunGigaChatDsaIndexerScores(q_f, k_cache, w_f, d.heads, d.head_dim,
-                                      gigachat4::frozen::kIndexScoreScale, n, scores,
-                                      stream));
+                                       d.score_scale, n, scores, stream));
     GC4_TRY(RunGigaChatDsaTopkSelect(scores, n, d.topk, out_idx, out_count,
                                    stream));
 #undef GC4_TRY

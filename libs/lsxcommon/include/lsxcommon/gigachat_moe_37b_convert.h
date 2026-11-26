@@ -115,7 +115,65 @@ struct Gc4Topology {
     std::string error_msg;  // non-empty when config is invalid
 };
 
+// ── Frozen expectation of ONE member of the family ─────────────────────────
+// The converter and the loader are shape-parameterised: every member of the
+// architecture passes its own passport here, so neither TU ever reads another
+// model's constants. This is the complete description the pipeline needs — the
+// same fields a passport fixes at compile time.
+struct Gc4FrozenGeometry {
+    int hidden = 0;
+    int layers = 0;
+    int vocab = 0;
+    int heads = 0;
+    int kv_heads = 0;
+    int num_experts = 0;
+    int top_k = 0;
+    int moe_intermediate = 0;
+    int dense_intermediate = 0;
+    int first_k_dense = 0;
+    int q_lora = 0;
+    int kv_lora = 0;
+    int qk_nope = 0;
+    int qk_rope = 0;
+    int v_head = 0;
+    int index_heads = 0;
+    int index_head_dim = 0;
+    int index_topk = 0;
+    double rms_eps = 0.0;
+    double routed_scale = 0.0;
+    double swiglu_limit = 0.0;
+    double logit_softcap = 0.0;
+    int bos_id = -1;
+    int eos_id = -1;
+    int pad_id = -1;
+};
+
+// What the produced tree must say about itself: the format tag, the model name
+// and the variant-dependent attention scale (rope/attn scale is a passport
+// value, not a config field).
+struct Gc4IngestSpec {
+    const char *format = "";
+    const char *model_name = "";
+    Gc4FrozenGeometry frozen;
+    std::vector<int> full_attention_layers;  // empty = do not check the map
+    float attn_scale = 0.0f;
+};
+
+// The GigaChat4-37B-A4B passport's spec. A sibling supplies its own.
+Gc4IngestSpec Gc4DefaultIngestSpec();
+
+// `spec` fills every field the config omits, so a parse can never fall back to
+// another member's geometry.
+Gc4Topology ParseGigaChat4Config(const std::string &config_json_text,
+                                 const Gc4IngestSpec &spec);
 Gc4Topology ParseGigaChat4Config(const std::string &config_json_text);
+
+// Runs the whole conversion pass against `spec`: geometry gate, FP8/BF16 ->
+// NVFP4, per-expert records (flushed layer by layer), MTP ballast, tokenizer
+// arrows and the index document.
+arrow::Status ConvertGigaChat4ModelWithSpec(const std::string &input_dir,
+                                           const std::string &output_root,
+                                           const Gc4IngestSpec &spec);
 
 arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
                                     const std::string &output_root);
