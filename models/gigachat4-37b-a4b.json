@@ -23,7 +23,8 @@
     ],
     "load": [
       "test_gigachat_moe_37b_loader",
-      "test_gigachat_moe_37b_weight_graph"
+      "test_gigachat_moe_37b_weight_graph",
+      "test_gigachat_moe_37b_tokenizer_parity"
     ],
     "model": [
       "test_gigachat_moe_37b_model",
@@ -76,6 +77,10 @@
       "kind": "det"
     },
     "test_gigachat_tool_framing_37b": {
+      "label": "fast",
+      "env": []
+    },
+    "test_gigachat_moe_37b_tokenizer_parity": {
       "label": "fast",
       "env": []
     }

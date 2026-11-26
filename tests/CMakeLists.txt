@@ -3685,6 +3685,14 @@ target_include_directories(test_gigachat_moe_37b_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 lsx_copy_arrow_dlls(test_gigachat_moe_37b_convert ARROW_ONLY)
 
+add_executable(test_gigachat_moe_37b_tokenizer_parity
+    test_gigachat_moe_37b_tokenizer_parity.cpp)
+target_link_libraries(test_gigachat_moe_37b_tokenizer_parity PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_37b_tokenizer_parity PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+lsx_copy_arrow_dlls(test_gigachat_moe_37b_tokenizer_parity ARROW_ONLY)
+
 add_executable(test_gigachat_tool_framing_37b test_gigachat_tool_framing_37b.cpp)
 target_link_libraries(test_gigachat_tool_framing_37b PRIVATE
     lsxcommon Catch2::Catch2WithMain)
