@@ -26,8 +26,8 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|dory|alice|xing|mistral|minimax|hy|flint|ling|beam|step|inkling|muse)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra|base|loop|varloop|1017)";
-    const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
+    const std::string var    = "(?:27b|37b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra|base|loop|varloop|1017)";
+    const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp|indexer)";
     const std::string tail   =
         "(?:convert"
         "|load"
@@ -277,6 +277,26 @@ TEST_CASE("naming guard accepts deepseek_moe_v41_* stems", "[naming][guard]")
     CHECK(m("deepseek_moe_v41_inference_attn"));
     CHECK(m("deepseek_moe_v41_device_math"));
     CHECK(m("deepseek_moe_v41_dequant"));
+}
+
+TEST_CASE("naming guard accepts gigachat_moe_37b_* stems", "[naming][guard]")
+{
+    // `37b` is a VARIANT slot (the GigaChat4 sibling of GigaChat3.5-432B) and
+    // `indexer` is a SUBSYSTEM slot: the DSA lightning indexer is an
+    // attention-adjacent decode unit of its own, not part of the MLA kernel.
+    const auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("gigachat_moe_37b_constants"));
+    CHECK(m("gigachat_moe_37b_convert"));
+    CHECK(m("gigachat_moe_37b_load"));
+    CHECK(m("gigachat_moe_37b_model"));
+    CHECK(m("gigachat_moe_37b_kernels"));
+    CHECK(m("gigachat_moe_37b_norm_kernels"));
+    CHECK(m("gigachat_moe_37b_inference_indexer"));
+    // The type marker is mandatory: `gigachat_37b_*` is not a legal stem.
+    CHECK_FALSE(m("gigachat_37b_model"));
+    CHECK_FALSE(m("gigachat_moe_37b"));
 }
 
 TEST_CASE("naming guard accepts nemotron_moe_* stems", "[naming][guard]")
