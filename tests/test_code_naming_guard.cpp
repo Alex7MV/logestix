@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|dory|alice|xing|mistral|minimax|hy|flint|ling|beam|step|inkling|muse)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|37b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra|base|loop|varloop|1017)";
+    const std::string var    = "(?:27b|37b|708b|8b|flash|36|v41|pro|nvfp4|switch|simulmt|large4|k3|ultra|base|loop|varloop|1017)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp|indexer)";
     const std::string tail   =
         "(?:convert"
@@ -294,6 +294,15 @@ TEST_CASE("naming guard accepts gigachat_moe_37b_* stems", "[naming][guard]")
     CHECK(m("gigachat_moe_37b_kernels"));
     CHECK(m("gigachat_moe_37b_norm_kernels"));
     CHECK(m("gigachat_moe_37b_inference_indexer"));
+    // The 708B row is the second size variant of the same architecture.
+    CHECK(m("gigachat_moe_708b_constants"));
+    CHECK(m("gigachat_moe_708b_convert"));
+    CHECK(m("gigachat_moe_708b_load"));
+    CHECK(m("gigachat_moe_708b_model"));
+    CHECK(m("gigachat_moe_708b_kernels"));
+    // The indexer TU is shared by the family, but the name is legal for a
+    // member that ever needs its own.
+    CHECK(m("gigachat_moe_708b_inference_indexer"));
     // The type marker is mandatory: `gigachat_37b_*` is not a legal stem.
     CHECK_FALSE(m("gigachat_37b_model"));
     CHECK_FALSE(m("gigachat_moe_37b"));

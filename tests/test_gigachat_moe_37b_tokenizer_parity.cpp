@@ -11,7 +11,7 @@
 // too), so it needs its own assertion.
 #include <catch2/catch_test_macros.hpp>
 
-#include "test_gigachat_37b_fixture.h"
+#include "test_gigachat4_fixture.h"
 
 #include "lsxcommon/gigachat_moe_37b_model.h"
 #include "lsxcommon/tokenizer.h"

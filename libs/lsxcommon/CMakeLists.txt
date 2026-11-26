@@ -68,6 +68,8 @@ add_library(lsxcommon STATIC
     src/gigachat_moe_37b_convert.cpp
     src/gigachat_moe_37b_load.cpp
     src/gigachat_moe_37b_model.cpp
+    src/gigachat_moe_708b_convert.cpp
+    src/gigachat_moe_708b_model.cpp
     src/mimo_moe_convert.cpp
     src/mimo_moe_load.cpp
     src/mimo_moe_expert_cache.cpp

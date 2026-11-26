@@ -3728,6 +3728,98 @@ target_link_libraries(test_gigachat_moe_37b_kernels PRIVATE
 target_include_directories(test_gigachat_moe_37b_kernels PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
+# ── GigaChat4-708B-A41B (the 37B's big sibling) ──────────────────────────
+# Host reference math (header-only, no CUDA).
+add_executable(test_gigachat_moe_708b_kernels test_gigachat_moe_708b_kernels.cpp)
+target_link_libraries(test_gigachat_moe_708b_kernels PRIVATE
+    Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_708b_kernels PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+
+# Converter (synthetic checkpoint E2E, bounded TIMEOUT from the manifest).
+add_executable(test_gigachat_moe_708b_convert test_gigachat_moe_708b_convert.cpp)
+target_link_libraries(test_gigachat_moe_708b_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_708b_convert PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_convert ARROW_ONLY)
+
+# Loader-stage passport (index only, never the vault).
+add_executable(test_gigachat_moe_708b_loader test_gigachat_moe_708b_loader.cpp)
+target_link_libraries(test_gigachat_moe_708b_loader PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_708b_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_loader ARROW_ONLY)
+
+# Device weight graph + expert store (GPU-gated).
+add_executable(test_gigachat_moe_708b_weight_graph
+    test_gigachat_moe_708b_weight_graph.cpp)
+target_link_libraries(test_gigachat_moe_708b_weight_graph PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_708b_weight_graph PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_weight_graph ARROW_ONLY)
+
+# Model contour (synthetic converted fixture).
+add_executable(test_gigachat_moe_708b_model test_gigachat_moe_708b_model.cpp)
+target_link_libraries(test_gigachat_moe_708b_model PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_708b_model PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_model ARROW_ONLY)
+
+# Tokenizer bridge (real vault, SKIP when the converted tree is absent).
+add_executable(test_gigachat_moe_708b_tokenizer_parity
+    test_gigachat_moe_708b_tokenizer_parity.cpp)
+target_link_libraries(test_gigachat_moe_708b_tokenizer_parity PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_708b_tokenizer_parity PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(test_gigachat_moe_708b_tokenizer_parity PRIVATE
+    "LSX_GIGACHAT_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/gigachat\"")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_tokenizer_parity ARROW_ONLY)
+
+# ── GigaChat4-708B lifecycle gates (shared drivers) ──────────────────────
+add_executable(test_gigachat_moe_708b_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_gigachat_moe_708b_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_708b_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_708b_selfcheck PRIVATE
+    "LSX_SELFCHECK_MODEL=\"gigachat4-708b-a41b\"")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_selfcheck ARROW_ONLY)
+
+add_executable(test_gigachat_moe_708b_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_708b_fsi_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_708b_fsi_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_708b_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-708b-a41b\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_fsi_selfcheck ARROW_ONLY)
+
+add_executable(test_gigachat_moe_708b_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_708b_code_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_708b_code_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_708b_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-708b-a41b\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_code_selfcheck ARROW_ONLY)
+
+add_executable(test_gigachat_moe_708b_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gigachat_moe_708b_det_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gigachat_moe_708b_det_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_708b_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gigachat4-708b-a41b\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+lsx_copy_arrow_dlls(test_gigachat_moe_708b_det_selfcheck ARROW_ONLY)
+
 # Device kernels (standalone .cu object + link lsxcommon at the exe).
 add_library(test_gigachat_moe_37b_devkernels_cu OBJECT
     test_gigachat_moe_37b_devkernels.cu)

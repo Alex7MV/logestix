@@ -393,6 +393,11 @@ Gc4Topology ParseGigaChat4Config(const std::string &config_json_text,
                       "(hidden_size/num_hidden_layers/vocab_size)";
         return t;
     }
+    // A config that omits the layer map keeps the member's frozen one: the map
+    // is a compile-time property of the architecture variant, and the gate
+    // re-checks every entry the config DOES declare.
+    if (t.full_attention_layers.empty())
+        t.full_attention_layers = spec.full_attention_layers;
     if (t.full_attention_layers.empty())
         t.error_msg = "config.json has no full_attention_layers";
     return t;

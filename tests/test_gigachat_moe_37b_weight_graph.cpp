@@ -4,7 +4,7 @@
 // LRU. GPU-gated.
 #include <catch2/catch_test_macros.hpp>
 
-#include "test_gigachat_37b_fixture.h"
+#include "test_gigachat4_fixture.h"
 
 #include "lsxcommon/gigachat_moe_37b_convert.h"
 #include "lsxcommon/gigachat_moe_37b_load.h"
