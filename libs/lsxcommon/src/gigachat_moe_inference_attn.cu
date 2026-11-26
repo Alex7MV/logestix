@@ -428,10 +428,14 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
                                d.hidden, stream));
         GcDsaIndexerDims idims = hook.dims;
         idims.latent_scale = alpha_q;
+        // The indexer selects table row `pos` itself (its documented contract),
+        // so it gets the BASE tables: handing it the already-advanced `cos_t`
+        // would rotate by 2*pos. That stayed invisible below index_topk, where
+        // the selection is the identity, and corrupted the scores above it.
         GC_TRY(RunGigaChatDsaIndexerStep(
             q_a_n, static_cast<const uint8_t *>(sc.x_bf), *hook.weights, idims,
-            cos_t, sin_t, pos, hook.capacity, hook.k_cache, *hook.scratch,
-            hook.sel, hook.count, stream));
+            rope_cos, rope_sin, pos, hook.capacity, hook.k_cache,
+            *hook.scratch, hook.sel, hook.count, stream));
         sel = hook.sel;
         n_sel = std::min(idims.topk, pos + 1);
         hook.n_sel = n_sel;

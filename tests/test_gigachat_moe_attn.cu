@@ -407,3 +407,210 @@ TEST_CASE("gigachat GatedDeltaNet decode matches the host reference",
     cudaFree(out0);
     cudaFree(out1);
 }
+
+// Regression: the DSA indexer's RoPE table row is selected INSIDE the indexer
+// step (its contract is "pass the base table plus pos"). The MLA decode used to
+// hand it an already-advanced pointer, so the indexer rotated by 2*pos instead
+// of pos. Below index_topk keys that is invisible (the selection is the
+// identity), which is why every short-context gate stayed green while the
+// long-context selection was scored from wrong keys.
+//
+// The assertion is path equivalence, not a numeric tolerance: the index key the
+// decoder caches at `pos` must equal the key the indexer produces when driven
+// directly with the base tables at the same `pos`.
+TEST_CASE("gigachat MLA DSA indexer uses table row pos, not 2*pos",
+          "[gigachat][attn][dsa]")
+{
+    if (cudaFree(0) != cudaSuccess) SKIP("no CUDA device");
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(false);
+
+    const int hidden = 32, heads = 2, q_lora = 8, kv_lora = 8, nope = 8,
+              rope = 8, vh = 8;
+    const int qk = nope + rope, kvw = kv_lora + rope;
+    const int kvb = heads * (nope + vh), hv = heads * vh;
+    const GcMlaDims d{hidden, heads, q_lora, kv_lora, nope, rope, vh};
+
+    // DSA indexer geometry: 1 index head, 8-wide keys, rope on the first 8.
+    const int index_heads = 1, index_dim = 8, index_rope = 8, index_topk = 2;
+    const int capacity = 4;
+
+    GcLayerWeights lw;
+    {
+        auto gen = [](int n, int seed) {
+            std::vector<float> v(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) v[i] = GridVal(i * 5 + seed);
+            return v;
+        };
+        const int rank = 2;
+        lw.q_a = DevNvfp4(gen(q_lora * hidden, 1), q_lora, hidden);
+        lw.q_b = DevNvfp4(gen(heads * qk * q_lora, 2), heads * qk, q_lora);
+        lw.kv_a = DevNvfp4(gen(kvw * hidden, 3), kvw, hidden);
+        lw.kv_b = DevNvfp4(gen(kvb * kv_lora, 4), kvb, kv_lora);
+        lw.attn_gate = DevNvfp4(gen(hv * hidden, 5), hv, hidden);
+        lw.o_proj = DevNvfp4(gen(hidden * hv, 6), hidden, hv);
+        lw.q_a_norm = DevNorm(gen(q_lora, 7), gen(rank * q_lora, 8),
+                              gen(q_lora * rank, 9), q_lora, rank);
+        lw.kv_a_norm = DevNorm(gen(kv_lora, 10), gen(rank * kv_lora, 11),
+                               gen(kv_lora * rank, 12), kv_lora, rank);
+    }
+
+    // Indexer weights (BF16 planes + one NVFP4 projection).
+    GcDsaIndexerWeights iw;
+    std::vector<float> wk(static_cast<size_t>(index_dim) * hidden);
+    for (size_t i = 0; i < wk.size(); ++i) wk[i] = GridVal(static_cast<int>(i) + 3);
+    std::vector<float> wp(static_cast<size_t>(index_heads) * hidden);
+    for (size_t i = 0; i < wp.size(); ++i) wp[i] = 0.5f * GridVal(static_cast<int>(i) + 1);
+    std::vector<float> kn(index_dim, 1.0f);
+    iw.d_wk = DevBf16(wk);
+    iw.d_weights_proj = DevBf16(wp);
+    iw.d_k_norm = DevBf16(kn);
+    {
+        std::vector<float> wq(static_cast<size_t>(index_heads) * index_dim * q_lora);
+        for (size_t i = 0; i < wq.size(); ++i)
+            wq[i] = GridVal(static_cast<int>(i) + 2);
+        iw.wq_b = DevNvfp4(wq, index_heads * index_dim, q_lora);
+    }
+
+    GcDsaIndexerDims idims;
+    idims.hidden = hidden;
+    idims.q_lora = q_lora;
+    idims.heads = index_heads;
+    idims.head_dim = index_dim;
+    idims.rope = index_rope;
+    idims.topk = index_topk;
+    idims.latent_scale = 1.0f;
+
+    // Tables whose every row differs, so a wrong row is a different number.
+    const int half = rope / 2;
+    std::vector<float> rc(static_cast<size_t>(capacity) * half),
+        rs(static_cast<size_t>(capacity) * half);
+    for (int p = 0; p < capacity; ++p)
+        for (int j = 0; j < half; ++j)
+        {
+            rc[static_cast<size_t>(p) * half + j] =
+                std::cos(0.37f * static_cast<float>(p + 1) + 0.11f * j);
+            rs[static_cast<size_t>(p) * half + j] =
+                std::sin(0.37f * static_cast<float>(p + 1) + 0.11f * j);
+        }
+    float *d_rc = DevCopy(rc), *d_rs = DevCopy(rs);
+
+    std::vector<float> x0(static_cast<size_t>(hidden));
+    for (int i = 0; i < hidden; ++i)
+        x0[i] = 0.25f * static_cast<float>((i % 7) - 3);
+
+    const float eps = 1e-6f, scale = 0.55f;
+
+    // ── Path A: the indexer driven directly with the BASE tables. ──
+    std::vector<float> k_direct(static_cast<size_t>(index_dim), 0.0f);
+    GcDsaIndexerScratch direct_sc;
+    REQUIRE(direct_sc.Alloc(idims, capacity));
+    float *d_kcache_direct = nullptr;
+    int32_t *d_idx = nullptr;
+    int *d_cnt = nullptr;
+    REQUIRE(cudaMalloc(&d_kcache_direct,
+                       static_cast<size_t>(capacity) * index_dim * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_kcache_direct, 0,
+                       static_cast<size_t>(capacity) * index_dim * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d_idx, static_cast<size_t>(index_topk) * sizeof(int32_t)) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d_cnt, sizeof(int)) == cudaSuccess);
+    {
+        std::vector<float> qlat(static_cast<size_t>(q_lora));
+        for (int i = 0; i < q_lora; ++i)
+            qlat[i] = 0.3f * static_cast<float>((i % 3) - 1);
+        float *d_ql = DevCopy(qlat);
+        uint8_t *d_hid = DevBf16(x0);
+        // pos = 1: the second table row, which is where a double offset lands on
+        // row 2 instead.
+        REQUIRE(RunGigaChatDsaIndexerStep(
+                    d_ql, static_cast<const uint8_t *>(d_hid), iw, idims, d_rc,
+                    d_rs, 1, capacity, d_kcache_direct, direct_sc, d_idx, d_cnt,
+                    nullptr) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        REQUIRE(cudaMemcpy(k_direct.data(),
+                           d_kcache_direct + static_cast<size_t>(index_dim),
+                           static_cast<size_t>(index_dim) * 4,
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        direct_sc.Free();
+        cudaFree(d_ql);
+        cudaFree(d_hid);
+    }
+
+    // ── Path B: the same key through the MLA decode's DSA hook. ──
+    float *kx = DevCopy(x0);
+    GcMlaScratch sc;
+    REQUIRE(sc.Alloc(d, capacity));
+    float *k_cache = nullptr, *v_cache = nullptr;
+    REQUIRE(cudaMalloc(&k_cache, static_cast<size_t>(capacity) * heads * qk * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&v_cache, static_cast<size_t>(capacity) * heads * vh * 4) ==
+            cudaSuccess);
+    float *out = nullptr;
+    REQUIRE(cudaMalloc(&out, hidden * 4) == cudaSuccess);
+
+    GcDsaIndexerScratch hook_sc;
+    REQUIRE(hook_sc.Alloc(idims, capacity));
+    float *d_kcache_hook = nullptr;
+    int32_t *d_sel = nullptr;
+    int *d_count = nullptr;
+    REQUIRE(cudaMalloc(&d_kcache_hook,
+                       static_cast<size_t>(capacity) * index_dim * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_kcache_hook, 0,
+                       static_cast<size_t>(capacity) * index_dim * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d_sel, static_cast<size_t>(index_topk) * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_count, sizeof(int)) == cudaSuccess);
+
+    GcDsaHook hook;
+    hook.weights = &iw;
+    hook.dims = idims;
+    hook.scratch = &hook_sc;
+    hook.k_cache = d_kcache_hook;
+    hook.sel = d_sel;
+    hook.count = d_count;
+    hook.capacity = capacity;
+    hook.run_indexer = true;
+    GcAttnVariant var;
+    var.dsa = &hook;
+
+    REQUIRE(RunGigaChatMlaDecode(kx, lw, d, eps, scale, d_rc, d_rs, 0, capacity,
+                                 k_cache, v_cache, sc, out, nullptr, var) ==
+            cudaSuccess);
+    REQUIRE(RunGigaChatMlaDecode(kx, lw, d, eps, scale, d_rc, d_rs, 1, capacity,
+                                 k_cache, v_cache, sc, out, nullptr, var) ==
+            cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<float> k_hook(static_cast<size_t>(index_dim), 0.0f);
+    REQUIRE(cudaMemcpy(k_hook.data(),
+                       d_kcache_hook + static_cast<size_t>(index_dim),
+                       static_cast<size_t>(index_dim) * 4,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    // Non-vacuity: the key is not all zeros.
+    float maxabs = 0.0f;
+    for (float v : k_direct) maxabs = std::fmax(maxabs, std::fabs(v));
+    CHECK(maxabs > 1e-3f);
+    // Bit identity: both paths run the same kernels on the same row.
+    for (int r = 0; r < index_dim; ++r)
+        CHECK(k_hook[static_cast<size_t>(r)] == k_direct[static_cast<size_t>(r)]);
+
+    hook_sc.Free();
+    sc.Free();
+    cudaFree(k_cache);
+    cudaFree(v_cache);
+    cudaFree(out);
+    cudaFree(kx);
+    cudaFree(d_kcache_hook);
+    cudaFree(d_kcache_direct);
+    cudaFree(d_sel);
+    cudaFree(d_count);
+    cudaFree(d_idx);
+    cudaFree(d_cnt);
+    cudaFree(d_rc);
+    cudaFree(d_rs);
+}
