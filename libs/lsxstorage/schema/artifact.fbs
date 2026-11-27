@@ -1,0 +1,104 @@
+// libs/lsxstorage/schema/artifact.fbs — the artifact index, version 1.
+//
+// artifact.fb is the SINGLE source of truth for what a converted artifact
+// CONTAINS: which plane encodings it uses, per layer, plus the tokenizer and
+// provenance. model.index.json keeps model GEOMETRY (num_layers, hidden_size,
+// eos_id, vram) and must carry no codec declaration at all — the per-layer map
+// lives here, in `layer_codec`.
+//
+// Rules an emitter must satisfy (design §2.4.3); `lsxforge --verify` enforces
+// every one of them by re-reading what was written:
+//   * used_codecs == OR of every planes[].codec
+//   * every plane in the tree is listed, and every listed plane exists
+//   * v1 ships no ballast: a plane the load path cannot reach is a defect
+//   * layer_codec has one entry per physical layer
+//   * the tokenizer planes exist inside the artifact (self-sufficiency, I5)
+//
+// Prose in this file is deliberately short: the reader is a verifier, not a
+// negotiator.
+
+namespace lsx.storage.fb;
+
+enum Vendor : byte { Nvidia, Cpu, Amd }
+
+// Bit values MUST match lsxcommon::hw::PlaneCodec (hardware_target.h). The mask
+// crosses the library boundary as a plain integer, so a mismatch would
+// reinterpret every artifact rather than fail to compile.
+enum PlaneCodec : ulong (bit_flags) {
+  NONE  = 0,
+  F32   = 1,
+  BF16  = 2,
+  F16   = 4,
+  I8Sym = 8,
+  MxFp8 = 16,
+  NvFp4 = 32,
+  MxFp4 = 64
+}
+
+table Target {
+  vendor:Vendor;
+  arch:string;              // "sm_120", "sm_86", "avx512+bf16+vnni"
+}
+
+// One storage plane: a file (or a set of tensors inside one file) whose bytes
+// are all encoded the same way.
+table Plane {
+  codec:PlaneCodec;         // exactly one bit
+  role:string;              // "dense.mlp", "expert.routed", "embed", "meta", ...
+  path:string;              // relative to the artifact dir; "" = inside model.index.json
+  bytes:ulong;
+  sha256:[ubyte];           // 32 bytes; empty = not digested (only for role "meta")
+}
+
+table Tokenizer {
+  vocab:string;
+  merges:string;
+  chat_template:string;     // "" when the checkpoint has no template
+  chat_template_sha256:[ubyte];
+  source_tokenizer_sha256:[ubyte];
+}
+
+// Provenance, not identity: re-converting from an unchanged source must produce
+// the same artifact_id even though the source path may differ.
+table Source {
+  model_name:string;        // "Phi-4"
+  source_dir:string;        // "phi-4", relative to LSX_SOURCE_ROOT
+  config_sha256:[ubyte];
+  safetensors_index_sha256:[ubyte];
+}
+
+table Artifact {
+  format_version:uint = 1;
+  artifact_id:string;       // sha256(family|model_type|profile|mask|planes)
+  model_type:string;        // factory registry id, e.g. "phi-4"
+  family:string;            // "phi"
+  profile:string;           // "bf16", "nvfp4", "int8-w8a16"
+
+  // Advisory: the target this artifact was BUILT for. The load gate uses
+  // used_codecs and the ACTIVE device, never this field — otherwise editing one
+  // string would let an artifact past the gate on the wrong hardware.
+  target:Target;
+
+  used_codecs:ulong;        // I2/I3 mask — the single source of truth
+  planes:[Plane];
+
+  // Per-layer codec mask, index = physical layer. Replaces the codec fields
+  // that used to live in model.index.json (mlp_nvfp4 / attn_nvfp4 /
+  // head_nvfp4 / expert_nvfp4[] / expert_fp8[]).
+  layer_codec:[ulong];
+
+  tokenizer:Tokenizer;
+  source:Source;
+
+  layer_count:int;
+  pinned_tensors:int;
+  expert_files:int;
+  converter_version:string;
+  converter_git_rev:string;
+  codec_profile_arg:string; // verbatim --codec-profile value
+  created_utc:string;       // ISO-8601
+  enterprise_reserved:ulong;// 0 in the open edition
+}
+
+root_type Artifact;
+file_identifier "LSXA";

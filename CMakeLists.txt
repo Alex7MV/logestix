@@ -514,7 +514,11 @@ FetchContent_MakeAvailable(httplib)
 # ── DEPENDENCIES: FlatBuffers via submodule (static build) ────────────
 
 set(FLATBUFFERS_BUILD_FLATLIB ON CACHE INTERNAL "")
-set(FLATBUFFERS_BUILD_FLATC OFF CACHE INTERNAL "")
+# flatc is needed to generate libs/lsxstorage's artifact.fb header from
+# schema/artifact.fbs at build time. Generated code is never committed, so the
+# header cannot drift from the schema (the alternative — committing it — makes
+# a schema edit silently invisible until someone regenerates by hand).
+set(FLATBUFFERS_BUILD_FLATC ON CACHE INTERNAL "")
 set(FLATBUFFERS_BUILD_TESTS OFF CACHE INTERNAL "")
 set(FLATBUFFERS_BUILD_BENCHMARKS OFF CACHE INTERNAL "")
 set(FLATBUFFERS_INSTALL OFF CACHE INTERNAL "")
