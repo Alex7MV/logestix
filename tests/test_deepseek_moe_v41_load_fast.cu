@@ -100,7 +100,7 @@ TEST_CASE("deepseek-v41 loader errors on a missing layer file",
     fs::remove_all(base);
     const auto model = base / "model";
     REQUIRE(v41fixtest::BuildSyntheticConverted(model).ok());
-    fs::remove(model / "logestix" / "pinned" / "layer_000.arrow");
+    fs::remove(model / "pinned" / "layer_000.arrow");
 
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);

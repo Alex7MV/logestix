@@ -97,7 +97,7 @@ std::unique_ptr<lsxcommon::IModel> Load(const lsxmanifest::ModelRow &row,
 void RequireVault(const lsxmanifest::ModelRow &row,
                   const std::filesystem::path &root)
 {
-    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+    if (!std::filesystem::exists(root / "model.index.json"))
         SKIP(manifest_query::SkipMessage(row, "converted model"));
 }
 

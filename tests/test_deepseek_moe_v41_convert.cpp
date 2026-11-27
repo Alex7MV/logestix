@@ -164,7 +164,7 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
     REQUIRE(st.ok());
 
     {
-        std::ifstream f(out / "logestix" / "model.index.json");
+        std::ifstream f(out / "model.index.json");
         REQUIRE(f.good());
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
@@ -179,7 +179,7 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
 
     {
         const auto names = synthtest::TensorNamesIn(
-            out / "logestix" / "pinned" / "global.arrow");
+            out / "pinned" / "global.arrow");
         CHECK(std::find(names.begin(), names.end(), "embed.weight") !=
               names.end());
         CHECK(std::find(names.begin(), names.end(), "norm.weight") !=
@@ -187,11 +187,11 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
     }
 
     // Tokenizer bridge (BPE vocab + merges).
-    CHECK(fs::exists(out / "logestix" / "pinned" / "tokenizer_vocab.arrow"));
-    CHECK(fs::exists(out / "logestix" / "pinned" / "tokenizer_merges.arrow"));
+    CHECK(fs::exists(out / "pinned" / "tokenizer_vocab.arrow"));
+    CHECK(fs::exists(out / "pinned" / "tokenizer_merges.arrow"));
     {
         const auto names = synthtest::TensorNamesIn(
-            out / "logestix" / "pinned" / "layer_000.arrow");
+            out / "pinned" / "layer_000.arrow");
         CHECK(std::find(names.begin(), names.end(),
                         "layers.0.attn.wq_a.weight") != names.end());
         CHECK(std::find(names.begin(), names.end(),
@@ -203,7 +203,7 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
     // Routed expert 0: E8M0 window [119..122] -> m=-2 (global 0.25), pairs.
     {
         auto batch = lsxcommon::ReadRecordBatchFromFile(
-            out / "logestix" / "experts" / "layer_0" / "exp_0.arrow");
+            out / "experts" / "layer_0" / "exp_0.arrow");
         REQUIRE(batch.ok());
         auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch);
         REQUIRE(pe.ok());
@@ -240,7 +240,7 @@ TEST_CASE("deepseek-v41 converter stamps the input card name",
     INFO("convert status: " << st.ToString());
     REQUIRE(st.ok());
 
-    std::ifstream f(out / "logestix" / "model.index.json");
+    std::ifstream f(out / "model.index.json");
     REQUIRE(f.good());
     const std::string json((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());

@@ -35,7 +35,7 @@ void PatchConfigBos(const fs::path &dir, int bos_id)
 
 std::string ReadIndex(const fs::path &out)
 {
-    std::ifstream f(out / "logestix" / "model.index.json");
+    std::ifstream f(out / "model.index.json");
     std::stringstream ss;
     ss << f.rdbuf();
     return ss.str();
@@ -111,8 +111,8 @@ TEST_CASE("ConvertQwen36MoeModel synthetic roundtrip (format/model/bos)",
     CHECK(j.find("bos_token_id") == std::string::npos);
 
     // Unified layout: expert split + MTP store.
-    CHECK(fs::exists(out / "logestix" / "experts" / "layer_0" / "exp_0.arrow"));
-    CHECK(fs::exists(out / "logestix" / "mtp" / "mtp_nvfp4.arrow"));
+    CHECK(fs::exists(out / "experts" / "layer_0" / "exp_0.arrow"));
+    CHECK(fs::exists(out / "mtp" / "mtp_nvfp4.arrow"));
 
     // Determinism: byte-identical index on re-conversion.
     fs::path out2 = fs::temp_directory_path() / "lsx_qwen36_out2";

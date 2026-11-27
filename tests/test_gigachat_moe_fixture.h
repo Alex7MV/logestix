@@ -389,8 +389,8 @@ inline void WriteGigaChatIndex(
     const std::filesystem::path &model_root, int hidden_override = 7168,
     const std::string &format_tag = "logestix-gigachat-nvfp4")
 {
-    std::filesystem::create_directories(model_root / "logestix");
-    std::ofstream f(model_root / "logestix" / "model.index.json");
+    std::filesystem::create_directories(model_root);
+    std::ofstream f(model_root / "model.index.json");
     f << "{\n  \"format\": \"" << format_tag << "\",\n"
       << "  \"model\": \"GigaChat3.5-432B-A28B-Reasoning\",\n"
       << "  \"num_layers\": 40,\n  \"full_attention_layers\": [";

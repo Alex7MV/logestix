@@ -247,7 +247,7 @@ std::unique_ptr<IModel> MakeModel(const fs::path &root)
 void PatchIndex(const fs::path &root, const std::string &from,
                 const std::string &to)
 {
-    const fs::path idx = root / "logestix" / "model.index.json";
+    const fs::path idx = root / "model.index.json";
     std::ifstream in(idx, std::ios::binary);
     std::ostringstream ss;
     ss << in.rdbuf();

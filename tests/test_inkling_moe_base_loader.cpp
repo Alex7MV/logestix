@@ -204,7 +204,7 @@ TEST_CASE("inkling base real vault index matches the frozen passport",
           "[inkling][load]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling tree absent: " + root.string());
 
     base::Topology top;
@@ -237,7 +237,7 @@ TEST_CASE("inkling base real vault index matches the frozen passport",
 
     // One expert record: the BF16 source quantizes to I*H/2 packed bytes and
     // I*H/16 scale bytes per plane.
-    const fs::path rec = root / "logestix" / "experts" / "layer_2" / "exp_0.arrow";
+    const fs::path rec = root / "experts" / "layer_2" / "exp_0.arrow";
     REQUIRE(fs::exists(rec));
     auto batch = lsxcommon::ReadRecordBatchFromFile(rec);
     if (!batch.ok()) FAIL(batch.status().ToString());

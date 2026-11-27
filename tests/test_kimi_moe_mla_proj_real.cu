@@ -376,7 +376,7 @@ TEST_CASE("pinned MLA projection GEMV matches the host NVFP4 decoder on real "
           "weights", "[kimi][mla][real-model]")
 {
     const std::filesystem::path model = ModelDir();
-    const std::filesystem::path log_root = model / "logestix";
+    const std::filesystem::path log_root = model;
     if (!std::filesystem::exists(log_root / "pinned" / "layer_0.arrow"))
         SKIP("converted Kimi model directory not present");
 

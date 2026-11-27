@@ -82,7 +82,7 @@ TEST_CASE("gigachat4 index requires the DSA indexer geometry",
     const auto root = gigachat4test::MakeTempDir("gc4_idx_noidx");
     // A 3.5-shaped index without index_* fields must be refused, not defaulted.
     gigachat4test::WriteGigaChat4Index(root);
-    const auto path = root / "logestix" / "model.index.json";
+    const auto path = root / "model.index.json";
     std::ifstream in(path);
     std::stringstream ss;
     ss << in.rdbuf();

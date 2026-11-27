@@ -55,7 +55,7 @@ TEST_CASE(
     "[deepseek][model][prompt][real-model]")
 {
     const std::filesystem::path model = DeepSeekModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("DeepSeek real model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

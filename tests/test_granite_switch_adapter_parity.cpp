@@ -140,7 +140,7 @@ TEST_CASE("granite-switch chat framing reproduces the source ids",
           "[granite_switch][inference][real-model]")
 {
     const auto root = ModelRoot();
-    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+    if (!std::filesystem::exists(root / "model.index.json"))
         SKIP("granite-switch converted model not present");
     const auto golden_path = GoldenPath();
     if (!std::filesystem::exists(golden_path))
@@ -172,7 +172,7 @@ TEST_CASE("granite-switch adapter parity against the source oracle",
           "[granite_switch][inference][real-model]")
 {
     const auto root = ModelRoot();
-    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+    if (!std::filesystem::exists(root / "model.index.json"))
         SKIP("granite-switch converted model not present");
     const auto golden_path = GoldenPath();
     if (!std::filesystem::exists(golden_path))

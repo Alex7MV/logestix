@@ -1130,7 +1130,7 @@ arrow::Status RecomputeVramBlock(
     const std::filesystem::path &output_root)
 {
     namespace fs = std::filesystem;
-    auto index_path = fs::path(output_root) / "logestix" / "model.index.json";
+    auto index_path = fs::path(output_root) / "model.index.json";
     std::ifstream f(index_path);
     if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -1353,7 +1353,7 @@ arrow::Status Converter::Run()
 
     // Mandatory layout: all converted artifacts live under <root>/logestix
     // (model.index.json, pinned/, experts/), mirroring the Qwen/GLM pipelines.
-    fs::path log_root = fs::path(impl_->output_path) / "logestix";
+    fs::path log_root = fs::path(impl_->output_path);
     fs::create_directories(log_root);
 
     auto model = lsxcommon::scan_directory(impl_->input_path);

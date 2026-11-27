@@ -250,9 +250,9 @@ TEST_CASE("muse dense convert happy path", "[muse_dense][convert]") {
     if (!st.ok()) FAIL("ConvertMuseDenseModel: " << st.ToString());
     REQUIRE(st.ok());
 
-    const auto pinned = out / "logestix" / "pinned";
+    const auto pinned = out / "pinned";
     SECTION("index: format, geometry, ballast count") {
-        std::ifstream f(out / "logestix" / "model.index.json");
+        std::ifstream f(out / "model.index.json");
         REQUIRE(f.good());
         const std::string json((std::istreambuf_iterator<char>(f)),
                                std::istreambuf_iterator<char>());
@@ -264,7 +264,7 @@ TEST_CASE("muse dense convert happy path", "[muse_dense][convert]") {
         CHECK(json.find("\"vram\"") != std::string::npos);
         // The loader re-reads the topology from the index.
         auto top = lsxcommon::muse_dense::load_muse_dense_topology(
-            (out / "logestix" / "model.index.json").string());
+            (out / "model.index.json").string());
         REQUIRE(top.error_msg.empty());
         CHECK(top.num_layers == 4);
         CHECK(top.hidden_size == 64);

@@ -205,7 +205,7 @@ Topology LoadTopology(const std::string &model_path)
 {
     Topology top;
     const fs::path idx_path =
-        fs::path(model_path) / "logestix" / "model.index.json";
+        fs::path(model_path) / "model.index.json";
     std::ifstream f(idx_path, std::ios::binary);
     if (!f) {
         top.error_msg = "model.index.json not found: " + idx_path.string();
@@ -486,7 +486,7 @@ bool LoadHy4Weights(const std::string &model_path, const Topology &topo,
     pw.experts_per_layer = topo.experts_per_layer;
     pw.vocab_size = topo.vocab_size;
 
-    const fs::path log_root = fs::path(model_path) / "logestix";
+    const fs::path log_root = fs::path(model_path);
     cudaError_t e = cudaSuccess;
     std::uint64_t bytes = 0;
 

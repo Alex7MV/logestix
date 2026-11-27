@@ -91,7 +91,7 @@ TEST_CASE("Hy-SimulMT converter strips and counts the speech encoder",
     if (!st.ok()) WARN(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const auto &c = hy_simulmt_test::TestCfg();
 
     // 1) The index carries the SimulMT identity and the ballast count.
@@ -155,7 +155,7 @@ TEST_CASE("Hy-SimulMT converter strips and counts the speech encoder",
         fs::remove_all(out2);
         REQUIRE(hy_simulmt::ConvertHySimulMTModel(in.string(), out2.string()).ok());
         CHECK(ReadAll(base / "model.index.json") ==
-              ReadAll(out2 / "logestix" / "model.index.json"));
+              ReadAll(out2 / "model.index.json"));
         std::error_code ec;
         fs::remove_all(out2, ec);
     }

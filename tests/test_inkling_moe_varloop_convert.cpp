@@ -150,7 +150,7 @@ TEST_CASE("varloop synthetic convert emits logestix-inkling-2-varloop",
     if (!st.ok()) FAIL(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const fs::path idx = base / "model.index.json";
     REQUIRE(fs::exists(idx));
 

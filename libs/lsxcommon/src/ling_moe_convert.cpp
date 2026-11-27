@@ -615,7 +615,7 @@ arrow::Status ConvertLingModel(const std::string &input_dir,
             integrity::VerifyAllTensorReads(input_dir, resident_only));
     }
 
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";

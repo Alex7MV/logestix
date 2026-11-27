@@ -79,8 +79,8 @@ inline lsxcommon::TensorRecord ByteRecord(const std::string &name,
 
 inline void WriteIndexJson(const std::filesystem::path &model_dir)
 {
-    std::filesystem::create_directories(model_dir / "logestix");
-    std::ofstream f(model_dir / "logestix" / "model.index.json");
+    std::filesystem::create_directories(model_dir);
+    std::ofstream f(model_dir / "model.index.json");
     f << "{\n"
       << "  \"format\": \"logestix-v1-nvfp4\",\n"
       << "  \"model\": \"DeepSeek-V4-Pro-0813\",\n"
@@ -181,7 +181,7 @@ inline arrow::Status WriteGlobalArrow(
     const std::filesystem::path &model_dir,
     const std::vector<lsxcommon::TensorRecord> &records)
 {
-    return WritePinnedFile(model_dir / "logestix" / "pinned" /
+    return WritePinnedFile(model_dir / "pinned" /
                                "global.arrow",
                            records);
 }
@@ -203,7 +203,7 @@ inline lsxcommon::PackedExpert SyntheticExpert(uint8_t seed)
 
 inline arrow::Status BuildSyntheticModel(const std::filesystem::path &model_dir)
 {
-    const auto pinned = model_dir / "logestix" / "pinned";
+    const auto pinned = model_dir / "pinned";
     std::filesystem::create_directories(pinned);
     WriteIndexJson(model_dir);
     if (auto st = WritePinnedFile(pinned / "global.arrow", GlobalRecords());
@@ -213,7 +213,7 @@ inline arrow::Status BuildSyntheticModel(const std::filesystem::path &model_dir)
         auto fn = pinned / ("layer_" + std::to_string(l) + ".arrow");
         if (auto st = WritePinnedFile(fn, LayerRecords(l)); !st.ok())
             return st;
-        const auto edir = model_dir / "logestix" / "experts" /
+        const auto edir = model_dir / "experts" /
                           ("layer_" + std::to_string(l));
         std::filesystem::create_directories(edir);
         for (int e = 0; e < 2; ++e) {

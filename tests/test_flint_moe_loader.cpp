@@ -140,7 +140,7 @@ TEST_CASE("flint loader rejects a foreign index format", "[flint][loader]")
 {
     Converted c = BuildConverted();
     // Corrupt the format tag: the loader must refuse rather than decode.
-    const fs::path idx = c.root / "logestix" / "model.index.json";
+    const fs::path idx = c.root / "model.index.json";
     std::string json;
     {
         std::ifstream f(idx);

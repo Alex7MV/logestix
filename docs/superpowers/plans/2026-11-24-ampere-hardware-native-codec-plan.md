@@ -45,7 +45,7 @@ geometry and `vram` only, and `vram` is legitimately profile-dependent.
 **Revision 2026-11-27e (layout):** "why a `logestix/` folder inside the logestix
 store?" — withdrawn. The intermediate path segment is removed, so
 `ArtifactDir(...)` **is** the artifact directory:
-`<ROOT>/<family>/<model_type>/<profile>/{artifact.fb,pinned,experts,…}` (spec §2.4.2).
+`<ROOT>/<org>/<model_dir>/<profile>/{artifact.fb,pinned,experts,…}` (spec §2.4.2).
 **New Task 4a** performs the mechanical rewrite (538 sites: 144 `libs/`, 3 `apps/`,
 391 `tests/`), deletes the four dead `ResolvePinnedDir()` fallbacks, rewrites the two
 "detect a tree by folder name" sites to test `artifact.fb`, and adds a `fast` guard
@@ -62,7 +62,7 @@ that the segment cannot come back.
   owns codecs (including the per-layer map), `model.index.json` owns geometry and the
   `vram` profile and must contain **no** codec key (spec §2.4.3 rule 5).
 - **The artifact IS the profile directory.** No intermediate `logestix/` path
-  segment anywhere: `<LSX_ARTIFACT_ROOT>/<family>/<model_type>/<profile>/`. An artifact is
+  segment anywhere: `<LSX_ARTIFACT_ROOT>/<org>/<model_dir>/<profile>/`. An artifact is
   detected by `artifact.fb`, never by a directory name (spec §2.4.2).
 - **The mask covers every shipped plane, and every shipped plane is reachable by the
   load path.** v1 ships **no ballast**: `mtp/` and any `deferred` subtree are not
@@ -443,7 +443,7 @@ instead of `artifact.fb`.
 **Interfaces:**
 - Consumes: Task 4.
 - Produces: the final on-disk path form —
-  `<LSX_ARTIFACT_ROOT>/<family>/<model_type>/<profile>/{artifact.fb,pinned,experts,…}`.
+  `<LSX_ARTIFACT_ROOT>/<org>/<model_dir>/<profile>/{artifact.fb,pinned,experts,…}`.
   No API change; `cfg_.model_path` stays the thing every join hangs off.
 
 - [ ] **Step 1: Write the failing guard test** (the shape of `test_logging_guard`:
@@ -1125,7 +1125,7 @@ SKIPping) on the 5090; the `nvfp4` siblings exist and `--explain-artifact` shows
 target-dependent pick; **Task 9b done** — no `model.index.json` in the tree carries a
 codec key, and the inkling/gemma suites are green reading the artifact instead;
 **Task 4a done** — the path-shape guard is green and the bootstrapped artifacts live at
-`<ROOT>/<family>/<model_type>/<profile>/` with no intermediate segment;
+`<ROOT>/<org>/<model_dir>/<profile>/` with no intermediate segment;
 `docs/superpowers/specs/…-design.md` committed; `docs/numeric-contract.md` §1/§1.1
 amended; `docs/OPEN_TASKS.md` records the cold start and the artifact root.
 

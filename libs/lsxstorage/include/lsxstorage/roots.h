@@ -52,7 +52,12 @@ fs::path CacheRoot();
 //
 // Returns an EMPTY path when no artifact root is configured, so a caller that
 // ignores ArtifactRoot() cannot accidentally write under an invented root.
-fs::path ArtifactDir(const std::string &family, const std::string &model_type,
+// The artifact path MIRRORS the source store, so moving between a checkpoint and
+// its artifacts means changing only the root:
+//   <ArtifactRoot>/<org>/<model_dir>/<profile>
+// org and model_dir are the store's own spelling ("microsoft", "Qwen3.5-9B"), not
+// the manifest's family/model_type: an operator navigates by what `ls` shows.
+fs::path ArtifactDir(const std::string &org, const std::string &model_dir,
                      const std::string &profile);
 
 // The pre-split layout `<LSX_MODEL_ROOT>/<Model>/logestix`. Nothing loadable

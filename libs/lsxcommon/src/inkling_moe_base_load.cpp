@@ -44,7 +44,7 @@ bool get_i(simdjson::ondemand::object &o, const char *k, int &out)
 arrow::Status LoadTopology(const std::string &model_path, Topology &out)
 {
     out = Topology{};
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::ifstream f(idx);
     if (!f) return arrow::Status::IOError("cannot open ", idx.string());
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -382,7 +382,7 @@ void FreePinnedWeights(PinnedWeights &pw)
 bool LoadPinnedWeights(const std::string &root, PinnedWeights &pw,
                        cudaStream_t stream)
 {
-    const fs::path base = fs::path(root) / "logestix";
+    const fs::path base = fs::path(root);
     const fs::path pinned = base / "pinned";
     const Topology &top = pw.top;
     const int H = top.hidden;

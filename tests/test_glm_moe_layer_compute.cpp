@@ -213,7 +213,7 @@ TEST_CASE("GLM real dense stack layers 0-2: loader filter, finite, FP64 ref",
     std::filesystem::path model =
         env ? std::filesystem::path(env)
             : std::filesystem::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.2";
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("GLM real model directory not present");
 
     cudaFree(0);

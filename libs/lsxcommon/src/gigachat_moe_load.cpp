@@ -30,7 +30,7 @@ bool LoadGigaChatIndex(const std::string &model_path, GigaChatIndex &out,
 {
     namespace fs = std::filesystem;
     const fs::path index_path =
-        fs::path(model_path) / "logestix" / "model.index.json";
+        fs::path(model_path) / "model.index.json";
     std::ifstream f(index_path, std::ios::binary);
     if (!f)
     {
@@ -400,7 +400,7 @@ bool LoadGigaChatWeights(const std::string &model_path, const GigaChatIndex &idx
                          GcWeights &w, cudaStream_t stream, std::string &error)
 {
     namespace fs = std::filesystem;
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     PinnedStagingRing ring;
     if (!ring.ok())
     {

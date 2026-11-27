@@ -45,7 +45,7 @@ TEST_CASE("Dory topology parses the logestix-dory-nvfp4 index",
 {
     auto tmp = BuildConvertedFixture();
     const auto top =
-        load_dory_topology((tmp / "logestix" / "model.index.json").string());
+        load_dory_topology((tmp / "model.index.json").string());
     INFO(top.error_msg);
     CHECK(top.error_msg.empty());
     CHECK(top.num_layers == dorytest::TestCfg().num_layers);

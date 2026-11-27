@@ -104,7 +104,7 @@ TEST_CASE("inkling loop topology rejects a wrong format tag", "[inkling][load]")
     const fs::path out = ConvertFixture("fmt");
     // Corrupt the format tag: the loader must refuse a foreign tree.
     {
-        const fs::path idx = out / "logestix" / "model.index.json";
+        const fs::path idx = out / "model.index.json";
         std::ifstream f(idx);
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());

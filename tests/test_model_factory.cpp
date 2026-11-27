@@ -24,7 +24,7 @@ std::string TestModelPath()
 bool TestModelPathUsable()
 {
     const auto idx =
-        std::filesystem::path(TestModelPath()) / "logestix" / "model.index.json";
+        std::filesystem::path(TestModelPath()) / "model.index.json";
     std::error_code ec;
     return std::filesystem::exists(idx, ec) && !ec;
 }

@@ -718,7 +718,7 @@ arrow::Status ConvertInklingLoopModelWithSpec(const std::string &input_dir,
                 dt.c_str()));
     }
 
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     const fs::path experts_dir = base / "experts";
     fs::create_directories(pinned_dir);

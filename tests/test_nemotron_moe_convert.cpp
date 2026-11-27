@@ -25,7 +25,7 @@ TEST_CASE("nemotron converter emits the logestix-nemotron-nvfp4 layout",
     auto st = ConvertNemotronModel(src.string(), dst.string());
     REQUIRE(st.ok());
 
-    std::ifstream in(dst / "logestix" / "model.index.json");
+    std::ifstream in(dst / "model.index.json");
     REQUIRE(in.good());
     std::stringstream ss;
     ss << in.rdbuf();
@@ -39,13 +39,13 @@ TEST_CASE("nemotron converter emits the logestix-nemotron-nvfp4 layout",
 
     // Per-expert files for the single MoE layer (layer 1), w1 unused.
     for (int e = 0; e < nemotrontest::kTExperts; ++e) {
-        CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" /
+        CHECK(fs::exists(dst / "experts" / "layer_1" /
                          ("exp_" + std::to_string(e) + ".arrow")));
     }
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "global.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_1_nvfp4.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_2_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "global.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_0.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_1_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_2_nvfp4.arrow"));
 }
 
 TEST_CASE("nemotron classifier tolerates malformed layer/expert indices",

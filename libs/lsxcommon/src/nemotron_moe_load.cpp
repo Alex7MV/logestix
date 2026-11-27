@@ -43,7 +43,7 @@ bool LoadNemotronIndex(const std::string &model_path, NemotronIndex &out,
 {
     namespace fs = std::filesystem;
     const fs::path idx_path =
-        fs::path(model_path) / "logestix" / "model.index.json";
+        fs::path(model_path) / "model.index.json";
     std::error_code ec;
     if (!fs::exists(idx_path, ec)) {
         error = "model.index.json not found: " + idx_path.string();
@@ -283,7 +283,7 @@ bool LoadNemotronWeights(const std::string &model_path,
                          cudaStream_t stream, std::string &error)
 {
     namespace fs = std::filesystem;
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     PinnedStagingRing ring;
     if (!ring.ok()) {
         error = "pinned staging ring allocation failed";

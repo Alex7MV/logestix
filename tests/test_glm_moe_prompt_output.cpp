@@ -36,7 +36,7 @@ TEST_CASE("GLM-5.2 Infer: meaningful output_text on the test prompt",
           "[glm][model][prompt][real-model]")
 {
     const std::filesystem::path model = GlmModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("GLM real model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

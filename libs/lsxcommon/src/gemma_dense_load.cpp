@@ -357,7 +357,7 @@ cudaError_t LoadGemmaDensePinnedWeights(const std::string &model_path,
 {
     pw.Free();
 
-    fs::path pinned_dir = fs::path(model_path) / "logestix" / "pinned";
+    fs::path pinned_dir = fs::path(model_path) / "pinned";
     if (!fs::exists(pinned_dir) && fs::exists(fs::path(model_path) / "pinned"))
         pinned_dir = fs::path(model_path) / "pinned";
     if (!fs::exists(pinned_dir)) {
@@ -405,7 +405,7 @@ cudaError_t LoadGemmaDensePinnedWeights(const std::string &model_path,
 
     // Topology from the index. Mandatory for generation; a parse failure is
     // logged and surfaces through ValidateGeometry.
-    auto idx_path = fs::path(model_path) / "logestix" / "model.index.json";
+    auto idx_path = fs::path(model_path) / "model.index.json";
     if (!fs::exists(idx_path))
         idx_path = fs::path(model_path) / "model.index.json";
     if (fs::exists(idx_path)) {

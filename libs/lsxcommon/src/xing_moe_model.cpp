@@ -127,8 +127,7 @@ bool XingMoeModel::Load()
                            " ms"));
 
     const xing::XingTopology top =
-        xing::xing_load_topology((std::filesystem::path(cfg_.model_path) /
-                                  "logestix" / "model.index.json")
+        xing::xing_load_topology((std::filesystem::path(cfg_.model_path) / "model.index.json")
                                      .string());
     if (!ValidateGeometry(top)) return AbortLoad();
 

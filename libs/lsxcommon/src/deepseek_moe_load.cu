@@ -192,7 +192,7 @@ arrow::Result<TensorBatchViews> load_arrow_file(const std::string &path)
 ModelTopology load_topology(const std::string &model_path)
 {
     ModelTopology topo;
-    auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
+    auto ipath = std::filesystem::path(model_path) / "model.index.json";
     std::ifstream f(ipath);
     if (!f) {
         topo.error_msg = "Cannot open " + ipath.string();
@@ -239,7 +239,7 @@ ModelTopology load_topology(const std::string &model_path)
 std::string detect_model_type(const std::string &model_path)
 {
     std::string result;
-    auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
+    auto ipath = std::filesystem::path(model_path) / "model.index.json";
     const auto moe_ipath =
         std::filesystem::path(model_path) / "logestix-qwen35moe" /
         "model.index.json";
@@ -475,7 +475,7 @@ cudaError_t load_pinned_weights(
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    auto pinned_dir = fs::path(model_path) / "logestix" / "pinned";
+    auto pinned_dir = fs::path(model_path) / "pinned";
 
     // Drains the stream on every error exit below so pinned staging never
     // dies while a DMA transfer is still in flight.

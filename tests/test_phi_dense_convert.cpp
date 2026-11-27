@@ -144,7 +144,7 @@ TEST_CASE("phi residual plane halves the 4-bit reconstruction error",
               tmp / "tokenizer.json");
     REQUIRE(ConvertPhiModel(tmp.string(), tmp.string()).ok());
 
-    const path nv = tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow";
+    const path nv = tmp / "pinned" / "layer_0_nvfp4.arrow";
     auto names = DenseNvfp4NamesIn(nv);
     for (const char *t : {"self_attn.qkv_proj.weight", "self_attn.o_proj.weight",
                           "mlp.gate_up_proj.weight", "mlp.down_proj.weight"}) {
@@ -209,7 +209,7 @@ TEST_CASE("phi converter builds logestix-phi index and arrow layout",
     REQUIRE(st.ok());
 
     auto top = load_phi_topology(
-        (tmp / "logestix" / "model.index.json").string());
+        (tmp / "model.index.json").string());
     CHECK(top.error_msg.empty());
     CHECK(top.num_layers == 2);
     CHECK(top.hidden_size == 64);
@@ -227,15 +227,15 @@ TEST_CASE("phi converter builds logestix-phi index and arrow layout",
     CHECK(top.vram.max_bytes >= top.vram.optimal_bytes);
     CHECK(top.vram.context_tokens > 0);
 
-    CHECK(exists(tmp / "logestix" / "pinned" / "global.arrow"));
+    CHECK(exists(tmp / "pinned" / "global.arrow"));
     // With FP16 edges the fixture has no global NVFP4 tensors at all, so the
     // file is legitimately absent (the loader treats it as optional).
-    CHECK_FALSE(exists(tmp / "logestix" / "pinned" / "global_nvfp4.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_1_nvfp4.arrow"));
+    CHECK_FALSE(exists(tmp / "pinned" / "global_nvfp4.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_0.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_0_nvfp4.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_1_nvfp4.arrow"));
 
-    auto names = DenseNvfp4NamesIn(tmp / "logestix" / "pinned" /
+    auto names = DenseNvfp4NamesIn(tmp / "pinned" /
                                    "layer_0_nvfp4.arrow");
     CHECK(Contains(names, "model.layers.0.self_attn.qkv_proj.weight"));
     CHECK(Contains(names, "model.layers.0.self_attn.o_proj.weight"));
@@ -243,12 +243,12 @@ TEST_CASE("phi converter builds logestix-phi index and arrow layout",
     CHECK(Contains(names, "model.layers.0.mlp.down_proj.weight"));
 
     // Edges: embed + lm_head are FP16 (raw BF16 records), never NVFP4.
-    auto gnames = DenseNvfp4NamesIn(tmp / "logestix" / "pinned" /
+    auto gnames = DenseNvfp4NamesIn(tmp / "pinned" /
                                     "global_nvfp4.arrow");
     CHECK_FALSE(Contains(gnames, "model.embed_tokens.weight"));
     CHECK_FALSE(Contains(gnames, "lm_head.weight"));
 
-    auto rnames = synthtest::TensorNamesIn(tmp / "logestix" / "pinned" /
+    auto rnames = synthtest::TensorNamesIn(tmp / "pinned" /
                                            "global.arrow");
     CHECK(Contains(rnames, "model.norm.weight"));
     CHECK(Contains(rnames, "model.embed_tokens.weight"));
@@ -257,7 +257,7 @@ TEST_CASE("phi converter builds logestix-phi index and arrow layout",
     {
         // The index records the weight format so a loader can refuse a tree
         // it does not understand.
-        std::ifstream f(tmp / "logestix" / "model.index.json");
+        std::ifstream f(tmp / "model.index.json");
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
         CHECK(json.find("\"edges\": \"fp16\"") != std::string::npos);

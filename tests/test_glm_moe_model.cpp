@@ -24,7 +24,6 @@ TEST_CASE("GLM factory autodetects and creates glm-5.2 model", "[glm][model]")
                               glmtest::BuildSyntheticModel());
     glmtest::WriteConfig(model_home);
     glmtest::WriteTokenizer(model_home);
-    // The converter appends the mandatory "logestix" subdirectory itself.
     auto st = lsxcommon::glm::ConvertGlmModel(model_home.string(), model_home);
     REQUIRE(st.ok());
 

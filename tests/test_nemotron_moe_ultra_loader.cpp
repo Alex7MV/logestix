@@ -89,7 +89,7 @@ TEST_CASE("ultra index: a foreign format tag is rejected by name", "[ultra][load
     const auto tree = ConvertedFixture("nu_tag");
     // Rewrite the tag to the 30B sibling's: same layout family, different schema.
     {
-        std::ifstream in(tree / "logestix" / "model.index.json");
+        std::ifstream in(tree / "model.index.json");
         std::stringstream ss;
         ss << in.rdbuf();
         std::string json = ss.str();
@@ -97,7 +97,7 @@ TEST_CASE("ultra index: a foreign format tag is rejected by name", "[ultra][load
         const auto at = json.find(from);
         REQUIRE(at != std::string::npos);
         json.replace(at, from.size(), "logestix-nemotron-nvfp4");
-        std::ofstream out(tree / "logestix" / "model.index.json");
+        std::ofstream out(tree / "model.index.json");
         out << json;
     }
     UltraIndex idx;
@@ -156,7 +156,7 @@ TEST_CASE("ultra weights: the latent bridge is mandatory when the index declares
     // fail is the latent-bridge check. That is the case a config/tensor mismatch
     // produces in the wild (latent declared, projections never converted).
     REQUIRE(lsxcommon::WriteBatch(lsxcommon::DenseNvfp4Schema::MakeBatch({}),
-                       tree / "logestix" / "pinned" / "layer_1_nvfp4.arrow")
+                       tree / "pinned" / "layer_1_nvfp4.arrow")
                 .ok());
 
     UltraWeights w;
@@ -179,7 +179,7 @@ TEST_CASE("ultra weights: a missing layer file is named, not fudged", "[ultra][l
     INFO("index error: " << err);
     REQUIRE(loaded);
 
-    fs::remove(tree / "logestix" / "pinned" / "layer_2_nvfp4.arrow");
+    fs::remove(tree / "pinned" / "layer_2_nvfp4.arrow");
 
     UltraWeights w;
     cudaStream_t stream = nullptr;

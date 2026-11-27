@@ -148,6 +148,8 @@ ReadResult ReadArtifactFile(const fs::path &artifact_fb)
     info.model_type = Str(a->model_type());
     info.family = Str(a->family());
     info.profile = Str(a->profile());
+    info.org = Str(a->org());
+    info.model_dir = Str(a->model_dir());
     if (const auto *t = a->target(); t != nullptr)
         info.target_id = std::string(fb::EnumNameVendor(t->vendor())) + ":" +
                          Str(t->arch());

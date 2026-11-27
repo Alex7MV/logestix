@@ -37,7 +37,7 @@ TEST_CASE("Kimi-K2.7-Code perf baseline: decode throughput",
           "[kimi][perf][real-model]")
 {
     const std::filesystem::path model = KimiPerfModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("converted Kimi model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

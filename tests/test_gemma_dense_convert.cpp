@@ -194,29 +194,29 @@ TEST_CASE("gemma dense convert happy path", "[gemma_dense][convert]") {
     REQUIRE(cst.ok());
 
     // Layout: pinned globals (raw norms) + the NVFP4 tied table + per-layer.
-    CHECK(exists(out / "logestix" / "pinned" / "global.arrow"));
-    CHECK(exists(out / "logestix" / "pinned" / "global_nvfp4.arrow"));
+    CHECK(exists(out / "pinned" / "global.arrow"));
+    CHECK(exists(out / "pinned" / "global_nvfp4.arrow"));
     for (int l = 0; l < gemma_dense_test::TestCfg().num_layers; ++l)
-        CHECK(exists(out / "logestix" / "pinned" /
+        CHECK(exists(out / "pinned" /
                      ("layer_" + std::to_string(l) + ".arrow")));
     // A dense checkpoint has no routed experts at all.
-    CHECK_FALSE(exists(out / "logestix" / "experts"));
+    CHECK_FALSE(exists(out / "experts"));
     // Tokenizer bridge (stage 4): the vocabulary/merges arrows plus the
     // metadata the loader re-mmaps.
-    CHECK(exists(out / "logestix" / "pinned" / "tokenizer_vocab.arrow"));
-    CHECK(exists(out / "logestix" / "pinned" / "tokenizer_merges.arrow"));
+    CHECK(exists(out / "pinned" / "tokenizer_vocab.arrow"));
+    CHECK(exists(out / "pinned" / "tokenizer_merges.arrow"));
 
     // Global raw holds the norms/scalars, never a quantized projection.
     {
         const auto names = synthtest::TensorNamesIn(
-            out / "logestix" / "pinned" / "global.arrow");
+            out / "pinned" / "global.arrow");
         CHECK(std::find(names.begin(), names.end(),
                         "model.language_model.norm.weight") != names.end());
     }
 
     // Per-layer layout: projections as the NVFP4 triple, norms/scalar raw.
     auto batch_res = lsxcommon::LoadTensorBatchViews(
-        out / "logestix" / "pinned" / "layer_0.arrow");
+        out / "pinned" / "layer_0.arrow");
     REQUIRE(batch_res.ok());
     auto find = [&](std::string_view name) -> const lsxcommon::TensorView * {
         for (const auto &t : batch_res->tensors)
@@ -261,7 +261,7 @@ TEST_CASE("gemma dense convert happy path", "[gemma_dense][convert]") {
     // The full-attention layer stores NO v_proj (V is tied to K).
     {
         auto full_res = lsxcommon::LoadTensorBatchViews(
-            out / "logestix" / "pinned" / "layer_3.arrow");
+            out / "pinned" / "layer_3.arrow");
         REQUIRE(full_res.ok());
         bool has_v = false;
         for (const auto &t : full_res->tensors)
@@ -273,7 +273,7 @@ TEST_CASE("gemma dense convert happy path", "[gemma_dense][convert]") {
 
     // Index round-trip through the loader-side parser.
     {
-        std::ifstream idx(out / "logestix" / "model.index.json");
+        std::ifstream idx(out / "model.index.json");
         const std::string json((std::istreambuf_iterator<char>(idx)),
                                std::istreambuf_iterator<char>());
         CHECK(json.find("\"format\": \"logestix-gemma-dense\"") !=
@@ -283,7 +283,7 @@ TEST_CASE("gemma dense convert happy path", "[gemma_dense][convert]") {
         CHECK(json.find("\"head_nvfp4\": true") != std::string::npos);
     }
     auto top2 = lsxcommon::gemma_dense::load_gemma_dense_topology(
-        (out / "logestix" / "model.index.json").string());
+        (out / "model.index.json").string());
     CHECK(top2.error_msg.empty());
     CHECK(top2.num_layers == 4);
     CHECK(top2.hidden_size == 64);

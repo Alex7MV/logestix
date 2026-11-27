@@ -58,7 +58,7 @@ TEST_CASE("Qwen3.5-35B-A3B perf baseline: decode throughput",
           "[qwen35moe][perf][real-model]")
 {
     const std::filesystem::path model = QwenMoePerfModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("Qwen3.5-35B-A3B converted model directory not present");
 
     lsxcommon::ModelInitConfig cfg;
@@ -107,7 +107,7 @@ TEST_CASE("gemma-4-26B-A4B-it perf baseline: decode throughput",
           "[gemma26moe][perf][real-model]")
 {
     const std::filesystem::path model = VaultModelPath("gemma-4-26B-A4B-it");
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("gemma-4-26B-A4B-it converted model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

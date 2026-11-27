@@ -152,7 +152,7 @@ TEST_CASE("ultra per-layer numerics match the reference slice", "[ultra][layers]
         SKIP("slice-oracle fixture absent (run tools/nemotron_ultra_oracle.py): " +
              fixture.string());
     const fs::path tree = ConvertedTree();
-    if (!fs::exists(tree / "logestix" / "model.index.json", ec))
+    if (!fs::exists(tree / "model.index.json", ec))
         SKIP("converted tree absent: " + tree.string());
 
     Oracle oracle;

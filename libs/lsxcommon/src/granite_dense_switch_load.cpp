@@ -308,14 +308,14 @@ bool LoadGraniteSwitchPinnedWeights(const std::string &output_root,
     pw.Free();
     const auto t0 = std::chrono::steady_clock::now();
 
-    auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    auto pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) {
         log::error("[granite_switch_load] no pinned dir under " + output_root);
         return false;
     }
 
-    auto idx = fs::path(output_root) / "logestix" / "model.index.json";
+    auto idx = fs::path(output_root) / "model.index.json";
     if (!fs::exists(idx)) {
         log::error("[granite_switch_load] no model.index.json");
         return false;

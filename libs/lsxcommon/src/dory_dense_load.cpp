@@ -256,14 +256,14 @@ bool LoadDoryPinnedWeights(const std::string &output_root,
     pw.Free();
     const auto t0 = std::chrono::steady_clock::now();
 
-    fs::path pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    fs::path pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) {
         log::error("[dory_load] no pinned dir under " + output_root);
         return false;
     }
 
-    const auto idx = fs::path(output_root) / "logestix" / "model.index.json";
+    const auto idx = fs::path(output_root) / "model.index.json";
     if (fs::exists(idx)) {
         pw.top = load_dory_topology(idx.string());
         if (!pw.top.error_msg.empty()) {

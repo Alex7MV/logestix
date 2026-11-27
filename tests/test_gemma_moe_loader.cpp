@@ -308,7 +308,7 @@ TEST_CASE("gemma loader uploads NVFP4 tied embed/lm_head",
     auto out = tmp / "out";
     REQUIRE(lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string())
                 .ok());
-    CHECK(fs::exists(out / "logestix" / "pinned" / "global_nvfp4.arrow"));
+    CHECK(fs::exists(out / "pinned" / "global_nvfp4.arrow"));
 
     lsxcommon::gemma::GemmaPinnedWeights pw;
     auto rc = lsxcommon::gemma::LoadGemmaPinnedWeights(out.string(), pw,

@@ -151,7 +151,7 @@ void FillDsaBlock(kimi_k3::KimiK3Topology &t)
 fs::path IndexWith(const fs::path &tree, const std::string &from,
                    const std::string &to, const std::string &tag)
 {
-    const fs::path src = tree / "logestix" / "model.index.json";
+    const fs::path src = tree / "model.index.json";
     std::ifstream in(src);
     REQUIRE(in.is_open());
     std::string json((std::istreambuf_iterator<char>(in)),
@@ -162,8 +162,8 @@ fs::path IndexWith(const fs::path &tree, const std::string &from,
     const fs::path dir = fs::temp_directory_path() / ("kimi_pro_badidx_" + tag);
     std::error_code ec;
     fs::remove_all(dir, ec);
-    fs::create_directories(dir / "logestix");
-    std::ofstream out(dir / "logestix" / "model.index.json");
+    fs::create_directories(dir);
+    std::ofstream out(dir / "model.index.json");
     out << json;
     return dir;
 }

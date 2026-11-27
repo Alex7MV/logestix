@@ -40,6 +40,11 @@ struct ArtifactSpec {
     std::string model_type;  // manifest id: "phi-4"
     std::string family;      // "phi"
     std::string profile;     // "bf16", "nvfp4", "int8-w8a16"
+    // Store coordinates, so the artifact records where it belongs:
+    // <LSX_ARTIFACT_ROOT>/<org>/<model_dir>/<profile>. The path mirrors the
+    // source store (<org>/<model>), which is what an operator navigates.
+    std::string org;         // "microsoft"
+    std::string model_dir;   // "phi-4" (store spelling, not the manifest id)
     std::string model_name;  // display name, "Phi-4"
     std::string source_dir;  // "phi-4", relative to LSX_SOURCE_ROOT
 

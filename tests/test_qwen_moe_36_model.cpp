@@ -82,7 +82,7 @@ TEST_CASE("geometry mismatch rejected at load (qwen3.6)", "[qwen36-model]")
     ConvertedModel36 fix;
 
     // Corrupt hidden_size in the index: ValidateGeometry must refuse.
-    auto idx = fix.out / "logestix" / "model.index.json";
+    auto idx = fix.out / "model.index.json";
     {
         std::ifstream f(idx);
         std::stringstream ss;

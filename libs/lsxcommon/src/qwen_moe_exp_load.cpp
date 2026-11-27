@@ -299,7 +299,7 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
     pw.Free();
     error.clear();
 
-    fs::path base = fs::path(model_path) / "logestix";
+    fs::path base = fs::path(model_path);
     const fs::path pinned_dir = base / "pinned";
     if (!fs::exists(pinned_dir)) {
         error = "no pinned dir under " + base.string();
@@ -878,7 +878,7 @@ bool LoadQwen4ExpExpertStore(const std::string &model_path,
     store.Free();
     error.clear();
 
-    fs::path base = fs::path(model_path) / "logestix";
+    fs::path base = fs::path(model_path);
     const fs::path experts_dir = base / "experts";
     if (!fs::exists(experts_dir)) {
         error = "no experts dir under " + base.string();
@@ -1233,7 +1233,7 @@ bool LoadQwen4ExpPleShards(const std::string &model_path, ExpPinnedWeights &pw,
         error = "PLE shard count unknown or output array null";
         return false;
     }
-    const fs::path ple_dir = fs::path(model_path) / "logestix" / "ple";
+    const fs::path ple_dir = fs::path(model_path) / "ple";
 
     for (int s = 0; s < parts; ++s) {
         const fs::path path = ple_dir / absl::StrCat("shard_", s, ".arrow");

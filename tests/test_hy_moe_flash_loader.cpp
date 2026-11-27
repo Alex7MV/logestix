@@ -31,7 +31,7 @@ fs::path BuildTree(int layers, int experts)
     const fs::path root = fs::temp_directory_path() /
                           ("hy4-load-" + std::to_string(::getpid()));
     fs::remove_all(root);
-    const fs::path log = root / "logestix";
+    const fs::path log = root;
     fs::create_directories(log / "pinned");
     fs::create_directories(log / "experts" / "layer_1");
 

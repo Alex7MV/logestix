@@ -328,7 +328,7 @@ arrow::Status WriteMuseDenseModelIndex(const std::string &output_root,
                                        const MuseDenseTopology &top)
 {
     namespace fs = std::filesystem;
-    const auto dir = fs::path(output_root) / "logestix";
+    const auto dir = fs::path(output_root);
     if (!fs::exists(dir)) {
         auto st = fs::create_directories(dir);
         if (!st) return arrow::Status::IOError("cannot create ", dir.string());
@@ -609,7 +609,7 @@ arrow::Status ConvertMuseDenseModel(const std::string &input_path,
         dst.push_back(std::move(gs));
     };
 
-    const auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    const auto pinned_dir = fs::path(output_root) / "pinned";
     fs::create_directories(pinned_dir);
 
     std::vector<TensorRecord> global_raw;

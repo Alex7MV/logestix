@@ -60,7 +60,7 @@ std::string LayerFileName(int layer, const char *suffix)
 arrow::Result<MiMoModelFiles> LoadMiMoLayout(const std::string &root)
 {
     namespace fs = std::filesystem;
-    const fs::path logestix = fs::path(root) / "logestix";
+    const fs::path logestix = fs::path(root);
     const fs::path index = logestix / "model.index.json";
     std::ifstream f(index);
     if (!f) return arrow::Status::IOError("cannot open ", index.string());

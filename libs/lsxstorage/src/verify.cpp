@@ -87,7 +87,65 @@ uint64_t CodecForDtype(const std::string &dtype)
     return 0;
 }
 
+// The on-disk SCHEMA SHAPE. This is what decides a file's storage codec; the
+// `dtype` column cannot, because a DenseNvfp4 file records the dtype of the
+// tensor it was QUANTIZED FROM ("BF16"), not the form it is stored in.
+enum class SchemaShape {
+    kPinned,     // name, shape, dtype, data              -> codec from dtype
+    kDenseNvfp4, // name, shape, dtype, packed, scales, global_scale -> NVFP4
+    kExpert,     // w1_weight .. w3_global_scale (9 cols) -> NVFP4 nibbles
+    kVocab,      // token_id, token_bytes, is_special     -> no codec
+    kMerges,     // merge_left .. merge_token_id          -> no codec
+    kUnknown,
+};
+
+const char *SchemaShapeName(SchemaShape s)
+{
+    switch (s) {
+    case SchemaShape::kPinned: return "pinned";
+    case SchemaShape::kDenseNvfp4: return "dense-nvfp4";
+    case SchemaShape::kExpert: return "expert";
+    case SchemaShape::kVocab: return "vocab";
+    case SchemaShape::kMerges: return "merges";
+    case SchemaShape::kUnknown: return "unknown";
+    }
+    return "unknown";
+}
+
+bool ColumnsAre(const std::shared_ptr<arrow::Schema> &schema,
+                std::initializer_list<const char *> names)
+{
+    if (!schema || schema->num_fields() != static_cast<int>(names.size()))
+        return false;
+    int i = 0;
+    for (const char *n : names) {
+        if (schema->field(i)->name() != n) return false;
+        ++i;
+    }
+    return true;
+}
+
+SchemaShape ClassifyShape(const std::shared_ptr<arrow::Schema> &schema)
+{
+    if (ColumnsAre(schema, {"name", "shape", "dtype", "packed", "scales",
+                            "global_scale"}))
+        return SchemaShape::kDenseNvfp4;
+    if (ColumnsAre(schema, {"name", "shape", "dtype", "data"}))
+        return SchemaShape::kPinned;
+    if (ColumnsAre(schema, {"w1_weight", "w2_weight", "w3_weight", "w1_scale",
+                            "w2_scale", "w3_scale", "w1_global_scale",
+                            "w2_global_scale", "w3_global_scale"}))
+        return SchemaShape::kExpert;
+    if (ColumnsAre(schema, {"token_id", "token_bytes", "is_special"}))
+        return SchemaShape::kVocab;
+    if (ColumnsAre(schema, {"merge_left", "merge_right", "merge_rank",
+                            "merge_token_id"}))
+        return SchemaShape::kMerges;
+    return SchemaShape::kUnknown;
+}
+
 struct FileFacts {
+    SchemaShape shape = SchemaShape::kUnknown;
     bool has_dtype_column = false;
     std::vector<std::string> names;
     std::vector<std::string> dtypes;
@@ -128,6 +186,7 @@ bool ReadFileFacts(const fs::path &path, FileFacts *facts, std::string *error)
     facts->num_rows = batch->num_rows();
 
     const auto schema = batch->schema();
+    facts->shape = ClassifyShape(schema);
     const int dtype_idx = schema->GetFieldIndex("dtype");
     const int name_idx = schema->GetFieldIndex("name");
     facts->has_dtype_column = dtype_idx >= 0;
@@ -204,10 +263,33 @@ VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep)
             report.problems.push_back("cannot read " + rel + ": " + ferr);
             continue;
         }
+        // The SHAPE decides first. A DenseNvfp4 file carries a `dtype` column
+        // holding the dtype it was quantized FROM ("BF16"), so trusting it would
+        // report an NVFP4 plane as BF16 — which is exactly the bug this
+        // classification exists to catch.
+        switch (facts.shape) {
+        case SchemaShape::kDenseNvfp4:
+            report.actual_mask |= kNvFp4;
+            continue;
+        case SchemaShape::kExpert:
+            report.actual_mask |= kNvFp4;
+            continue;
+        case SchemaShape::kVocab:
+        case SchemaShape::kMerges:
+            continue;  // payload tables: no codec of their own
+        case SchemaShape::kUnknown:
+            report.problems.push_back(
+                "plane " + rel + " has an unrecognised Arrow schema (" +
+                std::to_string(facts.dtypes.size()) + " tensors); the codec "
+                "cannot be verified from its shape");
+            continue;
+        case SchemaShape::kPinned:
+            break;  // fall through to the dtype column
+        }
         if (!facts.has_dtype_column) {
-            // No dtype column: the codec is implied by the schema shape, which
-            // the declared plane already states. Nothing to infer.
-            report.actual_mask |= declared[rel]->codec_bit;
+            report.problems.push_back(
+                "plane " + rel + " is a 4-column PinnedSchema with no dtype "
+                "column: its codec cannot be established");
             continue;
         }
         for (size_t i = 0; i < facts.dtypes.size(); ++i) {
@@ -344,14 +426,27 @@ ScanReport ScanArtifactTree(const fs::path &tree_root)
         }
 
         uint64_t mask = 0;
-        if (!facts.has_dtype_column) {
-            // A schema-implied codec (9-column ExpertSchema, 6-column
-            // DenseNvfp4Schema). The converter's own index tells the family;
-            // absent that, treat it as an expert plane and let the verifier
-            // catch a lie.
+        // Shape first, dtype second: see the note in VerifyArtifact.
+        if (facts.shape == SchemaShape::kDenseNvfp4) {
+            per_file_role[rel] = "dense.nvfp4";
+            per_file_mask[rel] = kNvFp4;
+            continue;
+        }
+        if (facts.shape == SchemaShape::kExpert) {
             per_file_role[rel] = "expert.routed";
-            mask = kNvFp4;
-        } else {
+            per_file_mask[rel] = kNvFp4;
+            continue;
+        }
+        if (facts.shape == SchemaShape::kVocab || facts.shape == SchemaShape::kMerges) {
+            per_file_role[rel] = "meta";
+            continue;
+        }
+        if (!facts.has_dtype_column) {
+            out.problems.push_back(
+                "cannot establish a codec for " + rel + " (unknown schema shape)");
+            continue;
+        }
+        {
             bool any_weight = false;
             for (size_t i = 0; i < facts.dtypes.size(); ++i) {
                 const auto &dtype = facts.dtypes[i];

@@ -562,7 +562,7 @@ arrow::Status ConvertBeamModel(const std::string &input_dir,
                                                             resident_only));
     }
 
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     for (const fs::path &d : {base, pinned_dir}) {
         std::error_code ec;

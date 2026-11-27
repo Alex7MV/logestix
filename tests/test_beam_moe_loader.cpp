@@ -127,7 +127,7 @@ TEST_CASE("beam loader rejects a foreign index format", "[beam][loader]")
 {
     setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
     Converted c = BuildConverted();
-    const fs::path idx = c.root / "logestix" / "model.index.json";
+    const fs::path idx = c.root / "model.index.json";
     std::string json;
     {
         std::ifstream f(idx);

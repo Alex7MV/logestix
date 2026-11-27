@@ -77,8 +77,8 @@ inline lsxcommon::TensorRecord ByteRecord(const std::string &name,
 
 inline void WriteIndexJson(const std::filesystem::path &model_dir)
 {
-    std::filesystem::create_directories(model_dir / "logestix");
-    std::ofstream f(model_dir / "logestix" / "model.index.json");
+    std::filesystem::create_directories(model_dir);
+    std::ofstream f(model_dir / "model.index.json");
     f << "{\n"
       << "  \"format\": \"logestix-v1-nvfp4\",\n"
       << "  \"model\": \"DeepSeek-V4-Flash\",\n"
@@ -143,14 +143,14 @@ inline arrow::Status WriteGlobalArrow(
     const std::filesystem::path &model_dir,
     const std::vector<lsxcommon::TensorRecord> &records)
 {
-    return WritePinnedFile(model_dir / "logestix" / "pinned" /
+    return WritePinnedFile(model_dir / "pinned" /
                                "global.arrow",
                            records);
 }
 
 inline arrow::Status BuildSyntheticModel(const std::filesystem::path &model_dir)
 {
-    const auto pinned = model_dir / "logestix" / "pinned";
+    const auto pinned = model_dir / "pinned";
     std::filesystem::create_directories(pinned);
     WriteIndexJson(model_dir);
     if (auto st = WritePinnedFile(pinned / "global.arrow", GlobalRecords());

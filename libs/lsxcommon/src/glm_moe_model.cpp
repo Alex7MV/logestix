@@ -71,7 +71,7 @@ bool GlmV5Model::Load()
     if (!BeginLoad(cfg_.model_path)) return false;
 
     namespace fs = std::filesystem;
-    fs::path idx = fs::path(cfg_.model_path) / "logestix" / "model.index.json";
+    fs::path idx = fs::path(cfg_.model_path) / "model.index.json";
     auto topo = glm::load_topology(idx.string());
     if (!topo.error_msg.empty()) {
         lsxcommon::log::error("[glm-model] topology error in "

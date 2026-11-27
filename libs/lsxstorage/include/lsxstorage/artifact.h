@@ -42,6 +42,8 @@ struct ArtifactInfo {
     std::string model_type;   // factory registry id, "phi-4"
     std::string family;       // "phi"
     std::string profile;      // "bf16", "nvfp4", "int8-w8a16"
+    std::string org;          // "microsoft": the first path segment under the root
+    std::string model_dir;    // "phi-4": the second, in the store's own spelling
     std::string target_id;    // ADVISORY: "nvidia:sm_86". The gate never reads it.
     uint64_t used_codecs = 0; // the mask the gate consumes
     std::vector<PlaneInfo> planes;

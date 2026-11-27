@@ -85,7 +85,7 @@ TEST_CASE("Kimi perf baseline: decode throughput", "[kimi][model][perf][real-mod
     fs::path model = env ? fs::path(env)
                          : fs::path(lsxcommon::lsx_model_models_dir()) /
                                "Kimi-K2.7-Code";
-    if (!fs::exists(model / "logestix" / "pinned"))
+    if (!fs::exists(model / "pinned"))
         SKIP("converted Kimi model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

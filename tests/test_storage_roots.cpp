@@ -91,14 +91,15 @@ TEST_CASE("artifact root is optional and never invented", "[storage_roots]") {
     CHECK_FALSE(lsx::storage::ArtifactRoot().has_value());
 }
 
-TEST_CASE("artifact dir joins family/model_type/profile under the artifact root",
+TEST_CASE("artifact dir mirrors the source store: org/model/profile",
           "[storage_roots]") {
     ScopedEnv e("LSX_ARTIFACT_ROOT", "/tmp/art");
-    REQUIRE(lsx::storage::ArtifactDir("phi", "phi-4", "bf16") ==
-            fs::path("/tmp/art/phi/phi-4/bf16"));
-    // model_type, NOT the vault dir name: "Qwen3.5-9B" -> "qwen3.5-9b".
-    REQUIRE(lsx::storage::ArtifactDir("qwen", "qwen3.5-9b", "bf16") ==
-            fs::path("/tmp/art/qwen/qwen3.5-9b/bf16"));
+    // The two path segments are the STORE's spelling, so moving between a
+    // checkpoint and its artifacts means changing only the root.
+    REQUIRE(lsx::storage::ArtifactDir("microsoft", "phi-4", "nvfp4") ==
+            fs::path("/tmp/art/microsoft/phi-4/nvfp4"));
+    REQUIRE(lsx::storage::ArtifactDir("Qwen", "Qwen3.5-9B", "nvfp4") ==
+            fs::path("/tmp/art/Qwen/Qwen3.5-9B/nvfp4"));
 }
 
 TEST_CASE("artifact dir is empty when no artifact root is configured",
@@ -107,7 +108,7 @@ TEST_CASE("artifact dir is empty when no artifact root is configured",
     // path under some default: silently writing into the source vault is the
     // bug this whole layer exists to prevent.
     ScopedEnv e("LSX_ARTIFACT_ROOT", nullptr);
-    CHECK(lsx::storage::ArtifactDir("phi", "phi-4", "bf16").empty());
+    CHECK(lsx::storage::ArtifactDir("microsoft", "phi-4", "nvfp4").empty());
 }
 
 TEST_CASE("source root falls back to LSX_MODEL_ROOT then the platform default",

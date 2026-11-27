@@ -155,7 +155,7 @@ TEST_CASE("dory converter builds the logestix-dory-nvfp4 layout",
     auto tmp = fx.dir;
 
     const auto top =
-        load_dory_topology((tmp / "logestix" / "model.index.json").string());
+        load_dory_topology((tmp / "model.index.json").string());
     INFO("topology error: " << top.error_msg);
     REQUIRE(top.error_msg.empty());
 
@@ -182,7 +182,7 @@ TEST_CASE("dory converter builds the logestix-dory-nvfp4 layout",
     CHECK(top.vram.max_bytes >= top.vram.optimal_bytes);
     CHECK(top.vram.context_tokens > 0);
 
-    const auto json = ReadFile(tmp / "logestix" / "model.index.json");
+    const auto json = ReadFile(tmp / "model.index.json");
     CHECK(json.find("\"format\": \"logestix-dory-nvfp4\"") !=
           std::string::npos);
     CHECK(json.find("\"edges\": \"fp16\"") != std::string::npos);
@@ -196,7 +196,7 @@ TEST_CASE("dory converter builds the logestix-dory-nvfp4 layout",
     // Attention layers carry the FUSED q|k|v record plus the gate and output
     // projections; mlp layers carry the FUSED gate|up plus down.
     const auto attn_names =
-        DenseNamesIn(tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow");
+        DenseNamesIn(tmp / "pinned" / "layer_0_nvfp4.arrow");
     CHECK(Contains(attn_names, "backbone.layers.0.mixer.qkv_proj.weight"));
     CHECK(Contains(attn_names, "backbone.layers.0.mixer.g_proj.weight"));
     CHECK(Contains(attn_names, "backbone.layers.0.mixer.o_proj.weight"));
@@ -207,7 +207,7 @@ TEST_CASE("dory converter builds the logestix-dory-nvfp4 layout",
                                        ".res"));
 
     const auto mlp_names =
-        DenseNamesIn(tmp / "logestix" / "pinned" / "layer_1_nvfp4.arrow");
+        DenseNamesIn(tmp / "pinned" / "layer_1_nvfp4.arrow");
     CHECK(Contains(mlp_names, "backbone.layers.1.mixer.gate_up_proj.weight"));
     CHECK(Contains(mlp_names, "backbone.layers.1.mixer.down_proj.weight"));
     CHECK(Contains(mlp_names,
@@ -216,26 +216,26 @@ TEST_CASE("dory converter builds the logestix-dory-nvfp4 layout",
 
     // The nGPT vectors / alphas and the edges are raw records, never NVFP4.
     const auto raw_attn =
-        synthtest::TensorNamesIn(tmp / "logestix" / "pinned" / "layer_0.arrow");
+        synthtest::TensorNamesIn(tmp / "pinned" / "layer_0.arrow");
     CHECK(Contains(raw_attn, "backbone.layers.0.mixer.sqk"));
     CHECK(Contains(raw_attn, "backbone.layers.0.mixer.s_gate"));
     CHECK(Contains(raw_attn, "backbone.layers.0.attn_alpha"));
     const auto raw_mlp =
-        synthtest::TensorNamesIn(tmp / "logestix" / "pinned" / "layer_1.arrow");
+        synthtest::TensorNamesIn(tmp / "pinned" / "layer_1.arrow");
     CHECK(Contains(raw_mlp, "backbone.layers.1.mixer.suv_gate"));
     CHECK(Contains(raw_mlp, "backbone.layers.1.mixer.suv_up"));
     CHECK(Contains(raw_mlp, "backbone.layers.1.mlp_alpha"));
     const auto raw_global =
-        synthtest::TensorNamesIn(tmp / "logestix" / "pinned" / "global.arrow");
+        synthtest::TensorNamesIn(tmp / "pinned" / "global.arrow");
     CHECK(Contains(raw_global, "backbone.embeddings.weight"));
     CHECK(Contains(raw_global, "lm_head.weight"));
     CHECK(Contains(raw_global, "lm_head.logit_scale"));
-    CHECK_FALSE(std::filesystem::exists(tmp / "logestix" / "pinned" /
+    CHECK_FALSE(std::filesystem::exists(tmp / "pinned" /
                                         "global_nvfp4.arrow"));
 
     // Fused q|k|v has q_size + 2*kv_size rows.
     auto batch = lsxcommon::ReadRecordBatchFromFile(
-        tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow");
+        tmp / "pinned" / "layer_0_nvfp4.arrow");
     REQUIRE(batch.ok());
     auto recs = lsxcommon::DenseNvfp4Schema::UnpackBatch(*batch);
     REQUIRE(recs.ok());
@@ -281,7 +281,7 @@ TEST_CASE("dory residual plane halves the 4-bit reconstruction error",
     REQUIRE(!src_qkv.empty());
 
     auto batch = lsxcommon::ReadRecordBatchFromFile(
-        tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow");
+        tmp / "pinned" / "layer_0_nvfp4.arrow");
     REQUIRE(batch.ok());
     auto recs = lsxcommon::DenseNvfp4Schema::UnpackBatch(*batch);
     REQUIRE(recs.ok());

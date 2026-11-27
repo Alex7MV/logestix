@@ -36,7 +36,7 @@ bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
 {
     namespace fs = std::filesystem;
     const fs::path index_path =
-        fs::path(model_path) / "logestix" / "model.index.json";
+        fs::path(model_path) / "model.index.json";
     std::ifstream f(index_path, std::ios::binary);
     if (!f)
     {
@@ -395,7 +395,7 @@ bool LoadGigaChat4WeightsWithExpect(const std::string &model_path,
                                    std::string &error)
 {
     namespace fs = std::filesystem;
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     const int gate_rank = expect.gate_rank;
     PinnedStagingRing ring;
     if (!ring.ok())

@@ -148,7 +148,7 @@ TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
     REQUIRE(st.ok());
 
     // Unified vault convention (matches dense converters): <out>/logestix.
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
 
     // 1) Index with format tag and MoE fields.
     REQUIRE(fs::exists(base / "model.index.json"));
@@ -227,7 +227,7 @@ TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
             // Streams must CLOSE before remove_all: Windows refuses to delete
             // files with open handles (POSIX unlinks them silently).
             std::ifstream a(base / "model.index.json"),
-                b(out2 / "logestix" / "model.index.json");
+                b(out2 / "model.index.json");
             std::stringstream sa, sb; sa << a.rdbuf(); sb << b.rdbuf();
             index_a = sa.str();
             index_b = sb.str();

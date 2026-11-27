@@ -136,7 +136,7 @@ TEST_CASE("gigachat4 device weight graph loads the converted layout",
 
     // Byte identity: the pinned host embed must equal the arrow payload.
     auto views = lsxcommon::LoadTensorBatchViews(
-        root / "logestix" / "pinned" / "global.arrow");
+        root / "pinned" / "global.arrow");
     REQUIRE(views.ok());
     constexpr std::string_view kEmbed = "model.embed_tokens.weight";
     const lsxcommon::TensorView *emb = nullptr;

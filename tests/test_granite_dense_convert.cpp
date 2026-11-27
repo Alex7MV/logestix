@@ -80,7 +80,7 @@ TEST_CASE("Granite converter builds logestix-granite index and arrow layout",
     REQUIRE(st.ok());
 
     auto top = load_granite_topology(
-        (tmp / "logestix" / "model.index.json").string());
+        (tmp / "model.index.json").string());
     CHECK(top.error_msg.empty());
     CHECK(top.num_layers == 2);
     CHECK(top.hidden_size == 64);
@@ -99,14 +99,14 @@ TEST_CASE("Granite converter builds logestix-granite index and arrow layout",
     CHECK(top.vram.context_tokens > 0);
 
     // global.arrow (final norm raw) + global_nvfp4.arrow (embed/head).
-    CHECK(exists(tmp / "logestix" / "pinned" / "global.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "global_nvfp4.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_1_nvfp4.arrow"));
+    CHECK(exists(tmp / "pinned" / "global.arrow"));
+    CHECK(exists(tmp / "pinned" / "global_nvfp4.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_0.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_0_nvfp4.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_1_nvfp4.arrow"));
 
     // Per-layer NVFP4 records: q/k/v/o + fused gate_up + down.
-    auto names = DenseNvfp4NamesIn(tmp / "logestix" / "pinned" /
+    auto names = DenseNvfp4NamesIn(tmp / "pinned" /
                                    "layer_0_nvfp4.arrow");
     // q/k/v are fused into one jointly-quantized record.
     CHECK(Contains(names, "model.layers.0.self_attn.qkv_proj.weight"));
@@ -115,13 +115,13 @@ TEST_CASE("Granite converter builds logestix-granite index and arrow layout",
     CHECK(Contains(names, "model.layers.0.mlp.down_proj.weight"));
 
     // Global NVFP4 records: embed + lm_head.
-    auto gnames = DenseNvfp4NamesIn(tmp / "logestix" / "pinned" /
+    auto gnames = DenseNvfp4NamesIn(tmp / "pinned" /
                                     "global_nvfp4.arrow");
     CHECK(Contains(gnames, "model.embed_tokens.weight"));
     CHECK(Contains(gnames, "lm_head.weight"));
 
     // Raw global record: final norm.
-    auto rnames = synthtest::TensorNamesIn(tmp / "logestix" / "pinned" /
+    auto rnames = synthtest::TensorNamesIn(tmp / "pinned" /
                                            "global.arrow");
     CHECK(Contains(rnames, "model.norm.weight"));
 

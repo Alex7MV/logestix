@@ -241,7 +241,7 @@ TEST_CASE("ConvertLingModel synthetic end to end", "[ling-moe-convert]")
     INFO(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const std::string idx = ReadAll(base / "model.index.json");
     CHECK(idx.find("\"format\": \"logestix-ling-nvfp4\"") != std::string::npos);
     CHECK(idx.find("\"model\": \"Ling-3.1-flash\"") != std::string::npos);

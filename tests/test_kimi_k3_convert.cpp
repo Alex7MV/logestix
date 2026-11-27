@@ -91,7 +91,7 @@ TEST_CASE("kimi-k3 synthetic convert emits logestix-kimi-k3-nvfp4",
     if (!st.ok()) FAIL(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const fs::path idx = base / "model.index.json";
     REQUIRE(fs::exists(idx));
 

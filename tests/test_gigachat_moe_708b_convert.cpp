@@ -133,7 +133,7 @@ TEST_CASE("gigachat4-708b converter writes its own identity",
     REQUIRE(st.ok());
 
     const std::string json =
-        ReadFile(dst / "logestix" / "model.index.json");
+        ReadFile(dst / "model.index.json");
     // Identity comes from the SPEC, so this tree can never be mistaken for the
     // 37B's even before the geometry gate runs.
     CHECK(json.find("\"format\": \"logestix-gigachat4-708b-nvfp4\"") !=
@@ -149,11 +149,11 @@ TEST_CASE("gigachat4-708b converter writes its own identity",
 
     // The expert files exist for BOTH projections of every expert, i.e. the
     // per-layer flush wrote them all before releasing the layer.
-    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_1.arrow"));
+    CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_0.arrow"));
+    CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_1.arrow"));
     CHECK(json.find("\"total_experts\": 2") != std::string::npos);
     // MTP ballast stored and counted, never applied.
-    CHECK(fs::exists(dst / "logestix" / "mtp" / "layer_002.arrow"));
+    CHECK(fs::exists(dst / "mtp" / "layer_002.arrow"));
 }
 
 TEST_CASE("gigachat4-708b frozen gate refuses the 37B geometry",
@@ -194,7 +194,7 @@ TEST_CASE("gigachat4-708b conversion flushes experts layer by layer",
     gigachattest::WriteTokenizerJson(src);
     REQUIRE(gc708::ConvertGigaChat4_708BModel(src.string(), dst.string()).ok());
     // Every expert file must be a readable record with all three planes.
-    auto batch = lsxcommon::ReadRecordBatchFromFile(dst / "logestix" / "experts" /
+    auto batch = lsxcommon::ReadRecordBatchFromFile(dst / "experts" /
                                         "layer_1" / "exp_0.arrow");
     INFO(batch.status().ToString());
     REQUIRE(batch.ok());

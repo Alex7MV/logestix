@@ -460,7 +460,7 @@ cudaError_t LoadGemmaPinnedWeights(const std::string &model_path,
     namespace fs = std::filesystem;
     pw.Free();
 
-    fs::path pinned_dir = fs::path(model_path) / "logestix" / "pinned";
+    fs::path pinned_dir = fs::path(model_path) / "pinned";
     if (!fs::exists(pinned_dir) &&
         fs::exists(fs::path(model_path) / "pinned"))
         pinned_dir = fs::path(model_path) / "pinned";
@@ -513,7 +513,7 @@ cudaError_t LoadGemmaPinnedWeights(const std::string &model_path,
 
     // Topology from the index (mandatory for generation; the loader still
     // succeeds without it so weight-only tooling keeps working).
-    auto idx_path = fs::path(model_path) / "logestix" / "model.index.json";
+    auto idx_path = fs::path(model_path) / "model.index.json";
     if (!fs::exists(idx_path))
         idx_path = fs::path(model_path) / "model.index.json";
     if (fs::exists(idx_path)) {

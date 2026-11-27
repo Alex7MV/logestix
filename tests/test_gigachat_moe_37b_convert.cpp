@@ -131,7 +131,7 @@ TEST_CASE("gigachat4 converter emits the logestix-gigachat4-nvfp4 layout",
     INFO("convert status: " << st.ToString());
     REQUIRE(st.ok());
 
-    std::ifstream in(dst / "logestix" / "model.index.json");
+    std::ifstream in(dst / "model.index.json");
     REQUIRE(in.good());
     std::stringstream ss;
     ss << in.rdbuf();
@@ -148,27 +148,27 @@ TEST_CASE("gigachat4 converter emits the logestix-gigachat4-nvfp4 layout",
     CHECK(json.find("\"total_experts\": 2") != std::string::npos);
 
     // Dense/pinned output.
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "global.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_000_nvfp4.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_001_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "global.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_000_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_001_nvfp4.arrow"));
     // BF16 dense MLP and the BF16 attention gate must still land in the NVFP4
     // batch (they are quantized, not passed through raw).
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_000.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_000.arrow"));
     // Routed experts: one file per expert, all three projections.
-    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_1.arrow"));
+    CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_0.arrow"));
+    CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_1.arrow"));
     // MTP layer is stored and counted, never applied.
-    CHECK(fs::exists(dst / "logestix" / "mtp" / "layer_002.arrow"));
+    CHECK(fs::exists(dst / "mtp" / "layer_002.arrow"));
 
     // Tokenizer bridge (stage 4): byte-level BPE of the Llama-3 case-run kind.
     CHECK(json.find("\"tokenizer\": \"arrow-bpe\"") != std::string::npos);
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "tokenizer_vocab.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "tokenizer_merges.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "tokenizer_vocab.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "tokenizer_merges.arrow"));
     auto vf = arrow::io::MemoryMappedFile::Open(
-        (dst / "logestix" / "pinned" / "tokenizer_vocab.arrow").string(),
+        (dst / "pinned" / "tokenizer_vocab.arrow").string(),
         arrow::io::FileMode::READ);
     auto mf = arrow::io::MemoryMappedFile::Open(
-        (dst / "logestix" / "pinned" / "tokenizer_merges.arrow").string(),
+        (dst / "pinned" / "tokenizer_merges.arrow").string(),
         arrow::io::FileMode::READ);
     REQUIRE(vf.ok());
     REQUIRE(mf.ok());

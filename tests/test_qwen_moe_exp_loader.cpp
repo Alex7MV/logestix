@@ -158,7 +158,7 @@ TEST_CASE("strict errors on missing layer files", "[qwen-exp-loader]")
 {
     LoaderEnv env;
     // Corrupt: remove one dense layer file.
-    auto victim = env.out / "logestix" / "pinned" / "layer_2.arrow";
+    auto victim = env.out / "pinned" / "layer_2.arrow";
     std::error_code ec;
     fs::remove(victim, ec);
     ExpPinnedWeights pw;
@@ -172,7 +172,7 @@ TEST_CASE("strict errors on missing layer files", "[qwen-exp-loader]")
 TEST_CASE("strict errors on missing expert file", "[qwen-exp-loader]")
 {
     LoaderEnv env;
-    auto victim = env.out / "logestix" / "experts" / "layer_1" / "exp_5.arrow";
+    auto victim = env.out / "experts" / "layer_1" / "exp_5.arrow";
     std::error_code ec;
     fs::remove(victim, ec);
     ExpExpertStore store;

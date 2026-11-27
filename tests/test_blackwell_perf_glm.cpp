@@ -40,7 +40,7 @@ int PerfGenTokens()
 TEST_CASE("GLM-5.2 perf baseline: decode throughput", "[glm][perf][real-model]")
 {
     const std::filesystem::path model = GlmModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("GLM real model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

@@ -69,7 +69,7 @@ uint64_t Fnv1a(const std::vector<float> &v)
 
 bool VaultPresent(const fs::path &root)
 {
-    return fs::exists(root / "logestix" / "model.index.json");
+    return fs::exists(root / "model.index.json");
 }
 
 }  // namespace

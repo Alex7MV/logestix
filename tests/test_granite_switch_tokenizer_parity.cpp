@@ -81,7 +81,7 @@ TEST_CASE("granite-switch tokenizer reproduces the checkpoint ids",
         env ? std::filesystem::path(env)
             : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
                   LSX_GSW_MODEL;
-    const auto pinned = root / "logestix" / "pinned";
+    const auto pinned = root / "pinned";
     if (!std::filesystem::exists(pinned / "tokenizer_vocab.arrow"))
         SKIP(std::string(LSX_GSW_MODEL) +
              " converted tokenizer absent");

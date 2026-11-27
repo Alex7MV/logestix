@@ -176,7 +176,7 @@ arrow::Status ReadWholeFile(const fs::path &path, std::string &out)
 LingIndex LoadLingIndex(const std::string &model_path)
 {
     LingIndex top;
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::string json;
     auto st = ReadWholeFile(idx, json);
     if (!st.ok()) {
@@ -408,7 +408,7 @@ bool LoadLingDenseWeights(const std::string &model_path, LingPinnedWeights &pw,
         return false;
     }
     const LingIndex &top = pw.top;
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
 
     std::size_t accounted = 0;
 

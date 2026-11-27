@@ -150,18 +150,18 @@ TEST_CASE("deepseek nvfp4 repack tool: micro-vault e2e", "[tool][deepseek]")
         ("lsx_ds_repack_" + std::to_string(::getpid()));
     const fs::path src = root / "in";
     const fs::path dst = root / "out";
-    fs::create_directories(src / "logestix" / "experts" / "layer_0");
-    fs::create_directories(src / "logestix" / "pinned");
+    fs::create_directories(src / "experts" / "layer_0");
+    fs::create_directories(src / "pinned");
 
     // Minimal v1 index (num_layers/experts_per_layer drive the tool walk).
     {
-        std::ofstream f(src / "logestix" / "model.index.json");
+        std::ofstream f(src / "model.index.json");
         f << "{\"format\": \"logestix-v1\", \"model\": \"DeepSeek-V4-Flash\","
              " \"num_layers\": 1, \"experts_per_layer\": 2, \"files\": {}}\n";
     }
     // Verbatim-carry probe file.
     {
-        std::ofstream f(src / "logestix" / "pinned" / "dummy.bin");
+        std::ofstream f(src / "pinned" / "dummy.bin");
         f << "pinned-payload";
     }
 
@@ -185,7 +185,7 @@ TEST_CASE("deepseek nvfp4 repack tool: micro-vault e2e", "[tool][deepseek]")
             static_cast<uint8_t>(exp ? 0xA0 : 0xB0)));
         REQUIRE(batch.ok());
         auto w = lsxcommon::WriteRecordBatchToFile(
-            *batch, src / "logestix" / "experts" / "layer_0" /
+            *batch, src / "experts" / "layer_0" /
                         ("exp_" + std::to_string(exp) + ".arrow"));
         REQUIRE(w.ok());
     }
@@ -196,14 +196,14 @@ TEST_CASE("deepseek nvfp4 repack tool: micro-vault e2e", "[tool][deepseek]")
 
     // Index format swapped, payload carried.
     {
-        std::ifstream f(dst / "logestix" / "model.index.json");
+        std::ifstream f(dst / "model.index.json");
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
         CHECK(json.find("\"logestix-v1-nvfp4\"") != std::string::npos);
         CHECK(json.find("logestix-v1\"") == std::string::npos);
     }
     {
-        std::ifstream f(dst / "logestix" / "pinned" / "dummy.bin");
+        std::ifstream f(dst / "pinned" / "dummy.bin");
         std::string payload((std::istreambuf_iterator<char>(f)),
                             std::istreambuf_iterator<char>());
         CHECK(payload == "pinned-payload");
@@ -213,7 +213,7 @@ TEST_CASE("deepseek nvfp4 repack tool: micro-vault e2e", "[tool][deepseek]")
     for (int exp = 0; exp < 2; ++exp) {
         const uint8_t packed_seed = exp ? 0xA0 : 0xB0;
         auto batch = lsxcommon::ReadRecordBatchFromFile(
-            dst / "logestix" / "experts" / "layer_0" /
+            dst / "experts" / "layer_0" /
                 ("exp_" + std::to_string(exp) + ".arrow"));
         REQUIRE(batch.ok());
         auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch);

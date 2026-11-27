@@ -82,7 +82,7 @@ void REQUIRE_STRICT_JSON(const std::string &json)
 
 std::string ReadIndexJson(const fs::path &dst)
 {
-    std::ifstream in(dst / "logestix" / "model.index.json");
+    std::ifstream in(dst / "model.index.json");
     REQUIRE(in.good());
     std::stringstream ss;
     ss << in.rdbuf();
@@ -246,15 +246,15 @@ TEST_CASE("ultra convert: the synthetic checkpoint produces the Ultra index",
     // the real 24 576-expert pool would be ~290 GB of host records.
     CHECK(json.find("\"peak_expert_records\": 8") != std::string::npos);
 
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "global.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_1_nvfp4.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_2_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "global.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_0.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_1_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_2_nvfp4.arrow"));
     // One expert arrow per expert of the single MoE layer; no layer_0 experts.
     for (int e = 0; e < ultratest::kTExperts; ++e)
-        CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" /
+        CHECK(fs::exists(dst / "experts" / "layer_1" /
                          ("exp_" + std::to_string(e) + ".arrow")));
-    CHECK_FALSE(fs::exists(dst / "logestix" / "experts" / "layer_0"));
+    CHECK_FALSE(fs::exists(dst / "experts" / "layer_0"));
 }
 
 TEST_CASE("ultra convert: the latent projections are mandatory when declared",
@@ -310,9 +310,9 @@ TEST_CASE("ultra convert: a layer window converts only that layer and marks the 
     const std::string json = ReadIndexJson(dst);
     CHECK(json.find("\"partial\": true") != std::string::npos);
     CHECK(json.find("\"layers_converted\": [1]") != std::string::npos);
-    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow"));
-    CHECK_FALSE(fs::exists(dst / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK_FALSE(fs::exists(dst / "logestix" / "pinned" / "layer_2_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_0.arrow"));
+    CHECK_FALSE(fs::exists(dst / "pinned" / "layer_0.arrow"));
+    CHECK_FALSE(fs::exists(dst / "pinned" / "layer_2_nvfp4.arrow"));
 }
 
 TEST_CASE("ultra convert: a second window extends the tree without rewriting layer 1",
@@ -325,7 +325,7 @@ TEST_CASE("ultra convert: a second window extends the tree without rewriting lay
     first.first_layer = 1;
     first.last_layer = 1;
     REQUIRE(ConvertNemotronUltraModel(src.string(), dst.string(), first).ok());
-    const auto stamp_file = dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow";
+    const auto stamp_file = dst / "experts" / "layer_1" / "exp_0.arrow";
     const auto before = fs::last_write_time(stamp_file);
 
     ConversionWindow second;
@@ -334,7 +334,7 @@ TEST_CASE("ultra convert: a second window extends the tree without rewriting lay
     REQUIRE(ConvertNemotronUltraModel(src.string(), dst.string(), second).ok());
 
     CHECK(fs::last_write_time(stamp_file) == before);  // untouched, not rewritten
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_2_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_2_nvfp4.arrow"));
     // The index is rewritten to name every converted layer.
     const std::string json = ReadIndexJson(dst);
     CHECK(json.find("\"layers_converted\": [1,2]") != std::string::npos);

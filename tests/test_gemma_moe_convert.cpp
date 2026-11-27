@@ -118,18 +118,18 @@ TEST_CASE("gemma topology parse + convert happy path", "[gemma][convert]") {
     REQUIRE(cst.ok());
 
     // GLM-style layout: pinned raw + per-expert NVFP4 files.
-    CHECK(exists(out / "logestix" / "pinned" / "global.arrow"));
-    CHECK(exists(out / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK_FALSE(exists(out / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
+    CHECK(exists(out / "pinned" / "global.arrow"));
+    CHECK(exists(out / "pinned" / "layer_0.arrow"));
+    CHECK_FALSE(exists(out / "pinned" / "layer_0_nvfp4.arrow"));
     for (int l = 0; l < 4; ++l)
         for (int e = 0; e < 8; ++e)
-            CHECK(exists(out / "logestix" / "experts" /
+            CHECK(exists(out / "experts" /
                          ("layer_" + std::to_string(l)) /
                          ("exp_" + std::to_string(e) + ".arrow")));
 
     // Index round-trip.
     auto top2 = lsxcommon::gemma::load_gemma_topology(
-        (out / "logestix" / "model.index.json").string());
+        (out / "model.index.json").string());
     // The index has no text_config nesting; parse must still succeed via
     // top-level keys written by WriteGemmaModelIndex.
     CHECK(top2.error_msg.empty());
@@ -292,7 +292,7 @@ TEST_CASE("gemma MoE residual plane covers attn + dense MLP, never the experts",
     REQUIRE(cst.ok());
 
     auto batch_res = lsxcommon::LoadTensorBatchViews(
-        out / "logestix" / "pinned" / "layer_0.arrow");
+        out / "pinned" / "layer_0.arrow");
     REQUIRE(batch_res.ok());
     const auto &ts = batch_res->tensors;
 
@@ -332,7 +332,7 @@ TEST_CASE("gemma MoE residual plane covers attn + dense MLP, never the experts",
     // logit while the body owns the drift, so a residual there is pure cost.
     {
         auto g = lsxcommon::ReadRecordBatchFromFile(
-            out / "logestix" / "pinned" / "global_nvfp4.arrow");
+            out / "pinned" / "global_nvfp4.arrow");
         REQUIRE(g.ok());
         auto recs = lsxcommon::DenseNvfp4Schema::UnpackBatch(*g);
         REQUIRE(recs.ok());
@@ -364,7 +364,7 @@ TEST_CASE("gemma converter emits NVFP4 records for dense MLP",
     REQUIRE(cst.ok());
 
     auto batch_res = lsxcommon::LoadTensorBatchViews(
-        out / "logestix" / "pinned" / "layer_0.arrow");
+        out / "pinned" / "layer_0.arrow");
     REQUIRE(batch_res.ok());
 
     auto find = [&](std::string_view name) -> const lsxcommon::TensorView * {
@@ -393,7 +393,7 @@ TEST_CASE("gemma converter emits NVFP4 records for dense MLP",
 
     // Index advertises the mlp_nvfp4 flag.
     {
-        std::ifstream idx(out / "logestix" / "model.index.json");
+        std::ifstream idx(out / "model.index.json");
         std::string json((std::istreambuf_iterator<char>(idx)),
                          std::istreambuf_iterator<char>());
         CHECK(json.find("\"mlp_nvfp4\": true") != std::string::npos);

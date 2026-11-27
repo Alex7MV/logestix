@@ -481,7 +481,7 @@ arrow::Status ConvertInklingBaseModel(const std::string &input_dir,
                 l, it->second.info->dtype));
     }
 
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     const fs::path experts_dir = base / "experts";
     fs::create_directories(pinned_dir);

@@ -96,7 +96,7 @@ TEST_CASE("tokenizer arrows: the canonical root wins over a legacy one",
                           "tokenizer_vocab.arrow");
         bad << "not an arrow file";
     }
-    WritePinnedArrows(base / "logestix" / "pinned",
+    WritePinnedArrows(base / "pinned",
                       TOKENIZER_TEST_DATA_DIR "/synthetic_qwen_tok.json");
 
     ArrowTokenizerDb db;
@@ -129,11 +129,11 @@ TEST_CASE("tokenizer arrows: a corrupt vocab file fails cleanly", "[tokenizer_ar
     std::error_code ec;
     fs::remove_all(base, ec);
     synthmodel::WriteIndex(base, "Qwen3.5-9B");
-    fs::create_directories(base / "logestix" / "pinned");
+    fs::create_directories(base / "pinned");
     {
-        std::ofstream bad(base / "logestix" / "pinned" / "tokenizer_vocab.arrow");
+        std::ofstream bad(base / "pinned" / "tokenizer_vocab.arrow");
         bad << "not an arrow file";
-        std::ofstream ok(base / "logestix" / "pinned" / "tokenizer_merges.arrow");
+        std::ofstream ok(base / "pinned" / "tokenizer_merges.arrow");
         ok << "not an arrow file either";
     }
 
@@ -151,12 +151,12 @@ TEST_CASE("tokenizer arrows: a missing merges file fails the pair", "[tokenizer_
     std::error_code ec;
     fs::remove_all(base, ec);
     synthmodel::WriteIndex(base, "Qwen3.5-9B");
-    fs::create_directories(base / "logestix" / "pinned");
+    fs::create_directories(base / "pinned");
     REQUIRE(lsxcommon::BuildTokenizerArrowFiles(
                 TOKENIZER_TEST_DATA_DIR "/synthetic_qwen_tok.json",
-                (base / "logestix" / "pinned").string())
+                (base / "pinned").string())
                 .ok());
-    fs::remove(base / "logestix" / "pinned" / "tokenizer_merges.arrow", ec);
+    fs::remove(base / "pinned" / "tokenizer_merges.arrow", ec);
 
     ArrowTokenizerDb db;
     CHECK_FALSE(LoadTokenizerArrows(base.string(), db));

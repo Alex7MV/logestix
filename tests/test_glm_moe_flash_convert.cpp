@@ -321,7 +321,7 @@ TEST_CASE("ConvertGlm5NextModel: synthetic tiny checkpoint — layout + index")
     REQUIRE(st.ok());
 
     // Vault layout: globals + per-layer raw/nvfp4 + per-expert arrows.
-    const fs::path base = fix.out / "logestix";
+    const fs::path base = fix.out;
     REQUIRE(fs::exists(base / "model.index.json"));
     REQUIRE(fs::exists(base / "pinned" / "global.arrow"));
     REQUIRE(fs::exists(base / "pinned" / "layer_000.arrow"));

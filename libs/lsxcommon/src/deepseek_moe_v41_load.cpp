@@ -15,7 +15,7 @@ ModelTopology LoadTopology(const std::string &model_path)
 {
     ModelTopology topo;
     auto ipath =
-        std::filesystem::path(model_path) / "logestix" / "model.index.json";
+        std::filesystem::path(model_path) / "model.index.json";
     std::ifstream f(ipath);
     if (!f) {
         topo.error_msg = "Cannot open " + ipath.string();

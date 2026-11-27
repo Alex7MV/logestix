@@ -164,7 +164,7 @@ TEST_CASE("every converted vocabulary keeps the decode->encode round-trip",
     std::vector<fs::path> found;
     for (const auto &entry : fs::directory_iterator(models_root)) {
         if (!entry.is_directory()) continue;
-        if (fs::exists(entry.path() / "logestix" / "pinned" /
+        if (fs::exists(entry.path() / "pinned" /
                        "tokenizer_vocab.arrow"))
             found.push_back(entry.path());
     }
@@ -180,11 +180,11 @@ TEST_CASE("every converted vocabulary keeps the decode->encode round-trip",
         REQUIRE(known != nullptr);   // a new family must declare its contract
 
         auto vocab = arrow::io::MemoryMappedFile::Open(
-            (root / "logestix" / "pinned" / "tokenizer_vocab.arrow").string(),
+            (root / "pinned" / "tokenizer_vocab.arrow").string(),
             arrow::io::FileMode::READ);
         REQUIRE(vocab.ok());
         auto merges = arrow::io::MemoryMappedFile::Open(
-            (root / "logestix" / "pinned" / "tokenizer_merges.arrow").string(),
+            (root / "pinned" / "tokenizer_merges.arrow").string(),
             arrow::io::FileMode::READ);
         REQUIRE(merges.ok());
 

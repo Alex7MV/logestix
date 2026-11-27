@@ -80,9 +80,9 @@ arrow::Status RepackDeepseekExpertsNvfp4(const std::string &src,
     // logestix-dir output — so the loader can consume either verbatim.
     const fs::path src_path(src);
     const fs::path dst_path(dst);
-    const bool src_is_root = fs::exists(src_path / "logestix");
-    const fs::path sroot = src_is_root ? src_path / "logestix" : src_path;
-    const fs::path droot = src_is_root ? dst_path / "logestix" : dst_path;
+    const bool src_is_root = fs::exists(src_path);
+    const fs::path sroot = src_is_root ? src_path : src_path;
+    const fs::path droot = src_is_root ? dst_path : dst_path;
     const fs::path s_experts = sroot / "experts";
     if (!fs::exists(s_experts))
         return arrow::Status::Invalid("no experts/ directory under ",

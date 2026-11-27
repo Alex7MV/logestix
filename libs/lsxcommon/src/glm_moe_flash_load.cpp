@@ -211,7 +211,7 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
     pw.Free();
     error.clear();
 
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     const fs::path pinned_dir = base / "pinned";
     if (!fs::exists(pinned_dir)) {
         error = "no pinned dir under " + base.string();
@@ -749,7 +749,7 @@ bool LoadGlmFlashExpertStore(const std::string &model_path,
     store.Free();
     error.clear();
 
-    const fs::path experts_dir = fs::path(model_path) / "logestix" / "experts";
+    const fs::path experts_dir = fs::path(model_path) / "experts";
     if (!fs::exists(experts_dir)) {
         error = "no experts dir under " + experts_dir.string();
         return false;

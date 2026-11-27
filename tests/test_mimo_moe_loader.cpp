@@ -48,7 +48,7 @@ TEST_CASE("mimo loader resolves the logestix-mimo-nvfp4 layout",
 TEST_CASE("mimo loader rejects a foreign format tag", "[mimo][loader]")
 {
     const fs::path out = BuildConverted();
-    const fs::path idx = out / "logestix" / "model.index.json";
+    const fs::path idx = out / "model.index.json";
     auto text = mimotest::ReadFileText(idx);
     const auto pos = text.find("logestix-mimo-nvfp4");
     REQUIRE(pos != std::string::npos);

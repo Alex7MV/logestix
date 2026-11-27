@@ -155,7 +155,7 @@ TEST_CASE("nvfp4 converter reads the real vault's eos list from generation_confi
     }
     const auto dst = nemotronv4test::MakeTempDir("nmv4_gen_dst");
     REQUIRE(ConvertNemotronNvfp4Model(src.string(), dst.string()).ok());
-    const std::string idx = ReadFile(dst / "logestix" / "model.index.json");
+    const std::string idx = ReadFile(dst / "model.index.json");
     CHECK(idx.find("\"eos_token_id\": [2, 11]") != std::string::npos);
     CHECK(idx.find("\"bos_token_id\": 1") != std::string::npos);
     CHECK(idx.find("\"pad_token_id\": 0") != std::string::npos);
@@ -172,7 +172,7 @@ TEST_CASE("nvfp4 converter emits the logestix-nemotron-nvfp4 layout",
     INFO(st.ToString());
     REQUIRE(st.ok());
 
-    const std::string idx = ReadFile(dst / "logestix" / "model.index.json");
+    const std::string idx = ReadFile(dst / "model.index.json");
     CHECK(idx.find("\"format\": \"logestix-nemotron-nvfp4\"") != std::string::npos);
     CHECK(idx.find("\"attn_layer_idx\": [2]") != std::string::npos);
     CHECK(idx.find("\"experts_no_gate\": true") != std::string::npos);
@@ -184,12 +184,12 @@ TEST_CASE("nvfp4 converter emits the logestix-nemotron-nvfp4 layout",
 
     // Per-expert arrow files for the single MoE layer (layer 1), w1 unused.
     for (int e = 0; e < nemotronv4test::kTExperts; ++e)
-        CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" /
+        CHECK(fs::exists(dst / "experts" / "layer_1" /
                          ("exp_" + std::to_string(e) + ".arrow")));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "global.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_2_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "global.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_0.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_0_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_2_nvfp4.arrow"));
 }
 
 TEST_CASE("nvfp4 converter dequantizes the source full-E4M3 block scales",
@@ -259,7 +259,7 @@ TEST_CASE("nvfp4 converter dequantizes the source full-E4M3 block scales",
 
     // The converted expert arrow: w3 (up) packed by the repo's NVFP4 codec.
     const auto rec = ReadDenseNvfp4Records(
-        dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow");
+        dst / "experts" / "layer_1" / "exp_0.arrow");
     REQUIRE(rec.ok());
     const lsxcommon::PackedExpert &r = *rec;
     REQUIRE(r.w3_packed.size() == truth.size() / 2);

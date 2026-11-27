@@ -158,7 +158,7 @@ TEST_CASE("Mistral-Large-4 synthetic convert emits the full tree",
     INFO(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const std::string index = ReadAll(base / "model.index.json");
     REQUIRE(absl::StrContains(index, "\"format\": \"logestix-mistral-large4-nvfp4\""));
     REQUIRE(absl::StrContains(index, "\"model\": \"Mistral-Large-4-1T\""));

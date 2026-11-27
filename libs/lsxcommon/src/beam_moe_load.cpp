@@ -58,10 +58,10 @@ bool LoadBeamExpertStore(const std::string &model_path,
     store.Free();
     error.clear();
     const fs::path experts_dir =
-        fs::path(model_path) / "logestix" / "experts";
+        fs::path(model_path) / "experts";
     if (!fs::exists(experts_dir)) {
         error = "no experts dir under " +
-                (fs::path(model_path) / "logestix").string();
+                (fs::path(model_path)).string();
         return false;
     }
     store.num_layers = top.num_layers;
@@ -165,7 +165,7 @@ void FreeBeamPinnedWeights(BeamPinnedWeights &pw)
 BeamTopology LoadBeamTopology(const std::string &model_path)
 {
     BeamTopology top;
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::string json;
     auto st = ReadWholeFile(idx, json);
     if (!st.ok()) {
@@ -278,7 +278,7 @@ bool LoadBeamWeights(const std::string &model_path, BeamPinnedWeights &pw,
     pw.Free();
     error.clear();
 
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     const fs::path pinned_dir = base / "pinned";
     if (!fs::exists(pinned_dir)) {
         error = "no pinned dir under " + base.string();

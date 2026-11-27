@@ -248,21 +248,21 @@ TEST_CASE("synthetic checkpoint conversion produces logestix layout",
     REQUIRE(written > 0);
     auto st = ConvertQwen38FlashNextModel(dir.string(), out.string());
     REQUIRE(st.ok());
-    REQUIRE(fs::exists(out / "logestix" / "model.index.json"));
-    REQUIRE(fs::exists(out / "logestix" / "pinned" / "global_nvfp4.arrow"));
-    REQUIRE(fs::exists(out / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
+    REQUIRE(fs::exists(out / "model.index.json"));
+    REQUIRE(fs::exists(out / "pinned" / "global_nvfp4.arrow"));
+    REQUIRE(fs::exists(out / "pinned" / "layer_0_nvfp4.arrow"));
     // hc records live in the per-layer dense bundles (layer_0.arrow raw +
     // layer_0_nvfp4.arrow quantized); global mixer bundle present.
-    REQUIRE(fs::exists(out / "logestix" / "ple" / "meta.arrow"));
-    REQUIRE(fs::exists(out / "logestix" / "ple" / "shard_0.arrow"));
+    REQUIRE(fs::exists(out / "ple" / "meta.arrow"));
+    REQUIRE(fs::exists(out / "ple" / "shard_0.arrow"));
     // experts layout per layer
-    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_0" / "exp_0.arrow"));
-    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_3" / "exp_7.arrow"));
+    REQUIRE(fs::exists(out / "experts" / "layer_0" / "exp_0.arrow"));
+    REQUIRE(fs::exists(out / "experts" / "layer_3" / "exp_7.arrow"));
     // router + shared
-    REQUIRE(fs::exists(out / "logestix" / "router" / "layer_0.arrow"));
-    REQUIRE(fs::exists(out / "logestix" / "shared" / "layer_0_nvfp4.arrow"));
+    REQUIRE(fs::exists(out / "router" / "layer_0.arrow"));
+    REQUIRE(fs::exists(out / "shared" / "layer_0_nvfp4.arrow"));
     // mtp subtree stored
-    REQUIRE(fs::exists(out / "logestix" / "mtp"));
+    REQUIRE(fs::exists(out / "mtp"));
     qwen_moe_exp_test::ExpUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
     fs::remove_all(dir, ec);
     fs::remove_all(out, ec);

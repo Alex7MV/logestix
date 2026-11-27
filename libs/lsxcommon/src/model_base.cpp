@@ -170,8 +170,10 @@ bool ModelBase::BeginLoad(const std::string &model_path)
             target.Id().c_str(), why.c_str()));
         // Name the alternative so the operator does not have to guess: another
         // profile of the SAME model may be exactly what this device can run.
+        // Siblings are found by the artifact's STORE coordinates, which it
+        // records itself, so this works even when the caller passed a bare path.
         const auto alternatives =
-            lsx::storage::ListProfiles(read.info.family, read.info.model_type);
+            lsx::storage::ListProfiles(read.info.org, read.info.model_dir);
         std::string usable;
         for (const auto &alt : alternatives) {
             const auto alt_read = lsx::storage::ReadArtifact(alt.dir);

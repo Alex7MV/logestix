@@ -51,7 +51,7 @@ std::filesystem::path ModelRoot()
 
 bool LoadVaultDb(lsxcommon::ArrowTokenizerDb &db)
 {
-    const std::filesystem::path root = ModelRoot() / "logestix" / "pinned";
+    const std::filesystem::path root = ModelRoot() / "pinned";
     const std::filesystem::path v = root / "tokenizer_vocab.arrow";
     const std::filesystem::path m = root / "tokenizer_merges.arrow";
     if (!std::filesystem::exists(v) || !std::filesystem::exists(m)) return false;

@@ -440,7 +440,7 @@ arrow::Status RecomputeGlmVram(
     const std::filesystem::path &output_root)
 {
     namespace fs = std::filesystem;
-    auto index_path = fs::path(output_root) / "logestix" / "model.index.json";
+    auto index_path = fs::path(output_root) / "model.index.json";
     std::ifstream f(index_path);
     if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -525,7 +525,7 @@ arrow::Status ConvertGlmModel(
 
     // Mandatory layout: all converted artifacts live under <root>/logestix
     // (model.index.json, pinned/, experts/), mirroring the Qwen pipeline.
-    fs::path log_root = output_root / "logestix";
+    fs::path log_root = output_root;
     fs::create_directories(log_root);
 
     auto model = lsxcommon::scan_directory(input_path);

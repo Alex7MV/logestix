@@ -359,10 +359,10 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
     const auto t0 = std::chrono::steady_clock::now();
 
     // Accept both the logestix root itself and its container directory.
-    fs::path pinned_dir = fs::path(model_path) / "logestix" / "pinned";
+    fs::path pinned_dir = fs::path(model_path) / "pinned";
     if (!fs::exists(pinned_dir) && fs::exists(fs::path(model_path) / "pinned"))
         pinned_dir = fs::path(model_path) / "pinned";
-    fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
+    fs::path index_path = fs::path(model_path) / "model.index.json";
 
     auto topo = kimi_load_topology(index_path.string());
     if (!topo.error_msg.empty()) {
@@ -550,7 +550,7 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
         db.planes.assign(static_cast<size_t>(total), {});
         db.paths.resize(static_cast<size_t>(total));
         namespace fs = std::filesystem;
-        fs::path exp_dir = fs::path(model_path) / "logestix" / "experts";
+        fs::path exp_dir = fs::path(model_path) / "experts";
         if (!fs::exists(exp_dir)
             && fs::exists(fs::path(model_path) / "experts"))
             exp_dir = fs::path(model_path) / "experts";

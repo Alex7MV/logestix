@@ -155,7 +155,7 @@ TEST_CASE("ConvertMinimaxMoeModel converts a synthetic checkpoint",
     if (!st.ok()) WARN(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const auto &c = minimax_test::TestCfg();
 
     // 1) Index carries the format tag, dispatch arrays and frozen numbers.
@@ -310,7 +310,7 @@ TEST_CASE("ConvertMinimaxMoeModel converts a synthetic checkpoint",
         fs::remove_all(out2);
         REQUIRE(ConvertMinimaxMoeModel(in.string(), out2.string()).ok());
         CHECK(ReadAll(base / "model.index.json") ==
-              ReadAll(out2 / "logestix" / "model.index.json"));
+              ReadAll(out2 / "model.index.json"));
         fs::remove_all(out2);
     }
 

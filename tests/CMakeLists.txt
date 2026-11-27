@@ -2845,6 +2845,12 @@ lsx_add_test(NAME test_storage_artifact_writer LABEL fast LINK lsxstorage
 # hw::PlaneCodec, which is the guard on the deliberate duplication.
 lsx_add_test(NAME test_storage_verify LABEL fast LINK lsxstorage lsxcommon)
 
+# ── Path shape: no `logestix` segment anywhere (Task 4a) ──────────────────
+# Scans libs/, apps/ and tests/, so it needs only lsxstorage (for IsArtifactDir)
+# and the source-tree define.
+lsx_add_test(NAME test_path_shape_guard LABEL fast LINK lsxstorage
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+
 # ── The I3 admission gate in ModelBase::BeginLoad ─────────────────────────
 # Host-only: the gate is a pure function of the declared mask and the active
 # target, and the target is injectable for tests.

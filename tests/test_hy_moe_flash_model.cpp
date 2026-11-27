@@ -25,8 +25,8 @@ fs::path WriteIndex(int layers, const std::string &format,
         fs::path("hy4-model-" + std::to_string(::getpid()) + "-" +
                  std::to_string(layers) + "-" + std::to_string(format.size()));
     fs::remove_all(root);
-    fs::create_directories(root / "logestix" / "pinned");
-    std::ofstream f(root / "logestix" / "model.index.json");
+    fs::create_directories(root / "pinned");
+    std::ofstream f(root / "model.index.json");
     f << "{\"format\": \"" << format << "\", \"model\": \"" << model
       << "\", \"num_layers\": " << layers
       << ", \"experts_per_layer\": 512, \"total_experts\": 20992,"
@@ -136,7 +136,7 @@ TEST_CASE("hy4 model: control-prompt diagnostic", "[.hy4diag]")
     const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT");
     const fs::path root = env ? fs::path(env)
                               : fs::path("/mnt/fast_storage/lsx_model/tencent/Hy4-flash");
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Hy4-flash tree absent");
 
     lsxcommon::ModelInitConfig cfg;

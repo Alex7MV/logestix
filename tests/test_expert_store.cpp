@@ -33,7 +33,7 @@ std::filesystem::path MakeExpertDir(bool distinct = false)
     std::filesystem::path container =
         std::filesystem::temp_directory_path() /
         ("lsx_expert_test_" + std::to_string(std::rand()));
-    const std::filesystem::path exps = container / "logestix" / "experts";
+    const std::filesystem::path exps = container / "experts";
     std::filesystem::create_directories(exps / "layer_0");
     std::filesystem::create_directories(exps / "layer_1");
 
@@ -510,7 +510,7 @@ TEST_CASE("ExpertStore PrefetchStage refuses an oversized expert without "
     const std::filesystem::path container =
         std::filesystem::temp_directory_path() /
         ("lsx_expert_oversize_" + std::to_string(std::rand()));
-    const auto exps = container / "logestix" / "experts" / "layer_0";
+    const auto exps = container / "experts" / "layer_0";
     std::filesystem::create_directories(exps);
     for (int i = 0; i < 2; ++i) {
         const size_t n = (i == 0) ? 16u : 64u;
@@ -574,7 +574,7 @@ TEST_CASE("ExpertStore accepts an expert whose schema plane is empty",
     const std::filesystem::path container =
         std::filesystem::temp_directory_path() /
         ("lsx_expert_nongated_" + std::to_string(std::rand()));
-    const auto exps = container / "logestix" / "experts" / "layer_0";
+    const auto exps = container / "experts" / "layer_0";
     std::filesystem::create_directories(exps);
     {
         lsxcommon::PackedExpert pe;
@@ -674,7 +674,7 @@ TEST_CASE("ExpertStore survives LoadParallelParse without a prior Load",
     for (int layer = 0; layer < s.num_layers; ++layer)
         for (int exp = 0; exp < s.experts_per_layer; ++exp)
             s.paths[static_cast<size_t>(layer * 2 + exp)] =
-                (dir / "logestix" / "experts" /
+                (dir / "experts" /
                  ("layer_" + std::to_string(layer)) /
                  ("exp_" + std::to_string(exp) + ".arrow"))
                     .string();

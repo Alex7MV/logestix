@@ -150,7 +150,7 @@ TEST_CASE("LoadXingWeights is strict about a missing layer", "[xing][loader]")
 {
     const auto model = BuildConvertedFixture();
     std::error_code ec;
-    std::filesystem::remove(std::filesystem::path(model) / "logestix" / "pinned" /
+    std::filesystem::remove(std::filesystem::path(model) / "pinned" /
                                 "layer_1.arrow",
                             ec);
 

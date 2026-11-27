@@ -197,7 +197,7 @@ TEST_CASE("synthetic Beam checkpoint converts to the NVFP4 tree",
     INFO(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     REQUIRE(fs::exists(base / "pinned" / "global.arrow"));
     REQUIRE(fs::exists(base / "pinned" / "layer_0_nvfp4.arrow"));
     REQUIRE(fs::exists(base / "pinned" / "layer_1_nvfp4.arrow"));

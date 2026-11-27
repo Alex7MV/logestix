@@ -523,7 +523,7 @@ arrow::Status ConvertMistralLarge4Model(const std::string &input_dir,
         }
     }
 
-    const fs::path base = output_root / "logestix";
+    const fs::path base = output_root;
     const fs::path pinned_dir = base / "pinned";
     std::error_code ec;
     fs::create_directories(pinned_dir, ec);

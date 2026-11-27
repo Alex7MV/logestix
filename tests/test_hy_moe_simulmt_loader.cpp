@@ -124,7 +124,7 @@ TEST_CASE("Hy-SimulMT loader rejects the parent's format (and vice versa)",
     }
 
     // A foreign tag is refused with this model's passport too.
-    const fs::path idx = c.root / "logestix" / "model.index.json";
+    const fs::path idx = c.root / "model.index.json";
     std::string json;
     {
         std::ifstream f(idx);

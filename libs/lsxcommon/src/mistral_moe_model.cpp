@@ -117,7 +117,7 @@ bool MistralSmall4MoeModel::Load()
 
     const mistral_moe::MistralTopology top =
         mistral_moe::mistral_load_topology(
-            (std::filesystem::path(cfg_.model_path) / "logestix" /
+            (std::filesystem::path(cfg_.model_path) /
              "model.index.json")
                 .string());
     if (!ValidateGeometry(top)) return AbortLoad();

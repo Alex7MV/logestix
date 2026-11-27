@@ -449,9 +449,9 @@ inline void WriteNemotronNvfp4Index(
     const std::string &model_name = "Nemotron-3.5-Lightning-30B-A3B-NVFP4",
     const std::string &eos_json = "[2, 11]")
 {
-    std::filesystem::create_directories(model_root / "logestix");
+    std::filesystem::create_directories(model_root);
     const auto types = RealLayerTypes();
-    std::ofstream f(model_root / "logestix" / "model.index.json");
+    std::ofstream f(model_root / "model.index.json");
     f << "{\n  \"format\": \"" << format_tag << "\",\n"
       << "  \"model\": \"" << model_name << "\",\n"
       << "  \"num_layers\": 52,\n  \"layer_types\": [";

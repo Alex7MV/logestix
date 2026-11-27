@@ -141,7 +141,7 @@ void FreeStepPinnedWeights(StepPinnedWeights &pw)
 StepTopology LoadStepTopology(const std::string &model_path)
 {
     StepTopology top;
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::string json;
     auto st = ReadWholeFile(idx, json);
     if (!st.ok()) {
@@ -365,7 +365,7 @@ bool LoadStepDenseWeights(const std::string &model_path, StepPinnedWeights &pw,
     const int NH = top.num_attention_heads;
     const int NKV = top.num_key_value_heads;
     const int HD = top.head_dim;
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";

@@ -78,6 +78,15 @@ table Artifact {
   family:string;            // "phi"
   profile:string;           // "bf16", "nvfp4", "int8-w8a16"
 
+  // Where this artifact sits under LSX_ARTIFACT_ROOT:
+  //   <root>/<org>/<model_dir>/<profile>
+  // The path mirrors the source store (<org>/<model>), so an operator can move
+  // between a checkpoint and its artifacts by changing only the root. org and
+  // model_dir are recorded rather than derived from the path, so ListProfiles()
+  // can enumerate siblings from artifact.fb alone.
+  org:string;               // "microsoft", "Qwen"
+  model_dir:string;         // "phi-4", "Qwen3.5-9B" (the store's own spelling)
+
   // Advisory: the target this artifact was BUILT for. The load gate uses
   // used_codecs and the ACTIVE device, never this field — otherwise editing one
   // string would let an artifact past the gate on the wrong hardware.

@@ -50,7 +50,7 @@ Resolved Resolve(const std::string &model_or_path)
     // (1) An artifact directory, or a path inside one: accept the profile dir
     // itself, the conventional `logestix` subdir an older caller may still
     // spell, and the parent of a trailing slash.
-    for (const auto &cand : {given, given / "logestix"}) {
+    for (const auto &cand : {given, given}) {
         if (IsArtifactDir(cand)) {
             r.status = ResolveStatus::kArtifact;
             r.dir = cand;
@@ -104,15 +104,20 @@ Resolved Resolve(const std::string &model_or_path)
                     if (!IsArtifactDir(profile_dir.path())) continue;
                     r.status = ResolveStatus::kArtifact;
                     r.dir = profile_dir.path();
-                    r.family = family_dir.path().filename().string();
-                    r.model_type = name;
+                    r.org = family_dir.path().filename().string();
+                    r.model_dir = name;
                     r.profile = profile_dir.path().filename().string();
+                    const auto read = ReadArtifact(profile_dir.path());
+                    if (read.status == ReadStatus::kOk) {
+                        r.family = read.info.family;
+                        r.model_type = read.info.model_type;
+                    }
                     return r;
                 }
                 // The model exists but has no converted profile.
                 r.status = ResolveStatus::kSourceOnly;
-                r.model_type = name;
-                r.family = family_dir.path().filename().string();
+                r.model_dir = name;
+                r.org = family_dir.path().filename().string();
                 r.detail = "'" + name + "' has no converted artifact under " +
                            root->string();
                 return r;
@@ -152,14 +157,14 @@ Resolved Resolve(const std::string &model_or_path)
     return r;
 }
 
-std::vector<Resolved> ListProfiles(const std::string &family,
-                                   const std::string &model_type)
+std::vector<Resolved> ListProfiles(const std::string &org,
+                                   const std::string &model_dir_name)
 {
     std::vector<Resolved> out;
     const auto root = ArtifactRoot();
-    if (!root.has_value() || family.empty() || model_type.empty()) return out;
+    if (!root.has_value() || org.empty() || model_dir_name.empty()) return out;
 
-    const auto model_dir = *root / family / model_type;
+    const auto model_dir = *root / org / model_dir_name;
     std::error_code ec;
     if (!fs::is_directory(model_dir, ec)) return out;
 
@@ -170,9 +175,16 @@ std::vector<Resolved> ListProfiles(const std::string &family,
         Resolved r;
         r.status = ResolveStatus::kArtifact;
         r.dir = entry.path();
-        r.family = family;
-        r.model_type = model_type;
+        r.org = org;
+        r.model_dir = model_dir_name;
         r.profile = entry.path().filename().string();
+        // Identity comes from artifact.fb, not from the path: one read is what
+        // the caller needs anyway, and it cannot disagree with the directory.
+        const auto read = ReadArtifact(entry.path());
+        if (read.status == ReadStatus::kOk) {
+            r.family = read.info.family;
+            r.model_type = read.info.model_type;
+        }
         out.push_back(std::move(r));
     }
     std::sort(out.begin(), out.end(),

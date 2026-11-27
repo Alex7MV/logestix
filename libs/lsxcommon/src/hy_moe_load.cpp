@@ -117,7 +117,7 @@ void FreeHyPinnedWeights(HyPinnedWeights &pw)
 HyTopology LoadHyTopology(const std::string &model_path)
 {
     HyTopology top;
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::string json;
     auto st = ReadWholeFile(idx, json);
     if (!st.ok()) {
@@ -223,7 +223,7 @@ bool LoadHyDenseWeights(const std::string &model_path,
     pw.Free();
     error.clear();
 
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";

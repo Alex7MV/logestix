@@ -83,7 +83,7 @@ TEST_CASE("LoadKimiPinnedWeights errors on missing layer file",
 {
     auto model = BuildConvertedFixture();
     auto missing =
-        std::filesystem::path(model) / "logestix" / "pinned" / "layer_2.arrow";
+        std::filesystem::path(model) / "pinned" / "layer_2.arrow";
     std::filesystem::rename(missing, missing.string() + ".bak");
 
     lsxcommon::kimi::KimiPinnedWeights pw;
@@ -109,7 +109,7 @@ TEST_CASE("LoadKimiPinnedWeights releases partial globals on failure (A3.2)",
     // that skips the release leaks embed+head into free-VRAM terms.
     namespace fs = std::filesystem;
     auto model = BuildConvertedFixture();
-    const fs::path global = fs::path(model) / "logestix" / "pinned" /
+    const fs::path global = fs::path(model) / "pinned" /
                             "global.arrow";
     {
         auto batch = lsxcommon::ReadRecordBatchFromFile(global);
@@ -275,7 +275,7 @@ TEST_CASE("kimi loader r2: MLA NVFP4 roundtrip + old rev rejected",
     // (b) Pre-r2 index is rejected with a strict "reconvert" error.
     {
         namespace fs = std::filesystem;
-        auto idx = fs::path(model) / "logestix" / "model.index.json";
+        auto idx = fs::path(model) / "model.index.json";
         std::string json;
         {
             std::ifstream f(idx);

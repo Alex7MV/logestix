@@ -162,7 +162,7 @@ TEST_CASE("loader refuses a checkpoint whose layer is missing a projection",
     auto out = MakeConvertedSynthetic();
     // Drop the o_proj triple from layer 1: the loader must fail loudly instead
     // of running a layer with a null weight pointer.
-    const auto path = out / "logestix" / "pinned" / "layer_1.arrow";
+    const auto path = out / "pinned" / "layer_1.arrow";
     {
         auto batch_res = lsxcommon::LoadTensorBatchViews(path);
         REQUIRE(batch_res.ok());

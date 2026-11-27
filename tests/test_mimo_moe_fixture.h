@@ -209,7 +209,7 @@ inline std::string ReadFileText(const fs::path &p)
 
 inline bool ExpertFileExists(const fs::path &out, int layer, int expert)
 {
-    return fs::exists(fs::path(out) / "logestix" / "experts" /
+    return fs::exists(fs::path(out) / "experts" /
                       ("layer_" + std::to_string(layer)) /
                       ("exp_" + std::to_string(expert) + ".arrow"));
 }

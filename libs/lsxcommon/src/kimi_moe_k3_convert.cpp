@@ -681,7 +681,7 @@ arrow::Status ConvertKimiK3Variant(const std::string &input_dir,
     // would read the whole 1.5 TB tree a second time. Every read below is
     // length-checked against the safetensors header instead.
 
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     const fs::path streamed_dir = base / "streamed";
     const fs::path experts_dir = base / "experts";

@@ -139,7 +139,7 @@ TEST_CASE("inkling base synthetic convert emits logestix-inkling-nvfp4",
     if (!st.ok()) FAIL(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const fs::path idx = base / "model.index.json";
     REQUIRE(fs::exists(idx));
 

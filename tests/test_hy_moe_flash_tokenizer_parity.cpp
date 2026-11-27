@@ -83,7 +83,7 @@ std::filesystem::path VaultRoot()
 TEST_CASE("hy4 tokenizer: the bridge reproduces the reference ids",
           "[hy4][fast]")
 {
-    const auto pinned = VaultRoot() / "logestix" / "pinned";
+    const auto pinned = VaultRoot() / "pinned";
     if (!std::filesystem::exists(pinned / "tokenizer_vocab.arrow"))
         SKIP("converted Hy4-flash tokenizer absent at " + pinned.string());
 

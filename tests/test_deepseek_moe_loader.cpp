@@ -247,7 +247,7 @@ TEST_CASE("DeepSeek loader errors on missing layer file",
     fs::remove_all(base);
     auto model = base / "model";
     REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
-    fs::remove(model / "logestix" / "pinned" / "layer_1.arrow");
+    fs::remove(model / "pinned" / "layer_1.arrow");
 
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -481,7 +481,7 @@ TEST_CASE("DeepSeek model Load rejects topology mismatching the passport",
     // Rewrite the index with a layer count that violates the frozen passport
     // of the real architecture.
     {
-        std::ofstream f(model / "logestix" / "model.index.json");
+        std::ofstream f(model / "model.index.json");
         f << "{\n"
           << "  \"model\": \"DeepSeek-V4-Flash\",\n"
           << "  \"num_layers\": "

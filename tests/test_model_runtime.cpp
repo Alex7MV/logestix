@@ -25,7 +25,7 @@ namespace {
 
 std::string BuildPinnedTokenizerDir(const std::string &fixture_name)
 {
-    auto pinned = fs::temp_directory_path() / ("modelbase_" + fixture_name) / "logestix" / "pinned";
+    auto pinned = fs::temp_directory_path() / ("modelbase_" + fixture_name) / "pinned";
     fs::remove_all(pinned.parent_path().parent_path());
     fs::create_directories(pinned);
     REQUIRE(lsxcommon::BuildTokenizerArrowFiles(

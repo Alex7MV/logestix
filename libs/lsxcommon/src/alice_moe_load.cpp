@@ -41,7 +41,7 @@ arrow::Status LoadAliceTopology(const std::string &model_path,
                                 AliceMoeTopology &out)
 {
     out = AliceMoeTopology{};
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::ifstream f(idx);
     if (!f)
         return arrow::Status::IOError("cannot open ", idx.string());
@@ -196,7 +196,7 @@ void FreeAlicePinnedWeights(AlicePinnedWeights &pw)
 bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
                             cudaStream_t stream)
 {
-    const fs::path base = fs::path(root) / "logestix";
+    const fs::path base = fs::path(root);
     fs::path pinned = base / "pinned";
     if (!fs::exists(pinned)) pinned = fs::path(root) / "pinned";
     if (!fs::exists(pinned)) return false;

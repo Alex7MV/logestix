@@ -107,7 +107,7 @@ TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
     INFO("convert status: " << st.ToString());
     REQUIRE(st.ok());
 
-    std::ifstream in(dst / "logestix" / "model.index.json");
+    std::ifstream in(dst / "model.index.json");
     REQUIRE(in.good());
     std::stringstream ss;
     ss << in.rdbuf();
@@ -118,24 +118,24 @@ TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
     CHECK(json.find("\"full_attention_layers\": [1]") != std::string::npos);
     CHECK(json.find("\"mtp\": \"stored\"") != std::string::npos);
     CHECK(json.find("\"total_experts\": 2") != std::string::npos);
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "global.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_000_nvfp4.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_001_nvfp4.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "mtp" / "layer_040.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "global.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_000_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "layer_001_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_0.arrow"));
+    CHECK(fs::exists(dst / "mtp" / "layer_040.arrow"));
     // Model Ingestion Protocol stage 4: the converter owns the tokenizer
     // bridge. GigaChat's checkpoint is the Llama-3/o200k case-run BPE, so the
     // emitted metadata must say tokenizer_kind 3 (not the legacy kind 0, which
     // mis-splits mixed-case identifiers).
     CHECK(json.find("\"tokenizer\": \"arrow-bpe\"") != std::string::npos);
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "tokenizer_vocab.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "pinned" / "tokenizer_merges.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "tokenizer_vocab.arrow"));
+    CHECK(fs::exists(dst / "pinned" / "tokenizer_merges.arrow"));
 
     auto vf = arrow::io::MemoryMappedFile::Open(
-        (dst / "logestix" / "pinned" / "tokenizer_vocab.arrow").string(),
+        (dst / "pinned" / "tokenizer_vocab.arrow").string(),
         arrow::io::FileMode::READ);
     auto mf = arrow::io::MemoryMappedFile::Open(
-        (dst / "logestix" / "pinned" / "tokenizer_merges.arrow").string(),
+        (dst / "pinned" / "tokenizer_merges.arrow").string(),
         arrow::io::FileMode::READ);
     REQUIRE(vf.ok());
     REQUIRE(mf.ok());

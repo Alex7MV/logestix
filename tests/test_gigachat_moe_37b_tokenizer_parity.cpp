@@ -38,7 +38,7 @@ std::filesystem::path VaultRoot()
 
 ArrowTokenizerDb LoadVaultTokenizer(const std::filesystem::path &root)
 {
-    const auto pinned = root / "logestix" / "pinned";
+    const auto pinned = root / "pinned";
     auto v = arrow::io::MemoryMappedFile::Open(
         (pinned / "tokenizer_vocab.arrow").string(),
         arrow::io::FileMode::READ);
@@ -65,7 +65,7 @@ TEST_CASE("gigachat4 tokenizer bridge resolves the checkpoint's own markers",
           "[gigachat4][tokenizer]")
 {
     const auto root = VaultRoot();
-    if (!std::filesystem::exists(root / "logestix" / "pinned" /
+    if (!std::filesystem::exists(root / "pinned" /
                                  "tokenizer_vocab.arrow"))
         SKIP("converted model absent");
 
@@ -90,7 +90,7 @@ TEST_CASE("gigachat4 prompt framing is chatml-v5, not a raw encode",
           "[gigachat4][tokenizer]")
 {
     const auto root = VaultRoot();
-    if (!std::filesystem::exists(root / "logestix" / "pinned" /
+    if (!std::filesystem::exists(root / "pinned" /
                                  "tokenizer_vocab.arrow"))
         SKIP("converted model absent");
 
@@ -119,7 +119,7 @@ TEST_CASE("gigachat4 tokenizer round-trips a mixed-case identifier",
           "[gigachat4][tokenizer]")
 {
     const auto root = VaultRoot();
-    if (!std::filesystem::exists(root / "logestix" / "pinned" /
+    if (!std::filesystem::exists(root / "pinned" /
                                  "tokenizer_vocab.arrow"))
         SKIP("converted model absent");
 

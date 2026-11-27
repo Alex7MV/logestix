@@ -169,7 +169,7 @@ TEST_CASE("MiniMax routed-expert store is the neutral mmap store",
 TEST_CASE("MiniMax loader rejects a foreign index format", "[minimax][loader]")
 {
     const Converted c = BuildConverted();
-    const fs::path idx = c.root / "logestix" / "model.index.json";
+    const fs::path idx = c.root / "model.index.json";
     {
         std::ofstream f(idx);
         f << "{\"format\":\"logestix-qwen35moe\",\"num_layers\":4,"

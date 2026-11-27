@@ -70,7 +70,7 @@ fs::path ConvertOrFail(const fs::path &in, const fs::path &out)
                                                           out.string());
     if (!st.ok()) FAIL(st.ToString());
     REQUIRE(st.ok());
-    return out / "logestix";
+    return out;
 }
 
 std::string IndexerName(int layer, const char *suffix)

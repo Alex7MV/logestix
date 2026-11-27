@@ -165,7 +165,7 @@ TEST_CASE("deepseek-v4-pro loader errors on a missing layer file",
     fs::remove_all(base);
     auto model = base / "model";
     REQUIRE(dsprofixtest::BuildSyntheticModel(model).ok());
-    fs::remove(model / "logestix" / "pinned" / "layer_1.arrow");
+    fs::remove(model / "pinned" / "layer_1.arrow");
 
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -288,7 +288,7 @@ TEST_CASE("deepseek-v4-pro Model::Load rejects a passport mismatch",
     REQUIRE(dsprofixtest::BuildSyntheticModel(model).ok());
 
     {
-        std::ofstream f(model / "logestix" / "model.index.json");
+        std::ofstream f(model / "model.index.json");
         f << "{\n"
           << "  \"model\": \"DeepSeek-V4-Pro-0813\",\n"
           << "  \"num_layers\": "

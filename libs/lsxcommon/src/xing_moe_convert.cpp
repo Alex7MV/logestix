@@ -691,7 +691,7 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
             "checkpoint has ", observed_layers, " decoder layers, expected ",
             cfg.layers);
 
-    const fs::path base = output_root / "logestix";
+    const fs::path base = output_root;
     const fs::path pinned_dir = base / "pinned";
     const fs::path mtp_dir = base / "mtp";
     for (const fs::path &d : {base, pinned_dir, mtp_dir})

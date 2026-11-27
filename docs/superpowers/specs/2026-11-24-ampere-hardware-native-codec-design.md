@@ -61,7 +61,7 @@ document and code disagree, this document wins until the code is changed.
 | I2 | **Multi-vendor capability registry** | One abstraction `HardwareTarget {vendor, arch}` and one table `SupportedCodecs(HardwareTarget) -> Bitmask<PlaneCodec>` in `libs/lsxcommon`. Vendors: `nvidia`, `cpu`, reserved `amd`. |
 | I3 | **Hard admission gate** | `used_codecs_mask ⊆ SupportedCodecs(active_target)`, evaluated once, in `ModelBase::BeginLoad`. A model runs only if 100 % of the codecs its artifact used are natively supported by the active accelerator. |
 | I4 | **Multi-artifact + autoselect** | One source model converts to several native trees, one per codec profile (`lsxforge --codec-profile`). `lsxfabric` selects the best *compatible* artifact for the current GPU/CPU. |
-| I5 | **Split storage** | `libs/lsxstorage` (namespace `lsx::storage`) separates read-only HF sources (`LSX_SOURCE_ROOT`) from converted artifacts (`LSX_ARTIFACT_ROOT`). Every artifact is self-sufficient (tokenizer + `chat_template.jinja` inside it) and lives at `<ROOT>/<family>/<model_type>/<profile>/` with no extra path segment (§2.4.2). **Amended 2026-11-27:** the fallback to `<LSX_MODEL_ROOT>/<Model>/logestix/` is retired — there are no legacy trees, so an unset `LSX_ARTIFACT_ROOT` is a configuration error that names itself, not a compatibility route. |
+| I5 | **Split storage** | `libs/lsxstorage` (namespace `lsx::storage`) separates read-only HF sources (`LSX_SOURCE_ROOT`) from converted artifacts (`LSX_ARTIFACT_ROOT`). Every artifact is self-sufficient (tokenizer + `chat_template.jinja` inside it) and lives at `<ROOT>/<org>/<model_dir>/<profile>/` with no extra path segment (§2.4.2). **Amended 2026-11-27:** the fallback to `<LSX_MODEL_ROOT>/<Model>/logestix/` is retired — there are no legacy trees, so an unset `LSX_ARTIFACT_ROOT` is a configuration error that names itself, not a compatibility route. |
 
 ### 0.2 Operator decisions that constrain all of this
 
@@ -568,16 +568,21 @@ std::filesystem::path SourceRoot();      // LSX_SOURCE_ROOT   or kModelRootBase
 std::optional<fs::path> ArtifactRoot();  // LSX_ARTIFACT_ROOT or nullopt
 fs::path CacheRoot();
 
-// Where artifacts of a model live, per profile, when an artifact root exists:
-//   <ArtifactRoot>/<family>/<model_type>/<profile>/{artifact.fb,pinned,...}
-// `family` and `model_type` are the manifest fields of the same name
-// (models/<model_type>.json), NOT the vault directory name: "Qwen3.5-9B" is the
-// vault dir, `qwen3.5-9b` is the model_type and is what appears in the path.
-// Using the vault name would tie the artifact layout to a download's spelling.
-// No intermediate `logestix/` segment: the root is the store, the profile IS the
-// artifact (§2.4.2).
-fs::path ArtifactDir(const std::string &family,
-                     const std::string &model_type,
+// Where artifacts of a model live, per profile:
+//   <ArtifactRoot>/<org>/<model_dir>/<profile>/{artifact.fb,pinned,...}
+//
+// The path MIRRORS the source store, so moving between a checkpoint and its
+// artifacts means changing only the root:
+//   source     /mnt/fast_storage/lsx_model/microsoft/phi-4
+//   artifact   /mnt/fast_storage/lsx_artifact/microsoft/phi-4/nvfp4
+//
+// Both segments are the STORE's spelling ("microsoft", "Qwen3.5-9B"), not the
+// manifest's family/model_type: an operator navigates by what `ls` shows. The
+// manifest identity is still recorded — inside artifact.fb as model_type/family
+// — so the two spellings can never be confused at load time.
+//
+// No intermediate `logestix/` segment: the profile IS the artifact (§2.4.2).
+fs::path ArtifactDir(const std::string &org, const std::string &model_dir,
                      const std::string &profile);
 
 // Source checkpoints, one level down: <SourceRoot>/<org>/<model>.
@@ -641,7 +646,7 @@ operator rejected it, correctly, and this section records why the rejection is r
 and what it costs.**
 
 ```
-<LSX_ARTIFACT_ROOT>/<family>/<model_type>/<profile>/
+<LSX_ARTIFACT_ROOT>/<org>/<model_dir>/<profile>/
     artifact.fb
     model.index.json
     pinned/          experts/         router/      shared/      ple/
@@ -744,6 +749,11 @@ table Artifact {
   // pick a kernel per layer. Those fields are REMOVED from model.index.json
   // (spec §2.4.3 rule 5), so this array is the only per-layer codec record.
   layer_codec:[ulong];
+  // Store coordinates, so the artifact records where it belongs and
+  // ListProfiles() can enumerate siblings from artifact.fb alone:
+  //   <root>/<org>/<model_dir>/<profile>
+  org:string;               // "microsoft"
+  model_dir:string;         // "phi-4" (the store's own spelling)
   tokenizer:Tokenizer;
   source:Source;
   layer_count:int;
@@ -999,7 +1009,7 @@ profile then partially overwritten".
 
 Selection is deterministic and total:
 
-1. Enumerate profiles of `<family>/<model_type>/` under the artifact root.
+1. Enumerate profiles of `<org>/<model_dir>/` under the artifact root.
 2. Keep those with `used_codecs ⊆ SupportedCodecs(active_target)`.
 3. Rank by the profile rank table (highest first):
    `int8-w8a16` (if the target's INT8 kernel exists) ≥ `nvfp4` >

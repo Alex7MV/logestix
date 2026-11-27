@@ -325,7 +325,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
     // Unified vault convention: <output_root>/logestix (same as the dense
     // qwen/glm/kimi converters; legacy logestix-qwen35moe readers keep a
     // loader-side fallback for pre-unification artifacts).
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";

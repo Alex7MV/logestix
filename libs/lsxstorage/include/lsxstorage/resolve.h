@@ -40,6 +40,8 @@ struct Resolved {
     std::string model_type;
     std::string family;
     std::string profile;
+    std::string org;       // "microsoft": the artifact store's first segment
+    std::string model_dir; // "phi-4": the second, in the store's spelling
     std::string detail;    // human-readable reason, always set
 };
 
@@ -53,7 +55,9 @@ Resolved Resolve(const std::string &model_or_path);
 // Every artifact profile of one model that exists under the artifact root,
 // sorted (profile name ascending) for a deterministic choice. Empty when the
 // model has never been converted.
-std::vector<Resolved> ListProfiles(const std::string &family,
-                                   const std::string &model_type);
+// Enumerates the profiles of ONE model, identified by its store coordinates
+// (<root>/<org>/<model_dir>/<profile>), sorted by profile name.
+std::vector<Resolved> ListProfiles(const std::string &org,
+                                   const std::string &model_dir);
 
 } // namespace lsx::storage

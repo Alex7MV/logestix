@@ -59,7 +59,7 @@ arrow::Status LoadInklingLoopTopology(const std::string &model_path,
                                       std::string_view expected_format)
 {
     out = InklingLoopTopology{};
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::ifstream f(idx);
     if (!f) return arrow::Status::IOError("cannot open ", idx.string());
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -630,7 +630,7 @@ bool LoadInklingLoopPinnedWeights(const std::string &root,
                                   cudaStream_t stream)
 {
     namespace fs = std::filesystem;
-    const fs::path base = fs::path(root) / "logestix";
+    const fs::path base = fs::path(root);
     const fs::path pinned = base / "pinned";
     const InklingLoopTopology &top = pw.top;
     const int H = top.hidden;

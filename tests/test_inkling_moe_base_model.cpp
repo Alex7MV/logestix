@@ -253,7 +253,7 @@ TEST_CASE("inkling base v short-conv reaches the KV cache",
     fs::remove_all(root2);
     fs::copy(root, root2, fs::copy_options::recursive);
     {
-        const fs::path p = root2 / "logestix" / "pinned" / "layer_0.arrow";
+        const fs::path p = root2 / "pinned" / "layer_0.arrow";
         auto batch = lsxcommon::ReadRecordBatchFromFile(p);
         REQUIRE(batch.ok());
         auto rows = lsxcommon::PinnedSchema::UnpackBatch(*batch);

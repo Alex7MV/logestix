@@ -111,7 +111,7 @@ TEST_CASE("gigachat4-708b refuses a 37B tree on the geometry",
                                             /*hidden_override=*/7168,
                                             /*format_tag=*/frozen708::kFormat);
     // Rewrite num_layers to the 37B depth, keeping the 708B tag.
-    const auto path = root / "logestix" / "model.index.json";
+    const auto path = root / "model.index.json";
     std::string json;
     {
         std::ifstream in(path);
@@ -143,7 +143,7 @@ TEST_CASE("gigachat4-708b geometry gate catches a single wrong width",
     DisableSyntheticGeometry();
     const auto root = gigachat4test::MakeTempDir("gc708_idx_width");
     gigachat4test::WriteGigaChat4_708BIndex(root);
-    const auto path = root / "logestix" / "model.index.json";
+    const auto path = root / "model.index.json";
     std::string json;
     {
         std::ifstream in(path);

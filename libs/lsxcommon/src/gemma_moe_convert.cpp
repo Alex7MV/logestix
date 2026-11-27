@@ -324,7 +324,7 @@ arrow::Status WriteGemmaModelIndex(const std::string &output_root,
                                    const GemmaTopology &top)
 {
     namespace fs = std::filesystem;
-    auto dir = fs::path(output_root) / "logestix";
+    auto dir = fs::path(output_root);
     if (!fs::exists(dir)) {
         auto st = fs::create_directories(dir);
         if (!st) return arrow::Status::IOError("cannot create ", dir.string());
@@ -536,9 +536,9 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
             dst.push_back(std::move(gs));
         };
 
-    auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    auto pinned_dir = fs::path(output_root) / "pinned";
     fs::create_directories(pinned_dir);
-    auto logestix_dir = fs::path(output_root) / "logestix";
+    auto logestix_dir = fs::path(output_root);
 
     std::vector<TensorRecord> global_raw;
     std::vector<lsxcommon::DenseNvfp4Record> global_nvfp4;

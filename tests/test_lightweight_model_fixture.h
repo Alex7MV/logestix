@@ -39,7 +39,7 @@ namespace fs = std::filesystem;
 // Writes {"model":"<model>"} into <root>/logestix/model.index.json.
 inline void WriteIndex(const fs::path &root, std::string_view model)
 {
-    std::ofstream idx(root / "logestix" / "model.index.json");
+    std::ofstream idx(root / "model.index.json");
     idx << R"({"model":")" << model << R"("})";
 }
 
@@ -93,10 +93,10 @@ inline LightweightModel MakeLightweightModel(
     const fs::path root = fs::temp_directory_path() / dir_name;
     std::error_code ec;
     fs::remove_all(root, ec);
-    fs::create_directories(root / "logestix" / "pinned");
+    fs::create_directories(root / "pinned");
     WriteIndex(root, model_name);
     auto st = lsxcommon::BuildTokenizerArrowFiles(
-        tokenizer_json, (root / "logestix" / "pinned").string());
+        tokenizer_json, (root / "pinned").string());
     LightweightModel m;
     m.root = root;
     m.model_name = std::string(model_name);

@@ -90,7 +90,7 @@ TEST_CASE("ConvertKimiModel produces logestix-kimi layout", "[kimi][convert]") {
     INFO(conv.ToString());
     REQUIRE(conv.ok());
 
-    const auto log_root = out / "logestix";
+    const auto log_root = out;
     REQUIRE(fs::exists(log_root / "model.index.json"));
     REQUIRE(fs::exists(log_root / "pinned" / "global.arrow"));
     // INT4 routed experts packed to per-expert arrow files.
@@ -135,7 +135,7 @@ TEST_CASE("Kimi converter r2: MLA projections quantized, norms untouched",
     INFO(conv.ToString());
     REQUIRE(conv.ok());
 
-    const auto log_root = out / "logestix";
+    const auto log_root = out;
     std::ifstream f(log_root / "model.index.json");
     std::string json((std::istreambuf_iterator<char>(f)),
                      std::istreambuf_iterator<char>());
@@ -200,7 +200,7 @@ TEST_CASE("Kimi conversion applies the checkpoint token policy", "[kimi][convert
     REQUIRE(conv.ok());
 
     auto vres = lsxcommon::ReadRecordBatchFromFile(
-        out / "logestix" / "pinned" / "tokenizer_vocab.arrow");
+        out / "pinned" / "tokenizer_vocab.arrow");
     REQUIRE(vres.ok());
     auto meta = (*vres)->schema()->metadata();
     REQUIRE(meta != nullptr);
@@ -231,7 +231,7 @@ TEST_CASE("Kimi conversion counts ballast and rejects unknown tensors",
     INFO(conv.ToString());
     REQUIRE(conv.ok());
 
-    std::ifstream f(out / "logestix" / "model.index.json");
+    std::ifstream f(out / "model.index.json");
     REQUIRE(f.good());
     const std::string json((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());

@@ -488,7 +488,7 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
     ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(input_dir, model));
 
     // Unified vault convention: <output_root>/logestix.
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";

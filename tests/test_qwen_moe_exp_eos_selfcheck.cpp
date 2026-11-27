@@ -70,7 +70,7 @@ TEST_CASE("qwen3.8-flash-next stops on EOS instead of running the budget",
           "[qwen38][model][lifecycle][real-model]")
 {
     const std::filesystem::path model_dir = ConvertedPath();
-    if (!std::filesystem::exists(model_dir / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model_dir / "pinned"))
         SKIP("Qwen3.8-Flash-Next converted model directory not present");
 
     // Pin the expert-cache residency so the gate is a pure function of its own
@@ -138,7 +138,7 @@ TEST_CASE("qwen3.8-flash-next answers identically from a second model instance",
           "[qwen38][model][lifecycle][real-model]")
 {
     const std::filesystem::path model_dir = ConvertedPath();
-    if (!std::filesystem::exists(model_dir / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model_dir / "pinned"))
         SKIP("Qwen3.8-Flash-Next converted model directory not present");
 
     const ScopedEnv slots("LSX_QWEN38_EXPERT_CACHE_SLOTS", "1024");

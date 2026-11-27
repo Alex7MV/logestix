@@ -57,7 +57,7 @@ std::filesystem::path MakeStore(int experts)
     const auto container =
         std::filesystem::temp_directory_path() /
         ("lsx_stage_bw_" + std::to_string(std::rand()));
-    const auto exps = container / "logestix" / "experts";
+    const auto exps = container / "experts";
     std::filesystem::create_directories(exps / "layer_0");
     for (int i = 0; i < experts; ++i) {
         lsxcommon::PackedExpert pe;

@@ -46,7 +46,7 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
           "[kimi][model][inference][real-model]")
 {
     const std::filesystem::path model = KimiModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("converted Kimi model directory not present");
 
     lsxcommon::ModelInitConfig cfg;
@@ -116,7 +116,7 @@ TEST_CASE("Kimi-K2.7-Code repeated inference keeps the instance usable",
           "[kimi][model][inference][real-model]")
 {
     const std::filesystem::path model = KimiModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("converted Kimi model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

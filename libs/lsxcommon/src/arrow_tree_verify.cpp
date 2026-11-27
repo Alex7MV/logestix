@@ -503,8 +503,8 @@ FindConvertedTrees(const std::filesystem::path &vault_root)
     if (!std::filesystem::exists(vault_root)) return trees;
     for (const auto &e : std::filesystem::directory_iterator(vault_root)) {
         if (!e.is_directory()) continue;
-        if (std::filesystem::exists(e.path() / "logestix"))
-            trees.push_back(e.path() / "logestix");
+        if (std::filesystem::exists(e.path()))
+            trees.push_back(e.path());
     }
     std::sort(trees.begin(), trees.end());
     return trees;

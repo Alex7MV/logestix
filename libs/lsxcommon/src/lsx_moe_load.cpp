@@ -172,7 +172,7 @@ bool LoadMoeDenseWeights(const std::string &model_path,
     pw.Free();
     error.clear();
 
-    fs::path base = fs::path(model_path) / "logestix";
+    fs::path base = fs::path(model_path);
     if (!fs::exists(base))
         base = fs::path(model_path) / "logestix-qwen35moe";  // legacy layout
     const fs::path pinned_dir = base / "pinned";

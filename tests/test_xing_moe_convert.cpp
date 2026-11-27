@@ -154,7 +154,7 @@ TEST_CASE("Xing synthetic convert emits logestix-xing-nvfp4", "[xing][convert]")
     INFO("converter status: " << st.ToString());
     REQUIRE(st.ok());
 
-    const auto log_root = out / "logestix";
+    const auto log_root = out;
     REQUIRE(fs::exists(log_root / "model.index.json"));
     REQUIRE(fs::exists(log_root / "pinned" / "global_nvfp4.arrow"));
     // Raw (norms/mHC/router bias) and NVFP4 (linears) live in sibling files —
@@ -198,7 +198,7 @@ TEST_CASE("Xing converter: mHC stays BF16, MLA projections go NVFP4",
     INFO("converter status: " << st.ToString());
     REQUIRE(st.ok());
 
-    const auto log_root = fs::temp_directory_path() / "xing_conv_hc_out" / "logestix";
+    const auto log_root = fs::temp_directory_path() / "xing_conv_hc_out";
     auto raw = lsxcommon::LoadTensorBatchViews(log_root / "pinned" / "layer_2.arrow");
     REQUIRE(raw.ok());
     auto nvfp4 = lsxcommon::LoadDenseNvfp4BatchViews(

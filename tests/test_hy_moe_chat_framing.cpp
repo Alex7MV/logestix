@@ -44,7 +44,7 @@ bool LoadVaultDb(lsxcommon::ArrowTokenizerDb &db)
 {
     const std::filesystem::path root =
         std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-        "Hy-Memory-30B-A3B" / "logestix" / "pinned";
+        "Hy-Memory-30B-A3B" / "pinned";
     const std::filesystem::path v = root / "tokenizer_vocab.arrow";
     const std::filesystem::path m = root / "tokenizer_merges.arrow";
     if (!std::filesystem::exists(v) || !std::filesystem::exists(m)) return false;

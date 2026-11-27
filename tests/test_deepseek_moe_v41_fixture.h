@@ -20,8 +20,8 @@ namespace v41fixtest {
 inline void WriteIndex(const std::filesystem::path &model_dir,
                        const std::string &json)
 {
-    std::filesystem::create_directories(model_dir / "logestix");
-    std::ofstream f(model_dir / "logestix" / "model.index.json");
+    std::filesystem::create_directories(model_dir);
+    std::ofstream f(model_dir / "model.index.json");
     f << json;
 }
 
@@ -136,8 +136,8 @@ inline arrow::Status BuildSyntheticConverted(const std::filesystem::path &dir,
                                              int hidden = 64, int vocab = 128,
                                              int experts = 2)
 {
-    std::filesystem::create_directories(dir / "logestix" / "pinned");
-    std::filesystem::create_directories(dir / "logestix" / "experts" /
+    std::filesystem::create_directories(dir / "pinned");
+    std::filesystem::create_directories(dir / "experts" /
                                         "layer_0");
     if (auto st = BuildSyntheticIndex(dir, /*num_layers=*/1, experts,
                                       "logestix-v41-nvfp4");
@@ -148,7 +148,7 @@ inline arrow::Status BuildSyntheticConverted(const std::filesystem::path &dir,
     g.push_back(Bf16Rec("embed.weight", {vocab, hidden}, 0x4248));
     g.push_back(Bf16Rec("head.weight", {vocab, hidden}, 0x3555));
     g.push_back(Bf16Rec("norm.weight", {hidden}, 0x3C00));
-    if (auto st = WritePinned(dir / "logestix" / "pinned" / "global.arrow",
+    if (auto st = WritePinned(dir / "pinned" / "global.arrow",
                               g);
         !st.ok())
         return st;
@@ -185,7 +185,7 @@ inline arrow::Status BuildSyntheticConverted(const std::filesystem::path &dir,
     v.push_back(F32Rec("layers.0.hc_ffn_fn", {24, 4 * hidden}, 1.0f));
     v.push_back(F32Rec("layers.0.hc_ffn_base", {24}, 0.5f));
     v.push_back(F32Rec("layers.0.hc_ffn_scale", {3}, 2.0f));
-    if (auto st = WritePinned(dir / "logestix" / "pinned" / "layer_000.arrow",
+    if (auto st = WritePinned(dir / "pinned" / "layer_000.arrow",
                               v);
         !st.ok())
         return st;
@@ -205,7 +205,7 @@ inline arrow::Status BuildSyntheticConverted(const std::filesystem::path &dir,
         auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
         if (!batch.ok()) return batch.status();
         if (auto st = lsxcommon::WriteRecordBatchToFile(
-                *batch, dir / "logestix" / "experts" / "layer_0" /
+                *batch, dir / "experts" / "layer_0" /
                             ("exp_" + std::to_string(e) + ".arrow"));
             !st.ok())
             return st;
@@ -226,8 +226,8 @@ inline arrow::Status BuildSyntheticFullGeometry(
     const int q_dim = heads * head_dim, oa_rows = o_groups * o_lora,
               oa_cols = q_dim / o_groups;
 
-    std::filesystem::create_directories(dir / "logestix" / "pinned");
-    std::filesystem::create_directories(dir / "logestix" / "experts" /
+    std::filesystem::create_directories(dir / "pinned");
+    std::filesystem::create_directories(dir / "experts" /
                                         "layer_0");
 
     std::string json = "{";
@@ -247,7 +247,7 @@ inline arrow::Status BuildSyntheticFullGeometry(
     g.push_back(Bf16Rec("embed.weight", {vocab, hidden}, 0x3C00));
     g.push_back(Bf16Rec("head.weight", {vocab, hidden}, 0x3C00));
     g.push_back(Bf16Rec("norm.weight", {hidden}, 0x3C00));
-    if (auto st = WritePinned(dir / "logestix" / "pinned" / "global.arrow", g);
+    if (auto st = WritePinned(dir / "pinned" / "global.arrow", g);
         !st.ok())
         return st;
 
@@ -282,7 +282,7 @@ inline arrow::Status BuildSyntheticFullGeometry(
     v.push_back(F32Rec("layers.0.hc_ffn_fn", {24, 4 * hidden}, 0.0f));
     v.push_back(F32Rec("layers.0.hc_ffn_base", {24}, 0.0f));
     v.push_back(F32Rec("layers.0.hc_ffn_scale", {3}, 1.0f));
-    if (auto st = WritePinned(dir / "logestix" / "pinned" / "layer_000.arrow",
+    if (auto st = WritePinned(dir / "pinned" / "layer_000.arrow",
                               v);
         !st.ok())
         return st;
@@ -304,7 +304,7 @@ inline arrow::Status BuildSyntheticFullGeometry(
         auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
         if (!batch.ok()) return batch.status();
         if (auto st = lsxcommon::WriteRecordBatchToFile(
-                *batch, dir / "logestix" / "experts" / "layer_0" /
+                *batch, dir / "experts" / "layer_0" /
                             ("exp_" + std::to_string(e) + ".arrow"));
             !st.ok())
             return st;
@@ -324,10 +324,10 @@ inline arrow::Status BuildSyntheticCedGeometry(
     const int idx_heads = 32, idx_dim = 128, idx_qdim = idx_heads * idx_dim;
     const int idx_wkrow = idx_dim;
 
-    std::filesystem::create_directories(dir / "logestix" / "pinned");
+    std::filesystem::create_directories(dir / "pinned");
     for (int l = 0; l < 2; ++l)
         std::filesystem::create_directories(
-            dir / "logestix" / "experts" / ("layer_" + std::to_string(l)));
+            dir / "experts" / ("layer_" + std::to_string(l)));
 
     std::string json = "{";
     json += "\"format\": \"logestix-v41-nvfp4\",";
@@ -349,7 +349,7 @@ inline arrow::Status BuildSyntheticCedGeometry(
     g.push_back(Bf16Rec("embed.weight", {vocab, hidden}, 0x3C00));
     g.push_back(Bf16Rec("head.weight", {vocab, hidden}, 0x3C00));
     g.push_back(Bf16Rec("norm.weight", {hidden}, 0x3C00));
-    if (auto st = WritePinned(dir / "logestix" / "pinned" / "global.arrow", g);
+    if (auto st = WritePinned(dir / "pinned" / "global.arrow", g);
         !st.ok())
         return st;
 
@@ -402,7 +402,7 @@ inline arrow::Status BuildSyntheticCedGeometry(
                                 0x3C00));
         }
         const std::string lname = "layer_00" + std::to_string(l);
-        if (auto st = WritePinned(dir / "logestix" / "pinned" /
+        if (auto st = WritePinned(dir / "pinned" /
                                       (lname + ".arrow"),
                                   v);
             !st.ok())
@@ -425,7 +425,7 @@ inline arrow::Status BuildSyntheticCedGeometry(
             auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
             if (!batch.ok()) return batch.status();
             if (auto st = lsxcommon::WriteRecordBatchToFile(
-                    *batch, dir / "logestix" / "experts" /
+                    *batch, dir / "experts" /
                                 ("layer_" + std::to_string(l)) /
                                 ("exp_" + std::to_string(e) + ".arrow"));
                 !st.ok())

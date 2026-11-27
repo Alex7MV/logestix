@@ -197,7 +197,7 @@ TEST_CASE("ConvertMinimaxFlashModel converts the synthetic MXFP8+NVFP4 tree",
     if (!st.ok()) WARN(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const auto &c = minimax_flash_test::TestCfg();
 
     // 1) Identity + structure: the same emitted layout tag, the sibling's name.
@@ -296,7 +296,7 @@ TEST_CASE("ConvertMinimaxFlashModel converts the synthetic MXFP8+NVFP4 tree",
         fs::remove_all(out2);
         REQUIRE(ConvertMinimaxFlashModel(in.string(), out2.string()).ok());
         CHECK(ReadAll(base / "model.index.json") ==
-              ReadAll(out2 / "logestix" / "model.index.json"));
+              ReadAll(out2 / "model.index.json"));
         fs::remove_all(out2);
     }
 

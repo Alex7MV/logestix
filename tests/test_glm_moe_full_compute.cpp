@@ -500,7 +500,7 @@ TEST_CASE("GLM-5.2 full 79-layer SKWOS regression: multi-turn decode, no leak, "
     std::filesystem::path model =
         env ? std::filesystem::path(env)
             : std::filesystem::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.2";
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("GLM real model directory not present");
 
     cudaFree(0);
@@ -567,7 +567,7 @@ TEST_CASE("GLM-5.2 full 79-layer SKWOS regression: multi-turn decode, no leak, "
         rl.exp_gs3.assign(static_cast<size_t>(kNRouted), 1.0f);
         rl.exp_active.assign(static_cast<size_t>(kNRouted), false);
         for (int e = 0; e < kExpertsPerLayer; ++e) {
-            auto p = model / "logestix" / "experts" /
+            auto p = model / "experts" /
                      ("layer_" + std::to_string(l)) /
                      ("exp_" + std::to_string(e) + ".arrow");
             if (!std::filesystem::exists(p)) continue;

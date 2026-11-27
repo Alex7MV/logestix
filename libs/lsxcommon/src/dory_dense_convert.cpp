@@ -511,7 +511,7 @@ DoryTopology load_dory_topology(const std::string &index_path)
 arrow::Status WriteDoryModelIndex(const std::string &output_root,
                                   const DoryTopology &top)
 {
-    auto dir = fs::path(output_root) / "logestix";
+    auto dir = fs::path(output_root);
     if (!fs::exists(dir)) {
         auto st = fs::create_directories(dir);
         if (!st) return arrow::Status::IOError("cannot create ", dir.string());
@@ -608,7 +608,7 @@ arrow::Status ConvertDoryModel(const std::string &input_path,
             integrity::CheckLayerContiguity(top.num_layers, layers));
     }
 
-    const fs::path pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    const fs::path pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) fs::create_directories(pinned_dir);
 
     // Global edges + the per-vocabulary logit scale stay raw (FP16/BF16): the
@@ -765,7 +765,7 @@ arrow::Status ConvertDoryModel(const std::string &input_path,
 arrow::Status RecomputeDoryVram(const std::string &input_path,
                                 const std::string &output_root)
 {
-    const fs::path idx = fs::path(output_root) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(output_root) / "model.index.json";
     std::ifstream f(idx);
     if (!f) return arrow::Status::IOError("cannot open ", idx.string());
     std::string json((std::istreambuf_iterator<char>(f)),

@@ -320,7 +320,7 @@ arrow::Status ConvertDeepSeekV41Model(const std::string &input_path,
     if (input_path.empty() || output_path.empty())
         return arrow::Status::Invalid("input/output path required");
 
-    fs::path log_root = fs::path(output_path) / "logestix";
+    fs::path log_root = fs::path(output_path);
     fs::create_directories(log_root);
 
     auto cfg_path = fs::path(input_path) / "config.json";

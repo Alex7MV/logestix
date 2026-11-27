@@ -209,7 +209,7 @@ struct ExpertStore {
         paths.resize(static_cast<size_t>(total));
         lru.reserve(max_open);
 
-        fs::path exp_dir = fs::path(model_path) / "logestix" / "experts";
+        fs::path exp_dir = fs::path(model_path) / "experts";
         if (fallback && !fs::exists(exp_dir) &&
             fs::exists(fs::path(model_path) / "experts"))
             exp_dir = fs::path(model_path) / "experts";

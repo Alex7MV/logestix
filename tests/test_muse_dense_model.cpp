@@ -85,7 +85,7 @@ TEST_CASE("muse dense model refuses a wrong layer pattern",
     auto out = MakeConvertedSynthetic();
     // Flip layer 3 (frozen: full) to sliding in the index: the pattern gate
     // must refuse even though every scalar geometry field still matches.
-    const auto idx = out / "logestix" / "model.index.json";
+    const auto idx = out / "model.index.json";
     std::ifstream f(idx);
     std::string json((std::istreambuf_iterator<char>(f)),
                      std::istreambuf_iterator<char>());

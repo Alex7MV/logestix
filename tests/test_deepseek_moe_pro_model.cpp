@@ -29,8 +29,8 @@ std::filesystem::path TempDir(const std::string &name)
 
 void WriteIndex(const std::filesystem::path &dir, const std::string &json)
 {
-    std::filesystem::create_directories(dir / "logestix");
-    std::ofstream f(dir / "logestix" / "model.index.json");
+    std::filesystem::create_directories(dir);
+    std::ofstream f(dir / "model.index.json");
     f << json;
 }
 
@@ -97,7 +97,7 @@ TEST_CASE("deepseek-v4-pro model Load rejects the outdated format tag",
     const auto dir = TempDir("lsx_ds_pro_model_v1_reject");
     REQUIRE(dsprofixtest::BuildSyntheticModel(dir).ok());
     {
-        std::ofstream f(dir / "logestix" / "model.index.json");
+        std::ofstream f(dir / "model.index.json");
         f << "{\"format\": \"logestix-v1\", \"model\": "
              "\"DeepSeek-V4-Pro-0813\", \"num_layers\": 3,"
              " \"experts_per_layer\": 2, \"total_experts\": 6,"

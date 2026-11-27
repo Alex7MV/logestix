@@ -280,7 +280,7 @@ cudaError_t LoadMistralLarge4Weights(const std::string &model_path,
 {
     (void)stream;
     pw.model_path = model_path;
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
 
     const IndexInfo ix = ReadIndex(base / "model.index.json");
     if (!ix.error_msg.empty())

@@ -51,7 +51,7 @@ TEST_CASE("alice loader parses topology and gates the format", "[alice][load]")
     REQUIRE_FALSE(lsxcommon::alice::AliceTopologyMatchesFrozen(top));
 
     // Corrupt the format tag -> the gate rejects it.
-    const fs::path idx = out / "logestix" / "model.index.json";
+    const fs::path idx = out / "model.index.json";
     std::string json;
     {
         std::ifstream f(idx);
@@ -83,7 +83,7 @@ TEST_CASE("alice resident bytes count every uploaded weight", "[alice][load]")
 
     std::string json;
     {
-        std::ifstream f(out / "logestix" / "model.index.json");
+        std::ifstream f(out / "model.index.json");
         json.assign((std::istreambuf_iterator<char>(f)),
                     std::istreambuf_iterator<char>());
     }

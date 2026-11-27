@@ -8,7 +8,7 @@ namespace lsxcommon {
 namespace {
 
 std::filesystem::path ResolvePinnedDir(const std::string& model_path) {
-    auto pinned = std::filesystem::path(model_path) / "logestix" / "pinned";
+    auto pinned = std::filesystem::path(model_path) / "pinned";
     if (!std::filesystem::exists(pinned)) {
         for (const char* alt : {"logestix-qwen35moe", "logestix-glm",
                                 "logestix-kimi", "logestix-gemma"}) {

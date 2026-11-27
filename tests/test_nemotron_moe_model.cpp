@@ -115,7 +115,7 @@ TEST_CASE("nemotron Load rejects a tree built for the other distribution",
     auto st = nemotron_moe::ConvertNemotronModel(src.string(), dst.string());
     REQUIRE(st.ok());
 
-    const auto idx = dst / "logestix" / "model.index.json";
+    const auto idx = dst / "model.index.json";
     {
         std::ifstream in(idx);
         const std::string json((std::istreambuf_iterator<char>(in)),

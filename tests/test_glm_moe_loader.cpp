@@ -267,7 +267,7 @@ TEST_CASE("GLM loader errors on missing layer file", "[glm][loader]")
     auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
     REQUIRE(st.ok());
 
-    auto victim = out / "logestix" / "pinned" / "layer_5.arrow";
+    auto victim = out / "pinned" / "layer_5.arrow";
     if (!fs::exists(victim))
         victim = out / "pinned" / "layer_5.arrow";
     REQUIRE(fs::exists(victim));
@@ -307,8 +307,8 @@ TEST_CASE("GLM loader errors on malformed tensor shape", "[glm][loader]")
                    std::vector<uint8_t>(16 * 2)});
     auto batch_res = lsxcommon::PinnedSchema::MakeBatch(bad);
     REQUIRE(batch_res.ok());
-    auto pinned_bad = out / "logestix" / "pinned" / "layer_5.arrow";
-    if (!fs::exists(out / "logestix" / "pinned"))
+    auto pinned_bad = out / "pinned" / "layer_5.arrow";
+    if (!fs::exists(out / "pinned"))
         pinned_bad = out / "pinned" / "layer_5.arrow";
     auto wres = lsxcommon::WriteRecordBatchToFile(*batch_res, pinned_bad);
     REQUIRE(wres.ok());

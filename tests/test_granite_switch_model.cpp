@@ -245,7 +245,7 @@ TEST_CASE("granite-switch native tool round-trip (real weights)",
         env ? std::filesystem::path(env)
             : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
                   kModelType;
-    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+    if (!std::filesystem::exists(root / "model.index.json"))
         SKIP(std::string(kModelType) + " converted model not present");
     const std::filesystem::path golden_path =
         std::filesystem::path(LSX_GRANITE_SWITCH_FIXTURE_DIR) /

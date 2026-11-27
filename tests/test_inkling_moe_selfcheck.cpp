@@ -74,7 +74,7 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
     if (path == nullptr) SKIP("LSX_INKLING_TRACE not set");
     fs::path root = VaultRoot();
     if (const char *alt = std::getenv("LSX_INKLING_TRACE_ROOT")) root = alt;
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
     static bool once = [] {
@@ -257,7 +257,7 @@ TEST_CASE("inkling real-weight sanity: the model keeps its knowledge",
           "[inkling][sanity]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
     static bool once = [] {
@@ -312,7 +312,7 @@ TEST_CASE("inkling real-weight sanity: the model keeps its knowledge",
 TEST_CASE("inkling SelfCheck: the capital of France is Paris", "[inkling][selfcheck]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
     // No manifest row yet, so the generated registration list does not carry

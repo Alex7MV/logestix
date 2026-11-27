@@ -323,7 +323,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
 
     ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(input_dir, model));
 
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     for (const fs::path &d : {base, pinned_dir}) {
         std::error_code ec;

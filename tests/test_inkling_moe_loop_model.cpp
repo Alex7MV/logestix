@@ -66,7 +66,7 @@ void RegisterInklingLoopOnce()
 // as a bogus Load() failure.
 bool CachedFixtureIsCurrent(const fs::path &out)
 {
-    const fs::path index = out / "logestix" / "model.index.json";
+    const fs::path index = out / "model.index.json";
     std::error_code ec;
     if (!fs::exists(index, ec) || ec) return false;
     std::ifstream f(index);

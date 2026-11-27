@@ -52,23 +52,23 @@ fs::path CacheRoot()
     if (const char *v = NonEmptyEnv("LSX_CACHE_DIR")) return fs::path(v);
 #if defined(_WIN32)
     if (const char *lad = NonEmptyEnv("LOCALAPPDATA"))
-        return fs::path(lad) / "logestix" / "cache";
+        return fs::path(lad) / "cache";
 #else
     if (const char *xdg = NonEmptyEnv("XDG_CACHE_HOME"))
-        return fs::path(xdg) / "logestix";
+        return fs::path(xdg);
     if (const char *home = NonEmptyEnv("HOME"))
-        return fs::path(home) / ".cache" / "logestix";
+        return fs::path(home) / ".cache";
 #endif
     return fs::temp_directory_path() / "logestix-cache";
 }
 
-fs::path ArtifactDir(const std::string &family, const std::string &model_type,
+fs::path ArtifactDir(const std::string &org, const std::string &model_dir,
                      const std::string &profile)
 {
     const auto root = ArtifactRoot();
     if (!root.has_value()) return {};
-    if (family.empty() || model_type.empty() || profile.empty()) return {};
-    return *root / family / model_type / profile;
+    if (org.empty() || model_dir.empty() || profile.empty()) return {};
+    return *root / org / model_dir / profile;
 }
 
 namespace {

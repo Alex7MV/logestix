@@ -181,7 +181,7 @@ TEST_CASE("granite-switch converter builds the pinned layout",
     REQUIRE(ConvertGraniteSwitchModel(tmp.string(), tmp.string()).ok());
 
     auto top = load_granite_switch_topology(
-        (tmp / "logestix" / "model.index.json").string());
+        (tmp / "model.index.json").string());
     INFO(top.error_msg);
     CHECK(top.error_msg.empty());
     CHECK(top.num_layers == 2);
@@ -203,7 +203,7 @@ TEST_CASE("granite-switch converter builds the pinned layout",
     CHECK(top.logits_scaling == Catch::Approx(16.0));
     CHECK(top.vram.min_bytes > 0);
 
-    const auto pinned = tmp / "logestix" / "pinned";
+    const auto pinned = tmp / "pinned";
     CHECK(exists(pinned / "global.arrow"));
     CHECK(exists(pinned / "global_nvfp4.arrow"));
     CHECK(exists(pinned / "layer_0_nvfp4.arrow"));
@@ -259,7 +259,7 @@ TEST_CASE("granite-switch output identity is the checkpoint, not a literal",
     REQUIRE(ConvertGraniteSwitchModel(in.string(), in.string()).ok());
 
     auto top = load_granite_switch_topology(
-        (in / "logestix" / "model.index.json").string());
+        (in / "model.index.json").string());
     CHECK(top.error_msg.empty());
     CHECK(top.model_name == "granite-switch-4.1-8b");
     remove_all(root);
@@ -283,7 +283,7 @@ TEST_CASE("granite-switch identity survives a trailing separator",
     REQUIRE(ConvertGraniteSwitchModel(in.string() + "/", (in.string() + "/"))
                 .ok());
     auto top = load_granite_switch_topology(
-        (in / "logestix" / "model.index.json").string());
+        (in / "model.index.json").string());
     CHECK(top.model_name == "granite-switch-4.1-8b");
     remove_all(root);
 }
@@ -320,7 +320,7 @@ TEST_CASE("granite-switch emits the residual plane on the measured placement",
               tmp / "tokenizer.json");
     REQUIRE(ConvertGraniteSwitchModel(tmp.string(), tmp.string()).ok());
 
-    const auto nv = tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow";
+    const auto nv = tmp / "pinned" / "layer_0_nvfp4.arrow";
     const auto names = DenseNvfp4NamesIn(nv);
     for (const char *t : {"self_attn.qkv_proj.weight", "self_attn.o_proj.weight"}) {
         const std::string base = std::string("model.layers.0.") + t;
@@ -350,7 +350,7 @@ TEST_CASE("granite-switch emits the residual plane on the measured placement",
 
     // The index records the placement, so a reader of the tree can tell a
     // residual build from a legacy one without decoding a weight.
-    std::ifstream f(tmp / "logestix" / "model.index.json");
+    std::ifstream f(tmp / "model.index.json");
     std::string idx((std::istreambuf_iterator<char>(f)),
                     std::istreambuf_iterator<char>());
     // The tag names the placement, so a reader can tell the trees apart without
@@ -374,7 +374,7 @@ TEST_CASE("granite-switch residual plane halves the 4-bit reconstruction error",
               tmp / "tokenizer.json");
     REQUIRE(ConvertGraniteSwitchModel(tmp.string(), tmp.string()).ok());
 
-    const auto nv = tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow";
+    const auto nv = tmp / "pinned" / "layer_0_nvfp4.arrow";
     auto batch = lsxcommon::ReadRecordBatchFromFile(nv);
     REQUIRE(batch.ok());
     auto recs = lsxcommon::DenseNvfp4Schema::UnpackBatch(*batch);

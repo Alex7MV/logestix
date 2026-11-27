@@ -237,7 +237,7 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
 
     const auto t0 = std::chrono::steady_clock::now();
 
-    auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    auto pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir))
         pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) {
@@ -245,7 +245,7 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
         return false;
     }
 
-    auto idx = fs::path(output_root) / "logestix" / "model.index.json";
+    auto idx = fs::path(output_root) / "model.index.json";
     if (fs::exists(idx)) {
         pw.top = load_qwen_topology(idx.string());
         if (!pw.top.error_msg.empty()) {

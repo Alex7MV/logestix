@@ -75,7 +75,7 @@ TEST_CASE("Qwen converter builds logestix-qwen index and filters MTP/Visual")
     auto st = ConvertQwenModel(tmp.string(), tmp.string());
     REQUIRE(st.ok());
 
-    auto top = load_qwen_topology((tmp / "logestix" / "model.index.json").string());
+    auto top = load_qwen_topology((tmp / "model.index.json").string());
     CHECK(top.num_layers == 4);
     CHECK(top.layer_types[0] == "linear_attention");
     CHECK(top.layer_types[1] == "linear_attention");
@@ -96,11 +96,11 @@ TEST_CASE("Qwen converter builds logestix-qwen index and filters MTP/Visual")
     CHECK(top.vram.context_tokens > 0);
 
     // global.arrow (raw norms) and global_nvfp4.arrow (embed/head)
-    CHECK(exists(tmp / "logestix" / "pinned" / "global.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "global_nvfp4.arrow"));
+    CHECK(exists(tmp / "pinned" / "global.arrow"));
+    CHECK(exists(tmp / "pinned" / "global_nvfp4.arrow"));
     // per-layer
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0.arrow"));
-    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_0.arrow"));
+    CHECK(exists(tmp / "pinned" / "layer_0_nvfp4.arrow"));
 
     remove_all(tmp);
 }

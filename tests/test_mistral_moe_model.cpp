@@ -97,7 +97,7 @@ TEST_CASE("Mistral vram block reaches VramRequirements", "[mistral][inference]")
 
     // The converted index carries the profile; the model must publish it, or
     // the placement plan and lsxcli --info see an empty one.
-    std::ifstream f(root / "logestix" / "model.index.json");
+    std::ifstream f(root / "model.index.json");
     const std::string json((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());
     lsxcommon::VramProfile parsed;

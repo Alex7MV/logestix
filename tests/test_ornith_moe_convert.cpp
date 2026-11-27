@@ -143,7 +143,7 @@ TEST_CASE("ornith converter synthetic roundtrip", "[ornith][convert]")
     INFO("convert status: " << st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out.path / "logestix";
+    const fs::path base = out.path;
     REQUIRE(fs::exists(base / "model.index.json"));
     REQUIRE(fs::exists(base / "pinned" / "global_nvfp4.arrow"));
     REQUIRE(fs::exists(base / "router" / "layer_0.arrow"));
@@ -230,7 +230,7 @@ TEST_CASE("ornith HF converter roundtrip strips vision and defers MTP",
     INFO("convert status: " << st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out.path / "logestix";
+    const fs::path base = out.path;
     REQUIRE(fs::exists(base / "model.index.json"));
     REQUIRE(fs::exists(base / "pinned" / "global_nvfp4.arrow"));
     REQUIRE(fs::exists(base / "experts" / "layer_0" / "exp_0.arrow"));
@@ -312,7 +312,7 @@ TEST_CASE("ornith HF fused experts: rows [0,I) become w1, rows [I,2I) become w3"
     REQUIRE(st.ok());
 
     auto batch = lsxcommon::ReadRecordBatchFromFile(
-        out.path / "logestix" / "experts" / "layer_0" / "exp_0.arrow");
+        out.path / "experts" / "layer_0" / "exp_0.arrow");
     REQUIRE(batch.ok());
     auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch);
     REQUIRE(pe.ok());

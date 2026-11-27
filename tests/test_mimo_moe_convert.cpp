@@ -26,7 +26,7 @@ TEST_CASE("mimo converter emits a valid logestix-mimo-nvfp4 layout",
     REQUIRE(st.ok());
 
     const std::string idx =
-        mimotest::ReadFileText(out / "logestix" / "model.index.json");
+        mimotest::ReadFileText(out / "model.index.json");
     CHECK(idx.find("\"format\": \"logestix-mimo-nvfp4\"") != std::string::npos);
     CHECK(idx.find("\"num_layers\": 2") != std::string::npos);
     CHECK(idx.find("\"deferred\"") != std::string::npos);
@@ -37,10 +37,10 @@ TEST_CASE("mimo converter emits a valid logestix-mimo-nvfp4 layout",
         REQUIRE(mimotest::ExpertFileExists(out, 1, e));
 
     // Pinned layer files exist for both layers.
-    CHECK(fs::exists(out / "logestix" / "pinned" / "layer_000.arrow"));
-    CHECK(fs::exists(out / "logestix" / "pinned" / "layer_001.arrow"));
+    CHECK(fs::exists(out / "pinned" / "layer_000.arrow"));
+    CHECK(fs::exists(out / "pinned" / "layer_001.arrow"));
     // Global pinned file (embed / head / final norm).
-    CHECK(fs::exists(out / "logestix" / "pinned" / "global.arrow"));
+    CHECK(fs::exists(out / "pinned" / "global.arrow"));
 
     // The multimodal tensor is stripped: its name appears nowhere in outputs.
     std::error_code ec;

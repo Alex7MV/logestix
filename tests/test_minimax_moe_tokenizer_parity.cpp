@@ -82,7 +82,7 @@ std::filesystem::path ModelRoot()
 TEST_CASE("minimax tokenizer parity against the checkpoint tokenizer",
           "[minimax][tokenizer][real-model]")
 {
-    const std::filesystem::path pinned = ModelRoot() / "logestix" / "pinned";
+    const std::filesystem::path pinned = ModelRoot() / "pinned";
     if (!std::filesystem::exists(pinned / "tokenizer_vocab.arrow"))
         SKIP("MiniMax-M3 converted tokenizer not present");
 

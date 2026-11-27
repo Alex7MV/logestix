@@ -28,8 +28,8 @@ std::filesystem::path TempDir(const std::string &name)
 
 void WriteIndex(const std::filesystem::path &dir, const std::string &json)
 {
-    std::filesystem::create_directories(dir / "logestix");
-    std::ofstream f(dir / "logestix" / "model.index.json");
+    std::filesystem::create_directories(dir);
+    std::ofstream f(dir / "model.index.json");
     f << json;
 }
 
@@ -99,7 +99,7 @@ TEST_CASE("model load rejects the outdated logestix-v1 format",
     REQUIRE(dsfixtest::BuildSyntheticModel(dir).ok());
     // Rewind the fixture index to the pre-NVFP4 tag.
     {
-        std::ofstream f(dir / "logestix" / "model.index.json");
+        std::ofstream f(dir / "model.index.json");
         f << "{\"format\": \"logestix-v1\", \"model\": \"DeepSeek-V4-Flash\","
              " \"num_layers\": 3, \"experts_per_layer\": 2,"
              " \"total_experts\": 6, \"vram\": {\"min_bytes\": 1,"

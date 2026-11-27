@@ -546,7 +546,7 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
     ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(input_dir, model));
 
     // Unified vault convention: <output_root>/logestix.
-    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     for (const fs::path &d : {base, pinned_dir}) {
         std::error_code ec;
@@ -869,7 +869,7 @@ arrow::Status RecomputeGlmFlashVram(const std::string &input_path,
 {
     namespace fs = std::filesystem;
     const fs::path index_path =
-        fs::path(output_root) / "logestix" / "model.index.json";
+        fs::path(output_root) / "model.index.json";
     std::ifstream f(index_path);
     if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
     std::string json((std::istreambuf_iterator<char>(f)),

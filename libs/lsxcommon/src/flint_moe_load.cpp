@@ -120,7 +120,7 @@ void FreeFlintPinnedWeights(FlintPinnedWeights &pw)
 FlintTopology LoadFlintTopology(const std::string &model_path)
 {
     FlintTopology top;
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::string json;
     auto st = ReadWholeFile(idx, json);
     if (!st.ok()) {
@@ -240,7 +240,7 @@ bool LoadFlintDenseWeights(const std::string &model_path, FlintPinnedWeights &pw
     pw.Free();
     error.clear();
 
-    const fs::path base = fs::path(model_path) / "logestix";
+    const fs::path base = fs::path(model_path);
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";

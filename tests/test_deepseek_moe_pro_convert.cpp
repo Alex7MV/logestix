@@ -141,7 +141,7 @@ TEST_CASE("deepseek-v4-pro converter strips and counts MTP ballast",
     INFO("converter status: " << st.ToString());
     REQUIRE(st.ok());
 
-    const auto log_root = out / "logestix";
+    const auto log_root = out;
     const std::string index = ReadText(log_root / "model.index.json");
     CHECK(index.find("\"logestix-v1-nvfp4\"") != std::string::npos);
     CHECK(index.find("\"DeepSeek-V4-Pro-0813\"") != std::string::npos);

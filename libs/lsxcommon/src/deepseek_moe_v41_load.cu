@@ -229,7 +229,7 @@ cudaError_t load_pinned_weights(const std::string &model_path,
     const ModelTopology topo = LoadTopology(model_path);
     if (!topo.error_msg.empty()) return cudaErrorInvalidValue;
 
-    const fs::path pinned = fs::path(model_path) / "logestix" / "pinned";
+    const fs::path pinned = fs::path(model_path) / "pinned";
 
     TensorMap globals;
     if (ReadPinnedFile(pinned / "global.arrow", &globals) != cudaSuccess)

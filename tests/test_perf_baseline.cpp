@@ -330,7 +330,7 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m,
 #endif
     const fs::path model_dir = ModelDir(m);
     std::error_code ec;
-    if (!fs::exists(model_dir / "logestix" / "model.index.json", ec)) {
+    if (!fs::exists(model_dir / "model.index.json", ec)) {
         SKIP(("vault model missing: " + model_dir.string()).c_str());
     }
 
@@ -563,7 +563,7 @@ void RunPerfModel(const PerfModel &m)
     // Cool before the perf->r3 pair, but only when the model is present (an
     // absent vault SKIPs immediately — no point holding the GPU cool first).
     std::error_code ec;
-    if (!fs::exists(ModelDir(m) / "logestix" / "model.index.json", ec))
+    if (!fs::exists(ModelDir(m) / "model.index.json", ec))
         return;
     CooldownBetweenTargets();
     // Environment oracle, measured once per target on the same cool card the

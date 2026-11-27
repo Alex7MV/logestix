@@ -129,7 +129,7 @@ TEST_CASE("Mistral synthetic convert emits logestix-mistral-nvfp4",
     INFO("converter status: " << st.ToString());
     REQUIRE(st.ok());
 
-    const auto log_root = out / "logestix";
+    const auto log_root = out;
     REQUIRE(fs::exists(log_root / "model.index.json"));
     REQUIRE(fs::exists(log_root / "pinned" / "global.arrow"));
     REQUIRE(fs::exists(log_root / "pinned" / "shared_experts.arrow"));
@@ -171,7 +171,7 @@ TEST_CASE("Mistral converter writes the mandatory vram block", "[mistral][conver
     INFO("converter status: " << st.ToString());
     REQUIRE(st.ok());
 
-    std::ifstream f(out / "logestix" / "model.index.json");
+    std::ifstream f(out / "model.index.json");
     const std::string json((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());
     lsxcommon::VramProfile vram;
@@ -254,7 +254,7 @@ TEST_CASE("Mistral converter passes already-quantized experts through verbatim",
     INFO("converter status: " << st.ToString());
     REQUIRE(st.ok());
 
-    const auto log_root = out / "logestix";
+    const auto log_root = out;
     auto batch = lsxcommon::ReadRecordBatchFromFile(
         log_root / "experts" / "layer_0" / "exp_0.arrow");
     REQUIRE(batch.ok());

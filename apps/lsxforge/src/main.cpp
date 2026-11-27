@@ -5,6 +5,7 @@
 #include "lsxstorage/artifact_writer.h"
 #include "lsxstorage/roots.h"
 #include "codec_profiles.h"
+#include "model_identity.h"
 #include "lsxcommon/glm_moe_flash_convert.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
@@ -301,15 +302,9 @@ int main(int argc, char* argv[]) {
         // Accept either the profile directory or a path inside it, so an
         // operator can point at what `ls` showed them.
         std::filesystem::path artifact_dir = tree;
-        if (!lsx::storage::IsArtifactDir(artifact_dir)) {
-            for (const auto &rel : {"logestix", "."}) {
-                const auto cand = tree / rel;
-                if (lsx::storage::IsArtifactDir(cand)) {
-                    artifact_dir = cand;
-                    break;
-                }
-            }
-        }
+        if (!lsx::storage::IsArtifactDir(artifact_dir) &&
+            lsx::storage::IsArtifactDir(tree / "."))
+            artifact_dir = tree / ".";
         if (!lsx::storage::IsArtifactDir(artifact_dir)) {
             lsxcommon::log::error(
                 absl::StrCat("lsxforge --verify: ", tree.string(),
@@ -439,6 +434,13 @@ int main(int argc, char* argv[]) {
     // one this build cannot yet produce (int8-w8a16 has no quantizer), must
     // fail before gigabytes are read, not after.
     lsxforge::CodecProfile codec_profile = lsxforge::CodecProfile::kDefault;
+    lsxforge::ModelIdentity codec_identity;
+    std::string codec_profile_name;
+    std::string why_not;
+    // Conservative per-artifact estimate for the disk preflight. A conversion
+    // writes roughly source-size bytes for an NVFP4 profile; refusing early is
+    // much cheaper than half a tree with no artifact.fb.
+    constexpr uint64_t kArtifactEstimateBytes = uint64_t{8} << 30;
     {
         const std::string raw = absl::GetFlag(FLAGS_codec_profile);
         if (!raw.empty()) {
@@ -470,6 +472,40 @@ int main(int argc, char* argv[]) {
                 lsxcommon::Core::Shutdown();
                 return 2;
             }
+
+            // Identity from the manifest, not from the download's spelling:
+            // "Qwen3.5-9B" is a vault dir, `qwen3.5-9b` is the model_type that
+            // belongs in the path (design §2.4.1).
+            const auto identity = lsxforge::ModelIdentityFor(input_path);
+            if (!identity.has_value()) {
+                lsxcommon::log::error(absl::StrCat(
+                    "cannot place artifact: '", input_path,
+                    "' is not a model in the manifest (models/*.json); every "
+                    "convertible model needs a manifest row"));
+                lsxcommon::Core::Shutdown();
+                return 2;
+            }
+            codec_identity = *identity;
+            codec_profile_name = lsxforge::CodecProfileName(codec_profile);
+            const auto profile_dir = lsxforge::ArtifactProfileDir(
+                *identity, codec_profile_name);
+            if (profile_dir.empty()) {
+                lsxcommon::log::error("cannot compute the artifact profile dir");
+                lsxcommon::Core::Shutdown();
+                return 2;
+            }
+
+            // The converter appends the content subtrees itself, so it writes
+            // straight into the profile directory.
+            output_path = profile_dir;
+            if (!lsx::storage::PreflightDisk(profile_dir, kArtifactEstimateBytes,
+                                             &why_not)) {
+                lsxcommon::log::error("conversion refused: " + why_not);
+                lsxcommon::Core::Shutdown();
+                return 2;
+            }
+            lsxcommon::log::info(absl::StrCat("artifact profile dir: ",
+                                              output_path));
         }
     }
 
@@ -536,20 +572,15 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Identity comes from where the artifact LIVES, not from parsing the
-        // model's config again: the path is <root>/<family>/<model_type>/<profile>
-        // (design §2.4.1), so the caller has already stated both.
-        const std::filesystem::path out_dir(output_path);
-        const std::string profile_dir = out_dir.filename().string();
-        const std::string model_type = out_dir.parent_path().filename().string();
-        const std::string family =
-            out_dir.parent_path().parent_path().filename().string();
-
+        // Identity was resolved from the manifest before the conversion ran, so
+        // it cannot disagree with the directory the converter just wrote into.
         lsx::storage::ArtifactSpec spec;
-        spec.model_type = model_type;
-        spec.family = family;
-        spec.profile = profile_dir;
-        spec.model_name = model_type;
+        spec.model_type = codec_identity.model_type;
+        spec.family = codec_identity.family;
+        spec.org = codec_identity.org;
+        spec.model_dir = codec_identity.model_dir;
+        spec.profile = codec_profile_name;
+        spec.model_name = codec_identity.model_type;
         spec.source_dir = std::filesystem::path(input_path).filename().string();
         spec.target_id = lsxcommon::hw::ActiveTarget().Id();
         // Per-layer map: every layer of this profile carries the codec set the
@@ -585,7 +616,7 @@ int main(int argc, char* argv[]) {
         // Detect the converted format from the index and dispatch to the
         // matching family recompute.
         namespace fs = std::filesystem;
-        auto idx = fs::path(output_path) / "logestix" / "model.index.json";
+        auto idx = fs::path(output_path) / "model.index.json";
         std::ifstream f(idx);
         if (!f) {
             lsxcommon::log::error(absl::StrFormat("model.index.json not found under %s", output_path));
@@ -691,7 +722,7 @@ int main(int argc, char* argv[]) {
     case lsxforge::Pipeline::kTokenizer: {
         namespace fs = std::filesystem;
         auto tokenizer_json = fs::path(input_path) / "tokenizer.json";
-        auto pinned_dir = fs::path(input_path) / "logestix" / "pinned";
+        auto pinned_dir = fs::path(input_path) / "pinned";
         fs::create_directories(pinned_dir);
         lsxcommon::log::info(absl::StrFormat("Building tokenizer Arrow files from %s", tokenizer_json.string()));
         // `--tokenizer <dir> --minimax` rebuilds MiniMax-M3's tokenizer with

@@ -121,7 +121,7 @@ TEST_CASE("parity gate: golden answers match", "[parity][real-model]")
     REQUIRE(row != nullptr);
 
     const std::filesystem::path root = manifest_query::ModelRoot(*row);
-    if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
+    if (!std::filesystem::exists(root / "model.index.json"))
         SKIP(manifest_query::SkipMessage(*row, "converted model"));
 
     const std::filesystem::path golden_path = GoldenPath();

@@ -134,7 +134,7 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
                                  KimiK3Topology &out)
 {
     out = KimiK3Topology{};
-    const fs::path idx = fs::path(model_path) / "logestix" / "model.index.json";
+    const fs::path idx = fs::path(model_path) / "model.index.json";
     std::ifstream f(idx);
     if (!f)
         return arrow::Status::IOError("cannot open ", idx.string());
@@ -344,7 +344,7 @@ bool KimiK3TopologyMatchesFrozen(const KimiK3Topology &top, bool expect_dsa,
 bool LoadKimiK3PinnedWeights(const std::string &root, KimiK3PinnedWeights &pw,
                              cudaStream_t stream)
 {
-    const fs::path base = fs::path(root) / "logestix";
+    const fs::path base = fs::path(root);
     fs::path pinned = base / "pinned";
     if (!fs::exists(pinned)) pinned = fs::path(root) / "pinned";
     if (!fs::exists(pinned)) return false;

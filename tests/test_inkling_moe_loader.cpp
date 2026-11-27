@@ -142,7 +142,7 @@ TEST_CASE("inkling topology reader reads a converted tree",
     // source's per-32 ue8m0 exponent duplicated to a per-16 count.
     for (int l : {0, kLayers - 1}) {
         auto batch = lsxcommon::ReadRecordBatchFromFile(
-            out / "logestix" / "experts" / ("layer_" + std::to_string(l)) /
+            out / "experts" / ("layer_" + std::to_string(l)) /
             "exp_0.arrow");
         REQUIRE(batch.ok());
         // scale_block = 0: layer 4 is one of the MXFP8 layers, whose plane is
@@ -225,7 +225,7 @@ TEST_CASE("inkling pinned load releases the query-offset array (A3.1)",
 TEST_CASE("inkling real vault expert store reads both codecs", "[inkling][load]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
     lsxcommon::inkling::InklingTopology top;
@@ -264,7 +264,7 @@ TEST_CASE("inkling real vault index matches the frozen passport",
           "[inkling][load]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
     lsxcommon::inkling::InklingTopology top;
@@ -311,7 +311,7 @@ TEST_CASE("inkling real vault index matches the frozen passport",
 
     // One expert record of an NVFP4-source layer: the pass-through must keep
     // the checkpoint's own byte count (I*H/2 packed, I*H/16 scales per plane).
-    const fs::path dir = root / "logestix" / "experts" / "layer_0" / "exp_0.arrow";
+    const fs::path dir = root / "experts" / "layer_0" / "exp_0.arrow";
     REQUIRE(fs::exists(dir));
     auto batch = lsxcommon::ReadRecordBatchFromFile(dir);
     if (!batch.ok()) FAIL(batch.status().ToString());

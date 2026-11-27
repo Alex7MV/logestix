@@ -88,7 +88,7 @@ TEST_CASE("inkling loop real-weight sanity: the model keeps its knowledge",
           "[inkling][sanity]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Mini tree absent: " + root.string());
 
     RegisterOnce();
@@ -147,7 +147,7 @@ TEST_CASE("inkling loop SelfCheck: the capital of France is Paris",
           "[inkling][selfcheck]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Mini tree absent: " + root.string());
 
     RegisterOnce();
@@ -208,7 +208,7 @@ TEST_CASE("inkling loop SelfCheck: the capital of France is Paris",
 TEST_CASE("inkling loop SelfCheck driver reaches Paris", "[inkling][selfcheck]")
 {
     const fs::path root = VaultRoot();
-    if (!fs::exists(root / "logestix" / "model.index.json"))
+    if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Mini tree absent: " + root.string());
 
     RegisterOnce();

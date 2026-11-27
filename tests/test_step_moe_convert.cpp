@@ -146,7 +146,7 @@ TEST_CASE("ConvertStepMoeModel converts a synthetic checkpoint",
     if (!st.ok()) WARN(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const auto &c = step_test::TestCfg();
 
     // 1) Index carries the format tag, dispatch, hybrid schedule and stripped
@@ -324,7 +324,7 @@ TEST_CASE("ConvertStepMoeModel converts a synthetic checkpoint",
         fs::remove_all(out2);
         REQUIRE(ConvertStepMoeModel(in.string(), out2.string()).ok());
         CHECK(ReadAll(base / "model.index.json") ==
-              ReadAll(out2 / "logestix" / "model.index.json"));
+              ReadAll(out2 / "model.index.json"));
         fs::remove_all(out2);
     }
 

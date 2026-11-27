@@ -62,7 +62,7 @@ float MaxAbs(const std::vector<float> &v)
 
 RefModel LoadRefModel(const std::filesystem::path &root)
 {
-    const auto base = root / "logestix";
+    const auto base = root;
     RefModel m;
     m.hidden = gigachattest::kTH;
     m.vocab = gigachattest::kTVocab;

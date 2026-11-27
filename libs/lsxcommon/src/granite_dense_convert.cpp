@@ -284,7 +284,7 @@ arrow::Status WriteGraniteModelIndex(const std::string &output_root,
                                      const GraniteTopology &top)
 {
     namespace fs = std::filesystem;
-    auto dir = fs::path(output_root) / "logestix";
+    auto dir = fs::path(output_root);
     if (!fs::exists(dir)) {
         auto st = fs::create_directories(dir);
         if (!st) return arrow::Status::IOError("cannot create ", dir.string());
@@ -372,7 +372,7 @@ arrow::Status ConvertGraniteModel(const std::string &input_path,
         {"intermediate_size", {top.intermediate_size, tensor_intermediate}},
     }));
 
-    auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    auto pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) fs::create_directories(pinned_dir);
 
     absl::btree_map<int, std::vector<DenseNvfp4Record>> nvfp4_by_layer;
@@ -633,7 +633,7 @@ arrow::Status RecomputeGraniteVram(const std::string &input_path,
                                    const std::string &output_root)
 {
     namespace fs = std::filesystem;
-    auto idx = fs::path(output_root) / "logestix" / "model.index.json";
+    auto idx = fs::path(output_root) / "model.index.json";
     std::ifstream f(idx);
     if (!f) return arrow::Status::IOError("cannot open ", idx.string());
     std::string json((std::istreambuf_iterator<char>(f)),

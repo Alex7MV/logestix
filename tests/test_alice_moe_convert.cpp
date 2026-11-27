@@ -82,7 +82,7 @@ TEST_CASE("alice synthetic convert emits logestix-alice-nvfp4", "[alice][convert
     if (!st.ok()) FAIL(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix";
+    const fs::path base = out;
     const fs::path idx = base / "model.index.json";
     REQUIRE(fs::exists(idx));
 
@@ -149,7 +149,7 @@ TEST_CASE("alice vram profile streams routed experts as NVFP4",
     REQUIRE_FALSE(lsxcommon::alice::alice_tensor_is_routed_expert(K::SharedUpProj));
 
     const fs::path out = ConvertSyntheticAlice("vram");
-    const std::string json = ReadFile(out / "logestix" / "model.index.json");
+    const std::string json = ReadFile(out / "model.index.json");
     simdjson::ondemand::parser parser;
     simdjson::padded_string pad(json);
     auto doc = parser.iterate(pad);

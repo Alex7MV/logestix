@@ -543,7 +543,7 @@ arrow::Status ConvertKimiModel(
 
     // Mandatory layout: converted artifacts under <root>/logestix, format tag
     // "logestix-kimi" inside model.index.json.
-    fs::path log_root = output_root / "logestix";
+    fs::path log_root = output_root;
     fs::create_directories(log_root);
 
     auto model = lsxcommon::scan_directory(input_path);

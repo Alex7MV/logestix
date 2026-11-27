@@ -34,7 +34,7 @@ TEST_CASE("Phi topology parses logestix-phi index", "[phi][loader]")
 {
     auto tmp = BuildConvertedFixture();
     auto top = load_phi_topology(
-        (tmp / "logestix" / "model.index.json").string());
+        (tmp / "model.index.json").string());
     CHECK(top.error_msg.empty());
     CHECK(top.num_layers == 2);
     CHECK(top.hidden_size == 64);

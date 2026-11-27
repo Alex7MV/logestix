@@ -301,7 +301,7 @@ arrow::Status WriteGraniteSwitchModelIndex(
     const std::string &output_root, const GraniteSwitchTopology &top)
 {
     namespace fs = std::filesystem;
-    auto dir = fs::path(output_root) / "logestix";
+    auto dir = fs::path(output_root);
     if (!fs::exists(dir)) {
         auto st = fs::create_directories(dir);
         if (!st) return arrow::Status::IOError("cannot create ", dir.string());
@@ -606,7 +606,7 @@ arrow::Status ConvertGraniteSwitchModel(const std::string &input_path,
         top.num_adapters <= 0)
         return arrow::Status::Invalid("adapter metadata is incomplete");
 
-    auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
+    auto pinned_dir = fs::path(output_root) / "pinned";
     if (!fs::exists(pinned_dir)) fs::create_directories(pinned_dir);
 
     absl::btree_map<int, std::vector<DenseNvfp4Record>> nv_by_layer;

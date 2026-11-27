@@ -54,7 +54,7 @@ TEST_CASE("DeepSeek-V4-Flash perf baseline: decode throughput",
           "[deepseek][perf][real-model]")
 {
     const std::filesystem::path model = DeepSeekModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("DeepSeek real model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

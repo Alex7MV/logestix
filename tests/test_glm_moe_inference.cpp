@@ -567,7 +567,7 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
     std::filesystem::path model =
         env ? std::filesystem::path(env)
             : std::filesystem::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.2";
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("GLM real model directory not present");
 
     cudaFree(0);
@@ -653,7 +653,7 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
         rl.exp_gs3.assign(static_cast<size_t>(kNRouted), 1.0f);
         rl.exp_active.assign(static_cast<size_t>(kNRouted), false);
         for (int e = 0; e < kExpertsPerLayer; ++e) {
-            auto exp_dir = model / "logestix" / "experts" /
+            auto exp_dir = model / "experts" /
                            ("layer_" + std::to_string(l));
             auto p = exp_dir / ("exp_" + std::to_string(e) + ".arrow");
             if (!std::filesystem::exists(p)) continue;

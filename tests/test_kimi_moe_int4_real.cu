@@ -104,7 +104,7 @@ TEST_CASE("Kimi INT4->NVFP4 conversion matches source nibble order",
         return env ? fs::path(env)
                    : fs::path(lsxcommon::lsx_model_models_dir()) / "Kimi-K2.7-Code";
     }();
-    if (!fs::exists(model / "logestix" / "experts"))
+    if (!fs::exists(model / "experts"))
         SKIP("converted Kimi experts not present");
 
     constexpr int rows = lsxcommon::kimi::kKimiMoeIntermediate;

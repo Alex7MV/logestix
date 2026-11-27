@@ -134,7 +134,7 @@ TEST_CASE("muse dense KV cache: uniform pos-major geometry per layer",
 TEST_CASE("muse dense loader refuses a missing layer file",
           "[muse_dense][loader]") {
     auto out = MakeConvertedSynthetic();
-    std::filesystem::remove(out / "logestix" / "pinned" / "layer_2.arrow");
+    std::filesystem::remove(out / "pinned" / "layer_2.arrow");
     lsxcommon::muse_dense::MuseDensePinnedWeights pw;
     CHECK(lsxcommon::muse_dense::LoadMuseDensePinnedWeights(out.string(), pw,
                                                             nullptr) !=
@@ -146,7 +146,7 @@ TEST_CASE("muse dense loader refuses a missing layer file",
 TEST_CASE("muse dense loader refuses a missing global table",
           "[muse_dense][loader]") {
     auto out = MakeConvertedSynthetic();
-    std::filesystem::remove(out / "logestix" / "pinned" / "global.arrow");
+    std::filesystem::remove(out / "pinned" / "global.arrow");
     lsxcommon::muse_dense::MuseDensePinnedWeights pw;
     CHECK(lsxcommon::muse_dense::LoadMuseDensePinnedWeights(out.string(), pw,
                                                             nullptr) !=

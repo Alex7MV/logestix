@@ -57,7 +57,7 @@ TEST_CASE("Qwen3.5-9B perf baseline: decode throughput",
           "[qwen][perf][real-model]")
 {
     const std::filesystem::path model = QwenModelPath();
-    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+    if (!std::filesystem::exists(model / "pinned"))
         SKIP("Qwen real model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

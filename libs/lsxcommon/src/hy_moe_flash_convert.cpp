@@ -532,7 +532,7 @@ arrow::Status ConvertHy4FlashModel(const std::string &input_path,
     if (input_path.empty() || output_path.empty())
         return arrow::Status::Invalid("input/output path required");
 
-    const fs::path log_root = fs::path(output_path) / "logestix";
+    const fs::path log_root = fs::path(output_path);
     const fs::path cfg_path = fs::path(input_path) / "config.json";
     if (!fs::exists(cfg_path))
         return arrow::Status::Invalid("config.json not found in ", input_path);

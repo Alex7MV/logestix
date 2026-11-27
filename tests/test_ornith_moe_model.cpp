@@ -72,7 +72,7 @@ TEST_CASE("ornith geometry mismatch rejected at load", "[ornith-moe-model]")
 {
     EnsureModelRegistry();
     ConvertedModel fix;
-    auto idx = fix.out / "logestix" / "model.index.json";
+    auto idx = fix.out / "model.index.json";
     {
         std::ifstream f(idx);
         std::stringstream ss; ss << f.rdbuf();

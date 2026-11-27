@@ -239,9 +239,9 @@ struct UltraIndexOptions {
 inline void WriteUltraIndex(const std::filesystem::path &model_root,
                             const UltraIndexOptions &opts = {})
 {
-    std::filesystem::create_directories(model_root / "logestix");
+    std::filesystem::create_directories(model_root);
     const auto types = LayerTypes();
-    std::ofstream f(model_root / "logestix" / "model.index.json");
+    std::ofstream f(model_root / "model.index.json");
     f << "{\n  \"format\": \"" << opts.format << "\",\n"
       << "  \"model\": \"" << opts.model << "\",\n"
       << "  \"num_layers\": " << opts.num_layers << ",\n  \"layer_types\": [";

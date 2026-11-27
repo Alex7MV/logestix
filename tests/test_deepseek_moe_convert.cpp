@@ -118,7 +118,7 @@ TEST_CASE("deepseek converter emits nvfp4 experts from e8m0 source",
 
     // Index: NVFP4 format tag.
     {
-        std::ifstream f(out / "logestix" / "model.index.json");
+        std::ifstream f(out / "model.index.json");
         REQUIRE(f.good());
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
@@ -128,7 +128,7 @@ TEST_CASE("deepseek converter emits nvfp4 experts from e8m0 source",
     // Expert 0: w1 window [119..122] -> m=-2 (gs 0.25), scales doubled.
     {
         auto batch = lsxcommon::ReadRecordBatchFromFile(
-            out / "logestix" / "experts" / "layer_0" / "exp_0.arrow");
+            out / "experts" / "layer_0" / "exp_0.arrow");
         REQUIRE(batch.ok());
         auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch);
         REQUIRE(pe.ok());
@@ -154,7 +154,7 @@ TEST_CASE("deepseek converter emits nvfp4 experts from e8m0 source",
     // Expert 1: w1 has the extra zero block (passes through as zero pairs).
     {
         auto batch = lsxcommon::ReadRecordBatchFromFile(
-            out / "logestix" / "experts" / "layer_0" / "exp_1.arrow");
+            out / "experts" / "layer_0" / "exp_1.arrow");
         REQUIRE(batch.ok());
         auto pe = lsxcommon::ExpertSchema::UnpackBatch(*batch);
         REQUIRE(pe.ok());
