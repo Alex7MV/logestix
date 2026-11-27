@@ -17,6 +17,15 @@ Revision note (2026-11-27c, **deletion verified complete**): the last leftover t
 `.arrow` files in the vault (§1.1.1). No control tree exists for any model, so the
 contract rests entirely on our own fixtures plus the bootstrap conversions; the
 last open question about keeping a reference tree is closed (§8).
+Revision note (2026-11-27g, **index-field audit + layout**): `model.index.json`
+declares `"layout": 2` instead of a per-model `format` tag (18 spellings, 11 of
+them dead, 6 of the 7 gated ones embedding the codec — see §2.4.3). An audit of
+the remaining field set found that it **cannot** be verified by scanning: keys are
+read through local lambdas and written through five helper shapes, so four
+successive scans produced four different answers. The authority is therefore a
+small registry of the fields whose absence is a hard load failure
+(`libs/lsxcommon/index_fields.h`) plus a guard, not a grep. §2.4.3 rule 5 is
+corrected: the codec fields are read by two files in one family, not six in two.
 Revision note (2026-11-27f, **source store moved and org-nested**): checkpoints
 live at `/mnt/fast_storage/lsx_model/<org>/<model>` (39 over 18 orgs); the old
 flat vault is gone. §2.4.1 gains `FindSourceModel`/`ListSourceModels`, drops
@@ -788,15 +797,19 @@ Rules that make it a *contract* rather than metadata:
   otherwise copying a sm_120 artifact to a Jetson and editing one string would
   bypass I1.
 - **Rule 5 — `model.index.json` owns geometry and the VRAM profile; it owns nothing
-  about codecs.** Fields that identify a codec (`mlp_nvfp4`, `attn_nvfp4`,
-  `head_nvfp4`, `expert_nvfp4[]`, `expert_fp8[]`, `fp8_kv_scales_dropped`) are
-  **removed** from it, and their per-layer role moves to `Artifact::layer_codec[]`.
-  Six files read those fields today to pick a kernel per layer
-  (`inkling_moe_load.cpp`, `inkling_moe_loop_load.cpp`,
-  `inkling_moe_inference_pipeline.cu`, `inkling_moe_loop_inference_pipeline.cu`,
-  `gemma_moe_load.cpp`, `gemma_moe_inference.cu`); they read the artifact instead
-  (§2.4.6). `--verify` **fails** an artifact whose `model.index.json` still carries
-  one of those keys, so the second source of truth cannot come back unnoticed.
+  about codecs.** The codec fields (`mlp_nvfp4`, `attn_nvfp4`, `head_nvfp4`,
+  `expert_nvfp4[]`, `expert_fp8[]`, `fp8_kv_scales_dropped`) are **removed** from
+  it, and their per-layer role moves to `Artifact::layer_codec[]`.
+  **Corrected by the 2026-11-27 audit:** only **two** files actually read those
+  fields — `inkling_moe_load.cpp` and `inkling_moe_loop_load.cpp`, both in the
+  single inkling family. The gemma files were listed here by mistake: they choose
+  a kernel from the `.packed`/`.res` records on disk (`gemma_moe_load.cpp`
+  builds `lw.mlp_nvfp4` from the uploaded planes), never from the index. The
+  remaining codec-tagged keys (`mlp_nvfp4`, `attn_nvfp4`, `head_nvfp4`, `nvfp4`,
+  `head_fp16`, `mlp_only_layers`) are written by converters and read by
+  **nothing**, i.e. dead weight rather than a second source of truth.
+  `--verify` still **fails** an artifact whose `model.index.json` carries a codec
+  key, so the shape cannot come back unnoticed.
 - **Why one file per artifact, not one per model.** `model.index.json` is written
   per artifact because its `vram` block is genuinely profile-dependent:
   `EstimateVram` charges `numel/2 + numel/16` only when `is_nvfp4(name)` and
