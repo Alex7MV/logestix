@@ -1,11 +1,11 @@
 // artifact.fb writer (design §2.4.5).
 //
-// The emitter is the ONLY place a mask is authored, and it refuses to author a
-// lie: after writing it re-reads and re-verifies its own output, and returns 0
-// if the mask it wrote disagrees with the planes on disk. With every converted
-// tree deleted there is no reference artifact left to compare a converter
-// against, so this self-check is the only thing between a converter bug and a
-// plausible-looking artifact.
+// The emitter is the only place a mask is AUTHORED. It checks that every
+// declared plane exists, writes atomically, and re-reads its own output to
+// confirm the mask survived the round trip — but it does not read the tensors,
+// so a converter that declares the wrong codec for a file is caught by
+// `lsxforge --verify` (VerifyArtifact), which infers codecs from content. That
+// separation is deliberate: see artifact_writer.h.
 #include "lsxstorage/artifact_writer.h"
 
 #include "lsxstorage/artifact.h"

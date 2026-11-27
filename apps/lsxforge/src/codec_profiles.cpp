@@ -14,11 +14,11 @@ namespace {
 
 // Bit values mirrored from lsxcommon::hw::PlaneCodec. The shell cannot take a
 // dependency on the codec header without dragging CUDA in, and the values are an
-// on-disk contract that tests/test_forge_codec_profile.cpp pins against the enum.
+// on-disk contract that tests/test_forge_codec_profile.cpp pins against the enum
+// (every DeclaredPlanes bit it compares comes from hw::Mask(), so a drift here
+// fails that test rather than silently mislabelling an artifact).
 constexpr uint64_t kF32 = 1ull << 0;
 constexpr uint64_t kBF16 = 1ull << 1;
-constexpr uint64_t kI8Sym = 1ull << 3;
-constexpr uint64_t kMxFp8 = 1ull << 4;
 constexpr uint64_t kNvFp4 = 1ull << 5;
 
 struct ProfileNameRow {

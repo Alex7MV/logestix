@@ -80,20 +80,26 @@ Resolved Resolve(const std::string &model_or_path)
     // are searched because both are things a user types.
     const auto root = ArtifactRoot();
     if (root.has_value()) {
-        std::error_code ec;
-        for (const auto &family_dir : fs::directory_iterator(*root, ec)) {
-            if (ec) break;
+        // One error_code per loop level: sharing one across nested iterators
+        // means an inner failure (a permission error in one model directory)
+        // aborts the whole search.
+        std::error_code fam_ec;
+        for (const auto &family_dir : fs::directory_iterator(*root, fam_ec)) {
+            if (fam_ec) break;
             if (!family_dir.is_directory()) continue;
-            for (const auto &model_dir : fs::directory_iterator(family_dir.path(), ec)) {
-                if (ec) break;
+            std::error_code model_ec;
+            for (const auto &model_dir :
+                 fs::directory_iterator(family_dir.path(), model_ec)) {
+                if (model_ec) break;
                 if (!model_dir.is_directory()) continue;
                 const std::string name = model_dir.path().filename().string();
                 if (name != model_or_path &&
                     name != fs::path(model_or_path).filename().string())
                     continue;
+                std::error_code prof_ec;
                 for (const auto &profile_dir :
-                     fs::directory_iterator(model_dir.path(), ec)) {
-                    if (ec) break;
+                     fs::directory_iterator(model_dir.path(), prof_ec)) {
+                    if (prof_ec) break;
                     if (!profile_dir.is_directory()) continue;
                     if (!IsArtifactDir(profile_dir.path())) continue;
                     r.status = ResolveStatus::kArtifact;

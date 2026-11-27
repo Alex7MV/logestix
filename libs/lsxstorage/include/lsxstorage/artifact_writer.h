@@ -3,9 +3,15 @@
 // ── artifact.fb writer (libs/lsxstorage) ───────────────────────────────────
 //
 // The emitter takes a DECLARATION of the planes a converter produced plus the
-// real files, and writes artifact.fb. It never trusts the declaration on its
-// own: the mask it records is recomputed from the declared planes AND from the
-// files that exist, and the write is re-read and re-verified before returning.
+// real files, and writes artifact.fb. What it checks itself: every declared
+// plane exists on disk, the mask it writes is the OR of the declared bits, the
+// write is atomic, and the file reads back with the same mask.
+//
+// What it deliberately does NOT check: that the declared codec matches the
+// bytes. Reading every plane's tensors during a conversion would double the I/O
+// on a 30 GB model, and the check belongs to `lsxforge --verify`
+// (VerifyArtifact), which infers the codec from content and is an independent
+// input rather than a restatement. Run --verify after a conversion.
 //
 // Deliberate omission: v1 ships no ballast. A plane the load path cannot reach
 // (an MTP head, say) is not written at all, so `used_codecs` has exactly one
