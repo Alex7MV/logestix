@@ -46,6 +46,11 @@ TEST_CASE("granite model loads, infers and is deterministic",
 
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "granite-4.2-30b";
 
     auto model = LsxModelFactory::Create(cfg);
@@ -89,6 +94,11 @@ TEST_CASE("granite honours cooperative cancel", "[granite][model][lifecycle]")
 
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "granite-4.2-30b";
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -110,6 +120,11 @@ TEST_CASE("granite continuation matches a fresh prefill", "[granite][model]")
     auto tmp = BuildConvertedFixture();
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "granite-4.2-30b";
 
     auto model = LsxModelFactory::Create(cfg);

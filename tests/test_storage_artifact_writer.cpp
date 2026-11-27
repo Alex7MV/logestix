@@ -126,6 +126,54 @@ TEST_CASE("emit copies the chat template in and digests it", "[storage_writer]")
     CHECK(ReadArtifact(d.path()).info.chat_template == "chat_template.jinja");
 }
 
+TEST_CASE("a template supplied as inline text is written and digested like a "
+          "copied one",
+          "[storage_writer]") {
+    // microsoft/phi-4's shape: no chat_template.jinja in the checkpoint, the
+    // template lives inside tokenizer_config.json. The artifact must still ship
+    // it, and the digest must be computed from the bytes it wrote.
+    TempDir d;
+    auto spec = MinimalSpec(d.path());
+    const std::string inline_text = "{% for m in messages %}{{ m['role'] }}{% endfor %}";
+    spec.chat_template_text = inline_text;
+
+    std::string err;
+    REQUIRE(EmitArtifact(spec, d.path(), &err) != 0);
+    INFO(err);
+    REQUIRE(fs::exists(d.path() / "chat_template.jinja"));
+    {
+        std::ifstream in(d.path() / "chat_template.jinja");
+        const std::string written((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+        CHECK(written == inline_text);
+    }
+    const auto info = ReadArtifact(d.path()).info;
+    CHECK(info.chat_template == "chat_template.jinja");
+    CHECK(info.has_chat_template_digest);
+    // No VerifyArtifact here: this fixture's "planes" are literal strings, not
+    // Arrow files, so a content pass has nothing to read. The verify side of the
+    // inline path is covered in test_storage_verify, on a tree built from real
+    // Arrow payloads.
+}
+
+TEST_CASE("a recorded .jinja path wins over inline text", "[storage_writer]") {
+    // A converter that writes its own template must not be overridden by a
+    // checkpoint default: the more specific input wins.
+    TempDir d, src;
+    WriteFile(src.path() / "chat_template.jinja", "{{ from_file }}");
+    auto spec = MinimalSpec(d.path());
+    spec.chat_template_src = (src.path() / "chat_template.jinja").string();
+    spec.chat_template_text = "{{ from_json }}";
+
+    std::string err;
+    REQUIRE(EmitArtifact(spec, d.path(), &err) != 0);
+    INFO(err);
+    std::ifstream in(d.path() / "chat_template.jinja");
+    const std::string written((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+    CHECK(written == "{{ from_file }}");
+}
+
 TEST_CASE("a declared plane missing from disk fails the conversion",
           "[storage_writer]") {
     TempDir d;

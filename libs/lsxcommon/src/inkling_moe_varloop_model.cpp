@@ -46,10 +46,27 @@ int EnvInt(const char *name, int dflt)
 
 bool VarloopTopologyMatches(const inkling::InklingLoopTopology &top)
 {
+    // ── Capability first, and NEVER relaxed ────────────────────────────────
+    // `varloop` is not a size: it says which KIND of checkpoint this is. The
+    // synthetic-geometry escape below exists because a unit fixture is 8 layers
+    // wide and declares 2 passes, which are legitimate differences in
+    // MAGNITUDE; a fixed-pass tree loaded into the varloop row is a different
+    // MODEL, and no fixture ever needs that to be legal. Checking it before the
+    // escape is what makes test_inkling_moe_varloop_model's "refuses the
+    // fixed-pass sibling's artifact" case able to fail: with both checks under
+    // one early return, the refusal never ran and the case could only pass
+    // vacuously.
+    //
+    // The declared pass count and the ceiling stay BELOW the escape on purpose —
+    // they are numbers, and a synthetic checkpoint legitimately has its own.
+    if (!top.varloop) {
+        log::error("[varloop] index does not declare varloop: this model's "
+                   "weights are trained across 1..5 passes");
+        return false;
+    }
+
+    // ── Geometry, relaxed for synthetic fixtures ───────────────────────────
     if (SyntheticGeometryAllowed()) return true;
-    // The geometry this model's OWN passport pins (never another row's header):
-    // a mismatch means the tree was converted for a different model, and the
-    // engine would answer as that model while calling itself this one.
     struct Field {
         const char *name;
         long long got;
@@ -101,15 +118,10 @@ bool VarloopTopologyMatches(const inkling::InklingLoopTopology &top)
                 i, top.full_layers[i], frozen::kFullLayers[i]));
             return false;
         }
-    // The capability itself: a fixed-pass tree loaded here would advertise a
-    // pass range its weights were never trained for.
-    if (!top.varloop) {
-        log::error("[varloop] index does not declare varloop: this model's "
-                   "weights are trained across 1..5 passes");
-        return false;
-    }
     // The DECLARED count and the CEILING. The declared value is what the
-    // checkpoint was post-trained at; the ceiling is the model card's range.
+    // checkpoint was post-trained at; the ceiling is the model card's range. Both
+    // are magnitudes, so they sit below the synthetic escape; a real tree still
+    // cannot claim a range its weights were never trained for.
     if (top.loop_passes != frozen::kLoopPassesDefault) {
         log::error(absl::StrFormat(
             "[varloop] loop_passes is %d, passport says the checkpoint "

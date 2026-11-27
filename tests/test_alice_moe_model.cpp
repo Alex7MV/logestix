@@ -72,6 +72,11 @@ TEST_CASE("alice tiny hf parity", "[alice][model]")
     lsxcommon::EnsureModelRegistry();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out;
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "alice-foundation-80b-a3b";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -163,6 +168,11 @@ TEST_CASE("alice synthetic generation is deterministic", "[alice][model]")
     lsxcommon::EnsureModelRegistry();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "alice-foundation-80b-a3b";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -220,6 +230,11 @@ std::unique_ptr<lsxcommon::IModel> LoadSyntheticAlice(const char *tag)
     lsxcommon::EnsureModelRegistry();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = ConvertedSyntheticAlice(tag).string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "alice-foundation-80b-a3b";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);

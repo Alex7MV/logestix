@@ -4,7 +4,11 @@
 
 #include "model_manifest.h"
 
+#include <simdjson.h>
+
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string_view>
 
 namespace fs = std::filesystem;
@@ -53,6 +57,26 @@ std::string ArtifactProfileDir(const ModelIdentity &identity,
     if (identity.org.empty() || identity.model_dir.empty() || profile.empty())
         return {};
     return (*root / identity.org / identity.model_dir / profile).string();
+}
+
+std::string ChatTemplateFromTokenizerConfig(const std::string &config_path)
+{
+    std::ifstream in(config_path, std::ios::binary);
+    if (!in) return {};
+    std::string json((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    if (json.empty()) return {};
+
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string padded(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(padded).get(doc) != simdjson::SUCCESS) return {};
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) return {};
+    std::string_view text;
+    if (root["chat_template"].get_string().get(text) != simdjson::SUCCESS)
+        return {};
+    return std::string(text);
 }
 
 } // namespace lsxforge

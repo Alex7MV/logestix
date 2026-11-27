@@ -52,6 +52,11 @@ TEST_CASE("flint model is registered under its kType", "[flint][model]")
     fs::path root = BuildModel();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "flint";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -67,6 +72,11 @@ TEST_CASE("flint model runs the full lifecycle on a synthetic tree", "[flint][mo
     fs::path root = BuildModel();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "flint";
     cfg.fast_math_mode = lsxcommon::FastMathMode::kOff;
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
@@ -142,6 +152,11 @@ TEST_CASE("flint model is deterministic on the device-table expert path",
     fs::path root = BuildModel();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "flint";
     cfg.fast_math_mode = lsxcommon::FastMathMode::kAuto;
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
@@ -174,6 +189,11 @@ TEST_CASE("flint SelfCheck runs the framed Paris probe", "[flint][model]")
     fs::path root = BuildModel();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "flint";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);

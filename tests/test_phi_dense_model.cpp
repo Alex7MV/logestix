@@ -46,6 +46,11 @@ TEST_CASE("phi model loads, infers and is deterministic",
 
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "phi-4";
 
     auto model = LsxModelFactory::Create(cfg);
@@ -89,6 +94,11 @@ TEST_CASE("phi honours cooperative cancel", "[phi][model][lifecycle]")
 
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "phi-4";
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -113,6 +123,11 @@ TEST_CASE("phi continuation matches a fresh prefill", "[phi][model]")
     auto tmp = BuildConvertedFixture();
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "phi-4";
 
     auto model = LsxModelFactory::Create(cfg);

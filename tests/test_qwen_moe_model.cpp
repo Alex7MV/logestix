@@ -56,6 +56,11 @@ std::unique_ptr<IModel> LoadSyntheticModel(const ConvertedModel &fx,
     ModelInitConfig cfg;
     cfg.model_type = Qwen35MoeModel::kType;
     cfg.model_path = fx.out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.max_gen_tokens = max_gen;
     cfg.fast_math = true;
     auto m = LsxModelFactory::Create(cfg);
@@ -121,6 +126,11 @@ TEST_CASE("geometry mismatch rejected at load", "[qwen-moe-model]")
     ModelInitConfig cfg;
     cfg.model_type = Qwen35MoeModel::kType;
     cfg.model_path = fix.out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     CHECK_FALSE(model->Load());

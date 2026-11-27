@@ -53,6 +53,11 @@ TEST_CASE("gigachat4-708b model decodes a synthetic converted fixture",
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     GigaChat4Moe708BModel m(cfg);
     REQUIRE(m.Load());
     CHECK(m.IndexForTest().num_layers == 2);
@@ -89,6 +94,11 @@ TEST_CASE("gigachat4-708b honours cooperative cancel",
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     GigaChat4Moe708BModel m(cfg);
     REQUIRE(m.Load());
 
@@ -106,6 +116,11 @@ TEST_CASE("gigachat4-708b rejects a prompt longer than the session capacity",
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     GigaChat4Moe708BModel m(cfg);
     REQUIRE(m.Load());
 

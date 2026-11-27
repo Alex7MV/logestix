@@ -17,6 +17,33 @@ Revision note (2026-11-27c, **deletion verified complete**): the last leftover t
 `.arrow` files in the vault (§1.1.1). No control tree exists for any model, so the
 contract rests entirely on our own fixtures plus the bootstrap conversions; the
 last open question about keeping a reference tree is closed (§8).
+Revision note (2026-11-28, **Task 9a on real weights — three defects the fixtures
+could not see**). The bootstrap conversion of phi-4 and Qwen3.5-9B exercised the
+emitter against real checkpoints for the first time, and §1.5's "the artifact is
+self-sufficient" was **still** unimplemented: `lsxforge`'s `finish` looked for
+`chat_template.jinja` / `tokenizer.json` under the ARTIFACT directory, where no
+converter writes either (a converter derives the two tokenizer arrows instead), so
+the copy step written in Task 6 never ran on a real tree. Fixed by resolving the
+sidecars from the SOURCE checkpoint first. Two consequences recorded here because
+they are contract, not implementation detail:
+(1) a checkpoint may carry its template **inline in `tokenizer_config.json`** with
+no `.jinja` beside the weights — `microsoft/phi-4` is exactly this shape — so
+`ArtifactSpec::chat_template_text` materializes it as `chat_template.jinja` rather
+than recording `""`; §1.5's "records `""` rather than inventing one" applies to a
+checkpoint that has no template at all, not to one that has it elsewhere;
+(2) `chat_template_sha256` has been written since Task 6 and **no reader ever
+compared it**, so a template that drifted from the one `artifact.fb` names verified
+clean. `ArtifactInfo` now carries the digest, and `VerifyArtifact` refuses a
+recorded template that is absent (any depth) or whose bytes moved (deep).
+Third: 37 `model`-stage tests build a converted fixture in a temp directory, which
+predates `artifact.fb`, and none of them set `ModelInitConfig::synthetic` — the
+gate refused every one of them, so the `model` stage of 35 families was red on the
+branch and invisible to the `fast` sweep (which does not carry that label). The
+escape is now set in the fixtures, and `inkling_moe_varloop`'s capability check
+(the `varloop` flag) moved ABOVE its synthetic-geometry escape: a fixture may
+legitimately be 8 layers wide and declare 2 passes, but it can never legitimately
+be a fixed-pass tree — with both checks under one early return, that row's
+"refuses the fixed-pass sibling" case could only pass vacuously.
 Revision note (2026-11-27g, **index-field audit + layout**): `model.index.json`
 declares `"layout": 2` instead of a per-model `format` tag (18 spellings, 11 of
 them dead, 6 of the 7 gated ones embedding the codec — see §2.4.3). An audit of

@@ -49,6 +49,11 @@ TEST_CASE("Qwen3.8-27B model factory registration and generation")
 
     lsxcommon::ModelInitConfig mcfg;
     mcfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    mcfg.synthetic = true;
     mcfg.model_type = "qwen3.8-27b";
     auto model = lsxcommon::LsxModelFactory::Create(mcfg);
     REQUIRE(model != nullptr);

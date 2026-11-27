@@ -592,10 +592,29 @@ int main(int argc, char* argv[]) {
         spec.layer_count = layers;
         for (const auto &p : scan.planes)
             spec.planes.push_back({p.role, p.codec_bit, p.path, p.bytes});
-        const auto tpl = std::filesystem::path(output_path) / "chat_template.jinja";
-        if (std::filesystem::exists(tpl)) spec.chat_template_src = tpl.string();
-        const auto tk = std::filesystem::path(output_path) / "tokenizer.json";
-        if (std::filesystem::exists(tk)) spec.tokenizer_json_src = tk.string();
+        // The chat template and the raw tokenizer.json are Hugging-Face INPUTS:
+        // no converter writes them into its output (it derives the two tokenizer
+        // arrows instead), so looking only under the artifact path found nothing
+        // on every real tree and invariant 5's "the artifact is self-sufficient"
+        // (design §1.5, §2.4.2) stayed unimplemented while EmitArtifact's copy
+        // step sat there unexercised. Source first, then output, so a converter
+        // that does write one still wins over the checkpoint's copy.
+        const auto sidecar = [&](const char *name) -> std::string {
+            for (const auto &dir : {input_path, output_path}) {
+                const auto p = std::filesystem::path(dir) / name;
+                if (std::filesystem::is_regular_file(p)) return p.string();
+            }
+            return {};
+        };
+        spec.chat_template_src = sidecar("chat_template.jinja");
+        spec.tokenizer_json_src = sidecar("tokenizer.json");
+        // A checkpoint may carry the template INSIDE tokenizer_config.json with
+        // no .jinja beside the weights (microsoft/phi-4 is this shape), and then
+        // the copy above still finds nothing. The template is the checkpoint's
+        // own, so recording it is provenance, not invention (design §1.5).
+        if (spec.chat_template_src.empty())
+            spec.chat_template_text = lsxforge::ChatTemplateFromTokenizerConfig(
+                std::filesystem::path(input_path) / "tokenizer_config.json");
 
         const uint64_t mask = lsx::storage::EmitArtifact(spec, output_path, &err);
         if (mask == 0) {

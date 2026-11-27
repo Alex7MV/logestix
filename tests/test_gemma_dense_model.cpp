@@ -90,6 +90,11 @@ TEST_CASE("factory creates the registered gemma dense model", "[gemma_dense][mod
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "gemma-4-31b-it";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -123,6 +128,11 @@ TEST_CASE("gemma dense honours cooperative cancel", "[gemma_dense][model]") {
     auto out = MakeConvertedSynthetic();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "gemma-4-31b-it";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -162,6 +172,11 @@ TEST_CASE("gemma dense wires the shared Gemma-4 tool codec (stage 4b)",
     auto out = MakeConvertedSynthetic(/*gemma_tok=*/true);
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "gemma-4-31b-it";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);

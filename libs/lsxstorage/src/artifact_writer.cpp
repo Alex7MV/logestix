@@ -138,6 +138,17 @@ uint64_t EmitArtifact(const ArtifactSpec &spec, const fs::path &artifact_dir,
         copies.chat_template = "chat_template.jinja";
         if (!CopyFileOverwrite(from, artifact_dir / copies.chat_template, error))
             return 0;
+    } else if (!spec.chat_template_text.empty()) {
+        // Inline template from tokenizer_config.json. Written here rather than
+        // copied, so the DIGEST below is computed from the same bytes the
+        // artifact ships and not from a source the caller could have changed.
+        copies.chat_template = "chat_template.jinja";
+        std::ofstream out(artifact_dir / copies.chat_template, std::ios::binary);
+        if (!out) return fail("cannot write " + copies.chat_template);
+        out.write(spec.chat_template_text.data(),
+                  static_cast<std::streamsize>(spec.chat_template_text.size()));
+        out.close();
+        if (!out) return fail("cannot write " + copies.chat_template);
     }
     if (!spec.tokenizer_json_src.empty()) {
         const fs::path from(spec.tokenizer_json_src);

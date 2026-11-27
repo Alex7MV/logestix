@@ -57,6 +57,11 @@ TEST_CASE("nemotron-nvfp4 Load accepts a synthetic converted model",
 
     ModelInitConfig cfg;
     cfg.model_path = dst.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronNvfp4Model::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -77,6 +82,11 @@ TEST_CASE("nemotron-nvfp4 Infer runs the hybrid pipeline end-to-end on a tiny mo
 
     ModelInitConfig cfg;
     cfg.model_path = dst.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronNvfp4Model::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -110,6 +120,11 @@ TEST_CASE("nemotron-nvfp4 Load rejects a frozen-geometry mismatch",
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronNvfp4Model::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -131,6 +146,11 @@ TEST_CASE("nemotron-nvfp4 Load rejects the BF16 sibling's tree",
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronNvfp4Model::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);

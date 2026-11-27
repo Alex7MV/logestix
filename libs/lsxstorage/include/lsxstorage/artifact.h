@@ -49,6 +49,12 @@ struct ArtifactInfo {
     std::vector<PlaneInfo> planes;
     std::vector<uint64_t> layer_codec; // index = physical layer
     std::string tokenizer_vocab, tokenizer_merges, chat_template;
+    // Digest of chat_template, as the writer recorded it. Kept here because a
+    // recorded digest that nothing checks is a hollow field: the emitter has
+    // hashed the template since Task 6 and no reader ever compared it, so a
+    // template that drifted from the one artifact.fb names verified clean.
+    std::array<uint8_t, 32> chat_template_sha256{};
+    bool has_chat_template_digest = false;
     std::string model_name, source_dir;
     int layer_count = 0;
     int pinned_tensors = 0;

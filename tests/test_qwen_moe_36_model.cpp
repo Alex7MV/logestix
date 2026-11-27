@@ -99,6 +99,11 @@ TEST_CASE("geometry mismatch rejected at load (qwen3.6)", "[qwen36-model]")
     ModelInitConfig cfg;
     cfg.model_type = Qwen36MoeModel::kType;
     cfg.model_path = fix.out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     CHECK_FALSE(model->Load());
@@ -125,6 +130,11 @@ TEST_CASE("device-fed decode run-to-run determinism (qwen3.6)",
     ModelInitConfig cfg;
     cfg.model_type = Qwen36MoeModel::kType;
     cfg.model_path = fx.out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.max_gen_tokens = 12;
     cfg.fast_math = true;
     auto m = LsxModelFactory::Create(cfg);
@@ -163,6 +173,11 @@ TEST_CASE("qwen3.6-35b-a3b honours cooperative cancel",
     ModelInitConfig cfg;
     cfg.model_type = Qwen36MoeModel::kType;
     cfg.model_path = fx.out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.fast_math = true;
     auto m = LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);

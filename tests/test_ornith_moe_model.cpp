@@ -87,6 +87,11 @@ TEST_CASE("ornith geometry mismatch rejected at load", "[ornith-moe-model]")
     ModelInitConfig cfg;
     cfg.model_type = OrnithMoeModel::kType;
     cfg.model_path = fix.out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     CHECK_FALSE(model->Load());

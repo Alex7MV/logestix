@@ -25,6 +25,19 @@ extended **2026-11-22** (TML-d24-varloop-research: the `is_varloop` sibling of
 Inkling-2-Mini — same tower and artifact layout, with the pass count chosen at
 load time from the trained range 1..5; the row's SelfCheck is at the checkpoint's
 declared 3 passes, and its goldens are source-captured like the sibling's),
+re-measured **2026-11-28** (**phi-4** and **qwen3.5-9b** — the two bootstrap
+artifacts of the hardware-native codec contract, after every converted tree in the
+vault was deleted on 2026-11-27). Both were converted from their real checkpoints
+into the artifact store and all four gates re-run on the 5090: phi-4
+`microsoft/phi-4/nvfp4` (mask 34 = bf16|nvfp4, 83 planes, 17 GiB) SelfCheck x3
+`cf51b9bbd5c913dd`; Qwen3.5-9B `Qwen/Qwen3.5-9B/nvfp4` (mask 35 =
+f32|bf16|nvfp4, 68 planes, 4.8 GiB) SelfCheck x3 `a2af669548e59c73`. The hashes are
+the SAME values §1's reproducibility note records from the pre-deletion trees, so
+the new NVFP4 artifacts are bit-identical to the ones they replace — which is the
+only useful statement a re-measurement after a format migration can make. The
+trees now live under `$LSX_ARTIFACT_ROOT/<org>/<model_dir>/<profile>/`, not
+`<models_dir>/<Model>/logestix/`; every path in this file that names the old shape
+is historical. Also
 closed **2026-11-19** (Muse-Glimmer-30B: the FSI golden that had been declared
 debt was captured from the source text tower at `reasoning_strength: low` — the
 chat template's own switch, which makes the answer channel the canonical formula
@@ -67,9 +80,9 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **gemma-4-31b-it** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
 | granite-4.2-30b | PASS | 3/3 | 3/3 | 3/3 |
 | ornith-1.5-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
-| phi-4 | PASS | 3/3 | 3/3 | 3/3 |
+| phi-4 | PASS (x3, `cf51b9bbd5c913dd`) | 3/3 | 3/3 | 3/3 |
 | **dory-1.0-4b** | PASS (x3, `f100088895adb12d`) | 3/3 | 3/3 | 3/3 (reasoning mode) |
-| qwen3.5-9b | PASS | 3/3 | 3/3 | 3/3 |
+| qwen3.5-9b | PASS (x3, `a2af669548e59c73`) | 3/3 | 3/3 | 3/3 |
 | **qwen3.5-35b-a3b** | PASS (x3, `f4c91be5f2206d56`) | 3/3 | 3/3 | 3/3 |
 | qwen3.6-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
 | qwen3.8-27b | PASS | 3/3 | 3/3 | 3/3 |

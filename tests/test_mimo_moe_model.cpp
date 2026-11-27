@@ -37,6 +37,11 @@ TEST_CASE("mimo model loads a synthetic checkpoint and infers", "[mimo][model]")
     const fs::path out = BuildConverted();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "mimo-v2.6-flash-rl";
 
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
@@ -65,6 +70,11 @@ TEST_CASE("mimo Infer streams one chunk per generated token",
     const fs::path out = BuildConverted();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "mimo-v2.6-flash-rl";
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
@@ -84,6 +94,11 @@ TEST_CASE("mimo Infer honours cooperative cancel", "[mimo][model][lifecycle]")
     const fs::path out = BuildConverted();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "mimo-v2.6-flash-rl";
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
@@ -107,6 +122,11 @@ TEST_CASE("mimo resident bytes cover the uploaded layer weights",
     const fs::path out = BuildConverted();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "mimo-v2.6-flash-rl";
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);

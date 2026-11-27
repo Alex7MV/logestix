@@ -167,6 +167,11 @@ ReadResult ReadArtifactFile(const fs::path &artifact_fb)
         info.tokenizer_vocab = Str(tok->vocab());
         info.tokenizer_merges = Str(tok->merges());
         info.chat_template = Str(tok->chat_template());
+        if (const auto *d = tok->chat_template_sha256();
+            d != nullptr && d->size() == 32) {
+            for (size_t i = 0; i < 32; ++i) info.chat_template_sha256[i] = d->Get(i);
+            info.has_chat_template_digest = true;
+        }
     }
     if (const auto *src = a->source(); src != nullptr) {
         info.model_name = Str(src->model_name());

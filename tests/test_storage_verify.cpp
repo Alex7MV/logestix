@@ -421,3 +421,99 @@ TEST_CASE("the scan reports NVFP4 for a packed plane, not the source dtype",
     REQUIRE(s.ok);
     CHECK((s.mask & kNvFp4) != 0);
 }
+
+// ── The chat template: a recorded path and a recorded digest, both checked ──
+//
+// Invariant I5 says the artifact is self-sufficient, so the template it records
+// must be inside it. Nothing checked that until the bootstrap conversion of a
+// real checkpoint made it visible: the emitter looked for the template under the
+// ARTIFACT directory, where no converter writes it, so every real artifact
+// recorded chat_template = "" while its source had one — and, because a recorded
+// digest that no reader compares is a hollow field, a drifted template verified
+// clean. Both halves of that are pinned here.
+namespace {
+void WriteTemplate(const fs::path &dir, const std::string &text)
+{
+    fs::create_directories(dir);
+    std::ofstream(dir / "chat_template.jinja") << text;
+}
+
+ArtifactSpec SpecWithTemplate(const fs::path &dir, const fs::path &src)
+{
+    WriteTemplate(src, "{{ messages }}");
+    auto spec = BaseSpec(dir);
+    spec.chat_template_src = (src / "chat_template.jinja").string();
+    return spec;
+}
+} // namespace
+
+TEST_CASE("an artifact whose recorded chat template is gone is refused",
+          "[storage_verify][template]") {
+    TempDir d, src;
+    auto spec = SpecWithTemplate(d.path(), src.path());
+    REQUIRE(EmitArtifact(spec, d.path(), nullptr) != 0);
+    REQUIRE(ReadArtifact(d.path()).info.chat_template == "chat_template.jinja");
+    CHECK(VerifyArtifact(d.path(), false).ok);
+
+    // The artifact still claims to ship it. A loader then fails at the first
+    // framed prompt instead of at load time, which is the wrong place to learn.
+    fs::remove(d.path() / "chat_template.jinja");
+    const auto r = VerifyArtifact(d.path(), false);
+    REQUIRE_FALSE(r.ok);
+    bool named = false;
+    for (const auto &p : r.problems) {
+        INFO(p);
+        if (p.find("chat template") != std::string::npos) named = true;
+    }
+    CHECK(named);
+}
+
+TEST_CASE("a template supplied as inline text verifies like a copied one",
+          "[storage_verify][template]") {
+    // The phi-4 shape end to end on a tree with real Arrow planes: no
+    // chat_template.jinja in the source, the template inside tokenizer_config.
+    // The emitter writes it into the artifact and digests the bytes it wrote, so
+    // the deep pass must agree with it.
+    TempDir d;
+    auto spec = BaseSpec(d.path());
+    spec.chat_template_text = "{{ inline }}";
+    REQUIRE(EmitArtifact(spec, d.path(), nullptr) != 0);
+    REQUIRE(fs::exists(d.path() / "chat_template.jinja"));
+
+    const auto info = ReadArtifact(d.path()).info;
+    CHECK(info.chat_template == "chat_template.jinja");
+    CHECK(info.has_chat_template_digest);
+    const auto deep = VerifyArtifact(d.path(), true);
+    std::string joined;
+    for (const auto &p : deep.problems) joined += p + "\n";
+    INFO("problems:\n" << joined);
+    CHECK(deep.ok);
+
+    // And the digest is of the WRITTEN bytes, not of some source file.
+    WriteTemplate(d.path(), "{{ tampered }}");
+    const auto after = VerifyArtifact(d.path(), true);
+    REQUIRE_FALSE(after.ok);
+    CHECK(after.problems.size() == 1);
+}
+
+TEST_CASE("a chat template that drifted from its recorded digest is caught",
+          "[storage_verify][template]") {
+    TempDir d, src;
+    auto spec = SpecWithTemplate(d.path(), src.path());
+    REQUIRE(EmitArtifact(spec, d.path(), nullptr) != 0);
+    CHECK(VerifyArtifact(d.path(), true).ok);
+
+    // Same path, different bytes: the shallow pass has nothing to compare (it
+    // does not hash), the deep pass must catch it. Without this the digest the
+    // writer stores is decorative.
+    WriteTemplate(d.path(), "{{ completely different }}");
+    CHECK(VerifyArtifact(d.path(), false).ok);
+    const auto deep = VerifyArtifact(d.path(), true);
+    REQUIRE_FALSE(deep.ok);
+    bool named = false;
+    for (const auto &p : deep.problems) {
+        INFO(p);
+        if (p.find("chat template") != std::string::npos) named = true;
+    }
+    CHECK(named);
+}

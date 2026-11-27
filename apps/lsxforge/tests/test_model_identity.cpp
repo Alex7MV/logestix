@@ -10,6 +10,8 @@
 #include "model_identity.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace {
@@ -93,4 +95,79 @@ TEST_CASE("no artifact root means no profile dir, never an invented one",
     const auto id = lsxforge::ModelIdentityFor("phi-4");
     REQUIRE(id.has_value());
     CHECK(lsxforge::ArtifactProfileDir(*id, "nvfp4").empty());
+}
+
+// ── The chat template a checkpoint carries inside tokenizer_config.json ────
+//
+// Hugging Face allows the template in a chat_template.jinja beside the weights
+// OR as a "chat_template" string inside tokenizer_config.json. microsoft/phi-4
+// is the second shape, and the bootstrap conversion recorded chat_template = ""
+// for it until this existed — an artifact that cannot reproduce the framing it
+// was converted from, with nothing reporting the loss.
+namespace {
+class TempDir {
+public:
+    TempDir()
+    {
+        static int counter = 0;
+        path_ = std::filesystem::temp_directory_path() /
+                ("lsx-identity-" + std::to_string(counter++));
+        std::filesystem::create_directories(path_);
+    }
+    ~TempDir()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+    const std::filesystem::path &path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+void WriteText(const std::filesystem::path &p, const std::string &text)
+{
+    std::ofstream out(p, std::ios::binary);
+    out << text;
+}
+} // namespace
+
+TEST_CASE("the template is read out of tokenizer_config.json", "[model_identity]") {
+    TempDir d;
+    const auto cfg = d.path() / "tokenizer_config.json";
+    // A JSON string needs its quotes escaped, which is exactly the content a
+    // real template is full of.
+    WriteText(cfg, R"({"chat_template": "{% for m in messages %}{{ '<|im_start|>' + m['role'] }}{% endfor %}", "model_max_length": 4096})");
+    const auto tpl = lsxforge::ChatTemplateFromTokenizerConfig(cfg.string());
+    CHECK(tpl.find("<|im_start|>") != std::string::npos);
+    CHECK(tpl.find("m['role']") != std::string::npos);
+}
+
+TEST_CASE("a config with no template yields no template, never a guess",
+          "[model_identity]") {
+    TempDir d;
+    const auto cfg = d.path() / "tokenizer_config.json";
+    WriteText(cfg, R"({"model_max_length": 4096})");
+    CHECK(lsxforge::ChatTemplateFromTokenizerConfig(cfg.string()).empty());
+    // An absent file and a malformed one are the same answer: nothing to record.
+    CHECK(lsxforge::ChatTemplateFromTokenizerConfig(
+              (d.path() / "nope.json").string()).empty());
+    WriteText(d.path() / "broken.json", "{not json");
+    CHECK(lsxforge::ChatTemplateFromTokenizerConfig(
+              (d.path() / "broken.json").string()).empty());
+}
+
+TEST_CASE("the checkpoint's own template is what phi-4 records",
+          "[model_identity]") {
+    // The real checkpoint, if it is on this box: this is the case the conversion
+    // caught, and asserting it against the real file is what makes the fix
+    // meaningful rather than a fixture agreeing with itself.
+    const std::filesystem::path cfg =
+        "/mnt/fast_storage/lsx_model/microsoft/phi-4/tokenizer_config.json";
+    if (!std::filesystem::exists(cfg))
+        SKIP("microsoft/phi-4 is not in the source store");
+    const auto tpl = lsxforge::ChatTemplateFromTokenizerConfig(cfg.string());
+    REQUIRE_FALSE(tpl.empty());
+    CHECK(tpl.find("<|im_start|>") != std::string::npos);
+    CHECK(tpl.find("<|im_end|>") != std::string::npos);
 }

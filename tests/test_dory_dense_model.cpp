@@ -50,6 +50,11 @@ TEST_CASE("dory model loads, infers and is deterministic", "[dory][model]")
 
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "dory-1.0-4b";
     cfg.fast_math_mode = FastMathMode::kOff;
 
@@ -94,6 +99,11 @@ TEST_CASE("dory honours cooperative cancel", "[dory][model][lifecycle]")
 
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "dory-1.0-4b";
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -115,6 +125,11 @@ TEST_CASE("dory continuation matches a fresh prefill", "[dory][model]")
     auto tmp = BuildConvertedFixture();
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "dory-1.0-4b";
 
     auto model = LsxModelFactory::Create(cfg);
@@ -168,6 +183,11 @@ TEST_CASE("dory selfcheck is invariant to how the caller framed the prompt",
     lsxcommon::EnsureModelRegistry();
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "dory-1.0-4b";
     cfg.fast_math_mode = FastMathMode::kOff;
     auto model = LsxModelFactory::Create(cfg);
@@ -231,6 +251,11 @@ TEST_CASE("dory pins the strict routing (TC fast-math cannot change the output)"
 
     ModelInitConfig cfg;
     cfg.model_path = tmp.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "dory-1.0-4b";
     cfg.fast_math_mode = FastMathMode::kOff;
 

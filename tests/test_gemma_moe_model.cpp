@@ -55,6 +55,11 @@ TEST_CASE("factory creates registered gemma model on synthetic fixture",
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "gemma-4-26b-a4b-it";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -93,6 +98,11 @@ TEST_CASE("gemma MoE honours cooperative cancel", "[gemma][model][lifecycle]") {
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "gemma-4-26b-a4b-it";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -113,6 +123,11 @@ TEST_CASE("gemma expert index parsed once across Infers", "[gemma][model]") {
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = out.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "gemma-4-26b-a4b-it";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);

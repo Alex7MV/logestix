@@ -2864,6 +2864,18 @@ lsx_add_test(NAME test_path_shape_guard LABEL fast LINK lsxstorage
 # target, and the target is injectable for tests.
 lsx_add_test(NAME test_load_codec_gate LABEL fast LINK lsxcommon lsxstorage)
 
+# ── The contract on REAL bytes (plan Task 9a step 2) ──────────────────────
+# Label `inference`, not `fast`: the deep verify re-digests every byte of two
+# real artifacts (~26 GiB), which has no place in a 3-minute guard sweep. It
+# SKIPs (exit 4) when LSX_ARTIFACT_ROOT or a bootstrap artifact is absent, and
+# that SKIP is recorded as a cold start in docs/OPEN_TASKS.md — never as a pass.
+# It holds RESOURCE_LOCK "gpu" because it reads the same tree a model load reads,
+# and running it beside an inference pass would evict that tree from page cache.
+lsx_add_test(NAME test_bootstrap_artifacts LABEL inference TIMEOUT 1800
+    LINK lsxstorage lsxcommon)
+set_tests_properties(test_bootstrap_artifacts PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_bootstrap_artifacts PROPERTIES RESOURCE_LOCK "gpu")
+
 # ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)
 target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)

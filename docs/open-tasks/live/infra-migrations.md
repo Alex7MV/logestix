@@ -99,6 +99,44 @@ covers LINK/INCLUDE/DEFINE/LABEL/TIMEOUT/SKIP/ENV and the DLL copy; add a
 property to the helper only when a target genuinely needs one, e.g.
 `RESOURCE_LOCK`).
 
+### V. Codec profiles: the store supports N per model, nothing can produce the second one (2026-11-28)
+
+The hardware-native codec contract (branch `feat/lsxstorage-hardware-codec-contract`)
+ships the STORAGE half of invariant I4 — `<ARTIFACT_ROOT>/<org>/<model>/<profile>/`,
+one artifact per profile, `artifact.fb` per artifact — and the load gate names the
+other profiles of a model when it refuses the current one. Two halves are open,
+both found by the bootstrap conversion of real weights (plan Task 9a step 4):
+
+- **No converter knows what a codec profile is.** `--codec-profile` is read only
+  in `apps/lsxforge/src/main.cpp` (`DeclaredPlanes` + the cross-check that the
+  scanned tree carries no codec the profile did not declare). `grep -rn
+  codec_profile libs/lsxcommon/src` is empty, so every family converter emits
+  NVFP4 unconditionally: `lsxforge --phi --codec-profile bf16` quantizes exactly
+  as it does for `nvfp4` and is then **refused at the end of a full conversion**
+  by its own cross-check ("promised codecs … but the tree holds more"). A second
+  profile of one model cannot be produced today, so "on `nvidia:sm_86` the bf16
+  profile is chosen" has no artifact to choose.
+  **Fix shape:** give the converters a profile parameter at the quantization
+  call site (phi/qwen dense first — the two bootstrap models), not a per-family
+  copy of the profile table.
+- **`Resolve()` picks a profile by directory iteration order.** With one profile
+  per model this is invisible; with two it is filesystem-order dependent, and it
+  does not consult `SupportedCodecs(ActiveTarget())`. The gate then refuses the
+  arbitrarily-chosen one and prints the usable list, which is a good error but
+  not a selection — `I4` says lsxfabric SELECTS. The selection also needs a
+  precedence among compatible profiles (the operator ruling is NVFP4 first on the
+  5090, i.e. compressed-native before bf16), which does not exist anywhere yet.
+  **Fix shape:** `lsx::storage::SelectProfile(org, model_dir, supported_mask,
+  preference)` — storage stays codec-agnostic by taking the mask, `lsxcommon`
+  supplies the preference — used only when the caller named a MODEL rather than
+  an explicit profile path (an explicit path is a choice and must stay one).
+
+Measured on the two bootstrap artifacts (both single-profile, both green): phi-4
+`microsoft/phi-4/nvfp4` mask 34 (bf16|nvfp4), Qwen3.5-9B `Qwen/Qwen3.5-9B/nvfp4`
+mask 35 (f32|bf16|nvfp4). Evidence and the gate verdicts:
+`.superpowers/sdd/2026-11-24-ampere-hardware-native-codec-plan/progress.md`
+(Task 9a) and `docs/SELFCHECK_MATRIX.md` §1.
+
 ### Model manifest migration (2026-11-06) — what it did not cover
 
 The registry moved from six hand-maintained projections to `models/*.json`.

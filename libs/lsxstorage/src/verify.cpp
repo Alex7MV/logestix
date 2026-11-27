@@ -349,6 +349,35 @@ VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep)
             " entries, layer_count is " + std::to_string(read.info.layer_count));
     }
 
+    // The chat template the artifact CLAIMS to ship. Same rule as a plane: the
+    // recorded path must exist, because an artifact is self-sufficient or it is
+    // not (design §1.5). Checked before the digest loop so the cheap "missing"
+    // answer wins over the expensive hash.
+    const auto template_digest_ok = [&] {
+        if (read.info.chat_template.empty() || !read.info.has_chat_template_digest)
+            return;
+        const auto p = artifact_dir / read.info.chat_template;
+        if (!fs::is_regular_file(p, ec)) {
+            report.problems.push_back(
+                "artifact.fb records chat template '" + read.info.chat_template +
+                "' but the file is not in the artifact (invariant I5: an "
+                "artifact must load with the source store unmounted)");
+            return;
+        }
+        if (!deep) return;
+        std::string herr;
+        const auto d = Sha256::OfFile(p.string(), &herr);
+        if (!herr.empty()) {
+            report.problems.push_back(herr);
+            return;
+        }
+        if (!std::equal(d.begin(), d.end(),
+                        read.info.chat_template_sha256.begin()))
+            report.problems.push_back(
+                "sha256 mismatch for chat template " + read.info.chat_template);
+    };
+    template_digest_ok();
+
     // Digests.
     if (deep) {
         for (const auto &p : read.info.planes) {

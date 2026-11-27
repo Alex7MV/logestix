@@ -48,6 +48,11 @@ TEST_CASE("beam model is registered under its kType", "[beam][model]")
     fs::path root = BuildModel();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "beam";
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -65,6 +70,11 @@ TEST_CASE("beam model runs the full lifecycle on a synthetic tree",
     fs::path root = BuildModel();
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "beam";
     cfg.fast_math_mode = lsxcommon::FastMathMode::kOff;
     auto model = lsxcommon::LsxModelFactory::Create(cfg);

@@ -64,6 +64,14 @@ struct ArtifactSpec {
     // self-sufficient. Empty means the checkpoint has none.
     std::string chat_template_src;
     std::string tokenizer_json_src;
+    // The template TEXT, for a checkpoint that carries it inline in
+    // tokenizer_config.json instead of a chat_template.jinja beside the weights.
+    // That is not an edge case: microsoft/phi-4 ships exactly this shape, so
+    // "copy the .jinja file" left the artifact with chat_template = "" while the
+    // checkpoint did have a template. Used only when chat_template_src is empty;
+    // the writer materializes it as chat_template.jinja and digests it the same
+    // way, so the artifact records provenance it actually holds.
+    std::string chat_template_text;
 
     std::string converter_git_rev;
     int layer_count = 0;

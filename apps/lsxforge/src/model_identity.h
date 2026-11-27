@@ -35,4 +35,14 @@ std::optional<ModelIdentity> ModelIdentityFor(const std::string &input_path);
 std::string ArtifactProfileDir(const ModelIdentity &identity,
                                const std::string &profile);
 
+// The chat template from a checkpoint's tokenizer_config.json, or "" when the
+// file is absent, unparseable, or carries no "chat_template" string.
+//
+// Hugging Face allows the template in two places: a chat_template.jinja file
+// beside the weights, or a "chat_template" string inside tokenizer_config.json.
+// microsoft/phi-4 ships only the second, which is why copying the .jinja file
+// recorded chat_template = "" for a checkpoint that does have a template — an
+// artifact that then could not reproduce the framing it was converted from.
+std::string ChatTemplateFromTokenizerConfig(const std::string &config_path);
+
 } // namespace lsxforge

@@ -33,6 +33,11 @@ TEST_CASE("GLM factory autodetects and creates glm-5.2 model", "[glm][model]")
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_home.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
     CHECK(m->Type() == "glm-5.2");
@@ -85,6 +90,11 @@ TEST_CASE("GLM model explicit type create", "[glm][model]")
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_home.string();
+    // Fixture: this tree was built by the family converter into a temporary
+    // directory, so it predates artifact.fb. The storage resolve and the codec
+    // gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = "glm-5.2";
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
