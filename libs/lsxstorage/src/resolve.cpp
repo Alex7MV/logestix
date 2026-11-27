@@ -120,18 +120,35 @@ Resolved Resolve(const std::string &model_or_path)
         }
     }
 
-    // (4) A source checkpoint by name.
-    const auto source = SourceRoot() / fs::path(model_or_path).filename();
-    if (LooksLikeSourceModel(source)) {
+    // (4) A source checkpoint by name, under <SourceRoot>/<org>/<model>.
+    // The name may arrive bare ("phi-4") or already qualified ("microsoft/phi-4");
+    // both are things a user types, and the qualified form skips the search.
+    const fs::path given_rel(model_or_path);
+    if (given_rel.has_parent_path() &&
+        given_rel.parent_path() != given_rel.parent_path().parent_path()) {
+        const auto qualified = SourceRoot() / given_rel;
+        if (LooksLikeSourceModel(qualified)) {
+            r.status = ResolveStatus::kSourceOnly;
+            r.dir = qualified;
+            r.detail = "source checkpoint (no artifact.fb): convert it with "
+                       "lsxforge --<family> --input <dir> --codec-profile <p>";
+            return r;
+        }
+    }
+    std::string why;
+    if (const auto source = FindSourceModel(model_or_path, &why);
+        source.has_value()) {
         r.status = ResolveStatus::kSourceOnly;
-        r.dir = source;
+        r.dir = *source;
         r.detail = "source checkpoint (no artifact.fb): convert it with "
                    "lsxforge --<family> --input <dir> --codec-profile <p>";
         return r;
     }
 
     r.status = ResolveStatus::kNotFound;
-    r.detail = "no artifact and no source checkpoint for '" + model_or_path + "'";
+    r.detail = why.empty() ? ("no artifact and no source checkpoint for '" +
+                              model_or_path + "'")
+                           : why;
     return r;
 }
 

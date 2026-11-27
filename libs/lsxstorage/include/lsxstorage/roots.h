@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace lsx::storage {
 
@@ -55,9 +56,32 @@ fs::path ArtifactDir(const std::string &family, const std::string &model_type,
                      const std::string &profile);
 
 // The pre-split layout `<LSX_MODEL_ROOT>/<Model>/logestix`. Nothing loadable
-// lives here any more: it exists so a load pointed at a source checkout
-// produces "this is a source directory, not an artifact" instead of "path not
-// found". Diagnostic only, never a compatibility path.
-fs::path LegacyDir(const std::string &model);
+// lives here any more, and with the org-nested store it cannot even be computed
+// correctly, so it is gone: `FindSourceModel` answers the question that mattered
+// ("where is the checkpoint for this name?") and `Resolve` reports a source
+// directory as source-only. See design §2.4.1.
+
+// ── Source checkpoints: <SourceRoot>/<org>/<model> ─────────────────────────
+//
+// Hugging Face lays a download out as <org>/<model>, and so does the store, so
+// resolution searches ONE level of nesting instead of assuming a flat root.
+struct SourceModelRef {
+    std::string org;
+    std::string model;
+    fs::path dir;   // <root>/<org>/<model>
+};
+
+// Every checkpoint under the source root, sorted by (org, model). A directory
+// directly under the root is an org; only one that also holds config.json is a
+// checkpoint, so `<root>/microsoft` never shows up as a model.
+std::vector<SourceModelRef> ListSourceModels();
+
+// Finds exactly one checkpoint whose directory name is `model`.
+//
+// Returns nullopt when there is none OR when more than one org holds that name;
+// *why says which (and names the orgs). An ambiguous name is never resolved by
+// picking one, because the choice would depend on directory iteration order.
+std::optional<fs::path> FindSourceModel(const std::string &model,
+                                        std::string *why);
 
 } // namespace lsx::storage

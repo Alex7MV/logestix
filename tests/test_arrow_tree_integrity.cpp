@@ -24,7 +24,7 @@ std::string RootDir()
 {
     if (const char *env = std::getenv("LSX_ARROW_AUDIT_ROOT"))
         return env;
-    return "/mnt/fast_storage/huggingface";
+    return "/mnt/fast_storage/lsx_model";
 }
 
 int64_t BudgetBytes()

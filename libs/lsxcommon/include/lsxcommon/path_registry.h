@@ -7,11 +7,15 @@ namespace lsxcommon {
 // Compile-time platform selector for the SOURCE root. Overridable at runtime
 // with LSX_SOURCE_ROOT, then LSX_MODEL_ROOT (the pre-split spelling); when both
 // are unset the platform default below is used.
+//
+// The store is ORG-NESTED: <root>/<org>/<model>, the way Hugging Face lays a
+// download out. `lsx::storage::FindSourceModel("phi-4")` searches one level and
+// reports an ambiguous name rather than picking an org.
 #if defined(_WIN32)
-constexpr const char* kModelRootBase = "D:\\Programs\\huggingface.co";
+constexpr const char* kModelRootBase = "D:\\Programs\\lsx_model";
 #else
 // The model vault moved on 2026-10; LSX_MODEL_ROOT still overrides this.
-constexpr const char* kModelRootBase = "/mnt/fast_storage/huggingface";
+constexpr const char* kModelRootBase = "/mnt/fast_storage/lsx_model";
 #endif
 
 // "<base>" — the read-only models directory holding named checkpoints. This is

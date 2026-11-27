@@ -1,5 +1,6 @@
 #include "lsxstorage/roots.h"
 
+#include <algorithm>
 #include <cstdlib>
 
 #if defined(_WIN32)
@@ -14,9 +15,9 @@ namespace {
 // lsxcommon::kModelRootBase so a tree configured today and a tree configured
 // before the split resolve the same sources.
 #if defined(_WIN32)
-constexpr const char *kDefaultSourceBase = R"(D:\Programs\huggingface.co)";
+constexpr const char *kDefaultSourceBase = R"(D:\Programs\lsx_model)";
 #else
-constexpr const char *kDefaultSourceBase = "/mnt/fast_storage/huggingface";
+constexpr const char *kDefaultSourceBase = "/mnt/fast_storage/lsx_model";
 #endif
 
 const char *NonEmptyEnv(const char *name)
@@ -70,12 +71,106 @@ fs::path ArtifactDir(const std::string &family, const std::string &model_type,
     return *root / family / model_type / profile;
 }
 
-fs::path LegacyDir(const std::string &model)
+namespace {
+
+// A checkpoint is a MODEL directory, not an org directory.
+//
+// config.json alone is not enough: Mistral's own download layout ships
+// params.json + consolidated*.safetensors and no config.json at all, so a
+// config.json-only predicate silently hides those models. The three signals are
+// cheap and a model directory has at least one of them; an org directory has
+// none, because it holds only subdirectories.
+bool HoldsCheckpoint(const fs::path &dir)
 {
-    // The pre-split layout. Nothing loadable lives here: see roots.h.
-    if (const char *v = NonEmptyEnv("LSX_MODEL_ROOT"))
-        return fs::path(v) / model / "logestix";
-    return fs::path(kDefaultSourceBase) / model / "logestix";
+    std::error_code ec;
+    if (fs::is_regular_file(dir / "config.json", ec)) return true;
+    if (fs::is_regular_file(dir / "params.json", ec)) return true;
+
+    std::error_code iter_ec;
+    for (const auto &entry : fs::directory_iterator(dir, iter_ec)) {
+        if (iter_ec) break;
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() == ".safetensors") return true;
+    }
+    return false;
+}
+
+} // namespace
+
+std::vector<SourceModelRef> ListSourceModels()
+{
+    std::vector<SourceModelRef> out;
+    const fs::path root = SourceRoot();
+
+    std::error_code org_ec;
+    for (const auto &org_entry : fs::directory_iterator(root, org_ec)) {
+        if (org_ec) break;
+        if (!org_entry.is_directory()) continue;
+        std::error_code model_ec;
+        for (const auto &model_entry :
+             fs::directory_iterator(org_entry.path(), model_ec)) {
+            if (model_ec) break;
+            if (!model_entry.is_directory()) continue;
+            if (!HoldsCheckpoint(model_entry.path())) continue;
+            out.push_back({org_entry.path().filename().string(),
+                           model_entry.path().filename().string(),
+                           model_entry.path()});
+        }
+    }
+    std::sort(out.begin(), out.end(),
+              [](const SourceModelRef &a, const SourceModelRef &b) {
+                  if (a.org != b.org) return a.org < b.org;
+                  return a.model < b.model;
+              });
+    return out;
+}
+
+std::optional<fs::path> FindSourceModel(const std::string &model,
+                                        std::string *why)
+{
+    if (model.empty()) {
+        if (why != nullptr) *why = "empty model name";
+        return std::nullopt;
+    }
+
+    // "org/model" is matched exactly rather than searched: a qualified name is
+    // the user telling us which one they mean, so a name that matches only by
+    // model must NOT resolve.
+    const auto slash = model.find('/');
+    const bool qualified = slash != std::string::npos;
+
+    std::vector<SourceModelRef> matches;
+    for (const auto &ref : ListSourceModels()) {
+        if (qualified) {
+            if (ref.org == model.substr(0, slash) &&
+                ref.model == model.substr(slash + 1))
+                matches.push_back(ref);
+        } else if (ref.model == model) {
+            matches.push_back(ref);
+        }
+    }
+
+    if (matches.empty()) {
+        if (why != nullptr)
+            *why = "'" + model + "' is not a checkpoint under " +
+                   SourceRoot().string() + " (<org>/<model>)";
+        return std::nullopt;
+    }
+    if (matches.size() > 1) {
+        // Never pick one: the choice would depend on directory iteration order,
+        // so two runs could resolve different checkpoints.
+        std::string list;
+        for (const auto &m : matches) {
+            if (!list.empty()) list += ", ";
+            list += m.org + "/" + m.model;
+        }
+        if (why != nullptr)
+            *why = "'" + model + "' is ambiguous under " + SourceRoot().string() +
+                   ": " + list + " (qualify it as <org>/<model>)";
+        return std::nullopt;
+    }
+    if (why != nullptr) why->clear();
+    return matches.front().dir;
 }
 
 } // namespace lsx::storage

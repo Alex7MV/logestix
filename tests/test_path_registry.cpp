@@ -26,9 +26,9 @@ TEST_CASE("path_registry platform root base", "[path_registry]")
     const std::string models = lsxcommon::lsx_model_models_dir();
     REQUIRE_FALSE(models.empty());
 #if defined(_WIN32)
-    CHECK(models == R"(D:\Programs\huggingface.co)");
+    CHECK(models == R"(D:\Programs\lsx_model)");
 #else
-    CHECK(models == "/mnt/fast_storage/huggingface");
+    CHECK(models == "/mnt/fast_storage/lsx_model");
 #endif
 }
 
@@ -41,9 +41,9 @@ TEST_CASE("path_registry LSX_MODEL_ROOT overrides the compile-time base", "[path
 
     set_model_root(nullptr);
 #if defined(_WIN32)
-    CHECK(lsxcommon::lsx_model_models_dir() == R"(D:\Programs\huggingface.co)");
+    CHECK(lsxcommon::lsx_model_models_dir() == R"(D:\Programs\lsx_model)");
 #else
-    CHECK(lsxcommon::lsx_model_models_dir() == "/mnt/fast_storage/huggingface");
+    CHECK(lsxcommon::lsx_model_models_dir() == "/mnt/fast_storage/lsx_model");
 #endif
 }
 
