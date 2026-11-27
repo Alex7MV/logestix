@@ -2830,6 +2830,12 @@ lsx_add_test(NAME test_storage_roots LABEL fast LINK lsxstorage lsxcommon)
 # ── artifact.fb reader/verifier: absent, truncated, hostile, bad version ───
 lsx_add_test(NAME test_storage_artifact LABEL fast LINK lsxstorage)
 
+# ── artifact.fb writer: mask == content, atomic publish, self-verify ───────
+# Links lsxstorage and reaches its private sha256.h, so the test target gets
+# that include dir explicitly (the header is deliberately not public).
+lsx_add_test(NAME test_storage_artifact_writer LABEL fast LINK lsxstorage
+    INCLUDE "${PROJECT_SOURCE_DIR}/libs/lsxstorage/src")
+
 # ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)
 target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)

@@ -24,6 +24,8 @@ add_custom_command(
 add_library(lsxstorage STATIC
     src/roots.cpp
     src/artifact.cpp
+    src/artifact_writer.cpp
+    src/sha256.cpp
     "${_lsx_artifact_gen_hdr}"
 )
 
@@ -34,6 +36,7 @@ target_include_directories(lsxstorage
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     PRIVATE
         "${_lsx_artifact_gen_dir}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"   # sha256.h, private to this target
 )
 
 target_link_libraries(lsxstorage PUBLIC
