@@ -2822,8 +2822,13 @@ add_test(NAME test_path_registry COMMAND test_path_registry)
 lsx_add_test(NAME test_hardware_target LABEL fast LINK lsxcommon)
 
 # ── Storage roots: source vs artifact split (invariant I5) ─────────────────
-# Links lsxstorage alone, not lsxcommon: the layer must stand on its own.
-lsx_add_test(NAME test_storage_roots LABEL fast LINK lsxstorage)
+# Links lsxcommon as well as lsxstorage because it also proves the old
+# path_registry entry points still forward correctly — that is the property
+# ~40 call sites and every test depend on.
+lsx_add_test(NAME test_storage_roots LABEL fast LINK lsxstorage lsxcommon)
+
+# ── artifact.fb reader/verifier: absent, truncated, hostile, bad version ───
+lsx_add_test(NAME test_storage_artifact LABEL fast LINK lsxstorage)
 
 # ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)

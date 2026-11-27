@@ -24,15 +24,19 @@ enum Vendor : byte { Nvidia, Cpu, Amd }
 // Bit values MUST match lsxcommon::hw::PlaneCodec (hardware_target.h). The mask
 // crosses the library boundary as a plain integer, so a mismatch would
 // reinterpret every artifact rather than fail to compile.
+//
+// In a bit_flags enum flatc reads each value as a BIT INDEX and stores 1<<index,
+// so these are 0..6 and the generated constants are 1,2,4,...,64. There is no
+// NONE member: the enum's zero value already means "no codec", and a named zero
+// would collide with F32's index.
 enum PlaneCodec : ulong (bit_flags) {
-  NONE  = 0,
-  F32   = 1,
-  BF16  = 2,
-  F16   = 4,
-  I8Sym = 8,
-  MxFp8 = 16,
-  NvFp4 = 32,
-  MxFp4 = 64
+  F32   = 0,   // 1
+  BF16  = 1,   // 2
+  F16   = 2,   // 4
+  I8Sym = 3,   // 8
+  MxFp8 = 4,   // 16
+  NvFp4 = 5,   // 32
+  MxFp4 = 6    // 64
 }
 
 table Target {
