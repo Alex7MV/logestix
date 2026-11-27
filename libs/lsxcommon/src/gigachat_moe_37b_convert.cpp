@@ -470,10 +470,10 @@ arrow::Status WriteBatchOr(const arrow::Result<std::shared_ptr<arrow::RecordBatc
 }
 
 // EstimateVram takes plain function pointers (NVCC-safe header), so the depth
-// the classifier must use travels through this file-scope slot instead of a
+// the classifier must use travels through this thread-local slot instead of a
 // lambda capture. A non-zero value is the depth of the member BEING converted;
 // zero falls back to this TU's own passport (the one-argument overload).
-int g_classify_depth = 0;
+thread_local int g_classify_depth = 0;
 
 struct ScopedClassifyDepth {
     explicit ScopedClassifyDepth(int depth) : saved(g_classify_depth)
