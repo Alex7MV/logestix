@@ -3,7 +3,7 @@
 // Inkling-2-Mini native conversation + tool-call codec (host-only).
 //
 // Grammar transcribed from the checkpoint's own `chat_template.jinja`
-// (`/mnt/fast_storage/huggingface/Inkling-2-Mini/chat_template.jinja`), which is
+// (`/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini/chat_template.jinja`), which is
 // the source of truth for this family. The template differs from the
 // Inkling-2-Small one only by `{% generation %}` span markers, which render
 // nothing, so the rendered text is identical; every frame in

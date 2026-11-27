@@ -79,7 +79,7 @@ tensors.
 SelfCheck/FSI/CODE/DET all green (measured 2026-10-31) and
 `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md` exists. On
 2026-11-07 its three parity gates SKIP, and the SKIP is *correct*:
-`/mnt/fast_storage/huggingface/GigaChat3.5-432B-A28B-Reasoning/` contains the
+`/mnt/fast_storage/lsx_model/ai-sage/GigaChat3.5-432B-A28B-Reasoning/` contains the
 source checkpoint and a `lsxforge_runtime.1.log` whose writes all point at
 `/mnt/fast_storage/tmp/gigachat_reconvert/logestix/...` — the tree was converted
 **outside the vault**, and the tmp directory has since been cleaned. No

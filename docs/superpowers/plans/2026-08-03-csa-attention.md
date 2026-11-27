@@ -223,7 +223,7 @@ $env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
 
 Run inference to verify CSA tensors load without crash:
 ```powershell
-& "build\bin\Debug\lsxfabric.exe" --testprompt --localmodel "D:\Programs\huggingface.co\DeepSeek-V4-Flash" 2>&1 | Select-String "compressor|indexer|error" | Select-Object -First 5
+& "build\bin\Debug\lsxfabric.exe" --testprompt --localmodel "D:\Programs\lsx_model\DeepSeek-V4-Flash" 2>&1 | Select-String "compressor|indexer|error" | Select-Object -First 5
 ```
 
 - [ ] **Step 4: Commit**
@@ -836,7 +836,7 @@ $env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
 ```
 
 ```powershell
-& "build\bin\Debug\lsxfabric.exe" --testprompt --localmodel "D:\Programs\huggingface.co\DeepSeek-V4-Flash" 2>&1 | Select-String -Pattern "step=0 |output:|gen_tokens|tokens/s|error" | Select-Object -First 5
+& "build\bin\Debug\lsxfabric.exe" --testprompt --localmodel "D:\Programs\lsx_model\DeepSeek-V4-Flash" 2>&1 | Select-String -Pattern "step=0 |output:|gen_tokens|tokens/s|error" | Select-Object -First 5
 ```
 
 Expected: No crash, generates tokens (even if still degenerate — CSA is a first cut).
@@ -860,7 +860,7 @@ logger->set_level(spdlog::level::debug);
 
 Build and run:
 ```powershell
-& "build\bin\Debug\lsxfabric.exe" --testprompt --localmodel "D:\Programs\huggingface.co\DeepSeek-V4-Flash" 2>&1 | Select-String "step0 layer.*hc_state" | Select-Object -First 10
+& "build\bin\Debug\lsxfabric.exe" --testprompt --localmodel "D:\Programs\lsx_model\DeepSeek-V4-Flash" 2>&1 | Select-String "step0 layer.*hc_state" | Select-Object -First 10
 ```
 
 Expected: HC state rms should be bounded (<100) across all 43 layers.

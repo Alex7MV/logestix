@@ -1,7 +1,7 @@
 # Dory1.0-4B ingestion — plan (2026-11-10)
 
 Model: `NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16` (`model_type: dory`, class
-`DoryForCausalLM`). Vault source: `/mnt/fast_storage/huggingface/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16`.
+`DoryForCausalLM`). Vault source: `/mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16`.
 
 ## Stage 0 triage (gate: answered before stage 1)
 

@@ -313,7 +313,7 @@ before the real-weight numbers do.
 
 ### Task 9: Real weights (vault)
 
-- [x] **Step 1** Convert (`lsxforge --kimi_k31_pro`, in place, 17 min → 1.5 TB tree at `/mnt/fast_storage/huggingface/Kimi-K3.1-Pro/logestix`); index verified: `format logestix-kimi-k31-pro-nvfp4`, `model_type kimi-k3.1-pro`, `indexer true`, 24 `dsa_layers`, `total_experts 82432`, 2120 pinned + 460 streamed, 165 vision + 3 projector stripped/counted, and all 120 indexer tensors present as BF16 via pyarrow over every DSA layer.
+- [x] **Step 1** Convert (`lsxforge --kimi_k31_pro`, in place, 17 min → 1.5 TB tree at `/mnt/fast_storage/lsx_model/moonshotai/Kimi-K3.1-Pro/logestix`); index verified: `format logestix-kimi-k31-pro-nvfp4`, `model_type kimi-k3.1-pro`, `indexer true`, 24 `dsa_layers`, `total_experts 82432`, 2120 pinned + 460 streamed, 165 vision + 3 projector stripped/counted, and all 120 indexer tensors present as BF16 via pyarrow over every DSA layer.
 - [x] **Step 2** `test_kimi_pro_selfcheck` → Paris ×3 bit-exact, `logits_hash 98ec1bbb372c9181`, top-1 token 40 (23 assertions / 2 cases PASS).
 - [x] **Step 3** Tool round-trip `get_weather {"city":"Paris"}` green in the same target (one 23 GB load serves both cases; TIMEOUT raised 5400 → 7200 s).
 - [x] **Step 4** FSI/CODE/DET **not run** — operator ruling 2026-11-05: record the sweep as debt. Measured decode ~0.125 t/s here, so FSI alone is ~13.7 h and the sweep ~36 h. FSI was started and stopped 97 min in; the kill is not a verdict, so the cells stay `not run`, and the four ctest budgets were raised to what a real completion needs (54 000 / 18 000 / 43 200 / 43 200 s).

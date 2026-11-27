@@ -1,4 +1,4 @@
-# captured from /mnt/fast_storage/huggingface/Hy-Memory-30B-A3B (transformers 5.15.1)
+# captured from /mnt/fast_storage/lsx_model/tencent/Hy-Memory-30B-A3B (transformers 5.15.1)
 {"text": "The capital of France is", "ids": [628, 6801, 279, 9391, 316]}
 {"text": "Compute the present value PV of a bond with cash flow CF, rate r, and n periods. Return the value.", "ids": [49666, 252, 2682, 1364, 33934, 279, 244, 10774, 413, 12606, 3720, 28395, 11, 3243, 494, 11, 289, 302, 10598, 13, 6708, 252, 1364, 13]}
 {"text": "getUserName and setHTTPHeader and parseXMLResponse", "ids": [874, 65528, 289, 1178, 23682, 14822, 289, 11956, 20590, 7716]}

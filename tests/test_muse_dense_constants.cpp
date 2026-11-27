@@ -1,7 +1,7 @@
 // Frozen passport guard for Muse-Glimmer-30B. Host-only, no CUDA deps.
 //
 // Values are read off the released checkpoint
-// (/mnt/fast_storage/huggingface/Muse-Glimmer-30B: config.json text_config,
+// (/mnt/fast_storage/lsx_model/meta-models/Muse-Glimmer-30B: config.json text_config,
 // tokenizer.json added_tokens and both safetensors headers, audited
 // 2026-11-18) and cross-checked against the reference semantics in
 // transformers 5.15.1 `models/muse_glimmer/modular_muse_glimmer.py`

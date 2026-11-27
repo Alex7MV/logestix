@@ -15,7 +15,7 @@ What this file still owns: the **verified semantics** (the reference's own
 behaviour, measured before the engine existed) and the **trail**. Stage-0
 triage is historical; the report is the artifact.
 
-Source checkpoint: `/mnt/fast_storage/huggingface/Inkling-2-Mini`
+Source checkpoint: `/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini`
 (`thinkingmachines/Inkling-2-Mini`, released 2026-11-20, downloaded 2026-11-21
 via modelscope with sha256 verified against HF for both safetensors; see
 `/mnt/fast_storage/tmp/opencode/inkling2-mini/manifest.json`). Single 18.2 GiB

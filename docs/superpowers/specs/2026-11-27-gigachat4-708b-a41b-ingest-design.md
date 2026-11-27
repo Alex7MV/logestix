@@ -1,7 +1,7 @@
 # GigaChat4-708B-A41B ingestion — design (stage 0 triage + plan)
 
 Date: 2026-11-27. Branch: `feat/model-GigaChat4-708B-A41B`.
-Source checkpoint: `/mnt/fast_storage/huggingface/GigaChat4-708B-A41B`
+Source checkpoint: `/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B`
 (`ai-sage/GigaChat4-708B-A41B`, FP8 inference release, 45 shards, 95 616 tensors,
 720 GB). Read-only reference (not vendored): `modeling_gigachat4.py`,
 `configuration_gigachat4.py`, `chat_template.jinja`, `tokenizer.json`,
@@ -162,7 +162,7 @@ would be 2 500 lines of divergence for zero behaviour.
 | passport | `libs/lsxcommon/src/gigachat_moe_708b_constants.h`, `namespace lsxcommon::gigachat4_708b::frozen` |
 | format tag | `logestix-gigachat4-708b-nvfp4` (a distinct tag: a 708B row must never accept a 37B tree even before the geometry check) |
 | forge flag | `--gigachat4-708b` |
-| vault | `/mnt/fast_storage/huggingface/GigaChat4-708B-A41B/logestix` (`LSX_TEST_GIGACHAT4_708B_A41B_ROOT`) |
+| vault | `/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B/logestix` (`LSX_TEST_GIGACHAT4_708B_A41B_ROOT`) |
 | tokenizer_kind | 3 (unchanged) |
 | session cap | 4096 (perf protocol needs prompt + 2048 generated) |
 
@@ -221,8 +221,8 @@ Modified (additive, behaviour-preserving for the shipped rows):
 
 ## Conversion and real-weight run plan
 
-1. `lsxforge --gigachat4-708b --input /mnt/fast_storage/huggingface/GigaChat4-708B-A41B
-   --output /mnt/fast_storage/huggingface/GigaChat4-708B-A41B` (writes
+1. `lsxforge --gigachat4-708b --input /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B
+   --output /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B` (writes
    `.../logestix/`), on the release/AOCC tree, `LSX_EXPERT_PIN` default on.
    Expected ≈410 GB written; 451 GB stays free.
 2. Real-weight gates on the **Release/AOCC** tree, one target at a time

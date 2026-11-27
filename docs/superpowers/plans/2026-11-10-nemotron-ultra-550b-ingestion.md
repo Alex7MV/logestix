@@ -164,7 +164,7 @@ Header comment must record the source of truth (path of the real `config.json`) 
 ```cpp
 #pragma once
 // Frozen NVIDIA-Nemotron-3-Ultra-550B-A55B geometry (compile-time passport).
-// Source: /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+// Source: /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
 // config.json (model_type nemotron_h) + safetensors inventory (2026-11-10):
 // 108 layers (48 mamba + 48 moe + 12 full attention), hidden 8192, mamba2
 // d_inner 16384 (256x64), n_groups 8, state 128, conv 4, in_proj 35072,
@@ -944,8 +944,8 @@ Expected: `docs/MODELS.md` gains the `nemotron-ultra-550b-a55b` section; the fas
 export LSX_MODEL_ROOT=/mnt/fast_storage/huggingface
 nohup ./build/linux-release-znver4-aocc/apps/lsxforge/lsxforge \
   --nemotron_ultra \
-  --input /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 \
-  --output /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 \
+  --input /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 \
+  --output /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 \
   > /mnt/fast_storage/tmp/nemotron_ultra_convert.log 2>&1 &
 ```
 Expected: `logestix/model.index.json` appears, then `pinned/` (109 files) and `experts/layer_<l>/exp_<e>.arrow` for the 48 MoE layers (24 576 files, ≈290 GB). Re-running resumes at the first missing layer.
@@ -965,7 +965,7 @@ Expected: `logestix/model.index.json` appears, then `pinned/` (109 files) and `e
 - [ ] **Step 1: Write `tools/nemotron_ultra_oracle.py`**
 
 `--checkpoint DIR --layers 0,1,7 --prompt "The capital of France is" --out FILE` builds a real `NemotronHForCausalLM` whose `config.layers_block_type` is the selected subset (keeping the real embedding, `norm_f`, `lm_head`), loads only those shards' tensors (BF16), runs a no-grad forward, and writes per-layer hidden-state summaries (first 64 dims + L2 norm + position count) as JSON. CPU only, ~4 GB peak.
-Run it once: `python3 tools/nemotron_ultra_oracle.py --checkpoint /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 --layers 0,1,7 --prompt "The capital of France is" --out tests/fixtures/nemotron_ultra/layers_slice.json`
+Run it once: `python3 tools/nemotron_ultra_oracle.py --checkpoint /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 --layers 0,1,7 --prompt "The capital of France is" --out tests/fixtures/nemotron_ultra/layers_slice.json`
 Expected: the file exists and contains ≥3 layer entries at ≥8 positions.
 
 - [ ] **Step 2: Write the failing gate** — `test_nemotron_ultra_layers` loads the converted tree, runs the engine's per-layer dump at the same prompt and positions, and asserts per selected layer `relL2 < 2e-2` and `cos > 0.99`; SKIP 4 when either the fixture or the tree is absent.

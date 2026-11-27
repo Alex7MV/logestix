@@ -4,7 +4,7 @@ Date: 2026-11-18. Approved by operator ("ок").
 
 ## Intent
 
-Ingest `Muse-Glimmer-30B` (`/mnt/fast_storage/huggingface/Muse-Glimmer-30B`,
+Ingest `Muse-Glimmer-30B` (`/mnt/fast_storage/lsx_model/meta-models/Muse-Glimmer-30B`,
 architecture `MuseGlimmerForConditionalGeneration`, text tower
 `muse_glimmer_text`) into logestix end to end: converter, NVFP4 tree, model
 class, tokenizer + ATEM tool bridge, CUDA kernels, all lifecycle gates

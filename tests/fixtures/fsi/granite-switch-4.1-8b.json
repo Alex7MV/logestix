@@ -2,7 +2,7 @@
   "format": "logestix-fsi-golden",
   "version": 1,
   "model_type": "granite-switch-4.1-8b",
-  "source": "/mnt/fast_storage/huggingface/granite-switch-4.1-8b",
+  "source": "/mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-8b",
   "runtime": "transformers 5.17.0 / torch 2.13.0+cu130",
   "prompts": [
     {

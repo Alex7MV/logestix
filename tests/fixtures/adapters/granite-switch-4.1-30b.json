@@ -2,7 +2,7 @@
   "format": "logestix-granite-switch-adapter-golden",
   "version": 1,
   "model_type": "granite-switch-4.1-30b",
-  "source": "/mnt/fast_storage/huggingface/granite-switch-4.1-30b",
+  "source": "/mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-30b",
   "runtime": "transformers/granite-switch CPU BF16",
   "cases": [
     {

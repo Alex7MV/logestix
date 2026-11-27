@@ -2,7 +2,7 @@
  "format": "logestix-code-golden",
  "version": 1,
  "model_type": "muse-glimmer-30b",
- "source": "/mnt/fast_storage/huggingface/Muse-Glimmer-30B",
+ "source": "/mnt/fast_storage/lsx_model/meta-models/Muse-Glimmer-30B",
  "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
  "prompts": [
   {

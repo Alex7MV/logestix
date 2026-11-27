@@ -14,7 +14,7 @@ Usage:
   KIMI_DUMP_LAYERS=0,1,30,60 LSX_MODEL_ROOT=/mnt/fast_storage/huggingface \
       ./build/linux-release-znver4-aocc/tests/test_kimi_moe_selfcheck
   python3 tools/kimi_layer_oracle.py \
-      --model /mnt/fast_storage/huggingface/Kimi-K2.7-Code \
+      --model /mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code \
       --ids "The capital of France is" --layers 0,1,30,60 --dump-dir /tmp
 """
 import argparse

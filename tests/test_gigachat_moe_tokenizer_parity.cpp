@@ -23,7 +23,7 @@
 #endif
 #ifndef LSX_GIGACHAT_TOKENIZER_PATH
 #define LSX_GIGACHAT_TOKENIZER_PATH \
-    "/mnt/fast_storage/huggingface/GigaChat3.5-432B-A28B-Reasoning/tokenizer.json"
+    "/mnt/fast_storage/lsx_model/ai-sage/GigaChat3.5-432B-A28B-Reasoning/tokenizer.json"
 #endif
 
 namespace {

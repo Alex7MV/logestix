@@ -162,7 +162,7 @@ TEST_CASE("gigachat4 oracle probe dumps the engine logits",
 
     const char *root_env = std::getenv("LSX_TEST_GIGACHAT4_37B_A4B_ROOT");
     std::filesystem::path root = root_env ? root_env
-                                          : "/mnt/fast_storage/huggingface/GigaChat4-37B-A4B";
+                                          : "/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-37B-A4B";
     if (!std::filesystem::exists(root / "logestix" / "model.index.json"))
         SKIP("converted model absent");
 

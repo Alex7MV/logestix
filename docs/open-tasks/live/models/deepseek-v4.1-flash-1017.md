@@ -8,7 +8,7 @@ loader, one kernel set and one generation body serve both; this row owns a
 re-declared passport (`lsxcommon::deepseek_v41_flash1017`), its own registry id
 (`deepseek-v4.1-flash-1017`) and its own gates.
 
-Converted 2026-11-22 into `/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash-1017/logestix`
+Converted 2026-11-22 into `/mnt/fast_storage/lsx_model/deepseek-ai/DeepSeek-V4.1-Flash-1017/logestix`
 (294 GB, `logestix-v41-nvfp4`, 1246 pinned tensors, 15360 experts, deferred
 `engram=12 mtp=2401 vision=266` — the parent's counts exactly).
 

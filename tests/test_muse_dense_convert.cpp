@@ -202,7 +202,7 @@ TEST_CASE("muse dense topology parse: real checkpoint config",
         env && *env)
         root = env;
     else
-        root = "/mnt/fast_storage/huggingface/Muse-Glimmer-30B";
+        root = "/mnt/fast_storage/lsx_model/meta-models/Muse-Glimmer-30B";
     if (!fs::exists(fs::path(root) / "config.json"))
         SKIP("Muse-Glimmer-30B source checkpoint not present");
 

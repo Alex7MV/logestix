@@ -31,7 +31,7 @@ directory):
 | platform | `kModelRootBase` (default) | converted models live in |
 |---|---|---|
 | Linux | `/mnt/llm_models/models` | `<base>/<Model>/logestix/` |
-| Windows | `D:\Programs\huggingface.co` | `<base>\<Model>\logestix\` |
+| Windows | `D:\Programs\lsx_model` | `<base>\<Model>\logestix\` |
 
 - Every vault read/write goes through `lsx_model_models_dir()` — **no other
   code may reconstruct the root**. The vault holds model trees only

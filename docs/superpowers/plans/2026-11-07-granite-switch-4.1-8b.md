@@ -41,8 +41,8 @@ Run:
 
 ```bash
 build/linux-debug/apps/lsxforge/lsxforge --granite_switch \
-  --input  /mnt/fast_storage/huggingface/granite-switch-4.1-8b \
-  --output /mnt/fast_storage/huggingface/granite-switch-4.1-8b
+  --input  /mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-8b \
+  --output /mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-8b
 ```
 
 ## Stage 2 — NVFP4

@@ -1,7 +1,7 @@
 # Kimi-K3.1-Pro ingestion — design
 
 Date: 2026-11-05
-Source: `/mnt/fast_storage/huggingface/Kimi-K3.1-Pro` (1.5 TB, 96 shards,
+Source: `/mnt/fast_storage/lsx_model/moonshotai/Kimi-K3.1-Pro` (1.5 TB, 96 shards,
 497 340 tensors)
 Registry: `kimi-k3.1-pro` (family `kimi`, variant `pro`, files `kimi_moe_pro_*`)
 Format tag: `logestix-kimi-k31-pro-nvfp4`

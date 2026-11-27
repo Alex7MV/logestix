@@ -1,7 +1,7 @@
 # GigaChat4-37B-A4B ingestion — design (stage 0 triage + plan)
 
 Date: 2026-11-26. Branch: `feat/model-GigaChat4-37B-A4B`.
-Source checkpoint: `/mnt/fast_storage/huggingface/GigaChat4-37B-A4B`
+Source checkpoint: `/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-37B-A4B`
 (`ai-sage/GigaChat4-37B-A4B`, FP8 release, 3 shards, 36 700 tensors, 39 GB).
 Read-only reference (not vendored): `modeling_gigachat4.py`,
 `configuration_gigachat4.py`, `chat_template.jinja`, `tokenizer.json`.
@@ -125,7 +125,7 @@ Verified from `config.json`, the safetensors shard headers, `tokenizer.json`,
 | passport | `libs/lsxcommon/src/gigachat_moe_37b_constants.h`, `namespace lsxcommon::gigachat4::frozen` |
 | format tag | `logestix-gigachat4-nvfp4` |
 | forge flag | `--gigachat4` |
-| vault | `/mnt/fast_storage/huggingface/GigaChat4-37B-A4B/logestix` (`LSX_TEST_GIGACHAT4_37B_A4B_ROOT`) |
+| vault | `/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-37B-A4B/logestix` (`LSX_TEST_GIGACHAT4_37B_A4B_ROOT`) |
 | tokenizer_kind | 3 |
 
 ## Files

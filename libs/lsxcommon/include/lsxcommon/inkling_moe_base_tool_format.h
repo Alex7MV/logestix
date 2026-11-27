@@ -4,7 +4,7 @@
 // Ingestion Protocol step 4b).
 //
 // Grammar transcribed from the BASE checkpoint's own `chat_template.jinja`
-// (/mnt/fast_storage/huggingface/Inkling, verified by rendering it on
+// (/mnt/fast_storage/lsx_model/thinkingmachines/Inkling, verified by rendering it on
 // 2026-11-17). It is the same marker family as Inkling-2-Small's with two
 // verified differences:
 //   * the tool-result header carries the tool name:

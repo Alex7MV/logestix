@@ -14,7 +14,7 @@ plus the `index_norm_eps` cross-check), the four indexer kernels + selectable ML
 attention, the pipeline's indexer key cache with the dormant-at-`n_pos <= 2048`
 DSA branch, `KimiK31ProModel` + registry + the lifecycle contract, and the four
 real-weight targets with their template-derived goldens and the perf row.
-Stage 9 landed too, in place at `/mnt/fast_storage/huggingface/Kimi-K3.1-Pro/logestix`
+Stage 9 landed too, in place at `/mnt/fast_storage/lsx_model/moonshotai/Kimi-K3.1-Pro/logestix`
 (1.5 TB source → **1.5 TB tree** in 17 min: 1.4 TB routed-expert arrows, 23 GB
 pinned graph, 8.9 GB streamed latent/shared plane, `total_experts 82432`, 2120
 pinned + 460 streamed tensors, 165 vision + 3 projector tensors stripped and

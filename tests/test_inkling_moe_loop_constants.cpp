@@ -1,7 +1,7 @@
 // Frozen passport guard for Inkling-2-Mini (inkling2_loop). Host-only.
 //
 // Values are read off the released checkpoint
-// (/mnt/fast_storage/huggingface/Inkling-2-Mini: config.json,
+// (/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini: config.json,
 // hf_quant_config.json, tokenizer.json added_tokens and the safetensors
 // headers) and cross-checked against the reference semantics in transformers
 // 5.24.0 `models/inkling2_loop/modeling_inkling2_loop.py`. Load re-derives the

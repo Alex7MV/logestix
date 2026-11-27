@@ -2,7 +2,7 @@
 // Host-only, no CUDA deps.
 //
 // Values are read off the released checkpoint
-// (/mnt/fast_storage/huggingface/Kimi-K3.1-Pro: config.json + safetensors
+// (/mnt/fast_storage/lsx_model/moonshotai/Kimi-K3.1-Pro: config.json + safetensors
 // headers). Kimi-K3.1-Pro has the same text tower as Kimi-K3 and replaces the
 // 24 full-attention Gated-MLA layers with Gated DSA (the same gated NoPE MLA
 // plus a 32-head Lightning Indexer over a 2048-key budget). The load path

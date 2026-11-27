@@ -344,4 +344,4 @@ recompile: they do not call `RunInference`/`RunSelfCheck`.
 - Prompt tokenization in `lsxfabric` testprompt: the current code tokenizes a hardcoded
   prompt; the prompt text can stay there, but via `tok` from `IModel::Tokenizer()`.
 - The home model directory for tests (the `LSX_TEST_MODEL_PATH` environment variable,
-  falling back to `D:\Programs\huggingface.co\DeepSeek-V4-Flash`).
+  falling back to `D:\Programs\lsx_model\DeepSeek-V4-Flash`).

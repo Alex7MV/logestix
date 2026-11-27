@@ -1,7 +1,7 @@
 # Hy4-flash ingestion — design
 
 Date: 2026-11-23. Branch: `feat/hy4-flash-ingestion`.
-Source checkpoint: `/mnt/fast_storage/huggingface/Hy4-flash` (tencent/Hy4-flash,
+Source checkpoint: `/mnt/fast_storage/lsx_model/tencent/Hy4-flash` (tencent/Hy4-flash,
 revision as shipped 2026-11-23). Operator-approved scope decisions are marked
 **[approved]**.
 

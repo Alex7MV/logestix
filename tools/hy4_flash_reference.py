@@ -17,7 +17,7 @@ reference the engine must reproduce. It runs on CPU in bf16 with a streamed
 state_dict, because the full tree is 411 GB and no single GPU here can hold it.
 
     /mnt/fast_storage/tmp/hy4venv2/bin/python tools/hy4_flash_reference.py \
-        --model /mnt/fast_storage/huggingface/Hy4-flash --prompt "The capital of France is"
+        --model /mnt/fast_storage/lsx_model/tencent/Hy4-flash --prompt "The capital of France is"
 """
 import argparse
 import json
@@ -333,7 +333,7 @@ def dump_layers(model, ids, head, out_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/mnt/fast_storage/huggingface/Hy4-flash")
+    ap.add_argument("--model", default="/mnt/fast_storage/lsx_model/tencent/Hy4-flash")
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--tokens", type=int, default=4)
     ap.add_argument("--ids", default="")

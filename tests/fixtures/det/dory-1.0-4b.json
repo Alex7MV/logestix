@@ -2,7 +2,7 @@
   "format": "logestix-det-golden",
   "version": 1,
   "model_type": "dory-1.0-4b",
-  "source": "/mnt/fast_storage/huggingface/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
+  "source": "/mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
   "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
   "prompts": [
     {

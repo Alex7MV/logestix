@@ -25,7 +25,7 @@ the box.
 
 ## 2. Stage 1 — convert real weights
 
-- [x] 2.1 `lsxforge --input /mnt/fast_storage/huggingface/Mistral-Small-4-119B-2603-NVFP4
+- [x] 2.1 `lsxforge --input /mnt/fast_storage/lsx_model/mistralai/Mistral-Small-4-119B-2603-NVFP4
       --output <same> --mistral` (log to `/mnt/fast_storage/tmp/mistral_convert.log`).
 - [x] 2.2 Structural verification of `logestix/`:
       `model.index.json` format tag, `36 × 128 = 4608` expert arrows,

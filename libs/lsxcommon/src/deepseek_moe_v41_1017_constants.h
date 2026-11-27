@@ -3,7 +3,7 @@
 // Frozen DeepSeek-V4.1-Flash-1017 geometry (compile-time passport).
 //
 // Source of truth:
-// /mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash-1017/config.json
+// /mnt/fast_storage/lsx_model/deepseek-ai/DeepSeek-V4.1-Flash-1017/config.json
 // (model_type deepseek_v41_text, DeepseekV41ForCausalLM) + the CED constants in
 // the checkpoint's own inference/config.json.
 //

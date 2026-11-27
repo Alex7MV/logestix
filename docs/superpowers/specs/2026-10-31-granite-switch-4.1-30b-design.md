@@ -2,7 +2,7 @@
 
 ## Context
 
-`granite-switch-4.1-30b` (IBM, `/mnt/fast_storage/huggingface/granite-switch-4.1-30b`)
+`granite-switch-4.1-30b` (IBM, `/mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-30b`)
 is a **composed** checkpoint: the Granite 4.1 30B dense decoder plus two
 embedded act LoRA (aLoRA) adapters, control-token routing, and (in the source
 package only) a separate 470M speech encoder.

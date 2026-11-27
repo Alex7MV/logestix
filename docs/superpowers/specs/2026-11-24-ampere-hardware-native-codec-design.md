@@ -17,6 +17,11 @@ Revision note (2026-11-27c, **deletion verified complete**): the last leftover t
 `.arrow` files in the vault (§1.1.1). No control tree exists for any model, so the
 contract rests entirely on our own fixtures plus the bootstrap conversions; the
 last open question about keeping a reference tree is closed (§8).
+Revision note (2026-11-27f, **source store moved and org-nested**): checkpoints
+live at `/mnt/fast_storage/lsx_model/<org>/<model>` (39 over 18 orgs); the old
+flat vault is gone. §2.4.1 gains `FindSourceModel`/`ListSourceModels`, drops
+`LegacyDir`, and records that the checkpoint predicate must accept Mistral's
+`params.json` layout as well as HF's `config.json`.
 Revision note (2026-11-27d/e, **ownership and layout**): answering "is
 `artifact.fb` per model or per artifact?" found a second source of truth — codec
 declarations still lived in `model.index.json` — closed by rule 5 and
@@ -139,7 +144,7 @@ outlived its usefulness.
 ## 1. Evidence base (what was measured, not assumed)
 
 Recon on 2026-11-24, re-measured 2026-11-27, against
-`/mnt/fast_storage/huggingface` (40 source dirs) and `models/*.json`
+`/mnt/fast_storage/lsx_model` (39 checkpoints over 18 orgs) and `models/*.json`
 (47 manifest rows).
 
 ### 1.1 Inventory (cold start, 2026-11-27)
@@ -150,7 +155,7 @@ only; the artifact store starts empty.
 | quantity | value | consequence |
 |---|---|---|
 | manifest rows (`models/*.json`) | **47** | the registry is the contract for what can be converted |
-| source dirs on disk | **40**, of which 39 are representable by the manifest | `ERNIE-5.5-Flash-Base-BF16` has **no manifest row** |
+| source checkpoints on disk | **39** over 18 orgs, of which 38 are representable by the manifest | `ERNIE-5.5-Flash-Base-BF16` has **no manifest row**; the store is `<org>/<model>` |
 | converted trees on disk | **0** | **the whole real-weight suite is dark until bootstrap** |
 | `.arrow` files anywhere in the vault | **0** | nothing to read, nothing to compare against |
 | free space on the vault volume | **2.6 TB of 15 TB (82 % used)** | the disk constraint of the previous revision is **gone** |
@@ -160,7 +165,7 @@ only; the artifact store starts empty.
 
 The last leftover — `Inkling-2-Mini/logestix/`, 18 GB — was the final tree; the
 operator deleted it too. Measured now: **0 `logestix/` directories and 0 `.arrow`
-files anywhere under `/mnt/fast_storage/huggingface`.** The vault is sources only.
+files anywhere under the source store.** The store is sources only.
 
 Three consequences that the rest of this document now assumes:
 
@@ -529,11 +534,16 @@ sm_87 does **not** execute sm_86 SASS, so an Ampere fatbin needs both
 #### 2.4.1 Roots and resolution
 
 ```
-LSX_SOURCE_ROOT    read-only HF checkpoints.        default: kModelRootBase
+LSX_SOURCE_ROOT    read-only HF checkpoints.        default: /mnt/fast_storage/lsx_model
 LSX_ARTIFACT_ROOT  converted artifacts (writable).  default: UNSET
-LSX_MODEL_ROOT     legacy single-root vault.        default: kModelRootBase
+LSX_MODEL_ROOT     the pre-split spelling of the source root; still consulted
+                   after LSX_SOURCE_ROOT so an older environment keeps working
 LSX_CACHE_DIR      per-user host cache (unchanged)
 ```
+
+The store is **org-nested**: `<SourceRoot>/<org>/<model>`, the layout Hugging
+Face uses for a download. Measured on 2026-11-27: 39 checkpoints over 18 orgs
+(`Qwen/Qwen3.5-9B`, `microsoft/phi-4`, `thinkingmachines/Inkling`, …).
 
 Resolution is a pure function with a documented precedence; it never guesses
 codecs, only *location*:
@@ -558,16 +568,35 @@ fs::path ArtifactDir(const std::string &family,
                      const std::string &model_type,
                      const std::string &profile);
 
-// Where the LEGACY single-root vault used to keep a converted tree
-// (<LSX_MODEL_ROOT>/<Model>/logestix/). There are no such trees any more: this
-// exists so that pointing a load at a source checkout produces
-// "this is a source dir, not an artifact" instead of "path not found".
-// It is a diagnostic, NOT a compatibility path — nothing here can be loaded.
-fs::path LegacyDir(const std::string &model);
+// Source checkpoints, one level down: <SourceRoot>/<org>/<model>.
+struct SourceModelRef { std::string org, model; fs::path dir; };
+
+// Every checkpoint under the source root, sorted by (org, model). A directory
+// directly under the root is an ORG; only one that also holds a checkpoint does
+// not qualify, so <root>/microsoft never appears as a model.
+//
+// "Is this a checkpoint?" is config.json OR params.json OR any *.safetensors
+// file. config.json alone is NOT enough: Mistral's own download layout ships
+// params.json + consolidated*.safetensors and no config.json (measured on
+// mistralai/Mistral-Small-4-119B), so that predicate hides real models.
+std::vector<SourceModelRef> ListSourceModels();
+
+// Exactly one checkpoint named `model`, which may be bare ("phi-4") or
+// org-qualified ("microsoft/phi-4"). A qualified name matches exactly rather
+// than falling back to a search. Returns nullopt when there is none OR when the
+// bare name matches under more than one org; *why names the orgs. An ambiguous
+// name is never resolved by picking one, because the choice would depend on
+// directory iteration order.
+std::optional<fs::path> FindSourceModel(const std::string &model,
+                                        std::string *why);
 
 // NO kLegacy status: with the artifact store starting empty there is nothing
 // legacy to resolve to, and a status that could only ever fail is a trap for
 // the next reader. A source dir resolves to kSourceOnly.
+//
+// There is also no LegacyDir(): its premise was a flat <Model> root, so with an
+// org-nested store it could not even be computed, and nothing loadable ever
+// lived there. FindSourceModel answers the question that mattered.
 enum class ResolveStatus { kArtifact, kSourceOnly, kNotFound };
 struct Resolved {
     ResolveStatus status;
@@ -581,8 +610,9 @@ Resolved Resolve(const std::string &model_or_path,
 ```
 
 `Resolve` accepts: an artifact profile dir (already resolved → return it), a
-source model dir (→ select a profile under the artifact root), or a bare model
-name (→ same, family from the manifest).
+source model dir (→ kSourceOnly, so the caller can say "convert it"), a bare
+model name, an org-qualified name (`microsoft/phi-4`), or an org-nested path
+(`<root>/Qwen/Qwen3.5-9B`).
 
 #### 2.4.2 The `logestix/` leaf is gone — the path form is the profile dir
 

@@ -32,7 +32,7 @@ std::string VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_INKLING_ROOT"))
         return env;
-    return "/mnt/fast_storage/huggingface/Inkling";
+    return "/mnt/fast_storage/lsx_model/thinkingmachines/Inkling";
 }
 
 fs::path ConvertedFixture()

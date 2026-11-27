@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ingest tencent/Hy4-flash (`/mnt/fast_storage/huggingface/Hy4-flash`) into logestix as a text-backbone NVFP4 model with a registered `hy4-flash` identity, a native Hunyuan tokenizer/tool bridge, family CUDA decode kernels, and every lifecycle gate green.
+**Goal:** Ingest tencent/Hy4-flash (`/mnt/fast_storage/lsx_model/tencent/Hy4-flash`) into logestix as a text-backbone NVFP4 model with a registered `hy4-flash` identity, a native Hunyuan tokenizer/tool bridge, family CUDA decode kernels, and every lifecycle gate green.
 
 **Architecture:** One family contour under `hy` (`hy_moe_flash_*`): frozen passport → C++ converter (BF16→NVFP4, routed experts streamed to host Arrow, Engram/ViT/DFly2 cut and counted) → NVFP4 loader over the neutral `ExpertStore` → per-token decode pipeline (iHC streams, gated MLA with learnable sinks, SWA ring + IndexPool sparse selection, LatentMoE) → `IModel` with streaming/abort. Goldens come from a new Python oracle (`tools/hy4_flash_oracle.py`) because no published implementation of the flash architecture exists (transformers ships `hy_v4`, not `hy_v4_flash`).
 
@@ -50,7 +50,7 @@
   - `IsMoeLayer(l)` agrees with `mlp_layer_types[l] == "sparse"`;
   - `IsEngramCut(l)` agrees with `text_config.engram_layer_ids == {1,11,21,31}`;
   - the constants equal `hidden_size`, `num_hidden_layers`, `vocab_size`, `moe_intermediate_size`, `intermediate_size`, `n_routed_experts`, `num_experts_per_tok`, `n_shared_experts`, `q_lora_rank`, `kv_lora_rank`, `qk_nope_head_dim`, `qk_rope_head_dim`, `v_head_dim`, `sliding_window`, `hc_mult`, `routed_scaling_factor`, `swiglu_limit`, `rms_norm_eps`, `hc_eps`, `hc_magnitude`, `index_n_heads`, `index_head_dim`, `index_topk`, `compressed_indexer_compress_ratio`, `compressed_indexer_group_topk`;
-  - the vault root is `LSX_TEST_HY4_FLASH_ROOT`, defaulting to `/mnt/fast_storage/huggingface/Hy4-flash`.
+  - the vault root is `LSX_TEST_HY4_FLASH_ROOT`, defaulting to `/mnt/fast_storage/lsx_model/tencent/Hy4-flash`.
 
 - [ ] **Step 2: Run it to make sure it fails**
 
@@ -99,7 +99,7 @@ Expected: PASS (or SKIP if the vault is absent).
 - Layout written: `logestix/model.index.json`, `logestix/pinned/global.arrow`, `logestix/pinned/layer_XXX.arrow` (raw norms/iHC/sinks/router), `logestix/pinned/layer_XXX_nvfp4.arrow` (dense projections), `logestix/experts/layer_XXX/expert_NNNNN.arrow` (one `PackedExpert` per expert: w1 = `gate_up` first half, w3 = `gate_up` second half, w2 = `down`).
 
 - [ ] **Step 1: Write the failing test** — `tests/test_hy_moe_flash_convert.cpp`:
-  - `TEST_CASE("hy4 convert: classifier covers every real tensor name")` — host-only, reads ONLY `/mnt/fast_storage/huggingface/Hy4-flash/model.safetensors.index.json` (167 KB), `SKIP()`s when absent, asserts every one of the 1964 names maps to a kind other than `kUnknown`, and asserts the bucket counts: 1632 routed-expert tensors (41 layers × 512 × 2 packed tensors… computed in the test from the index), the Engram/ViT/DFly2 counts, and that all 4 `engram_layer` layers classify as `kCutEngram`.
+  - `TEST_CASE("hy4 convert: classifier covers every real tensor name")` — host-only, reads ONLY `/mnt/fast_storage/lsx_model/tencent/Hy4-flash/model.safetensors.index.json` (167 KB), `SKIP()`s when absent, asserts every one of the 1964 names maps to a kind other than `kUnknown`, and asserts the bucket counts: 1632 routed-expert tensors (41 layers × 512 × 2 packed tensors… computed in the test from the index), the Engram/ViT/DFly2 counts, and that all 4 `engram_layer` layers classify as `kCutEngram`.
   - `TEST_CASE("hy4 convert: synthetic checkpoint end to end")` — builds a synthetic tree with `synthtest::WriteSafetensors` (`config.json` with relaxed geometry + one dense layer + one MoE layer + 4 experts + an engram layer + a vision tower sample + a dfly sample), runs the converter, then asserts: index has `format == "logestix-hy4-nvfp4"`, `model == <dir name>`, `deferred.engram == <n>`, every expected Arrow file exists, every dense projection has a `DenseNvfp4` record with `packed_bytes == rows*cols/2`, every norm/scalar is a raw record with its source dtype, and `experts/layer_001/expert_00003.arrow` decodes to three NVFP4 planes whose `gate_up` split is 2*I rows.
   - `TEST_CASE("hy4 convert: an unknown tensor fails the conversion")` — one synthetic tensor named `model.layers.0.mystery.weight` must make `ConvertHy4FlashModel` return a non-OK status naming it.
 
@@ -107,7 +107,7 @@ Expected: PASS (or SKIP if the vault is absent).
 
 - [ ] **Step 3: Implement the converter** — `ClassifyTensor` by name pattern (the exact leaf set is the design doc's artifact table); raw bucket for norms/`learnable_sink_param`/`hc_*`/`e_score_correction_bias`/indexer F32 scalars; `DenseNvfp4` for every 2-D linear (`q_a_proj`, `q_b_proj`, `kv_a_proj_with_mqa`, `kv_b_proj`, `o_proj`, `linear_gate`, dense `gate/up/down`, `shared_experts.*`, `routed_expert_down_proj`, `routed_expert_up_proj`, `combine_*` stays raw, indexer `query_projection`/`token_key_projection`/`head_weight_projection`, dense-layer `mlp.*`); experts from the 3-D `[512, 3072, 1536]` `gate_up_proj` and `[512, 1536, 1536]` `down_proj` tensors by per-expert slicing (they are single tensors, not per-expert names — this is the one place the flash layout differs from flint); `QuantizeSlice`/`QuantizeSliceBf16` for BF16 sources; write the index with the per-layer list and the `deferred` counts.
 
-- [ ] **Step 4: Run** the convert target → PASS. Then run it against the REAL checkpoint into `/mnt/fast_storage/huggingface/Hy4-flash` (this writes `logestix/` next to the weights; ~90 GB, run it in the background).
+- [ ] **Step 4: Run** the convert target → PASS. Then run it against the REAL checkpoint into `/mnt/fast_storage/lsx_model/tencent/Hy4-flash` (this writes `logestix/` next to the weights; ~90 GB, run it in the background).
 - [ ] **Step 5: Commit** `feat(hy4): the converter cuts Engram/ViT/DFly2 and packs LatentMoE experts`
 
 ---

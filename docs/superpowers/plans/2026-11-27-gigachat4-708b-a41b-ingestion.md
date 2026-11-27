@@ -36,7 +36,7 @@ touched), Arrow IPC weight format, Catch2 tests, ctest via
 - Model-scoped verification only: `ctest --preset linux-debug` (guards) plus
   `-R "gigachat" -j 1`. No label sweeps.
 - Conversion output root is the vault dir:
-  `/mnt/fast_storage/huggingface/GigaChat4-708B-A41B/logestix` (861 GB free,
+  `/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B/logestix` (861 GB free,
   ~410 GB artifact).
 - Temp scratch on the fast disk: `/mnt/fast_storage/tmp`.
 
@@ -675,7 +675,7 @@ git commit -m "feat: GigaChat4-708B-A41B row — passport, converter, loader, mo
 
 ### Task 8: Convert the real checkpoint (720 GB)
 
-**Files:** none (artifact under `/mnt/fast_storage/huggingface/GigaChat4-708B-A41B/logestix`)
+**Files:** none (artifact under `/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B/logestix`)
 
 - [ ] **Step 1: Check the card is idle** — `nvidia-smi --query-compute-apps=pid,used_memory --format=csv`; no compute apps, else wait.
 
@@ -686,8 +686,8 @@ git commit -m "feat: GigaChat4-708B-A41B row — passport, converter, loader, mo
 ```bash
 cd /mnt/fast_storage/projects/cuda/logestix
 time build/linux-release-znver4-aocc/apps/lsxforge --gigachat4-708b \
-  --input /mnt/fast_storage/huggingface/GigaChat4-708B-A41B \
-  --output /mnt/fast_storage/huggingface/GigaChat4-708B-A41B 2>&1 | tee /mnt/fast_storage/tmp/gc708b-convert.log
+  --input /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B \
+  --output /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B 2>&1 | tee /mnt/fast_storage/tmp/gc708b-convert.log
 ```
 Expected: `GigaChat4 conversion: 64 layers, 15616 experts, 11 MTP tensors stored`
 and a ~410 GB tree; monitor `df -h /mnt/fast_storage` (must not go below ~50 GB).
@@ -696,11 +696,11 @@ and a ~410 GB tree; monitor `df -h /mnt/fast_storage` (must not go below ~50 GB)
 
 ```bash
 python3 - <<'EOF'
-import json; p='/mnt/fast_storage/huggingface/GigaChat4-708B-A41B/logestix/model.index.json'
+import json; p='/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B/logestix/model.index.json'
 d=json.load(open(p)); print(d['format'], d['num_layers'], d['num_experts'], d['deferred'])
 EOF
-du -sh /mnt/fast_storage/huggingface/GigaChat4-708B-A41B/logestix
-ls /mnt/fast_storage/huggingface/GigaChat4-708B-A41B/logestix/experts | wc -l   # 61
+du -sh /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B/logestix
+ls /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B/logestix/experts | wc -l   # 61
 ```
 Expected: format `logestix-gigachat4-708b-nvfp4`, 64 layers, 256 experts, 61
 expert dirs, ~410 GB.
@@ -714,7 +714,7 @@ expert dirs, ~410 GB.
 - [ ] **Step 1: Capture the parity goldens (template-derived, 37B precedent)**
 
 ```bash
-python3 tools/fsi_capture.py --model /mnt/fast_storage/huggingface/GigaChat4-708B-A41B \
+python3 tools/fsi_capture.py --model /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B \
   --type gigachat4-708b-a41b --template-only \
   --out tests/fixtures/fsi/gigachat4-708b-a41b.json
 # same for tools/code_capture.py -> tests/fixtures/code/, tools/det_capture.py -> tests/fixtures/det/

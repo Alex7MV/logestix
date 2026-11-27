@@ -3,7 +3,7 @@
 **Status: COMPLETE (2026-11-22).** Branch `feat/inkling-2-varloop-ingest`.
 Design: `docs/superpowers/specs/2026-11-22-tml-varloop-ingest-design.md`.
 
-Source checkpoint: `/mnt/fast_storage/huggingface/TML-d24-varloop-research`
+Source checkpoint: `/mnt/fast_storage/lsx_model/thinkingmachines/TML-d24-varloop-research`
 (`thinkingmachines/tml-d24-varloop-research`, released 2026-11-20). Single
 18.2 GiB shard (`79e60b65…`) + a 0.59 GiB `mtp.safetensors` the index does not
 list. Text-only ingestion: the vision tower is stripped, images are out of

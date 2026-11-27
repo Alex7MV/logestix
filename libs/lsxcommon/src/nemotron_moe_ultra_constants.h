@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen NVIDIA-Nemotron-3-Ultra-550B-A55B geometry (compile-time passport).
-// Source of truth: /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
+// Source of truth: /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
 // config.json (model_type nemotron_h) + safetensors inventory audited 2026-11-10:
 // 108 layers (48 mamba + 48 moe + 12 full attention at 7/14/23/32/39/48/57/64/
 // 73/82/89/98), hidden 8192, mamba2 d_inner 16384 (256x64), n_groups 8, state

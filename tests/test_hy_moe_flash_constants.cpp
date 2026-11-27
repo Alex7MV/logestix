@@ -27,7 +27,7 @@ std::filesystem::path VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT"))
         return std::filesystem::path(env);
-    return std::filesystem::path("/mnt/fast_storage/huggingface/Hy4-flash");
+    return std::filesystem::path("/mnt/fast_storage/lsx_model/tencent/Hy4-flash");
 }
 
 // The text_config object of config.json. The DOM parser is used on purpose:

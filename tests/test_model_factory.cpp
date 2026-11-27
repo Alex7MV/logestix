@@ -15,7 +15,7 @@ std::string TestModelPath()
 {
     if (const char *p = std::getenv("LSX_TEST_MODEL_PATH"))
         return p;
-    return R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    return R"(D:\Programs\lsx_model\DeepSeek-V4-Flash)";
 }
 
 // Real-model tests need a model dir with a ready logestix index. Unset or

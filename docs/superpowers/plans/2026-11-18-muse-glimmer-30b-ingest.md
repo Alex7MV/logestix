@@ -181,7 +181,7 @@
 - Modify: `tools/fsi_capture.py`, `tools/code_capture.py`, `tools/det_capture.py` OVERRIDES: `"muse-glimmer-30b": {"loader": "muse_text", ...}` (import oracle; chat_template.jinja framing; ignore_eos where needed)
 - Create: `tests/fixtures/{fsi,code,det}/muse-glimmer-30b.json` (captured goldens)
 
-- [ ] Step 1: Convert the real checkpoint: `build/linux-debug/apps/lsxforge/lsxforge --muse --input /mnt/fast_storage/huggingface/Muse-Glimmer-30B --output <vault>/Muse-Glimmer-30B` (vault root from lsx_model_models_dir; conversion output under it). Verify index: 809 ballast counted, 627 text tensors converted, vram block.
+- [ ] Step 1: Convert the real checkpoint: `build/linux-debug/apps/lsxforge/lsxforge --muse --input /mnt/fast_storage/lsx_model/meta-models/Muse-Glimmer-30B --output <vault>/Muse-Glimmer-30B` (vault root from lsx_model_models_dir; conversion output under it). Verify index: 809 ballast counted, 627 text tensors converted, vram block.
 - [ ] Step 2: Oracle smoke: Paris prompt greedy on CPU → confirm "Paris" reachable; record probe parameters (frame_prompt yes/no, max_gen, bit-exact kOff) from THIS run.
 - [ ] Step 3: Capture FSI/CODE/DET goldens (CPU, greedy, chat-template framed; budgets per skill defaults, raise if reasoning truncates). Commit goldens + capture-tool changes.
 - [ ] Step 4: Update manifest: selfcheck_frame_prompt/selfcheck_max_gen/selfcheck_bit_exact from measurement; drop golden_debt entries whose goldens now exist.

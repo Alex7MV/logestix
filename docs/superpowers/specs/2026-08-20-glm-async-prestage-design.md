@@ -92,7 +92,7 @@ selfchecks is the acceptance metric (§4).
 
 ## 4. Acceptance gate (from strategy spec §5)
 
-1. `test_glm_selfcheck` — 3-cycle `final_logits` byte-identical, `"Paris"`. (SKIP w/o checkpoint acceptable; must be bit-exact if model is present on `D:\Programs\huggingface.co`.)
+1. `test_glm_selfcheck` — 3-cycle `final_logits` byte-identical, `"Paris"`. (SKIP w/o checkpoint acceptable; must be bit-exact if model is present on `D:\Programs\lsx_model`.)
 2. `test_glm_experts`, `test_glm_moe_compute`, `test_glm_model`, `test_expert_store` → unchanged PASS.
 3. Occupancy/throughput: measure that warps/SM ≤48 and no throughput regression on the on-demand MoE path. If the machinery can't be benchmarked in CI without a model, reason from the overlap math (bytes moved / GEMM time) — document expected gain.
 4. No plumbing regression: `rg "struct ExpertDb|struct GlmExpertDb"` stays empty; DeepSeek loader + store tests still pass.

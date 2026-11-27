@@ -828,8 +828,8 @@ python3 -m venv --system-site-packages .venv-gs
 
 ```bash
 build/linux-debug/apps/lsxforge/lsxforge --granite-switch \
-  /mnt/fast_storage/huggingface/granite-switch-4.1-30b \
-  /mnt/fast_storage/huggingface/granite-switch-4.1-30b
+  /mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-30b \
+  /mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-30b
 ```
 
 - [ ] **Step 2: Run SelfCheck x3** (`lsxbenchmark --selfcheck`), then FSI, CODE,

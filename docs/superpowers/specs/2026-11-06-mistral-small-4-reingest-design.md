@@ -5,7 +5,7 @@
 The `mistral-small-4-119b` family landed on 2026-10-11/12 (stages 0–5 + 4b,
 real-weight conversion, five decode defects found and fixed). The converted
 vault tree is **no longer present** on this machine
-(`/mnt/fast_storage/huggingface/Mistral-Small-4-119B-2603-NVFP4/logestix/`
+(`/mnt/fast_storage/lsx_model/mistralai/Mistral-Small-4-119B-2603-NVFP4/logestix/`
 does not exist while 24 other families do have theirs), so every real-weight
 claim about this family is currently unverifiable. The goal is to re-establish
 it: convert the source again and execute **every** model-lifecycle stage

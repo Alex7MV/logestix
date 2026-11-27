@@ -2,7 +2,7 @@
   "format": "logestix-det-golden",
   "version": 1,
   "model_type": "hy-memory-30b-a3b",
-  "source": "/mnt/fast_storage/huggingface/Hy-Memory-30B-A3B",
+  "source": "/mnt/fast_storage/lsx_model/tencent/Hy-Memory-30B-A3B",
   "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
   "prompts": [
     {

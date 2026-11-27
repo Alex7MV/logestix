@@ -187,7 +187,7 @@ LSX_HY4_DUMP_DIR=/mnt/fast_storage/tmp/hy4-eng-dump \
 
 # 4. the same reference on the ARTIFACT's weights (~40 min: 20992 experts)
 /mnt/fast_storage/tmp/hy4venv2/bin/python tools/hy4_flash_reference.py \
-  --ids 802,8778,299,12749,341 --artifact /mnt/fast_storage/huggingface/Hy4-flash \
+  --ids 802,8778,299,12749,341 --artifact /mnt/fast_storage/lsx_model/tencent/Hy4-flash \
   --dump /tmp/hy4-ref-full-art.npz
 
 # 5. boundary-by-boundary verdict

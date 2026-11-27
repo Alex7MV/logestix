@@ -4,7 +4,7 @@ Date: 2026-11-17. Approved by operator ("ок").
 
 ## Intent
 
-Ingest the `Inkling` base checkpoint (`/mnt/fast_storage/huggingface/Inkling`,
+Ingest the `Inkling` base checkpoint (`/mnt/fast_storage/lsx_model/thinkingmachines/Inkling`,
 architecture `inkling_mm_model`, text tower `inkling`) into logestix end to end:
 converter, NVFP4 tree, model class, tokenizer + tool bridge, CUDA kernels, all
 lifecycle gates (SelfCheck/FSI/CODE/DET, tool round-trip, perf), report.

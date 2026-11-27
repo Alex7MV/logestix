@@ -49,7 +49,7 @@ int EnvIntOr(const char *name, int dflt)
 std::string VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_INKLING_2_MINI_ROOT")) return env;
-    return "/mnt/fast_storage/huggingface/Inkling-2-Mini";
+    return "/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini";
 }
 
 lsxcommon::ModelInitConfig Cfg(const std::string &root)

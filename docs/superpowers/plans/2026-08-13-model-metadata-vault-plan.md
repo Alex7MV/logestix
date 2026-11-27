@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Establish a single compile-time-selected platform root (`D:\Programs\huggingface.co` / `/mnt/llm_models/models`) and route structural JSON manifests and the binary translation passport into the unified `model-metadata/` vault by default.
+**Goal:** Establish a single compile-time-selected platform root (`D:\Programs\lsx_model` / `/mnt/llm_models/models`) and route structural JSON manifests and the binary translation passport into the unified `model-metadata/` vault by default.
 
 **Architecture:** A single path authority (`lsxcommon/path_registry`) resolves the platform root + auto-appends the invariant `model-metadata/` block to every metadata read/write query. Manifest reads use vault-first, per-checkpoint-fallback resolution (compositional, non-breaking). The passport builder defaults its output into the vault. Validated by platform-asset unit tests; real-model tests stay SKIP-guarded and unaffected.
 
@@ -132,7 +132,7 @@ TEST_CASE("path_registry platform root base", "[path_registry]")
     const std::string models = lsxcommon::lsx_model_models_dir();
     REQUIRE_FALSE(models.empty());
 #if defined(_WIN32)
-    CHECK(models == R"(D:\Programs\huggingface.co)");
+    CHECK(models == R"(D:\Programs\lsx_model)");
 #else
     CHECK(models == "/mnt/llm_models/models");
 #endif
@@ -374,7 +374,7 @@ Add to both `apps/lsxcli/src/main.cpp` and `apps/lsxfabric/src/main.cpp` (they a
 In `apps/lsxcli/src/main.cpp`, replace
 
 ```cpp
-    std::string model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    std::string model_path = R"(D:\Programs\lsx_model\DeepSeek-V4-Flash)";
 ```
 
 with
@@ -391,7 +391,7 @@ and add `#include <filesystem>` to its includes block.
 In `apps/lsxfabric/src/main.cpp`, replace
 
 ```cpp
-    std::string model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    std::string model_path = R"(D:\Programs\lsx_model\DeepSeek-V4-Flash)";
 ```
 
 with the identical `std::filesystem::path(lsxcommon::lsx_model_models_dir()) / "DeepSeek-V4-Flash"` expression (Step 2), adding `#include <filesystem>`.

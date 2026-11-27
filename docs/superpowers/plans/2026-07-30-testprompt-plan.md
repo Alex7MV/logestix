@@ -1259,7 +1259,7 @@ Add after the existing lifecycle test:
 TEST_CASE("--testprompt runs and produces output", "[lsxfabric][inference]") {
     lsxcommon::Core::Initialize("test_inference.log");
     lsxcommon::gpu::InferenceConfig cfg;
-    cfg.model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    cfg.model_path = R"(D:\Programs\lsx_model\DeepSeek-V4-Flash)";
     cfg.max_gen_tokens = 8; // short for testing
     auto result = lsxcommon::gpu::RunInference(cfg);
     CHECK(result.ok);

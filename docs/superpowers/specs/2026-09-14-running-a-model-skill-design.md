@@ -65,7 +65,7 @@ Sections:
    `logestix-repo-map` (where the code is), `nvfp4-blackwell-conventions`
    (kernel-level rules when a change is needed).
 2. **Vault and paths** — `path_registry.h`: platform roots
-   (`/mnt/llm_models/models`, Win `D:\Programs\huggingface.co`),
+   (`/mnt/llm_models/models`, Win `D:\Programs\lsx_model`),
    `model-metadata/`, the `lsx_model_metadata(rel)` invariant, and the
    **gotcha: the CLI takes the vault root, not the `logestix/` subdir**.
 3. **Applications and exact invocations** — a table with one canonical command

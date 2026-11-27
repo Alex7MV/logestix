@@ -4,7 +4,7 @@
 
 Phase 4. Establish a single, platform-uniform root for all model structural JSON
 manifests and binary translation passport files. Today every app hardcodes a
-model checkpoint path (`D:\Programs\huggingface.co\...` on Windows,
+model checkpoint path (`D:\Programs\lsx_model\...` on Windows,
 `/mnt/llm_models/models/...` on Linux) and appends per-model `logestix/pinned`
 subdirectories ad hoc. This work centralizes that under one invariant
 `model-metadata/` block appended automatically to the resolved platform root.
@@ -17,7 +17,7 @@ build matrix:
 
 | Platform | Root base |
 |---|---|
-| `_WIN32` | `D:\Programs\huggingface.co` |
+| `_WIN32` | `D:\Programs\lsx_model` |
 | else (Linux) | `/mnt/llm_models/models` |
 
 Every metadata read/write query resolves to `model_metadata_root()`:
@@ -75,7 +75,7 @@ reconstructs the root.
 ### CLI / app defaults
 
 - `apps/lsxcli/src/main.cpp`, `apps/lsxfabric/src/main.cpp`,
-  `apps/lsxforge/src/main.cpp` — hardcoded `D:\Programs\huggingface.co\...`
+  `apps/lsxforge/src/main.cpp` — hardcoded `D:\Programs\lsx_model\...`
   defaults replaced by vault-root resolution; `lsxforge` pinned-dir construction
   (`model_path/logestix/pinned`) re-rooted to `model_metadata_root()`
 

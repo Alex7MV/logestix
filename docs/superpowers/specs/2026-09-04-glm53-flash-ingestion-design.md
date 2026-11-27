@@ -94,7 +94,7 @@ Additional (protocol steps 4, 7):
 ## Metadata
 
 Manifest and indices — via `lsxcommon::lsx_model_metadata(rel)` in
-`/mnt/llm_models/models/model-metadata/` (Linux) / `D:\Programs\huggingface.co\model-metadata`
+`/mnt/llm_models/models/model-metadata/` (Linux) / `D:\Programs\lsx_model\model-metadata`
 (Windows). No hardcoded paths in the converter.
 
 ## Generation driver

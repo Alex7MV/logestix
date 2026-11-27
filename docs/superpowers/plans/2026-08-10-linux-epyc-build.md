@@ -18,7 +18,7 @@
 - Windows (MSVC) build must remain untouched: every flag is behind `$<PLATFORM_ID:Linux>`; no changes to windows presets or MSVC-specific flags.
 - Flag mapping: GCC → `-flto` (no `=thin`); Clang/AOCC → `-flto=thin`. `-march=znver4` supported by GCC ≥ 12 and Clang/AOCC (LLVM) — both present here.
 - `LSX_ARCH_ZNVER4`/`LSX_LTO` default OFF; only the `linux-release-znver4` preset enables them.
-- Test expectation on this box: ctest `11/12` — the only failure is the pre-existing `test_model_factory` (`Create + Load + Inspect on real model dir` needs the real DeepSeek-V4-Flash checkpoint at a Windows path `D:\Programs\huggingface.co\...`; unrelated to this work).
+- Test expectation on this box: ctest `11/12` — the only failure is the pre-existing `test_model_factory` (`Create + Load + Inspect on real model dir` needs the real DeepSeek-V4-Flash checkpoint at a Windows path `D:\Programs\lsx_model\...`; unrelated to this work).
 
 ---
 
@@ -316,7 +316,7 @@ ctest --preset linux-release-znver4 2>&1 | tail -20
 ```
 Expected: 12 tests, 11 PASS, 1 FAIL.
 
-The single failure is `test_model_factory` — pre-existing and unrelated (`Create + Load + Inspect on real model dir` requires the real DeepSeek-V4-Flash checkpoint at `D:\Programs\huggingface.co\DeepSeek-V4-Flash`; not available on Linux). Confirm it is the ONLY failure:
+The single failure is `test_model_factory` — pre-existing and unrelated (`Create + Load + Inspect on real model dir` requires the real DeepSeek-V4-Flash checkpoint at `D:\Programs\lsx_model\DeepSeek-V4-Flash`; not available on Linux). Confirm it is the ONLY failure:
 ```bash
 ctest --preset linux-release-znver4 2>&1 | grep -E "tests passed|Failed"
 ```

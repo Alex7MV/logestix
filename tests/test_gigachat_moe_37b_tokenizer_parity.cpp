@@ -33,7 +33,7 @@ std::filesystem::path VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_GIGACHAT4_37B_A4B_ROOT"))
         return env;
-    return "/mnt/fast_storage/huggingface/GigaChat4-37B-A4B";
+    return "/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-37B-A4B";
 }
 
 ArrowTokenizerDb LoadVaultTokenizer(const std::filesystem::path &root)

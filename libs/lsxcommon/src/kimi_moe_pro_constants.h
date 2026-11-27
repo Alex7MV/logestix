@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen Kimi-K3.1-Pro geometry (compile-time passport).
-// Source of truth: /mnt/fast_storage/huggingface/Kimi-K3.1-Pro (config.json +
+// Source of truth: /mnt/fast_storage/lsx_model/moonshotai/Kimi-K3.1-Pro (config.json +
 // configuration_kimi_k3.py + safetensors headers, audited 2026-11-05).
 //
 // Kimi-K3.1-Pro is a SIBLING VARIANT of the `kimi` family, not a new family:

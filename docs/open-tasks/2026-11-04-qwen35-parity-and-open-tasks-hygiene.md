@@ -14,7 +14,7 @@ The QA-gate numbers for this member were not taken from
 
 ## 1. The converted tree exists, and all four gates are green
 
-`/mnt/fast_storage/huggingface/Qwen3.5-35B-A3B/logestix` — 19 GB, converted
+`/mnt/fast_storage/lsx_model/Qwen/Qwen3.5-35B-A3B/logestix` — 19 GB, converted
 2026-10-01 in the Arrow-audit session (the archive row for 2026-11-01 records the
 conversion: "Qwen3.5-35B-A3B 217 s/19 GB"). The three goldens
 (`tests/fixtures/{fsi,code,det}/qwen3.5-35b-a3b.json`) were already committed, and
@@ -22,7 +22,7 @@ conversion: "Qwen3.5-35B-A3B 217 s/19 GB"). The three goldens
 every gate was *required* to be green and none had ever been run.
 
 Run serially on the real weights, one GPU workload at a time
-(`LSX_TEST_QWEN_MOE_MODEL_PATH=/mnt/fast_storage/huggingface/Qwen3.5-35B-A3B`):
+(`LSX_TEST_QWEN_MOE_MODEL_PATH=/mnt/fast_storage/lsx_model/Qwen/Qwen3.5-35B-A3B`):
 
 | gate | result |
 |---|---|

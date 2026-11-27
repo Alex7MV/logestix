@@ -1129,7 +1129,7 @@ target_link_libraries(test_granite_switch_tool_framing PRIVATE
 add_executable(test_granite_switch_tokenizer_parity test_granite_switch_tokenizer_parity.cpp)
 target_compile_definitions(test_granite_switch_tokenizer_parity PRIVATE
     LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
-    LSX_GRANITE_SWITCH_TOKENIZER_PATH="/mnt/fast_storage/huggingface/granite-switch-4.1-30b/tokenizer.json")
+    LSX_GRANITE_SWITCH_TOKENIZER_PATH="/mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-30b/tokenizer.json")
 target_link_libraries(test_granite_switch_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 add_executable(test_granite_switch_adapter_parity test_granite_switch_adapter_parity.cpp)

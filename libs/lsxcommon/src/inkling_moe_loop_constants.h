@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen Inkling-2-Mini geometry (compile-time passport).
-// Source of truth: /mnt/fast_storage/huggingface/Inkling-2-Mini (config.json +
+// Source of truth: /mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini (config.json +
 // hf_quant_config.json + safetensors headers, audited 2026-11-21) and the
 // reference semantics in transformers 5.24.0
 // `models/inkling2_loop/modeling_inkling2_loop.py`.

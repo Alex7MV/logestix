@@ -3,7 +3,7 @@
 Branch: `feat/ingest-hy-simulmt-30b`
 Date: 2026-10-31
 Protocol: Model Ingestion Protocol (`ingesting-a-model`), stages 0–8 + 4b.
-Source checkpoint: `/mnt/fast_storage/huggingface/Hy-SimulMT-30B-A3B`
+Source checkpoint: `/mnt/fast_storage/lsx_model/tencent/Hy-SimulMT-30B-A3B`
 (`tencent/Hy-SimulMT-30B-A3B`, 57 GB, 18 shards + one audio shard).
 
 ## Stage 0 — triage

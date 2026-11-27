@@ -9,7 +9,7 @@ substitute for the nvidia-cuda-docs MCP).
 ## Intent
 
 Adapt `thinkingmachines/Inkling-2-Mini` (downloaded and sha256-verified at
-`/mnt/fast_storage/huggingface/Inkling-2-Mini`) into logestix, text-only, through
+`/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini`) into logestix, text-only, through
 every lifecycle stage: convert → load → model → kernels → SelfCheck (Paris,
 ≥3 bit-exact cycles) → FSI/CODE/DET parity gates → native tool round-trip →
 seeded perf row at the canonical 2048-token protocol → publishable model report.

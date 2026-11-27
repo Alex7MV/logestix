@@ -123,7 +123,7 @@ Expected: FAIL — паспорт `deepseek_moe_constants.h` не найден.
 Поля, помеченные `?`, берутся из реального `config.json` (команда ниже) — **не угадывать**:
 
 ```bash
-python3 -c "import json;c=json.load(open('/mnt/fast_storage/huggingface/DeepSeek-V4-Flash/inference/config.json'));print({k:v for k,v in c.items() if 'index' in k or 'hash' in k or 'nope' in k})"
+python3 -c "import json;c=json.load(open('/mnt/fast_storage/lsx_model/deepseek-ai/DeepSeek-V4-Flash/inference/config.json'));print({k:v for k,v in c.items() if 'index' in k or 'hash' in k or 'nope' in k})"
 ```
 
 Определение структуры:
@@ -627,8 +627,8 @@ Expected: `logits_hash` совпадает с `/tmp/opencode/deepseek-baseline.t
 - [ ] **Step 6: Проверить, что деревья не пострадали**
 
 ```bash
-./build/linux-debug/apps/lsxforge/lsxforge --verify --input /mnt/fast_storage/huggingface/DeepSeek-V4-Flash 2>&1 | tail -3
-./build/linux-debug/apps/lsxforge/lsxforge --verify --input /mnt/fast_storage/huggingface/DeepSeek-V4-Pro-0813 2>&1 | tail -3
+./build/linux-debug/apps/lsxforge/lsxforge --verify --input /mnt/fast_storage/lsx_model/deepseek-ai/DeepSeek-V4-Flash 2>&1 | tail -3
+./build/linux-debug/apps/lsxforge/lsxforge --verify --input /mnt/fast_storage/lsx_model/deepseek-ai/DeepSeek-V4-Pro-0813 2>&1 | tail -3
 ```
 
 Expected: `problems=0`, `footer_ok = files`, exit 0 для обоих.

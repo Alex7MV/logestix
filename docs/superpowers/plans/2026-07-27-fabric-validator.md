@@ -437,7 +437,7 @@ git commit -m "feat: add RunValidator orchestrator"
 #include <string>
 
 int main(int argc, char* argv[]) {
-    std::string model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    std::string model_path = R"(D:\Programs\lsx_model\DeepSeek-V4-Flash)";
     bool validate = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--localmodel") == 0 && i + 1 < argc)

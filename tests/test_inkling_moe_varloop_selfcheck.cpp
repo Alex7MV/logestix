@@ -45,7 +45,7 @@ std::string VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_TML_D24_VARLOOP_RESEARCH_ROOT"))
         return env;
-    return "/mnt/fast_storage/huggingface/TML-d24-varloop-research";
+    return "/mnt/fast_storage/lsx_model/thinkingmachines/TML-d24-varloop-research";
 }
 
 lsxcommon::ModelInitConfig Cfg(const std::string &root)

@@ -204,7 +204,7 @@ model.
 
 The engine and the real-model tests resolve converted checkpoints from a
 model vault. The root defaults to `/mnt/fast_storage/huggingface` on Linux
-and `D:\Programs\huggingface.co` on Windows (compile-time defaults in
+and `D:\Programs\lsx_model` on Windows (compile-time defaults in
 `libs/lsxcommon/include/lsxcommon/path_registry.h`). **Set `LSX_MODEL_ROOT`
 to an absolute path to relocate the vault** — the runtime override takes
 precedence over the platform default:

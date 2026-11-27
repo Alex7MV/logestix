@@ -34,7 +34,7 @@
 
 **Verified facts to embed (do not invent others):**
 
-- Platform roots (`path_registry.h`): Linux `/mnt/llm_models/models`, Windows `D:\Programs\huggingface.co`; subdir `model-metadata/`; helpers `lsx_model_metadata_root()`, `lsx_model_metadata(rel)`, `lsx_model_models_dir()`. Gotcha: pass the model vault ROOT (`<root>/<Model>`), not the converted `logestix/` subdir.
+- Platform roots (`path_registry.h`): Linux `/mnt/llm_models/models`, Windows `D:\Programs\lsx_model`; subdir `model-metadata/`; helpers `lsx_model_metadata_root()`, `lsx_model_metadata(rel)`, `lsx_model_models_dir()`. Gotcha: pass the model vault ROOT (`<root>/<Model>`), not the converted `logestix/` subdir.
 - `lsxbenchmark` (`apps/lsxbenchmark/src/cli.h`): `--model <path>` (default `<models_dir>/DeepSeek-V4-Flash`), `--bench` (default), `--selfcheck`, `--bit-exact`, `--max-gen <n>` (default 2048), `--prompt <p>` (default "The capital of France is"). `--selfcheck` forces bench off. Unknown tokens silently ignored.
 - `lsxfabric` (`apps/lsxfabric/src/cli.h`): `--localmodel <path>`, `--validate`, `--testprompt`, `--max-gen <n>` (default 64), `--prompt <p>` (default "The capital of France is"). Benchmark-era flags are ignored.
 - `lsxforge` (`apps/lsxforge/src/main.cpp`): `--input`, `--output` (default `converted_model`), `--verify`, `--tokenizer <tokenizer.json>`, `--vram_recompute`, `--repack_shared`, `--repack_experts`, `--run/-r` (generation path, bare = default blueprint prompt), and family pipelines `--glm`, `--kimi`, `--qwen`, `--qwen35moe`, `--qwen36moe`, `--qwen38flashnext`, `--gemma4`, `--glmflash`, `--deepseek_nvfp4`, `--deepseek_v41`.

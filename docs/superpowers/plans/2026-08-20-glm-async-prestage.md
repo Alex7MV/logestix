@@ -396,7 +396,7 @@ Notes for the engineer:
 
 ## Task 5: Bit-exact verification
 
-- [ ] If `D:\Programs\huggingface.co` has a GLM-5.2 checkpoint: run `test_glm_selfcheck.exe` → 3-cycle `final_logits` byte-identical, `"Paris"`. Else SKIP accepted.
+- [ ] If `D:\Programs\lsx_model` has a GLM-5.2 checkpoint: run `test_glm_selfcheck.exe` → 3-cycle `final_logits` byte-identical, `"Paris"`. Else SKIP accepted.
 - [ ] Full build clean; `ctest --preset windows-debug -R "expert_store|glm_model|glm_loader|glm_moe_compute"` → pass.
 - [ ] Commit if files changed.
 

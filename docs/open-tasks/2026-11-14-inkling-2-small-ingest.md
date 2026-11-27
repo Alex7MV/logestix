@@ -8,7 +8,7 @@ conversion defect that no byte-level check could see (see "Root cause");
 the publishable artifact is
 `docs/model-reports/2026-11-15-Inkling-2-Small.md`.
 
-Source checkpoint: `/mnt/fast_storage/huggingface/Inkling-2-Small`
+Source checkpoint: `/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Small`
 (`thinkingmachines/Inkling-2-Small`, modelopt NVFP4 release, 24 shards +
 `mtp.safetensors`, 367 GB). Converted output: `<vault>/logestix/` (the
 `path_registry` root; never anywhere else).

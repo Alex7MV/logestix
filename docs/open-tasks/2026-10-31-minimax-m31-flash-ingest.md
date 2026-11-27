@@ -6,7 +6,7 @@ into the `minimax` family. Everything below was measured on the reference host
 
 ## Stage 0 — triage
 
-Source: `/mnt/fast_storage/huggingface/MiniMax-M3.1-Flash`, 236 GB in 48
+Source: `/mnt/fast_storage/lsx_model/MiniMaxAI/MiniMax-M3.1-Flash`, 236 GB in 48
 safetensors shards (89 632 indexed tensors once the vision ballast is counted).
 
 | item | M3 | M3.1-Flash |

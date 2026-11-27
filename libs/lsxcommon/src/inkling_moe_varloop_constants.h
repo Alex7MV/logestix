@@ -2,7 +2,7 @@
 
 // Frozen TML-d24-varloop-research passport (compile-time geometry).
 //
-// Source of truth: /mnt/fast_storage/huggingface/TML-d24-varloop-research
+// Source of truth: /mnt/fast_storage/lsx_model/thinkingmachines/TML-d24-varloop-research
 // (config.json + hf_quant_config.json + safetensors index + tokenizer.json
 // added_tokens, audited 2026-11-22) and the reference semantics in
 // transformers 5.24.0 `models/inkling2_loop/modeling_inkling2_loop.py`.
@@ -10,7 +10,7 @@
 // Stage-0 classification (2026-11-22): a SIBLING of Inkling-2-Mini, not a new
 // family. `architectures: ["Inkling2LoopForConditionalGeneration"]`,
 // `model_type: inkling2_loop`, and the ONLY config delta against
-// /mnt/fast_storage/huggingface/Inkling-2-Mini is
+// /mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini is
 // `text_config.loop_config.is_varloop` (true here, false there) — every other
 // field, the 1244-tensor index (total_size 19 525 870 752), the tokenizer, the
 // chat template and hf_quant_config.json are byte-identical. The weights are a

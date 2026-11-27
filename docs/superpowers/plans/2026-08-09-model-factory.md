@@ -616,7 +616,7 @@ git commit -m "feat: wire LsxModelFactory into lsxcommon; remove public RunInfer
 - Modify: `tests/CMakeLists.txt`
 
 Default model dir for tests: env `LSX_TEST_MODEL_PATH`, fallback
-`D:\Programs\huggingface.co\DeepSeek-V4-Flash`.
+`D:\Programs\lsx_model\DeepSeek-V4-Flash`.
 
 - [ ] **Step 1: Write the test file**
 
@@ -636,7 +636,7 @@ std::string TestModelPath()
 {
     if (const char *p = std::getenv("LSX_TEST_MODEL_PATH"))
         return p;
-    return R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    return R"(D:\Programs\lsx_model\DeepSeek-V4-Flash)";
 }
 
 } // namespace

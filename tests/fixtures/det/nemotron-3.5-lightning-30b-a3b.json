@@ -2,7 +2,7 @@
   "format": "logestix-det-golden",
   "version": 1,
   "model_type": "nemotron-3.5-lightning-30b-a3b",
-  "source": "/mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+  "source": "/mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
   "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
   "prompts": [
     {

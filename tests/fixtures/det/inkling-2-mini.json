@@ -2,7 +2,7 @@
   "format": "logestix-det-golden",
   "version": 1,
   "model_type": "inkling-2-mini",
-  "source": "/mnt/fast_storage/huggingface/Inkling-2-Mini",
+  "source": "/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini",
   "runtime": "transformers 5.24.0 / torch 2.13.0+cu130",
   "prompts": [
     {

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans (inline; AGENTS.md forbids subagents). Steps use checkbox syntax. TDD per task: failing test first, watch it fail, minimal code, watch it pass, commit.
 
-**Goal:** ingest `/mnt/fast_storage/huggingface/Inkling` (952B/28B-active, arch `inkling`) end to end: converter → NVFP4 tree → model class → tokenizer/tool bridge → CUDA kernels → all lifecycle gates → report.
+**Goal:** ingest `/mnt/fast_storage/lsx_model/thinkingmachines/Inkling` (952B/28B-active, arch `inkling`) end to end: converter → NVFP4 tree → model class → tokenizer/tool bridge → CUDA kernels → all lifecycle gates → report.
 
 **Architecture:** new family member `kType="inkling"`, files `inkling_moe_base_*`, namespace `lsxcommon::inkling::base` (passport `lsxcommon::inkling::base::frozen`). Plain-residual hybrid decoder: rel-bank attention (no RoPE), 4 static sconv/layer, MoE 256×top-6 + 2 shared-sink experts. Source is pure BF16 → standard NVFP4 quantization (dense + routed), norms/biases/rel-banks/sconv/router/embed stay high precision. Routed experts (~486 GiB) stream via neutral `ExpertStore` mmap views.
 
@@ -155,7 +155,7 @@ Manifest: full stages block (`convert/load/model/kernels/selfcheck/fsi/code/det/
 
 ### Task 6: real conversion + numeric validation vs reference
 
-**Files:** none in-tree (scripts under `/mnt/fast_storage/tmp/inkling_base/`); output tree `/mnt/fast_storage/huggingface/Inkling/logestix/`.
+**Files:** none in-tree (scripts under `/mnt/fast_storage/tmp/inkling_base/`); output tree `/mnt/fast_storage/lsx_model/thinkingmachines/Inkling/logestix/`.
 
 - [ ] Step 1: run forge `--inkling-base` on the real checkpoint (background, log to /mnt/fast_storage/tmp). ~1.9 TB read; verify index counts: 66 layers, 64×256=16384 expert files, ballast counts (8 visual, 2 audio, 160 mtp), tree size ≈ 500 GB.
 - [ ] Step 2: python reference script: `transformers.models.inkling` `InklingTextModel` with real dense weights (BF16, CPU/GPU split as fits) + on-demand expert dequant; compare engine TraceForward layer-by-layer on a short prompt (relL2 per layer; expect ~1e-2 NVFP4 body error, no structural divergence). Also float64 re-derivation of layer 0 and a full layer from raw safetensors.

@@ -16,7 +16,7 @@
   selfcheck driver dropped its cancel assertion during the manifest migration
   (§G5). It is restored, and the case now runs.
   Measured 2026-11-04 on real weights (294 GB tree in the vault):
-  `LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/huggingface/DeepSeek-V4.1-Flash`
+  `LSX_TEST_DEEPSEEK_V41_ROOT=/mnt/fast_storage/lsx_model/deepseek-ai/DeepSeek-V4.1-Flash`
   `./tests/test_deepseek_moe_v41_selfcheck` — the Paris case passes (3 cycles
   bit-exact, `logits_hash 0ab7077b529eaa3b`, top-1 11111), then the
   cooperative-cancel case fails: `mid-generation abort: compressor state reset

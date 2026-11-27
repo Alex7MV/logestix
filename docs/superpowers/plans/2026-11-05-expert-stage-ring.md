@@ -717,7 +717,7 @@ git commit -am "perf: stage kimi-k3.1-pro routed experts through the pinned ring
 ```bash
 ulimit -l unlimited
 ./build/linux-release-znver4-aocc/apps/lsxbenchmark/lsxbenchmark \
-  --model /mnt/fast_storage/huggingface/Kimi-K3.1-Pro --bench \
+  --model /mnt/fast_storage/lsx_model/moonshotai/Kimi-K3.1-Pro --bench \
   --max-gen 2048 --prompt "The capital of France is"
 ```
 Expected: ~0.30–0.31 t/s (3.2–3.35 s/token), reproducing the recorded figure. **GPU exclusive**; budget 1.8 h.

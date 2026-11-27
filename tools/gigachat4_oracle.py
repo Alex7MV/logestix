@@ -17,7 +17,7 @@ LSX_GC4_PROBE_IDS / LSX_GC4_PROBE_OUT set (see tests/test_gigachat_moe_37b_model
 
 Usage:
   python3 tools/gigachat4_oracle.py \
-      --model /mnt/fast_storage/huggingface/GigaChat4-37B-A4B \
+      --model /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-37B-A4B \
       --ids-file /mnt/fast_storage/tmp/gc4/probe_ids.txt \
       --out /mnt/fast_storage/tmp/gc4/source_logits.bin \
       [--engine-logits /mnt/fast_storage/tmp/gc4/engine_logits.bin] \

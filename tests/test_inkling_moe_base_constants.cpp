@@ -1,7 +1,7 @@
 // Frozen passport guard for Inkling (base). Host-only, no CUDA deps.
 //
 // Values are read off the released checkpoint
-// (/mnt/fast_storage/huggingface/Inkling: config.json, tokenizer_config.json
+// (/mnt/fast_storage/lsx_model/thinkingmachines/Inkling: config.json, tokenizer_config.json
 // added_tokens and all 108 safetensors headers, audited 2026-11-17) and
 // cross-checked against the reference semantics in transformers 5.15.1
 // `models/inkling/modeling_inkling.py` + `conversion_mapping.py`

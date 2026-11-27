@@ -2,7 +2,7 @@
 // is_varloop). Host-only.
 //
 // Values are read off the released checkpoint
-// (/mnt/fast_storage/huggingface/TML-d24-varloop-research: config.json,
+// (/mnt/fast_storage/lsx_model/thinkingmachines/TML-d24-varloop-research: config.json,
 // hf_quant_config.json, tokenizer.json added_tokens, the safetensors index and
 // the model card) on 2026-11-22. The architecture is Inkling-2-Mini's — the
 // same `Inkling2LoopForConditionalGeneration` — so the geometry is the same and

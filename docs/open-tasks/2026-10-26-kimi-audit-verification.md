@@ -7,14 +7,14 @@ oracle behind it.
 
 ## 1. Conversion
 
-Source: `/mnt/fast_storage/huggingface/Kimi-K2.7-Code` (64 shards, 581 GB,
+Source: `/mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code` (64 shards, 581 GB,
 INT4 group-32 routed experts, BF16 attention/shared/dense, multimodal wrapper).
 
 ```bash
 LSX_MODEL_ROOT=/mnt/fast_storage/huggingface \
   ./build/linux-release-znver4-aocc/apps/lsxforge/lsxforge --kimi \
-  --input /mnt/fast_storage/huggingface/Kimi-K2.7-Code \
-  --output /mnt/fast_storage/huggingface/Kimi-K2.7-Code
+  --input /mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code \
+  --output /mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code
 ```
 
 Result (42 min wall): `675 pinned tensors, 23040 experts processed`, tree 542 GB.
@@ -52,7 +52,7 @@ LSX_PERF_AUTO=0 KIMI_DUMP_LAYERS=0,1,30,60 LSX_EXPERT_PIN=0 \
   LSX_MODEL_ROOT=/mnt/fast_storage/huggingface LSX_TEST_KIMI_SELFCHECK_CYCLES=1 \
   ./build/linux-debug/tests/test_kimi_moe_selfcheck
 # reference side
-python3 tools/kimi_layer_oracle.py --model /mnt/fast_storage/huggingface/Kimi-K2.7-Code \
+python3 tools/kimi_layer_oracle.py --model /mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code \
   --ids "The capital of France is" --layers 0,1,30,60 --dump-dir /tmp --weights converted
 ```
 

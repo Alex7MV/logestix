@@ -68,7 +68,7 @@ makes the repetition harmless.
 
 ```bash
 python3 tools/muse_golden_oracle.py     # loader only; the capture tools import it
-python3 tools/fsi_capture.py --model /mnt/fast_storage/huggingface/Muse-Glimmer-30B \
+python3 tools/fsi_capture.py --model /mnt/fast_storage/lsx_model/meta-models/Muse-Glimmer-30B \
     --type muse-glimmer-30b --out tests/fixtures/fsi/muse-glimmer-30b.json \
     --max-new-tokens 512 --only FSI-TEST-01
 python3 tools/fsi_capture.py ... --only FSI-TEST-02,FSI-TEST-03 --resume

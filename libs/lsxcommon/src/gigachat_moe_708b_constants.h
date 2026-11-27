@@ -3,7 +3,7 @@
 // Frozen GigaChat4-708B-A41B geometry (compile-time passport).
 //
 // Source of truth (read-only references, not vendored):
-//   /mnt/fast_storage/huggingface/GigaChat4-708B-A41B/config.json
+//   /mnt/fast_storage/lsx_model/ai-sage/GigaChat4-708B-A41B/config.json
 //   .../model.safetensors.index.json (95 616 tensors, 45 shards, 720 GB FP8/BF16)
 //   .../modeling_gigachat4.py, .../configuration_gigachat4.py
 //

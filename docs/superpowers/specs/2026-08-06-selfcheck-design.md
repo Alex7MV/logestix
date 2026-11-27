@@ -130,7 +130,7 @@ No Catch2 auto-test (diagnostic CLI tool). Manual verification:
 ```powershell
 $env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
 cmake --build build --config Release
-build\bin\Release\lsxfabric.exe --selfcheck --localmodel D:\Programs\huggingface.co\DeepSeek-V4-Flash
+build\bin\Release\lsxfabric.exe --selfcheck --localmodel D:\Programs\lsx_model\DeepSeek-V4-Flash
 ```
 
 Expected when correct: `first token : <id> 'Paris'`, `passed : yes`, exit 0.

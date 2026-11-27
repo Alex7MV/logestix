@@ -14,7 +14,7 @@ multi-line text fits on one corpus line.
 
 Usage:
   python3 tools/kimi_tokenizer_capture.py \
-      --model /mnt/fast_storage/huggingface/Kimi-K2.7-Code \
+      --model /mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code \
       --corpus tests/fixtures/kimi/tokenizer_corpus.txt \
       --out tests/fixtures/kimi/tokenizer_parity.txt
 """

@@ -135,7 +135,7 @@ TEST_CASE("hy4 model: control-prompt diagnostic", "[.hy4diag]")
 {
     const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT");
     const fs::path root = env ? fs::path(env)
-                              : fs::path("/mnt/fast_storage/huggingface/Hy4-flash");
+                              : fs::path("/mnt/fast_storage/lsx_model/tencent/Hy4-flash");
     if (!fs::exists(root / "logestix" / "model.index.json"))
         SKIP("converted Hy4-flash tree absent");
 

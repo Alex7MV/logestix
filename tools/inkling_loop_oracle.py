@@ -19,7 +19,7 @@ inside a 32-token window, so a capture that relied on EOS would truncate.
 Requires the 5.24 reference environment on PYTHONPATH:
 
   PYTHONPATH=/mnt/fast_storage/tmp/inkling2-mini/tf/deps:/mnt/fast_storage/tmp/inkling2-mini/tf/x \
-  python3 tools/fsi_capture.py --model /mnt/fast_storage/huggingface/Inkling-2-Mini \
+  python3 tools/fsi_capture.py --model /mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini \
       --type inkling-2-mini --out tests/fixtures/fsi/inkling-2-mini.json
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-DEFAULT_VAULT = "/mnt/fast_storage/huggingface/Inkling-2-Mini"
+DEFAULT_VAULT = "/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini"
 # The reference's default sampling stop set: `eos_token_id` plus <|endoftext|>.
 STOP_IDS = (200006, 199999)
 

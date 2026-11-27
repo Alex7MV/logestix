@@ -27,7 +27,7 @@ leading dims far beyond the 4-bit noise floor.
 Usage
 -----
   python3 tools/nemotron_ultra_oracle.py \
-      --checkpoint /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 \
+      --checkpoint /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 \
       --layers 0,1,7 \
       --prompt "The capital of France is" \
       --out tests/fixtures/nemotron_ultra/layers_slice.json

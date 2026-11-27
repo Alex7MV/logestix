@@ -2,7 +2,7 @@
 
 ## Context
 
-`granite-switch-4.1-8b` (IBM, `/mnt/fast_storage/huggingface/granite-switch-4.1-8b`,
+`granite-switch-4.1-8b` (IBM, `/mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-8b`,
 downloaded 2026-11-06) is the small sibling of the already-ingested
 `granite-switch-4.1-30b`. Both are `GraniteSwitchForCausalLM`
 (`model_type="granite_switch"`): a Granite 4.1 dense decoder with two embedded

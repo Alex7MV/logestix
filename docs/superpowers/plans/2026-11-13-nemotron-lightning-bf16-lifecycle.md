@@ -88,7 +88,7 @@ Run:
 ```bash
 python3 - <<'PY' > /mnt/fast_storage/tmp/nemotron_bf16/inventory.txt
 import json, re, collections
-v = "/mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+v = "/mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
 d = json.load(open(v + "/model.safetensors.index.json"))
 wm = d["weight_map"]
 print("tensors", len(wm), "bytes", d["metadata"]["total_size"],
@@ -116,8 +116,8 @@ Expected: PASS, including the case `nemotron converter rejects an unrecognized t
 ```bash
 build/linux-release-znver4-aocc/apps/lsxforge/lsxforge \
   --nemotron \
-  --input /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 \
-  --output /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+  --input /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 \
+  --output /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
 ```
 Expected: the log reports the converted layout, the routed-expert count and `mtp_tensors 270`; exit 0. Record wall time and the final log lines in the evidence file.
 
@@ -128,7 +128,7 @@ Run:
 ```bash
 python3 - <<'PY'
 import json
-t = "/mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16/logestix"
+t = "/mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16/logestix"
 d = json.load(open(t + "/model.index.json"))
 assert d["format"] == "logestix-nemotron-nvfp4", d["format"]
 assert d["model"] == "Nemotron-3.5-Lightning-30B-A3B", d.get("model")
@@ -182,7 +182,7 @@ Expected: PASS.
 
 - [ ] **Step 4: Measure the real tree**
 
-Run: `python3 tools/nemotron_bf16_quant_probe.py --model /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --tree /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16/logestix --out /mnt/fast_storage/tmp/nemotron_bf16/quant-error.txt`
+Run: `python3 tools/nemotron_bf16_quant_probe.py --model /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --tree /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16/logestix --out /mnt/fast_storage/tmp/nemotron_bf16/quant-error.txt`
 Expected: five lines. Sanity anchors from the sibling: head ≈ 0.2 %, experts 5–6 %, attention ≈ 9–10 %; a value > 0.3 or ≈ 0 on any line means a wrong decode, not a wrong model — investigate before recording.
 
 - [ ] **Step 5: Commit**
@@ -434,7 +434,7 @@ Expected: PASS (the prompt/formula set is intact).
 
 - [ ] **Step 3: Capture from the source**
 
-Run: `python3 tools/fsi_capture.py --model /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --type nemotron-3.5-lightning-30b-a3b --out tests/fixtures/fsi/nemotron-3.5-lightning-30b-a3b.json --max-new-tokens 384`
+Run: `python3 tools/fsi_capture.py --model /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --type nemotron-3.5-lightning-30b-a3b --out tests/fixtures/fsi/nemotron-3.5-lightning-30b-a3b.json --max-new-tokens 384`
 Expected: three captured entries; `source` records the executed BF16 checkpoint (device CPU, dtype bf16). Record wall time.
 
 - [ ] **Step 4: Audit the captured answers before running the gate**
@@ -475,7 +475,7 @@ Run: `python3 tools/code_capture.py --selftest` → PASS.
 
 - [ ] **Step 3: Capture**
 
-Run: `python3 tools/code_capture.py --model /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --type nemotron-3.5-lightning-30b-a3b --out tests/fixtures/code/nemotron-3.5-lightning-30b-a3b.json --max-new-tokens 384`
+Run: `python3 tools/code_capture.py --model /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --type nemotron-3.5-lightning-30b-a3b --out tests/fixtures/code/nemotron-3.5-lightning-30b-a3b.json --max-new-tokens 384`
 
 - [ ] **Step 4: Apply the echo rule (Review Focus 4)**
 
@@ -509,7 +509,7 @@ git commit -m "test(nemotron-bf16): capture the CODE golden from the BF16 source
 
 - [ ] **Step 3: Capture**
 
-Run: `python3 tools/det_capture.py --model /mnt/fast_storage/huggingface/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --type nemotron-3.5-lightning-30b-a3b --out tests/fixtures/det/nemotron-3.5-lightning-30b-a3b.json --max-new-tokens 384`
+Run: `python3 tools/det_capture.py --model /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 --type nemotron-3.5-lightning-30b-a3b --out tests/fixtures/det/nemotron-3.5-lightning-30b-a3b.json --max-new-tokens 384`
 
 - [ ] **Step 4: Apply the echo rule** — as Task 8.
 

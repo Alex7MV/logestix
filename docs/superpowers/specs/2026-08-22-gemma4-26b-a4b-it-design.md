@@ -6,7 +6,7 @@ Protocol: Model Ingestion Protocol (8 steps), etalons: Qwen3.5-9B (pipeline stru
 
 ## Goal
 
-Integrate `gemma-4-26B-A4B-it` (vault: `D:\Programs\huggingface.co\gemma-4-26B-A4B-it`, ~51.6 GB BF16,
+Integrate `gemma-4-26B-A4B-it` (vault: `D:\Programs\lsx_model\gemma-4-26B-A4B-it`, ~51.6 GB BF16,
 2 safetensors shards, 1013 tensors) as a first-class model in the logestix stack: converter in
 lsxforge, GLM-style loader, CUDA inference kernels, factory registration, TDD test suite with
 real-model selfcheck.

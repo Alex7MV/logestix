@@ -9,7 +9,7 @@ nvidia-cuda-docs MCP). Host: 160 threads, RTX 5090 32 GiB, 750 GB RAM.
 ## Intent
 
 Adapt `TML-d24-varloop-research` (Thinking Machines Lab, released 2026-11-20,
-at `/mnt/fast_storage/huggingface/TML-d24-varloop-research`) into logestix,
+at `/mnt/fast_storage/lsx_model/thinkingmachines/TML-d24-varloop-research`) into logestix,
 text-only, through every lifecycle stage: convert → load → model → kernels →
 SelfCheck (Paris, ≥3 bit-exact cycles) → FSI/CODE/DET parity gates → native
 tool round-trip → seeded perf row at the canonical 2048-token protocol →

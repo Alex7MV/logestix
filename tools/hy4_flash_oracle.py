@@ -37,7 +37,7 @@ Design rules, all of which exist to keep it honest:
   * it prints per-layer diagnostics next to the logits, so a divergence can be
     LOCALISED instead of guessed at.
 
-    python3 tools/hy4_flash_oracle.py --model /mnt/fast_storage/huggingface/Hy4-flash \
+    python3 tools/hy4_flash_oracle.py --model /mnt/fast_storage/lsx_model/tencent/Hy4-flash \
         --prompt "The capital of France is" --tokens 4
 """
 import argparse
@@ -596,7 +596,7 @@ def topk(logits, k=8):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/mnt/fast_storage/huggingface/Hy4-flash")
+    ap.add_argument("--model", default="/mnt/fast_storage/lsx_model/tencent/Hy4-flash")
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--tokens", type=int, default=4)
     ap.add_argument("--verbose", action="store_true")

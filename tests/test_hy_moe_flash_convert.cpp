@@ -36,7 +36,7 @@ fs::path VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT"))
         return fs::path(env);
-    return fs::path("/mnt/fast_storage/huggingface/Hy4-flash");
+    return fs::path("/mnt/fast_storage/lsx_model/tencent/Hy4-flash");
 }
 
 } // namespace
