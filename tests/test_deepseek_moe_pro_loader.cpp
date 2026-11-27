@@ -8,6 +8,7 @@
 //   * the family-local pending-copy drain hook,
 //   * the frozen-passport gate in Model::Load.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/schema.h>
 #include <arrow/io/file.h>
@@ -255,7 +256,7 @@ TEST_CASE("deepseek-v4-pro topology reads the converted layout",
     CHECK(topo.error_msg.empty());
     CHECK(topo.num_layers == dsprofixtest::kNumLayers);
     CHECK(topo.experts_per_layer == 2);
-    CHECK(topo.format == "logestix-v1-nvfp4");
+    CHECK(topo.layout == lsxcommon::kIndexLayout);
     fs::remove_all(dir);
 }
 

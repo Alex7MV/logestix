@@ -34,7 +34,6 @@ void MergeGenerationConfigEos(const std::string &dir, GemmaDenseTopology &top)
     lsxcommon::config::MergeGenerationConfigEos(dir, top.eos_ids);
 }
 
-
 std::optional<ParsedTensor> match_layer(const std::string &name,
                                         const std::regex &re, TensorKind kind)
 {
@@ -350,7 +349,7 @@ arrow::Status WriteGemmaDenseModelIndex(const std::string &output_root,
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"" << kFormatTag << "\",\n"
+      << "  \"layout\": 2,\n"
       << "  \"model\": \"gemma-4-31B-it\",\n"
       << "  \"mlp_nvfp4\": true,\n"
       << "  \"attn_nvfp4\": true,\n"

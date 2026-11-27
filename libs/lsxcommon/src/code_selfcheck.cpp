@@ -20,7 +20,6 @@ namespace {
 // Dedup Ф5: fence stripper is the shared lsxcommon::selfcheck body.
 using lsxcommon::selfcheck::Unfence;
 
-
 std::string Normalize(std::string_view s)
 {
     std::string out;
@@ -346,7 +345,6 @@ std::vector<int32_t> TailAfter(const std::vector<int32_t> &ids, int32_t marker)
                                         ids.end());
     return ids;
 }
-
 
 CodeCaseResult RunCodeCase(IModel &model, const CodeGoldenCase &c,
                            const CodeDecodeFn &decode)

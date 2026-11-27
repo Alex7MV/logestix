@@ -13,6 +13,7 @@
 // CORRECT and the SWAPPED source rows: a converter that confuses the two
 // layouts reconstructs the wrong rows at O(1) relative L2.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/inkling_moe_base_convert.h>
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
@@ -150,7 +151,7 @@ TEST_CASE("inkling base synthetic convert emits logestix-inkling-nvfp4",
 
     std::string_view fmt;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == "logestix-inkling-nvfp4");
+    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
 
     // `model` normalizes (spaces -> '-', lower case) to exactly kType "inkling"
     // for gpu::detect_model_type / LsxModelFactory path auto-detection.

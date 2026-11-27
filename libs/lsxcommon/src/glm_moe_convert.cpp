@@ -401,7 +401,7 @@ void WriteGlmModelIndex(
     if (!f) return;
 
     f << "{\n";
-    f << "  \"format\": \"logestix-glm\",\n";
+    f << "  \"layout\": 2,\n";
     f << "  \"model\": \"" << model_name << "\",\n";
     f << "  \"num_layers\": " << topo.num_layers << ",\n";
     f << "  \"experts_per_layer\": " << topo.experts_per_layer << ",\n";

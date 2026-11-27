@@ -472,7 +472,6 @@ cudaError_t Forward(cudaStream_t stream, const InklingPinnedWeights &pw,
     e = RunInklingNormF32In(stream, ws.x_f, pw.embed_norm, ws.x_h, 1, H, eps);
     if (e != cudaSuccess) return fail("embed_norm", e);
 
-
     if (pos0_row != nullptr) {
         cudaStreamSynchronize(stream);
         pos0_row->resize(static_cast<size_t>(H));

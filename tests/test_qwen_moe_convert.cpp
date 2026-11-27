@@ -156,7 +156,7 @@ TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
         std::ifstream f(base / "model.index.json");
         std::stringstream ss; ss << f.rdbuf();
         const std::string j = ss.str();
-        CHECK(j.find("\"logestix-qwen35moe\"") != std::string::npos);
+        CHECK(j.find("\"layout\": 2") != std::string::npos);
         CHECK(j.find("\"num_experts\": 8") != std::string::npos);
         CHECK(j.find("\"hidden_size\": 64") != std::string::npos);
         CHECK(j.find("\"skipped_visual_tensors\": 2") != std::string::npos);

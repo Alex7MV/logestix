@@ -14,6 +14,7 @@
 
 #include "kimi_moe_k3_constants.h"
 #include "lsxcommon/kimi_moe_k3_convert.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/kimi_moe_k3_load.h"
 #include "test_kimi_k3_fixture.h"
 
@@ -48,7 +49,7 @@ TEST_CASE("kimi-k3 loader reads the frozen topology", "[kimi-k3][loader]")
     const fs::path root = BuildConverted();
     kimi_k3::KimiK3Topology top;
     REQUIRE(kimi_k3::LoadKimiK3Topology(root.string(), top).ok());
-    CHECK(top.format == "logestix-kimi-k3-nvfp4");
+    CHECK(top.layout == lsxcommon::kIndexLayout);
     CHECK(top.num_layers == kimik3test::kLayers);
     CHECK(top.hidden == kimik3test::kHidden);
     CHECK(top.mla_layers.size() == 2);

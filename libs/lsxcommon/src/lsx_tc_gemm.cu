@@ -241,7 +241,6 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
     __shared__ uint8_t sWs[kDecBufs][kDecCols][4];
     __shared__ __align__(128) uint8_t sW[kDecBufs][kDecCols][kDecChunkBytes];
 
-
     // One-time activation load (row 0 is the only row at seq == 1).
     for (int i = tid; i < k_half; i += 256)
         sXp[i] = ap[i];
@@ -1331,7 +1330,6 @@ cudaError_t LsxProbeTmaBulkCopy(cudaStream_t stream)
     cudaFree(d_ok);
     return e;
 }
-
 
 // ── Fused input GEMM weights ────────────────────────────────────────────────
 // Several projections sharing one input (qkv, z, a, b of the linear-attn

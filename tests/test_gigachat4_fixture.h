@@ -10,6 +10,7 @@
 // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 (runtime ENV, never a compile define).
 
 #include "test_gigachat_moe_fixture.h"
+#include "lsxcommon/index_layout.h"
 #include "test_synth_checkpoint.h"
 
 #include "lsxcommon/tokenizer.h"
@@ -285,11 +286,11 @@ inline void WriteGigaChat4Checkpoint(const std::filesystem::path &dir,
 // passport can be exercised without the synthetic-geometry bypass.
 inline void WriteGigaChat4Index(
     const std::filesystem::path &model_root, int hidden_override = 2560,
-    const std::string &format_tag = "logestix-gigachat4-nvfp4")
+    int64_t layout = lsxcommon::kIndexLayout)
 {
     std::filesystem::create_directories(model_root);
     std::ofstream f(model_root / "model.index.json");
-    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+    f << "{\n  \"layout\": " << layout << ",\n"
       << "  \"model\": \"GigaChat4-37B-A4B\",\n"
       << "  \"num_layers\": 32,\n  \"full_attention_layers\": "
          "[3,7,11,15,19,23,27,31],\n"
@@ -312,11 +313,11 @@ inline void WriteGigaChat4Index(
 // which run with the synthetic-geometry bypass OFF.
 inline void WriteGigaChat4_708BIndex(
     const std::filesystem::path &model_root, int hidden_override = 7168,
-    const std::string &format_tag = "logestix-gigachat4-708b-nvfp4")
+    int64_t layout_override = lsxcommon::kIndexLayout)
 {
     std::filesystem::create_directories(model_root);
     std::ofstream f(model_root / "model.index.json");
-    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+    f << "{\n  \"layout\": " << layout_override << ",\n"
       << "  \"model\": \"GigaChat4-708B-A41B\",\n"
       << "  \"num_layers\": 64,\n  \"full_attention_layers\": "
          "[3,7,11,15,19,23,27,31,35,39,43,47,51,55,59,63],\n"

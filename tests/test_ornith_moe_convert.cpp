@@ -151,7 +151,7 @@ TEST_CASE("ornith converter synthetic roundtrip", "[ornith][convert]")
     REQUIRE(fs::exists(base / "experts" / "layer_0" / "exp_0.arrow"));
 
     const std::string idx = ReadText(base / "model.index.json");
-    CHECK(idx.find("\"format\": \"logestix-ornithmoe\"") != std::string::npos);
+    CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"model\": \"Ornith-1.5-35B-A3B\"") != std::string::npos);
     CHECK(idx.find("\"bos_token_id\": 248044") != std::string::npos);
     CHECK(idx.find("\"num_experts\": 8") != std::string::npos);
@@ -242,7 +242,7 @@ TEST_CASE("ornith HF converter roundtrip strips vision and defers MTP",
     REQUIRE(fs::exists(base / "mtp" / "mtp_raw.arrow"));
 
     const std::string idx = ReadText(base / "model.index.json");
-    CHECK(idx.find("\"format\": \"logestix-ornithmoe\"") != std::string::npos);
+    CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"skipped_visual_tensors\": 3") != std::string::npos);
     CHECK(idx.find("\"deferred\": {\"mtp\": \"stored\"") != std::string::npos);
     CHECK(idx.find("\"mtp_tensors\": 6") != std::string::npos);

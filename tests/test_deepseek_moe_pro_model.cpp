@@ -14,6 +14,7 @@
 #include "deepseek_moe_pro_constants.h"
 #include "deepseek_moe_pro_load.cuh"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/index_layout.h"
 
 #include "test_deepseek_moe_pro_fixture.h"
 
@@ -73,7 +74,7 @@ TEST_CASE("deepseek-v4-pro load_topology parses the converted layout",
     CHECK(topo.vram.min_bytes == 1024);
     CHECK(topo.vram.optimal_bytes == 2048);
     CHECK(topo.vram.max_bytes == 4096);
-    CHECK(topo.format == "logestix-v1-nvfp4");
+    CHECK(topo.layout == lsxcommon::kIndexLayout);
     std::filesystem::remove_all(dir);
 }
 
@@ -98,7 +99,7 @@ TEST_CASE("deepseek-v4-pro model Load rejects the outdated format tag",
     REQUIRE(dsprofixtest::BuildSyntheticModel(dir).ok());
     {
         std::ofstream f(dir / "model.index.json");
-        f << "{\"format\": \"logestix-v1\", \"model\": "
+        f << "{\"layout\": 2, \"model\": "
              "\"DeepSeek-V4-Pro-0813\", \"num_layers\": 3,"
              " \"experts_per_layer\": 2, \"total_experts\": 6,"
              " \"vram\": {\"min_bytes\": 1, \"optimal_bytes\": 2,"

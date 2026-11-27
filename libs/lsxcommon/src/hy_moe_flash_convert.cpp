@@ -426,7 +426,7 @@ arrow::Status WriteIndex(const Config &c, const std::vector<LayerShape> &shapes,
     if (!f) return arrow::Status::IOError("cannot create model.index.json");
 
     f << "{\n";
-    f << "  \"format\": \"" << frozen::kFormatTag << "\",\n";
+    f << "  \"layout\": 2,\n";
     f << "  \"model\": \"" << card_name << "\",\n";
     f << "  \"model_type\": \"" << frozen::kType << "\",\n";
     f << "  \"num_layers\": " << c.layers << ",\n";

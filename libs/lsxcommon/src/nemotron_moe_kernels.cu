@@ -18,8 +18,6 @@ __device__ __forceinline__ float silu_f(float x)
     return x / (1.0f + expf(-x));
 }
 
-
-
 __global__ void gated_rmsnorm_kernel(const float *__restrict__ x,
                                      const float *__restrict__ gate,
                                      const float *__restrict__ weight, int n,
@@ -109,9 +107,6 @@ __global__ void relu2_kernel(const float *__restrict__ x, int n,
     const float r = x[i] > 0.0f ? x[i] : 0.0f;
     out[i] = r * r;
 }
-
-
-
 
 } // namespace
 

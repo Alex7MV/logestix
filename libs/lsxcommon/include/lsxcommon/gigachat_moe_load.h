@@ -17,7 +17,9 @@
 namespace lsxcommon::gigachat {
 
 struct GigaChatIndex {
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     std::string model;
     int num_layers = 0;
     std::vector<std::string> layer_types;  // "full_attention" | "linear_attention"

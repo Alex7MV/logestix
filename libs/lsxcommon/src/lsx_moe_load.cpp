@@ -161,8 +161,6 @@ void MoePinnedWeights<MoeTopology>::Free()
     resident_bytes = 0;
 }
 
-
-
 template <class MoeTopology>
 bool LoadMoeDenseWeights(const std::string &model_path,
                          MoePinnedWeights<MoeTopology> &pw,

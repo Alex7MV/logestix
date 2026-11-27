@@ -66,7 +66,7 @@ bool ReadIndexJson(const fs::path &idx_path, FlashTopology &top,
     top.indexer_head_dim = find_int("indexer_head_dim", 0);
     top.indexer_topk = find_int("indexer_topk", 0);
     top.pad_id = find_int("pad_token_id", -1);
-    if (json.find("\"format\": \"logestix-glm5next\"") == std::string::npos) {
+    if (json.find("\"layout\": 2") == std::string::npos) {
         error = "unexpected format tag in " + idx_path.string();
         return false;
     }

@@ -1,6 +1,7 @@
 // GigaChat3.5 loader-stage passport (index parse + frozen-geometry gate) and
 // the resident device weight graph.
 #include "lsxcommon/gigachat_moe_load.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/synthetic_geometry.h"
 
 #include "fast_load_internal.h"
@@ -60,6 +61,9 @@ bool LoadGigaChatIndex(const std::string &model_path, GigaChatIndex &out,
         return false;
     }
 
+    auto as_int = [](simdjson::ondemand::value v, int64_t &out) -> bool {
+        return v.get_int64().get(out) == simdjson::SUCCESS;
+    };
     auto as_string = [](simdjson::ondemand::value v, std::string &s) -> bool {
         std::string_view sv;
         if (v.get_string().get(sv) != simdjson::SUCCESS) return false;
@@ -82,9 +86,12 @@ bool LoadGigaChatIndex(const std::string &model_path, GigaChatIndex &out,
     {
         std::string_view key;
         if (field.unescaped_key().get(key) != simdjson::SUCCESS) continue;
-        if (key == "format")
+        if (key == "layout")
         {
-            have_format = as_string(field.value(), out.format);
+            int64_t v = 0;
+            (void)as_int(field.value(), v);
+            out.layout = v;
+            have_format = true;
             continue;
         }
         if (key == "model")
@@ -148,9 +155,9 @@ bool LoadGigaChatIndex(const std::string &model_path, GigaChatIndex &out,
         error = "index missing 'format' tag";
         return false;
     }
-    if (out.format != "logestix-gigachat-nvfp4")
+    if (!lsxcommon::IndexLayoutSupported(out.layout))
     {
-        error = "unknown format tag: " + out.format;
+        error = lsxcommon::IndexLayoutError(out.layout);
         return false;
     }
     ParseVramBlock(json, out.vram, error);

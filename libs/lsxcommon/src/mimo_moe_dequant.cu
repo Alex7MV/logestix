@@ -28,7 +28,6 @@ __device__ __forceinline__ float MimoE8m0ToFloat(uint8_t b)
     return v;
 }
 
-
 __global__ void mxfp4_to_bf16_kernel(const uint8_t *__restrict__ packed,
                                      const uint8_t *__restrict__ e8m0,
                                      __nv_bfloat16 *__restrict__ out,

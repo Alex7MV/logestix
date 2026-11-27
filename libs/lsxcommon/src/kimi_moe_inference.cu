@@ -70,7 +70,6 @@ size_t KimiExpertFfnStagingBytes()
 } // namespace kimi
 } // namespace lsxcommon
 
-
 // ── Router (noaux_tc sigmoid top-k) ────────────────────────────────────────
 
 #include <limits>
@@ -646,7 +645,6 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn, int layer,
     kimi_mla_append_kernel<<<dim3(seq), kKimiKvLoraRank + kKimiQkRope, 0,
                              stream>>>(d_state, d_kvfull, seq, base_slot);
 
-
     // 7. Fused absorbed attention. kv_b projection is consumed inside the
     // kernel as BF16: dequantize the NVFP4 kv_b once per LAYER (lazy,
     // cached in the layer's weights — a single static memo slot used to
@@ -716,7 +714,6 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn, int layer,
                     d_attn, d_oproj, kKimiNumHeads * kKimiHeadV, kKimiORows,
                     kKimiNumHeads * kKimiHeadV, kKimiORows);
     if (ae != cudaSuccess) return ae;
-
 
     // 9. Residual add.
     {
@@ -791,7 +788,6 @@ static cudaError_t RunKimiExpertFfnTail(
 
     kimi_accum_kernel<<<static_cast<unsigned>((Hd + 255) / 256), 256, 0,
                         stream>>>(y, expert_weight, d_out, Hd);
-
 
     return cudaGetLastError();
 }

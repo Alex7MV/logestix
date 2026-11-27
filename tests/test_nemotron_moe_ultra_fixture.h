@@ -18,6 +18,7 @@
 // test_model_suite_guard exists to catch.
 
 #include "test_synth_checkpoint.h"
+#include "lsxcommon/index_layout.h"
 
 #include <atomic>
 #include <chrono>
@@ -204,7 +205,7 @@ inline void WriteUltraCheckpoint(const std::filesystem::path &dir)
 // Overrides for the converted index so the loader's negative cases can be
 // written without re-running the converter for each one.
 struct UltraIndexOptions {
-    std::string format = "logestix-nemotron-ultra-nvfp4";
+    int64_t layout = lsxcommon::kIndexLayout;
     std::string model = "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16";
     int num_layers = 3;
     int hidden_size = kTH;
@@ -242,7 +243,7 @@ inline void WriteUltraIndex(const std::filesystem::path &model_root,
     std::filesystem::create_directories(model_root);
     const auto types = LayerTypes();
     std::ofstream f(model_root / "model.index.json");
-    f << "{\n  \"format\": \"" << opts.format << "\",\n"
+    f << "{\n  \"layout\": " << opts.layout << ",\n"
       << "  \"model\": \"" << opts.model << "\",\n"
       << "  \"num_layers\": " << opts.num_layers << ",\n  \"layer_types\": [";
     for (std::size_t i = 0; i < types.size(); ++i) {

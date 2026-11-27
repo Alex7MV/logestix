@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "lsxcommon/nemotron_moe_inference.h"
+#include "lsxcommon/index_layout.h"
 
 using lsxcommon::nemotron_moe::NmSession;
 
@@ -26,7 +27,7 @@ lsxcommon::nemotron_moe::NemotronIndex MakeIndex()
 {
     using lsxcommon::nemotron_moe::NemotronIndex;
     NemotronIndex idx;
-    idx.format = "logestix-nemotron";
+    idx.layout = lsxcommon::kIndexLayout;
     idx.model = "Nemotron-3.5-Lightning-30B-A3B";
     idx.layer_types = {"mamba", "moe", "attention", "mamba", "moe", "attention"};
     idx.num_layers = static_cast<int>(idx.layer_types.size());

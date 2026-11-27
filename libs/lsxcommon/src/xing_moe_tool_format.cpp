@@ -394,8 +394,6 @@ bool RenderText(const ChatConversation &conv, std::string &out,
     return RenderWith(conv, out, add_generation_prompt, LiteralMarkers());
 }
 
-
-
 bool Render(const ArrowTokenizerDb &tok, const ChatConversation &conv,
             std::vector<int32_t> &out_ids, bool add_generation_prompt)
 {

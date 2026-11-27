@@ -108,7 +108,7 @@ TEST_CASE("inkling loop topology rejects a wrong format tag", "[inkling][load]")
         std::ifstream f(idx);
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        const std::string from = "logestix-inkling-2-mini";
+        const std::string from = "\"layout\": 2";
         const auto pos = json.find(from);
         REQUIRE(pos != std::string::npos);
         json.replace(pos, from.size(), "logestix-inkling-2-small");

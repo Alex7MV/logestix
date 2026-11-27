@@ -108,7 +108,7 @@ struct ModelTopology {
     int64_t total_experts = 0;
     lsxcommon::VramProfile vram;   // conversion-time VRAM requirements
     // Index format tag ("logestix-v1-nvfp4" since the NVFP4 repack).
-    std::string format;
+    int64_t layout = 0;  // schema layout generation (kIndexLayout)
     std::string error_msg;
 };
 

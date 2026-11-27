@@ -27,7 +27,6 @@ static_assert(frozen::kNumRouted <= 1024, "router shared arrays are sized to 102
 
 __device__ __forceinline__ float silu_f(float x) { return x / (1.0f + expf(-x)); }
 
-
 // One block per (head, head_dim) pair: head_dim threads walk the state vector.
 // state_size is 128 in production, so this stays a serial inner loop per thread
 // (each thread owns one (head, d) row of the state, so the state update needs no
@@ -205,9 +204,6 @@ __global__ void attn_decode_kernel(const float *__restrict__ q,
     }
     out[h * head_dim + d] = o / l;
 }
-
-
-
 
 } // namespace
 

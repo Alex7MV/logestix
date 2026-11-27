@@ -18,7 +18,6 @@
 namespace lsxcommon::gigachat {
 namespace {
 
-
 struct DevGuard {
     uint8_t *d_fp8 = nullptr;
     float *d_scale = nullptr;

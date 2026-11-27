@@ -248,7 +248,6 @@ Gc4Topology ParseGigaChat4Config(const std::string &config_json_text)
 Gc4IngestSpec Gc4DefaultIngestSpec()
 {
     Gc4IngestSpec s;
-    s.format = frozen::kFormat;
     s.model_name = frozen::kModelName;
     s.frozen = Gc4FrozenGeometry{
         /*hidden=*/frozen::kHidden,
@@ -771,7 +770,6 @@ arrow::Status ConvertGigaChat4ModelWithSpec(const std::string &input_dir,
         experts_by_layer[static_cast<size_t>(layer)].shrink_to_fit();
     }
 
-
     if (!global_raw.empty())
         ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(global_raw),
                                          pinned_dir / "global.arrow"));
@@ -839,7 +837,7 @@ arrow::Status ConvertGigaChat4ModelWithSpec(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"" << spec.format << "\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"" << spec.model_name << "\",\n"
           << "  \"num_layers\": " << top.layers << ",\n"
           << "  \"layer_types\": [";

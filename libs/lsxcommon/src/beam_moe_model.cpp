@@ -35,21 +35,16 @@ bool BeamMoeModel::Load()
     if (!BeginLoad(cfg_.model_path)) return false;
 
     beam::BeamTopology top = beam::LoadBeamTopology(cfg_.model_path);
-    const std::string fmt = top.error_msg;
-    top.error_msg.clear();
     if (top.num_layers <= 0) {
         lsxcommon::log::error(absl::StrCat(
             "[beam-model] topology error: ",
-            fmt.empty() ? "model.index.json unreadable" : fmt));
+            "model.index.json unreadable or empty"));
         return AbortLoad();
     }
-    if (!fmt.empty() && fmt != beam::frozen::kFormatTag) {
-        lsxcommon::log::error(absl::StrCat(
-            "[beam-model] unsupported index format '", fmt,
-            "' — convert via: lsxforge --beam --input <model_dir> --output "
-            "<model_dir>"));
-        return AbortLoad();
-    }
+    // The schema generation is checked by the loader that parses the
+    // index (lsxcommon::IndexLayoutSupported); this used to compare a
+    // per-model tag that travelled here through error_msg.
+
     using namespace beam::frozen;
     if (!SyntheticGeometryAllowed() &&
         (top.num_layers != kLayers || top.hidden_size != kHidden ||

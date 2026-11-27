@@ -345,7 +345,6 @@ cudaError_t run_shared_experts_ffn(
     return cudaGetLastError();
 }
 
-
 // v1-nvfp4 routed-expert FFN: weights stay NVFP4-packed end to end. The
 // neutral lsx_nvfp4 layer streams them straight through the seq==1
 // weight-streaming GEMV (no dequantization stage, no cuBLAS). gate/up share
@@ -390,7 +389,6 @@ cudaError_t run_routed_expert_ffn(
 {
     constexpr int I = kIntermediateDim;
     constexpr int H = kHiddenDim;
-
 
     if (lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(stream, d_hidden, d_w13, d_s13,
             gs1, gs3, d_yg, H, I, false) != cudaSuccess)
@@ -631,7 +629,6 @@ cudaError_t run_routed_experts_ex(
         if (idx < 0 || idx >= experts_per_layer) continue;
         const ExpertEntry &en = db_entries[
             static_cast<size_t>(layer) * experts_per_layer + idx];
-
 
         const int64_t w1b = en.w1_bytes, w2b = en.w2_bytes, w3b = en.w3_bytes;
         const int64_t s1b = en.w1_scales_bytes, s2b = en.w2_scales_bytes, s3b = en.w3_scales_bytes;

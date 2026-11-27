@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/vram_estimate.h"
 
 #include "deepseek_moe_v41_constants.h"
@@ -20,7 +21,9 @@ struct ModelTopology {
     int experts_per_layer = 0;
     int64_t total_experts = 0;
     lsxcommon::VramProfile vram;
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     std::string model;
     std::array<LayerMeta, kLayers> layers{};
     std::string error_msg;
@@ -50,7 +53,7 @@ bool MatchesModelType(const ModelTopology &topo, std::string_view model_type);
 
 inline bool IsSupportedFormat(const ModelTopology &topo)
 {
-    return topo.format == kIndexFormat;
+    return IndexLayoutSupported(topo.layout);
 }
 
 } // namespace deepseek_v41

@@ -1,4 +1,5 @@
 #include "lsxcommon/nemotron_moe_load.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/synthetic_geometry.h"
 #include "nemotron_moe_constants.h"
 #include "fast_load_internal.h"
@@ -24,7 +25,6 @@ namespace lsxcommon::nemotron_moe {
 namespace {
 // Dedup Ф5: single-tensor upload is the shared lsxcommon::fastload body.
 using lsxcommon::fastload::UploadOne;
-
 
 constexpr const char *kFormatTag = "logestix-nemotron-nvfp4";
 
@@ -67,15 +67,12 @@ bool LoadNemotronIndex(const std::string &model_path, NemotronIndex &out,
         return false;
     }
 
-    std::string_view fmt;
-    if (root["format"].get_string().get(fmt) != simdjson::SUCCESS) {
-        error = "index missing 'format' tag";
-        return false;
-    }
-    out.format = std::string(fmt);
-    if (out.format != kFormatTag) {
-        error = absl::StrCat("unknown format tag: ", out.format,
-                             " (want ", kFormatTag, ")");
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) != simdjson::SUCCESS)
+        layout_v = 0;
+    out.layout = layout_v;
+    if (!lsxcommon::IndexLayoutSupported(out.layout)) {
+        error = lsxcommon::IndexLayoutError(out.layout);
         return false;
     }
     std::string_view model;

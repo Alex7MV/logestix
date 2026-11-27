@@ -4,6 +4,7 @@
 // the neutral host store and stream through a device slot LRU.
 
 #include "lsxcommon/mistral_moe_load.h"
+#include "lsxcommon/index_layout.h"
 #include "fast_load_internal.h"
 
 #include "mistral_moe_constants.h"
@@ -24,7 +25,6 @@ namespace lsxcommon::mistral_moe {
 namespace {
 // Dedup Ф5: byte upload is the shared lsxcommon::fastload body.
 using lsxcommon::fastload::UploadBytes;
-
 
 namespace fs = std::filesystem;
 namespace frozen = lsxcommon::mistral_moe::frozen;
@@ -105,6 +105,7 @@ long long JsonInt(const std::string &text, const std::string &key,
 }
 
 struct IndexInfo {
+    int64_t layout = 0;
     long long num_layers = 0;
     long long experts_per_layer = 0;
     long long hidden = 0;
@@ -132,7 +133,7 @@ IndexInfo ReadIndex(const fs::path &p)
     std::stringstream ss;
     ss << f.rdbuf();
     const std::string text = ss.str();
-    ix.format = mistral_load_topology(p.string()).format;
+    ix.layout = mistral_load_topology(p.string()).layout;
     ix.num_layers = JsonInt(text, "num_layers", 0);
     ix.experts_per_layer = JsonInt(text, "experts_per_layer", 0);
     ix.hidden = JsonInt(text, "hidden_size", 0);
@@ -144,10 +145,9 @@ IndexInfo ReadIndex(const fs::path &p)
     ix.v_head = JsonInt(text, "v_head_dim", 0);
     ix.moe_inter = JsonInt(text, "moe_intermediate_size", 0);
     ix.top_k = JsonInt(text, "num_experts_per_tok", 0);
-    if (ix.format != "logestix-mistral-nvfp4")
+    if (!lsxcommon::IndexLayoutSupported(ix.layout))
     {
-        ix.error_msg = absl::StrCat("unexpected format tag '", ix.format,
-                                    "' (expected logestix-mistral-nvfp4)");
+        ix.error_msg = lsxcommon::IndexLayoutError(ix.layout);
         return ix;
     }
     if (ix.num_layers <= 0 || ix.experts_per_layer <= 0)

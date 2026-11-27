@@ -243,7 +243,7 @@ TEST_CASE("ConvertLingModel synthetic end to end", "[ling-moe-convert]")
 
     const fs::path base = out;
     const std::string idx = ReadAll(base / "model.index.json");
-    CHECK(idx.find("\"format\": \"logestix-ling-nvfp4\"") != std::string::npos);
+    CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"model\": \"Ling-3.1-flash\"") != std::string::npos);
     CHECK(idx.find("\"mla_layers\": [7]") != std::string::npos);
     CHECK(idx.find("\"deferred\": {\"mtp\": 5}") != std::string::npos);

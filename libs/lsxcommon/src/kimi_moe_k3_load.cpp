@@ -1,4 +1,5 @@
 #include "lsxcommon/kimi_moe_k3_load.h"
+#include "lsxcommon/index_layout.h"
 #include "fast_load_internal.h"
 #include "lsxcommon/config_json.h"
 
@@ -28,7 +29,6 @@ inline bool get_d(simdjson::ondemand::object &o, const char *k, double &out)
 {
     return GetDouble(o, k, out);
 }
-
 
 namespace fs = std::filesystem;
 
@@ -152,20 +152,22 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
     if (doc.get_object().get(root) != simdjson::SUCCESS)
         return arrow::Status::Invalid("kimi-k3 index: root is not an object");
 
-    std::string_view s;
-    if (root["format"].get_string().get(s) == simdjson::SUCCESS)
-        out.format.assign(s.data(), s.size());
-    // Two trees, one loader: the K3 tag is the plain KimiLinear tower, the Pro
-    // tag adds the indexer plane. Anything else is not this family.
-    const bool is_k3 = out.format == frozen::kFormatTag;
-    const bool is_pro = out.format == kimi_pro::frozen::kFormatTag;
-    if (!is_k3 && !is_pro) {
-        out.error_msg = "unexpected format: " + out.format;
-        return arrow::Status::Invalid("kimi-k3 loader: expected format ",
-                                      frozen::kFormatTag, " or ",
-                                      kimi_pro::frozen::kFormatTag, ", got ",
-                                      out.format);
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) == simdjson::SUCCESS)
+        out.layout = layout_v;
+    if (!lsxcommon::IndexLayoutSupported(out.layout)) {
+        out.error_msg = lsxcommon::IndexLayoutError(out.layout);
+        return arrow::Status::Invalid("kimi-k3 loader: ", out.error_msg);
     }
+    // Two trees, one loader: the Pro variant adds the indexer plane, and the
+    // converter records that as an explicit `indexer` flag. The variant used to
+    // be encoded in the format TAG, which meant a layout check and a variant
+    // check shared one field.
+    bool indexer_flag = false;
+    const bool has_indexer_flag =
+        root["indexer"].get_bool().get(indexer_flag) == simdjson::SUCCESS;
+    const bool is_pro = has_indexer_flag && indexer_flag;
+    std::string_view s;
     if (root["model"].get_string().get(s) == simdjson::SUCCESS)
         out.model.assign(s.data(), s.size());
 
@@ -222,18 +224,10 @@ arrow::Status LoadKimiK3Topology(const std::string &model_path,
         }
 
     // ── Gated DSA block (Kimi-K3.1-Pro) ──
-    // The Pro tag REQUIRES the flag and the flag must be true; the K3 tag may
-    // omit it (trees converted before the variant existed) but may never carry
-    // a true one.
-    bool indexer_flag = false;
-    const bool has_indexer_flag = get_b(root, "indexer", indexer_flag);
-    if (is_pro ? (!has_indexer_flag || !indexer_flag)
-               : (has_indexer_flag && indexer_flag)) {
-        out.error_msg = "index: the indexer flag disagrees with the format "
-                        "(format says " +
-                        std::string(is_pro ? "kimi-k3.1-pro" : "kimi-k3") + ")";
-        return arrow::Status::Invalid("kimi-k3 index: ", out.error_msg);
-    }
+    // `is_pro` IS the indexer flag now (see above), so a separate
+    // flag-versus-variant cross-check would compare it with itself. What still
+    // needs checking is that a Pro index actually carries the indexer fields,
+    // which the block below reads.
     out.dsa = is_pro;
     if (out.dsa) {
         get_i(root, "index_head_dim", out.index_head_dim);

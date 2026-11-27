@@ -51,7 +51,6 @@ void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
     if (p >= 0) pad = p;
 }
 
-
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
     if (o[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;
@@ -766,7 +765,7 @@ arrow::Status ConvertHyMoeModelWithSpec(const std::string &input_dir,
     // (7) Structural manifest (deterministic byte content).
     {
         std::ostringstream j;
-        j << "{\n  \"format\": \"" << spec.format_tag << "\",\n"
+        j << "{\n  \"layout\": 2,\n"
           << "  \"model\": \"" << spec.model_name << "\",\n"
           << "  \"model_type\": \"" << spec.model_type << "\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n  \"mlp_layer_types\": [";

@@ -1,4 +1,5 @@
 #include "lsxcommon/inkling_moe_load.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/config_json.h"
 
 #include "inkling_moe_constants.h"
@@ -26,7 +27,6 @@ inline bool get_d(simdjson::ondemand::object &o, const char *k, double &out)
 {
     return GetDouble(o, k, out);
 }
-
 
 namespace fs = std::filesystem;
 
@@ -69,15 +69,16 @@ arrow::Status LoadInklingTopology(const std::string &model_path,
     if (doc.get_object().get(root) != simdjson::SUCCESS)
         return arrow::Status::Invalid("inkling index: root is not an object");
 
-    std::string_view s;
-    if (root["format"].get_string().get(s) == simdjson::SUCCESS)
-        out.format.assign(s.data(), s.size());
-    if (out.format != frozen::kFormatTag) {
-        out.error_msg = "unexpected format: " + out.format;
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) == simdjson::SUCCESS)
+        out.layout = layout_v;
+    if (!lsxcommon::IndexLayoutSupported(out.layout)) {
+        out.error_msg = lsxcommon::IndexLayoutError(out.layout);
         return arrow::Status::Invalid("inkling loader: expected format ",
                                       frozen::kFormatTag, ", got ",
-                                      out.format);
+                                      std::to_string(out.layout));
     }
+    std::string_view s;
     if (root["source_model_type"].get_string().get(s) == simdjson::SUCCESS)
         out.source_model_type.assign(s.data(), s.size());
 
@@ -176,7 +177,6 @@ bool InklingTopologyMatchesFrozen(const InklingTopology &top)
            top.shared_experts == frozen::kSharedExperts &&
            static_cast<int>(top.full_layers.size()) == frozen::kFullLayerCount;
 }
-
 
 namespace {
 

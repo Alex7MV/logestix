@@ -31,7 +31,6 @@ namespace {
 // nvfp4_scale.h::E4m3ToFloat. The two differ in signedness and are not
 // interchangeable.
 
-
 // ── KV act_quant (FP8_E4M3 inplace, block_size=64) ───────────────────────────
 // Reference line 506: act_quant(kv[..., :-rd], 64, scale_fmt, scale_dtype, True)
 // Applies FP8_E4M3 quantization+dequantization (fused) to the non-RoPE dims

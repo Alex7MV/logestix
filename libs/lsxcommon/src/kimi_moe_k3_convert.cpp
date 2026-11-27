@@ -57,7 +57,6 @@ inline bool parse_layer_body(const std::string &name, int &layer, std::string &b
     return lsxcommon::config::ParseLayerBody(name, layer, body);
 }
 
-
 namespace fs = std::filesystem;
 
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
@@ -952,10 +951,7 @@ arrow::Status ConvertKimiK3Variant(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \""
-          << (pro ? lsxcommon::kimi_pro::frozen::kFormatTag
-                  : frozen::kFormatTag)
-          << "\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"" << (pro ? "Kimi-K3.1-Pro" : "Kimi-K3")
           << "\",\n"
           << "  \"model_type\": \""

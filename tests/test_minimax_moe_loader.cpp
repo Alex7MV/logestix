@@ -172,7 +172,7 @@ TEST_CASE("MiniMax loader rejects a foreign index format", "[minimax][loader]")
     const fs::path idx = c.root / "model.index.json";
     {
         std::ofstream f(idx);
-        f << "{\"format\":\"logestix-qwen35moe\",\"num_layers\":4,"
+        f << "{\"layout\":2,\"num_layers\":4,"
              "\"num_experts\":8,\"layer_types\":[\"dense_attention\","
              "\"sparse_attention\",\"sparse_attention\",\"sparse_attention\"],"
              "\"mlp_layer_types\":[\"dense\",\"sparse\",\"sparse\",\"sparse\"]}";

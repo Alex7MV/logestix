@@ -5,6 +5,7 @@
 // Family-neutral helpers (FakeTensor/WriteSafetensors/MakeBf16*) come from
 // test_synth_checkpoint.h when P2 lands — never from another family's fixture.
 #include <filesystem>
+#include "lsxcommon/index_layout.h"
 #include <fstream>
 #include <cmath>
 #include <cstring>
@@ -26,10 +27,10 @@ inline void WriteIndex(const std::filesystem::path &model_dir,
 }
 
 inline std::string DefaultIndexJson(int num_layers, int experts,
-                                    const std::string &format)
+                                    int64_t layout)
 {
     return "{\n"
-           "  \"format\": \"" + format + "\",\n"
+           "  \"layout\": " + std::to_string(layout) + ",\n"
            "  \"model\": \"DeepSeek-V4.1-Flash\",\n"
            "  \"num_layers\": " + std::to_string(num_layers) + ",\n"
            "  \"experts_per_layer\": " + std::to_string(experts) + ",\n"
@@ -47,9 +48,9 @@ inline std::string DefaultIndexJson(int num_layers, int experts,
 
 inline arrow::Status BuildSyntheticIndex(
     const std::filesystem::path &model_dir, int num_layers = 40,
-    int experts = 384, const std::string &format = "logestix-v41-nvfp4")
+    int experts = 384, int64_t layout = lsxcommon::kIndexLayout)
 {
-    WriteIndex(model_dir, DefaultIndexJson(num_layers, experts, format));
+    WriteIndex(model_dir, DefaultIndexJson(num_layers, experts, layout));
     return arrow::Status::OK();
 }
 
@@ -139,8 +140,7 @@ inline arrow::Status BuildSyntheticConverted(const std::filesystem::path &dir,
     std::filesystem::create_directories(dir / "pinned");
     std::filesystem::create_directories(dir / "experts" /
                                         "layer_0");
-    if (auto st = BuildSyntheticIndex(dir, /*num_layers=*/1, experts,
-                                      "logestix-v41-nvfp4");
+    if (auto st = BuildSyntheticIndex(dir, /*num_layers=*/1, experts);
         !st.ok())
         return st;
 
@@ -231,7 +231,7 @@ inline arrow::Status BuildSyntheticFullGeometry(
                                         "layer_0");
 
     std::string json = "{";
-    json += "\"format\": \"logestix-v41-nvfp4\",";
+    json += "\"layout\": 2,";
     json += "\"model\": \"DeepSeek-V4.1-Flash\",";
     json += "\"num_layers\": 1,";
     json += "\"experts_per_layer\": " + std::to_string(experts) + ",";
@@ -330,7 +330,7 @@ inline arrow::Status BuildSyntheticCedGeometry(
             dir / "experts" / ("layer_" + std::to_string(l)));
 
     std::string json = "{";
-    json += "\"format\": \"logestix-v41-nvfp4\",";
+    json += "\"layout\": 2,";
     json += "\"model\": \"DeepSeek-V4.1-Flash\",";
     json += "\"num_layers\": 2,";
     json += "\"experts_per_layer\": " + std::to_string(experts) + ",";

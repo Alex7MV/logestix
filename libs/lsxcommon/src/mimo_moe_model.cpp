@@ -37,7 +37,6 @@ const TensorView *FindTensor(const TensorBatchViews &raw,
     return nullptr;
 }
 
-
 // Stream-ordered BF16->FP16 upload (OPEN_TASKS E3).
 //
 // This used to decode every BF16 element on the host into a temporary

@@ -8,6 +8,7 @@
 #include "test_gigachat4_fixture.h"
 #include "gigachat_moe_708b_constants.h"
 #include "lsxcommon/gigachat_moe_708b_model.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/gigachat_moe_37b_load.h"
 
 #include <cstdlib>
@@ -40,7 +41,7 @@ TEST_CASE("gigachat4-708b expectation is built from its own passport",
           "[gigachat708b][load]")
 {
     const Gc4FrozenExpect e = gc708::Gc708BExpect();
-    CHECK(std::string(e.format) == "logestix-gigachat4-708b-nvfp4");
+    CHECK(e.layout == lsxcommon::kIndexLayout);
     CHECK(e.geo.hidden == 7168);
     CHECK(e.geo.layers == 64);
     CHECK(e.geo.num_experts == 256);
@@ -51,7 +52,9 @@ TEST_CASE("gigachat4-708b expectation is built from its own passport",
     // Distinct from the family default, which stays the 37B's.
     const Gc4FrozenExpect d = lsxcommon::gigachat4::Gc4DefaultExpect();
     CHECK(d.geo.layers != e.geo.layers);
-    CHECK(std::string(d.format) != std::string(e.format));
+    // Both members share the generation; what distinguishes them is the
+    // passport geometry (checked above), not a format string.
+    CHECK(d.layout == e.layout);
 }
 
 TEST_CASE("gigachat4-708b index matches its own passport",
@@ -63,7 +66,7 @@ TEST_CASE("gigachat4-708b index matches its own passport",
 
     Gc4Index idx;
     std::string err;
-    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), frozen708::kFormat, idx,
+    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), lsxcommon::kIndexLayout, idx,
                                          err));
     CHECK(err.empty());
     CHECK(idx.num_layers == 64);
@@ -91,13 +94,17 @@ TEST_CASE("gigachat4-708b refuses a 37B tree on the format tag",
           "[gigachat708b][load]")
 {
     DisableSyntheticGeometry();
+    // The member distinction used to be a per-model format tag. It is now the
+    // PASSPORT GEOMETRY (see the next case), so what this one can still prove is
+    // the layout gate: a tree written in another generation is refused.
     const auto root = gigachat4test::MakeTempDir("gc708_idx_37fmt");
-    gigachat4test::WriteGigaChat4Index(root);  // the 37B tree's index
+    gigachat4test::WriteGigaChat4_708BIndex(root, /*hidden_override=*/7168,
+                                            /*layout_override=*/1);
     Gc4Index idx;
     std::string err;
-    CHECK_FALSE(LoadGigaChat4IndexWithFormat(root.string(), frozen708::kFormat,
+    CHECK_FALSE(LoadGigaChat4IndexWithFormat(root.string(), lsxcommon::kIndexLayout,
                                              idx, err));
-    CHECK(err.find("format") != std::string::npos);
+    CHECK(err.find("layout") != std::string::npos);
 }
 
 TEST_CASE("gigachat4-708b refuses a 37B tree on the geometry",
@@ -109,7 +116,7 @@ TEST_CASE("gigachat4-708b refuses a 37B tree on the geometry",
     const auto root = gigachat4test::MakeTempDir("gc708_idx_37geo");
     gigachat4test::WriteGigaChat4_708BIndex(root,
                                             /*hidden_override=*/7168,
-                                            /*format_tag=*/frozen708::kFormat);
+                                            /*format_tag=*/lsxcommon::kIndexLayout);
     // Rewrite num_layers to the 37B depth, keeping the 708B tag.
     const auto path = root / "model.index.json";
     std::string json;
@@ -129,7 +136,7 @@ TEST_CASE("gigachat4-708b refuses a 37B tree on the geometry",
     }
     Gc4Index idx;
     std::string err;
-    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), frozen708::kFormat, idx,
+    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), lsxcommon::kIndexLayout, idx,
                                          err));
     CHECK_FALSE(ValidateGigaChat4GeometryAgainst(idx, gc708::Gc708BExpect(), err));
     CHECK(err.find("mismatch") != std::string::npos);
@@ -161,7 +168,7 @@ TEST_CASE("gigachat4-708b geometry gate catches a single wrong width",
     }
     Gc4Index idx;
     std::string err;
-    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), frozen708::kFormat, idx,
+    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), lsxcommon::kIndexLayout, idx,
                                          err));
     CHECK_FALSE(ValidateGigaChat4GeometryAgainst(idx, gc708::Gc708BExpect(), err));
     CHECK(err.find("moe_intermediate_size") != std::string::npos);

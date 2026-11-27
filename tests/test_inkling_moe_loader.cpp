@@ -7,6 +7,7 @@
 //     `logestix/model.index.json`) plus the byte sizes of two expert records,
 //     and SKIPs when the vault is absent. No weight is loaded into VRAM here.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/inkling_moe_convert.h>
 #include <lsxcommon/inkling_moe_load.h>
 #include <lsxcommon/schema.h>
@@ -271,7 +272,7 @@ TEST_CASE("inkling real vault index matches the frozen passport",
     auto st = lsxcommon::inkling::LoadInklingTopology(root.string(), top);
     if (!st.ok()) FAIL(st.ToString());
 
-    REQUIRE(top.format == "logestix-inkling-2-small");
+    REQUIRE(top.layout == lsxcommon::kIndexLayout);
     REQUIRE(top.source_model_type == "inkling2");
     REQUIRE(top.tokenizer_kind == 2);
 

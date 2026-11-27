@@ -1,4 +1,5 @@
 #include "lsxcommon/kimi_moe_load.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/log.h"
@@ -36,7 +37,6 @@ namespace kimi {
 namespace {
 
 using fastload::PinnedStagingRing;
-
 
 cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
                        cudaStream_t stream, std::uint64_t &bytes_acc,
@@ -369,10 +369,11 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
         log::error("[kimi_load] topology error: " + topo.error_msg);
         return cudaErrorInvalidValue;
     }
-    if (!topo.format.empty() && topo.format != "logestix-kimi-r2") {
-        log::error("[kimi_load] format '" + topo.format +
-                   "' is pre-r2: MLA weights require NVFP4 — "
-                   "reconvert required");
+    if (!lsxcommon::IndexLayoutSupported(topo.layout)) {
+        log::error("[kimi_load] layout " + std::to_string(topo.layout) +
+                   " is not readable by this build (expects " +
+                   std::to_string(lsxcommon::kIndexLayout) +
+                   "): MLA weights require the NVFP4 layout — reconvert");
         return cudaErrorInvalidValue;
     }
     if (topo.num_layers <= 0) {

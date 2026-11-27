@@ -2,6 +2,7 @@
 // Synthetic index only: never opens the vault. The frozen geometry gate is
 // exercised for real (no synthetic bypass).
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include "test_gigachat4_fixture.h"
 
@@ -69,11 +70,11 @@ TEST_CASE("gigachat4 index rejects the sibling's format tag",
     // zero-centred norms, so loading it as this model would decode garbage.
     const auto root = gigachat4test::MakeTempDir("gc4_idx_fmt");
     gigachat4test::WriteGigaChat4Index(root, /*hidden_override=*/2560,
-                                       /*format_tag=*/"logestix-gigachat-nvfp4");
+                                       /*layout=*/1);  // wrong generation
     Gc4Index idx;
     std::string err;
     CHECK_FALSE(LoadGigaChat4Index(root.string(), idx, err));
-    CHECK(err.find("format") != std::string::npos);
+    CHECK(err.find("layout") != std::string::npos);
 }
 
 TEST_CASE("gigachat4 index requires the DSA indexer geometry",

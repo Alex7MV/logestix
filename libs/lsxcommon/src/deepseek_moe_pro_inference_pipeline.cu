@@ -116,7 +116,6 @@ cudaError_t run_csa_attention(
     float* d_dequant,
     float* d_norm_scratch, float* d_norm_gamma_scratch);
 
-
 // Sanity ceiling for a model-reported vocab_size. d_logits is now allocated
 // dynamically to the actual vocab_size (see RunInferenceModel), but any
 // model reporting an implausibly large vocabulary fails loudly at load time
@@ -172,7 +171,6 @@ InferenceResult RunInferenceModel(
             goto cleanup;                                              \
         }                                                              \
     } while (0)
-
 
     // 4. Allocate device buffers
     int max_gen = std::min(max_gen_tokens, 4096);

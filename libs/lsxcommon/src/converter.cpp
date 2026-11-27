@@ -1238,7 +1238,7 @@ static arrow::Status WriteModelIndex(
         return arrow::Status::IOError("Cannot create model.index.json");
 
     f << "{\n";
-    f << "  \"format\": \"logestix-v1-nvfp4\",\n";
+    f << "  \"layout\": 2,\n";
     f << "  \"model\": \"" << model_name << "\",\n";
     f << "  \"num_layers\": " << num_layers << ",\n";
     f << "  \"experts_per_layer\": " << experts_per_layer << ",\n";

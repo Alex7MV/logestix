@@ -1,4 +1,5 @@
 #include "lsxcommon/minimax_moe_load.h"
+#include "lsxcommon/index_layout.h"
 
 #include "minimax_moe_constants.h"
 #include "fast_load_internal.h"
@@ -136,9 +137,14 @@ MinimaxTopology LoadMinimaxTopology(const std::string &model_path)
             return static_cast<double>(i.value());
         return dflt;
     };
-    std::string_view format;
-    if (root["format"].get_string().get(format) == simdjson::SUCCESS)
-        top.error_msg = std::string(format);  // reused as a format carrier
+    // Plain local: the topology struct has no field for a schema generation.
+    int64_t layout = 0;
+    if (root["layout"].get_int64().get(layout) != simdjson::SUCCESS)
+        layout = 0;
+    if (!lsxcommon::IndexLayoutSupported(layout)) {
+        top.error_msg = lsxcommon::IndexLayoutError(layout);
+        return top;
+    }
 
     top.num_layers = gi("num_layers", 0);
     top.hidden_size = gi("hidden_size", 0);

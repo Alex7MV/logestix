@@ -58,7 +58,9 @@ struct MistralTopology {
     long long experts_per_layer = 0;
     std::vector<long long> moe_layers;
     std::vector<long long> dense_layers;
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     // Conversion-time placement profile ("vram" block). Empty on a tree
     // converted before the block became mandatory.
     VramProfile vram;

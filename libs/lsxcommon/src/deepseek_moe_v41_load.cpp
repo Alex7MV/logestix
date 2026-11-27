@@ -7,6 +7,7 @@
 #include <simdjson.h>
 
 #include "lsxcommon/path_registry.h"
+#include "lsxcommon/index_layout.h"
 
 namespace lsxcommon {
 namespace deepseek_v41 {
@@ -44,9 +45,9 @@ ModelTopology LoadTopology(const std::string &model_path)
         return failed;
     }
 
-    std::string_view fmt;
-    if (root["format"].get_string().get(fmt) == simdjson::SUCCESS)
-        topo.format.assign(fmt);
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) == simdjson::SUCCESS)
+        topo.layout = layout_v;;
     std::string_view mdl;
     if (root["model"].get_string().get(mdl) == simdjson::SUCCESS)
         topo.model.assign(mdl);
@@ -87,13 +88,10 @@ ModelTopology LoadTopology(const std::string &model_path)
         }
     }
 
-    if (topo.format != kIndexFormat) {
+    if (!lsxcommon::IndexLayoutSupported(topo.layout)) {
         ModelTopology failed;
-        failed.error_msg = "unsupported index format '" +
-                           (topo.format.empty() ? std::string("<missing>")
-                                                : topo.format) +
-                           "' in " + ipath.string() + " (expected " +
-                           std::string(kIndexFormat) + ")";
+        failed.error_msg = IndexLayoutError(topo.layout) + " (" +
+                           ipath.string() + ")";
         return failed;
     }
     return topo;

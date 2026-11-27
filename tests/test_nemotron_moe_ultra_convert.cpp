@@ -235,7 +235,7 @@ TEST_CASE("ultra convert: the synthetic checkpoint produces the Ultra index",
     REQUIRE(st.ok());
 
     const std::string json = ReadIndexJson(dst);
-    CHECK(json.find("\"format\": \"logestix-nemotron-ultra-nvfp4\"") != std::string::npos);
+    CHECK(json.find("\"layout\": 2") != std::string::npos);
     CHECK(json.find("\"moe_latent_size\": 8") != std::string::npos);
     CHECK(json.find("\"n_group\": 4") != std::string::npos);
     CHECK(json.find("\"topk_group\": 1") != std::string::npos);

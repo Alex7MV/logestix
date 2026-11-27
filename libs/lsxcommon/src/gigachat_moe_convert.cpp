@@ -639,7 +639,7 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-gigachat-nvfp4\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"GigaChat3.5-432B-A28B-Reasoning\",\n"
           << "  \"num_layers\": " << top.layers << ",\n"
           << "  \"layer_types\": [";

@@ -226,8 +226,9 @@ Topology LoadTopology(const std::string &model_path)
         return top;
     }
     std::string_view s;
-    if (root["format"].get_string().get(s) == simdjson::SUCCESS)
-        top.format = std::string(s);
+    if (root["layout"].get_int64().get(top.layout) != simdjson::SUCCESS)
+
+        top.layout = 0;
     if (root["model"].get_string().get(s) == simdjson::SUCCESS)
         top.model = std::string(s);
     top.num_layers = GetInt(root, "num_layers", 0);

@@ -336,7 +336,7 @@ arrow::Status WriteMuseDenseModelIndex(const std::string &output_root,
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"" << frozen::kFormatTag << "\",\n"
+      << "  \"layout\": 2,\n"
       << "  \"model\": \"" << frozen::kModelType << "\",\n"
       << "  \"mlp_nvfp4\": true,\n"
       << "  \"attn_nvfp4\": true,\n"

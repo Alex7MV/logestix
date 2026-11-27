@@ -32,7 +32,9 @@ namespace lsxcommon::inkling {
 
 // ── runtime topology (cross-checked against the frozen passport) ───────────
 struct InklingLoopTopology {
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     std::string source_model_type;
     int num_layers = 0;
     int hidden = 0;

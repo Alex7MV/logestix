@@ -9,7 +9,6 @@
 // Protocol invariants: one stream end-to-end (no cudaDeviceSynchronize in the
 // generation loop), shared-memory RMW only by thread 0 behind barriers.
 
-
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/lsx_moe_inference.h"
 #include "lsxcommon/lsx_attn_inference.h"
@@ -1700,7 +1699,6 @@ __global__ void moe_init_acc_kernel(const __half *__restrict__ resid,
     if (i >= n) return;
     acc[i] = __half2float(resid[i]);
 }
-
 
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 } // namespace

@@ -33,6 +33,7 @@ namespace dory {
 // Loaded/converted topology of a Dory checkpoint (geometry + special tokens +
 // the mandatory conversion-time VRAM profile). Device-safe.
 struct DoryTopology {
+    int64_t layout = 0;  // schema layout generation (kIndexLayout)
     int num_layers = 0;             // physical mixers (config num_hidden_layers)
     int hidden_size = 0;
     int intermediate_size = 0;

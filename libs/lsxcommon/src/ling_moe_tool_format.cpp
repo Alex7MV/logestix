@@ -20,7 +20,6 @@ constexpr std::array<const char *, 14> kMarkers = {
     "</arg_key>",   "</role>",         "<role>",           "<think>",
     "</think>",     "<|fim_end|>"};
 
-
 bool EncodeText(const ArrowTokenizerDb &tok, std::string_view text,
                 std::vector<int32_t> &out)
 {

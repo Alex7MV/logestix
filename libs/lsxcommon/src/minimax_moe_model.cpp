@@ -41,22 +41,17 @@ bool MinimaxM3Model::Load()
     if (!BeginLoad(cfg_.model_path)) return false;
 
     minimax::MinimaxTopology top = minimax::LoadMinimaxTopology(cfg_.model_path);
-    const std::string fmt = top.error_msg;
-    top.error_msg.clear();
     if (top.num_layers <= 0) {
         lsxcommon::log::error(absl::StrCat(
             "[minimax-model] topology error: ",
-            fmt.empty() ? "model.index.json unreadable" : fmt));
+            "model.index.json unreadable or empty"));
         return AbortLoad();
     }
     // Format contract: no backward compatibility (AGENTS.md).
-    if (!fmt.empty() && fmt != minimax::frozen::kFormatTag) {
-        lsxcommon::log::error(absl::StrCat(
-            "[minimax-model] unsupported index format '", fmt,
-            "' — convert via: lsxforge --minimax --input <model_dir> "
-            "--output <model_dir>"));
-        return AbortLoad();
-    }
+    // The schema generation is checked by the loader that parses the
+    // index (lsxcommon::IndexLayoutSupported); this used to compare a
+    // per-model tag that travelled here through error_msg.
+
     // Frozen-geometry passport cross-check (Model Ingestion Protocol step 3).
     using namespace minimax::frozen;
     if (!SyntheticGeometryAllowed() &&

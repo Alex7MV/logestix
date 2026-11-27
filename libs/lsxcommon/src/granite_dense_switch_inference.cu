@@ -247,7 +247,6 @@ cudaError_t RunGraniteSwitchAttentionSplitKernel(
     return e;
 }
 
-
 // ── KV cache ────────────────────────────────────────────────────────────────
 
 void GraniteSwitchKvCache::Free()

@@ -107,7 +107,6 @@ std::string GraniteSwitchGeometryMismatch(const GraniteSwitchFrozen &f,
     return why;
 }
 
-
 namespace {
 
 using fastload::CvKind;
@@ -438,7 +437,6 @@ bool LoadGraniteSwitchPinnedWeights(const std::string &output_root,
     return true;
 }
 
-
 int32_t GraniteSwitchSubstitute(const GraniteSwitchTopology &top, int32_t id)
 {
     for (int a = 0; a < top.num_adapters; ++a) {
@@ -476,7 +474,6 @@ GraniteSwitchPrepared PrepareGraniteSwitchTokens(
     out.last_adapter = carry;
     return out;
 }
-
 
 } // namespace granite_switch
 } // namespace lsxcommon

@@ -17,6 +17,7 @@
 
 #include "hy_moe_flash_load.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/synthetic_geometry.h"
 
 namespace fs = std::filesystem;
@@ -39,7 +40,7 @@ fs::path BuildTree(int layers, int experts)
     {
         std::ofstream f(log / "model.index.json");
         f << "{\n";
-        f << "  \"format\": \"logestix-hy4-nvfp4\",\n";
+        f << "  \"layout\": 2,\n";
         f << "  \"model\": \"Hy4-flash\",\n";
         f << "  \"model_type\": \"hy4-flash\",\n";
         f << "  \"num_layers\": " << layers << ",\n";
@@ -87,7 +88,7 @@ TEST_CASE("hy4 loader: topology parses and the format gate is exact",
     CHECK(topo.error_msg.empty());
     CHECK(topo.num_layers == 42);
     CHECK(topo.experts_per_layer == 512);
-    CHECK(topo.format == "logestix-hy4-nvfp4");
+    CHECK(topo.layout == lsxcommon::kIndexLayout);
     CHECK(gpu::IsSupportedFormat(topo));
     CHECK(topo.deferred_engram == 28);
     REQUIRE(topo.layers.size() == 42);

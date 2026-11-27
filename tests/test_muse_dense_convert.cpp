@@ -256,7 +256,7 @@ TEST_CASE("muse dense convert happy path", "[muse_dense][convert]") {
         REQUIRE(f.good());
         const std::string json((std::istreambuf_iterator<char>(f)),
                                std::istreambuf_iterator<char>());
-        CHECK(json.find("\"format\": \"logestix-muse-nvfp4\"") !=
+        CHECK(json.find("\"layout\": 2") !=
               std::string::npos);
         CHECK(json.find("\"model\": \"muse-glimmer-30b\"") != std::string::npos);
         CHECK(json.find("\"skipped_visual_tensors\": 4") != std::string::npos);

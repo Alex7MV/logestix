@@ -154,7 +154,7 @@ TEST_CASE("ConvertStepMoeModel converts a synthetic checkpoint",
     {
         REQUIRE(fs::exists(base / "model.index.json"));
         const std::string j = ReadAll(base / "model.index.json");
-        CHECK(j.find("\"logestix-step5-nvfp4\"") != std::string::npos);
+        CHECK(j.find("\"layout\": 2") != std::string::npos);
         CHECK(j.find("\"model_type\": \"step-5-preview\"") != std::string::npos);
         CHECK(j.find("\"num_experts\": " + std::to_string(c.experts)) !=
               std::string::npos);

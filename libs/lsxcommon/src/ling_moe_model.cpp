@@ -2,6 +2,7 @@
 
 #include "ling_moe_constants.h"
 #include "lsxcommon/ling_moe_tool_format.h"
+#include "lsxcommon/index_layout.h"
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
@@ -41,9 +42,9 @@ bool LingMoeModel::Load()
                                 top.error_msg));
         return AbortLoad();
     }
-    if (top.format != ling::frozen::kFormatTag) {
+    if (!lsxcommon::IndexLayoutSupported(top.layout)) {
         log::error(absl::StrCat(
-            "[ling-model] unsupported index format '", top.format,
+            "[ling-model] unsupported index format '", std::to_string(top.layout),
             "' — convert via: lsxforge --ling --input <model_dir> --output "
             "<model_dir>"));
         return AbortLoad();

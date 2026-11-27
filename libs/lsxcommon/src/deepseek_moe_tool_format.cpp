@@ -14,7 +14,6 @@ namespace {
 // Dedup Ф4: compact JSON serializer is the shared lsxcommon::tools body.
 using lsxcommon::tools::SerializeJson;
 
-
 constexpr std::string_view kBos = "<｜begin▁of▁sentence｜>";
 constexpr std::string_view kEos = "<｜end▁of▁sentence｜>";
 constexpr std::string_view kSystem = "<｜System｜>";
@@ -25,7 +24,6 @@ constexpr std::string_view kThinkEnd = "</think>";
 constexpr std::string_view kDsml = "｜DSML｜";
 
 using lsxnetwork::json::JsonEscape;
-
 
 std::string DsmlEsc(std::string_view s);
 

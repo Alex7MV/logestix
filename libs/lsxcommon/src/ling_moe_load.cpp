@@ -196,8 +196,9 @@ LingIndex LoadLingIndex(const std::string &model_path)
         return top;
     }
     std::string_view format;
-    if (root["format"].get_string().get(format) == simdjson::SUCCESS)
-        top.format = std::string(format);
+    if (root["layout"].get_int64().get(top.layout) != simdjson::SUCCESS)
+
+        top.layout = 0;
     auto gi = [&](const char *k, int dflt) {
         int64_t v;
         if (root[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;

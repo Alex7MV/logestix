@@ -824,7 +824,7 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
             eos += std::to_string(top.eos_ids[i]);
         }
         j << "{\n"
-          << "  \"format\": \"logestix-glm5next\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"GLM-5.3-Flash\",\n"
           << "  \"hidden_size\": " << top.hidden
           << ",\n  \"num_layers\": " << top.layers

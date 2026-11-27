@@ -91,7 +91,6 @@ const char *ResidualPlaneTag()
     return "none";
 }
 
-
 using K = GraniteSwitchTensorKind;
 
 std::optional<ParsedGraniteSwitchTensor> match_layer(
@@ -328,7 +327,7 @@ arrow::Status WriteGraniteSwitchModelIndex(
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"" << kFormatTag << "\",\n"
+      << "  \"layout\": 2,\n"
       << "  \"model\": \"" << top.model_name << "\",\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"switch_cache_layers\": " << top.switch_cache_layers

@@ -24,7 +24,6 @@ namespace glm {
 
 namespace {
 
-
 // Uploads one NVFP4-packed expert tensor (packed E2M1 nibbles + per-block E4M3
 // scales) into a GlmExpertDeviceBlock slot. On any failure the slot stays
 // inactive (null payload pointers) — the deterministic zero-contribution skip.
@@ -142,9 +141,6 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     }
     return cudaSuccess;
 }
-
-
-
 
 } // anonymous namespace
 
@@ -288,7 +284,6 @@ cudaError_t LoadSingleLayer(const TensorBatchViews &tensors,
     }
     return cudaSuccess;
 }
-
 
 void GlmLayerWeights::Free()
 {

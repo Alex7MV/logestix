@@ -1,6 +1,7 @@
 #include "deepseek_moe_pro_model.h"
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/safetensors.h"
@@ -59,10 +60,10 @@ bool DeepSeekV4ProModel::Load()
     }
     // Format contract: no backward compatibility (AGENTS.md) — only the
     // NVFP4 tree this converter writes loads.
-    if (topo.format != deepseek_pro::gpu::kIndexFormatNvfp4) {
+    if (!lsxcommon::IndexLayoutSupported(topo.layout)) {
         lsxcommon::log::error(absl::StrCat(
             "[deepseek-pro-model] unsupported index format '",
-            topo.format.empty() ? "<missing>" : topo.format,
+            std::to_string(topo.layout),
             "' — convert via: lsxforge --deepseek_pro --input <model_dir>"
             " --output <model_dir>"));
         return AbortLoad();

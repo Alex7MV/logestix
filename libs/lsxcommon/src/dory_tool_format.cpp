@@ -17,7 +17,6 @@ namespace {
 // Dedup Ф4: Jinja tojson string escaping is the shared lsxcommon::tools body.
 using lsxcommon::tools::AppendJinjaString;
 
-
 using lsxnetwork::json::JsonEscape;
 
 std::string_view TrimAscii(std::string_view s)

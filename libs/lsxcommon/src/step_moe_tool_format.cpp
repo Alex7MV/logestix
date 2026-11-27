@@ -24,7 +24,6 @@ inline bool AppendEncoded(const ArrowTokenizerDb &tok, std::string_view text,
     return AppendEncodedLarge(tok, text, ids);
 }
 
-
 using lsxnetwork::json::JsonEscape;
 
 constexpr const char *kBos = "<｜begin▁of▁sentence｜>";
@@ -49,7 +48,6 @@ bool AppendTextWithSentinels(const ArrowTokenizerDb &tok,
     return lsxcommon::tools::AppendTextWithSentinels(tok, text, kSentinelVec,
                                                      ids);
 }
-
 
 std::string_view TrimAscii(std::string_view s)
 {

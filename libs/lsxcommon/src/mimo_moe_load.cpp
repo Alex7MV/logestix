@@ -1,6 +1,7 @@
 #include "lsxcommon/mimo_moe_load.h"
 
 #include "mimo_moe_constants.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/synthetic_geometry.h"
 
@@ -78,10 +79,11 @@ arrow::Result<MiMoModelFiles> LoadMiMoLayout(const std::string &root)
         return arrow::Status::Invalid("index root is not an object");
 
     std::string_view format;
-    if (obj["format"].get_string().get(format) != simdjson::SUCCESS)
-        return arrow::Status::Invalid("index has no format tag");
-    if (format != "logestix-mimo-nvfp4")
-        return arrow::Status::Invalid("unsupported format tag: ", format);
+    int64_t layout = 0;
+    if (obj["layout"].get_int64().get(layout) != simdjson::SUCCESS)
+        layout = 0;
+    if (!lsxcommon::IndexLayoutSupported(layout))
+        return arrow::Status::Invalid(lsxcommon::IndexLayoutError(layout));
 
     MiMoTopology t;
     auto geti = [&](const char *k, int &out) {

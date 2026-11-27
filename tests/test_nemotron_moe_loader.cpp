@@ -2,6 +2,7 @@
 // output -> residency). Synthetic converted fixture only: never opens the
 // vault. The frozen geometry gate is exercised for real (no synthetic bypass).
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include "test_nemotron_moe_fixture.h"
 
@@ -65,13 +66,13 @@ TEST_CASE("nemotron index rejects an unknown format tag", "[nemotron][load]")
     const auto root = nemotrontest::MakeTempDir("nm_idx_fmt");
     nemotrontest::WriteNemotronIndex(root, /*hidden_override=*/2688,
                                      /*experts_no_gate=*/true,
-                                     /*format_tag=*/"logestix-glm");
+                                     /*layout=*/1);  // wrong generation
 
     NemotronIndex idx;
     std::string err;
     CHECK_FALSE(LoadNemotronIndex(root.string(), idx, err));
     INFO("error: " << err);
-    CHECK(err.find("format") != std::string::npos);
+    CHECK(err.find("layout") != std::string::npos);
 }
 
 TEST_CASE("nemotron frozen geometry mismatch fails validation",

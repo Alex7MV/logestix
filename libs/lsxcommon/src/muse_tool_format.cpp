@@ -28,7 +28,6 @@ using lsxcommon::tools::PyJsonString;
 using lsxcommon::tools::PyJsonValue;
 using lsxcommon::tools::PyJsonDumps;
 
-
 using lsxnetwork::json::JsonEscape;
 
 // Channel markers (chat_template.jinja literals; ALL special:true vocab ids).

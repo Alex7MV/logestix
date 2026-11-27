@@ -6,6 +6,7 @@
 // (the converted index) and SKIPs when the vault is absent — no weight is
 // loaded into VRAM here.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/inkling_moe_base_convert.h>
 #include <lsxcommon/inkling_moe_base_load.h>
 #include <lsxcommon/schema.h>
@@ -210,7 +211,7 @@ TEST_CASE("inkling base real vault index matches the frozen passport",
     base::Topology top;
     auto st = base::LoadTopology(root.string(), top);
     if (!st.ok()) FAIL(st.ToString());
-    REQUIRE(top.format == "logestix-inkling-nvfp4");
+    REQUIRE(top.layout == lsxcommon::kIndexLayout);
     REQUIRE(top.source_model_type == "inkling_mm_model");
     REQUIRE(top.tokenizer_kind == 2);
     REQUIRE(base::TopologyMatchesFrozen(top));

@@ -767,7 +767,7 @@ arrow::Status ConvertStepMoeModel(const std::string &input_dir,
     // (7) Structural manifest (deterministic byte content).
     {
         std::ostringstream j;
-        j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n"
+        j << "{\n  \"layout\": 2,\n"
           << "  \"model\": \"" << frozen::kModelName << "\",\n"
           << "  \"model_type\": \"" << frozen::kType << "\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n  \"mlp_layer_types\": [";

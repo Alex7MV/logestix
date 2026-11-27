@@ -1012,7 +1012,6 @@ bool FlintWordStream::next(WordSpan &word)
     return next_main(word);
 }
 
-
 // ── single-stage GPT-2-family patterns (tokenizer_kind 7-10) ───────────────
 //
 // The reference `pre_tokenizer` of these checkpoints is ONE Split stage, not
@@ -1327,7 +1326,6 @@ bool HunyuanWordStream::next(WordSpan &word)
     return next_main(word);
 }
 
-
 QwenWordStream::QwenWordStream(const char *text, size_t length)
     : begin_(text), end_(text + length)
 {
@@ -1625,7 +1623,6 @@ bool Gpt2OriginalWordStream::next(WordSpan &word)
     pos_ += len;
     return true;
 }
-
 
 // ── Kimi tiktoken pattern (tokenizer_kind 2) ───────────────────────────────
 //

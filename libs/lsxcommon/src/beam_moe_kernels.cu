@@ -274,7 +274,6 @@ __global__ void beam_softcap_kernel(float *__restrict__ logits, int n)
     logits[i] = tanhf(logits[i] / kSoftcap) * kSoftcap;
 }
 
-
 } // namespace
 
 cudaError_t RunBeamNorm(cudaStream_t stream, const __half *x, const __half *w,

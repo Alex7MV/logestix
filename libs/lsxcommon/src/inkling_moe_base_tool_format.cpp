@@ -15,7 +15,6 @@
 namespace lsxcommon::inkling::base {
 namespace {
 
-
 // ── markers (added_tokens, all special:true) ──────────────────────────────
 constexpr char kUser[] = "<|message_user|>";
 constexpr char kModel[] = "<|message_model|>";

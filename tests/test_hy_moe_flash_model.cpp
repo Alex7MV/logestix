@@ -2,6 +2,7 @@
 // gates, and the request guards — all host-only (label `fast`), so they run
 // without the 90 GB artifact.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include <atomic>
 #include <cstring>
@@ -27,7 +28,7 @@ fs::path WriteIndex(int layers, const std::string &format,
     fs::remove_all(root);
     fs::create_directories(root / "pinned");
     std::ofstream f(root / "model.index.json");
-    f << "{\"format\": \"" << format << "\", \"model\": \"" << model
+    f << "{\"layout\": " << lsxcommon::kIndexLayout << ", \"model\": \"" << model
       << "\", \"num_layers\": " << layers
       << ", \"experts_per_layer\": 512, \"total_experts\": 20992,"
       << " \"total_pinned_tensors\": 0, \"hidden_size\": 3072,"

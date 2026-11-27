@@ -389,7 +389,7 @@ arrow::Status WriteQwenModelIndex(const std::string &output_root, const QwenTopo
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"logestix-qwen\",\n"
+      << "  \"layout\": 2,\n"
       << "  \"model\": \"" << model_name << "\",\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"layer_types\": [";

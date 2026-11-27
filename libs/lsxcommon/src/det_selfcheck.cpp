@@ -19,7 +19,6 @@ namespace {
 // Dedup Ф5: fence stripper is the shared lsxcommon::selfcheck body.
 using lsxcommon::selfcheck::Unfence;
 
-
 // Strip everything before the last </think> so a reasoning chain does not
 // shadow the final answer (same rule as FSI/CODE).
 std::string Preprocess(std::string_view raw)
@@ -262,7 +261,6 @@ std::string CutPromptEcho(std::string_view text, std::string_view body)
     return s;
 }
 
-
 DetCaseResult RunDetCase(IModel &model, const DetGoldenCase &c,
                          const DetDecodeFn &decode, int stress_runs_override)
 {
@@ -368,7 +366,6 @@ DetResult RunDetSelfCheck(IModel &model, const DetGolden &golden)
             return runtime::DecodeGeneratedText(model.Tokenizer(), ids);
         });
 }
-
 
 }  // namespace det
 }  // namespace lsxcommon

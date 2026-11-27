@@ -955,7 +955,7 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
             }
             j << "]" << (trailing ? ",\n" : "\n");
         };
-        j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n";
+        j << "{\n  \"layout\": 2,\n";
         // The CARD name, not the architecture's: `gpu::detect_model_type` reads
         // this key and normalizes it (spaces -> '-', lower case) into the
         // `LsxModelFactory` key, so it must normalize to exactly

@@ -735,7 +735,6 @@ std::string SerializeByteToTokenId(const std::array<int32_t, 256> &b)
     return absl::StrJoin(b, ",");
 }
 
-
 } // namespace
 
 std::shared_ptr<arrow::Schema> TokenizerVocabSchema::Make(const TokenizerVocabMeta &meta)

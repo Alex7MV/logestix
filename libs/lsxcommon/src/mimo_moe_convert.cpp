@@ -567,7 +567,7 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
     // Structural manifest (deterministic).
     {
         std::ostringstream j;
-        j << "{\n  \"format\": \"logestix-mimo-nvfp4\",\n"
+        j << "{\n  \"layout\": 2,\n"
           << "  \"model\": \"MiMo-V2.6-Flash-RL\",\n"
           << "  \"num_layers\": " << top.layers << ",\n  \"layer_types\": [";
         for (int i = 0; i < top.layers; ++i)

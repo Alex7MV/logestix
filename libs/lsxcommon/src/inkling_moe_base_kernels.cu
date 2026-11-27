@@ -74,7 +74,6 @@ __global__ void head_norm_kernel(const float *__restrict__ x,
 // One block per head; each thread owns a key position and computes its own
 // d_rel-length dot, so the whole gather is one pass with no scratch.
 
-
 // ── 3. KV append + attention (NO sinks) ───────────────────────────────────
 __global__ void kv_append_kernel(const __half *__restrict__ k_new,
                                  const __half *__restrict__ v_new,
@@ -370,18 +369,12 @@ __global__ void shared_accumulate_f32_kernel(float *__restrict__ acc,
     acc[i] = __fadd_rn(acc[i], __fmul_rn(gamma, y[i]));
 }
 
-
-
-
-
 __global__ void scale_f32_kernel(float *__restrict__ x, int64_t n, float scale)
 {
     const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
     if (i >= n) return;
     x[i] = __fmul_rn(x[i], scale);
 }
-
-
 
 __global__ void norm_f32_kernel(const float *__restrict__ x,
                                 const __half *__restrict__ w,

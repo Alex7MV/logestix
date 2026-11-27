@@ -26,7 +26,6 @@ namespace arrow_check {
 namespace {
 namespace fs = std::filesystem;
 
-
 bool FieldsAre(const std::shared_ptr<arrow::Schema> &schema,
                std::initializer_list<const char *> names)
 {

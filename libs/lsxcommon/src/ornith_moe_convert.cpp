@@ -738,7 +738,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-ornithmoe\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"Ornith-1.5-35B-A3B\",\n"
           << "  \"num_layers\": " << top.num_layers
           << ",\n  \"layer_types\": [";

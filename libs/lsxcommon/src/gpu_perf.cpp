@@ -26,7 +26,6 @@
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/log.h"
 
-
 namespace lsxcommon {
 namespace perf {
 
@@ -383,7 +382,6 @@ bool EnsureCalibrated(const GpuPerfProfile &gpu,
               "'; per-GPU numeric calibration disabled for R3)");
     return true;
 }
-
 
 double MeasureMemoryBandwidthGbs(int mib)
 {

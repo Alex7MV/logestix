@@ -220,9 +220,9 @@ ModelTopology load_topology(const std::string &model_path)
         failed.error_msg = verr + " in " + ipath.string();
         return failed;
     }
-    std::string_view fmt;
-    if (root["format"].get_string().get(fmt) == simdjson::SUCCESS)
-        topo.format.assign(fmt);
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) == simdjson::SUCCESS)
+        topo.layout = layout_v;;
     int64_t nl = 0, epl = 0, te = 0;
     if (root["num_layers"].get_int64().get(nl) != simdjson::SUCCESS ||
         root["experts_per_layer"].get_int64().get(epl) != simdjson::SUCCESS ||

@@ -98,7 +98,7 @@ TEST_CASE("Hy-SimulMT converter strips and counts the speech encoder",
     {
         REQUIRE(fs::exists(base / "model.index.json"));
         const std::string j = ReadAll(base / "model.index.json");
-        CHECK(j.find("\"logestix-hy-simulmt-nvfp4\"") != std::string::npos);
+        CHECK(j.find("\"layout\": 2") != std::string::npos);
         CHECK(j.find("\"model_type\": \"hy-simulmt-30b-a3b\"") !=
               std::string::npos);
         CHECK(j.find("\"model\": \"Hy-SimulMT-30B-A3B\"") != std::string::npos);

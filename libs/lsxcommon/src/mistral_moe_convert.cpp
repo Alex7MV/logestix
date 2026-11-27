@@ -317,15 +317,14 @@ MistralTopology mistral_load_topology(const std::string &index_json_path)
             std::string verr;
             if (ParseVramBlock(text, vp, verr)) top.vram = vp;
         }
-        const size_t fp = text.find("\"format\"");
-        if (fp != std::string::npos)
+        // layout is an integer; the old string tag is gone (see index_layout.h).
         {
-            const size_t q1 = text.find('"', text.find(':', fp) + 1);
-            const size_t q2 =
-                q1 == std::string::npos ? std::string::npos
-                                        : text.find('"', q1 + 1);
-            if (q2 != std::string::npos)
-                top.format = text.substr(q1 + 1, q2 - q1 - 1);
+            const size_t fp = text.find("\"layout\"");
+            if (fp != std::string::npos) {
+                const size_t c = text.find(':', fp);
+                if (c != std::string::npos)
+                    top.layout = std::atoll(text.c_str() + c + 1);
+            }
         }
         return top;
     }
@@ -700,7 +699,7 @@ arrow::Status ConvertMistralModel(const std::string &input_dir,
     std::ofstream f(base / "model.index.json");
     if (!f) return arrow::Status::IOError("cannot write model.index.json");
     f << "{\n";
-    f << "  \"format\": \"logestix-mistral-nvfp4\",\n";
+    f << "  \"layout\": 2,\n";
     // Must normalize (detect_model_type) to exactly frozen::kType, otherwise
     // path auto-detection in lsxbenchmark/lsxfabric cannot resolve the family.
     f << "  \"model\": \"Mistral-Small-4-119B\",\n";

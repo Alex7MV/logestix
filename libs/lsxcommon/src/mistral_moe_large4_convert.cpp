@@ -656,7 +656,7 @@ arrow::Status ConvertMistralLarge4Model(const std::string &input_dir,
     std::ofstream f(base / "model.index.json");
     if (!f) return arrow::Status::IOError("cannot write model.index.json");
     f << "{\n";
-    f << "  \"format\": \"" << frozen::kFormat << "\",\n";
+    f << "  \"layout\": 2,\n";
     f << "  \"model\": \"" << frozen::kModelName << "\",\n";
     f << "  \"num_layers\": " << top.layers << ",\n";
     f << "  \"experts_per_layer\": " << top.num_experts << ",\n";

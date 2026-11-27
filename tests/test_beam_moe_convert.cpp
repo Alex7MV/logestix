@@ -267,7 +267,7 @@ TEST_CASE("synthetic Beam checkpoint converts to the NVFP4 tree",
     CHECK(globr->size() == 3);
 
     const std::string idx = ReadAll(base / "model.index.json");
-    CHECK(idx.find("\"format\": \"logestix-beam-nvfp4\"") != std::string::npos);
+    CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"model_type\": \"beam\"") != std::string::npos);
     CHECK(idx.find("\"num_layers\": 4") != std::string::npos);
     CHECK(idx.find("\"first_moe_layer\": 1") != std::string::npos);

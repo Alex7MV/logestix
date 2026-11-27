@@ -17,7 +17,6 @@ namespace {
 // Dedup Ф4: compact JSON serializer is the shared lsxcommon::tools body.
 using lsxcommon::tools::SerializeJson;
 
-
 constexpr const char *kRoleSep = "<|role_sep|>\n";
 constexpr const char *kMsgSep = "<|message_sep|>\n\n";
 constexpr const char *kThink = "<think>";
@@ -25,7 +24,6 @@ constexpr const char *kThinkEnd = "</think>";
 constexpr const char *kGcml = "｜GCML｜";
 
 using lsxnetwork::json::JsonEscape;
-
 
 std::string TsType(simdjson::dom::element schema)
 {

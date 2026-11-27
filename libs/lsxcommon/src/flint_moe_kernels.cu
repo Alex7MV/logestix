@@ -171,7 +171,6 @@ __global__ void flint_add_half_f32_kernel(float *__restrict__ acc,
     acc[i] = __fadd_rn(acc[i], __fmul_rn(__half2float(add[i]), scale));
 }
 
-
 __global__ void flint_expert_accumulate_kernel(
     float *__restrict__ acc, const __half *__restrict__ y,
     const FlintRoutedSlot *__restrict__ slots, int count, int hidden,
@@ -217,7 +216,6 @@ __global__ void flint_moe_combine_kernel(const float *__restrict__ acc,
     if (i >= n) return;
     out[i] = __fadd_rn(acc[i], __fmul_rn(__half2float(shared[i]), shared_scale));
 }
-
 
 } // namespace
 

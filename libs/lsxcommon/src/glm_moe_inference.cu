@@ -140,7 +140,6 @@ constexpr int kGlmLoopBlock = 256;
 // Real-model EOS ids (config.json eos_token_id), mirrored by the test.
 constexpr int kGlmEosIds[3] = {154820, 154827, 154829};
 
-
 // Embed gather: unified kernels::EmbedGatherKernel (lsx_kernels_math.cuh).
 
 __global__ void GlmCopyKernel(const __half *__restrict__ src,
@@ -607,7 +606,6 @@ static cudaError_t RunGlmGenerationImpl(
         cleanup();
         return err;
     };
-
 
     GlmLoopCtx ctx;
     ctx.st = stream;

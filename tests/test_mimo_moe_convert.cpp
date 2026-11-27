@@ -27,7 +27,7 @@ TEST_CASE("mimo converter emits a valid logestix-mimo-nvfp4 layout",
 
     const std::string idx =
         mimotest::ReadFileText(out / "model.index.json");
-    CHECK(idx.find("\"format\": \"logestix-mimo-nvfp4\"") != std::string::npos);
+    CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"num_layers\": 2") != std::string::npos);
     CHECK(idx.find("\"deferred\"") != std::string::npos);
     CHECK(idx.find("\"mtp\"") != std::string::npos);

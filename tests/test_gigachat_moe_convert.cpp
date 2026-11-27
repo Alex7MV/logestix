@@ -113,7 +113,7 @@ TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
     ss << in.rdbuf();
     const std::string json = ss.str();
 
-    CHECK(json.find("\"format\": \"logestix-gigachat-nvfp4\"") !=
+    CHECK(json.find("\"layout\": 2") !=
           std::string::npos);
     CHECK(json.find("\"full_attention_layers\": [1]") != std::string::npos);
     CHECK(json.find("\"mtp\": \"stored\"") != std::string::npos);

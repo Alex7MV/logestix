@@ -21,7 +21,6 @@ inline bool AppendMimoEncoded(const ArrowTokenizerDb &tok, std::string_view text
     return AppendEncoded(tok, text, ids);
 }
 
-
 // Control sentinels injected as their own vocab ids.
 constexpr const char *kMimoSentinels[] = {
     "<|im_start|>", "<|im_end|>",

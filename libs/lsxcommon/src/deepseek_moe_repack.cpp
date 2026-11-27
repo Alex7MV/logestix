@@ -3,6 +3,7 @@
 // format contract. Host-only; strict error handling.
 #include "lsxcommon/deepseek_moe_repack.h"
 
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/schema.h"
 #include "nvfp4_scale.h"
@@ -75,14 +76,12 @@ bool RemapScaleArray(const std::vector<uint8_t> &src,
 arrow::Status RepackDeepseekExpertsNvfp4(const std::string &src,
                                          const std::string &dst)
 {
-    // Output mirrors the INPUT layout: a model-root input produces a
-    // model-root output (dst/logestix), a logestix-dir input produces a
-    // logestix-dir output — so the loader can consume either verbatim.
+    // One layout now: the artifact directory holds pinned/, experts/ and
+    // model.index.json directly, so input and output are the paths given.
     const fs::path src_path(src);
     const fs::path dst_path(dst);
-    const bool src_is_root = fs::exists(src_path);
-    const fs::path sroot = src_is_root ? src_path : src_path;
-    const fs::path droot = src_is_root ? dst_path : dst_path;
+    const fs::path sroot = src_path;
+    const fs::path droot = dst_path;
     const fs::path s_experts = sroot / "experts";
     if (!fs::exists(s_experts))
         return arrow::Status::Invalid("no experts/ directory under ",
@@ -93,7 +92,9 @@ arrow::Status RepackDeepseekExpertsNvfp4(const std::string &src,
     if (ec)
         return arrow::Status::IOError("create dst failed: ", ec.message());
 
-    // ── 1. model.index.json: swap the format tag, carry the rest verbatim ──
+    // ── 1. model.index.json: stamp the layout generation, carry the rest ──
+    // verbatim. The repack used to rewrite a per-model `format` tag; the layout
+    // is now the only schema declaration an index carries (index_layout.h).
     {
         const fs::path s_index = sroot / "model.index.json";
         std::ifstream f(s_index);
@@ -102,12 +103,19 @@ arrow::Status RepackDeepseekExpertsNvfp4(const std::string &src,
                                           sroot.string());
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        static const std::regex fmt_re("(\"format\"\\s*:\\s*)\"[^\"]*\"");
-        const std::string swapped =
-            std::regex_replace(json, fmt_re, "$1\"logestix-v1-nvfp4\"");
-        if (swapped == json)
+        // Splice by hand rather than through regex_replace's $N format: the
+        // replacement text is "group 1 followed by a digit", and "$1" + "2" is
+        // read as group 12 (empty here), which silently deleted the field.
+        static const std::regex layout_re("\"layout\"\\s*:\\s*[0-9]+");
+        std::smatch m;
+        if (!std::regex_search(json, m, layout_re))
             return arrow::Status::Invalid(
-                "index format tag not found/unchanged in ", s_index.string());
+                "index layout field not found in ", s_index.string());
+        std::string swapped = json;
+        swapped.replace(static_cast<size_t>(m.position()),
+                        static_cast<size_t>(m.length()),
+                        "\"layout\": " +
+                            std::to_string(lsxcommon::kIndexLayout));
         fs::create_directories(droot, ec);
         std::ofstream out(droot / "model.index.json");
         out << swapped;

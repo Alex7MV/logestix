@@ -21,6 +21,7 @@
 // temporary directory and the converter runs on those.
 
 #include "test_synth_checkpoint.h"
+#include "lsxcommon/index_layout.h"
 
 #include <atomic>
 #include <chrono>
@@ -445,14 +446,14 @@ inline std::vector<std::string> RealLayerTypes()
 inline void WriteNemotronNvfp4Index(
     const std::filesystem::path &model_root, int hidden_override = 2688,
     bool experts_no_gate = true,
-    const std::string &format_tag = "logestix-nemotron-nvfp4",
+    int64_t layout = lsxcommon::kIndexLayout,
     const std::string &model_name = "Nemotron-3.5-Lightning-30B-A3B-NVFP4",
     const std::string &eos_json = "[2, 11]")
 {
     std::filesystem::create_directories(model_root);
     const auto types = RealLayerTypes();
     std::ofstream f(model_root / "model.index.json");
-    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+    f << "{\n  \"layout\": " << layout << ",\n"
       << "  \"model\": \"" << model_name << "\",\n"
       << "  \"num_layers\": 52,\n  \"layer_types\": [";
     for (size_t i = 0; i < types.size(); ++i) {

@@ -11,6 +11,7 @@
 #include "test_nemotron_moe_ultra_fixture.h"
 
 #include "lsxcommon/nemotron_moe_ultra_convert.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/converter.h"
 #include "lsxcommon/nemotron_moe_ultra_load.h"
 #include "lsxcommon/schema.h"
@@ -69,7 +70,7 @@ TEST_CASE("ultra index: a converted tree loads and validates", "[ultra][load]")
     INFO("index error: " << err);
     REQUIRE(loaded);
     CHECK(err.empty());
-    CHECK(idx.format == "logestix-nemotron-ultra-nvfp4");
+    CHECK(idx.layout == lsxcommon::kIndexLayout);
     CHECK(idx.num_layers == 3);
     CHECK(idx.moe_latent_size == ultratest::kTLatent);
     CHECK(idx.n_group == ultratest::kTGroup);
@@ -93,17 +94,17 @@ TEST_CASE("ultra index: a foreign format tag is rejected by name", "[ultra][load
         std::stringstream ss;
         ss << in.rdbuf();
         std::string json = ss.str();
-        const std::string from = "logestix-nemotron-ultra-nvfp4";
+        const std::string from = "\"layout\": 2";
         const auto at = json.find(from);
         REQUIRE(at != std::string::npos);
-        json.replace(at, from.size(), "logestix-nemotron-nvfp4");
+        json.replace(at, from.size(), "\"layout\": 1");
         std::ofstream out(tree / "model.index.json");
         out << json;
     }
     UltraIndex idx;
     std::string err;
     CHECK_FALSE(LoadUltraIndex(tree.string(), idx, err));
-    CHECK(err.find("logestix-nemotron-nvfp4") != std::string::npos);
+    CHECK(err.find("layout") != std::string::npos);
 }
 
 TEST_CASE("ultra geometry: a 30B-shaped tree is rejected by field", "[ultra][load]")
@@ -114,7 +115,7 @@ TEST_CASE("ultra geometry: a 30B-shaped tree is rejected by field", "[ultra][loa
     setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "0", 1);
 
     UltraIndex idx;
-    idx.format = "logestix-nemotron-ultra-nvfp4";
+    idx.layout = lsxcommon::kIndexLayout;
     idx.num_layers = 52;      // the sibling's
     idx.hidden_size = 2688;   // the sibling's
     idx.vocab_size = 131072;
@@ -131,7 +132,7 @@ TEST_CASE("ultra geometry: a partial tree fails naming the first missing layer",
           "[ultra][load]")
 {
     UltraIndex idx;
-    idx.format = "logestix-nemotron-ultra-nvfp4";
+    idx.layout = lsxcommon::kIndexLayout;
     idx.num_layers = 3;
     idx.partial = true;
     idx.layers_converted = {1, 2};

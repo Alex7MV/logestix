@@ -29,10 +29,7 @@ namespace {
 using nvfp4::E2M1Value;
 using nvfp4::E4M3ScaleToFloat;
 
-
-
 // NVFP4 E4M3/E2M1 decode primitives now live in nvfp4_codec.h (aliased above).
-
 
 __device__ __forceinline__ uint32_t half2_raw_bits(__half2 h)
 {

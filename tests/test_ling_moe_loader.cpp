@@ -5,6 +5,7 @@
 
 #include "ling_moe_constants.h"
 #include "lsxcommon/ling_moe_convert.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/ling_moe_load.h"
 #include "test_ling_moe_fixture.h"
 
@@ -54,7 +55,7 @@ TEST_CASE("LoadLingIndex reads the produced manifest", "[ling-moe-loader]")
     LingIndex top = LoadLingIndex(t.out.string());
     INFO(top.error_msg);
     REQUIRE(top.error_msg.empty());
-    CHECK(top.format == frozen::kFormatTag);
+    CHECK(top.layout == lsxcommon::kIndexLayout);
     CHECK(top.num_layers == ling_test::TestCfg().layers);
     CHECK(top.num_experts == ling_test::TestCfg().experts);
     CHECK(top.hidden == ling_test::TestCfg().hidden);

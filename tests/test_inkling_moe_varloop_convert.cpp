@@ -17,6 +17,7 @@
 // Accepting either silently produces a model whose pass count is wrong — which
 // still answers fluently, so no downstream gate would catch it.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/inkling_moe_loop_convert.h>
 #include <lsxcommon/inkling_moe_varloop_convert.h>
 #include <lsxcommon/schema.h>
@@ -161,7 +162,7 @@ TEST_CASE("varloop synthetic convert emits logestix-inkling-2-varloop",
 
     std::string_view fmt;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == "logestix-inkling-2-varloop");
+    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
 
     std::string_view card;
     REQUIRE(doc["model"].get_string().get(card) == simdjson::SUCCESS);

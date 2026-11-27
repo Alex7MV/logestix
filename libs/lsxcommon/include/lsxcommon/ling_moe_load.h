@@ -15,7 +15,9 @@
 namespace lsxcommon::ling {
 
 struct LingIndex {
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     int num_layers = 0;
     int hidden = 0;
     int vocab = 0;

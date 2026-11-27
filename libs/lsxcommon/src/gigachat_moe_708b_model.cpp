@@ -79,7 +79,7 @@ gigachat4::Gc4FrozenExpect Gc708BExpect()
 {
     using namespace frozen;
     gigachat4::Gc4FrozenExpect e;
-    e.format = kFormat;
+    e.layout = lsxcommon::kIndexLayout;
     e.geo.hidden = kHidden;
     e.geo.layers = kLayers;
     e.geo.vocab = kVocab;
@@ -213,7 +213,7 @@ bool GigaChat4Moe708BModel::Load()
 
     const gigachat4::Gc4FrozenExpect expect = gigachat4_708b::Gc708BExpect();
     std::string err;
-    if (!gigachat4::LoadGigaChat4IndexWithFormat(cfg_.model_path, expect.format,
+    if (!gigachat4::LoadGigaChat4IndexWithFormat(cfg_.model_path, expect.layout,
                                                  idx_, err))
     {
         log::error(absl::StrFormat("[gigachat4-708b] index error: %s", err));

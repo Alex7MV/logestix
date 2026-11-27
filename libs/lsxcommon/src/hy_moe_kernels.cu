@@ -123,7 +123,6 @@ __global__ void hy_rope_kernel(__half *__restrict__ x, int heads, int head_dim,
     x[base + j + half] = __float2half(x1 * s + x2 * c);
 }
 
-
 __global__ void hy_expert_accumulate_kernel(float *__restrict__ acc,
                                             const __half *__restrict__ y,
                                             const HyRoutedSlot *__restrict__ slots,

@@ -212,7 +212,6 @@ cudaError_t GreedySampler::Sample(cudaStream_t stream, const void* d_logits,
     return cudaGetLastError();
 }
 
-
 // ── SamplingSampler ─────────────────────────────────────────────────────────
 // Deterministic temperature/top-k/top-p sampler. All state is per-thread; the
 // RNG is counter-based (splitmix64 over seed+counter), so a request with a

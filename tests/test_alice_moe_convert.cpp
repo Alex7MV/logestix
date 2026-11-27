@@ -2,6 +2,7 @@
 // tiny legal fixture (LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1) and asserts the
 // logestix-alice-nvfp4 layout, expert count, and the layer-0 AttnRes absence.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/alice_moe_convert.h>
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
@@ -92,7 +93,7 @@ TEST_CASE("alice synthetic convert emits logestix-alice-nvfp4", "[alice][convert
     auto doc = parser.iterate(pad);
     std::string_view fmt;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == "logestix-alice-nvfp4");
+    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
     int64_t block = 0;
     REQUIRE(doc["block_attn_res_block_size"].get_int64().get(block) ==
             simdjson::SUCCESS);

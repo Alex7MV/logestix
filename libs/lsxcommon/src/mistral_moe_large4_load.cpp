@@ -4,6 +4,7 @@
 // them through a device slot LRU.
 
 #include "lsxcommon/mistral_moe_large4_load.h"
+#include "lsxcommon/index_layout.h"
 #include "fast_load_internal.h"
 
 #include "mistral_moe_large4_constants.h"
@@ -28,7 +29,6 @@ namespace mistral_large4 {
 namespace {
 // Dedup Ф5: byte upload is the shared lsxcommon::fastload body.
 using lsxcommon::fastload::UploadBytes;
-
 
 namespace fs = std::filesystem;
 namespace frozen = lsxcommon::mistral_large4::frozen;
@@ -91,6 +91,7 @@ const DenseNvfp4View *FindDense(const DenseNvfp4BatchViews &b,
 }
 
 struct IndexInfo {
+    int64_t layout = 0;
     Large4Dims dims;
     std::vector<int> rope_layers;
     std::vector<int> kv_source;
@@ -134,17 +135,11 @@ IndexInfo ReadIndex(const fs::path &p)
         ix.error_msg = "invalid JSON: " + p.string();
         return ix;
     }
-    std::string_view fmt;
-    if (doc["format"].get_string().get(fmt) != simdjson::SUCCESS)
+    if (doc["layout"].get_int64().get(ix.layout) != simdjson::SUCCESS)
+        ix.layout = 0;
+    if (!lsxcommon::IndexLayoutSupported(ix.layout))
     {
-        ix.error_msg = "index has no format tag";
-        return ix;
-    }
-    ix.format = std::string(fmt);
-    if (ix.format != frozen::kFormat)
-    {
-        ix.error_msg = absl::StrCat("unexpected format tag '", ix.format,
-                                    "' (expected ", frozen::kFormat, ")");
+        ix.error_msg = lsxcommon::IndexLayoutError(ix.layout);
         return ix;
     }
     const auto geti = [&doc](const char *k, int dflt) {

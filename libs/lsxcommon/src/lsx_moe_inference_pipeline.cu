@@ -46,7 +46,6 @@ __global__ void moe_record_token_kernel(int32_t *__restrict__ hist,
 }
 } // namespace
 
-
 template <class MoeTopology>
 cudaError_t EnsureMoeScratch(cudaStream_t stream,
                              const MoePinnedWeights<MoeTopology> &pw,

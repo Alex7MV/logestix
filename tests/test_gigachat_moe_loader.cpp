@@ -2,6 +2,7 @@
 // Synthetic index only: never opens the vault. The frozen geometry gate is
 // exercised for real (no synthetic bypass).
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include "test_gigachat_moe_fixture.h"
 
@@ -62,11 +63,11 @@ TEST_CASE("gigachat index rejects an unknown format tag", "[gigachat][load]")
 {
     const auto root = gigachattest::MakeTempDir("gc_idx_fmt");
     gigachattest::WriteGigaChatIndex(root, /*hidden_override=*/7168,
-                                     /*format_tag=*/"logestix-glm");
+                                     /*layout=*/1);  // wrong generation
     GigaChatIndex idx;
     std::string err;
     CHECK_FALSE(LoadGigaChatIndex(root.string(), idx, err));
-    CHECK(err.find("format") != std::string::npos);
+    CHECK(err.find("layout") != std::string::npos);
 }
 
 TEST_CASE("gigachat frozen geometry mismatch fails validation",

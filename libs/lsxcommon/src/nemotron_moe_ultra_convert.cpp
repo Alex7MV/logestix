@@ -713,7 +713,7 @@ arrow::Status ConvertNemotronUltraModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-nemotron-ultra-nvfp4\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n"
           << "  \"layer_types\": [";

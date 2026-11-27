@@ -183,7 +183,7 @@ TEST_CASE("dory converter builds the logestix-dory-nvfp4 layout",
     CHECK(top.vram.context_tokens > 0);
 
     const auto json = ReadFile(tmp / "model.index.json");
-    CHECK(json.find("\"format\": \"logestix-dory-nvfp4\"") !=
+    CHECK(json.find("\"layout\": 2") !=
           std::string::npos);
     CHECK(json.find("\"edges\": \"fp16\"") != std::string::npos);
     CHECK(json.find("\"residual\": true") != std::string::npos);

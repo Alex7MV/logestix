@@ -900,7 +900,6 @@ cudaError_t RunGemmaDenseLogitsArgmax(cudaStream_t stream,
     return cudaGetLastError();
 }
 
-
 // ── Layer / generation ───────────────────────────────────────────────────────
 
 namespace {

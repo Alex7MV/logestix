@@ -911,7 +911,7 @@ arrow::Status ConvertLingModel(const std::string &input_dir,
 
     {
         std::ostringstream j;
-        j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n"
+        j << "{\n  \"layout\": 2,\n"
           << "  \"model\": \"" << frozen::kModelName << "\",\n"
           << "  \"model_type\": \"" << kType << "\",\n"
           << "  \"num_layers\": " << top.layers << ",\n  \"mla_layers\": [";

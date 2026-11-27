@@ -10,6 +10,7 @@
 //     a hard error (never a silent drop);
 //   * a Kimi-K3 checkpoint converted as Pro is a hard error.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/kimi_moe_pro_convert.h>
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
@@ -101,7 +102,7 @@ TEST_CASE("kimi-k3.1-pro synthetic convert emits the DSA format tag and table",
 
     std::string_view fmt, model, model_type;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == "logestix-kimi-k31-pro-nvfp4");
+    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
     // `model` is the human-readable card name (Kimi-K3 writes "Kimi-K3");
     // `model_type` is the registry id the loader gates on.
     REQUIRE(doc["model"].get_string().get(model) == simdjson::SUCCESS);

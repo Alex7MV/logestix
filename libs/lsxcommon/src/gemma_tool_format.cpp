@@ -18,7 +18,6 @@ namespace {
 // Dedup Ф4: compact JSON serializer is the shared lsxcommon::tools body.
 using lsxcommon::tools::SerializeJson;
 
-
 // All Gemma control markers are special tokens (injected via lookup; the BPE
 // encoder never resolves added tokens and the decoder drops them).
 constexpr const char *kGemmaSentinels[] = {
@@ -40,7 +39,6 @@ std::string_view Trim(std::string_view s)
 }
 
 using lsxnetwork::json::JsonEscape;
-
 
 bool AppendGemmaEncoded(const ArrowTokenizerDb &tok, std::string_view text,
                         std::vector<int32_t> &ids)

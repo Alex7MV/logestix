@@ -15,7 +15,6 @@ namespace {
 // Dedup Ф4: BPE append (cap 65536) is the shared lsxcommon::tools body.
 using lsxcommon::tools::AppendEncoded;
 
-
 using lsxnetwork::json::JsonEscape;
 
 constexpr const char *kSentinels[] = {
@@ -38,7 +37,6 @@ constexpr AdapterSpec kAdapters[] = {
     {"guardian-core", "<|guardian-core|>", "<guardian>", 1},
     {"decision", "<|decision|>", "### DECISION", 3},
 };
-
 
 std::string ToolJson(const ToolSpec &t)
 {

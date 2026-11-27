@@ -510,6 +510,5 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     return cudaSuccess;
 }
 
-
 } // namespace qwen
 } // namespace lsxcommon

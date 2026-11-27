@@ -28,6 +28,7 @@
 #include "kimi_moe_k3_constants.h"
 #include "kimi_moe_pro_constants.h"
 #include "lsxcommon/kimi_moe_k3_convert.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/kimi_moe_k3_load.h"
 #include "lsxcommon/kimi_moe_pro_convert.h"
 #include "test_kimi_pro_fixture.h"
@@ -107,7 +108,7 @@ kimi_k3::KimiK3Topology FrozenTopology()
 {
     using namespace kimi_k3::frozen;
     kimi_k3::KimiK3Topology t;
-    t.format = kFormatTag;
+    t.layout = lsxcommon::kIndexLayout;
     t.num_layers = kLayers;
     t.dense_layers = kDenseLayers;
     t.hidden = kHidden;
@@ -177,7 +178,7 @@ TEST_CASE("kimi-k3.1-pro loader reads the DSA topology", "[kimi-pro][loader]")
 
     kimi_k3::KimiK3Topology top;
     REQUIRE(kimi_k3::LoadKimiK3Topology(root.string(), top).ok());
-    CHECK(top.format == "logestix-kimi-k31-pro-nvfp4");
+    CHECK(top.layout == lsxcommon::kIndexLayout);
     CHECK(top.dsa);
     CHECK(top.dsa_layers == std::vector<int>{2, 3});
     CHECK(top.dsa_layers == top.mla_layers);

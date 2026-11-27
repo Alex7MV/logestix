@@ -105,7 +105,7 @@ TEST_CASE("ConvertQwen36MoeModel synthetic roundtrip (format/model/bos)",
     REQUIRE(st.ok());
 
     const std::string j = ReadIndex(out);
-    CHECK(j.find("\"logestix-qwen36moe\"") != std::string::npos);
+    CHECK(j.find("\"layout\": 2") != std::string::npos);
     CHECK(j.find("\"Qwen3.6-35B-A3B\"") != std::string::npos);
     // Synthetic config carries no bos: record_bos must NOT emit the field.
     CHECK(j.find("bos_token_id") == std::string::npos);

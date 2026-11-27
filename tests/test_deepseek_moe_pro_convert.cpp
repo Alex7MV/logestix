@@ -143,7 +143,7 @@ TEST_CASE("deepseek-v4-pro converter strips and counts MTP ballast",
 
     const auto log_root = out;
     const std::string index = ReadText(log_root / "model.index.json");
-    CHECK(index.find("\"logestix-v1-nvfp4\"") != std::string::npos);
+    CHECK(index.find("\"layout\": 2") != std::string::npos);
     CHECK(index.find("\"DeepSeek-V4-Pro-0813\"") != std::string::npos);
     // Two mtp tensors were cut and reported, not silently discarded.
     CHECK(index.find("\"mtp\": 2") != std::string::npos);

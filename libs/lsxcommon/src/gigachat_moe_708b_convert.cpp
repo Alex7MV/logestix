@@ -16,7 +16,6 @@ gigachat4::Gc4IngestSpec Gc708BIngestSpec()
 {
     using namespace frozen;
     gigachat4::Gc4IngestSpec s;
-    s.format = kFormat;
     s.model_name = kModelName;
     s.frozen.hidden = kHidden;
     s.frozen.layers = kLayers;

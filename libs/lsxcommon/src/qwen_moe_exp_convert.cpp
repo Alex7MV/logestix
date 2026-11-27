@@ -942,7 +942,7 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-qwen38flashnext\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"Qwen3.8-Flash-Next\",\n"
           << "  \"num_layers\": " << top.num_layers
           << ",\n  \"layer_types\": [";

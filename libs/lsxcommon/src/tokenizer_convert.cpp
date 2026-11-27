@@ -535,7 +535,6 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     return arrow::Status::OK();
 }
 
-
 // ── TikToken bridge (Kimi-K2.7-Code) ───────────────────────────────────────
 
 namespace {
@@ -784,7 +783,6 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
     // are added tokens matched literally before BPE.
     meta.tokenizer_kind = 2;
     meta.base_vocab_size = base_rank_count;
-
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

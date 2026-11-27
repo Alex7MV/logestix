@@ -19,7 +19,6 @@ namespace {
 // Dedup Ф5: fence stripper is the shared lsxcommon::selfcheck body.
 using lsxcommon::selfcheck::Unfence;
 
-
 bool IsComparisonOp(char c)
 {
     return c == '<' || c == '>' || c == '=' || c == '!';

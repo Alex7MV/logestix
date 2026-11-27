@@ -105,6 +105,7 @@ add_library(lsxcommon STATIC
     src/det_selfcheck.cpp
     src/path_registry.cpp
     src/hardware_target.cpp
+    src/index_layout.cpp
     src/prompt_framing.cpp
     src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp

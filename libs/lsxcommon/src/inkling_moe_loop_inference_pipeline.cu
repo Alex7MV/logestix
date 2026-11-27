@@ -516,7 +516,6 @@ cudaError_t StageExperts(InklingLoopExpertDb &db, int layer, const int32_t *ids,
     return cudaSuccess;
 }
 
-
 // The four conv rings of ONE cache slot: [k][kv_dim] for k, [k][kv_dim] for v,
 // then [k][hidden] for the post-attention and post-MLP convolutions. The
 // session owns one set per cache slot; the loader's copy is only the pass-0

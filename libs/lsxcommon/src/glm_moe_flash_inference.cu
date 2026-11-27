@@ -87,7 +87,6 @@ __global__ void flash_dbg_probe_kernel(const void *buf, int kind,
                static_cast<long long>(total), static_cast<long long>(inf));
 }
 
-
 FLASH_HD float sigmoid_dev(float x)
 {
     return 1.0f / (1.0f + flash_expf_glibc(-x));
@@ -791,7 +790,6 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
 
 // ── MoE clamped-swiglu routed chain ──────────────────────────────────────
 
-
 // ── DSA (deepseek_sparse_attention) decode path ──────────────────────────
 namespace {
 
@@ -1318,7 +1316,6 @@ __global__ void flash_indexer_scores_test_kernel(const float *q,
 
 } // namespace
 
-
 __global__ void flash_exp0_probe_kernel(float *out)
 {
     out[0] = flash_expf_glibc(0.0f);
@@ -1365,7 +1362,6 @@ cudaError_t RunFlashExp0Probe(cudaStream_t stream, float *d_out)
     flash_exp_dbg_kernel<<<1, 1, 0, stream>>>(d_out + 8);
     return cudaGetLastError();
 }
-
 
 cudaError_t RunFlashMlaAttnTest(cudaStream_t stream, const __half *d_q,
                                 const __half *d_k, const __half *d_v,
@@ -1695,7 +1691,6 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
     return cudaSuccess;
 }
 
-
 // ── Driver helper kernels + constants ─────────────────────────────────────
 namespace {
 
@@ -1728,10 +1723,7 @@ __global__ void bf16_to_f16_kernel(const uint8_t *__restrict__ src,
     dst[i] = __float2half(f);
 }
 
-
-
 __device__ int flash_dbg_id = 0;
-
 
 __global__ void flash_embed_row_kernel(const __half *__restrict__ table,
                                        const int32_t *__restrict__ id,
@@ -1779,8 +1771,6 @@ __global__ void flash_gemv_bf16_logits_kernel(const uint8_t *__restrict__ head,
         part += __shfl_down_sync(0xffffffffu, part, off);
     if (lane == 0) logits[v] = part;
 }
-
-
 
 static bool flash_router_debug = std::getenv("LSX_TRACE_FLASH") != nullptr;
 
@@ -1921,7 +1911,6 @@ __global__ void flash_router_top8_f16_kernel(
 
 } // namespace
 
-
 cudaError_t FlashEmbedCache::Ensure(cudaStream_t stream,
                                     const __nv_bfloat16 *src, int64_t n,
                                     unsigned long long weight_epoch)
@@ -2002,8 +1991,6 @@ cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
         d_rscratch, experts, d_slots);
     return cudaGetLastError();
 }
-
-
 
 cudaError_t RunFlashRoutedFFN(
     cudaStream_t stream, lsxcommon::moe::MoEExpertStore &store,
@@ -3036,7 +3023,6 @@ cudaError_t RunGlmFlashGeneration(
     if (t_stop) cudaEventDestroy(t_stop);
     return result.ok ? cudaSuccess : cudaErrorUnknown;
 }
-
 
 arrow::Status DequantFp8TilesToBf16Gpu(const std::vector<uint8_t> &fp8,
                                        const std::vector<int64_t> &shape,

@@ -235,7 +235,7 @@ arrow::Status WriteIndex(const V41Config &cfg, int64_t total_pinned,
     if (!f) return arrow::Status::IOError("cannot create model.index.json");
 
     f << "{\n";
-    f << "  \"format\": \"" << kIndexFormat << "\",\n";
+    f << "  \"layout\": 2,\n";
     f << "  \"model\": \"" << card_name << "\",\n";
     f << "  \"num_layers\": " << cfg.num_layers << ",\n";
     f << "  \"experts_per_layer\": " << cfg.experts << ",\n";

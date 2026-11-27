@@ -763,7 +763,7 @@ arrow::Status ConvertInklingBaseModel(const std::string &input_dir,
             }
             j << "]" << (trailing ? ",\n" : "\n");
         };
-        j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n";
+        j << "{\n  \"layout\": 2,\n";
         // The CARD name: gpu::detect_model_type normalizes it (spaces -> '-',
         // lower case) into the LsxModelFactory key, so it must normalize to
         // exactly InklingMoeBaseModel::kType ("inkling").

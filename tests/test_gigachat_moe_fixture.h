@@ -9,6 +9,7 @@
 // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 (runtime ENV, never a compile define).
 
 #include "test_synth_checkpoint.h"
+#include "lsxcommon/index_layout.h"
 
 #include <atomic>
 #include <chrono>
@@ -387,11 +388,11 @@ inline const std::vector<int> &RealFullAttn()
 // passport can be exercised without the synthetic-geometry bypass.
 inline void WriteGigaChatIndex(
     const std::filesystem::path &model_root, int hidden_override = 7168,
-    const std::string &format_tag = "logestix-gigachat-nvfp4")
+    int64_t layout = lsxcommon::kIndexLayout)
 {
     std::filesystem::create_directories(model_root);
     std::ofstream f(model_root / "model.index.json");
-    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+    f << "{\n  \"layout\": " << layout << ",\n"
       << "  \"model\": \"GigaChat3.5-432B-A28B-Reasoning\",\n"
       << "  \"num_layers\": 40,\n  \"full_attention_layers\": [";
     const auto &fa = RealFullAttn();

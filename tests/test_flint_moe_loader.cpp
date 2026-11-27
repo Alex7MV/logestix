@@ -147,10 +147,10 @@ TEST_CASE("flint loader rejects a foreign index format", "[flint][loader]")
         json.assign(std::istreambuf_iterator<char>(f),
                     std::istreambuf_iterator<char>());
     }
-    const std::string from = "logestix-flint-nvfp4";
+    const std::string from = "\"layout\": 2";
     const size_t at = json.find(from);
     REQUIRE(at != std::string::npos);
-    json.replace(at, from.size(), "logestix-other-nvfp");
+    json.replace(at, from.size(), "\"layout\": 1");
     {
         std::ofstream f(idx);
         f << json;

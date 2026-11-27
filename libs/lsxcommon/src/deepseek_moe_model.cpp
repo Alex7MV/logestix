@@ -1,6 +1,7 @@
 #include "deepseek_moe_model.h"
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/safetensors.h"
@@ -59,10 +60,10 @@ bool DeepSeekV4FlashModel::Load()
     // Format contract: only the NVFP4 repacked index loads. The pre-repack
     // logestix-v1 layout (E8M0 per-32 expert scales, global_scale ignored)
     // is retired — no backward compatibility (AGENTS.md).
-    if (topo.format != gpu::kIndexFormatNvfp4) {
+    if (!lsxcommon::IndexLayoutSupported(topo.layout)) {
         lsxcommon::log::error(absl::StrCat(
             "[deepseek-model] unsupported index format '",
-            topo.format.empty() ? "<missing>" : topo.format,
+            std::to_string(topo.layout),
             "' — repack via: lsxforge --deepseek_nvfp4 --input <model_dir>"
             " --output <model_dir>"));
         return AbortLoad();

@@ -4,6 +4,7 @@
 // the whole graph (DSA indexer planes included) and resolve a routed expert
 // through the shared store. GPU-gated.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include "test_gigachat4_fixture.h"
 
@@ -64,7 +65,7 @@ TEST_CASE("gigachat4-708b weight graph loads under its own expectation",
 
     Gc4Index idx;
     std::string err;
-    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), frozen708::kFormat, idx,
+    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), lsxcommon::kIndexLayout, idx,
                                          err));
     REQUIRE(idx.num_layers == 2);
 
@@ -112,7 +113,7 @@ TEST_CASE("gigachat4-708b expert store serves a routed expert",
 
     Gc4Index idx;
     std::string err;
-    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), frozen708::kFormat, idx,
+    REQUIRE(LoadGigaChat4IndexWithFormat(root.string(), lsxcommon::kIndexLayout, idx,
                                          err));
 
     cudaStream_t stream = nullptr;

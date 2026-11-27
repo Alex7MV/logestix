@@ -17,6 +17,7 @@
 #include <cuda_runtime.h>
 
 #include "lsxcommon/expert_store.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/vram_estimate.h"
 
@@ -184,7 +185,9 @@ struct Topology {
     int64_t deferred_dfly = 0;
     std::vector<LayerShape> layers;
     VramProfile vram;
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     std::string model;
     std::string error_msg;
 };
@@ -205,7 +208,7 @@ bool MatchesModelType(const Topology &topo, std::string_view model_type);
 
 inline bool IsSupportedFormat(const Topology &topo)
 {
-    return topo.format == kFormatTag;
+    return IndexLayoutSupported(topo.layout);
 }
 
 // ── Load / expert store ────────────────────────────────────────────────────

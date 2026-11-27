@@ -173,7 +173,7 @@ TEST_CASE("nvfp4 converter emits the logestix-nemotron-nvfp4 layout",
     REQUIRE(st.ok());
 
     const std::string idx = ReadFile(dst / "model.index.json");
-    CHECK(idx.find("\"format\": \"logestix-nemotron-nvfp4\"") != std::string::npos);
+    CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"attn_layer_idx\": [2]") != std::string::npos);
     CHECK(idx.find("\"experts_no_gate\": true") != std::string::npos);
     // MTP is a COUNTED cut: 3 tensors in the fixture, recorded, never applied.

@@ -44,9 +44,6 @@ __global__ void embed_row_f32_kernel(const __nv_bfloat16 *__restrict__ row,
     if (i < hidden) h[i] = __bfloat162float(row[i]);
 }
 
-
-
-
 // a and out may alias (in-place residual add).
 __global__ void add_f32_kernel(const float *a, const float *__restrict__ b,
                                float *out, int n)

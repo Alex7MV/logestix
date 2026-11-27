@@ -51,7 +51,6 @@ void ReadGenerationIds(const std::filesystem::path &path, int &bos, int &eos,
     if (p >= 0) pad = p;
 }
 
-
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
     if (o[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;
@@ -949,7 +948,7 @@ arrow::Status ConvertMinimaxMoeModel(const std::string &input_dir,
     // (7) Structural manifest (deterministic byte content).
     {
         std::ostringstream j;
-        j << "{\n  \"format\": \"" << frozen::kFormatTag << "\",\n"
+        j << "{\n  \"layout\": 2,\n"
           << "  \"model\": \"" << variant.model << "\",\n"
           << "  \"model_type\": \"" << variant.model_type << "\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n  \"layer_types\": [";

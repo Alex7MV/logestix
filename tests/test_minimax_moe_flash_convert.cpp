@@ -203,7 +203,7 @@ TEST_CASE("ConvertMinimaxFlashModel converts the synthetic MXFP8+NVFP4 tree",
     // 1) Identity + structure: the same emitted layout tag, the sibling's name.
     {
         const std::string j = ReadAll(base / "model.index.json");
-        CHECK(j.find("\"format\": \"logestix-minimax-nvfp4\"") !=
+        CHECK(j.find("\"layout\": 2") !=
               std::string::npos);
         CHECK(j.find("\"model\": \"MiniMax-M3.1-Flash\"") != std::string::npos);
         CHECK(j.find("\"model_type\": \"minimax-m3.1-flash\"") !=

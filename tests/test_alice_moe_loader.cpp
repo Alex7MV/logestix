@@ -1,5 +1,6 @@
 // AliceAI loader topology/format gate tests on a synthetic converted fixture.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/alice_moe_convert.h>
 #include <lsxcommon/alice_moe_load.h>
 
@@ -39,7 +40,7 @@ TEST_CASE("alice loader parses topology and gates the format", "[alice][load]")
     auto st = lsxcommon::alice::LoadAliceTopology(out.string(), top);
     if (!st.ok()) FAIL(st.ToString());
     REQUIRE(st.ok());
-    REQUIRE(top.format == "logestix-alice-nvfp4");
+    REQUIRE(top.layout == lsxcommon::kIndexLayout);
     REQUIRE(top.num_layers == alicetest::kLayers);
     REQUIRE(top.num_experts == alicetest::kExperts);
     REQUIRE(top.block_attn_res_block_size == alicetest::kBlockAttnRes);
@@ -58,8 +59,8 @@ TEST_CASE("alice loader parses topology and gates the format", "[alice][load]")
         json.assign((std::istreambuf_iterator<char>(f)),
                     std::istreambuf_iterator<char>());
     }
-    const std::string needle = "logestix-alice-nvfp4";
-    json.replace(json.find(needle), needle.size(), "logestix-wrong");
+    const std::string needle = "\"layout\": 2";
+    json.replace(json.find(needle), needle.size(), "\"layout\": 1");
     {
         std::ofstream f(idx, std::ios::trunc);
         f << json;

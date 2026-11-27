@@ -50,7 +50,7 @@ bool Hy4FlashModel::Load()
     // Format contract: no backward compatibility (AGENTS.md).
     if (!hy4::gpu::IsSupportedFormat(top)) {
         log::error(absl::StrCat("[hy4-model] unsupported index format '",
-                                top.format,
+                                std::to_string(top.layout),
                                 "' — convert via: lsxforge --hy4_flash --input "
                                 "<model_dir> --output <model_dir>"));
         return AbortLoad();

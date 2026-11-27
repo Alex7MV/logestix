@@ -258,7 +258,6 @@ __global__ void inkling_gate_mul_kernel(const __half *__restrict__ x,
     out[i] = __float2half(__fmul_rn(__half2float(x[i]), 1.0f / (1.0f + expf(-g))));
 }
 
-
 __global__ void inkling_dynamic_taps_kernel(const float *__restrict__ static_w,
                                             const float *__restrict__ proj_out,
                                             float *__restrict__ taps,
@@ -468,10 +467,6 @@ __global__ void inkling_expert_accumulate_kernel(float *__restrict__ acc,
     acc[i] = v;
 }
 
-
-
-
-
 __global__ void inkling_logit_softcap_kernel(const float *__restrict__ logits,
                                              float *__restrict__ out, int n,
                                              float cap)
@@ -480,7 +475,6 @@ __global__ void inkling_logit_softcap_kernel(const float *__restrict__ logits,
     if (i >= n) return;
     out[i] = tanhf(logits[i] / cap) * cap;
 }
-
 
 // ── 9. plumbing ───────────────────────────────────────────────────────────
 __global__ void inkling_matvec_f16_h_kernel(const __half *__restrict__ w,
@@ -498,8 +492,6 @@ __global__ void inkling_matvec_f16_h_kernel(const __half *__restrict__ w,
     acc = BlockSum(acc, scratch);
     if (tid == 0) y[r] = __float2half(acc);
 }
-
-
 
 __global__ void inkling_matvec_f16_kernel(const __half *__restrict__ w,
                                           const __half *__restrict__ x,

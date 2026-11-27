@@ -125,7 +125,6 @@ cudaError_t issue_routed_staging(
 // From deepseek_moe_inference_attn.cu
 // run_csa_attention is declared in deepseek_moe_inference_csa.h.
 
-
 // Sanity ceiling for a model-reported vocab_size. d_logits is now allocated
 // dynamically to the actual vocab_size (see RunInferenceModel), but any
 // model reporting an implausibly large vocabulary fails loudly at load time
@@ -182,7 +181,6 @@ InferenceResult RunInferenceModel(
             goto cleanup;                                              \
         }                                                              \
     } while (0)
-
 
     // 4. Allocate device buffers
     int max_gen = std::min(max_gen_tokens, 4096);

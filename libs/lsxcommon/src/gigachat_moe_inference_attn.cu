@@ -28,9 +28,6 @@ inline int64_t AlignUp(int64_t v)
     return (v + kAlign - 1) / kAlign * kAlign;
 }
 
-
-
-
 __global__ void scale_f32_to_f16_kernel(const float *__restrict__ x,
                                         __half *__restrict__ y, int n,
                                         float s)

@@ -168,7 +168,7 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
         REQUIRE(f.good());
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        CHECK(json.find("\"logestix-v41-nvfp4\"") != std::string::npos);
+        CHECK(json.find("\"layout\": 2") != std::string::npos);
         CHECK(json.find("\"DeepSeek-V4.1-Flash\"") != std::string::npos);
         CHECK(json.find("\"num_layers\": 1") != std::string::npos);
         CHECK(json.find("\"total_experts\": 2") != std::string::npos);

@@ -49,7 +49,9 @@ struct XingTopology {
     std::vector<long long> mtp_layers;
     // Converted-index format tag ("logestix-xing-nvfp4"); empty for HF source
     // indexes (the converter, not the loader, consumes those).
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     std::string error_msg;
 
     bool is_moe_layer(long long l) const

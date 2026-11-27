@@ -6,6 +6,7 @@
 // exercises every converter path without touching the real vault.
 
 #include "test_synth_checkpoint.h"
+#include "lsxcommon/index_layout.h"
 
 #include <atomic>
 #include <chrono>
@@ -164,12 +165,12 @@ inline std::vector<std::string> RealLayerTypes()
 inline void WriteNemotronIndex(
     const std::filesystem::path &model_root, int hidden_override = 2688,
     bool experts_no_gate = true,
-    const std::string &format_tag = "logestix-nemotron-nvfp4")
+    int64_t layout = lsxcommon::kIndexLayout)
 {
     std::filesystem::create_directories(model_root);
     const auto types = RealLayerTypes();
     std::ofstream f(model_root / "model.index.json");
-    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+    f << "{\n  \"layout\": " << layout << ",\n"
       << "  \"model\": \"Nemotron-3.5-Lightning-30B-A3B\",\n"
       << "  \"num_layers\": 52,\n  \"layer_types\": [";
     for (size_t i = 0; i < types.size(); ++i) {

@@ -12,6 +12,7 @@
 #include "test_gigachat4_fixture.h"
 
 #include "lsxcommon/gigachat_moe_37b_convert.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/gigachat_moe_708b_convert.h"
 #include "lsxcommon/schema.h"
 
@@ -54,7 +55,6 @@ TEST_CASE("gigachat4-708b spec is the 708B passport, not the 37B's",
           "[gigachat708b][convert]")
 {
     const Gc4IngestSpec s = gc708::Gc708BIngestSpec();
-    CHECK(std::string(s.format) == "logestix-gigachat4-708b-nvfp4");
     CHECK(std::string(s.model_name) == "GigaChat4-708B-A41B");
     CHECK(s.frozen.hidden == 7168);
     CHECK(s.frozen.layers == 64);
@@ -136,11 +136,11 @@ TEST_CASE("gigachat4-708b converter writes its own identity",
         ReadFile(dst / "model.index.json");
     // Identity comes from the SPEC, so this tree can never be mistaken for the
     // 37B's even before the geometry gate runs.
-    CHECK(json.find("\"format\": \"logestix-gigachat4-708b-nvfp4\"") !=
+    CHECK(json.find("\"layout\": 2") !=
           std::string::npos);
     CHECK(json.find("\"model\": \"GigaChat4-708B-A41B\"") !=
           std::string::npos);
-    CHECK(json.find("\"format\": \"logestix-gigachat4-nvfp4\"") ==
+    CHECK(json.find("\"layout\": 2") ==
           std::string::npos);
     CHECK(json.find("\"attn_scale\": 0.130861") != std::string::npos);
     // The synthetic fixture is tiny, so the geometry inside the index is the

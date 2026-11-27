@@ -5,6 +5,7 @@
 // repack (nibbles verbatim, E8M0/32 -> two identical pow2-E4M3/16 scales with
 // a per-tensor power-of-two global scale).
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/kimi_moe_k3_convert.h>
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
@@ -102,7 +103,7 @@ TEST_CASE("kimi-k3 synthetic convert emits logestix-kimi-k3-nvfp4",
 
     std::string_view fmt;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == "logestix-kimi-k3-nvfp4");
+    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
 
     int64_t layers = 0;
     REQUIRE(doc["num_layers"].get_int64().get(layers) == simdjson::SUCCESS);

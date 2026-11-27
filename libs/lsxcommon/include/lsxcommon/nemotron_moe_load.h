@@ -16,7 +16,9 @@ namespace lsxcommon::nemotron_moe {
 // loader-stage passport: it is validated against the compile-time frozen
 // geometry (src/nemotron_moe_constants.h) before any weight is touched.
 struct NemotronIndex {
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     std::string model;
     int num_layers = 0;
     std::vector<std::string> layer_types;  // "mamba" | "moe" | "attention"

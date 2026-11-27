@@ -2,6 +2,7 @@
 // (host-only): the logestix-v41-nvfp4 index contract. Synthetic fixtures only
 // (suite guard); real weights live in the selfcheck stage.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include <filesystem>
 
@@ -20,7 +21,7 @@ TEST_CASE("deepseek-v41 load_topology parses the synthetic index",
 
     const auto topo = lsxcommon::deepseek_v41::LoadTopology(dir.string());
     CHECK(topo.error_msg.empty());
-    CHECK(topo.format == lsxcommon::deepseek_v41::kIndexFormat);
+    CHECK(topo.layout == lsxcommon::kIndexLayout);
     CHECK(topo.model == "DeepSeek-V4.1-Flash");
     CHECK(topo.num_layers == lsxcommon::deepseek_v41::kLayers);
     CHECK(topo.experts_per_layer == lsxcommon::deepseek_v41::kNumRouted);
@@ -58,7 +59,7 @@ TEST_CASE("deepseek-v41 topology rejects foreign geometry and format",
     fs::remove_all(dir);
     REQUIRE(v41fixtest::BuildSyntheticIndex(dir, /*num_layers=*/43,
                                             /*experts=*/256,
-                                            /*format=*/"logestix-v1-nvfp4")
+                                            /*layout=*/1)
                 .ok());
     const auto topo = lsxcommon::deepseek_v41::LoadTopology(dir.string());
     CHECK_FALSE(topo.error_msg.empty());  // format gate at parse time

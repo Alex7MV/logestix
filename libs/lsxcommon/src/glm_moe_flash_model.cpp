@@ -37,7 +37,6 @@ inline bool AppendGlmEncoded(const ArrowTokenizerDb &tok, std::string_view text,
     return AppendEncoded(tok, text, ids);
 }
 
-
 // Device memory reserved for generation-time allocations on top of the
 // expert cache: fp16 embed table (V*H*2B ~ 0.63 GB), head/logits, KDA/DSA
 // per-step arenas, and CUDA context overhead.

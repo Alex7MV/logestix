@@ -276,7 +276,7 @@ TEST_CASE("gemma dense convert happy path", "[gemma_dense][convert]") {
         std::ifstream idx(out / "model.index.json");
         const std::string json((std::istreambuf_iterator<char>(idx)),
                                std::istreambuf_iterator<char>());
-        CHECK(json.find("\"format\": \"logestix-gemma-dense\"") !=
+        CHECK(json.find("\"layout\": 2") !=
               std::string::npos);
         CHECK(json.find("\"mlp_nvfp4\": true") != std::string::npos);
         CHECK(json.find("\"attn_nvfp4\": true") != std::string::npos);

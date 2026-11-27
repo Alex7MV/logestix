@@ -511,7 +511,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-nemotron-nvfp4\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"" << frozen::kModelName << "\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n"
           << "  \"layer_types\": [";

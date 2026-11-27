@@ -8,6 +8,7 @@
 // ue8m0 scales), the row-interleaved w13 de-interleave for BOTH codecs, and the
 // stripped+counted vision ballast.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 #include <lsxcommon/inkling_moe_loop_convert.h>
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
@@ -87,7 +88,7 @@ TEST_CASE("inkling loop synthetic convert emits logestix-inkling-2-mini",
 
     std::string_view fmt;
     REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == "logestix-inkling-2-mini");
+    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
 
     // `model` is what path auto-detection resolves; normalized it must be
     // exactly the factory key "inkling-2-mini".

@@ -634,7 +634,6 @@ cudaError_t RunExpQsaAttention(cudaStream_t stream, const __half *d_q,
 
 namespace {
 
-
 } // namespace
 
 void launch_half_to_float(const __half *src, float *dst, int total,
@@ -1073,7 +1072,6 @@ cudaError_t RunExpRouterTop10(cudaStream_t stream, const uint8_t *d_router_bf16,
         seq, E, K, H, d_slots);
 }
 
-
 // ── NVFP4 production wrappers: dequant hc weights to device scratch, then
 // run the identical F32 sequence. ──────────────────────────────────────────
 
@@ -1332,7 +1330,6 @@ __global__ void half_to_float_rows_kernel(const __half *__restrict__ src,
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < total) dst[i] = __half2float(src[i]);
 }
-
 
 cudaError_t RunExpHcGatedResidual(
     cudaStream_t stream, const __half *d_hyper_input,
@@ -1869,7 +1866,6 @@ cudaError_t RunExpGeneration(
     const int prompt_steps = static_cast<int>(prompt.size());
 
     const int total_steps = prompt_steps + max_new - 1;
-
 
     int32_t cur = prompt[0];
     int generated = 0;
@@ -2501,7 +2497,6 @@ cudaError_t RunExpGeneration(
     result.ok = true;
     return cudaSuccess;
 }
-
 
 // ── LM head GEMM (deterministic FP16-in / FP32-out GEMV) ──────────────────
 // The lm_head is kept in BF16-derived FP16: NVFP4 logit noise exceeds the

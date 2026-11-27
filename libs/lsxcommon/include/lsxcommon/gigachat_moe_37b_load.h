@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lsxcommon/index_layout.h"
+
 // Loader-stage passport for GigaChat4-37B-A4B. Parses
 // <model_path>/logestix/model.index.json and validates it against the
 // compile-time frozen geometry (src/gigachat_moe_37b_constants.h) before any
@@ -18,7 +20,9 @@
 namespace lsxcommon::gigachat4 {
 
 struct Gc4Index {
-    std::string format;
+    // Schema layout generation declared by model.index.json
+    // (lsxcommon::kIndexLayout). 0 = absent.
+    int64_t layout = 0;
     std::string model;
     int num_layers = 0;
     std::vector<std::string> layer_types;  // "full_attention" | "linear_attention"
@@ -62,7 +66,7 @@ using Gc4Weights = gigachat::GcWeights;
 // One member's frozen expectation: the format tag it must see and the geometry
 // its passport fixes. Supplied by the model TU, never read from another model.
 struct Gc4FrozenExpect {
-    const char *format = "";
+    int64_t layout = lsxcommon::kIndexLayout;  // schema generation it must see
     Gc4FrozenGeometry geo;
     std::vector<int> full_attention_layers;  // empty = do not check the map
     int gate_rank = 16;
@@ -71,8 +75,9 @@ struct Gc4FrozenExpect {
 // The GigaChat4-37B-A4B passport's expectation.
 Gc4FrozenExpect Gc4DefaultExpect();
 
+// `expected_layout` is the schema generation this member's passport fixes.
 bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
-                                 const std::string &expected_format,
+                                 int64_t expected_layout,
                                  Gc4Index &out, std::string &error);
 bool LoadGigaChat4Index(const std::string &model_path, Gc4Index &out,
                         std::string &error);

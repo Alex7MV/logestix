@@ -16,7 +16,6 @@ namespace {
 // Dedup Ф4: BPE append (cap 65536) is the shared lsxcommon::tools body.
 using lsxcommon::tools::AppendEncoded;
 
-
 using lsxnetwork::json::JsonEscape;
 
 // Added tokens in the checkpoint's tokenizer.json. The BPE encoder resolves

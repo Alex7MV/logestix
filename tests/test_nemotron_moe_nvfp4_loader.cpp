@@ -3,6 +3,7 @@
 // opens the vault. The frozen geometry gate is exercised for real (no synthetic
 // bypass), so the passport really is the thing under test.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include "test_nemotron_moe_nvfp4_fixture.h"
 
@@ -83,7 +84,7 @@ TEST_CASE("nvfp4 index accepts the scalar eos form the sibling writes",
     DisableSyntheticGeometry();
     const auto root = nemotronv4test::MakeTempDir("nmv4_idx_eos_scalar");
     nemotronv4test::WriteNemotronNvfp4Index(root, 2688, true,
-                                            "logestix-nemotron-nvfp4",
+                                            lsxcommon::kIndexLayout,
                                             "Nemotron-3.5-Lightning-30B-A3B-NVFP4",
                                             "2");
 
@@ -109,13 +110,13 @@ TEST_CASE("nvfp4 index rejects an unknown format tag",
     const auto root = nemotronv4test::MakeTempDir("nmv4_idx_fmt");
     nemotronv4test::WriteNemotronNvfp4Index(root, /*hidden_override=*/2688,
                                             /*experts_no_gate=*/true,
-                                            /*format_tag=*/"logestix-glm");
+                                            /*layout=*/1);  // wrong generation
 
     NemotronIndex idx;
     std::string err;
     CHECK_FALSE(LoadNemotronNvfp4Index(root.string(), idx, err));
     INFO("error: " << err);
-    CHECK(err.find("format") != std::string::npos);
+    CHECK(err.find("layout") != std::string::npos);
 }
 
 TEST_CASE("nvfp4 loader refuses the BF16 sibling's converted tree",
@@ -130,7 +131,7 @@ TEST_CASE("nvfp4 loader refuses the BF16 sibling's converted tree",
     const auto root = nemotronv4test::MakeTempDir("nmv4_idx_sibling");
     nemotronv4test::WriteNemotronNvfp4Index(
         root, /*hidden_override=*/2688, /*experts_no_gate=*/true,
-        /*format_tag=*/"logestix-nemotron-nvfp4",
+        /*layout=*/lsxcommon::kIndexLayout,
         /*model_name=*/"Nemotron-3.5-Lightning-30B-A3B");
 
     NemotronIndex idx;
@@ -179,7 +180,7 @@ TEST_CASE("nvfp4 geometry rejects a second stop id that is not the vault's",
     DisableSyntheticGeometry();
     const auto root = nemotronv4test::MakeTempDir("nmv4_idx_eos_bad");
     nemotronv4test::WriteNemotronNvfp4Index(root, 2688, true,
-                                            "logestix-nemotron-nvfp4",
+                                            lsxcommon::kIndexLayout,
                                             "Nemotron-3.5-Lightning-30B-A3B-NVFP4",
                                             "[2, 99]");
 

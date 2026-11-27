@@ -156,7 +156,7 @@ TEST_CASE("deepseek nvfp4 repack tool: micro-vault e2e", "[tool][deepseek]")
     // Minimal v1 index (num_layers/experts_per_layer drive the tool walk).
     {
         std::ofstream f(src / "model.index.json");
-        f << "{\"format\": \"logestix-v1\", \"model\": \"DeepSeek-V4-Flash\","
+        f << "{\"layout\": 1, \"model\": \"DeepSeek-V4-Flash\","
              " \"num_layers\": 1, \"experts_per_layer\": 2, \"files\": {}}\n";
     }
     // Verbatim-carry probe file.
@@ -199,8 +199,7 @@ TEST_CASE("deepseek nvfp4 repack tool: micro-vault e2e", "[tool][deepseek]")
         std::ifstream f(dst / "model.index.json");
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        CHECK(json.find("\"logestix-v1-nvfp4\"") != std::string::npos);
-        CHECK(json.find("logestix-v1\"") == std::string::npos);
+        CHECK(json.find("\"layout\": 2") != std::string::npos);
     }
     {
         std::ifstream f(dst / "pinned" / "dummy.bin");

@@ -28,7 +28,6 @@ using lsxcommon::tools::PyJsonString;
 using lsxcommon::tools::PyJsonValue;
 using lsxcommon::tools::PyJsonDumps;
 
-
 using lsxnetwork::json::JsonEscape;
 
 // Control markers (chat_template.jinja literals).
@@ -66,7 +65,6 @@ bool AppendTextWithSentinels(const ArrowTokenizerDb &tok,
     return lsxcommon::tools::AppendTextWithSentinels(tok, text, kSentinelVec,
                                                      ids);
 }
-
 
 std::string_view TrimAscii(std::string_view s)
 {

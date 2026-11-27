@@ -279,7 +279,7 @@ arrow::Status WritePhiModelIndex(const std::string &output_root,
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"logestix-phi\",\n"
+      << "  \"layout\": 2,\n"
       << "  \"model\": \"Phi-4\",\n"
       << "  \"edges\": \"fp16\",\n"
       << "  \"residual\": true,\n"

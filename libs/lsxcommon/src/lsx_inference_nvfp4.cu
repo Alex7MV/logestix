@@ -439,7 +439,6 @@ struct LsxExpertBatchPtrs {
     float gs[8];
 };
 
-
 // The per-row GEMV body shared by the by-value and device-table expert batches.
 // Verbatim copy of what used to be inline, wrapped so that BOTH entry points run
 // the same loop: they must produce bit-identical rows, and a second copy of this

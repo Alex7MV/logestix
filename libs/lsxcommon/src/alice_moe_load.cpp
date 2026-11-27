@@ -1,4 +1,5 @@
 #include "lsxcommon/alice_moe_load.h"
+#include "lsxcommon/index_layout.h"
 #include "fast_load_internal.h"
 #include "lsxcommon/config_json.h"
 
@@ -23,7 +24,6 @@ inline bool get_d(simdjson::ondemand::object &o, const char *k, double &out)
 {
     return GetDouble(o, k, out);
 }
-
 
 namespace fs = std::filesystem;
 
@@ -59,15 +59,16 @@ arrow::Status LoadAliceTopology(const std::string &model_path,
     if (doc.get_object().get(root) != simdjson::SUCCESS)
         return arrow::Status::Invalid("alice index: root is not an object");
 
-    std::string_view s;
-    if (root["format"].get_string().get(s) == simdjson::SUCCESS)
-        out.format.assign(s.data(), s.size());
-    if (out.format != "logestix-alice-nvfp4") {
-        out.error_msg = "unexpected format: " + out.format;
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) == simdjson::SUCCESS)
+        out.layout = layout_v;
+    if (!lsxcommon::IndexLayoutSupported(out.layout)) {
+        out.error_msg = lsxcommon::IndexLayoutError(out.layout);
         return arrow::Status::Invalid("alice loader: expected format "
                                       "logestix-alice-nvfp4, got ",
-                                      out.format);
+                                      std::to_string(out.layout));
     }
+    std::string_view s;
     if (root["model"].get_string().get(s) == simdjson::SUCCESS)
         out.model.assign(s.data(), s.size());
 
@@ -165,7 +166,6 @@ const DenseNvfp4Record *FindNvfp4(const std::vector<DenseNvfp4Record> &v,
         if (r.name == name) return &r;
     return nullptr;
 }
-
 
 } // namespace
 

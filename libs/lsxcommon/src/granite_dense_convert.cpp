@@ -292,7 +292,7 @@ arrow::Status WriteGraniteModelIndex(const std::string &output_root,
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"logestix-granite\",\n"
+      << "  \"layout\": 2,\n"
       << "  \"model\": \"Granite-4.2-30B\",\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"hidden_size\": " << top.hidden_size

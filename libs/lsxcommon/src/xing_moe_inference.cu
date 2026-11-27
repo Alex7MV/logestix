@@ -345,7 +345,6 @@ __global__ void xing_write_cache_kernel(const float *__restrict__ kv_b,
     for (int i = threadIdx.x; i < rope; i += blockDim.x) kb[nope + i] = krot[i];
 }
 
-
 // Host-side staging for the four selected experts: the model-neutral
 // expert-batch GEMV takes its packed/scale pointer arrays BY VALUE (it copies
 // them into a by-value struct for the kernel), so the routed ids must reach the

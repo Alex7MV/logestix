@@ -2,6 +2,7 @@
 // (Model Ingestion Protocol step 3). Synthetic PRE-QUANTIZED checkpoint only;
 // the real vault is never converted here.
 #include <catch2/catch_test_macros.hpp>
+#include "lsxcommon/index_layout.h"
 
 #include "test_nemotron_moe_nvfp4_fixture.h"
 #include "test_streaming_assert.h"
@@ -125,7 +126,7 @@ TEST_CASE("nemotron-nvfp4 Load rejects the BF16 sibling's tree",
     const auto root = nemotronv4test::MakeTempDir("nmv4_model_sibling");
     nemotronv4test::WriteNemotronNvfp4Index(
         root, /*hidden_override=*/2688, /*experts_no_gate=*/true,
-        /*format_tag=*/"logestix-nemotron-nvfp4",
+        /*layout=*/lsxcommon::kIndexLayout,
         /*model_name=*/"Nemotron-3.5-Lightning-30B-A3B-BF16");
 
     ModelInitConfig cfg;

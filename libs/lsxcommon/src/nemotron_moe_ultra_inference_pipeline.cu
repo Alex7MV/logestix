@@ -40,12 +40,6 @@ namespace lsxcommon::nemotron_ultra {
 
 namespace {
 
-
-
-
-
-
-
 inline int Grid1D(int n, int threads) { return (n + threads - 1) / threads; }
 
 // Diagnostic (LSX_NEMOTRON_ULTRA_DUMP_LAYERS=<file>, optional

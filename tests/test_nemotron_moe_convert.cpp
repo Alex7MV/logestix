@@ -31,7 +31,7 @@ TEST_CASE("nemotron converter emits the logestix-nemotron-nvfp4 layout",
     ss << in.rdbuf();
     const std::string json = ss.str();
 
-    CHECK(json.find("\"format\": \"logestix-nemotron-nvfp4\"") != std::string::npos);
+    CHECK(json.find("\"layout\": 2") != std::string::npos);
     CHECK(json.find("\"attn_layer_idx\": [2]") != std::string::npos);
     CHECK(json.find("\"experts_no_gate\": true") != std::string::npos);
     CHECK(json.find("\"deferred\": {\"mtp\": \"cut\"") != std::string::npos);

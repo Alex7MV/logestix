@@ -25,11 +25,6 @@ namespace lsxcommon::nemotron_moe {
 
 namespace {
 
-
-
-
-
-
 __global__ void axpy_f32_kernel(float *__restrict__ acc,
                                 const float *__restrict__ x, float a, int n)
 {
@@ -37,7 +32,6 @@ __global__ void axpy_f32_kernel(float *__restrict__ acc,
     if (i >= n) return;
     acc[i] += a * x[i];
 }
-
 
 inline int Grid1D(int n, int threads) { return (n + threads - 1) / threads; }
 

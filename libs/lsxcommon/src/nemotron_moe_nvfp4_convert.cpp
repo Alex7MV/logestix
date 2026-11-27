@@ -854,7 +854,7 @@ arrow::Status ConvertNemotronNvfp4Model(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-nemotron-nvfp4\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"Nemotron-3.5-Lightning-30B-A3B-NVFP4\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n"
           << "  \"layer_types\": [";

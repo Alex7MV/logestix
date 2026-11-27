@@ -1,4 +1,5 @@
 #include "lsxcommon/dory_dense_convert.h"
+#include "lsxcommon/index_layout.h"
 
 #include <simdjson.h>
 
@@ -470,10 +471,10 @@ DoryTopology load_dory_topology(const std::string &index_path)
             return x.value();
         return dflt;
     };
-    std::string_view format;
-    if (root["format"].get_string().get(format) == simdjson::SUCCESS &&
-        format != "logestix-dory-nvfp4") {
-        top.error_msg = absl::StrCat("unexpected format tag: ", format);
+    if (root["layout"].get_int64().get(top.layout) != simdjson::SUCCESS)
+        top.layout = 0;
+    if (!lsxcommon::IndexLayoutSupported(top.layout)) {
+        top.error_msg = lsxcommon::IndexLayoutError(top.layout);
         return top;
     }
 
@@ -519,7 +520,7 @@ arrow::Status WriteDoryModelIndex(const std::string &output_root,
 
     std::ostringstream j;
     j << "{\n"
-      << "  \"format\": \"logestix-dory-nvfp4\",\n"
+      << "  \"layout\": 2,\n"
       << "  \"model\": \"Dory-1.0-4B\",\n"
       << "  \"architecture\": \"looped-ngpt\",\n"
       << "  \"edges\": \"fp16\",\n"

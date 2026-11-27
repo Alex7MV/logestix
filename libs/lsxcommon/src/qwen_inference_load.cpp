@@ -58,7 +58,6 @@ namespace lsxcommon::qwen {
 
 // lsx_nvfp4::LsxNvfp4Weight::Free is defined inline in the header.
 
-
 void QwenPinnedWeights::Free() {
     embed.Free();
     head.Free();

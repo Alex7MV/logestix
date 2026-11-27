@@ -1,4 +1,5 @@
 #include "lsxcommon/nemotron_moe_ultra_load.h"
+#include "lsxcommon/index_layout.h"
 
 #include "nemotron_moe_ultra_constants.h"
 #include "fast_load_internal.h"
@@ -21,7 +22,6 @@ namespace lsxcommon::nemotron_ultra {
 namespace {
 // Dedup Ф5: single-tensor upload is the shared lsxcommon::fastload body.
 using lsxcommon::fastload::UploadOne;
-
 
 constexpr const char *kFormatTag = "logestix-nemotron-ultra-nvfp4";
 
@@ -63,15 +63,12 @@ bool LoadUltraIndex(const std::string &model_path, UltraIndex &out,
         return false;
     }
 
-    std::string_view fmt;
-    if (root["format"].get_string().get(fmt) != simdjson::SUCCESS) {
-        error = "index missing 'format' tag";
-        return false;
-    }
-    out.format = std::string(fmt);
-    if (out.format != kFormatTag) {
-        error = absl::StrCat("unknown format tag: ", out.format, " (want ",
-                             kFormatTag, ")");
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) != simdjson::SUCCESS)
+        layout_v = 0;
+    out.layout = layout_v;
+    if (!lsxcommon::IndexLayoutSupported(out.layout)) {
+        error = lsxcommon::IndexLayoutError(out.layout);
         return false;
     }
     // simdjson on-demand is FORWARD-ONLY: keys must be read in the order the

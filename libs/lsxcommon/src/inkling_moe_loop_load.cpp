@@ -1,4 +1,5 @@
 #include "lsxcommon/inkling_moe_loop_load.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/config_json.h"
 
 #include "inkling_moe_loop_constants.h"
@@ -76,14 +77,15 @@ arrow::Status LoadInklingLoopTopology(const std::string &model_path,
     if (doc.get_object().get(root) != simdjson::SUCCESS)
         return arrow::Status::Invalid("inkling loop index: root is not an object");
 
-    std::string_view s;
-    if (root["format"].get_string().get(s) == simdjson::SUCCESS)
-        out.format.assign(s.data(), s.size());
-    if (out.format != expected_format) {
-        out.error_msg = "unexpected format: " + out.format;
+    int64_t layout_v = 0;
+    if (root["layout"].get_int64().get(layout_v) == simdjson::SUCCESS)
+        out.layout = layout_v;
+    if (!lsxcommon::IndexLayoutSupported(out.layout)) {
+        out.error_msg = lsxcommon::IndexLayoutError(out.layout);
         return arrow::Status::Invalid("inkling loop loader: expected format ",
-                                      expected_format, ", got ", out.format);
+                                      expected_format, ", got ", std::to_string(out.layout));
     }
+    std::string_view s;
     if (root["source_model_type"].get_string().get(s) == simdjson::SUCCESS)
         out.source_model_type.assign(s.data(), s.size());
 

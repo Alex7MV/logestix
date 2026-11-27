@@ -3,6 +3,7 @@
 // (pinned staging ring, NVFP4 batch views, mmap-only Arrow reads) and adds the
 // DSA indexer weights and the non-zero-centred norm variant.
 #include "lsxcommon/gigachat_moe_37b_load.h"
+#include "lsxcommon/index_layout.h"
 #include "lsxcommon/synthetic_geometry.h"
 
 #include "fast_load_internal.h"
@@ -27,11 +28,11 @@ namespace lsxcommon::gigachat4 {
 bool LoadGigaChat4Index(const std::string &model_path, Gc4Index &out,
                         std::string &error)
 {
-    return LoadGigaChat4IndexWithFormat(model_path, frozen::kFormat, out, error);
+    return LoadGigaChat4IndexWithFormat(model_path, kIndexLayout, out, error);
 }
 
 bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
-                                 const std::string &expected_format,
+                                 int64_t expected_layout,
                                  Gc4Index &out, std::string &error)
 {
     namespace fs = std::filesystem;
@@ -66,6 +67,9 @@ bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
         return false;
     }
 
+    auto as_int = [](simdjson::ondemand::value v, int64_t &out) -> bool {
+        return v.get_int64().get(out) == simdjson::SUCCESS;
+    };
     auto as_string = [](simdjson::ondemand::value v, std::string &s) -> bool {
         std::string_view sv;
         if (v.get_string().get(sv) != simdjson::SUCCESS) return false;
@@ -88,9 +92,12 @@ bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
     {
         std::string_view key;
         if (field.unescaped_key().get(key) != simdjson::SUCCESS) continue;
-        if (key == "format")
+        if (key == "layout")
         {
-            have_format = as_string(field.value(), out.format);
+            int64_t v = 0;
+            (void)as_int(field.value(), v);
+            out.layout = v;
+            have_format = true;
             continue;
         }
         if (key == "model")
@@ -166,9 +173,9 @@ bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
         error = "index missing 'format' tag";
         return false;
     }
-    if (out.format != expected_format)
+    if (!lsxcommon::IndexLayoutSupported(out.layout))
     {
-        error = "unknown format tag: " + out.format;
+        error = lsxcommon::IndexLayoutError(out.layout);
         return false;
     }
     ParseVramBlock(json, out.vram, error);
@@ -193,7 +200,7 @@ bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
 Gc4FrozenExpect Gc4DefaultExpect()
 {
     Gc4FrozenExpect e;
-    e.format = frozen::kFormat;
+    e.layout = lsxcommon::kIndexLayout;
     const Gc4IngestSpec s = Gc4DefaultIngestSpec();
     e.geo = s.frozen;
     e.full_attention_layers = s.full_attention_layers;

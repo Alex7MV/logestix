@@ -32,7 +32,6 @@ inline bool parse_layer_body(const std::string &name, int &layer, std::string &b
     return lsxcommon::config::ParseLayerBody(name, layer, body);
 }
 
-
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
     if (o[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;
@@ -609,7 +608,7 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-alice-nvfp4\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"AliceAI-Foundation-80B-A3B-Base\",\n"
           << "  \"num_layers\": " << top.num_layers
           << ",\n  \"layer_types\": [";

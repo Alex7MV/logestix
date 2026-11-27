@@ -1090,7 +1090,7 @@ arrow::Status ConvertInklingLoopModelWithSpec(const std::string &input_dir,
             }
             j << "]" << (trailing ? ",\n" : "\n");
         };
-        j << "{\n  \"format\": \"" << spec.format_tag << "\",\n";
+        j << "{\n  \"layout\": 2,\n";
         // The CARD name: gpu::detect_model_type normalizes it into the factory
         // key, so it must normalize to exactly this row's model_type.
         j << "  \"model\": \"" << spec.model_name << "\",\n";

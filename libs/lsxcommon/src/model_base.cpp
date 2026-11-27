@@ -272,7 +272,6 @@ bool ModelBase::CheckGeometryFields(const char *tag,
     return true;
 }
 
-
 void ModelBase::FinishLoad()
 {
     // Weights are now resident at addresses CUDA will later recycle: start a

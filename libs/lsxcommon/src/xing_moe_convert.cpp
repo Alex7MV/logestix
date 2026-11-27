@@ -39,7 +39,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-
 int WeightIdFor(const std::string &proj)
 {
     if (proj == "gate_proj") return 1;
@@ -324,15 +323,14 @@ XingTopology xing_load_topology(const std::string &index_json_path)
         scan_lists("moe_layers", top.moe_layers);
         scan_lists("dense_layers", top.dense_layers);
         scan_lists("mtp_layers", top.mtp_layers);
-        const size_t fp = text.find("\"format\"");
-        if (fp != std::string::npos)
+        // layout is an integer; the old string tag is gone (see index_layout.h).
         {
-            const size_t q1 = text.find('"', text.find(':', fp) + 1);
-            const size_t q2 = q1 == std::string::npos
-                                  ? std::string::npos
-                                  : text.find('"', q1 + 1);
-            if (q2 != std::string::npos)
-                top.format = text.substr(q1 + 1, q2 - q1 - 1);
+            const size_t fp = text.find("\"layout\"");
+            if (fp != std::string::npos) {
+                const size_t c = text.find(':', fp);
+                if (c != std::string::npos)
+                    top.layout = std::atoll(text.c_str() + c + 1);
+            }
         }
         std::sort(top.moe_layers.begin(), top.moe_layers.end());
         std::sort(top.dense_layers.begin(), top.dense_layers.end());
@@ -395,7 +393,6 @@ XingTopology xing_load_topology(const std::string &index_json_path)
     }
     return top;
 }
-
 
 namespace {
 
@@ -904,7 +901,7 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
     std::ofstream f(base / "model.index.json");
     if (!f) return arrow::Status::IOError("cannot write model.index.json");
     f << "{\n";
-    f << "  \"format\": \"logestix-xing-nvfp4\",\n";
+    f << "  \"layout\": 2,\n";
     f << "  \"model\": \"Xing4.0-29B-A4B\",\n";
     // The index reports what was actually written (observed), not what the
     // config asked for: a synthetic fixture is legitimately smaller, and the

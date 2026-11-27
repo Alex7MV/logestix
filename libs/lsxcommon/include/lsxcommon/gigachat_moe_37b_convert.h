@@ -152,7 +152,8 @@ struct Gc4FrozenGeometry {
 // and the variant-dependent attention scale (rope/attn scale is a passport
 // value, not a config field).
 struct Gc4IngestSpec {
-    const char *format = "";
+    // No format/tag field: the converter writes layout = kIndexLayout, and each
+    // member differs only in geometry (see index_layout.h).
     const char *model_name = "";
     Gc4FrozenGeometry frozen;
     std::vector<int> full_attention_layers;  // empty = do not check the map

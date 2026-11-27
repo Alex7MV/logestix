@@ -787,7 +787,6 @@ cudaError_t RunArgmax(const float *x, int n, int32_t *out_idx, float *out_val,
     return cudaGetLastError();
 }
 
-
 cudaError_t RunRmsNormHalf(__half *x, const __half *w, int dim, float eps,
                            cudaStream_t stream)
 {

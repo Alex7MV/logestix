@@ -631,7 +631,7 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"" << spec.format_tag << "\",\n"
+          << "  \"layout\": 2,\n"
           << "  \"model\": \"" << spec.model_name << "\",\n"
           << "  \"num_layers\": " << top.num_layers
           << ",\n  \"layer_types\": [";

@@ -11,6 +11,7 @@
 // loudly instead of silently falling back to streaming.
 
 #include "lsxcommon/xing_moe_load.h"
+#include "lsxcommon/index_layout.h"
 #include "fast_load_internal.h"
 
 #include "xing_moe_constants.h"
@@ -39,7 +40,6 @@ namespace lsxcommon::xing {
 namespace {
 // Dedup Ф5: byte upload is the shared lsxcommon::fastload body.
 using lsxcommon::fastload::UploadBytes;
-
 
 namespace fs = std::filesystem;
 
@@ -97,6 +97,7 @@ cudaError_t UploadBf16(const lsxcommon::TensorView &v,
 }
 
 struct IndexInfo {
+    int64_t layout = 0;
     long long num_layers = 0;
     long long experts_per_layer = 0;
     long long hc_mult = 0;
@@ -149,18 +150,17 @@ IndexInfo ReadIndex(const fs::path &p)
     std::stringstream ss;
     ss << f.rdbuf();
     const std::string text = ss.str();
-    ix.format = xing_load_topology(p.string()).format;
+    ix.layout = xing_load_topology(p.string()).layout;
     ix.num_layers = JsonInt(text, "num_layers", 0);
     ix.experts_per_layer = JsonInt(text, "experts_per_layer", 0);
     ix.hc_mult = JsonInt(text, "hc_mult", 0);
     ScanList(text, "dense_layers", ix.dense_layers);
     ScanList(text, "moe_layers", ix.moe_layers);
     ScanList(text, "mtp_layers", ix.mtp_layers);
-    if (ix.format != "logestix-xing-nvfp4")
+    if (!lsxcommon::IndexLayoutSupported(ix.layout))
     {
         ix.error_msg =
-            absl::StrCat("unexpected format tag '", ix.format,
-                         "' (expected logestix-xing-nvfp4)");
+            lsxcommon::IndexLayoutError(ix.layout);
         return ix;
     }
     if (ix.num_layers <= 0 || ix.experts_per_layer <= 0)

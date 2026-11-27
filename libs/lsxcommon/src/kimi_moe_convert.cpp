@@ -263,9 +263,9 @@ KimiTopology kimi_load_topology(const std::string &index_json_path)
         (void)read_arr("dense_layers", topo.dense_layers);
         topo.num_layers = static_cast<long long>(nl);
         topo.experts_per_layer = static_cast<long long>(epl);
-        std::string_view fmt_sv;
-        if (root["format"].get_string().get(fmt_sv) == simdjson::SUCCESS)
-            topo.format.assign(fmt_sv);
+        int64_t fmt_sv = 0;
+        if (root["layout"].get_int64().get(fmt_sv) == simdjson::SUCCESS)
+            topo.layout = fmt_sv;
         return topo;
     }
 
@@ -426,7 +426,6 @@ void AssignSharedWeight(ExpertData &ed, int weight_id,
     }
 }
 
-
 // Kimi-specific per-layer pinned saver ("layers\.(\d+)" names do not pass the
 // shared SavePinnedTensors regex; grouping keys off kimi_classify instead).
 arrow::Status SaveKimiPinnedTensors(
@@ -484,7 +483,7 @@ void WriteKimiModelIndex(
     if (!f) return;
 
     f << "{\n";
-    f << "  \"format\": \"logestix-kimi-r2\",\n";
+    f << "  \"layout\": 2,\n";
     f << "  \"model\": \"" << model_name << "\",\n";
     f << "  \"num_layers\": " << topo.num_layers << ",\n";
     f << "  \"experts_per_layer\": " << topo.experts_per_layer << ",\n";

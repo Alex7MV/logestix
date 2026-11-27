@@ -856,7 +856,6 @@ __global__ void fused_rope_tables_kernel(__half *__restrict__ cos_buf,
     }
 }
 
-
 // ── Fused linear-attention front stage A: raw qkv NVFP4 GEMM into the
 // persistent d_qkv history. One block per token row t; blockDim = pow2(kd).
 // Own launch: the conv stage (stage B) reads history rows written by other
@@ -997,7 +996,6 @@ __global__ void fused_linear_conv_zab_kernel(
         }
     }
 }
-
 
 } // namespace
 

@@ -122,7 +122,7 @@ TEST_CASE("deepseek converter emits nvfp4 experts from e8m0 source",
         REQUIRE(f.good());
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
-        CHECK(json.find("\"logestix-v1-nvfp4\"") != std::string::npos);
+        CHECK(json.find("\"layout\": 2") != std::string::npos);
     }
 
     // Expert 0: w1 window [119..122] -> m=-2 (gs 0.25), scales doubled.
