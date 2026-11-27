@@ -347,3 +347,28 @@ TEST_CASE("a name that matches nothing at all still says just that",
     CHECK(why.find("placeholder") == std::string::npos);
     CHECK(why.find("typo-name") != std::string::npos);
 }
+
+TEST_CASE("ListPlaceholderDirs lists every placeholder and nothing else",
+          "[storage_roots]") {
+    TempRoot root;
+    MakeCheckpoint(root.path() / "Qwen" / "real-model");
+    fs::create_directories(root.path() / "zai-org" / "evicted-a");
+    fs::create_directories(root.path() / "moonshotai" / "evicted-b");
+    fs::create_directories(root.path() / "moonshotai" / "empty-org-less");  // also a placeholder
+    ScopedEnv e("LSX_SOURCE_ROOT", root.path().c_str());
+
+    const auto all = lsx::storage::ListPlaceholderDirs("");
+    REQUIRE(all.size() == 3);
+    // Sorted, and a checkpoint is never listed.
+    for (const auto &p : all) {
+        INFO(p.string());
+        CHECK(p.filename() != "real-model");
+    }
+
+    const auto one = lsx::storage::ListPlaceholderDirs("evicted-b");
+    REQUIRE(one.size() == 1);
+    CHECK(one.front() == root.path() / "moonshotai" / "evicted-b");
+
+    // And a real checkpoint has no placeholder entry.
+    CHECK(lsx::storage::ListPlaceholderDirs("real-model").empty());
+}

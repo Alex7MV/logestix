@@ -543,18 +543,19 @@ LSX_CACHE_DIR      per-user host cache (unchanged)
 
 The store is **org-nested**: `<SourceRoot>/<org>/<model>`, the layout Hugging
 Face uses for a download. Measured on 2026-11-27: 39 checkpoints with weights
-over 21 orgs (`Qwen/Qwen3.5-9B`, `microsoft/phi-4`, `thinkingmachines/Inkling`,
-…), plus **6 empty placeholder directories** recording where an evicted
+over 23 orgs (`Qwen/Qwen3.5-9B`, `microsoft/phi-4`, `thinkingmachines/Inkling`,
+…), plus **9 empty placeholder directories** recording where an evicted
 checkpoint belongs (`moonshotai/Kimi-K3`, `inclusionAI/Ling-3.1-flash`,
 `RecursiveSI/flint`, `reflection/Beam-1.0-501B-A23B`, `MiniMaxAI/MiniMax-M3`,
-`mistralai/Mistral-Large-4-1T-A52B`).
+`mistralai/Mistral-Large-4-1T-A52B`, `stepfun-ai/Step-5-Preview`,
+`zai-org/GLM-5.2`, `XiaomiMiMo/MiMo-V2.6-Flash-RL`). Every one of the 47
+manifest rows now has a directory: 39 with weights, 9 placeholders, 0 absent.
 
 A placeholder is not a checkpoint: `ListSourceModels()` ignores it, so nothing
 resolves to a directory with no weights, and `FindSourceModel()` reports the
-placeholder by org instead of suggesting a typo. Three manifest rows still have
-no directory at all (`glm-5.2`, `mimo-v2.6-flash-rl`, `step-5-preview`); their
-publishing org is recorded nowhere in this repository, so no directory is
-guessed for them.
+placeholder by org instead of suggesting a typo. `ListPlaceholderDirs()` is the
+accessor, so a tool can enumerate what is missing from the store without
+scanning directories itself.
 
 Resolution is a pure function with a documented precedence; it never guesses
 codecs, only *location*:

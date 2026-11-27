@@ -72,9 +72,16 @@ struct SourceModelRef {
 };
 
 // Every checkpoint under the source root, sorted by (org, model). A directory
-// directly under the root is an org; only one that also holds config.json is a
+// directly under the root is an org; only one that also holds weights is a
 // checkpoint, so `<root>/microsoft` never shows up as a model.
 std::vector<SourceModelRef> ListSourceModels();
+
+// Empty <org>/<model> directories: deliberate records of where an evicted
+// checkpoint belongs. They are NOT checkpoints (nothing can load from them) and
+// never enter ListSourceModels(); they exist so a diagnostic can distinguish
+// "the directory is here, the weights are not" from "you mistyped the name".
+// An empty `model` lists every placeholder, sorted.
+std::vector<fs::path> ListPlaceholderDirs(const std::string &model);
 
 // Finds exactly one checkpoint whose directory name is `model`.
 //
