@@ -60,3 +60,6 @@ __pycache__/
 # Stage-0/8 capture venvs (tools/granite_switch_oracle.py documents .venv-gs;
 # a checkpoint oracle needs packages transformers cannot pin for the host).
 .venv-gs/
+
+# superpowers plan-execution scratch (ledger, briefs, review packages)
+.superpowers/
