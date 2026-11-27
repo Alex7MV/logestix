@@ -112,8 +112,12 @@ uint64_t EmitArtifact(const ArtifactSpec &spec, const fs::path &artifact_dir,
     // over with an empty digest.
     uint64_t computed_mask = 0;
     for (const auto &decl : spec.planes) {
-        if (decl.codec_bit == 0)
-            return fail("plane '" + decl.path + "' declares no codec bit");
+        // A meta plane legitimately establishes no codec (an index table, a
+        // bitmap); every other plane must name exactly one, or the mask would
+        // silently under-report what the loader will execute.
+        if (decl.codec_bit == 0 && decl.role != "meta")
+            return fail("plane '" + decl.path + "' (role '" + decl.role +
+                        "') declares no codec bit");
         if (decl.path.empty() && decl.role != "meta")
             return fail("plane '" + decl.role + "' has no path");
         if (!decl.path.empty()) {

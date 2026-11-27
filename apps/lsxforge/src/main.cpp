@@ -1,5 +1,6 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/arrow_tree_verify.h"
+#include "lsxstorage/artifact.h"
 #include "lsxcommon/glm_moe_flash_convert.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
@@ -267,9 +268,10 @@ int main(int argc, char* argv[]) {
     bool step = absl::GetFlag(FLAGS_step);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
-    // Post-conversion verification: the same shared verifier the audit test
-    // uses. Runs before pipeline resolution so it is a standalone mode:
-    //   lsxforge --verify --input <converted model root>
+    // Post-conversion verification. Contract mode (design §2.4.3): an artifact
+    // MUST carry artifact.fb, and the mask it declares must still describe the
+    // bytes beside it.
+    //   lsxforge --verify --input <artifact dir>            (or the profile dir)
     if (absl::GetFlag(FLAGS_verify)) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
         const std::string target = !input_path.empty() ? input_path : output_path;
@@ -279,23 +281,60 @@ int main(int argc, char* argv[]) {
             lsxcommon::Core::Shutdown();
             return 2;
         }
-        if (std::filesystem::exists(tree / "logestix")) tree /= "logestix";
+
+        // Accept either the profile directory or a path inside it, so an
+        // operator can point at what `ls` showed them.
+        std::filesystem::path artifact_dir = tree;
+        if (!lsx::storage::IsArtifactDir(artifact_dir)) {
+            for (const auto &rel : {"logestix", "."}) {
+                const auto cand = tree / rel;
+                if (lsx::storage::IsArtifactDir(cand)) {
+                    artifact_dir = cand;
+                    break;
+                }
+            }
+        }
+        if (!lsx::storage::IsArtifactDir(artifact_dir)) {
+            lsxcommon::log::error(
+                absl::StrCat("lsxforge --verify: ", tree.string(),
+                             " is not a LogestiX artifact (no artifact.fb). "
+                             "Every artifact must carry one; convert (or "
+                             "reconvert) with `lsxforge --<family> --input <src> "
+                             "--codec-profile <bf16|nvfp4|int8-w8a16>`"));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+
+        const bool deep = std::getenv("LSX_ARROW_AUDIT_FULL") != nullptr &&
+                          std::getenv("LSX_ARROW_AUDIT_FULL")[0] == '1';
+        const auto report = lsx::storage::VerifyArtifact(artifact_dir, deep);
+        lsxcommon::log::info(absl::StrCat(
+            "artifact verify: ", artifact_dir.string(),
+            " declared_mask=", report.declared_mask,
+            " actual_mask=", report.actual_mask,
+            " deep=", deep ? 1 : 0,
+            " problems=", report.problems.size()));
+        for (const auto &msg : report.problems)
+            lsxcommon::log::error("artifact verify: " + msg);
+
+        // Keep the Arrow payload audit: the artifact can be well-declared and
+        // still hold a corrupt IPC file.
         lsxcommon::arrow_check::TreeVerifyOptions opts;
-        if (const char *f = std::getenv("LSX_ARROW_AUDIT_FULL"))
-            opts.full = f[0] == '1';
+        opts.full = deep;
         if (const char *b = std::getenv("LSX_ARROW_AUDIT_MAX_BYTES")) {
             const long long v = std::atoll(b);
             if (v > 0) opts.budget_bytes = v;
         }
-        const auto st = lsxcommon::arrow_check::VerifyArrowTree(tree, opts);
+        const auto st = lsxcommon::arrow_check::VerifyArrowTree(artifact_dir, opts);
         lsxcommon::log::info(absl::StrCat(
-            "arrow verify: ", tree.string(), " files=", st.files,
+            "arrow verify: ", artifact_dir.string(), " files=", st.files,
             " footer_ok=", st.footer_ok, " deep=", st.deep, " deep_MiB=",
             st.deep_bytes >> 20, " problems=", st.problems.size()));
         for (const auto &msg : st.problems)
             lsxcommon::log::error("arrow verify: " + msg);
+
         lsxcommon::Core::Shutdown();
-        return st.problems.empty() ? 0 : 1;
+        return (report.problems.empty() && st.problems.empty()) ? 0 : 1;
     }
 
     // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is

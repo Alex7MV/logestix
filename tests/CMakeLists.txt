@@ -2836,6 +2836,11 @@ lsx_add_test(NAME test_storage_artifact LABEL fast LINK lsxstorage)
 lsx_add_test(NAME test_storage_artifact_writer LABEL fast LINK lsxstorage
     INCLUDE "${PROJECT_SOURCE_DIR}/libs/lsxstorage/src")
 
+# ── VerifyArtifact: rules D1-D5, no-ballast, mask/digest drift ─────────────
+# Links lsxcommon too: it asserts the duplicated codec bits still match
+# hw::PlaneCodec, which is the guard on the deliberate duplication.
+lsx_add_test(NAME test_storage_verify LABEL fast LINK lsxstorage lsxcommon)
+
 # ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)
 target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)

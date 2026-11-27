@@ -26,6 +26,7 @@ add_library(lsxstorage STATIC
     src/artifact.cpp
     src/artifact_writer.cpp
     src/sha256.cpp
+    src/verify.cpp
     "${_lsx_artifact_gen_hdr}"
 )
 
@@ -42,6 +43,19 @@ target_include_directories(lsxstorage
 target_link_libraries(lsxstorage PUBLIC
     flatbuffers
     spdlog::spdlog
+)
+
+# Arrow is PRIVATE: only src/verify.cpp reads Arrow IPC files (to recover each
+# plane's dtype column), and artifact.h/artifact_writer.h expose plain structs.
+# A PUBLIC link would push Arrow's include dirs onto every consumer of
+# lsxstorage, including device TUs, for a verification-only path.
+#
+# Ruling (Task 7): verification belongs with artifact.fb, not with the model
+# layer, so lsxstorage takes the Arrow dependency rather than duplicating the
+# reader in lsxcommon. lsxcommon already links Arrow, so no binary grows.
+target_link_libraries(lsxstorage PRIVATE
+    lsx_dep_includes
+    arrow_shared
 )
 
 set_target_properties(lsxstorage PROPERTIES

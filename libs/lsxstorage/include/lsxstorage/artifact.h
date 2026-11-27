@@ -80,4 +80,26 @@ ReadResult ReadArtifactFile(const fs::path &artifact_fb);
 // ReadArtifact. This is what replaces "is there a directory named logestix?".
 bool IsArtifactDir(const fs::path &dir);
 
+// ── Verification: does the file on disk still describe the bytes beside it? ──
+//
+// Recomputes the mask from the files in the tree and compares it with what
+// artifact.fb claims, so a mask cannot drift from the content it describes.
+// Rules (design §1.3/§2.4.3):
+//   D1  a quantized weight names its codec explicitly; `U8` for a weight is a
+//       failure (it was the old ambiguous spelling of NVFP4 nibbles)
+//   D2  `*.scale`/`*.scales`/`*.global_scale` are companions: no bit of their own
+//   D3  metadata lives under role "meta" and adds no bit
+//   D4  a "meta" plane whose dtype looks like weights is a failure
+//   D5  the mask is a union, never a sum
+// Plus: every plane in the file exists, every file in the tree is a listed
+// plane (v1 ships no ballast), and every digest matches when `deep`.
+struct VerifyReport {
+    bool ok = false;
+    std::vector<std::string> problems;
+    uint64_t declared_mask = 0;
+    uint64_t actual_mask = 0;
+};
+
+VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep);
+
 } // namespace lsx::storage
