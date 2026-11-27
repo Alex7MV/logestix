@@ -244,19 +244,13 @@ bool GigaChat4Moe708BModel::Load()
         weights_.Free();
         return AbortLoad();
     }
-    if (!gigachat::InitGigaChatExpertCache(
-            cfg_.model_path, idx_.num_layers, idx_.first_k_dense_replace,
-            idx_.num_experts, idx_.num_experts_per_tok, /*slots_override=*/0,
-            stream(), expert_cache_, err))
-    {
-        log::error(absl::StrFormat("[gigachat4-708b] expert cache error: %s",
-                                   err));
-        TeardownWeights();
-        return AbortLoad();
-    }
-    // Prompt + generated tokens share the pipeline's KV/state capacity; the
-    // canonical 2048-token benchmark needs headroom for the framed prompt.
-    // The 708B pays 5.4 GB of MLA KV at this cap on a 32 GB card.
+    // ALLOCATION ORDER MATTERS at this size. The expert slot cache auto-sizes
+    // from free VRAM minus a 4 GiB reserve, which on this member is SMALLER than
+    // the session's KV: 16 MLA layers at a 4096-token cap cost 5 GiB (3 GiB of
+    // K at 64 heads x 192 lanes + 2 GiB of V), so sizing the cache first leaves
+    // the KV allocation to fail. Everything with a fixed size is therefore
+    // allocated first and the elastically sized cache last, against what is
+    // actually left.
     max_seq_ = 4096;
     if (!pipeline_.Init(weights_, dims, max_seq_, err))
     {
@@ -269,6 +263,16 @@ bool GigaChat4Moe708BModel::Load()
         cudaSuccess)
     {
         log::error("[gigachat4-708b] logits buffer allocation failed");
+        TeardownWeights();
+        return AbortLoad();
+    }
+    if (!gigachat::InitGigaChatExpertCache(
+            cfg_.model_path, idx_.num_layers, idx_.first_k_dense_replace,
+            idx_.num_experts, idx_.num_experts_per_tok, /*slots_override=*/0,
+            stream(), expert_cache_, err))
+    {
+        log::error(absl::StrFormat("[gigachat4-708b] expert cache error: %s",
+                                   err));
         TeardownWeights();
         return AbortLoad();
     }

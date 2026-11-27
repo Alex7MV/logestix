@@ -316,3 +316,40 @@ The fix direction is the one `G9` already argues for: attribute the delta to the
 process (a pool snapshot, or an alloc/free of a same-sized sentinel *inside* the
 case, so the slack belongs to the sentinel). Widening `kSlack` is explicitly not
 the answer.
+
+### I3. The DET/FSI extractors resolve a reasoning model's *preamble*, not its answer (2026-11-27, open)
+
+**Status: open — the `R21` class, now reproduced on a second row; no defect in
+the model.**
+
+`gigachat4-708b-a41b` DET-TEST-03 asks for the token `BIT_ZERO` and the model's
+raw text says `BIT_ZERO` as its final line — but `ExtractToken`
+(`libs/lsxcommon/src/det_selfcheck.cpp`) returns the **first** 2+ character
+uppercase token that is not part of a word, and the model's own reasoning
+preamble paraphrases the prompt ("*Context: **DET**-Validation-Core-03 // …*"),
+so the gate extracts `DET` and reports a red. `CutPromptEcho` is supposed to
+remove that echo first, but it searches for the prompt body's first 32 bytes
+**verbatim**; a model that paraphrases instead of echoing (this one writes
+`Context:` bullets) leaves it nothing to cut. Measured 2026-11-27 on the AOCC
+Release tree: DET 2/3, and the failing case is `deterministic=true` (3 repeats),
+so this is not sampling noise.
+
+The same row's FSI-TEST-01 is red for a sibling reason: `ExtractFsiFormula`
+selects **one line** (`SelectAnswerLine`) and the model rendered
+`PV=CF*(1-exp(-r*n))/(1-exp(-r))` as two lines. The answer is arithmetically
+identical to the golden and passes on the next process run, which is what makes
+it flaky rather than wrong.
+
+`R21` (`docs/open-tasks/live/models/tml-d24-varloop-research.md`) filed the same
+DET-03 shape on 2026-11-22 and closed it as "the extractor resolves the prompt
+echo, identically on the source and the engine". This entry exists because the
+class now has a second, independent victim and a *second* mechanism (paraphrase
+instead of echo; a wrapped expression instead of a wrong one).
+
+Fix direction, in order of blast radius: (a) `CutPromptEcho` should cut on a
+token-level overlap rather than 32 verbatim bytes; (b) `ExtractToken` should
+accept a *trailing* answer line when the reasoning preamble is present
+(`</think>` / `[COT_END]`, or a `Final …:` label); (c) `ExtractFsiFormula`
+should join a trailing `*`, `+`, `/`, `-` or `=` continuation line. None of the
+three is safe to land inside a single model ingestion: all three are shared by
+every row, so each needs its own before/after sweep over the 43 manifests.

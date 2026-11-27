@@ -135,6 +135,12 @@ const PerfModel kGigachat = {
     "The capital of France is", 2048};
 const PerfModel kGigachat4 = {
     "gigachat4-37b-a4b", "GigaChat4-37B-A4B", "The capital of France is", 2048};
+// The 708B's 386.9 GB expert set cannot live on the card: 488 expert touches
+// per token stream ~12.1 GB over PCIe, so this row measures the family's
+// host-store path rather than its compute path.
+const PerfModel kGigachat4_708B = {
+    "gigachat4-708b-a41b", "GigaChat4-708B-A41B", "The capital of France is",
+    2048};
 const PerfModel kOrnith = {
     "ornith-1.5-35b-a3b", "Ornith-1.5-35B-A3B", "The capital of France is",
     2048};
@@ -706,6 +712,11 @@ TEST_CASE("perf baseline: gigachat3.5-432b-a28b-reasoning", "[perf]")
 TEST_CASE("perf baseline: gigachat4-37b-a4b", "[perf]")
 {
     RunPerfModel(kGigachat4);
+}
+
+TEST_CASE("perf baseline: gigachat4-708b-a41b", "[perf]")
+{
+    RunPerfModel(kGigachat4_708B);
 }
 
 TEST_CASE("perf baseline: ornith-1.5-35b-a3b", "[perf]")

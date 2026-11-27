@@ -177,7 +177,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - vault `GigaChat4-708B-A41B` (override `LSX_TEST_GIGACHAT4_708B_A41B_ROOT`)
 - lifecycle TUs: `gigachat_moe_708b_model.cpp`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes
-- perf: not seeded
+- perf: 3.68 t/s (r3, 2026-11-27)
 - report: `docs/model-reports/2026-11-27-GigaChat4-708B-A41B.md`
 - notes: GigaChat4 708B-A41B: 64 layers, 61 MoE (256 experts, top-8), 16 full-attention DSA layers; the expert set streams from host RAM
 
