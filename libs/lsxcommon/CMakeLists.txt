@@ -104,6 +104,7 @@ add_library(lsxcommon STATIC
     src/code_selfcheck.cpp
     src/det_selfcheck.cpp
     src/path_registry.cpp
+    src/hardware_target.cpp
     src/prompt_framing.cpp
     src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp
@@ -1168,6 +1169,7 @@ configure_file(
 
 target_link_libraries(lsxcommon PUBLIC
     lsx_dep_includes
+    lsxstorage
     spdlog::spdlog
     flatbuffers
     libzmq-static

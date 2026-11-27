@@ -1,40 +1,28 @@
 #include "lsxcommon/path_registry.h"
 
-#include <cstdlib>
+#include "lsxstorage/roots.h"
+
 #include <filesystem>
 
 namespace lsxcommon {
 
-namespace {
-std::filesystem::path base()
-{
-    // Runtime override (LSX_MODEL_ROOT) takes precedence over the compile-time
-    // platform default so an external user can relocate the vault.
-    if (const char* env = std::getenv("LSX_MODEL_ROOT"); env && *env)
-        return std::filesystem::path(env);
-    return std::filesystem::path(kModelRootBase);
-}
-} // namespace
+// The roots themselves live in libs/lsxstorage (namespace lsx::storage), which
+// sits below this library so ModelBase::BeginLoad can read artifact.fb without a
+// dependency cycle. These three functions stay because ~40 call sites and every
+// test in the tree use them; they are forwarders, not a second implementation.
+//
+// The cache root is the one place where the string "logestix" is still a path
+// segment: it is the per-user host cache (~/.cache/logestix), unrelated to the
+// artifact layout.
 
 std::string lsx_model_models_dir()
 {
-    return base().string();
+    return lsx::storage::SourceRoot().string();
 }
 
 std::string lsx_cache_dir()
 {
-    if (const char *env = std::getenv("LSX_CACHE_DIR"); env && *env)
-        return env;
-#if defined(_WIN32)
-    if (const char *lad = std::getenv("LOCALAPPDATA"); lad && *lad)
-        return (std::filesystem::path(lad) / "logestix" / "cache").string();
-#else
-    if (const char *xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg)
-        return (std::filesystem::path(xdg) / "logestix").string();
-    if (const char *home = std::getenv("HOME"); home && *home)
-        return (std::filesystem::path(home) / ".cache" / "logestix").string();
-#endif
-    return (std::filesystem::temp_directory_path() / "logestix-cache").string();
+    return lsx::storage::CacheRoot().string();
 }
 
 std::string lsx_cache_path(const std::string& rel)
@@ -43,8 +31,7 @@ std::string lsx_cache_path(const std::string& rel)
     const char sep = std::filesystem::path::preferred_separator;
     for (char &c : norm)
         if (c == '/' || c == '\\') c = sep;
-    return (std::filesystem::path(lsx_cache_dir()) /
-            std::filesystem::path(norm)).string();
+    return (lsx::storage::CacheRoot() / std::filesystem::path(norm)).string();
 }
 
 } // namespace lsxcommon

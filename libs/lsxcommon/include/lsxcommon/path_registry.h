@@ -4,10 +4,9 @@
 
 namespace lsxcommon {
 
-// Compile-time platform selector for the model root (CC 12.0 build matrix).
-// Overridable at runtime with the LSX_MODEL_ROOT environment variable (an
-// absolute path to the models directory); when unset, the platform default
-// below is used.
+// Compile-time platform selector for the SOURCE root. Overridable at runtime
+// with LSX_SOURCE_ROOT, then LSX_MODEL_ROOT (the pre-split spelling); when both
+// are unset the platform default below is used.
 #if defined(_WIN32)
 constexpr const char* kModelRootBase = "D:\\Programs\\huggingface.co";
 #else
@@ -15,8 +14,10 @@ constexpr const char* kModelRootBase = "D:\\Programs\\huggingface.co";
 constexpr const char* kModelRootBase = "/mnt/fast_storage/huggingface";
 #endif
 
-// "<base>" — the models directory holding named checkpoints. Converted models
-// live in "<base>/<Model>/logestix/"; nothing else is written into the vault.
+// "<base>" — the read-only models directory holding named checkpoints. This is
+// the SOURCE root: converted artifacts live under LSX_ARTIFACT_ROOT, never in
+// the vault (libs/lsxstorage, design §2.4.1). Kept here because the platform
+// default is compile-time and callers include this header for it.
 std::string lsx_model_models_dir();
 
 // Per-user cache root for host-side state that is NOT part of a model

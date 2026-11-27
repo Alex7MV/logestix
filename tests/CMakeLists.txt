@@ -2817,6 +2817,14 @@ lsx_copy_arrow_dlls(test_path_registry)
 
 add_test(NAME test_path_registry COMMAND test_path_registry)
 
+# ── Hardware codec contract: PlaneCodec / HardwareTarget / the admission gate
+# Host-only; no device needed, so these stay in the parallel `fast` sweep.
+lsx_add_test(NAME test_hardware_target LABEL fast LINK lsxcommon)
+
+# ── Storage roots: source vs artifact split (invariant I5) ─────────────────
+# Links lsxstorage alone, not lsxcommon: the layer must stand on its own.
+lsx_add_test(NAME test_storage_roots LABEL fast LINK lsxstorage)
+
 # ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)
 target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)
