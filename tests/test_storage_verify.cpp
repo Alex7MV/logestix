@@ -342,3 +342,82 @@ TEST_CASE("scan of a non-directory fails instead of returning an empty tree",
     CHECK_FALSE(s.ok);
     CHECK_FALSE(s.problems.empty());
 }
+
+// ── Shape-first classification (the bug the first real conversion exposed) ──
+//
+// A DenseNvfp4 file carries a `dtype` column that holds the dtype the tensor was
+// QUANTIZED FROM ("BF16"), not the storage form. Classifying by that column
+// reports an NVFP4 plane as BF16 — which is exactly what happened: phi-4 wrote
+// 40 NVFP4 planes and artifact.fb recorded mask=2. The codec is the SCHEMA SHAPE.
+void WriteDenseNvfp4Arrow(const fs::path &path,
+                          const std::vector<std::string> &source_dtypes)
+{
+    auto name_b = std::make_shared<arrow::StringBuilder>();
+    auto shape_b = std::make_shared<arrow::StringBuilder>();
+    auto dtype_b = std::make_shared<arrow::StringBuilder>();
+    auto packed_b = std::make_shared<arrow::BinaryBuilder>();
+    auto scales_b = std::make_shared<arrow::BinaryBuilder>();
+    auto gscale_b = std::make_shared<arrow::FloatBuilder>();
+
+    for (const auto &dt : source_dtypes) {
+        REQUIRE(name_b->Append("w").ok());
+        REQUIRE(shape_b->Append("[2]").ok());
+        REQUIRE(dtype_b->Append(dt).ok());          // the SOURCE dtype
+        REQUIRE(packed_b->Append("pp", 2).ok());    // E2M1 nibbles
+        REQUIRE(scales_b->Append("s", 1).ok());     // UE4M3 block scales
+        REQUIRE(gscale_b->Append(1.0f).ok());
+    }
+    std::shared_ptr<arrow::Array> n, s, d, p, sc, g;
+    REQUIRE(name_b->Finish(&n).ok());
+    REQUIRE(shape_b->Finish(&s).ok());
+    REQUIRE(dtype_b->Finish(&d).ok());
+    REQUIRE(packed_b->Finish(&p).ok());
+    REQUIRE(scales_b->Finish(&sc).ok());
+    REQUIRE(gscale_b->Finish(&g).ok());
+
+    auto schema = arrow::schema(
+        {arrow::field("name", arrow::utf8()), arrow::field("shape", arrow::utf8()),
+         arrow::field("dtype", arrow::utf8()), arrow::field("packed", arrow::binary()),
+         arrow::field("scales", arrow::binary()),
+         arrow::field("global_scale", arrow::float32())});
+    auto batch = arrow::RecordBatch::Make(schema, n->length(), {n, s, d, p, sc, g});
+
+    fs::create_directories(path.parent_path());
+    auto out_res = arrow::io::FileOutputStream::Open(path.string());
+    REQUIRE(out_res.ok());
+    auto out = *out_res;
+    auto writer_res = arrow::ipc::MakeFileWriter(out.get(), schema);
+    REQUIRE(writer_res.ok());
+    auto writer = *writer_res;
+    REQUIRE(writer->WriteRecordBatch(*batch).ok());
+    REQUIRE(writer->Close().ok());
+    REQUIRE(out->Close().ok());
+}
+
+TEST_CASE("a DenseNvfp4 plane is NVFP4 even though its dtype column says BF16",
+          "[storage_verify][shape]") {
+    TempDir d;
+    auto spec = BaseSpec(d.path());
+    // Exactly phi-4's layout: a 6-column packed file whose dtype says BF16.
+    WriteDenseNvfp4Arrow(d.path() / "pinned" / "layer_0_nvfp4.arrow", {"BF16"});
+    spec.planes.push_back({"dense.nvfp4", kNvFp4, "pinned/layer_0_nvfp4.arrow", 3});
+    REQUIRE(EmitArtifact(spec, d.path(), nullptr) != 0);
+
+    const auto r = VerifyArtifact(d.path(), false);
+    for (const auto &p : r.problems) INFO(p);
+    CHECK(r.ok);
+    CHECK((r.actual_mask & kNvFp4) != 0);
+}
+
+TEST_CASE("the scan reports NVFP4 for a packed plane, not the source dtype",
+          "[storage_verify][shape]") {
+    // The same defect on the converter side: a scan that trusted dtype would
+    // declare a bf16 artifact for a tree full of NVFP4 nibbles.
+    TempDir d;
+    BaseSpec(d.path());
+    WriteDenseNvfp4Arrow(d.path() / "pinned" / "layer_0_nvfp4.arrow", {"BF16", "F32"});
+    const auto s = ScanArtifactTree(d.path());
+    for (const auto &p : s.problems) INFO(p);
+    REQUIRE(s.ok);
+    CHECK((s.mask & kNvFp4) != 0);
+}

@@ -25,13 +25,18 @@ namespace {
 
 std::string BuildPinnedTokenizerDir(const std::string &fixture_name)
 {
-    auto pinned = fs::temp_directory_path() / ("modelbase_" + fixture_name) / "pinned";
-    fs::remove_all(pinned.parent_path().parent_path());
+    // The model root is named explicitly rather than recovered by counting
+    // `parent_path()` calls: that count is silently wrong the moment the tree
+    // gains or loses a level (a `/ "logestix"` segment once lived here), and
+    // getting it wrong made the cleanup target `temp_directory_path()` itself.
+    const auto root = fs::temp_directory_path() / ("modelbase_" + fixture_name);
+    const auto pinned = root / "pinned";
+    fs::remove_all(root);
     fs::create_directories(pinned);
     REQUIRE(lsxcommon::BuildTokenizerArrowFiles(
                 TOKENIZER_TEST_DATA_DIR "/" + fixture_name, pinned)
                 .ok());
-    return pinned.parent_path().parent_path().string();
+    return root.string();
 }
 
 class FakeModel : public lsxcommon::ModelBase {
