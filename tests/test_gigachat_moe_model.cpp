@@ -27,6 +27,11 @@ TEST_CASE("gigachat model loads a synthetic converted fixture",
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     GigaChat35Model m(cfg);
     REQUIRE(m.Load());
     CHECK(m.IndexForTest().num_layers == 2);
@@ -61,6 +66,11 @@ TEST_CASE("gigachat honours cooperative cancel", "[gigachat][model][lifecycle]")
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     GigaChat35Model m(cfg);
     REQUIRE(m.Load());
 
@@ -111,6 +121,11 @@ TEST_CASE("gigachat factory resolves the kType", "[gigachat][model]")
     ModelInitConfig cfg;
     cfg.model_type = GigaChat35Model::kType;
     cfg.model_path = "/nonexistent";
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     auto m = LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
     CHECK(m->Type() == "gigachat3.5-432b-a28b-reasoning");

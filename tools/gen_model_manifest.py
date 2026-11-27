@@ -616,7 +616,7 @@ _NON_MODEL_TESTS = frozenset({
     # tests. They are registered in tests/CMakeLists.txt and apps/lsxforge/tests
     # and belong to no model's stage list.
     "test_hardware_target", "test_storage_roots", "test_storage_artifact",
-    "test_storage_artifact_writer", "test_storage_verify",
+    "test_storage_artifact_writer", "test_storage_verify", "test_load_codec_gate",
 })
 
 

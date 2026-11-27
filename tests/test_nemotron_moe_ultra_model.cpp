@@ -180,6 +180,11 @@ TEST_CASE("ultra Load+Infer on the synthetic tree generate two tokens",
     const auto tree = ConvertedFixture("nu_infer");
     ModelInitConfig cfg;
     cfg.model_path = tree.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronUltra550BModel::kType;
     auto model = std::make_unique<NemotronUltra550BModel>(cfg);
     REQUIRE(model != nullptr);

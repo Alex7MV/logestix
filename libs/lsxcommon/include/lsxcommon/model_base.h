@@ -7,8 +7,10 @@
 #include <string>
 #include <utility>
 
+#include "lsxcommon/hardware_target.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/resource_governor.h"
+#include "lsxstorage/artifact.h"
 #include "lsxcommon/synthetic_geometry.h"
 #include "lsxcommon/tokenizer.h"
 
@@ -30,11 +32,34 @@ public:
 
     ModelInitConfig cfg_;
     std::unique_ptr<ArrowTokenizerDb> tok_db_;
+    // Cleared by Unload/AbortLoad: a stale artifact must not outlive the weights
+    // it describes, or a second Load with a different profile would read the old
+    // per-layer map.
+    std::unique_ptr<lsx::storage::ArtifactInfo> artifact_;
     bool loaded_ = false;
     bool tokenizer_optional_ = false;  // Qwen: warn+continue when arrows absent
 
     bool LoadTokenizerDb(const std::string &model_path);
     bool ValidateInferRequest(const ModelRequest &req, gpu::InferenceResult &r);
+
+    // ── Hardware codec gate (invariant I3) ─────────────────────────────────
+    // Populated by BeginLoad once the gate has passed; nullptr until then.
+    // The six families that pick a kernel PER LAYER read this instead of the
+    // codec fields model.index.json used to carry (design §2.4.6).
+    const lsx::storage::ArtifactInfo *artifact() const { return artifact_.get(); }
+
+    // True when this artifact declares `codec` for `layer`. Out-of-range or a
+    // layer with no declared codec returns false, so a caller keeps its
+    // existing hard failure instead of silently picking a kernel.
+    bool LayerUsesCodec(int layer, hw::PlaneCodec codec) const;
+
+    // The target this process runs on (probed once). Exposed for log lines.
+    hw::HardwareTarget ActiveTargetForLog() const { return hw::ActiveTarget(); }
+
+    // Test seam: does the gate accept this artifact on this target? Runs the
+    // same code path as BeginLoad without touching the filesystem twice.
+    bool CodecGateAllows(const lsx::storage::ArtifactInfo &info,
+                         const hw::HardwareTarget &target, std::string *why) const;
 
     ArrowTokenizerDb &Tokenizer() override { return *tok_db_; }
 

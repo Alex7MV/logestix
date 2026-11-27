@@ -300,7 +300,7 @@ TEST_CASE("scan derives the mask and plane list from a tree with no artifact.fb"
     REQUIRE_FALSE(IsArtifactDir(d.path()));
 
     const auto s = ScanArtifactTree(d.path());
-    INFO(s.problems.empty() ? "" : s.problems[0]);
+    for (const auto &p : s.problems) INFO(p);
     REQUIRE(s.ok);
     CHECK((s.mask & kBF16) != 0);
     CHECK((s.mask & kF32) != 0);

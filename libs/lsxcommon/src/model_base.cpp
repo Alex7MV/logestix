@@ -12,6 +12,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/tokenizer_arrows.h"
+#include "lsxstorage/resolve.h"
 
 namespace lsxcommon {
 
@@ -32,6 +33,7 @@ void ModelBase::Unload()
     permanent_lease_ = {};
     expert_cache_lease_ = {};
     tok_db_.reset();
+    artifact_.reset();   // a stale per-layer map must not outlive the weights
     loaded_ = false;
     resident_bytes_ = 0;
 }
@@ -46,6 +48,7 @@ bool ModelBase::AbortLoad()
     permanent_lease_ = {};
     expert_cache_lease_ = {};
     tok_db_.reset();
+    artifact_.reset();
     loaded_ = false;
     resident_bytes_ = 0;
     return false;
@@ -101,6 +104,25 @@ bool ModelBase::LoadTokenizerDb(const std::string &model_path)
     return true;
 }
 
+bool ModelBase::CodecGateAllows(const lsx::storage::ArtifactInfo &info,
+                                const hw::HardwareTarget &target,
+                                std::string *why) const
+{
+    const auto decision = hw::CheckCodecs(info.used_codecs, target);
+    if (!decision.allowed && why != nullptr) *why = decision.message;
+    return decision.allowed;
+}
+
+bool ModelBase::LayerUsesCodec(int layer, hw::PlaneCodec codec) const
+{
+    if (!artifact_) return false;
+    if (layer < 0 ||
+        static_cast<size_t>(layer) >= artifact_->layer_codec.size())
+        return false;
+    return (artifact_->layer_codec[static_cast<size_t>(layer)] &
+            hw::Mask(codec)) != 0;
+}
+
 bool ModelBase::BeginLoad(const std::string &model_path)
 {
     if (loaded_) return true;
@@ -108,7 +130,78 @@ bool ModelBase::BeginLoad(const std::string &model_path)
         log::error("[model] empty model_path");
         return false;
     }
-    return LoadTokenizerDb(model_path);
+
+    // Synthetic fixtures (unit tests) build their own Arrow files and have no
+    // artifact.fb. This is an explicit opt-in field, not a fallback: nothing a
+    // production binary can set reaches the gate.
+    if (cfg_.synthetic) {
+        log::warn("[load] synthetic model: storage resolve and codec gate "
+                  "skipped by ModelInitConfig::synthetic");
+        return LoadTokenizerDb(model_path);
+    }
+
+    // ── (1) RESOLVE: source dir / bare name / artifact dir -> artifact dir ──
+    const auto resolved = lsx::storage::Resolve(model_path);
+    if (resolved.status != lsx::storage::ResolveStatus::kArtifact) {
+        log::error(absl::StrFormat(
+            "[load] %s is not a LogestiX artifact (%s). %s", model_path,
+            lsx::storage::ResolveStatusName(resolved.status),
+            resolved.detail.empty() ? "convert it with lsxforge" : resolved.detail));
+        return false;
+    }
+
+    // ── (2) DECLARE: artifact.fb is mandatory; no inference, no fallback ────
+    auto read = lsx::storage::ReadArtifact(resolved.dir);
+    if (read.status != lsx::storage::ReadStatus::kOk) {
+        log::error(absl::StrFormat(
+            "[load] %s has no usable artifact.fb (%s): %s",
+            resolved.dir.string(), lsx::storage::ReadStatusName(read.status),
+            read.detail));
+        return false;
+    }
+
+    // ── (3) GATE: invariant I3, a pure function, no hardware call ───────────
+    const auto &target = hw::ActiveTarget();
+    std::string why;
+    if (!CodecGateAllows(read.info, target, &why)) {
+        log::error(absl::StrFormat(
+            "[load] %s (profile %s) is refused on %s: %s",
+            read.info.model_type.c_str(), read.info.profile.c_str(),
+            target.Id().c_str(), why.c_str()));
+        // Name the alternative so the operator does not have to guess: another
+        // profile of the SAME model may be exactly what this device can run.
+        const auto alternatives =
+            lsx::storage::ListProfiles(read.info.family, read.info.model_type);
+        std::string usable;
+        for (const auto &alt : alternatives) {
+            const auto alt_read = lsx::storage::ReadArtifact(alt.dir);
+            if (alt_read.status != lsx::storage::ReadStatus::kOk) continue;
+            if (!CodecGateAllows(alt_read.info, target, nullptr)) continue;
+            if (!usable.empty()) usable += ", ";
+            usable += alt.profile;
+        }
+        if (!usable.empty())
+            log::error("[load] profiles of this model this device CAN run: " +
+                       usable);
+        else
+            log::error("[load] no profile of '" + read.info.model_type +
+                       "' is runnable on '" + target.Id() +
+                       "'; reconvert with a compatible --codec-profile");
+        return false;
+    }
+
+    log::info(absl::StrFormat("[load] %s profile=%s codecs=%s target=%s",
+                              read.info.model_type.c_str(),
+                              read.info.profile.c_str(),
+                              hw::FormatMask(read.info.used_codecs).c_str(),
+                              target.Id().c_str()));
+
+    // ── (4) REBIND: only after the gate passes, so a refused model never has
+    // a mutated config. Every loader joins content subtrees off cfg_.model_path.
+    artifact_ = std::make_unique<lsx::storage::ArtifactInfo>(std::move(read.info));
+    cfg_.model_path = resolved.dir.string();
+
+    return LoadTokenizerDb(cfg_.model_path);
 }
 
 SafetensorsModel ModelBase::Inspect()

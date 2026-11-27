@@ -49,6 +49,17 @@ struct ModelInitConfig {
     // the decision stays revisable - but it is a decision, not an inherited
     // default. Do not flip this per family without an end-to-end measurement.
     KvCacheLayout kv_cache_layout = KvCacheLayout::kPosMajor;
+
+    // Synthetic fixture models (unit tests that build their own Arrow files)
+    // have no artifact.fb and are exempt from the storage resolve + codec gate.
+    // An explicit field rather than an env var or a silent fallback: the gate
+    // must not be bypassable by anything a production binary can set.
+    //
+    // Declared LAST on purpose: ModelInitConfig is brace-initialised
+    // positionally in several TUs, so a field inserted in the middle silently
+    // rebinds every later argument (that is exactly what happened when this was
+    // placed after model_path).
+    bool synthetic = false;
 };
 
 // Effective routing mode: the legacy bool wins (true -> kOn); otherwise the

@@ -86,6 +86,11 @@ TEST_CASE("nemotron Load accepts a synthetic converted model", "[nemotron][model
 
     ModelInitConfig cfg;
     cfg.model_path = dst.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronHModel::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -134,6 +139,11 @@ TEST_CASE("nemotron Load rejects a tree built for the other distribution",
 
     ModelInitConfig cfg;
     cfg.model_path = dst.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronHModel::kType;
     NemotronHModel model(cfg);
     CHECK_FALSE(model.Load());
@@ -152,6 +162,11 @@ TEST_CASE("nemotron Infer runs the hybrid pipeline end-to-end on a tiny model",
 
     ModelInitConfig cfg;
     cfg.model_path = dst.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronHModel::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -184,6 +199,11 @@ TEST_CASE("nemotron honours cooperative cancel",
 
     ModelInitConfig cfg;
     cfg.model_path = dst.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronHModel::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -204,6 +224,11 @@ TEST_CASE("nemotron Load rejects a frozen-geometry mismatch", "[nemotron][model]
 
     ModelInitConfig cfg;
     cfg.model_path = root.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
     cfg.model_type = NemotronHModel::kType;
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
@@ -229,6 +254,11 @@ TEST_CASE("nemotron expert LRU stays bit-identical under slot eviction",
         SetEnv("LSX_NEMOTRON_EXPERT_CACHE_SLOTS", slots_env);
         ModelInitConfig cfg;
         cfg.model_path = dst.string();
+    // Fixture: this tree was built by the family converter into a temp
+    // directory, so it predates artifact.fb. The storage resolve and the
+    // codec gate are skipped explicitly; the gate itself is covered by
+    // tests/test_load_codec_gate.cpp.
+    cfg.synthetic = true;
         cfg.model_type = NemotronHModel::kType;
         auto model = LsxModelFactory::Create(cfg);
         REQUIRE(model != nullptr);

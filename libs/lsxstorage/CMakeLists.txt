@@ -27,6 +27,7 @@ add_library(lsxstorage STATIC
     src/artifact_writer.cpp
     src/sha256.cpp
     src/verify.cpp
+    src/resolve.cpp
     "${_lsx_artifact_gen_hdr}"
 )
 

@@ -2764,6 +2764,10 @@ target_include_directories(test_glm_moe_model_lifecycle_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    # This object lib spells lsxcommon's include dirs by hand rather than
+    # linking the target, so it does not inherit lsxstorage's PUBLIC dir, and
+    # model_base.h now reaches lsxstorage/artifact.h.
+    "${PROJECT_SOURCE_DIR}/libs/lsxstorage/include"
 )
 target_compile_definitions(test_glm_moe_model_lifecycle_cu PRIVATE
     LOGESTIX_HAS_CUDA
@@ -2840,6 +2844,11 @@ lsx_add_test(NAME test_storage_artifact_writer LABEL fast LINK lsxstorage
 # Links lsxcommon too: it asserts the duplicated codec bits still match
 # hw::PlaneCodec, which is the guard on the deliberate duplication.
 lsx_add_test(NAME test_storage_verify LABEL fast LINK lsxstorage lsxcommon)
+
+# ── The I3 admission gate in ModelBase::BeginLoad ─────────────────────────
+# Host-only: the gate is a pure function of the declared mask and the active
+# target, and the target is injectable for tests.
+lsx_add_test(NAME test_load_codec_gate LABEL fast LINK lsxcommon lsxstorage)
 
 # ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)
