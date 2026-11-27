@@ -285,3 +285,60 @@ TEST_CASE("the verifier's codec bits match lsxcommon's enum", "[storage_verify]"
     CHECK(kMxFp8 == Mask(PlaneCodec::kMxFp8));
     CHECK(kNvFp4 == Mask(PlaneCodec::kNvFp4));
 }
+
+// ── ScanArtifactTree: the converter-side half of the contract ─────────────
+//
+// The forge path has no hand-written plane table per family, so it scans what
+// the converter wrote and derives the planes from the bytes. The profile then
+// cross-checks: two different inputs, so agreement means something.
+
+TEST_CASE("scan derives the mask and plane list from a tree with no artifact.fb",
+          "[storage_verify][scan]") {
+    TempDir d;
+    BaseSpec(d.path());   // writes pinned/layer_0.arrow (BF16) + layer_1.arrow (F32)
+    // The scan runs BEFORE the emitter, so there is deliberately no artifact.fb.
+    REQUIRE_FALSE(IsArtifactDir(d.path()));
+
+    const auto s = ScanArtifactTree(d.path());
+    INFO(s.problems.empty() ? "" : s.problems[0]);
+    REQUIRE(s.ok);
+    CHECK((s.mask & kBF16) != 0);
+    CHECK((s.mask & kF32) != 0);
+    CHECK((s.mask & kNvFp4) == 0);
+    CHECK(s.layer_count == 2);
+    REQUIRE_FALSE(s.planes.empty());
+    for (const auto &p : s.planes) CHECK(p.has_digest);
+}
+
+TEST_CASE("scan refuses a U8 weight spelling before the emitter sees it",
+          "[storage_verify][scan]") {
+    TempDir d;
+    BaseSpec(d.path());
+    WritePinnedArrow(d.path() / "pinned" / "layer_2.arrow",
+                     {{"mlp.down.weight.packed", "U8"}});
+    const auto s = ScanArtifactTree(d.path());
+    REQUIRE_FALSE(s.ok);
+    bool named = false;
+    for (const auto &p : s.problems)
+        if (p.find("U8") != std::string::npos) named = true;
+    CHECK(named);
+}
+
+TEST_CASE("scan refuses a file the load path cannot reach", "[storage_verify][scan]") {
+    TempDir d;
+    BaseSpec(d.path());
+    WritePinnedArrow(d.path() / "mtp" / "layer_032.arrow", {{"x", "F8_E4M3"}});
+    const auto s = ScanArtifactTree(d.path());
+    REQUIRE_FALSE(s.ok);
+    bool named = false;
+    for (const auto &p : s.problems)
+        if (p.find("mtp/") != std::string::npos) named = true;
+    CHECK(named);
+}
+
+TEST_CASE("scan of a non-directory fails instead of returning an empty tree",
+          "[storage_verify][scan]") {
+    const auto s = ScanArtifactTree(fs::path("/nonexistent-artifact-root"));
+    CHECK_FALSE(s.ok);
+    CHECK_FALSE(s.problems.empty());
+}

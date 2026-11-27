@@ -94,6 +94,11 @@ const std::set<std::string> kMmapOpenAllowed = {
     "libs/lsxcommon/src/shared_experts.cu",
     "libs/lsxcommon/src/deepseek_moe_load.cu",
     "libs/lsxcommon/src/deepseek_moe_pro_load.cu",
+    // artifact verification: reads the `dtype`/`name` columns of each plane to
+    // recover which codec the bytes actually are, so it must open the IPC files
+    // the same way the loaders do. Verification only — the runtime never infers
+    // a codec there.
+    "libs/lsxstorage/src/verify.cpp",
 };
 
 // R-A2 verdict per file that calls an owning *Schema::UnpackBatch.

@@ -45,15 +45,15 @@ target_link_libraries(lsxstorage PUBLIC
     spdlog::spdlog
 )
 
-# Arrow is PRIVATE: only src/verify.cpp reads Arrow IPC files (to recover each
-# plane's dtype column), and artifact.h/artifact_writer.h expose plain structs.
-# A PUBLIC link would push Arrow's include dirs onto every consumer of
-# lsxstorage, including device TUs, for a verification-only path.
+# Arrow is needed by src/verify.cpp only, but the link must be PUBLIC: lsxstorage
+# is a STATIC library, so a PRIVATE dependency does not reach the consumers that
+# actually resolve the symbols (they failed to link with `undefined reference to
+# arrow::...` from libarrow_cuda.so until this was public).
 #
-# Ruling (Task 7): verification belongs with artifact.fb, not with the model
-# layer, so lsxstorage takes the Arrow dependency rather than duplicating the
-# reader in lsxcommon. lsxcommon already links Arrow, so no binary grows.
-target_link_libraries(lsxstorage PRIVATE
+# The headers stay Arrow-free — artifact.h/artifact_writer.h expose plain
+# structs — so a device TU that reaches lsxstorage gets an include dir it does
+# not use, not a compile-time dependency on Arrow.
+target_link_libraries(lsxstorage PUBLIC
     lsx_dep_includes
     arrow_shared
 )

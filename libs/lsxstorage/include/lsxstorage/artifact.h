@@ -102,4 +102,28 @@ struct VerifyReport {
 
 VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep);
 
+// ── Scanning a freshly converted tree (converter side) ─────────────────────
+//
+// The forge path cannot carry a hand-written plane table per family (40
+// pipelines, each with its own subtrees), so it SCANS what the converter wrote
+// and derives the plane list from the bytes: the same classification the
+// verifier uses, pointed at a tree that has no artifact.fb yet.
+//
+// The profile then acts as a cross-check rather than as the source of truth:
+// the converter declares which codecs it MEANT to write, the scan reports which
+// it DID write, and a disagreement fails the conversion. That is a real check —
+// the two sides are computed from different inputs — instead of a restatement.
+struct ScanReport {
+    bool ok = false;
+    std::vector<std::string> problems;
+    std::vector<PlaneInfo> planes;  // ready to hand to EmitArtifact
+    uint64_t mask = 0;
+    // Physical layer count derived from the tree (highest layer_N index + 1),
+    // so the caller does not have to re-parse model.index.json. 0 when no
+    // per-layer file naming can be recovered.
+    int layer_count = 0;
+};
+
+ScanReport ScanArtifactTree(const fs::path &tree_root);
+
 } // namespace lsx::storage

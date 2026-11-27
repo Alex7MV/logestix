@@ -18,6 +18,8 @@
 #include <arrow/ipc/reader.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <array>
 #include <filesystem>
 #include <map>
@@ -282,6 +284,174 @@ VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep)
 
     report.ok = report.problems.empty();
     return report;
+}
+
+// ── Scan a freshly converted tree ──────────────────────────────────────────
+//
+// Same classification as the verifier, pointed at a tree with no artifact.fb
+// yet. The point is that the emitter's plane list and the converter's intent
+// are computed from DIFFERENT inputs — one from the bytes, one from the
+// profile — so comparing them is a real check rather than a restatement.
+ScanReport ScanArtifactTree(const fs::path &tree_root)
+{
+    ScanReport out;
+
+    if (!fs::is_directory(tree_root)) {
+        out.problems.push_back("not a directory: " + tree_root.string());
+        return out;
+    }
+
+    std::set<std::string> sidecars = {"artifact.fb", "model.index.json",
+                                      "chat_template.jinja", "tokenizer.json",
+                                      "artifact.fb.tmp"};
+    std::map<std::string, uint64_t> per_file_mask;  // rel path -> OR of codecs
+    std::map<std::string, std::string> per_file_role;
+
+    std::error_code ec;
+    for (const auto &entry : fs::recursive_directory_iterator(tree_root, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        const auto rel = fs::relative(entry.path(), tree_root).generic_string();
+        if (sidecars.count(rel) != 0) continue;
+
+        const auto top = rel.substr(0, rel.find('/'));
+        if (ContentDirs().count(top) == 0) {
+            out.problems.push_back(
+                "converted tree holds a file the load path cannot reach: " + rel +
+                " (v1 ships no ballast: an unreachable plane is not written)");
+            continue;
+        }
+
+        // Tokenizer arrows are planes in their own right (the loader mmaps
+        // them), but they carry no codec of their own — they are uint8 payload
+        // tables — so they are recorded under role "meta".
+        const bool is_tokenizer = rel.find("tokenizer") != std::string::npos;
+        if (is_tokenizer) {
+            per_file_role[rel] = "meta";
+            continue;
+        }
+
+        if (!EndsWith(rel, ".arrow")) {
+            per_file_role[rel] = "meta";
+            continue;
+        }
+
+        FileFacts facts;
+        std::string ferr;
+        if (!ReadFileFacts(entry.path(), &facts, &ferr)) {
+            out.problems.push_back("cannot read " + rel + ": " + ferr);
+            continue;
+        }
+
+        uint64_t mask = 0;
+        if (!facts.has_dtype_column) {
+            // A schema-implied codec (9-column ExpertSchema, 6-column
+            // DenseNvfp4Schema). The converter's own index tells the family;
+            // absent that, treat it as an expert plane and let the verifier
+            // catch a lie.
+            per_file_role[rel] = "expert.routed";
+            mask = kNvFp4;
+        } else {
+            bool any_weight = false;
+            for (size_t i = 0; i < facts.dtypes.size(); ++i) {
+                const auto &dtype = facts.dtypes[i];
+                const std::string name =
+                    i < facts.names.size() ? facts.names[i] : std::string{};
+                if (IsCompanionName(name)) continue;
+                if (dtype == "U8") {
+                    out.problems.push_back(
+                        "converter wrote " + rel + " with dtype U8 for '" + name +
+                        "'; rule D1 requires the codec to be named "
+                        "(NVFP4/F8_E4M3/I8/BF16/F32)");
+                    continue;
+                }
+                const uint64_t bit = CodecForDtype(dtype);
+                if (bit != 0 && !StartsWith(name, "indices")) {
+                    mask |= bit;
+                    any_weight = true;
+                }
+            }
+            per_file_role[rel] = any_weight ? "dense" : "meta";
+        }
+        per_file_mask[rel] = mask;
+    }
+
+    // Build the plane list: one entry per file, skipping pure-metadata files
+    // that hold no codec evidence at all (nothing to declare).
+    for (const auto &[rel, mask] : per_file_mask) {
+        PlaneInfo plane;
+        plane.codec_bit = mask;
+        plane.role = per_file_role[rel];
+        plane.path = rel;
+        std::error_code size_ec;
+        plane.bytes = fs::file_size(tree_root / rel, size_ec);
+        std::string herr;
+        const auto d = Sha256::OfFile((tree_root / rel).string(), &herr);
+        if (!herr.empty()) {
+            out.problems.push_back(herr);
+            continue;
+        }
+        plane.sha256 = d;
+        plane.has_digest = true;
+        out.mask |= mask;
+        out.planes.push_back(std::move(plane));
+    }
+    for (const auto &[rel, role] : per_file_role) {
+        if (role != "meta" || per_file_mask.count(rel) != 0) continue;
+        // A tokenizer/sidecar arrow: declare it with no codec so the verifier
+        // can see it is accounted for.
+        PlaneInfo plane;
+        plane.codec_bit = 0;
+        plane.role = "meta";
+        plane.path = rel;
+        std::error_code size_ec;
+        plane.bytes = fs::file_size(tree_root / rel, size_ec);
+        std::string herr;
+        const auto d = Sha256::OfFile((tree_root / rel).string(), &herr);
+        if (!herr.empty()) {
+            out.problems.push_back(herr);
+            continue;
+        }
+        plane.sha256 = d;
+        plane.has_digest = true;
+        out.planes.push_back(std::move(plane));
+    }
+
+    // Recover the layer count from the file naming the converters use
+    // (`layer_<n>.arrow`, `layer_<nnn>.arrow`, `exp_<n>.arrow` inside
+    // `layer_<n>/`). A tree with no per-layer naming reports 0 and the caller
+    // says so rather than inventing one.
+    std::error_code name_ec;
+    for (const auto &[rel, mask] : per_file_mask) {
+        (void)mask;
+        const auto file = fs::path(rel).filename().string();
+        std::string digits;
+        const auto us = file.rfind('_');
+        if (us != std::string::npos) {
+            for (size_t i = us + 1; i < file.size() && std::isdigit(
+                     static_cast<unsigned char>(file[i])); ++i)
+                digits.push_back(file[i]);
+        }
+        if (!digits.empty()) {
+            const int idx = std::atoi(digits.c_str());
+            out.layer_count = std::max(out.layer_count, idx + 1);
+        }
+        // experts/layer_<n>/exp_<m>.arrow
+        const auto parent = fs::path(rel).parent_path().filename().string();
+        const auto pus = parent.rfind('_');
+        if (pus != std::string::npos) {
+            std::string pd;
+            for (size_t i = pus + 1; i < parent.size() &&
+                 std::isdigit(static_cast<unsigned char>(parent[i])); ++i)
+                pd.push_back(parent[i]);
+            if (!pd.empty())
+                out.layer_count = std::max(out.layer_count, std::atoi(pd.c_str()) + 1);
+        }
+        (void)name_ec;
+    }
+
+    out.ok = out.problems.empty();
+    return out;
 }
 
 } // namespace lsx::storage

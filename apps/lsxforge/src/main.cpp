@@ -1,6 +1,10 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/arrow_tree_verify.h"
+#include "lsxcommon/hardware_target.h"
 #include "lsxstorage/artifact.h"
+#include "lsxstorage/artifact_writer.h"
+#include "lsxstorage/roots.h"
+#include "codec_profiles.h"
 #include "lsxcommon/glm_moe_flash_convert.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
@@ -78,6 +82,10 @@ ABSL_FLAG(std::string, output, "converted_model", "output directory");
 ABSL_FLAG(bool, verify, false,
           "verify the Arrow artifacts of --input (or --output) and exit; "
           "post-conversion step (LSX_ARROW_AUDIT_{FULL,MAX_BYTES} apply)");
+ABSL_FLAG(std::string, codec_profile, "",
+          "native codec profile to produce: bf16 | nvfp4 | int8-w8a16. Every "
+          "artifact writes artifact.fb declaring the codecs it uses; empty "
+          "keeps the family's historical layout.");
 ABSL_FLAG(bool, repack_shared, false, "re-pack shared experts into shared_experts.arrow");
 ABSL_FLAG(bool, repack_experts, false, "re-pack routed experts (fp4 passthrough)");
 ABSL_FLAG(std::string, tokenizer, "", "build tokenizer Arrow files from tokenizer.json");
@@ -211,6 +219,14 @@ int main(int argc, char* argv[]) {
     // Canonicalize the generation-path flag (-r/--run, bare -> default prompt)
     // before absl::ParseCommandLine consumes argv.
     auto normalized = lsxcommon::cli::NormalizeGenerationArgv(argc, argv);
+    // absl only spells flags with underscores, but the documented interface is
+    // `--codec-profile` (the codec-profile contract, design §2.6). Accept both
+    // rather than make the design document wrong.
+    for (auto &arg : normalized) {
+        if (arg.rfind("--codec-profile", 0) == 0)
+            arg.replace(0, std::strlen("--codec-profile"),
+                        "--codec_profile");
+    }
     std::vector<char*> argv_ptrs;
     argv_ptrs.reserve(normalized.size());
     for (auto& arg : normalized) argv_ptrs.push_back(arg.data());
@@ -418,6 +434,45 @@ int main(int argc, char* argv[]) {
     lsxcommon::version();
     lsxcommon::log_gpu_info();
 
+    // ── Codec profile ──────────────────────────────────────────────────────
+    // Resolved and validated BEFORE any conversion work: an unknown profile, or
+    // one this build cannot yet produce (int8-w8a16 has no quantizer), must
+    // fail before gigabytes are read, not after.
+    lsxforge::CodecProfile codec_profile = lsxforge::CodecProfile::kDefault;
+    {
+        const std::string raw = absl::GetFlag(FLAGS_codec_profile);
+        if (!raw.empty()) {
+            if (!lsxforge::ParseCodecProfile(raw, &codec_profile)) {
+                lsxcommon::log::error(
+                    absl::StrCat("--codec-profile '", raw,
+                                 "' is not a profile this build knows "
+                                 "(bf16 | nvfp4 | int8-w8a16)"));
+                lsxcommon::Core::Shutdown();
+                return 2;
+            }
+            if (lsxforge::DeclaredPlanes(codec_profile,
+                                         lsxforge::PipelineKind::kDense, 1)
+                    .empty()) {
+                lsxcommon::log::error(
+                    absl::StrCat("--codec-profile ", raw,
+                                 " is not implemented yet (no quantizer or "
+                                 "kernel for it); nothing was converted"));
+                lsxcommon::Core::Shutdown();
+                return 2;
+            }
+        }
+        if (codec_profile != lsxforge::CodecProfile::kDefault) {
+            if (!lsx::storage::ArtifactRoot().has_value()) {
+                lsxcommon::log::error(
+                    "--codec-profile requires LSX_ARTIFACT_ROOT (an absolute "
+                    "path): an artifact must never be written into the "
+                    "read-only source vault");
+                lsxcommon::Core::Shutdown();
+                return 2;
+            }
+        }
+    }
+
     // Generation path execution option. Resolved prompt (or the default
     // blueprint prompt) is encoded through the model tokenizer and handed to
     // the single end-to-end cudaStream_t Prefill->Decode autogeneration loop.
@@ -432,6 +487,99 @@ int main(int argc, char* argv[]) {
     }
 
     lsxcommon::log::info(absl::StrFormat("Converting model: %s -> %s", input_path, output_path));
+
+    // Every conversion branch returns through here, so the artifact emitter
+    // runs exactly once, only on success, instead of at 40 separate `return 0`
+    // sites that would each have to remember it.
+    //
+    // A tree without artifact.fb is NOT a product (design §0.2): if the emitter
+    // fails, the conversion fails, and the exit code says so.
+    const auto finish = [&](int rc) {
+        if (rc != 0) {
+            lsxcommon::Core::Shutdown();
+            return rc;
+        }
+        if (codec_profile == lsxforge::CodecProfile::kDefault) {
+            lsxcommon::Core::Shutdown();
+            return 0;
+        }
+        std::string err;
+        const auto scan = lsx::storage::ScanArtifactTree(output_path);
+        if (!scan.ok) {
+            for (const auto &msg : scan.problems)
+                lsxcommon::log::error("artifact scan: " + msg);
+            lsxcommon::log::error(
+                "artifact scan failed: the converted tree is not a valid "
+                "artifact (nothing was published)");
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+
+        // Cross-check: the profile says what the converter MEANT to write, the
+        // scan says what it DID write. Two independent inputs, so a
+        // disagreement is a real finding rather than a restatement.
+        uint64_t promised = 0;
+        for (const auto &plane :
+             lsxforge::DeclaredPlanes(codec_profile, lsxforge::PipelineKind::kDense,
+                                      1))
+            promised |= plane.codec_bit;
+        if (promised != 0 &&
+            (scan.mask & ~promised) != 0) {
+            lsxcommon::log::error(absl::StrFormat(
+                "codec profile %s promised codecs %llu but the tree holds more "
+                "(%llu): the converter wrote a plane the profile does not "
+                "declare",
+                lsxforge::CodecProfileName(codec_profile),
+                static_cast<unsigned long long>(promised),
+                static_cast<unsigned long long>(scan.mask)));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+
+        // Identity comes from where the artifact LIVES, not from parsing the
+        // model's config again: the path is <root>/<family>/<model_type>/<profile>
+        // (design §2.4.1), so the caller has already stated both.
+        const std::filesystem::path out_dir(output_path);
+        const std::string profile_dir = out_dir.filename().string();
+        const std::string model_type = out_dir.parent_path().filename().string();
+        const std::string family =
+            out_dir.parent_path().parent_path().filename().string();
+
+        lsx::storage::ArtifactSpec spec;
+        spec.model_type = model_type;
+        spec.family = family;
+        spec.profile = profile_dir;
+        spec.model_name = model_type;
+        spec.source_dir = std::filesystem::path(input_path).filename().string();
+        spec.target_id = lsxcommon::hw::ActiveTarget().Id();
+        // Per-layer map: every layer of this profile carries the codec set the
+        // scanner derived. A family with a genuinely mixed per-layer mix will
+        // override this once it writes its own layer map; until then this is the
+        // honest statement "the profile is uniform in codec".
+        const int layers = std::max(1, scan.layer_count);
+        spec.layer_codec.assign(static_cast<size_t>(layers), scan.mask);
+        spec.layer_count = layers;
+        for (const auto &p : scan.planes)
+            spec.planes.push_back({p.role, p.codec_bit, p.path, p.bytes});
+        const auto tpl = std::filesystem::path(output_path) / "chat_template.jinja";
+        if (std::filesystem::exists(tpl)) spec.chat_template_src = tpl.string();
+        const auto tk = std::filesystem::path(output_path) / "tokenizer.json";
+        if (std::filesystem::exists(tk)) spec.tokenizer_json_src = tk.string();
+
+        const uint64_t mask = lsx::storage::EmitArtifact(spec, output_path, &err);
+        if (mask == 0) {
+            lsxcommon::log::error("artifact.fb emission failed: " + err);
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info(absl::StrFormat(
+            "artifact.fb written: profile=%s mask=%llu planes=%zu",
+            spec.profile.c_str(), static_cast<unsigned long long>(mask),
+            spec.planes.size()));
+        lsxcommon::Core::Shutdown();
+        return 0;
+    };
+
     switch (resolution.pipeline) {
     case lsxforge::Pipeline::kVramRecompute: {
         // Detect the converted format from the index and dispatch to the
@@ -441,8 +589,7 @@ int main(int argc, char* argv[]) {
         std::ifstream f(idx);
         if (!f) {
             lsxcommon::log::error(absl::StrFormat("model.index.json not found under %s", output_path));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         std::string json((std::istreambuf_iterator<char>(f)),
                          std::istreambuf_iterator<char>());
@@ -466,12 +613,10 @@ int main(int argc, char* argv[]) {
             st = lsxcommon::RecomputeVramBlock(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("VRAM recompute failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info(absl::StrFormat("VRAM recompute complete -> %s", idx.string()));
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kDeepseekNvfp4: {
@@ -484,12 +629,10 @@ int main(int argc, char* argv[]) {
             lsxcommon::log::error(
                 absl::StrFormat("DeepSeek NVFP4 repack failed: %s",
                                 st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("DeepSeek NVFP4 repack complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kDeepseekV41: {
@@ -501,12 +644,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "DeepSeek-V4.1-Flash conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("DeepSeek-V4.1-Flash conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kDeepseekPro: {
@@ -518,12 +659,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "DeepSeek-V4-Pro-0813 conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("DeepSeek-V4-Pro-0813 conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kRepackShared: {
@@ -531,12 +670,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::RepackSharedExperts(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Shared experts re-pack failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Shared experts re-pack complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kRepackRouted: {
@@ -545,12 +682,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::RepackRoutedExperts(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Routed experts re-pack failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Routed experts re-pack complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kTokenizer: {
@@ -710,12 +845,10 @@ int main(int argc, char* argv[]) {
                                                       pinned_dir, tok_policy);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Tokenizer build failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info(absl::StrFormat("Tokenizer Arrow files complete -> %s", pinned_dir.string()));
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGlmFlash: {
@@ -725,12 +858,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 "GLM-5.3-Flash conversion failed: " + st.ToString());
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("GLM-5.3-Flash conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGranite: {
@@ -739,12 +870,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Granite conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Granite conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGraniteSwitch: {
@@ -756,12 +885,10 @@ int main(int argc, char* argv[]) {
             lsxcommon::log::error(
                 absl::StrFormat("Granite-Switch conversion failed: %s",
                                 st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Granite-Switch conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kPhi: {
@@ -770,12 +897,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("phi conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("phi conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kDory: {
@@ -786,12 +911,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("dory conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("dory conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kInkling: {
@@ -802,12 +925,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Inkling-2-Small conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Inkling-2-Small conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kInklingBase: {
@@ -818,12 +939,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Inkling base conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Inkling base conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kInklingLoop: {
@@ -834,12 +953,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Inkling-2-Mini conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Inkling-2-Mini conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kInklingVarloop: {
@@ -851,12 +968,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "TML-d24-varloop-research conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("TML-d24-varloop-research conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kMuse: {
@@ -867,12 +982,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Muse-Glimmer conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Muse-Glimmer conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kKimiK3: {
@@ -882,12 +995,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Kimi-K3 conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Kimi-K3 conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kKimiK31Pro: {
@@ -899,12 +1010,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Kimi-K3.1-Pro conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Kimi-K3.1-Pro conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kAlice: {
@@ -914,12 +1023,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Alice conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Alice conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kXing: {
@@ -929,12 +1036,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Xing conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Xing conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kMistral: {
@@ -944,12 +1049,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Mistral conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Mistral conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kMinimaxFlash: {
@@ -961,12 +1064,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "MiniMax-M3.1-Flash conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("MiniMax-M3.1-Flash conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kMinimax: {
@@ -976,12 +1077,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("MiniMax conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("MiniMax conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kFlint: {
@@ -990,12 +1089,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("flint conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("flint conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kBeam: {
@@ -1005,12 +1102,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("beam conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("beam conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kLing: {
@@ -1020,12 +1115,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("ling conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Ling conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kMistralLarge4: {
@@ -1037,12 +1130,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Mistral-Large-4 conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Mistral-Large-4 conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kStep: {
@@ -1052,12 +1143,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Step-5 conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Step-5 conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kHy4Flash: {
@@ -1069,12 +1158,10 @@ int main(int argc, char* argv[]) {
             lsxcommon::log::error(
                 absl::StrFormat("hy4-flash conversion failed: %s",
                                 st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("hy4-flash conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kHySimulMT: {
@@ -1085,12 +1172,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Hy-SimulMT conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Hy-SimulMT conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kHy: {
@@ -1100,12 +1185,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Hy-Memory conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Hy-Memory conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGemma4Dense: {
@@ -1117,12 +1200,10 @@ int main(int argc, char* argv[]) {
             lsxcommon::log::error(
                 absl::StrFormat("Gemma-4 dense conversion failed: %s",
                                 st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Gemma-4 dense conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGemma4: {
@@ -1130,12 +1211,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::gemma::ConvertGemmaModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Gemma conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Gemma conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kNemotron: {
@@ -1146,12 +1225,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Nemotron conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Nemotron conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kNemotronUltra: {
@@ -1166,8 +1243,7 @@ int main(int argc, char* argv[]) {
             if (!lsxforge::ParseLayerWindow(layers, window.first_layer,
                                             window.last_layer, range_err)) {
                 lsxcommon::log::error(range_err);
-                lsxcommon::Core::Shutdown();
-                return 1;
+                return finish(1);
             }
         }
         auto st = lsxcommon::nemotron_ultra::ConvertNemotronUltraModel(
@@ -1175,12 +1251,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Nemotron-Ultra conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Nemotron-Ultra conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kNemotronNvfp4: {
@@ -1192,12 +1266,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "Nemotron-NVFP4 conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Nemotron-NVFP4 conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGigachat: {
@@ -1208,12 +1280,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("GigaChat conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("GigaChat conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGigachat4: {
@@ -1224,12 +1294,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "GigaChat4 conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("GigaChat4 conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGigachat4_708B: {
@@ -1240,12 +1308,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat(
                 "GigaChat4-708B conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("GigaChat4-708B conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kMimo: {
@@ -1255,12 +1321,10 @@ int main(int argc, char* argv[]) {
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("MiMo conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("MiMo conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kQwen38FlashNext: {
@@ -1268,12 +1332,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::qwen_moe_exp::ConvertQwen38FlashNextModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Qwen4-exp conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Qwen4-exp conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kQwen36Moe: {
@@ -1281,12 +1343,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::qwen_moe_36::ConvertQwen36MoeModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Qwen3.6-MoE conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Qwen3.6-MoE conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kOrnith: {
@@ -1296,12 +1356,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::ornith::ConvertOrnithMoeModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Ornith conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Ornith conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kQwen35Moe: {
@@ -1309,12 +1367,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::qwen_moe::ConvertQwen35MoeModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Qwen-MoE conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Qwen-MoE conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kQwenDense: {
@@ -1322,12 +1378,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Qwen conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Qwen conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kGlm: {
@@ -1335,12 +1389,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::glm::ConvertGlmModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("GLM conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("GLM conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     case lsxforge::Pipeline::kKimi: {
@@ -1348,12 +1400,10 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::kimi::ConvertKimiModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Kimi conversion failed: %s", st.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
         lsxcommon::log::info("Kimi conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
 
     default: {
@@ -1365,13 +1415,11 @@ int main(int argc, char* argv[]) {
         auto status = converter.Run();
         if (!status.ok()) {
             lsxcommon::log::error(absl::StrFormat("Conversion failed: %s", status.ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
+            return finish(1);
         }
 
         lsxcommon::log::info("Conversion complete");
-        lsxcommon::Core::Shutdown();
-        return 0;
+        return finish(0);
     }
     }
 }

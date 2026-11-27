@@ -138,14 +138,27 @@ TEST_CASE("a declared plane missing from disk fails the conversion",
     CHECK_FALSE(fs::exists(d.path() / "artifact.fb"));
 }
 
-TEST_CASE("a plane with no codec bit fails instead of producing mask 0",
+TEST_CASE("a weight plane with no codec bit fails instead of producing mask 0",
           "[storage_writer]") {
     TempDir d;
     auto spec = MinimalSpec(d.path());
-    spec.planes.push_back({"meta", 0, "pinned/layer_0.arrow", 12});
+    // A real weight plane that forgot to name its codec would under-report the
+    // mask, letting the gate pass an artifact whose codec it never checked.
+    spec.planes.push_back({"expert.routed", 0, "pinned/layer_0.arrow", 12});
     std::string err;
     REQUIRE(EmitArtifact(spec, d.path(), &err) == 0);
     CHECK(err.find("codec") != std::string::npos);
+}
+
+TEST_CASE("a meta plane is allowed to declare no codec bit", "[storage_writer]") {
+    TempDir d;
+    auto spec = MinimalSpec(d.path());
+    WriteFile(d.path() / "pinned" / "idx.arrow", "index-table");
+    spec.planes.push_back({"meta", 0, "pinned/idx.arrow", 11});
+    std::string err;
+    const uint64_t mask = EmitArtifact(spec, d.path(), &err);
+    INFO(err);
+    REQUIRE(mask == (kBF16 | kF32));   // the meta plane adds nothing
 }
 
 TEST_CASE("emitting twice is idempotent in identity fields", "[storage_writer]") {

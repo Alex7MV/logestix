@@ -612,6 +612,11 @@ _NON_MODEL_TESTS = frozenset({
     "test_resource_governor", "test_runtime_tuner", "test_safetensors", "test_sampling",
     "test_schema_views", "test_stream_read_ceiling", "test_stream_scratch", "test_tokenizer",
     "test_tokenizer_arrows", "test_tokenizer_vocab_contract", "test_tool_format", "test_vram_estimate",
+    # Hardware-native codec contract + storage layer: infrastructure, not model
+    # tests. They are registered in tests/CMakeLists.txt and apps/lsxforge/tests
+    # and belong to no model's stage list.
+    "test_hardware_target", "test_storage_roots", "test_storage_artifact",
+    "test_storage_artifact_writer", "test_storage_verify",
 })
 
 
