@@ -618,7 +618,7 @@ _NON_MODEL_TESTS = frozenset({
     "test_hardware_target", "test_storage_roots", "test_storage_artifact",
     "test_storage_artifact_writer", "test_storage_verify", "test_load_codec_gate",
     "test_path_shape_guard", "test_model_identity", "test_forge_codec_profile",
-    "test_index_layout",
+    "test_index_layout", "test_index_fields",
 })
 
 

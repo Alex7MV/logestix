@@ -2845,6 +2845,10 @@ lsx_add_test(NAME test_storage_artifact_writer LABEL fast LINK lsxstorage
 # hw::PlaneCodec, which is the guard on the deliberate duplication.
 lsx_add_test(NAME test_storage_verify LABEL fast LINK lsxstorage lsxcommon)
 
+# ── Required index fields: registry guard (see libs/lsxcommon/index_fields.h) ──
+lsx_add_test(NAME test_index_fields LABEL fast LINK lsxcommon
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+
 # ── model.index.json declares a LAYOUT, not a per-model format tag ────────
 lsx_add_test(NAME test_index_layout LABEL fast LINK lsxcommon
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
