@@ -307,4 +307,32 @@ inline void WriteGigaChat4Index(
          "\"mtp_tensors\": 129},\n  \"total_pinned_tensors\": 0\n}\n";
 }
 
+// The 708B row: same tiny synthetic weights, but an index whose identity and
+// geometry are the real 708B numbers. Used by the loader/frozen-gate tests,
+// which run with the synthetic-geometry bypass OFF.
+inline void WriteGigaChat4_708BIndex(
+    const std::filesystem::path &model_root, int hidden_override = 7168,
+    const std::string &format_tag = "logestix-gigachat4-708b-nvfp4")
+{
+    std::filesystem::create_directories(model_root / "logestix");
+    std::ofstream f(model_root / "logestix" / "model.index.json");
+    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+      << "  \"model\": \"GigaChat4-708B-A41B\",\n"
+      << "  \"num_layers\": 64,\n  \"full_attention_layers\": "
+         "[3,7,11,15,19,23,27,31,35,39,43,47,51,55,59,63],\n"
+      << "  \"hidden_size\": " << hidden_override
+      << ",\n  \"vocab_size\": 128256,\n  \"num_attention_heads\": 64,\n"
+      << "  \"num_key_value_heads\": 64,\n  \"num_experts\": 256,\n"
+      << "  \"num_experts_per_tok\": 8,\n  \"moe_intermediate_size\": 2048,\n"
+      << "  \"dense_intermediate_size\": 18432,\n"
+      << "  \"first_k_dense_replace\": 3,\n  \"rms_norm_eps\": 1e-06,\n"
+      << "  \"router_scaling_factor\": 2.5,\n  \"swiglu_limit\": 10,\n"
+      << "  \"logit_softcap\": 30,\n  \"attn_scale\": 0.13086079996295008,\n"
+      << "  \"index_heads\": 64,\n  \"index_head_dim\": 128,\n"
+      << "  \"index_topk\": 2048,\n  \"index_rope\": 64,\n"
+      << "  \"bos_token_id\": 1,\n  \"eos_token_id\": 2,\n  \"pad_token_id\": 2,\n"
+      << "  \"deferred\": {\"mtp\": \"stored\", \"mtp_layer\": 64, "
+         "\"mtp_tensors\": 11},\n  \"total_pinned_tensors\": 0\n}\n";
+}
+
 } // namespace gigachat4test

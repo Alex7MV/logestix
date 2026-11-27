@@ -60,3 +60,5 @@ to Evidence. Do not rewrite a gate result: a SKIP is a gap, never a pass.
 | TML-d24-varloop-research | `2026-11-22-TML-d24-varloop-research.md` |
 | DeepSeek-V4.1-Flash-1017 | `2026-11-22-DeepSeek-V4.1-Flash-1017.md` |
 | Hy4-flash | `2026-11-24-Hy4-flash.md` |
+| GigaChat4-37B-A4B | `2026-11-26-GigaChat4-37B-A4B.md` |
+| GigaChat4-708B-A41B | `2026-11-27-GigaChat4-708B-A41B.md` |

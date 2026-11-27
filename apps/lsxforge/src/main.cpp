@@ -14,6 +14,7 @@
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gigachat_moe_convert.h"
 #include "lsxcommon/gigachat_moe_37b_convert.h"
+#include "lsxcommon/gigachat_moe_708b_convert.h"
 #include "lsxcommon/alice_moe_convert.h"
 #include "lsxcommon/kimi_moe_k3_convert.h"
 #include "lsxcommon/kimi_moe_pro_convert.h"
@@ -107,6 +108,9 @@ ABSL_FLAG(bool, gigachat, false,
           "GigaChat3.5-432B-A28B-Reasoning (hybrid MLA+GDN+MoE) conversion pipeline");
 ABSL_FLAG(bool, gigachat4, false,
           "GigaChat4-37B-A4B (hybrid GDN + DSA MLA + MoE) conversion pipeline");
+ABSL_FLAG(bool, gigachat4_708b, false,
+          "GigaChat4-708B-A41B (the 37B's 64-layer sibling: 61 MoE layers, "
+          "16 DSA MLA layers) conversion pipeline");
 ABSL_FLAG(bool, glmflash, false,
           "GLM-5.3-Flash (glm5_next) conversion pipeline");
 ABSL_FLAG(bool, granite, false,
@@ -234,6 +238,7 @@ int main(int argc, char* argv[]) {
     const std::string layers = absl::GetFlag(FLAGS_layers);
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
     bool gigachat4 = absl::GetFlag(FLAGS_gigachat4);
+    bool gigachat4_708b = absl::GetFlag(FLAGS_gigachat4_708b);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     bool granite = absl::GetFlag(FLAGS_granite);
     bool granite_switch = absl::GetFlag(FLAGS_granite_switch);
@@ -327,6 +332,7 @@ int main(int argc, char* argv[]) {
     }
     flags.gigachat = gigachat;
     flags.gigachat4 = gigachat4;
+    flags.gigachat4_708b = gigachat4_708b;
     flags.glmflash = glmflash;
     flags.granite = granite;
     flags.granite_switch = granite_switch;
@@ -624,7 +630,7 @@ int main(int argc, char* argv[]) {
             // tokenizer_kind 5.
             tok_policy.pretokenizer = 3;
         }
-        if (flags.gigachat || flags.gigachat4) {
+        if (flags.gigachat || flags.gigachat4 || flags.gigachat4_708b) {
             // GigaChat3.5 / GigaChat4: the Llama-3/o200k 7-alternative case-run pattern
             // (contraction suffix, \p{N}{1,3}, CJK inside the letter runs).
             // tokenizer_kind 3; `<s>`/`</s>`/pad resolve from
@@ -1183,6 +1189,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("GigaChat4 conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kGigachat4_708B: {
+        lsxcommon::log::info(
+            "GigaChat4-708B-A41B pipeline (unified logestix layout)");
+        auto st = lsxcommon::gigachat4_708b::ConvertGigaChat4_708BModel(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "GigaChat4-708B conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("GigaChat4-708B conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

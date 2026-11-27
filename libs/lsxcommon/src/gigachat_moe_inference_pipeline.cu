@@ -602,7 +602,7 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
         }
         else
             GC_TRY(RunGigaChatGdnDecode(p.buf, lw, p.d.gdn, p.d.rms_eps,
-                                        frozen::kLinearSigmoidGateScale,
+                                        p.d.gdn_sigmoid_gate_scale,
                                         p.conv[l], p.rec[l], p.gdn, p.attn,
                                         stream, p.d.gdn_w_offset));
         if (l == 0) DumpStageIfAsked(p.attn, hidden, "s0_attn", pos, stream);

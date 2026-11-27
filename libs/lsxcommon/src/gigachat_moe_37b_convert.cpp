@@ -242,34 +242,77 @@ bool gigachat4_tensor_is_expert(Gc4TensorKind kind)
 
 Gc4Topology ParseGigaChat4Config(const std::string &config_json_text)
 {
+    return ParseGigaChat4Config(config_json_text, Gc4DefaultIngestSpec());
+}
+
+Gc4IngestSpec Gc4DefaultIngestSpec()
+{
+    Gc4IngestSpec s;
+    s.format = frozen::kFormat;
+    s.model_name = frozen::kModelName;
+    s.frozen = Gc4FrozenGeometry{
+        /*hidden=*/frozen::kHidden,
+        /*layers=*/frozen::kLayers,
+        /*vocab=*/frozen::kVocab,
+        /*heads=*/frozen::kHeads,
+        /*kv_heads=*/frozen::kKVHeads,
+        /*num_experts=*/frozen::kNumRouted,
+        /*top_k=*/frozen::kTopK,
+        /*moe_intermediate=*/frozen::kMoeIntermediate,
+        /*dense_intermediate=*/frozen::kDenseIntermediate,
+        /*first_k_dense=*/frozen::kFirstKDense,
+        /*q_lora=*/frozen::kQLoraRank,
+        /*kv_lora=*/frozen::kKvLoraRank,
+        /*qk_nope=*/frozen::kQkNopeHeadDim,
+        /*qk_rope=*/frozen::kQkRopeHeadDim,
+        /*v_head=*/frozen::kVHeadDim,
+        /*index_heads=*/frozen::kIndexHeads,
+        /*index_head_dim=*/frozen::kIndexHeadDim,
+        /*index_topk=*/frozen::kIndexTopk,
+        /*rms_eps=*/static_cast<double>(frozen::kRmsEps),
+        /*routed_scale=*/static_cast<double>(frozen::kRoutedScale),
+        /*swiglu_limit=*/static_cast<double>(frozen::kSwigluLimit),
+        /*logit_softcap=*/static_cast<double>(frozen::kLogitSoftcap),
+        /*bos_id=*/frozen::kBosId,
+        /*eos_id=*/frozen::kEosId,
+        /*pad_id=*/frozen::kPadId};
+    s.full_attention_layers.assign(frozen::kFullAttnLayers,
+                                   frozen::kFullAttnLayers + frozen::kNumFullAttn);
+    s.attn_scale = frozen::kAttnScale;
+    return s;
+}
+
+Gc4Topology ParseGigaChat4Config(const std::string &config_json_text,
+                                 const Gc4IngestSpec &spec)
+{
     Gc4Topology t;
-    // GigaChat4-37B-A4B geometry as the parse defaults; config.json is
+    // The member's own geometry is the parse default; config.json is
     // authoritative wherever the field is present.
-    t.hidden = frozen::kHidden;
-    t.layers = frozen::kLayers;
-    t.vocab = frozen::kVocab;
-    t.heads = frozen::kHeads;
-    t.kv_heads = frozen::kKVHeads;
-    t.num_experts = frozen::kNumRouted;
-    t.top_k = frozen::kTopK;
-    t.moe_intermediate = frozen::kMoeIntermediate;
-    t.dense_intermediate = frozen::kDenseIntermediate;
-    t.first_k_dense = frozen::kFirstKDense;
-    t.q_lora = frozen::kQLoraRank;
-    t.kv_lora = frozen::kKvLoraRank;
-    t.qk_nope = frozen::kQkNopeHeadDim;
-    t.qk_rope = frozen::kQkRopeHeadDim;
-    t.v_head = frozen::kVHeadDim;
-    t.index_heads = frozen::kIndexHeads;
-    t.index_head_dim = frozen::kIndexHeadDim;
-    t.index_topk = frozen::kIndexTopk;
-    t.rms_eps = frozen::kRmsEps;
-    t.routed_scale = frozen::kRoutedScale;
-    t.swiglu_limit = frozen::kSwigluLimit;
-    t.logit_softcap = frozen::kLogitSoftcap;
-    t.bos_id = frozen::kBosId;
-    t.eos_id = frozen::kEosId;
-    t.pad_id = frozen::kPadId;
+    t.hidden = spec.frozen.hidden;
+    t.layers = spec.frozen.layers;
+    t.vocab = spec.frozen.vocab;
+    t.heads = spec.frozen.heads;
+    t.kv_heads = spec.frozen.kv_heads;
+    t.num_experts = spec.frozen.num_experts;
+    t.top_k = spec.frozen.top_k;
+    t.moe_intermediate = spec.frozen.moe_intermediate;
+    t.dense_intermediate = spec.frozen.dense_intermediate;
+    t.first_k_dense = spec.frozen.first_k_dense;
+    t.q_lora = spec.frozen.q_lora;
+    t.kv_lora = spec.frozen.kv_lora;
+    t.qk_nope = spec.frozen.qk_nope;
+    t.qk_rope = spec.frozen.qk_rope;
+    t.v_head = spec.frozen.v_head;
+    t.index_heads = spec.frozen.index_heads;
+    t.index_head_dim = spec.frozen.index_head_dim;
+    t.index_topk = spec.frozen.index_topk;
+    t.rms_eps = spec.frozen.rms_eps;
+    t.routed_scale = spec.frozen.routed_scale;
+    t.swiglu_limit = spec.frozen.swiglu_limit;
+    t.logit_softcap = spec.frozen.logit_softcap;
+    t.bos_id = spec.frozen.bos_id;
+    t.eos_id = spec.frozen.eos_id;
+    t.pad_id = spec.frozen.pad_id;
 
     simdjson::ondemand::parser parser;
     simdjson::padded_string pad(config_json_text.data(), config_json_text.size());
@@ -350,6 +393,11 @@ Gc4Topology ParseGigaChat4Config(const std::string &config_json_text)
                       "(hidden_size/num_hidden_layers/vocab_size)";
         return t;
     }
+    // A config that omits the layer map keeps the member's frozen one: the map
+    // is a compile-time property of the architecture variant, and the gate
+    // re-checks every entry the config DOES declare.
+    if (t.full_attention_layers.empty())
+        t.full_attention_layers = spec.full_attention_layers;
     if (t.full_attention_layers.empty())
         t.error_msg = "config.json has no full_attention_layers";
     return t;
@@ -421,52 +469,99 @@ arrow::Status WriteBatchOr(const arrow::Result<std::shared_ptr<arrow::RecordBatc
     return WriteRecordBatchToFile(*b, path);
 }
 
+// EstimateVram takes plain function pointers (NVCC-safe header), so the depth
+// the classifier must use travels through this thread-local slot instead of a
+// lambda capture. A non-zero value is the depth of the member BEING converted;
+// zero falls back to this TU's own passport (the one-argument overload).
+thread_local int g_classify_depth = 0;
+
+struct ScopedClassifyDepth {
+    explicit ScopedClassifyDepth(int depth) : saved(g_classify_depth)
+    {
+        g_classify_depth = depth;
+    }
+    ~ScopedClassifyDepth() { g_classify_depth = saved; }
+    ScopedClassifyDepth(const ScopedClassifyDepth &) = delete;
+    ScopedClassifyDepth &operator=(const ScopedClassifyDepth &) = delete;
+    int saved;
+};
+
+ParsedGc4Tensor ClassifyAtDepth(const std::string &name)
+{
+    return g_classify_depth > 0 ? classify_gigachat4_tensor(name, g_classify_depth)
+                                : classify_gigachat4_tensor(name);
+}
+
+bool VramIsNvfp4(const std::string &name)
+{
+    return gigachat4_tensor_is_nvfp4(ClassifyAtDepth(name).kind);
+}
+
+VramTensorClass VramMemClass(const std::string &name)
+{
+    return gigachat4_tensor_is_expert(ClassifyAtDepth(name).kind)
+               ? VramTensorClass::RoutedExpert
+               : VramTensorClass::Resident;
+}
+
 } // namespace
 
 arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
                                     const std::string &output_root)
 {
+    return ConvertGigaChat4ModelWithSpec(input_dir, output_root,
+                                         Gc4DefaultIngestSpec());
+}
+
+arrow::Status ConvertGigaChat4ModelWithSpec(const std::string &input_dir,
+                                            const std::string &output_root,
+                                            const Gc4IngestSpec &spec)
+{
     namespace fs = std::filesystem;
+    const Gc4FrozenGeometry &frz = spec.frozen;
 
     std::ifstream cf(fs::path(input_dir) / "config.json");
     if (!cf) return arrow::Status::Invalid("config.json not found in ", input_dir);
     std::stringstream css;
     css << cf.rdbuf();
-    const Gc4Topology top = ParseGigaChat4Config(css.str());
+    const Gc4Topology top = ParseGigaChat4Config(css.str(), spec);
     if (!top.error_msg.empty())
         return arrow::Status::Invalid("GigaChat4 config error: ", top.error_msg);
 
     if (!SyntheticGeometryAllowed())
     {
-        const bool ok = top.hidden == frozen::kHidden &&
-                        top.layers == frozen::kLayers &&
-                        top.vocab == frozen::kVocab &&
-                        top.heads == frozen::kHeads &&
-                        top.kv_heads == frozen::kKVHeads &&
-                        top.num_experts == frozen::kNumRouted &&
-                        top.top_k == frozen::kTopK &&
-                        top.moe_intermediate == frozen::kMoeIntermediate &&
-                        top.dense_intermediate == frozen::kDenseIntermediate &&
-                        top.first_k_dense == frozen::kFirstKDense &&
-                        top.q_lora == frozen::kQLoraRank &&
-                        top.kv_lora == frozen::kKvLoraRank &&
-                        top.qk_nope == frozen::kQkNopeHeadDim &&
-                        top.qk_rope == frozen::kQkRopeHeadDim &&
-                        top.v_head == frozen::kVHeadDim;
+        const bool ok = top.hidden == frz.hidden &&
+                        top.layers == frz.layers &&
+                        top.vocab == frz.vocab &&
+                        top.heads == frz.heads &&
+                        top.kv_heads == frz.kv_heads &&
+                        top.num_experts == frz.num_experts &&
+                        top.top_k == frz.top_k &&
+                        top.moe_intermediate == frz.moe_intermediate &&
+                        top.dense_intermediate == frz.dense_intermediate &&
+                        top.first_k_dense == frz.first_k_dense &&
+                        top.q_lora == frz.q_lora &&
+                        top.kv_lora == frz.kv_lora &&
+                        top.qk_nope == frz.qk_nope &&
+                        top.qk_rope == frz.qk_rope &&
+                        top.v_head == frz.v_head;
         if (!ok)
             return arrow::Status::Invalid(
                 "GigaChat4 frozen geometry mismatch (set "
                 "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 only for synthetic tests)");
-        if (static_cast<int>(top.full_attention_layers.size()) !=
-            frozen::kNumFullAttn)
-            return arrow::Status::Invalid(
-                "GigaChat4 frozen full_attention_layers count mismatch");
-        for (int i = 0; i < frozen::kNumFullAttn; ++i)
-            if (top.full_attention_layers[static_cast<size_t>(i)] !=
-                frozen::kFullAttnLayers[i])
+        if (!spec.full_attention_layers.empty())
+        {
+            if (top.full_attention_layers.size() !=
+                spec.full_attention_layers.size())
                 return arrow::Status::Invalid(
-                    "GigaChat4 frozen full_attention_layers mismatch at index ",
-                    i);
+                    "GigaChat4 frozen full_attention_layers count mismatch");
+            for (size_t i = 0; i < spec.full_attention_layers.size(); ++i)
+                if (top.full_attention_layers[i] != spec.full_attention_layers[i])
+                    return arrow::Status::Invalid(
+                        "GigaChat4 frozen full_attention_layers mismatch at "
+                        "index ",
+                        static_cast<int>(i));
+        }
     }
 
     auto model = lsxcommon::scan_directory(input_dir);
@@ -513,12 +608,6 @@ arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
     absl::flat_hash_map<int, std::vector<TensorRecord>> mtp_by_layer;
     std::vector<TensorRecord> global_raw;
     int64_t total_pinned = 0;
-
-    struct ExpertRec {
-        DenseNvfp4Record gate, up, down;
-        bool has_gate = false, has_up = false, has_down = false;
-    };
-    absl::flat_hash_map<int64_t, ExpertRec> experts;
 
     for (auto &shard : model.shards)
     {
@@ -582,9 +671,23 @@ arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
         }
     }
 
-    // Routed experts: 3 projections per expert.
+    // Routed experts: 3 projections per expert, flushed LAYER BY LAYER.
+    // The member's expert set is the dominant payload (386.9 GB on the 708B
+    // row); keeping it resident until the end of the pass is an OOM, not a
+    // slowdown, so one layer (256 experts) is the residency bound.
+    struct ExpertRec {
+        DenseNvfp4Record gate, up, down;
+        bool has_gate = false, has_up = false, has_down = false;
+    };
+    struct ExpertTensorRef {
+        const SafetensorsModel::Shard *shard;
+        const TensorInfo *info;
+        Gc4TensorKind kind;
+        int expert;
+    };
+    std::vector<std::vector<ExpertTensorRef>> experts_by_layer(
+        static_cast<size_t>(top.layers));
     for (auto &shard : model.shards)
-    {
         for (auto &t : shard.tensors)
         {
             auto p = classify_gigachat4_tensor(t.name, top.layers);
@@ -592,22 +695,38 @@ arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
             constexpr std::string_view kScale = ".weight_scale_inv";
             if (EndsWith(t.name, kScale))
                 continue;  // consumed together with its `.weight`
+            if (p.layer < 0 || p.layer >= top.layers)
+                return arrow::Status::Invalid("expert outside the layer range: ",
+                                              t.name);
+            experts_by_layer[static_cast<size_t>(p.layer)].push_back(
+                ExpertTensorRef{&shard, &t, p.kind, p.expert});
+        }
+    for (int l = 0; l < top.layers; ++l)
+        experts_by_layer[static_cast<size_t>(l)].shrink_to_fit();
+
+    int total_experts = 0;
+    for (int layer = 0; layer < top.layers; ++layer)
+    {
+        const auto &layer_refs = experts_by_layer[static_cast<size_t>(layer)];
+        if (layer_refs.empty()) continue;
+        absl::flat_hash_map<int, ExpertRec> experts;
+        for (const ExpertTensorRef &ref : layer_refs)
+        {
             DenseNvfp4Record r;
-            auto it = refs.find(t.name + "_scale_inv");
+            auto it = refs.find(ref.info->name + "_scale_inv");
             if (it != refs.end())
-                ARROW_RETURN_NOT_OK(
-                    QuantizeFp8(input_dir, refs[t.name], it->second, r));
+                ARROW_RETURN_NOT_OK(QuantizeFp8(
+                    input_dir, TensorRef{ref.shard, ref.info}, it->second, r));
             else
-                ARROW_RETURN_NOT_OK(QuantizeBf16(input_dir, refs[t.name], r));
-            const int64_t key =
-                static_cast<int64_t>(p.layer) * 100000 + p.expert;
-            auto &e = experts[key];
-            if (p.kind == Gc4TensorKind::ExpertGate)
+                ARROW_RETURN_NOT_OK(QuantizeBf16(
+                    input_dir, TensorRef{ref.shard, ref.info}, r));
+            auto &e = experts[ref.expert];
+            if (ref.kind == Gc4TensorKind::ExpertGate)
             {
                 e.gate = std::move(r);
                 e.has_gate = true;
             }
-            else if (p.kind == Gc4TensorKind::ExpertUp)
+            else if (ref.kind == Gc4TensorKind::ExpertUp)
             {
                 e.up = std::move(r);
                 e.has_up = true;
@@ -618,39 +737,40 @@ arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
                 e.has_down = true;
             }
         }
-    }
-
-    int total_experts = 0;
-    for (auto &[key, e] : experts)
-    {
-        const int layer = static_cast<int>(key / 100000);
-        const int expert = static_cast<int>(key % 100000);
-        if (!e.has_gate || !e.has_up || !e.has_down)
-            return arrow::Status::Invalid("incomplete expert: layer ", layer,
-                                          " expert ", expert);
-        PackedExpert pe;
-        // Repo PackedExpert slot convention: w1 = gate, w3 = up, w2 = down.
-        pe.w1_packed = e.gate.packed;
-        pe.w1_scales = e.gate.scales;
-        pe.w1_shape = e.gate.shape;
-        pe.w1_global_scale = e.gate.global_scale;
-        pe.w3_packed = e.up.packed;
-        pe.w3_scales = e.up.scales;
-        pe.w3_shape = e.up.shape;
-        pe.w3_global_scale = e.up.global_scale;
-        pe.w2_packed = e.down.packed;
-        pe.w2_scales = e.down.scales;
-        pe.w2_shape = e.down.shape;
-        pe.w2_global_scale = e.down.global_scale;
-        // Shared ExpertStore path convention (unpadded, like every family).
         const fs::path dir = base / "experts" / absl::StrCat("layer_", layer);
         std::error_code ec;
         fs::create_directories(dir, ec);
-        ARROW_RETURN_NOT_OK(WriteBatchOr(
-            ExpertSchema::MakeBatch(pe),
-            dir / absl::StrCat("exp_", expert, ".arrow")));
-        ++total_experts;
+        for (auto &[expert, e] : experts)
+        {
+            if (!e.has_gate || !e.has_up || !e.has_down)
+                return arrow::Status::Invalid("incomplete expert: layer ",
+                                              layer, " expert ", expert);
+            PackedExpert pe;
+            // Repo PackedExpert slot convention: w1 = gate, w3 = up, w2 = down.
+            pe.w1_packed = e.gate.packed;
+            pe.w1_scales = e.gate.scales;
+            pe.w1_shape = e.gate.shape;
+            pe.w1_global_scale = e.gate.global_scale;
+            pe.w3_packed = e.up.packed;
+            pe.w3_scales = e.up.scales;
+            pe.w3_shape = e.up.shape;
+            pe.w3_global_scale = e.up.global_scale;
+            pe.w2_packed = e.down.packed;
+            pe.w2_scales = e.down.scales;
+            pe.w2_shape = e.down.shape;
+            pe.w2_global_scale = e.down.global_scale;
+            // Shared ExpertStore path convention (unpadded, like every family).
+            ARROW_RETURN_NOT_OK(WriteBatchOr(
+                ExpertSchema::MakeBatch(pe),
+                dir / absl::StrCat("exp_", expert, ".arrow")));
+            ++total_experts;
+        }
+        // Release this layer before the next one is read.
+        absl::flat_hash_map<int, ExpertRec>().swap(experts);
+        experts_by_layer[static_cast<size_t>(layer)].clear();
+        experts_by_layer[static_cast<size_t>(layer)].shrink_to_fit();
     }
+
 
     if (!global_raw.empty())
         ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(global_raw),
@@ -708,24 +828,19 @@ arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
     for (auto &shard : model.shards)
         for (auto &t : shard.tensors)
             inv.push_back({t.name, t.numel(), t.byte_size()});
+    // The depth argument matters: with the one-argument overload every layer at
+    // or above ANOTHER member's depth would classify as MTP ballast and the
+    // expert planes would vanish from the estimate the governor consumes.
+    const ScopedClassifyDepth depth_scope(top.layers);
     const VramProfile vram = EstimateVram(
-        inv,
-        {+[](const std::string &n) {
-             return gigachat4_tensor_is_nvfp4(classify_gigachat4_tensor(n).kind);
-         },
-         +[](const std::string &n) -> VramTensorClass {
-             return gigachat4_tensor_is_expert(classify_gigachat4_tensor(n).kind)
-                        ? VramTensorClass::RoutedExpert
-                        : VramTensorClass::Resident;
-         }},
-        vg);
+        inv, {&VramIsNvfp4, &VramMemClass, nullptr}, vg);
 
     std::vector<int> full_attn = top.full_attention_layers;
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-gigachat4-nvfp4\",\n"
-          << "  \"model\": \"GigaChat4-37B-A4B\",\n"
+          << "  \"format\": \"" << spec.format << "\",\n"
+          << "  \"model\": \"" << spec.model_name << "\",\n"
           << "  \"num_layers\": " << top.layers << ",\n"
           << "  \"layer_types\": [";
         for (int i = 0; i < top.layers; ++i)
@@ -760,7 +875,7 @@ arrow::Status ConvertGigaChat4Model(const std::string &input_dir,
           << ",\n  \"router_scaling_factor\": " << top.routed_scale
           << ",\n  \"swiglu_limit\": " << top.swiglu_limit
           << ",\n  \"logit_softcap\": " << top.logit_softcap
-          << ",\n  \"attn_scale\": " << frozen::kAttnScale
+          << ",\n  \"attn_scale\": " << spec.attn_scale
           << ",\n  \"index_heads\": " << top.index_heads
           << ",\n  \"index_head_dim\": " << top.index_head_dim
           << ",\n  \"index_topk\": " << top.index_topk

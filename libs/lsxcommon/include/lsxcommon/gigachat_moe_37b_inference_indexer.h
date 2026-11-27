@@ -47,6 +47,10 @@ struct GcDsaIndexerDims {
     int topk = 0;
     // q_latent arrives unscaled; the step applies alpha_q itself.
     float latent_scale = 1.0f;
+    // Passport values of the OWNER model (never another member's): the k-norm
+    // epsilon and the 1/sqrt(head_dim) score scale.
+    float onorm_eps = 1e-6f;
+    float score_scale = 0.08838834764831845f;  // 128^-0.5
 };
 
 // Per-layer scratch, allocated once (all carves out of one device block).

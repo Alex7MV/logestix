@@ -787,6 +787,11 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // so the family codec target proves render+parse for it too; the model
         // overrides delegate to that codec.
         {"gigachat4-37b-a4b", {"test_gigachat_tool_framing_37b"}},
+        // The 708B ships a chat_template.jinja AND a tokenizer.json that are
+        // byte-identical to the 37B's (sha256-verified at stage 0), so the same
+        // codec target proves its render+parse round-trip; the model overrides
+        // delegate to that codec.
+        {"gigachat4-708b-a41b", {"test_gigachat_tool_framing_37b"}},
         {"mimo-v2.6-flash-rl", {"test_mimo_tool_framing"}},
         {"alice-foundation-80b-a3b", {"test_alice_tool_framing"}},
         // Xing has a native renderer verified against its chat_template.jinja

@@ -11,6 +11,7 @@
 #include <cuda_runtime.h>
 
 #include "lsxcommon/gigachat_moe_load.h"  // GcGatedNorm, GcExpertEntry
+#include "lsxcommon/gigachat_moe_37b_convert.h"  // Gc4FrozenGeometry
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/vram_estimate.h"
 
@@ -58,12 +59,35 @@ struct Gc4Index {
 // indexer planes as an optional member); the GC4 loader fills it in place.
 using Gc4Weights = gigachat::GcWeights;
 
+// One member's frozen expectation: the format tag it must see and the geometry
+// its passport fixes. Supplied by the model TU, never read from another model.
+struct Gc4FrozenExpect {
+    const char *format = "";
+    Gc4FrozenGeometry geo;
+    std::vector<int> full_attention_layers;  // empty = do not check the map
+    int gate_rank = 16;
+};
+
+// The GigaChat4-37B-A4B passport's expectation.
+Gc4FrozenExpect Gc4DefaultExpect();
+
+bool LoadGigaChat4IndexWithFormat(const std::string &model_path,
+                                 const std::string &expected_format,
+                                 Gc4Index &out, std::string &error);
 bool LoadGigaChat4Index(const std::string &model_path, Gc4Index &out,
                         std::string &error);
 
 // Frozen-geometry gate (bypassed only under LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY).
+bool ValidateGigaChat4GeometryAgainst(const Gc4Index &idx,
+                                     const Gc4FrozenExpect &expect,
+                                     std::string &error);
 bool ValidateGigaChat4Geometry(const Gc4Index &idx, std::string &error);
 
+bool LoadGigaChat4WeightsWithExpect(const std::string &model_path,
+                                   const Gc4Index &idx, Gc4Weights &w,
+                                   cudaStream_t stream,
+                                   const Gc4FrozenExpect &expect,
+                                   std::string &error);
 bool LoadGigaChat4Weights(const std::string &model_path, const Gc4Index &idx,
                           Gc4Weights &w, cudaStream_t stream,
                           std::string &error);

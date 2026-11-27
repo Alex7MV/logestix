@@ -86,6 +86,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
 | **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
 | **gigachat4-37b-a4b** | PASS (x3, `20148869d4404e55`, framed) | 3/3 (template) | 3/3 (template) | 3/3 (template) |
+| **gigachat4-708b-a41b** | PASS (x3, `4c91393c68d0b3e8`, framed) | **2/3** (FSI-02, template golden) | 3/3 (template) | **2/3** (DET-03, template) |
 | **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
 | **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
 | **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
