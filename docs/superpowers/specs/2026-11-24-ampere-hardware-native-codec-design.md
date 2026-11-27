@@ -542,8 +542,19 @@ LSX_CACHE_DIR      per-user host cache (unchanged)
 ```
 
 The store is **org-nested**: `<SourceRoot>/<org>/<model>`, the layout Hugging
-Face uses for a download. Measured on 2026-11-27: 39 checkpoints over 18 orgs
-(`Qwen/Qwen3.5-9B`, `microsoft/phi-4`, `thinkingmachines/Inkling`, …).
+Face uses for a download. Measured on 2026-11-27: 39 checkpoints with weights
+over 21 orgs (`Qwen/Qwen3.5-9B`, `microsoft/phi-4`, `thinkingmachines/Inkling`,
+…), plus **6 empty placeholder directories** recording where an evicted
+checkpoint belongs (`moonshotai/Kimi-K3`, `inclusionAI/Ling-3.1-flash`,
+`RecursiveSI/flint`, `reflection/Beam-1.0-501B-A23B`, `MiniMaxAI/MiniMax-M3`,
+`mistralai/Mistral-Large-4-1T-A52B`).
+
+A placeholder is not a checkpoint: `ListSourceModels()` ignores it, so nothing
+resolves to a directory with no weights, and `FindSourceModel()` reports the
+placeholder by org instead of suggesting a typo. Three manifest rows still have
+no directory at all (`glm-5.2`, `mimo-v2.6-flash-rl`, `step-5-preview`); their
+publishing org is recorded nowhere in this repository, so no directory is
+guessed for them.
 
 Resolution is a pure function with a documented precedence; it never guesses
 codecs, only *location*:
@@ -580,6 +591,12 @@ struct SourceModelRef { std::string org, model; fs::path dir; };
 // params.json + consolidated*.safetensors and no config.json (measured on
 // mistralai/Mistral-Small-4-119B), so that predicate hides real models.
 std::vector<SourceModelRef> ListSourceModels();
+
+// Empty <org>/<model> directories: deliberate records of where an evicted
+// checkpoint belongs. They are NOT checkpoints (nothing can load from them) and
+// never enter ListSourceModels(); they exist so a diagnostic can distinguish
+// "the directory is here, the weights are not" from "you mistyped the name".
+std::vector<fs::path> ListPlaceholderDirs(const std::string &model);
 
 // Exactly one checkpoint named `model`, which may be bare ("phi-4") or
 // org-qualified ("microsoft/phi-4"). A qualified name matches exactly rather

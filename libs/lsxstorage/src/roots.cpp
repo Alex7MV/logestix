@@ -97,6 +97,29 @@ bool HoldsCheckpoint(const fs::path &dir)
 
 } // namespace
 
+std::vector<fs::path> ListPlaceholderDirs(const std::string &model)
+{
+    std::vector<fs::path> out;
+    const fs::path root = SourceRoot();
+    std::error_code org_ec;
+    for (const auto &org_entry : fs::directory_iterator(root, org_ec)) {
+        if (org_ec) break;
+        if (!org_entry.is_directory()) continue;
+        std::error_code model_ec;
+        for (const auto &model_entry :
+             fs::directory_iterator(org_entry.path(), model_ec)) {
+            if (model_ec) break;
+            if (!model_entry.is_directory()) continue;
+            const std::string name = model_entry.path().filename().string();
+            if (!model.empty() && name != model) continue;
+            if (!HoldsCheckpoint(model_entry.path()))
+                out.push_back(model_entry.path());
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 std::vector<SourceModelRef> ListSourceModels()
 {
     std::vector<SourceModelRef> out;
@@ -151,9 +174,26 @@ std::optional<fs::path> FindSourceModel(const std::string &model,
     }
 
     if (matches.empty()) {
-        if (why != nullptr)
-            *why = "'" + model + "' is not a checkpoint under " +
-                   SourceRoot().string() + " (<org>/<model>)";
+        // Distinguish "nobody ever named this" from "a placeholder exists and
+        // its contents are missing": an empty <org>/<model> directory is a
+        // deliberate record of where an evicted checkpoint belongs, and telling
+        // the operator to check their spelling would waste the record.
+        const auto placeholders = ListPlaceholderDirs(model);
+        if (why != nullptr) {
+            if (!placeholders.empty()) {
+                std::string list;
+                for (const auto &p : placeholders) {
+                    if (!list.empty()) list += ", ";
+                    list += p.parent_path().filename().string() + "/" +
+                            p.filename().string();
+                }
+                *why = "'" + model + "' is a placeholder directory (" + list +
+                       ") with no weights: the checkpoint is not downloaded";
+            } else {
+                *why = "'" + model + "' is not a checkpoint under " +
+                       SourceRoot().string() + " (<org>/<model>)";
+            }
+        }
         return std::nullopt;
     }
     if (matches.size() > 1) {

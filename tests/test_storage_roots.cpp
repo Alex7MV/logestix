@@ -299,3 +299,51 @@ TEST_CASE("a directory directly under the root is not mistaken for a model",
     ScopedEnv e("LSX_SOURCE_ROOT", root.path().c_str());
     CHECK(lsx::storage::ListSourceModels().empty());
 }
+
+// ── Placeholder directories ────────────────────────────────────────────────
+//
+// An empty <org>/<model> directory records where an evicted checkpoint belongs.
+// It is NOT a checkpoint (nothing can load from it), but "absent" is the wrong
+// message: the operator created the directory on purpose, and a diagnostic that
+// ignores it sends them looking for a typo instead of at a missing download.
+
+TEST_CASE("an empty placeholder directory is reported as a placeholder",
+          "[storage_roots]") {
+    TempRoot root;
+    fs::create_directories(root.path() / "moonshotai" / "Kimi-K3");  // empty
+    ScopedEnv e("LSX_SOURCE_ROOT", root.path().c_str());
+
+    std::string why;
+    CHECK_FALSE(lsx::storage::FindSourceModel("Kimi-K3", &why).has_value());
+    CHECK(why.find("placeholder") != std::string::npos);
+    CHECK(why.find("moonshotai") != std::string::npos);
+    // And it must say what to do, not just that it is empty.
+    CHECK(why.find("not downloaded") != std::string::npos);
+}
+
+TEST_CASE("a placeholder never becomes a checkpoint", "[storage_roots]") {
+    // The distinction matters: ListSourceModels feeds Resolve, and an empty dir
+    // resolving to kSourceOnly would send a conversion at a directory with no
+    // weights at all.
+    TempRoot root;
+    fs::create_directories(root.path() / "acme" / "evicted");
+    ScopedEnv e("LSX_SOURCE_ROOT", root.path().c_str());
+    CHECK(lsx::storage::ListSourceModels().empty());
+
+    const auto r = lsx::storage::Resolve("evicted");
+    CHECK(r.status == lsx::storage::ResolveStatus::kNotFound);
+    CHECK(r.detail.find("placeholder") != std::string::npos);
+}
+
+TEST_CASE("a name that matches nothing at all still says just that",
+          "[storage_roots]") {
+    TempRoot root;
+    fs::create_directories(root.path() / "acme" / "present");
+    std::ofstream(root.path() / "acme" / "present" / "config.json") << "{}";
+    ScopedEnv e("LSX_SOURCE_ROOT", root.path().c_str());
+
+    std::string why;
+    CHECK_FALSE(lsx::storage::FindSourceModel("typo-name", &why).has_value());
+    CHECK(why.find("placeholder") == std::string::npos);
+    CHECK(why.find("typo-name") != std::string::npos);
+}
