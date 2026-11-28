@@ -88,7 +88,9 @@ cudaError_t RunGemmaDenseGeGLU(cudaStream_t stream, const __half *gate,
 // ── Embedding / head ────────────────────────────────────────────────────────
 // Gathers @p seq rows out of the tied NVFP4 [vocab, hidden] table and scales
 // them by sqrt(hidden_size) as upstream does (the constant is cast to the
-// weight dtype first, so it is kEmbedScale, not the exact root).
+// weight dtype first, so it is bf16(sqrt(hidden)) — 62.0 for 3840, 73.5 for
+// 5376 — and the loader hands it in as data, never as a sibling's constant).
+//
 cudaError_t RunGemmaDenseEmbedGatherNvfp4(cudaStream_t stream,
                                           const std::uint8_t *packed,
                                           const std::uint8_t *scales,

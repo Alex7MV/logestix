@@ -49,6 +49,7 @@ add_library(lsxcommon STATIC
     src/gemma_base_model.cpp
     src/gemma_moe_model.cpp
     src/gemma_dense_model.cpp
+    src/gemma_dense_12b_model.cpp
     src/nemotron_moe_convert.cpp
     src/nemotron_moe_nvfp4_convert.cpp
     src/nemotron_moe_nvfp4_load.cpp

@@ -15,6 +15,7 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -145,6 +146,125 @@ inline std::vector<synthtest::FakeTensor> BuildSyntheticGemmaDenseModel()
                  synthtest::MakeBf16(1)});
 
     return t;
+}
+
+// The `gemma4_unified` wrapper (google/gemma-4-12B-it): the SAME text decoder
+// plus the multimodal ballast of that checkpoint. Those names are NOT the 26B's
+// (`model.vision_tower.*`) nor the 31B's vision export: the unified tree ships
+// a bare `model.vision_embedder.*` (patch projection + position table, no
+// transformer) and a single `model.embed_audio.embedding_projection` (the
+// `audio_config` describes a tower this checkpoint does not contain).
+//
+// Eleven tensors, stored and counted, never applied - and every one of them is
+// a name the classifier has to claim, or the strict coverage check rejects the
+// whole checkpoint.
+inline std::vector<synthtest::FakeTensor> BuildSyntheticGemmaUnifiedBallast()
+{
+    const auto &c = TestCfg();
+    const int H = c.hidden_size;
+    const int P = 3 * H;   // patch patch_size*patch_size*channels, scaled down
+    const int A = 32;      // audio_embed_dim, scaled down
+
+    std::vector<synthtest::FakeTensor> t;
+    t.push_back({"model.vision_embedder.patch_dense.weight", "BF16", {H, P},
+                 synthtest::MakeBf16(H * P)});
+    t.push_back({"model.vision_embedder.patch_dense.bias", "BF16", {H},
+                 synthtest::MakeBf16(H)});
+    t.push_back({"model.vision_embedder.patch_ln1.weight", "BF16", {P},
+                 synthtest::MakeBf16(P)});
+    t.push_back({"model.vision_embedder.patch_ln1.bias", "BF16", {P},
+                 synthtest::MakeBf16(P)});
+    t.push_back({"model.vision_embedder.patch_ln2.weight", "BF16", {H},
+                 synthtest::MakeBf16(H)});
+    t.push_back({"model.vision_embedder.patch_ln2.bias", "BF16", {H},
+                 synthtest::MakeBf16(H)});
+    t.push_back({"model.vision_embedder.pos_embedding", "BF16", {4, 2, H},
+                 synthtest::MakeBf16(8 * H)});
+    t.push_back({"model.vision_embedder.pos_norm.weight", "BF16", {H},
+                 synthtest::MakeBf16(H)});
+    t.push_back({"model.vision_embedder.pos_norm.bias", "BF16", {H},
+                 synthtest::MakeBf16(H)});
+    t.push_back({"model.embed_vision.embedding_projection.weight", "BF16",
+                 {H, H}, synthtest::MakeBf16(H * H)});
+    t.push_back({"model.embed_audio.embedding_projection.weight", "BF16",
+                 {H, A}, synthtest::MakeBf16(H * A)});
+    return t;
+}
+
+// The whole `gemma4_unified` checkpoint: text tower + that ballast.
+inline std::vector<synthtest::FakeTensor> BuildSyntheticGemmaUnifiedModel()
+{
+    auto t = BuildSyntheticGemmaDenseModel();
+    // The 31B fixture carries its own vision export; the unified tree is a
+    // different export of the same idea, so keep exactly one of them.
+    t.erase(std::remove_if(t.begin(), t.end(),
+                           [](const synthtest::FakeTensor &x) {
+                               return x.name.rfind("model.vision_tower.", 0) ==
+                                          0 ||
+                                      x.name.rfind("model.embed_vision.", 0) ==
+                                          0;
+                           }),
+            t.end());
+    auto ballast = BuildSyntheticGemmaUnifiedBallast();
+    t.insert(t.end(), ballast.begin(), ballast.end());
+    return t;
+}
+
+// The unified config's real nesting: the special ids live in `text_config`
+// only (no top-level bos/pad), the eos array is top-level, and the tower
+// descriptors are present but irrelevant.
+inline void WriteUnifiedConfig(const std::filesystem::path &dir)
+{
+    const auto &c = TestCfg();
+    std::string layer_types = "[";
+    for (size_t i = 0; i < c.layer_types.size(); ++i) {
+        if (i) layer_types += ",";
+        layer_types += "\"" + c.layer_types[i] + "\"";
+    }
+    layer_types += "]";
+
+    const std::string json =
+        "{\"architectures\":[\"Gemma4UnifiedForConditionalGeneration\"],"
+        "\"model_type\":\"gemma4_unified\","
+        "\"eos_token_id\":[1,106],"
+        "\"image_token_id\":258880,\"audio_token_id\":258881,"
+        "\"audio_config\":{\"model_type\":\"gemma4_unified_audio\","
+        "\"audio_embed_dim\":32},"
+        "\"vision_config\":{\"model_type\":\"gemma4_unified_vision\","
+        "\"mm_embed_dim\":" + std::to_string(c.hidden_size) + "},"
+        "\"text_config\":{"
+        "\"model_type\":\"gemma4_unified_text\","
+        "\"hidden_size\":" + std::to_string(c.hidden_size) +
+        ",\"intermediate_size\":" + std::to_string(c.intermediate_size) +
+        ",\"num_hidden_layers\":" + std::to_string(c.num_layers) +
+        ",\"vocab_size\":" + std::to_string(c.vocab_size) +
+        ",\"num_attention_heads\":" + std::to_string(c.num_attention_heads) +
+        ",\"num_key_value_heads\":" + std::to_string(c.num_key_value_heads) +
+        ",\"num_global_key_value_heads\":" +
+        std::to_string(c.num_global_key_value_heads) +
+        ",\"head_dim\":" + std::to_string(c.head_dim) +
+        ",\"global_head_dim\":" + std::to_string(c.global_head_dim) +
+        ",\"sliding_window\":" + std::to_string(c.sliding_window) +
+        ",\"max_position_embeddings\":262144"
+        ",\"bos_token_id\":2,\"eos_token_id\":1,\"pad_token_id\":0"
+        ",\"attention_k_eq_v\":true"
+        ",\"enable_moe_block\":false"
+        ",\"rms_norm_eps\":1e-06"
+        ",\"final_logit_softcapping\":30.0"
+        ",\"tie_word_embeddings\":true"
+        ",\"hidden_activation\":\"gelu_pytorch_tanh\""
+        ",\"layer_types\":" + layer_types +
+        ",\"rope_parameters\":{"
+        "\"full_attention\":{\"partial_rotary_factor\":0.25,"
+        "\"rope_theta\":1000000.0,\"rope_type\":\"proportional\"},"
+        "\"sliding_attention\":{\"rope_theta\":10000.0,"
+        "\"rope_type\":\"default\"}}"
+        "}}";
+    std::ofstream f(dir / "config.json");
+    f << json;
+
+    std::ofstream g(dir / "generation_config.json");
+    g << "{\"eos_token_id\":[1,106,50]}";
 }
 
 // config.json in the real HF nesting (model_type gemma4 + text_config).

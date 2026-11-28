@@ -949,19 +949,34 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                          static_cast<float>(eps));
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
 
+    // One projection = base plane, plus the residual plane as a SECOND GEMV
+    // with acc=true when the tree carries one. The residual is `w - dequant(
+    // base)`, so the sum is the ~8-bit weight; the two dots round separately
+    // (base rounds to F16, then the residual adds and rounds again), which is
+    // the composition pinned by "residual plane accumulates after the base dot".
+    // A legacy 4-bit-only tree leaves the plane null and the pass is skipped.
+    auto project = [&](const lsx_nvfp4::LsxNvfp4Weight &base,
+                       const lsx_nvfp4::LsxNvfp4Weight &res, const __half *in,
+                       __half *out, int rows, int cols) -> cudaError_t {
+        cudaError_t pe = RunLsxNvfp4Gemm(stream, in, base.d_packed,
+                                         base.d_scales, base.global_scale, out,
+                                         seq, rows, cols);
+        if (pe != cudaSuccess) return pe;
+        if (res.d_packed == nullptr) return cudaSuccess;
+        return RunLsxNvfp4Gemm(stream, in, res.d_packed, res.d_scales,
+                               res.global_scale, out, seq, rows, cols, true);
+    };
+
     // q / k / v projections (all NVFP4 through the neutral layer).
-    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.attn_q.d_packed,
-                        lw.attn_q.d_scales, lw.attn_q.global_scale, ws.q, seq,
-                        static_cast<int>(H), q_rows);
+    e = project(lw.attn_q, lw.attn_q_res, ws.normed, ws.q,
+                static_cast<int>(H), q_rows);
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
-    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.attn_k.d_packed,
-                        lw.attn_k.d_scales, lw.attn_k.global_scale, ws.k, seq,
-                        static_cast<int>(H), kv_rows);
+    e = project(lw.attn_k, lw.attn_k_res, ws.normed, ws.k,
+                static_cast<int>(H), kv_rows);
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
     if (lw.HasV()) {
-        e = RunLsxNvfp4Gemm(stream, ws.normed, lw.attn_v.d_packed,
-                            lw.attn_v.d_scales, lw.attn_v.global_scale, ws.v,
-                            seq, static_cast<int>(H), kv_rows);
+        e = project(lw.attn_v, lw.attn_v_res, ws.normed, ws.v,
+                    static_cast<int>(H), kv_rows);
         if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
     } else {
         // attention_k_eq_v on the global layers: V IS the raw k_proj output
@@ -1023,24 +1038,23 @@ cudaError_t ForwardLayer(cudaStream_t stream,
             splits = (span + kAttnSplitKeys - 1) / kAttnSplitKeys;
         if (splits <= 1) {
             e = RunGemmaDenseAttention(stream, ws.q, dk, dv, ws.attn, seq, nh,
-                                       nkv, hd, window, frozen::kAttentionScale,
+                                       nkv, hd, window, pw.attention_scale,
                                        pos_base, kgeo, vgeo);
         } else {
             e = AttentionSplit(stream, ws.q, dk, dv, ws.attn, ws.attn_part, seq,
-                               nh, nkv, hd, window, frozen::kAttentionScale,
+                               nh, nkv, hd, window, pw.attention_scale,
                                pos_base, splits, kgeo, vgeo);
         }
     } else {
         e = RunGemmaDenseAttention(stream, ws.q, dk, dv, ws.attn, seq, nh, nkv,
-                                   hd, window, frozen::kAttentionScale,
+                                   hd, window, pw.attention_scale,
                                    pos_base, kgeo, vgeo);
     }
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
 
     // o_proj + the sandwich post-norm + residual.
-    e = RunLsxNvfp4Gemm(stream, ws.attn, lw.attn_o.d_packed, lw.attn_o.d_scales,
-                        lw.attn_o.global_scale, ws.proj, seq, q_rows,
-                        static_cast<int>(H));
+    e = project(lw.attn_o, lw.attn_o_res, ws.attn, ws.proj, q_rows,
+                static_cast<int>(H));
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
     e = RunGemmaDenseRMSNorm(stream, ws.proj, lw.d_post_norm, ws.normed, seq,
                              static_cast<int>(H), static_cast<float>(eps));
@@ -1061,23 +1075,19 @@ cudaError_t ForwardLayer(cudaStream_t stream,
     // gate and up project the SAME row; they are kept in two [seq, I] buffers
     // because the neutral GEMM writes contiguous rows (the GeGLU kernel takes
     // the two projections separately).
-    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.mlp_gate.d_packed,
-                        lw.mlp_gate.d_scales, lw.mlp_gate.global_scale,
-                        ws.gate_up, seq, static_cast<int>(H),
-                        static_cast<int>(I));
+    e = project(lw.mlp_gate, lw.mlp_gate_res, ws.normed, ws.gate_up,
+                static_cast<int>(H), static_cast<int>(I));
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
-    e = RunLsxNvfp4Gemm(stream, ws.normed, lw.mlp_up.d_packed,
-                        lw.mlp_up.d_scales, lw.mlp_up.global_scale, ws.act,
-                        seq, static_cast<int>(H), static_cast<int>(I));
+    e = project(lw.mlp_up, lw.mlp_up_res, ws.normed, ws.act,
+                static_cast<int>(H), static_cast<int>(I));
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
     e = RunGemmaDenseGeGLU(stream, ws.gate_up, ws.act, ws.gate_up,
                            static_cast<std::int64_t>(seq) * I);
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
     // The down projection consumes the GeGLU result (written back into
     // ws.gate_up), NOT the raw up projection.
-    e = RunLsxNvfp4Gemm(stream, ws.gate_up, lw.mlp_down.d_packed,
-                        lw.mlp_down.d_scales, lw.mlp_down.global_scale,
-                        ws.ffn, seq, static_cast<int>(I), static_cast<int>(H));
+    e = project(lw.mlp_down, lw.mlp_down_res, ws.gate_up, ws.ffn,
+                static_cast<int>(I), static_cast<int>(H));
     if (e != cudaSuccess) { GD_FAIL_LINE(e); return e; }
     e = RunGemmaDenseRMSNorm(stream, ws.ffn, lw.d_post_ffn, ws.proj, seq,
                              static_cast<int>(H), static_cast<float>(eps));
@@ -1224,7 +1234,7 @@ cudaError_t RunGemmaDenseGeneration(
                                               pw.embed.d_scales,
                                               pw.embed.global_scale, ws.ids,
                                               ws.x, seq, V, H,
-                                              frozen::kEmbedScale);
+                                              pw.embed_scale);
         if (e == cudaSuccess) e = run_layers(seq, 0);
         std::int32_t tok = -1;
         if (e == cudaSuccess) e = SampleNext(stream, ws, pw, seq, softcap);
@@ -1267,7 +1277,7 @@ cudaError_t RunGemmaDenseGeneration(
                                               pw.embed.d_scales,
                                               pw.embed.global_scale, ws.ids,
                                               ws.x, 1, V, H,
-                                              frozen::kEmbedScale);
+                                              pw.embed_scale);
         if (e == cudaSuccess) e = run_layers(1, pos_base);
         std::int32_t tok = -1;
         if (e == cudaSuccess) e = SampleNext(stream, ws, pw, 1, softcap);

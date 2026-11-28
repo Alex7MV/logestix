@@ -6,6 +6,7 @@
 #include <chrono>
 #include <string>
 
+#include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
 
 #include "fast_load_internal.h"
@@ -24,12 +25,18 @@ const std::string Gemma4_31BDenseModel::kType = "gemma-4-31b-it";
 // dispatcher's dense GEMVs to the streaming kernel; tc_fast_math follows the
 // tri-state config and routes eligible dense GEMMs to the TC mxf4nvf4 path.
 
+GemmaDenseModel::GemmaDenseModel(ModelInitConfig cfg,
+                                 gemma_dense::GemmaDenseFrozen frozen)
+    : ModelBase(std::move(cfg)), frozen_(frozen) {}
+
+GemmaDenseModel::~GemmaDenseModel() { Unload(); }
+
 Gemma4_31BDenseModel::Gemma4_31BDenseModel(ModelInitConfig cfg)
-    : ModelBase(std::move(cfg)) {}
+    : GemmaDenseModel(std::move(cfg), gemma_dense::frozen::kFrozen) {}
 
-Gemma4_31BDenseModel::~Gemma4_31BDenseModel() { Unload(); }
+Gemma4_31BDenseModel::~Gemma4_31BDenseModel() = default;
 
-void Gemma4_31BDenseModel::TeardownWeights()
+void GemmaDenseModel::TeardownWeights()
 {
     pw_.Free();
     weights_loaded_ = false;
@@ -40,31 +47,23 @@ void Gemma4_31BDenseModel::TeardownWeights()
     TeardownContext();
 }
 
-bool Gemma4_31BDenseModel::ValidateGeometry(
+bool GemmaDenseModel::ValidateGeometry(
     const gemma_dense::GemmaDenseTopology &top) const
 {
     if (!top.error_msg.empty()) return false;
     if (SyntheticGeometryAllowed()) return true;
-    const GeoFieldCheck fields[] = {
-        {"hidden_size", gemma_dense::frozen::kHiddenSize, top.hidden_size},
-        {"num_layers", gemma_dense::frozen::kNumLayers, top.num_layers},
-        {"num_attention_heads", gemma_dense::frozen::kNumHeads,
-         top.num_attention_heads},
-        {"num_key_value_heads", gemma_dense::frozen::kNumKVHeads,
-         top.num_key_value_heads},
-        {"num_global_key_value_heads", gemma_dense::frozen::kNumGlobalKVHeads,
-         top.num_global_key_value_heads},
-        {"head_dim", gemma_dense::frozen::kHeadDim, top.head_dim},
-        {"global_head_dim", gemma_dense::frozen::kGlobalHeadDim,
-         top.global_head_dim},
-        {"intermediate_size", gemma_dense::frozen::kIntermediateSize,
-         top.intermediate_size},
-        {"vocab_size", gemma_dense::frozen::kVocabSize, top.vocab_size},
-    };
-    return CheckGeometryFields("gemma-4-31b-it", fields, 9);
+    // Against THIS instance's passport, never against a namespace: the 12B and
+    // the 31B share every line of the decoder and differ in every number.
+    const std::string why =
+        gemma_dense::GemmaDenseGeometryMismatch(frozen_, top);
+    if (why.empty()) return true;
+    lsxcommon::log::error(
+        absl::StrCat("[gemma-dense-model] geometry mismatch for ",
+                     frozen_.model_type, " at ", cfg_.model_path, ":\n", why));
+    return false;
 }
 
-bool Gemma4_31BDenseModel::Load()
+bool GemmaDenseModel::Load()
 {
     Unload();  // idempotent re-load support
     tokenizer_optional_ = true;
@@ -110,7 +109,7 @@ bool Gemma4_31BDenseModel::Load()
     return true;
 }
 
-gpu::InferenceResult Gemma4_31BDenseModel::Infer(const ModelRequest &req)
+gpu::InferenceResult GemmaDenseModel::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
@@ -195,7 +194,7 @@ gpu::InferenceResult Gemma4_31BDenseModel::Infer(const ModelRequest &req)
     });
 }
 
-gpu::InferenceResult Gemma4_31BDenseModel::SelfCheck(const ModelRequest &req)
+gpu::InferenceResult GemmaDenseModel::SelfCheck(const ModelRequest &req)
 {
     // Gemma semantics: chat framing + leading <bos>, forced >= 8 generated
     // tokens, and a 12-token window in which "Paris" must appear.
@@ -207,7 +206,7 @@ gpu::InferenceResult Gemma4_31BDenseModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req, opts);
 }
 
-bool Gemma4_31BDenseModel::BuildConversationInputIds(
+bool GemmaDenseModel::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const
 {
@@ -218,7 +217,7 @@ bool Gemma4_31BDenseModel::BuildConversationInputIds(
     return true;
 }
 
-bool Gemma4_31BDenseModel::ParseToolCalls(
+bool GemmaDenseModel::ParseToolCalls(
     const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
     std::vector<ToolCall> &out_calls) const
 {

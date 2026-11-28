@@ -5,7 +5,7 @@
   "variant": null,
   "model_class": "Gemma4_31BDenseModel",
   "model_header": "gemma_dense_model.h",
-  "passport": "libs/lsxcommon/include/lsxcommon/gemma_dense_constants.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/gemma_dense_31b_constants.h",
   "namespace": "lsxcommon::gemma_dense::frozen",
   "format_tag": "",
   "forge_flag": "--gemma4dense",

@@ -43,6 +43,15 @@ struct GemmaDenseLayerWeights {
     lsx_nvfp4::LsxNvfp4Weight attn_q, attn_k, attn_v, attn_o;
     lsx_nvfp4::LsxNvfp4Weight mlp_gate, mlp_up, mlp_down;
 
+    // Second NVFP4 plane per projection: the residual `w - dequant(base)`.
+    // Uploaded from the `<name>.res.*` records when the tree carries them (the
+    // decode then runs one more GEMV with acc=true); left NULL on a legacy
+    // 4-bit-only tree, and the decode simply skips the accumulate pass. The
+    // tied embed/lm_head table has no residual: it is the largest plane in the
+    // tree and the measured 26B recipe left it at 4 bits.
+    lsx_nvfp4::LsxNvfp4Weight attn_q_res, attn_k_res, attn_v_res, attn_o_res;
+    lsx_nvfp4::LsxNvfp4Weight mlp_gate_res, mlp_up_res, mlp_down_res;
+
     // Non-null when the norms came from one arena allocation; Free() releases
     // it as a whole.
     void *d_arena = nullptr;
@@ -55,7 +64,9 @@ struct GemmaDenseLayerWeights {
 
 struct GemmaDensePinnedWeights {
     // Tied embed / lm_head: ONE NVFP4 table, sampled through the embed gather
-    // and again through the logits kernel.
+    // and again through the logits kernel. It carries NO residual plane: a
+    // measured experiment (2026-11-28) added one, cost 0.6 GiB and left the FSI
+    // gate byte-identical, so the projections' planes are the whole recipe.
     lsx_nvfp4::LsxNvfp4Weight embed;
     __half *d_final_norm = nullptr;
     // Arena holding the final norm (released by Free() as a whole).
@@ -69,8 +80,15 @@ struct GemmaDensePinnedWeights {
     // instead of a device readback per layer per forward).
     std::vector<float> h_layer_scalar;
 
-    GemmaDenseTopology top;  // from <root>/logestix/model.index.json
+    GemmaDenseTopology top;  // from <root>/model.index.json
     std::uint64_t resident_bytes = 0;
+
+    // Arithmetic constants of THIS checkpoint, filled by the loader from the
+    // topology it read: the embedding multiplier (bf16-rounded sqrt(hidden)) and
+    // the attention score scale (1.0 for every Gemma-4 member). Kept as data so
+    // the shared generation loop holds no model's geometry.
+    float embed_scale = 1.0f;
+    float attention_scale = 1.0f;
 
     void Free();
 };

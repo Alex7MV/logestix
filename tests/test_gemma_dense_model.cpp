@@ -11,6 +11,7 @@
 #include "test_gemma_dense_fixture.h"
 #include "test_streaming_assert.h"
 
+#include "lsxcommon/gemma_dense_31b_constants.h"
 #include "lsxcommon/gemma_dense_convert.h"
 #include "lsxcommon/gemma_dense_load.h"
 #include "lsxcommon/model_factory.h"

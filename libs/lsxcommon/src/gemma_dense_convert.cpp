@@ -99,6 +99,13 @@ bool parse_text_config(const std::string &json, GemmaDenseTopology &t)
     }
     t.total_pinned_tensors =
         get_i(src, "total_pinned_tensors", t.total_pinned_tensors);
+    t.skipped_visual_tensors =
+        get_i(src, "skipped_visual_tensors", t.skipped_visual_tensors);
+    if (auto m = root["model"].get_string(); m.error() == simdjson::SUCCESS)
+        t.model_name = std::string(m.value());
+    else if (auto m2 = src["model"].get_string();
+             m2.error() == simdjson::SUCCESS)
+        t.model_name = std::string(m2.value());
     t.num_attention_heads =
         get_i(src, "num_attention_heads", t.num_attention_heads);
     t.num_key_value_heads =
@@ -187,6 +194,15 @@ bool parse_text_config(const std::string &json, GemmaDenseTopology &t)
             root["eos_id"].get_int64().get(v) == simdjson::SUCCESS)
             t.eos_ids.push_back(static_cast<int>(v));
     }
+    // A config that omits a geometry field cannot be converted: this struct
+    // serves several checkpoints, so the value a default would supply is
+    // another size's. (The gate would refuse the tree at Load; failing here
+    // instead saves the GPU pass.)
+    const std::string missing = ValidateGemmaDenseTopology(t);
+    if (!missing.empty()) {
+        t.error_msg = "config.json is missing geometry: " + missing;
+        return false;
+    }
     return true;
 }
 
@@ -250,12 +266,21 @@ ParsedTensor classify_gemma_dense_tensor(const std::string &name)
 {
     using K = TensorKind;
 
-    // Multimodal fat (vision tower / vision embed) — stored and counted, never
-    // applied (this is a text-only runtime).
+    // Multimodal fat (vision tower / vision embed / unified vision_embedder /
+    // audio projection) — stored and counted, never applied (this is a
+    // text-only runtime). The `gemma4_unified` wrapper (gemma-4-12B-it) ships
+    // `model.vision_embedder.*` (patch projection + position table, no
+    // transformer) and one `model.embed_audio.embedding_projection` instead of
+    // the 26B/31B vision export, so both namings have to be claimed here; an
+    // unclaimed name is a hard conversion error, never a silent skip.
     if (name.rfind("model.vision_tower.", 0) == 0 ||
         name.rfind("vision_tower.", 0) == 0 ||
+        name.rfind("model.vision_embedder.", 0) == 0 ||
+        name.rfind("vision_embedder.", 0) == 0 ||
         name.rfind("model.embed_vision.", 0) == 0 ||
-        name.rfind("embed_vision.", 0) == 0)
+        name.rfind("embed_vision.", 0) == 0 ||
+        name.rfind("model.embed_audio.", 0) == 0 ||
+        name.rfind("embed_audio.", 0) == 0)
         return {K::Visual, -1};
 
     if (name == "model.language_model.embed_tokens.weight")
@@ -316,8 +341,13 @@ GemmaDenseTopology load_gemma_dense_topology(const std::string &config_path)
     std::string json((std::istreambuf_iterator<char>(f)),
                      std::istreambuf_iterator<char>());
     if (!parse_text_config(json, top)) {
+        // Keep the reason parse_text_config recorded (a missing geometry field
+        // names the field); "failed to parse" alone sends the next reader
+        // hunting the whole config.
         GemmaDenseTopology failed;
-        failed.error_msg = "failed to parse config JSON: " + config_path;
+        failed.error_msg = top.error_msg.empty()
+                               ? "failed to parse config JSON: " + config_path
+                               : top.error_msg + " (" + config_path + ")";
         return failed;
     }
 
@@ -350,7 +380,7 @@ arrow::Status WriteGemmaDenseModelIndex(const std::string &output_root,
     std::ostringstream j;
     j << "{\n"
       << "  \"layout\": 2,\n"
-      << "  \"model\": \"gemma-4-31B-it\",\n"
+      << "  \"model\": \"" << top.model_name << "\",\n"
       << "  \"mlp_nvfp4\": true,\n"
       << "  \"attn_nvfp4\": true,\n"
       << "  \"head_nvfp4\": true,\n"
@@ -380,8 +410,10 @@ arrow::Status WriteGemmaDenseModelIndex(const std::string &output_root,
         j << top.eos_ids[i];
     }
     j << "]"
-      << ",\n  \"pad_id\": " << top.pad_id
+      << ",\n  \"residual\": \"attn+mlp\","
+      << "\n  \"pad_id\": " << top.pad_id
       << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
+      << ",\n  \"skipped_visual_tensors\": " << top.skipped_visual_tensors
       << ",\n" << FormatVramJson(top.vram) << "\n}";
 
     std::ofstream out(dir / "model.index.json");
@@ -439,13 +471,18 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
         std::string cjson(static_cast<size_t>(csz), '\0');
         cf.read(cjson.data(), csz);
         if (!parse_text_config(cjson, top))
-            return arrow::Status::Invalid("failed to parse ",
-                                          cfg_path.string());
+            return arrow::Status::Invalid(
+                top.error_msg.empty() ? "failed to parse config"
+                                      : top.error_msg,
+                cfg_path.string());
         MergeGenerationConfigEos(input_path, top);
     }
 
     const int cfg_num_layers = top.num_layers;
     top.num_layers = max_layer + 1;
+    // The checkpoint this tree came from: the input directory's leaf, never a
+    // literal (one converter serves every dense Gemma-4 member).
+    top.model_name = fs::path(input_path).filename().string();
 
     // Layer-type decision: a layer is full_attention when its q width matches
     // heads*global_head_dim (real checkpoint: sliding q [8192,5376] =
@@ -530,6 +567,13 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
     // (<name>.packed E2M1 nibbles | <name>.scales E4M3 per 16 | <name>.
     // global_scale F32); the loader detects the triple and uploads an
     // LsxNvfp4Weight instead of the raw BF16 tensor.
+    //
+    // Each record NAMES its codec. Verifier rule D1 rejects `U8` on a weight
+    // plane (it was the old ambiguous spelling of "NVFP4 nibbles, if a .scales
+    // sibling exists"), and the codec-profile path runs ScanArtifactTree before
+    // it publishes anything: a tree written with U8 quantised on the GPU for
+    // minutes and was then thrown away with "the converted tree is not a valid
+    // artifact".
     auto append_nvfp4_records = [](const std::string &base,
                                    const std::vector<uint8_t> &packed,
                                    const std::vector<uint8_t> &scales,
@@ -538,11 +582,13 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
                                    std::vector<TensorRecord> &dst) {
         TensorRecord pk, sc, gs;
         pk.name = base + ".packed";
-        pk.dtype = "U8";
+        pk.dtype = "NVFP4";
         pk.shape = shape;
         pk.data = packed;
         sc.name = base + ".scales";
-        sc.dtype = "U8";
+        // E4M3 block scales: a companion (no codec bit of its own, D2), named
+        // for what it is rather than as bytes.
+        sc.dtype = "F8_E4M3";
         sc.shape = shape;
         sc.data = scales;
         gs.name = base + ".global_scale";
@@ -594,6 +640,9 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
                         rec.global_scale))
                     return arrow::Status::IOError(
                         "GPU NVFP4 quantization failed for ", t.name);
+                // NO residual plane on the tied table. Measured 2026-11-28:
+                // +0.6 GiB and a byte-identical FSI 2/3, so it was reverted.
+                // The projections' planes are what clears this family's gate.
                 global_nvfp4.push_back(std::move(rec));
                 ++total_pinned;
                 continue;
@@ -610,6 +659,28 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
                 append_nvfp4_records(t.name, packed, scales, gs, r.shape,
                                      raw_by_layer[p.layer]);
                 total_pinned += 3;  // packed + scales + global_scale records
+
+                // Second NVFP4 plane: the residual `w - dequant(base)`, decoded
+                // as one more GEMV with acc=true. A single 4-bit plane carries
+                // ~0.09 relative L2 error over the whole body, and this family's
+                // FSI gate is a near-tie decision that the accumulated error
+                // moves. Two planes give ~8 effective bits for 2x the
+                // projection bytes — 12B fits that on a 32 GB card (the 31B's
+                // 33.7 GiB does not).
+                if (p.kind != TensorKind::Embed) {
+                    std::vector<uint8_t> rpk, rsc;
+                    float rgs = 1.0f;
+                    if (!gpu::quantize_residual_tensor_gpu(
+                            r.data.data(),
+                            static_cast<int64_t>(r.data.size()) / 2, "BF16",
+                            r.shape, packed, scales, gs, rpk, rsc, rgs))
+                        return arrow::Status::IOError(
+                            "GPU NVFP4 residual quantization failed for ",
+                            t.name);
+                    append_nvfp4_records(t.name + ".res", rpk, rsc, rgs,
+                                         r.shape, raw_by_layer[p.layer]);
+                    total_pinned += 3;
+                }
                 continue;
             }
 
@@ -644,6 +715,7 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
                  top.num_layers, skipped_visual, total_pinned);
 
     top.total_pinned_tensors = static_cast<int>(total_pinned);
+    top.skipped_visual_tensors = static_cast<int>(skipped_visual);
 
     // Conversion-time VRAM profile. Everything this family stores is resident
     // (there are no routed experts); the vision ballast is NOT uploaded, so it

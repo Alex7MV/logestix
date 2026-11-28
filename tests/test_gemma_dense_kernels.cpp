@@ -6,12 +6,14 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <random>
 #include <vector>
 
 #include "lsxcommon/gemma_dense_inference.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 
 namespace {
 
@@ -655,4 +657,169 @@ TEST_CASE("gemma dense head norm: real-shape, zero rows, in place",
         CHECK(Close(__half2float(h[i]), ref[i], 6e-3));
     cudaFree(dx);
     cudaFree(dw);
+}
+
+// The per-tensor `global_scale` of the tied table must reach the logits dot.
+//
+// A fixture with gs == 1 cannot see a dropped scale: multiplied by one, every
+// reference agrees. That is exactly how gemma-4-26b shipped 7.01x-hot logits
+// once. The 12B subtree's `global_scale` is not 1 (the quantizer scales each
+// tensor by its own amax), so a dropped factor would move every logit by a
+// constant ratio and flip the fork the FSI gate sits on.
+TEST_CASE("gemma dense logits apply the table's global_scale (gs != 1)",
+          "[gemma_dense][kernels]") {
+    constexpr int vocab = 64, hidden = 64;
+    const size_t numel = static_cast<size_t>(vocab) * hidden;
+    std::vector<uint8_t> packed(numel / 2), scales(numel / 16, 0x38);
+    for (size_t i = 0; i < packed.size(); ++i)
+        packed[i] = static_cast<uint8_t>((i * 5 + 3) % 16);
+    const auto hx = RandomHalves(hidden);
+    const auto x = ToFloat(hx);
+    const float cap = 30.0f;
+    const size_t arg_tail = (vocab + 127) / 128 * 2;
+
+    uint8_t *dp, *ds;
+    __half *dx, *dlogits_h;
+    int32_t *darg;
+    float *dmax, *dlogits;
+    REQUIRE(cudaMalloc(&dp, packed.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, scales.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&darg, 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dmax, 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dlogits, (vocab + arg_tail) * sizeof(float)) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&dlogits_h, vocab * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dp, packed.data(), packed.size(),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, scales.data(), scales.size(),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, hx.data(), hidden * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    const auto run = [&](float gs, std::vector<float> *out) {
+        REQUIRE(RunGemmaDenseLogitsArgmax(nullptr, dp, ds, gs, dx, vocab, hidden,
+                                          cap, darg, dmax, dlogits,
+                                          dlogits_h) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        out->assign(vocab, 0.f);
+        REQUIRE(cudaMemcpy(out->data(), dlogits, vocab * sizeof(float),
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+    };
+
+    std::vector<float> one, three;
+    run(1.0f, &one);
+    run(3.5f, &three);
+
+    // Reference with gs applied, per vocab row.
+    for (int v = 0; v < vocab; ++v) {
+        double acc = 0.0;
+        for (int d = 0; d < hidden; ++d) {
+            const size_t flat = static_cast<size_t>(v) * hidden + d;
+            const uint8_t byte = packed[flat >> 1];
+            const int nib = (flat & 1) ? (byte >> 4) : (byte & 0xF);
+            acc += static_cast<double>(x[static_cast<size_t>(d)]) * E2M1(nib) *
+                   E4M3(scales[flat >> 4]);
+        }
+        const double want = std::tanh(acc * 3.5 / cap) * cap;
+        INFO("v=" << v);
+        CHECK(Close(three[static_cast<size_t>(v)], want, 3e-2));
+    }
+    // And the two runs must actually DIFFER: a dropped scale makes them equal.
+    double max_delta = 0.0;
+    for (int v = 0; v < vocab; ++v)
+        max_delta = std::max(max_delta,
+                             std::abs(static_cast<double>(
+                                          three[static_cast<size_t>(v)] -
+                                          one[static_cast<size_t>(v)])));
+    INFO("max |logits(gs=3.5) - logits(gs=1)| = " << max_delta);
+    CHECK(max_delta > 1e-2);
+
+    cudaFree(dp);
+    cudaFree(ds);
+    cudaFree(dx);
+    cudaFree(darg);
+    cudaFree(dmax);
+    cudaFree(dlogits);
+    cudaFree(dlogits_h);
+}
+
+// ── The residual plane's arithmetic ────────────────────────────────────────
+//
+// The decode runs the base GEMV, then ONE more GEMV of the residual plane with
+// acc=true into the same output, so the arithmetic is "base dot rounds to F16,
+// then the residual dot adds and rounds once more". This pins that composition
+// against a host reference that rounds between the two dots — the engine must
+// not fuse them (a fused dot would be a different numeric class and would move
+// the FSI fork the plane was added to fix).
+TEST_CASE("gemma dense residual plane accumulates after the base dot",
+          "[gemma_dense][kernels]") {
+    constexpr int K = 128, N = 32;
+    // Deterministic nibble patterns for base and residual, unit block scales.
+    auto make_plane = [&](int seed, std::vector<uint8_t> *packed,
+                          std::vector<uint8_t> *scales) {
+        packed->assign(static_cast<size_t>(N) * K / 2, 0);
+        scales->assign(static_cast<size_t>(N) * K / 16, 0x38);  // 1.0
+        for (size_t i = 0; i < packed->size(); ++i)
+            (*packed)[i] = static_cast<uint8_t>((i * 7 + seed) % 16 | (((i * 3 + seed) % 16) << 4));
+    };
+    std::vector<uint8_t> bp, bs, rp, rs;
+    make_plane(1, &bp, &bs);
+    make_plane(5, &rp, &rs);
+    const float bgs = 0.75f, rgs = 0.25f;
+    const auto hx = RandomHalves(K);
+    const auto x = ToFloat(hx);
+
+    uint8_t *dbp, *dbs, *drp, *drs;
+    __half *dx, *dy;
+    REQUIRE(cudaMalloc(&dbp, bp.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dbs, bs.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&drp, rp.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&drs, rs.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, K * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy, static_cast<size_t>(N) * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dbp, bp.data(), bp.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dbs, bs.data(), bs.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(drp, rp.data(), rp.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(drs, rs.data(), rs.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, hx.data(), K * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+
+    // base (acc=false), then residual (acc=true) — the decode's composition.
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(nullptr, dx, dbp, dbs, bgs,
+                                                  dy, 1, K, N, false) ==
+            cudaSuccess);
+    REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(nullptr, dx, drp, drs, rgs,
+                                                  dy, 1, K, N, true) ==
+            cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    std::vector<__half> got(N);
+    REQUIRE(cudaMemcpy(got.data(), dy, static_cast<size_t>(N) * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    for (int n = 0; n < N; ++n) {
+        const auto dot = [&](const std::vector<uint8_t> &pk,
+                             const std::vector<uint8_t> &sc, float gs) {
+            double acc = 0.0;
+            for (int k = 0; k < K; ++k) {
+                const size_t flat = static_cast<size_t>(n) * K + k;
+                const uint8_t byte = pk[flat >> 1];
+                const int nib = (flat & 1) ? (byte >> 4) : (byte & 0xF);
+                acc += static_cast<double>(x[size_t(k)]) * E2M1(nib) *
+                       E4M3(sc[flat >> 4]) * gs;
+            }
+            return acc;
+        };
+        // Round to F16 between the two dots: that is the composition under test.
+        double want = static_cast<double>(__half2float(__float2half(dot(bp, bs, bgs))));
+        want = static_cast<double>(__half2float(
+            __float2half(static_cast<float>(want + dot(rp, rs, rgs)))));
+        INFO("n=" << n);
+        CHECK(Close(__half2float(got[static_cast<size_t>(n)]), want, 3e-2));
+    }
+    cudaFree(dbp);
+    cudaFree(dbs);
+    cudaFree(drp);
+    cudaFree(drs);
+    cudaFree(dx);
+    cudaFree(dy);
 }

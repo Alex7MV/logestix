@@ -1,19 +1,23 @@
 #pragma once
 
-// Gemma-4-31B-it frozen geometry passport (Model Ingestion Protocol step 3).
+// Gemma-4 DENSE family — shared TYPES, not a passport (Model Ingestion
+// Protocol step 3).
 //
-// The DENSE member of the Gemma-4 family: `Gemma4ForConditionalGeneration`
-// with `text_config.enable_moe_block = false`, i.e. the same decoder as
-// gemma-4-26B-A4B-it (5:1 sliding/full-attention pattern, per-head QK-norm with
-// K tied to V on the global layers, four norms per layer, GeGLU, tied
-// embed/lm_head, softcapped logits) but with NO routed experts, twice the depth
-// and ~2x the width. A different geometry is a NEW family in this repo: it owns
-// this passport, its own converter/loader/kernels and its own namespace, and it
-// borrows no constant from the 26B MoE model.
+// The Gemma-4 dense decoder is ingested at several sizes (gemma-4-31B-it and
+// its 12B sibling); ONE converter, ONE loader, ONE kernel set and ONE lifecycle
+// body serve them all. This header holds what they SHARE: the loaded topology,
+// the frozen-expectations struct, the geometry gate and the embedding-scale
+// derivation. It deliberately holds NO checkpoint's numbers — those live in
+// each model's own passport:
 //
-// This header is a LEAF: it includes no other model's passport
-// (model-independence invariant). It is device-safe (no abseil, no arrow) so the
-// .cu inference layer can include it.
+//   gemma_dense_31b_constants.h  -> lsxcommon::gemma_dense::frozen
+//   gemma_dense_12b_constants.h  -> lsxcommon::gemma_dense_12b::frozen
+//
+// That split is the model-independence invariant: a shared copy of the geometry
+// is how one sibling ends up decoding a plausible-but-wrong model.
+//
+// This header is a LEAF (vram_estimate.h only) and is device-safe (no abseil,
+// no arrow), so the .cu inference layer can include it.
 
 #include <cstddef>
 #include <cstdint>
@@ -27,20 +31,26 @@ namespace gemma_dense {
 
 // Loaded/converted topology of a Gemma-4 dense checkpoint. Device-safe so the
 // .cu layer can include it; populated by the converter from config.json and
-// re-read from <root>/logestix/model.index.json by the loader.
+// re-read from <root>/model.index.json by the loader.
+//
+// The shape fields default to ZERO, never to a size: several checkpoints share
+// this struct, so a default would be one sibling's geometry, and a config (or
+// index) that omits a field would then convert to a tree that spreads out at the
+// wrong width. `ValidateGemmaDenseTopology` refuses the parse instead, which is
+// the only honest answer when we cannot tell what the checkpoint is.
 struct GemmaDenseTopology {
-    int num_layers = 60;
+    int num_layers = 0;
     // "sliding_attention" | "full_attention", one per layer.
     std::vector<std::string> layer_types;
-    int hidden_size = 5376;
-    int intermediate_size = 21504;
-    int vocab_size = 262144;
-    int num_attention_heads = 32;
-    int num_key_value_heads = 16;          // sliding layers
-    int num_global_key_value_heads = 4;    // full-attention layers (K is also V)
-    int head_dim = 256;                    // sliding layers
-    int global_head_dim = 512;             // full-attention layers
-    int sliding_window = 1024;
+    int hidden_size = 0;
+    int intermediate_size = 0;
+    int vocab_size = 0;
+    int num_attention_heads = 0;
+    int num_key_value_heads = 0;          // sliding layers
+    int num_global_key_value_heads = 0;   // full-attention layers (K is also V)
+    int head_dim = 0;                     // sliding layers
+    int global_head_dim = 0;              // full-attention layers
+    int sliding_window = 0;
     float rms_norm_eps = 1e-6f;
     float rope_theta_sliding = 10000.0f;
     float rope_theta_full = 1000000.0f;
@@ -50,6 +60,14 @@ struct GemmaDenseTopology {
     std::vector<int> eos_ids;
     int pad_id = 0;
     int total_pinned_tensors = 0;
+    // Multimodal tensors the converter recognised and stripped (counted, never
+    // applied). Written to model.index.json so the stripped mass is auditable
+    // after the checkpoint is gone.
+    int skipped_visual_tensors = 0;
+    // The checkpoint this tree was converted from (the input directory's leaf).
+    // NOT a hardcoded model card: an artifact that still says "gemma-4-31B-it"
+    // cannot be told apart from the 31B tree by a reader.
+    std::string model_name;
     VramProfile vram;         // conversion-time VRAM requirements (mandatory)
     std::string error_msg;    // non-empty when index.json is invalid
 
@@ -85,79 +103,65 @@ struct GemmaDenseTopology {
     int Window(int layer) const { return IsFull(layer) ? 0 : sliding_window; }
 };
 
-namespace frozen {
+// ── The frozen expectations, as DATA ───────────────────────────────────────
+//
+// One converter, one loader, one kernel set and one lifecycle body serve every
+// dense Gemma-4 member (the `granite-switch-4.1` shape). What keeps two
+// checkpoints apart is the passport each class validates the converted tree
+// against, so the numbers travel as this struct instead of being read from a
+// namespace: `granite_dense_constants.h` established the precedent after a
+// shared copy of the numbers made a sibling decode a plausible-but-wrong model.
+//
+// Each passport header defines its own `frozen::kFrozen` instance; nothing here
+// holds a value that belongs to one checkpoint.
+struct GemmaDenseFrozen {
+    const char *model_type = "";
+    int num_layers = 0;
+    int hidden_size = 0;
+    int intermediate_size = 0;
+    int vocab_size = 0;
+    int num_attention_heads = 0;
+    int num_key_value_heads = 0;         // sliding layers
+    int num_global_key_value_heads = 0;  // full-attention layers (K is also V)
+    int head_dim = 0;                    // sliding layers
+    int global_head_dim = 0;             // full-attention layers
+    int sliding_window = 0;
+    double rms_norm_eps = 0.0;
+    double rope_theta_sliding = 0.0;
+    double rope_theta_full = 0.0;
+    double partial_rotary_factor = 0.0;
+    double final_logit_softcapping = 0.0;
+    // Gemma-4 has NO attention score scale (q/k are per-head RMS-normalised),
+    // so this is 1.0 for every member; it is data anyway, because a family that
+    // silently applies 1/sqrt(head_dim) decodes garbage and the passport is
+    // where "what this checkpoint says" belongs.
+    float attention_scale = 1.0f;
+    // 5:1 pattern: layer l is full_attention iff (l + 1) % period == 0.
+    int full_layer_period = 0;
+};
 
-// ── Frozen compile-time geometry (config.json + safetensors, 2026-10-09) ───
-inline constexpr int kHiddenSize = 5376;
-inline constexpr int kNumLayers = 60;
-inline constexpr int kNumHeads = 32;
-inline constexpr int kNumKVHeads = 16;          // sliding layers
-inline constexpr int kNumGlobalKVHeads = 4;     // full-attention layers
-inline constexpr int kHeadDim = 256;            // sliding layers
-inline constexpr int kGlobalHeadDim = 512;      // full-attention layers
-inline constexpr int kIntermediateSize = 21504;
-inline constexpr int kVocabSize = 262144;
-inline constexpr int kSlidingWindow = 1024;
+// Non-empty when a REQUIRED geometry field is absent/zero. Called by both
+// parsers (the checkpoint's config.json and the converted model.index.json):
+// with several checkpoints behind one struct there is no safe default, so a
+// missing field must fail the parse instead of being filled from a sibling.
+// `sliding_window`/`max_position_embeddings` are deliberately NOT required —
+// a full-attention-only tree has no window, and the context length is not a
+// decode parameter.
+std::string ValidateGemmaDenseTopology(const GemmaDenseTopology &top);
 
-// The 5:1 sliding/full pattern: layer l is global iff (l + 1) % 6 == 0
-// (5, 11, …, 59 — verified against config.json `layer_types`).
-inline constexpr int kFullLayerPeriod = 6;
-inline constexpr int kNumFullLayers = 10;
-inline constexpr int kNumSlidingLayers = kNumLayers - kNumFullLayers;
+// Empty when `top` is the tree `f` describes; otherwise every difference on its
+// own line (a re-converted tree that is wrong twice must not need two runs to
+// discover). Declared here — the family's shared types header — rather than in
+// a model TU so a host-only unit test can exercise it with no GPU and no
+// checkpoint.
+std::string GemmaDenseGeometryMismatch(const GemmaDenseFrozen &f,
+                                       const GemmaDenseTopology &top);
 
-inline constexpr double kRmsNormEps = 1e-6;
-inline constexpr double kRopeThetaSliding = 10000.0;
-inline constexpr double kRopeThetaFull = 1000000.0;
+// The embedding multiplier upstream actually applies: sqrt(hidden_size) cast to
+// the weight dtype (bf16) FIRST, so 3840 -> 62.0 and 5376 -> 73.5, not the
+// exact roots. Derived from the loaded topology, never from a sibling's
+// constant: using the 31B's 73.5 on a 12B scales every embedding by 1.19.
+float GemmaDenseEmbedScale(int hidden_size);
 
-// "proportional" RoPE of the global layers (rope_type = "proportional",
-// partial_rotary_factor = 0.25, transformers/models/gemma4 +
-// modeling_rope_utils._compute_proportional_rope_parameters): the encoding
-// spans the WHOLE head dim and rotate_half pairs (i, i + head_dim/2); the first
-// `kFullRotaryAngles` frequency pairs are theta^(-2i / head_dim), the remaining
-// pairs are zero (cos=1, sin=0, i.e. the middle of the head is left untouched).
-inline constexpr double kPartialRotaryFactor = 0.25;
-inline constexpr int kFullRotaryAngles =
-    static_cast<int>(kPartialRotaryFactor * kGlobalHeadDim / 2);  // 64
-
-// Gemma-4 attention has NO score scale: q and k are per-head RMS-normalized
-// before the product (Gemma4TextAttention.scaling = 1.0), so 1/sqrt(head_dim)
-// must NOT be applied.
-inline constexpr float kAttentionScale = 1.0f;
-
-// Gemma4TextScaledWordEmbedding multiplies the embedding by sqrt(hidden_size);
-// upstream casts that constant to the weight dtype first (bf16), so 73.3212…
-// rounds to 73.5 and the gather multiplies by THAT, not by the exact root.
-inline constexpr float kEmbedScale = 73.5f;
-
-// Final logits soft cap: logits = tanh(l / cap) * cap (cap 30).
-inline constexpr float kFinalLogitSoftcap = 30.0f;
-
-// Special tokens (config.json / generation_config.json).
-inline constexpr int32_t kBosId = 2;
-inline constexpr int32_t kPadId = 0;
-// config.json carries [1, 106]; generation_config.json adds 50 (<end_of_turn>).
-inline constexpr int32_t kEosIdPrimary = 1;
-inline constexpr int32_t kEosIdTurn = 106;
-inline constexpr int32_t kEosIdEndTurn = 50;
-
-// Geometry invariants.
-static_assert(kHiddenSize > 0 && kIntermediateSize > 0 && kVocabSize > 0,
-              "positive Gemma-4 dense geometry required");
-static_assert(kNumHeads % kNumKVHeads == 0 && kNumKVHeads > 0,
-              "num_attention_heads must be a multiple of num_key_value_heads");
-static_assert(kNumHeads % kNumGlobalKVHeads == 0 && kNumGlobalKVHeads > 0,
-              "num_attention_heads must be a multiple of the global kv heads");
-static_assert(kHeadDim * kNumKVHeads != kGlobalHeadDim * kNumGlobalKVHeads,
-              "sliding and global KV row counts must differ (they gate the "
-              "per-layer cache geometry)");
-static_assert(kNumFullLayers * kFullLayerPeriod == kNumLayers,
-              "the 5:1 pattern must divide the depth exactly");
-static_assert(kFullRotaryAngles ==
-                  static_cast<int>(kPartialRotaryFactor * kGlobalHeadDim / 2),
-              "kFullRotaryAngles must be partial_rotary_factor*head_dim/2");
-static_assert(kFullRotaryAngles * 2 <= kGlobalHeadDim / 2,
-              "the rotated pairs must fit inside the first rotate_half half");
-
-} // namespace frozen
 } // namespace gemma_dense
 } // namespace lsxcommon

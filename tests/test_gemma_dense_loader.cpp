@@ -34,6 +34,17 @@ std::filesystem::path MakeConvertedSynthetic()
     return out;
 }
 
+bool lw_res_null_after_free(
+    const lsxcommon::gemma_dense::GemmaDensePinnedWeights &pw)
+{
+    for (const auto &lw : pw.layers) {
+        if (lw.attn_q.d_packed != nullptr) return false;
+        if (lw.attn_q_res.d_packed != nullptr) return false;
+        if (lw.mlp_down_res.d_packed != nullptr) return false;
+    }
+    return pw.embed.d_packed == nullptr && pw.layers.empty();
+}
+
 } // namespace
 
 TEST_CASE("LoadGemmaDensePinnedWeights layout", "[gemma_dense][loader]") {
@@ -49,6 +60,16 @@ TEST_CASE("LoadGemmaDensePinnedWeights layout", "[gemma_dense][loader]") {
     CHECK(pw.vocab_size == 64);
     CHECK(pw.hidden == 64);
     CHECK(pw.resident_bytes > 0);
+
+    // The arithmetic constants come from the tree that was LOADED, not from a
+    // sibling's passport. Both members of the family share this loader, and the
+    // embedding multiplier is bf16(sqrt(hidden)): 62.0 at 3840 and 73.5 at 5376.
+    // A shared literal is how the 12B would scale every embedding by 1.19 with
+    // every downstream number still plausible, so the fixture's own geometry
+    // (hidden 64 -> 8.0) is the check that the value MOVES with the checkpoint.
+    CHECK(pw.embed_scale == lsxcommon::gemma_dense::GemmaDenseEmbedScale(pw.top.hidden_size));
+    CHECK(pw.embed_scale == 8.0f);              // bf16(sqrt(64)); 73.5 is the 31B's
+    CHECK(pw.attention_scale == 1.0f);          // no score scale in Gemma-4
 
     // Tied embed/lm_head is ONE NVFP4 table.
     CHECK(pw.embed.d_packed != nullptr);
@@ -188,5 +209,82 @@ TEST_CASE("loader refuses a checkpoint whose layer is missing a projection",
                                                              nullptr) !=
           cudaSuccess);
     pw.Free();
+    fs::remove_all(out.parent_path());
+}
+
+// ── Residual plane (stage 2 "Parity fix") ──────────────────────────────────
+//
+// The loader uploads a SECOND LsxNvfp4Weight per projection when the tree has
+// one, and leaves it NULL on a legacy 4-bit-only tree so the decode skips the
+// accumulate pass and old artifacts keep loading. Both halves matter: a loader
+// that requires the residual breaks every previously converted tree, and one
+// that never uploads it silently decodes at 4 bits while the converter paid for
+// 8.
+TEST_CASE("loader uploads the residual plane and tolerates its absence",
+          "[gemma_dense][loader]") {
+    namespace fs = std::filesystem;
+    auto out = MakeConvertedSynthetic();
+
+    {
+        lsxcommon::gemma_dense::GemmaDensePinnedWeights pw;
+        REQUIRE(lsxcommon::gemma_dense::LoadGemmaDensePinnedWeights(
+                    out.string(), pw, nullptr) == cudaSuccess);
+        REQUIRE(!pw.layers.empty());
+        const auto &lw = pw.layers[0];
+        // Base + residual both present, same shape.
+        CHECK(lw.attn_q.d_packed != nullptr);
+        CHECK(lw.attn_q_res.d_packed != nullptr);
+        CHECK(lw.attn_q_res.d_scales != nullptr);
+        CHECK(lw.attn_q_res.rows == lw.attn_q.rows);
+        CHECK(lw.attn_q_res.cols == lw.attn_q.cols);
+        CHECK(lw.mlp_down_res.d_packed != nullptr);
+        CHECK(lw.attn_o_res.d_packed != nullptr);
+        // The full-attention layer has no v_proj, so it has no v residual.
+        CHECK(pw.layers[3].attn_v.d_packed == nullptr);
+        CHECK(pw.layers[3].attn_v_res.d_packed == nullptr);
+        // The tied table carries NO residual plane: measured, it did not move
+        // this family's FSI gate and cost 0.6 GiB, so the projections' planes
+        // are the whole recipe.
+        CHECK(pw.embed.d_packed != nullptr);
+        // The residual roughly doubles the resident projection bytes, and the
+        // count is what the governor lease and the "resident:" line report.
+        CHECK(pw.resident_bytes > 0);
+        const std::uint64_t with_res = pw.resident_bytes;
+        pw.Free();
+        CHECK(lw_res_null_after_free(pw));
+        (void)with_res;
+    }
+
+    // A tree converted BEFORE the residual existed: strip every ".res" record
+    // from one layer and the loader must still load it, with the residual null.
+    {
+        const auto path = out / "pinned" / "layer_0.arrow";
+        {
+            auto batch = lsxcommon::LoadTensorBatchViews(path);
+            REQUIRE(batch.ok());
+            std::vector<lsxcommon::TensorRecord> kept;
+            for (const auto &t : batch->tensors) {
+                if (std::string(t.name).find(".res.") != std::string::npos)
+                    continue;
+                lsxcommon::TensorRecord r;
+                r.name = t.name;
+                r.dtype = t.dtype;
+                r.shape.assign(t.shape, t.shape + t.rank);
+                r.data.assign(t.data, t.data + t.bytes);
+                kept.push_back(std::move(r));
+            }
+            batch->keepalive.reset();
+            auto rebuilt = lsxcommon::PinnedSchema::MakeBatch(kept);
+            REQUIRE(rebuilt.ok());
+            REQUIRE(lsxcommon::WriteRecordBatchToFile(*rebuilt, path).ok());
+        }
+        lsxcommon::gemma_dense::GemmaDensePinnedWeights pw;
+        REQUIRE(lsxcommon::gemma_dense::LoadGemmaDensePinnedWeights(
+                    out.string(), pw, nullptr) == cudaSuccess);
+        CHECK(pw.layers[0].attn_q.d_packed != nullptr);
+        CHECK(pw.layers[0].attn_q_res.d_packed == nullptr);   // legacy layer
+        CHECK(pw.layers[1].attn_q_res.d_packed != nullptr);   // untouched layer
+        pw.Free();
+    }
     fs::remove_all(out.parent_path());
 }

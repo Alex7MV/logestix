@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -23,6 +24,103 @@ namespace lsxcommon {
 namespace gemma_dense {
 
 namespace fs = std::filesystem;
+
+// ── Passport gates (shared by every dense Gemma-4 member) ──────────────────
+
+// A missing required field is a parse failure, not a defaulted value: one
+// topology struct serves every dense Gemma-4 size, so "the default" would be a
+// sibling's geometry and the tree would spread out at the wrong width. Both
+// parsers (the checkpoint's config.json and the converted model.index.json)
+// call this.
+std::string ValidateGemmaDenseTopology(const GemmaDenseTopology &top)
+{
+    std::string out;
+    const auto need = [&out](const char *field, int v) {
+        if (v > 0) return;
+        out += absl::StrCat("required geometry field '", field,
+                            "' is missing or non-positive (", v, ")\n");
+    };
+    need("num_layers", top.num_layers);
+    need("hidden_size", top.hidden_size);
+    need("intermediate_size", top.intermediate_size);
+    need("vocab_size", top.vocab_size);
+    need("num_attention_heads", top.num_attention_heads);
+    need("num_key_value_heads", top.num_key_value_heads);
+    need("num_global_key_value_heads", top.num_global_key_value_heads);
+    need("head_dim", top.head_dim);
+    need("global_head_dim", top.global_head_dim);
+    return out;
+}
+
+// The gate takes the numbers as data, so one implementation serves the 12B and
+// the 31B: each class passes its own `frozen::kFrozen`, and a converted tree is
+// accepted only by the passport it actually describes. Every difference is
+// reported, not just the first — a tree that is wrong twice must not need two
+// runs to discover.
+std::string GemmaDenseGeometryMismatch(const GemmaDenseFrozen &f,
+                                       const GemmaDenseTopology &top)
+{
+    std::string out;
+    const auto add = [&out](const char *field, auto expect, auto got) {
+        if (expect == got) return;
+        out += absl::StrCat(field, ": passport ", expect, " != tree ", got, "\n");
+    };
+    add("num_layers", f.num_layers, top.num_layers);
+    add("hidden_size", f.hidden_size, top.hidden_size);
+    add("intermediate_size", f.intermediate_size, top.intermediate_size);
+    add("vocab_size", f.vocab_size, top.vocab_size);
+    add("num_attention_heads", f.num_attention_heads, top.num_attention_heads);
+    add("num_key_value_heads", f.num_key_value_heads, top.num_key_value_heads);
+    add("num_global_key_value_heads", f.num_global_key_value_heads,
+        top.num_global_key_value_heads);
+    add("head_dim", f.head_dim, top.head_dim);
+    add("global_head_dim", f.global_head_dim, top.global_head_dim);
+    add("sliding_window", f.sliding_window, top.sliding_window);
+    add("rms_norm_eps", static_cast<float>(f.rms_norm_eps), top.rms_norm_eps);
+    add("rope_theta_sliding", static_cast<float>(f.rope_theta_sliding),
+        top.rope_theta_sliding);
+    add("rope_theta_full", static_cast<float>(f.rope_theta_full),
+        top.rope_theta_full);
+    add("partial_rotary_factor", static_cast<float>(f.partial_rotary_factor),
+        top.partial_rotary_factor);
+    add("final_logit_softcapping", static_cast<float>(f.final_logit_softcapping),
+        top.final_logit_softcapping);
+
+    // The hybrid pattern is the most-missed field of a Gemma-4 checkpoint: a
+    // tree whose layer_types disagrees with the passport's period decodes with
+    // a sliding band where it needs full attention (or the reverse), and every
+    // downstream number stays plausible.
+    if (f.full_layer_period > 0 &&
+        static_cast<int>(top.layer_types.size()) == top.num_layers) {
+        for (int l = 0; l < top.num_layers; ++l) {
+            const bool expect_full = (l + 1) % f.full_layer_period == 0;
+            if (top.IsFull(l) == expect_full) continue;
+            out += absl::StrCat("layer_types[", l, "]: passport ",
+                                expect_full ? "full_attention"
+                                            : "sliding_attention",
+                                " != tree ",
+                                top.layer_types[static_cast<size_t>(l)], "\n");
+        }
+    }
+    return out;
+}
+
+// sqrt(hidden_size) cast to bf16 — what Gemma4TextScaledWordEmbedding actually
+// multiplies by. Round-to-nearest-even on the low 16 mantissa bits, i.e. exactly
+// what `bf16(sqrt(float(hidden)))` does upstream.
+float GemmaDenseEmbedScale(int hidden_size)
+{
+    if (hidden_size <= 0) return 1.0f;
+    float exact = std::sqrt(static_cast<float>(hidden_size));
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &exact, sizeof(bits));
+    const std::uint32_t lsb = (bits >> 16) & 1u;
+    bits += 0x7FFFu + lsb;
+    bits &= 0xFFFF0000u;
+    float rounded = 0.0f;
+    std::memcpy(&rounded, &bits, sizeof(rounded));
+    return rounded;
+}
 
 namespace {
 
@@ -117,7 +215,6 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaDensePinnedWeights &pw,
         pw.vocab_size = pw.embed.rows;
         pw.hidden = pw.embed.cols;
         have_embed = true;
-        break;
     }
     if (!have_embed) {
         log::error("[gemma_dense_load] embed_tokens.weight missing in "
@@ -253,6 +350,36 @@ cudaError_t LoadLayer(const std::vector<lsxcommon::TensorView> &tensors,
     if (e == cudaSuccess) e = upload_nv(down, lw.mlp_down);
     if (e != cudaSuccess) return e;
 
+
+    // Residual planes. Optional by construction: a tree converted before the
+    // residual existed has none, and the decode must keep working at 4 bits
+    // rather than refusing to load. Present planes upload exactly like the base
+    // (same schema, same shape) and are counted in resident_bytes, because that
+    // number drives the governor lease and the "resident:" line of --bench.
+    auto upload_res = [&](const Nvfp4Recs &r,
+                          lsx_nvfp4::LsxNvfp4Weight &w) -> cudaError_t {
+        if (!complete(r)) return cudaSuccess;      // legacy tree: leave null
+        const cudaError_t re = upload_nv(r, w);
+        if (re != cudaSuccess) {
+            log::error("[gemma_dense_load] residual plane upload failed");
+        }
+        return re;
+    };
+    if ((e = upload_res(gather("self_attn.q_proj.weight.res"),
+                        lw.attn_q_res)) != cudaSuccess) return e;
+    if ((e = upload_res(gather("self_attn.k_proj.weight.res"),
+                        lw.attn_k_res)) != cudaSuccess) return e;
+    if ((e = upload_res(gather("self_attn.v_proj.weight.res"),
+                        lw.attn_v_res)) != cudaSuccess) return e;
+    if ((e = upload_res(gather("self_attn.o_proj.weight.res"),
+                        lw.attn_o_res)) != cudaSuccess) return e;
+    if ((e = upload_res(gather("mlp.gate_proj.weight.res"),
+                        lw.mlp_gate_res)) != cudaSuccess) return e;
+    if ((e = upload_res(gather("mlp.up_proj.weight.res"),
+                        lw.mlp_up_res)) != cudaSuccess) return e;
+    if ((e = upload_res(gather("mlp.down_proj.weight.res"),
+                        lw.mlp_down_res)) != cudaSuccess) return e;
+
     auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
     auto *post_norm = FindTensor(tensors, "post_attention_layernorm.weight");
     auto *pre_ffn = FindTensor(tensors, "pre_feedforward_layernorm.weight");
@@ -333,6 +460,17 @@ void GemmaDenseLayerWeights::Free()
     mlp_gate.Free();
     mlp_up.Free();
     mlp_down.Free();
+    // Every residual plane added by the loader must be released here too: a
+    // leaked plane is invisible on one load and shows up as an OOM on the NEXT
+    // model (on gemma-4-31b it surfaced as a SelfCheck failure in the following
+    // test case, not as a leak report).
+    attn_q_res.Free();
+    attn_k_res.Free();
+    attn_v_res.Free();
+    attn_o_res.Free();
+    mlp_gate_res.Free();
+    mlp_up_res.Free();
+    mlp_down_res.Free();
     *this = GemmaDenseLayerWeights{};
 }
 
@@ -414,6 +552,12 @@ cudaError_t LoadGemmaDensePinnedWeights(const std::string &model_path,
             log::error("[gemma_dense_load] index topology parse failed: " +
                        pw.top.error_msg);
     }
+    // Arithmetic constants derived from the tree that was actually loaded, not
+    // from a sibling's passport: the 12B multiplies its embedding by 62.0 and
+    // the 31B by 73.5 (bf16-rounded sqrt(hidden_size)), and a shared literal is
+    // how one of them ends up 19% off with every number still plausible.
+    pw.embed_scale = GemmaDenseEmbedScale(pw.top.hidden_size);
+    pw.attention_scale = 1.0f;  // Gemma-4 has no score scale (per-head QK-norm)
     return cudaSuccess;
 }
 

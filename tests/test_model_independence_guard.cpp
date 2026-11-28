@@ -166,7 +166,12 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"deepseek_moe_v41_constants.h", "namespace deepseek_v41 {"},
         {"deepseek_moe_pro_constants.h", "namespace deepseek_pro {"},
         {"../include/lsxcommon/gemma_moe_load.h", "namespace gemma {"},
-        {"../include/lsxcommon/gemma_dense_constants.h",
+        // The dense Gemma-4 family has TWO checkpoints served by one body:
+        // gemma_dense_constants.h is the shared TYPES header (no passport), and
+        // each size carries its own numbers in its own header.
+        {"../include/lsxcommon/gemma_dense_31b_constants.h",
+         "namespace frozen {"},
+        {"../include/lsxcommon/gemma_dense_12b_constants.h",
          "namespace frozen {"},
         {"../include/lsxcommon/kimi_moe_load.h", "namespace kimi {"},
         {"qwen_moe_constants.h", "namespace frozen {"},

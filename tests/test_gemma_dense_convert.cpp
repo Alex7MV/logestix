@@ -3,6 +3,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +14,8 @@
 
 #include "test_gemma_dense_fixture.h"
 
+#include "lsxstorage/artifact.h"
+
 #include "lsxcommon/gemma_dense_convert.h"
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/schema.h"
@@ -19,6 +23,33 @@
 using lsxcommon::gemma_dense::classify_gemma_dense_tensor;
 using lsxcommon::gemma_dense::gemma_dense_tensor_is_nvfp4;
 using K = lsxcommon::gemma_dense::TensorKind;
+
+namespace {
+
+// E2M1 (NVFP4 nibble) and E4M3 (block scale) decode tables. Host-side copies of
+// the codec, used to decode what the converter WROTE and compare it with the
+// source bytes — the same host-side decode that caught gemma-4-26b's 7.01x-hot
+// logits. A test that trusts the engine's own dequant cannot see that bug.
+float E2M1Of(int nib)
+{
+    static const float kVal[16] = {0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,
+                                   4.0f,  6.0f,  -0.0f, -0.5f, -1.0f, -1.5f,
+                                   -2.0f, -3.0f, -4.0f, -6.0f};
+    return kVal[nib & 0xF];
+}
+
+float E4M3Of(std::uint8_t b)
+{
+    if ((b & 0x7F) == 0) return 0.f;
+    const int s = (b >> 7) & 1;
+    const int e = (b >> 3) & 0x0F;
+    const int m = b & 0x07;
+    if (e == 0) return s ? -m * 0.001953125f : m * 0.001953125f;
+    const float v = std::ldexp(1.f + m / 8.f, e - 7);
+    return s ? -v : v;
+}
+
+} // namespace
 
 TEST_CASE("gemma dense tensor classifier", "[gemma_dense][convert]") {
     SECTION("globals") {
@@ -41,6 +72,28 @@ TEST_CASE("gemma dense tensor classifier", "[gemma_dense][convert]") {
               K::Visual);
         CHECK(classify_gemma_dense_tensor("model.vision_tower.std_bias").kind ==
               K::Visual);
+    }
+    SECTION("unified gemma-4 ballast: vision_embedder + audio projection") {
+        // google/gemma-4-12B-it is a `gemma4_unified` tree: no vision
+        // transformer and no audio tower, only a patch projection + position
+        // table and ONE audio embedding projection. Every one of those names
+        // must be claimed as ballast, or the strict coverage check rejects the
+        // checkpoint ("unclassified tensor(s)").
+        for (const char *n : {
+                 "model.vision_embedder.patch_dense.weight",
+                 "model.vision_embedder.patch_dense.bias",
+                 "model.vision_embedder.patch_ln1.weight",
+                 "model.vision_embedder.patch_ln1.bias",
+                 "model.vision_embedder.patch_ln2.weight",
+                 "model.vision_embedder.patch_ln2.bias",
+                 "model.vision_embedder.pos_embedding",
+                 "model.vision_embedder.pos_norm.weight",
+                 "model.vision_embedder.pos_norm.bias",
+                 "model.embed_audio.embedding_projection.weight",
+             }) {
+            INFO(n);
+            CHECK(classify_gemma_dense_tensor(n).kind == K::Visual);
+        }
     }
     SECTION("attention projections") {
         const auto q = classify_gemma_dense_tensor(
@@ -417,5 +470,386 @@ TEST_CASE("convert rejects a MoE checkpoint (this family is dense only)",
     auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
         tmp.string(), (tmp / "out").string());
     REQUIRE_FALSE(st.ok());
+    remove_all(tmp);
+}
+
+// ── gemma-4-12B-it (`gemma4_unified` wrapper) ────────────────────────────
+//
+// ONE converter serves the whole Gemma-4 dense family, so the 12B checkpoint is
+// accepted here rather than through a second pipeline. What differs is the
+// multimodal ballast: the unified tree ships `model.vision_embedder.*` and a
+// single `model.embed_audio.embedding_projection` instead of a vision
+// transformer, and its special ids live in `text_config` only.
+TEST_CASE("gemma-4-12B unified checkpoint converts (synthetic E2E)",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_u12b_synth";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    synthtest::WriteSafetensors(tmp, "model.safetensors",
+                                gemma_dense_test::BuildSyntheticGemmaUnifiedModel());
+    gemma_dense_test::WriteUnifiedConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
+                               tmp / "tokenizer.json");
+
+    const auto out = tmp / "out";
+    auto cst = lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(),
+                                                              out.string());
+    if (!cst.ok()) FAIL("ConvertGemmaDenseModel: " << cst.ToString());
+    REQUIRE(cst.ok());
+
+    // The text tower is complete and the ballast is nowhere in the artifact.
+    CHECK(exists(out / "pinned" / "global_nvfp4.arrow"));
+    for (int l = 0; l < gemma_dense_test::TestCfg().num_layers; ++l)
+        CHECK(exists(out / "pinned" /
+                     ("layer_" + std::to_string(l) + ".arrow")));
+    for (const auto &arrow : {out / "pinned" / "global.arrow",
+                              out / "pinned" / "layer_0.arrow"}) {
+        auto batch = lsxcommon::LoadTensorBatchViews(arrow);
+        REQUIRE(batch.ok());
+        for (const auto &t : batch->tensors) {
+            INFO(t.name);
+            CHECK(t.name.rfind("model.vision_embedder.", 0) != 0);
+            CHECK(t.name.rfind("model.embed_audio.", 0) != 0);
+            CHECK(t.name.rfind("model.embed_vision.", 0) != 0);
+        }
+        batch->keepalive.reset();
+    }
+    {
+        auto g = lsxcommon::LoadDenseNvfp4BatchViews(out / "pinned" /
+                                                     "global_nvfp4.arrow");
+        REQUIRE(g.ok());
+        REQUIRE(g->records.size() == 1);
+        CHECK(g->records[0].name == "model.language_model.embed_tokens.weight");
+        g->keepalive.reset();
+    }
+
+    // The index names the model it actually converted (the input directory's
+    // leaf) and counts the ballast it stripped: an artifact that still says
+    // "gemma-4-31B-it" cannot be told apart from the 31B tree by a reader.
+    {
+        std::ifstream idx(out / "model.index.json");
+        const std::string json((std::istreambuf_iterator<char>(idx)),
+                               std::istreambuf_iterator<char>());
+        CHECK(json.find("\"model\": \"gemma4_u12b_synth\"") !=
+              std::string::npos);
+        CHECK(json.find("\"skipped_visual_tensors\": 11") != std::string::npos);
+    }
+
+    // Round-trip through the loader-side parser: the ids come from
+    // text_config + generation_config (no top-level bos/pad in this nesting).
+    auto top2 = lsxcommon::gemma_dense::load_gemma_dense_topology(
+        (out / "model.index.json").string());
+    CHECK(top2.error_msg.empty());
+    CHECK(top2.num_layers == 4);
+    CHECK(top2.hidden_size == 64);
+    CHECK(top2.bos_id == 2);
+    CHECK(top2.pad_id == 0);
+    CHECK(top2.eos_ids == std::vector<int>({1, 106, 50}));
+    CHECK(top2.layer_types.size() == 4);
+    CHECK(top2.IsFull(3));
+
+    remove_all(tmp);
+}
+
+// The unified tree's special ids are nested one level deeper than the 31B's.
+// Reading them from the wrong level yields bos = -1 / an empty eos set, which
+// the framing and the eos stop condition then silently inherit.
+TEST_CASE("gemma-4-12B config parses text_config ids and geometry",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_u12b_cfg";
+    remove_all(tmp);
+    create_directories(tmp);
+    gemma_dense_test::WriteUnifiedConfig(tmp);
+
+    auto top = lsxcommon::gemma_dense::load_gemma_dense_topology(
+        (tmp / "config.json").string());
+    REQUIRE(top.error_msg.empty());
+    CHECK(top.hidden_size == 64);
+    CHECK(top.num_layers == 4);
+    CHECK(top.bos_id == 2);
+    CHECK(top.pad_id == 0);
+    CHECK(top.eos_ids == std::vector<int>({1, 106, 50}));
+    CHECK(top.sliding_window == 8);
+    CHECK(top.partial_rotary_factor == Catch::Approx(0.25f));
+    remove_all(tmp);
+}
+
+// ── The converted tree must be a VALID ARTIFACT, not just a loadable layout ──
+//
+// `lsxforge --codec-profile nvfp4` publishes an artifact only after
+// ScanArtifactTree accepts what the converter wrote (verifier rule D1: a weight
+// plane names its codec, and `U8` is the retired ambiguous spelling of NVFP4
+// nibbles). Before this test the dense Gemma-4 converter wrote its NVFP4 triple
+// as `U8`, so every conversion through the codec-profile path failed at the
+// publish step with "the converted tree is not a valid artifact (nothing was
+// published)" — after the whole tree had been quantised on the GPU.
+TEST_CASE("gemma-4-12B converted tree passes the artifact scan",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_u12b_scan";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    synthtest::WriteSafetensors(
+        tmp, "model.safetensors",
+        gemma_dense_test::BuildSyntheticGemmaUnifiedModel());
+    gemma_dense_test::WriteUnifiedConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
+                               tmp / "tokenizer.json");
+
+    const auto out = tmp / "out";
+    auto cst = lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(),
+                                                              out.string());
+    if (!cst.ok()) FAIL("ConvertGemmaDenseModel: " << cst.ToString());
+    REQUIRE(cst.ok());
+
+    const auto scan = lsx::storage::ScanArtifactTree(out);
+    std::string joined;
+    for (const auto &p : scan.problems) joined += "  " + p + "\n";
+    INFO("artifact scan problems:\n" << joined);
+    REQUIRE(scan.problems.empty());
+    CHECK(scan.ok);
+    // The tree really is 4-bit where it claims to be: the scan derives the mask
+    // from the bytes, so a converter that quietly wrote BF16 would show here.
+    REQUIRE(scan.mask != 0);
+    remove_all(tmp);
+}
+
+// A dense Gemma-4 config that omits a geometry field must be refused, not
+// filled in from a default: this family has SEVERAL sizes served by one
+// converter, so a default is one sibling's number, and a tree written with it
+// decodes at the wrong width. The geometry gate would catch it at Load, but a
+// conversion that produces a tree nobody can load is a wasted GPU pass.
+TEST_CASE("convert rejects a config missing a geometry field",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_missing_field";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    synthtest::WriteSafetensors(
+        tmp, "model.safetensors",
+        gemma_dense_test::BuildSyntheticGemmaUnifiedModel());
+    gemma_dense_test::WriteUnifiedConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
+                               tmp / "tokenizer.json");
+
+    // Drop `intermediate_size` from text_config.
+    const auto cfg = tmp / "config.json";
+    std::ifstream in(cfg);
+    std::string json((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    in.close();
+    const std::string key = "\"intermediate_size\":32,";
+    const auto pos = json.find(key);
+    REQUIRE(pos != std::string::npos);
+    json.replace(pos, key.size(), "");
+    {
+        std::ofstream o(cfg, std::ios::trunc);
+        o << json;
+    }
+
+    auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
+        tmp.string(), (tmp / "out").string());
+    INFO(st.ToString());
+    REQUIRE_FALSE(st.ok());
+    CHECK(st.ToString().find("intermediate_size") != std::string::npos);
+    remove_all(tmp);
+}
+
+// The same for the loader-side parser: an index without `hidden_size` must
+// report an error, because every arithmetic constant this family derives
+// (embedding scale, KV geometry, window) comes from it.
+TEST_CASE("index parser reports a missing geometry field",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_index_missing";
+    remove_all(tmp);
+    create_directories(tmp);
+    {
+        std::ofstream o(tmp / "model.index.json");
+        o << "{\"layout\":2,\"model\":\"x\",\"num_layers\":4,"
+             "\"vocab_size\":64,\"intermediate_size\":32,"
+             "\"num_attention_heads\":4,\"num_key_value_heads\":2,"
+             "\"num_global_key_value_heads\":1,\"head_dim\":16,"
+             "\"global_head_dim\":64}";
+    }
+    auto top = lsxcommon::gemma_dense::load_gemma_dense_topology(
+        (tmp / "model.index.json").string());
+    CHECK_FALSE(top.error_msg.empty());
+    CHECK(top.error_msg.find("hidden_size") != std::string::npos);
+    remove_all(tmp);
+}
+
+// ── The residual plane (stage 2 "Parity fix") ──────────────────────────────
+//
+// The dense Gemma-4 members are ingested at 4 bits per weight, and their FSI
+// gate is a near-tie decision: the accumulated body error of ONE plane moves the
+// fork. The fix that clears it (phi-4, gemma-4-26b) is a SECOND NVFP4 plane
+// carrying `w - dequant(base)`, decoded as one more GEMV with acc=true: ~8
+// effective bits for 2x the bytes, no new codec, no new kernel family.
+//
+// A 12B fits that budget (the 31B does not: every linear at 8 bits is 33.7 GiB
+// and this card has 32). The tied embed/lm_head table stays 4-bit — the 26B's
+// measured recipe left it 4-bit and still went green, and it is the single
+// largest plane in the tree.
+TEST_CASE("dense gemma conversions carry a residual plane on every projection",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_u12b_residual";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    synthtest::WriteSafetensors(
+        tmp, "model.safetensors",
+        gemma_dense_test::BuildSyntheticGemmaUnifiedModel());
+    gemma_dense_test::WriteUnifiedConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
+                               tmp / "tokenizer.json");
+
+    const auto out = tmp / "out";
+    auto cst = lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(),
+                                                              out.string());
+    if (!cst.ok()) FAIL("ConvertGemmaDenseModel: " << cst.ToString());
+    REQUIRE(cst.ok());
+
+    auto find = [](const std::vector<lsxcommon::TensorView> &tensors,
+                   std::string_view name) -> const lsxcommon::TensorView * {
+        for (const auto &t : tensors)
+            if (t.name == name) return &t;
+        return nullptr;
+    };
+
+    auto batch = lsxcommon::LoadTensorBatchViews(out / "pinned" / "layer_0.arrow");
+    REQUIRE(batch.ok());
+
+    // Every projection of a layer carries base + residual; the norms do not.
+    for (const char *proj : {
+             "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight",
+             "self_attn.q_proj.weight", "self_attn.k_proj.weight",
+             "self_attn.v_proj.weight", "self_attn.o_proj.weight"}) {
+        const std::string base =
+            std::string("model.language_model.layers.0.") + proj;
+        for (const char *suffix : {".packed", ".scales", ".global_scale"}) {
+            INFO(base + suffix);
+            REQUIRE(find(batch->tensors, base + suffix) != nullptr);
+            INFO(base + ".res" + suffix);
+            REQUIRE(find(batch->tensors, base + ".res" + suffix) != nullptr);
+        }
+    }
+    CHECK(find(batch->tensors,
+               "model.language_model.layers.0.input_layernorm.weight.res.packed") ==
+          nullptr);
+
+    // base + res reconstructs the source at least 2x better than base alone.
+    // Decoded on the HOST from the written records, against the fixture's own
+    // BF16 bytes — the same check that found gemma-4-26b's 7.01x logits bug.
+    {
+        const auto &cfg = gemma_dense_test::TestCfg();
+        const int64_t I = cfg.intermediate_size;
+        const int64_t H = cfg.hidden_size;
+        const std::string base = "model.language_model.layers.0.mlp.gate_proj.weight";
+        const auto *pk = find(batch->tensors, base + ".packed");
+        const auto *sc = find(batch->tensors, base + ".scales");
+        const auto *gs = find(batch->tensors, base + ".global_scale");
+        const auto *rpk = find(batch->tensors, base + ".res.packed");
+        const auto *rsc = find(batch->tensors, base + ".res.scales");
+        const auto *rgs = find(batch->tensors, base + ".res.global_scale");
+        REQUIRE(rpk != nullptr);
+        REQUIRE(rsc != nullptr);
+        REQUIRE(rgs != nullptr);
+        REQUIRE(pk != nullptr);
+
+        auto decode = [](const std::vector<uint8_t> &packed,
+                         const std::vector<uint8_t> &scales, float gs,
+                         int64_t rows, int64_t cols) {
+            std::vector<float> out(static_cast<size_t>(rows * cols));
+            for (int64_t i = 0; i < rows * cols; ++i) {
+                const uint8_t byte = packed[static_cast<size_t>(i) >> 1];
+                const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
+                out[static_cast<size_t>(i)] =
+                    E2M1Of(nib) * E4M3Of(scales[static_cast<size_t>(i) >> 4]) * gs;
+            }
+            return out;
+        };
+        std::vector<uint8_t> bpk(pk->data, pk->data + pk->bytes);
+        std::vector<uint8_t> bsc(sc->data, sc->data + sc->bytes);
+        std::vector<uint8_t> rpkv(rpk->data, rpk->data + rpk->bytes);
+        std::vector<uint8_t> rscv(rsc->data, rsc->data + rsc->bytes);
+        float bgs = 0.f, rgsv = 0.f;
+        std::memcpy(&bgs, gs->data, 4);
+        std::memcpy(&rgsv, rgs->data, 4);
+        const auto base_w = decode(bpk, bsc, bgs, I, H);
+        const auto res_w = decode(rpkv, rscv, rgsv, I, H);
+
+        // The fixture's own BF16 rows for this tensor: MakeBf16 writes
+        // element i's BF16 bits as `i % 65536`, so the source decodes exactly.
+        std::vector<float> src(static_cast<size_t>(I * H));
+        for (size_t i = 0; i < src.size(); ++i) {
+            const std::uint32_t wide =
+                static_cast<std::uint32_t>(synthtest::MakeBf16BitsAt(
+                    static_cast<int64_t>(i)))
+                << 16;
+            std::memcpy(&src[i], &wide, 4);
+        }
+
+        auto rel = [&](bool with_res) {
+            double num = 0.0, den = 0.0;
+            for (size_t i = 0; i < src.size(); ++i) {
+                const double w = with_res ? base_w[i] + res_w[i] : base_w[i];
+                num += (w - src[i]) * (w - src[i]);
+                den += static_cast<double>(src[i]) * src[i];
+            }
+            return std::sqrt(num / den);
+        };
+        const double e_base = rel(false);
+        const double e_res = rel(true);
+        INFO("relL2 base=" << e_base << " base+res=" << e_res);
+        CHECK(e_base > 0.02);           // 4 bits really is lossy
+        CHECK(e_res < e_base * 0.5);    // the residual is worth >= 1 bit
+    }
+
+    // The index records the choice, so the VRAM estimate and a reader can see it.
+    {
+        std::ifstream idx(out / "model.index.json");
+        const std::string json((std::istreambuf_iterator<char>(idx)),
+                               std::istreambuf_iterator<char>());
+        CHECK(json.find("\"residual\": \"attn+mlp\"") != std::string::npos);
+    }
+
+    batch->keepalive.reset();
+    remove_all(tmp);
+}
+
+// The tied embed/lm_head table is NOT doubled. Measured 2026-11-28 on the real
+// 12B tree: giving the head its own residual plane (+0.6 GiB, 13 GB artifact)
+// left FSI at 2/3 with byte-identical output, so it was reverted. The plane that
+// matters is the projections', which took FSI-01 from red to green.
+TEST_CASE("dense gemma residual plane excludes the tied embed/lm_head table",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_u12b_res_head_off";
+    remove_all(tmp);
+    create_directories(tmp);
+    synthtest::WriteSafetensors(
+        tmp, "model.safetensors",
+        gemma_dense_test::BuildSyntheticGemmaUnifiedModel());
+    gemma_dense_test::WriteUnifiedConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
+                               tmp / "tokenizer.json");
+    const auto out = tmp / "out";
+    REQUIRE(lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(),
+                                                           out.string())
+                .ok());
+    auto g = lsxcommon::LoadDenseNvfp4BatchViews(out / "pinned" /
+                                                 "global_nvfp4.arrow");
+    REQUIRE(g.ok());
+    REQUIRE(g->records.size() == 1);
+    CHECK(g->records[0].name == "model.language_model.embed_tokens.weight");
+    CHECK(g->records[0].name.find(".res") == std::string::npos);
+    g->keepalive.reset();
     remove_all(tmp);
 }
