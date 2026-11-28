@@ -205,6 +205,47 @@ void MakeArtifact(const fs::path &dir, const std::string &model_type,
 
 } // namespace
 
+TEST_CASE("an org-qualified name resolves under the artifact root",
+          "[storage_roots]") {
+    // `<org>/<model>` is how the store is laid out, so it is what an operator
+    // copies out of a `ls`, and it is the spelling the README and the design
+    // use. Resolution answered it only for SOURCE checkpoints: the artifact
+    // search compared directory names, so `Qwen/Qwen3.5-9B` — a path relative
+    // to the artifact root, not the cwd — fell through to "not found".
+    TempRoot art;
+    MakeArtifact(art.path() / "Qwen" / "Qwen3.5-9B" / "nvfp4", "qwen3.5-9b",
+                 "qwen", "Qwen", "Qwen3.5-9B", "nvfp4");
+    ScopedEnv a("LSX_ARTIFACT_ROOT", art.path().c_str());
+
+    const auto model = lsx::storage::Resolve("Qwen/Qwen3.5-9B");
+    REQUIRE(model.status == lsx::storage::ResolveStatus::kArtifact);
+    CHECK(model.org == "Qwen");
+    CHECK(model.model_dir == "Qwen3.5-9B");
+    CHECK(model.profile == "nvfp4");
+    CHECK(model.model_type == "qwen3.5-9b");
+
+    // With the profile spelled out, the same tree and that profile.
+    const auto with_profile = lsx::storage::Resolve("Qwen/Qwen3.5-9B/nvfp4");
+    REQUIRE(with_profile.status == lsx::storage::ResolveStatus::kArtifact);
+    CHECK(with_profile.dir == model.dir);
+    CHECK(with_profile.profile == "nvfp4");
+
+    // A profile that does not exist is not a silent fallback to another one.
+    CHECK(lsx::storage::Resolve("Qwen/Qwen3.5-9B/bf16").status ==
+          lsx::storage::ResolveStatus::kNotFound);
+
+    // An org-qualified name that matches nothing says so, and does not become a
+    // path relative to the cwd.
+    CHECK(lsx::storage::Resolve("Nobody/Nothing").status ==
+          lsx::storage::ResolveStatus::kNotFound);
+
+    // And the org is part of the name, not decoration: `WrongOrg/Qwen3.5-9B`
+    // must not resolve to Qwen's tree by matching the leaf alone. The store is
+    // org-nested precisely so two orgs can hold the same directory name.
+    const auto wrong_org = lsx::storage::Resolve("WrongOrg/Qwen3.5-9B");
+    CHECK(wrong_org.status == lsx::storage::ResolveStatus::kNotFound);
+}
+
 TEST_CASE("a model resolves by its registry identity, not only its store name",
           "[storage_roots]") {
     // The store spells it `Qwen/Qwen3.5-9B`; the registry, the gates and every

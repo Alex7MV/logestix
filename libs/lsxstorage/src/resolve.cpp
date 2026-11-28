@@ -4,7 +4,9 @@
 #include "lsxstorage/roots.h"
 
 #include <algorithm>
+#include <string>
 #include <system_error>
+#include <vector>
 
 namespace lsx::storage {
 
@@ -89,16 +91,84 @@ Resolved Resolve(const std::string &model_or_path)
         return r;
     }
 
+    // (2b) An ORG-QUALIFIED name, relative to the artifact root:
+    //     "<org>/<model>"            one of its profiles
+    //     "<org>/<model>/<profile>"  that profile
+    // It is the store's own layout, so it is what `ls` prints and what an
+    // operator copies — and it is a path relative to the ROOT, not to the cwd,
+    // so it must be joined to the root explicitly. Nothing else may answer it:
+    // in particular not the leaf-name search below, which would resolve
+    // "WrongOrg/Qwen3.5-9B" to Qwen's tree and hide the org the caller named.
+    const fs::path given_path(model_or_path);
+    const std::string wanted_leaf = given_path.filename().string();
+    std::vector<std::string> rel_parts;
+    for (const auto &part : given_path)
+        rel_parts.push_back(part.string());
+    const bool org_qualified = !given_path.is_absolute() &&
+                               (rel_parts.size() == 2 || rel_parts.size() == 3);
+    const auto root = ArtifactRoot();
+    if (org_qualified && root.has_value()) {
+        const fs::path model_dir = *root / rel_parts[0] / rel_parts[1];
+        std::error_code ec;
+        if (fs::is_directory(model_dir, ec)) {
+            // An explicit profile is a choice: it resolves or it does not, and
+            // never falls back to a sibling profile.
+            if (rel_parts.size() == 3) {
+                const fs::path wanted = model_dir / rel_parts[2];
+                if (IsArtifactDir(wanted)) {
+                    r.status = ResolveStatus::kArtifact;
+                    r.dir = wanted;
+                    r.org = rel_parts[0];
+                    r.model_dir = rel_parts[1];
+                    r.profile = rel_parts[2];
+                    const auto read = ReadArtifact(wanted);
+                    if (read.status == ReadStatus::kOk) {
+                        r.family = read.info.family;
+                        r.model_type = read.info.model_type;
+                    }
+                    return r;
+                }
+                r.detail = "'" + model_dir.string() + "' has no profile '" +
+                           rel_parts[2] + "'";
+                return r;
+            }
+            // No profile named: the first one that IS an artifact, in the same
+            // sorted order ListProfiles uses, so two runs agree.
+            std::error_code prof_ec;
+            for (const auto &profile_dir :
+                 fs::directory_iterator(model_dir, prof_ec)) {
+                if (prof_ec) break;
+                if (!profile_dir.is_directory()) continue;
+                if (!IsArtifactDir(profile_dir.path())) continue;
+                r.status = ResolveStatus::kArtifact;
+                r.dir = profile_dir.path();
+                r.org = rel_parts[0];
+                r.model_dir = rel_parts[1];
+                r.profile = profile_dir.path().filename().string();
+                const auto read = ReadArtifact(profile_dir.path());
+                if (read.status == ReadStatus::kOk) {
+                    r.family = read.info.family;
+                    r.model_type = read.info.model_type;
+                }
+                return r;
+            }
+            r.status = ResolveStatus::kSourceOnly;
+            r.org = rel_parts[0];
+            r.model_dir = rel_parts[1];
+            r.detail = "'" + model_dir.string() +
+                       "' has no converted artifact (no profile holds "
+                       "artifact.fb)";
+            return r;
+        }
+    }
+
     // (3) A bare model name, or a path into a model: look for its artifacts.
     // The name may be either a vault directory ("Qwen3.5-9B") or a manifest
     // model_type ("qwen3.5-9b"); both are searched because both are things a
     // user types, and only artifact.fb knows the second — the registry, the
     // gates and every document spell the model that way, so comparing the
     // directory name alone answered "not found" for the tree's own vocabulary.
-    const fs::path given_path(model_or_path);
-    const std::string wanted_leaf = given_path.filename().string();
-    const auto root = ArtifactRoot();
-    if (root.has_value()) {
+    if (root.has_value() && !org_qualified) {
         // One error_code per loop level: sharing one across nested iterators
         // means an inner failure (a permission error in one model directory)
         // aborts the whole search.

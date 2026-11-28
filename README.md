@@ -5,11 +5,13 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 ### Verified end-to-end C++/CUDA inference
 
 logestix is a deterministic C++20/CUDA runtime for native NVFP4 inference. The
-catalogue holds **44 registered model profiles** at the time of writing, and
-`docs/MODELS.md` — generated from the per-model manifests — is the count to
-trust, not this line. Model ingestion — converter, frozen geometry, tokenizer
-bridge, parity goldens — is largely agent-driven, but every claim rests on a
-measured oracle, not on the agent's word.
+catalogue holds **47 registered model rows across 22 orgs** at the time of
+writing, and `docs/MODELS.md` — generated from the per-model manifests — is the
+count to trust, not this line. A row describes a model that has been **triaged
+and ingested** (converter, frozen geometry, tokenizer bridge, parity goldens);
+whether its artifact has actually been **built** is a separate, recorded fact
+per codec profile. Model ingestion is largely agent-driven, but every claim
+rests on a measured oracle, not on the agent's word.
 
 What an ingestion has to establish — and what each manifest records either as
 done or as declared **debt** — is the same for every profile:
@@ -156,7 +158,7 @@ carries exactly one label, and the label decides when it runs
 |---|---|---|
 | `fast` | host-only unit and guard tests; parallel-safe, no model weights needed | every `ctest --preset` — the default filter of all test presets |
 | `convert` | model converters on synthetic checkpoints | when a converter changed, or manually |
-| `inference` | CUDA kernels and the model contour (load / model / selfcheck / fsi / code / det) | when the contour changed, or manually |
+| `inference` | CUDA kernels and the model contour (load / model / selfcheck / fsi / code / det / mcp) | when the contour changed, or manually |
 | `perf` | throughput baselines on real weights | separate command only, **Release only** (a Debug run SKIPs) |
 
 The one CUDA-aware `fast` target, `test_cuda_toolkit_guard`, allocates no
@@ -165,8 +167,8 @@ its device case SKIPs where no GPU exists.
 
 Counts move with every ingestion, so read them instead of trusting this page:
 `ctest --test-dir <build-dir> -N` prints the target total, and `-L <label>`
-narrows to one label. For orientation only, the tree on 2026-11-22 registered
-**610 targets: 159 `fast`, 45 `convert`, 354 `inference`, 52 `perf`**.
+narrows to one label. For orientation only, the tree on 2026-11-28 registered
+**663 targets: 184 `fast`, 48 `convert`, 376 `inference`, 55 `perf`**.
 
 ```powershell
 ctest --preset windows-debug    # Windows 11 — fast label only
@@ -196,29 +198,74 @@ ctest --test-dir build/linux-debug -R "<family>" -j 1       # its siblings too
 ```
 
 Each model's `model_type` and every target it owns are the manifest's
-(`models/<model_type>.json`, projected into `docs/MODELS.md`), so there is
+(`models/<org>/<model>.json`, projected into `docs/MODELS.md`), so there is
 nothing to look up by hand and no reason to sweep the label to verify one
 model.
 
-### Model vault (`LSX_MODEL_ROOT`)
+## Where models come from: two org-nested stores
 
-The engine and the real-model tests resolve converted checkpoints from a
-model vault. The root defaults to `/mnt/fast_storage/huggingface` on Linux
-and `D:\Programs\lsx_model` on Windows (compile-time defaults in
-`libs/lsxcommon/include/lsxcommon/path_registry.h`). **Set `LSX_MODEL_ROOT`
-to an absolute path to relocate the vault** — the runtime override takes
-precedence over the platform default:
+Nothing is downloaded, converted or loaded by guessing a path. There are two
+roots, kept apart on purpose, and both are laid out the way Hugging Face lays a
+download out — **`<org>/<model>`**:
 
-```bash
-export LSX_MODEL_ROOT=/data/models   # your vault root
+| store | contents | env | default |
+|---|---|---|---|
+| **source** (read-only) | the checkpoint as downloaded: `config.json`, `*.safetensors`, `tokenizer.json`, `chat_template.jinja` | `LSX_SOURCE_ROOT`, then the pre-split `LSX_MODEL_ROOT` | `/mnt/fast_storage/lsx_model` (Linux), `D:\Programs\lsx_model` (Windows) |
+| **artifact** (writable) | the converted LogestiX tree, one directory per codec profile | `LSX_ARTIFACT_ROOT` | **none** — unset is a configuration error, not a fallback |
+| host cache | per-GPU perf calibration only, never model data | `LSX_CACHE_DIR` | `$XDG_CACHE_HOME/logestix` / `~/.cache/logestix` |
+
+```
+<LSX_SOURCE_ROOT>/<org>/<model>                       the download
+<LSX_ARTIFACT_ROOT>/<org>/<model>/<profile>           the converted artifact
 ```
 
-Converted models live in `<LSX_MODEL_ROOT>/<Model>/logestix/` (produced by
-`lsxforge`). Individual model tests also accept a per-model root override
-declared in `models/<model_type>.json` (`vault.env`); `docs/MODELS.md` lists
-the directory and the variable per model. When the converted tree or a parity
-golden is absent, the test SKIPs gracefully (exit code 4) — a SKIP is **not**
-a pass.
+**The profile directory IS the artifact.** There is no `logestix/` segment any
+more (that was the pre-split layout, where conversion wrote inside the
+checkpoint): a profile directory holds `artifact.fb`, `model.index.json`,
+`pinned/`, and — self-sufficiency invariant, so a converted tree loads with the
+source store unmounted — the tokenizer and chat template it was built with.
+Profile names are `nvfp4` (default), `bf16`, `int8-w8a16`; one model may hold
+several, each with its own codecs and its own measured gates, and the load gate
+refuses a profile whose codecs the active device cannot execute (naming the
+profiles that would work instead of choosing one silently).
+
+### Where an artifact comes from
+
+An artifact exists only because someone converted a checkpoint — the repo ships
+no weights:
+
+```bash
+export LSX_ARTIFACT_ROOT=/data/lsx_artifact     # required for conversion
+lsxforge --input <org>/<model> --codec-profile nvfp4 --<family>
+# -> $LSX_ARTIFACT_ROOT/<org>/<model>/nvfp4/
+```
+
+`--input` is a model **identity**: the store directory (`Qwen3.5-9B`), the
+registry `model_type` (`qwen3.5-9b`), an org-qualified name, or an absolute
+checkpoint path. The org and model directory in the output path come from
+`models/<org>/<model>.json`, not from the path you typed, so an artifact always
+lands beside its source. With `--codec-profile` the output is the profile
+directory and `--output` is ignored; without it the converter writes into
+`--output` directly.
+
+### Which artifacts are built, and how a run finds them
+
+`docs/MODELS.md` is the authority: each row names its store path
+(`<org>/<model>`), its env override (`LSX_TEST_<MODEL>_ROOT`) and, per profile,
+whether it is **built** — with the codec mask, sha256 and each gate's verdict —
+or **not built**. At the time of writing 2 of the registered rows have a built
+artifact (`microsoft/phi-4/nvfp4`, `Qwen/Qwen3.5-9B/nvfp4`); the rest are
+`not built` because no conversion has been run for them, which is a fact the
+registry records rather than a gap in the code.
+
+The apps and the real-weight tests resolve a model by **the registry**, so
+`--model`/`--localmodel` accept an artifact directory, a path inside one, a
+store directory, a `model_type`, or an `<org>/<model>` name — and a plain
+checkpoint is reported as "source-only, convert it" instead of "weights missing".
+A per-model `LSX_TEST_<MODEL>_ROOT` (declared as `vault.env` in the manifest)
+still wins, e.g. for a tree on another disk. When the artifact or a parity
+golden is genuinely absent the test SKIPs (exit code 4) and the message names
+the path it looked at — a SKIP is **not** a pass.
 
 ## Structure
 
@@ -231,17 +278,21 @@ a pass.
   `--serve`); `apps/lsxforge/` — checkpoint conversion; `apps/taskmosaic/` —
   OpenAI/Anthropic HTTP+SSE bridge; `apps/lsxcli/` — CLI client;
   `apps/lsxbenchmark/` — speed measurement and bit-exactness.
-- `models/<model_type>.json` — the manifest: one file per ingested model, the
-  single source of truth for its vault directory, passport namespace, format tag,
-  tokenizer kind and lifecycle-stage targets. Everything derived from it
-  (target registration, registry list, `docs/MODELS.md`) is generated at
-  configure time; `test_manifest_sync` fails on any drift.
+- `models/<org>/<model>.json` — the manifest: one file per ingested model, laid
+  out the way the store is (`microsoft/phi-4.json` describes the checkpoint at
+  `<source root>/microsoft/phi-4` and the artifact at
+  `<artifact root>/microsoft/phi-4/<profile>`). The single source of truth for
+  its store coordinates, passport namespace, format tag, tokenizer kind,
+  lifecycle-stage targets and its per-profile build state. Everything derived
+  from it (target registration, registry list, `docs/MODELS.md`) is generated at
+  configure time; `test_manifest_sync` fails on any drift and the generator
+  refuses a row whose path disagrees with its own `vault` block.
 - `tests/` — Catch2 suite (labels `fast`/`convert`/`inference`/`perf`).
 
 Per-file inventory and which file owns what — skill `logestix-repo-map`.
-What each model *is* (geometry, vault, gates, throughput, debt) —
-**`docs/MODELS.md`**, generated from the manifests. Per-model narrative —
-`docs/model-reports/`.
+What each model *is* (geometry, store coordinates, per-profile build state,
+gates, throughput, debt) — **`docs/MODELS.md`**, generated from the manifests.
+Per-model narrative — `docs/model-reports/`.
 
 ## TaskMosaic OpenAI bridge
 
@@ -250,8 +301,8 @@ Start one GPU backend per model, point a bridge config at it, then use any
 OpenAI client:
 
 ```bash
-# 1) GPU engine (one model per process)
-lsxfabric --serve --localmodel /vault/models/<model> \
+# 1) GPU engine (one model per process); <org>/<model>/<profile> is the artifact
+lsxfabric --serve --localmodel <org>/<model>/nvfp4 \
   --listen tcp://*:5555 --listen-cancel tcp://*:5556
 
 # 2) bridge (JSON lists id -> model_path + backend endpoints; see the design doc)
