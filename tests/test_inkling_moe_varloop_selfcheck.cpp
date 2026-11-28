@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "test_manifest_query_root.h"
 #include "inkling_moe_varloop_constants.h"
 #include "inkling_moe_varloop_model.h"
 #include "lsxcommon/inkling_moe_loop_inference_pipeline.h"
@@ -41,11 +42,14 @@ int EnvIntOr(const char *name, int dflt)
     return dflt;
 }
 
-std::string VaultRoot()
+// The CONVERTED tree (artifact) — not the checkpoint. Named for what it
+// returns: in this tree 'vault' is the read-only SOURCE store, so a helper
+// called VaultRoot() that answered an artifact path read backwards.
+std::string ConvertedRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_TML_D24_VARLOOP_RESEARCH_ROOT"))
         return env;
-    return "/mnt/fast_storage/lsx_model/thinkingmachines/TML-d24-varloop-research";
+    return manifest_query::ConvertedDirFor("tml-d24-varloop-research");
 }
 
 lsxcommon::ModelInitConfig Cfg(const std::string &root)
@@ -77,7 +81,7 @@ bool VaultPresent(const fs::path &root)
 TEST_CASE("varloop real-weight sanity: the model keeps its knowledge",
           "[inkling][varloop][sanity]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!VaultPresent(root))
         SKIP("converted TML-d24-varloop-research tree absent: " + root.string());
 
@@ -128,7 +132,7 @@ TEST_CASE("varloop real-weight sanity: the model keeps its knowledge",
 TEST_CASE("varloop SelfCheck: the capital of France is Paris",
           "[inkling][varloop][selfcheck]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!VaultPresent(root))
         SKIP("converted TML-d24-varloop-research tree absent: " + root.string());
 
@@ -193,7 +197,7 @@ TEST_CASE("varloop SelfCheck: the capital of France is Paris",
 // family test above: same prompt, same answer, no SKIP when the vault is there.
 TEST_CASE("varloop SelfCheck driver reaches Paris", "[inkling][varloop][selfcheck]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!VaultPresent(root))
         SKIP("converted TML-d24-varloop-research tree absent: " + root.string());
 

@@ -11,6 +11,7 @@
 // too), so it needs its own assertion.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
 #include "test_gigachat4_fixture.h"
 
 #include "lsxcommon/gigachat_moe_37b_model.h"
@@ -29,11 +30,13 @@ using namespace lsxcommon;
 
 namespace {
 
+// The SOURCE checkpoint (read-only store) — what 'vault' means in the
+// registry schema; the converted tree is ConvertedDirFor/ModelRoot.
 std::filesystem::path VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_GIGACHAT4_37B_A4B_ROOT"))
         return env;
-    return "/mnt/fast_storage/lsx_model/ai-sage/GigaChat4-37B-A4B";
+    return manifest_query::SourceDirFor("gigachat4-37b-a4b");
 }
 
 ArrowTokenizerDb LoadVaultTokenizer(const std::filesystem::path &root)

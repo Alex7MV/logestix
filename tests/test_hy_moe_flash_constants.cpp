@@ -16,6 +16,7 @@
 
 #include <simdjson.h>
 
+#include "test_manifest_query_root.h"
 #include "lsxcommon/config_json.h"
 #include "hy_moe_flash_constants.h"
 
@@ -23,11 +24,13 @@ namespace {
 
 namespace hy4 = lsxcommon::hy4;
 
+// The SOURCE checkpoint (read-only store) — what 'vault' means in the
+// registry schema; the converted tree is ConvertedDirFor/ModelRoot.
 std::filesystem::path VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT"))
         return std::filesystem::path(env);
-    return std::filesystem::path("/mnt/fast_storage/lsx_model/tencent/Hy4-flash");
+    return std::filesystem::path(manifest_query::SourceDirFor("hy4-flash"));
 }
 
 // The text_config object of config.json. The DOM parser is used on purpose:

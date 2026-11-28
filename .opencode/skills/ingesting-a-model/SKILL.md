@@ -586,7 +586,18 @@ reproduced with zero differences is the standard this registry was migrated at.
   "format_tag": "logestix-flint-nvfp4",      // only where a constant exists
   "forge_flag": "--flint",
   "tokenizer_kind": 4,
-  "vault": { "dir": "flint", "env": "LSX_TEST_FLINT_ROOT" },  // env is derived
+  // The checkpoint's place in the ORG-NESTED store: the file lives at
+  // models/<org>/<dir>.json, so org and dir are the path and the generator
+  // REFUSES a row whose location disagrees with this block.
+  "vault": { "org": "RecursiveSI", "dir": "flint", "env": "LSX_TEST_FLINT_ROOT" },
+  // Invariant I4: one checkpoint, N native trees. Each profile is an artifact
+  // with its OWN codecs and its OWN measured gates; `built` requires a digest,
+  // `not-built` may carry no metrics at all.
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": { "status": "not-built" },
+    "bf16":  { "status": "not-built" }
+  },
   "lifecycle_tu": ["flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"],
   "stages": { "convert": [...], "load": [...], "model": [...], "kernels": [...],
               "selfcheck": [...], "fsi": [...], "code": [...], "det": [...],

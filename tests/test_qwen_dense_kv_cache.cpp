@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "test_manifest_query_root.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/qwen_base_model.h"
@@ -14,7 +15,7 @@ TEST_CASE("Qwen incremental KV continuation equals a single full run",
           "[qwen][realmodel]")
 {
     ModelInitConfig cfg;
-    cfg.model_path = "/mnt/llm_models/models/Qwen3.5-9B";
+    cfg.model_path = manifest_query::ConvertedDirFor("qwen3.5-9b");
     auto model = LsxModelFactory::Create(cfg);
     if (!model || !model->Load()) {
         SKIP("Qwen checkpoint not available");

@@ -40,7 +40,6 @@ inline std::filesystem::path SourceDir(const lsxmanifest::ModelRow &row)
 }
 
 // The directory a gate should load from.
-//
 // Precedence, and why in this order:
 //   1. LSX_TEST_<MODEL>_ROOT — an operator pointing at a tree anywhere (a second
 //      artifact root, a copy on another disk). The escape hatch stays.
@@ -59,6 +58,33 @@ inline std::filesystem::path ModelRoot(const lsxmanifest::ModelRow &row)
 {
     if (const char *env = std::getenv(row.vault_env); env && *env) return env;
     return ArtifactDir(row);
+}
+
+// ── Resolving from a model_type, for the tests that name a model by string ──
+//
+// A test knows its model_type ("hy4-flash"), not a row pointer. These two are
+// the canonical entry points for it, and they exist so no test has to spell the
+// store root: the registry is the one place that knows `models/<org>/<model>.json`
+// and therefore the one place that knows the org.
+//
+// Return an empty path when the registry has no such row — a test that names a
+// model with no manifest is a registration bug, and the empty path makes the
+// following SKIP say so instead of inventing a directory.
+
+// The SOURCE checkpoint: `<source root>/<org>/<model>`. For a test that reads
+// the model's own config.json / tokenizer.model / safetensors.
+inline std::filesystem::path SourceDirFor(std::string_view model_type)
+{
+    const lsxmanifest::ModelRow *row = FindModel(model_type);
+    return row ? SourceDir(*row) : std::filesystem::path();
+}
+
+// The ARTIFACT a gate loads: `<artifact root>/<org>/<model>/<profile>`, with the
+// row's env override winning. For a test that loads a converted tree.
+inline std::filesystem::path ConvertedDirFor(std::string_view model_type)
+{
+    const lsxmanifest::ModelRow *row = FindModel(model_type);
+    return row ? ModelRoot(*row) : std::filesystem::path();
 }
 
 } // namespace manifest_query

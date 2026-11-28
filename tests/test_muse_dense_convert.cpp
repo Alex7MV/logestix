@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "test_manifest_query_root.h"
 #include "lsxcommon/muse_dense_constants.h"
 #include "lsxcommon/muse_dense_convert.h"
 #include "lsxcommon/model_integrity.h"
@@ -202,7 +203,7 @@ TEST_CASE("muse dense topology parse: real checkpoint config",
         env && *env)
         root = env;
     else
-        root = "/mnt/fast_storage/lsx_model/meta-models/Muse-Glimmer-30B";
+        root = manifest_query::SourceDirFor("muse-glimmer-30b");
     if (!fs::exists(fs::path(root) / "config.json"))
         SKIP("Muse-Glimmer-30B source checkpoint not present");
 

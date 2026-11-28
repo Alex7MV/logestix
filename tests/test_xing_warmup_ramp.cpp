@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "test_manifest_query_root.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
 
@@ -44,7 +45,7 @@ using Ms = double;
 std::string Root()
 {
     if (const char *env = std::getenv("LSX_TEST_XING_ROOT")) return env;
-    return "/mnt/llm_models/models/Xing4.0-29B-A4B";
+    return manifest_query::ConvertedDirFor("xing4.0-29b-a4b");
 }
 
 struct Ramp

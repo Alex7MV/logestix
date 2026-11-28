@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "test_manifest_query_root.h"
 #include "inkling_moe_model.h"
 #include "lsxcommon/inkling_moe_inference_pipeline.h"
 #include "lsxcommon/inkling_moe_tool_format.h"
@@ -37,10 +38,13 @@ int EnvIntOr(const char *name, int dflt)
     return dflt;
 }
 
-std::string VaultRoot()
+// The CONVERTED tree (artifact) — not the checkpoint. Named for what it
+// returns: in this tree 'vault' is the read-only SOURCE store, so a helper
+// called VaultRoot() that answered an artifact path read backwards.
+std::string ConvertedRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_INKLING_2_SMALL_ROOT")) return env;
-    return "/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Small";
+    return manifest_query::ConvertedDirFor("inkling-2-small");
 }
 
 lsxcommon::ModelInitConfig Cfg(const std::string &root)
@@ -72,7 +76,7 @@ TEST_CASE("inkling parity trace: per-layer hidden states", "[inkling][trace]")
 {
     const char *path = std::getenv("LSX_INKLING_TRACE");
     if (path == nullptr) SKIP("LSX_INKLING_TRACE not set");
-    fs::path root = VaultRoot();
+    fs::path root = ConvertedRoot();
     if (const char *alt = std::getenv("LSX_INKLING_TRACE_ROOT")) root = alt;
     if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
@@ -256,7 +260,7 @@ TEST_CASE("inkling KV session growth keeps every layer's rows intact",
 TEST_CASE("inkling real-weight sanity: the model keeps its knowledge",
           "[inkling][sanity]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
@@ -311,7 +315,7 @@ TEST_CASE("inkling real-weight sanity: the model keeps its knowledge",
 
 TEST_CASE("inkling SelfCheck: the capital of France is Paris", "[inkling][selfcheck]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 

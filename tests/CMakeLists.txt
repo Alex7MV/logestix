@@ -104,6 +104,13 @@ target_include_directories(test_inkling_moe_base_convert PRIVATE
 target_link_libraries(test_inkling_moe_base_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 add_executable(test_inkling_moe_base_loader test_inkling_moe_base_loader.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_inkling_moe_base_loader PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_inkling_moe_base_loader PRIVATE lsxstorage)
 target_include_directories(test_inkling_moe_base_loader PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_inkling_moe_base_loader PRIVATE lsxcommon
@@ -149,6 +156,13 @@ target_link_libraries(test_muse_dense_constants PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 
 add_executable(test_muse_dense_convert test_muse_dense_convert.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_muse_dense_convert PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_muse_dense_convert PRIVATE lsxstorage)
 target_include_directories(test_muse_dense_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_muse_dense_convert PRIVATE lsxcommon
@@ -347,6 +361,13 @@ target_link_libraries(test_inkling_moe_loop_model PRIVATE lsxcommon
 
 # SelfCheck gate: the real converted tree in the vault; SKIP 4 when absent.
 add_executable(test_inkling_moe_loop_selfcheck test_inkling_moe_loop_selfcheck.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_inkling_moe_loop_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_inkling_moe_loop_selfcheck PRIVATE lsxstorage)
 target_include_directories(test_inkling_moe_loop_selfcheck PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_inkling_moe_loop_selfcheck PRIVATE lsxcommon
@@ -470,6 +491,10 @@ target_link_libraries(test_inkling_moe_varloop_pipeline PRIVATE
 # SelfCheck gate: the real converted tree in the vault; SKIP 4 when absent.
 add_executable(test_inkling_moe_varloop_selfcheck
     test_inkling_moe_varloop_selfcheck.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_inkling_moe_varloop_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_inkling_moe_varloop_selfcheck PRIVATE lsxstorage)
 target_include_directories(test_inkling_moe_varloop_selfcheck PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_inkling_moe_varloop_selfcheck PRIVATE lsxcommon
@@ -522,10 +547,24 @@ target_link_libraries(test_inkling_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
 add_executable(test_inkling_moe_loader test_inkling_moe_loader.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_inkling_moe_loader PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_inkling_moe_loader PRIVATE lsxstorage)
 target_link_libraries(test_inkling_moe_loader PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
 add_executable(test_inkling_moe_selfcheck test_inkling_moe_selfcheck.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_inkling_moe_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_inkling_moe_selfcheck PRIVATE lsxstorage)
 target_include_directories(test_inkling_moe_selfcheck PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_inkling_moe_selfcheck PRIVATE lsxcommon
@@ -1502,6 +1541,13 @@ lsx_copy_arrow_dlls(test_glm_moe_expert_cache ARROW_ONLY)
 
 # ── Qwen incremental KV cache (Task 7) ─────────────────────────────────
 add_executable(test_qwen_dense_kv_cache test_qwen_dense_kv_cache.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_qwen_dense_kv_cache PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_qwen_dense_kv_cache PRIVATE lsxstorage)
 target_compile_definitions(test_qwen_dense_kv_cache PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -1564,6 +1610,13 @@ lsx_copy_arrow_dlls(test_glm_moe_convert)
 
 # ── GLM-5.3-Flash converter test (geometry, classifier, requant) ─────
 add_executable(test_glm_moe_flash_convert test_glm_moe_flash_convert.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_glm_moe_flash_convert PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_glm_moe_flash_convert PRIVATE lsxstorage)
 target_compile_definitions(test_glm_moe_flash_convert PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
@@ -1778,6 +1831,13 @@ target_link_libraries(test_xing_kv_layout_parity PRIVATE lsxcommon Catch2::Catch
 # of the box (clock policy, driver, power state) and a budget taken from one box
 # would flake on another.
 add_executable(test_xing_warmup_ramp test_xing_warmup_ramp.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_xing_warmup_ramp PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_xing_warmup_ramp PRIVATE lsxstorage)
 target_link_libraries(test_xing_warmup_ramp PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 
@@ -3709,6 +3769,13 @@ target_include_directories(test_gigachat_moe_loader PRIVATE
 
 add_executable(test_gigachat_moe_tokenizer_parity
     test_gigachat_moe_tokenizer_parity.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_gigachat_moe_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_gigachat_moe_tokenizer_parity PRIVATE lsxstorage)
 target_include_directories(test_gigachat_moe_tokenizer_parity PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_gigachat_moe_tokenizer_parity PRIVATE
@@ -3746,6 +3813,13 @@ lsx_copy_arrow_dlls(test_gigachat_moe_37b_convert ARROW_ONLY)
 
 add_executable(test_gigachat_moe_37b_tokenizer_parity
     test_gigachat_moe_37b_tokenizer_parity.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_gigachat_moe_37b_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_gigachat_moe_37b_tokenizer_parity PRIVATE lsxstorage)
 target_link_libraries(test_gigachat_moe_37b_tokenizer_parity PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_37b_tokenizer_parity PRIVATE
@@ -3760,6 +3834,13 @@ target_include_directories(test_gigachat_tool_framing_37b PRIVATE
 lsx_copy_arrow_dlls(test_gigachat_tool_framing_37b ARROW_ONLY)
 
 add_executable(test_gigachat_moe_37b_model test_gigachat_moe_37b_model.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_gigachat_moe_37b_model PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_gigachat_moe_37b_model PRIVATE lsxstorage)
 target_link_libraries(test_gigachat_moe_37b_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_37b_model PRIVATE
@@ -3831,6 +3912,13 @@ lsx_copy_arrow_dlls(test_gigachat_moe_708b_model ARROW_ONLY)
 # Tokenizer bridge (real vault, SKIP when the converted tree is absent).
 add_executable(test_gigachat_moe_708b_tokenizer_parity
     test_gigachat_moe_708b_tokenizer_parity.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_gigachat_moe_708b_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_gigachat_moe_708b_tokenizer_parity PRIVATE lsxstorage)
 target_link_libraries(test_gigachat_moe_708b_tokenizer_parity PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_708b_tokenizer_parity PRIVATE
@@ -5919,12 +6007,26 @@ lsx_add_test(NAME test_manifest_sync
 
 # ── Hy4-flash (hy4-flash): one executable per lifecycle stage ───────────────
 add_executable(test_hy_moe_flash_constants test_hy_moe_flash_constants.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_hy_moe_flash_constants PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_hy_moe_flash_constants PRIVATE lsxstorage)
 target_include_directories(test_hy_moe_flash_constants PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_hy_moe_flash_constants PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
 add_executable(test_hy_moe_flash_convert test_hy_moe_flash_convert.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_hy_moe_flash_convert PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_hy_moe_flash_convert PRIVATE lsxstorage)
 target_include_directories(test_hy_moe_flash_convert PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_hy_moe_flash_convert PRIVATE lsxcommon
@@ -5938,12 +6040,23 @@ target_link_libraries(test_hy_moe_flash_loader PRIVATE lsxcommon
 
 add_executable(test_hy_moe_flash_tokenizer_parity
     test_hy_moe_flash_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_hy_moe_flash_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_flash_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_hy_moe_flash_tokenizer_parity PRIVATE
     LSX_HY4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy4")
 target_link_libraries(test_hy_moe_flash_tokenizer_parity PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 
 add_executable(test_hy_moe_flash_model test_hy_moe_flash_model.cpp)
+# Canonical model resolution: the test reads its checkpoint/artifact path from
+# the registry (tests/test_manifest_query_root.h) instead of a store literal,
+# so it needs the generated table and the artifact root.
+target_include_directories(test_hy_moe_flash_model PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_hy_moe_flash_model PRIVATE lsxstorage)
 target_include_directories(test_hy_moe_flash_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_hy_moe_flash_model PRIVATE lsxcommon

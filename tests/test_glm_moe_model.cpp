@@ -14,7 +14,8 @@ namespace fs = std::filesystem;
 TEST_CASE("GLM factory autodetects and creates glm-5.2 model", "[glm][model]")
 {
     // Layout mirrors production: <model>/logestix/model.index.json where
-    // <model> is the checkpoint directory (e.g. /mnt/llm_models/models/GLM-5.2).
+    // <model> is the checkpoint directory, resolved from the registry
+    // (models/zai-org/GLM-5.2.json: <source root>/<org>/<model>).
     auto base = fs::temp_directory_path() / "logestix_glm_model";
     fs::remove_all(base);
     auto model_home = base / "GLM-5.2";

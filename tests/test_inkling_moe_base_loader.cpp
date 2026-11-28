@@ -6,6 +6,7 @@
 // (the converted index) and SKIPs when the vault is absent — no weight is
 // loaded into VRAM here.
 #include <catch2/catch_test_macros.hpp>
+#include "test_manifest_query_root.h"
 #include "lsxcommon/index_layout.h"
 #include <lsxcommon/inkling_moe_base_convert.h>
 #include <lsxcommon/inkling_moe_base_load.h>
@@ -29,11 +30,14 @@ namespace base = lsxcommon::inkling::base;
 
 namespace {
 
-std::string VaultRoot()
+// The CONVERTED tree (artifact) — not the checkpoint. Named for what it
+// returns: in this tree 'vault' is the read-only SOURCE store, so a helper
+// called VaultRoot() that answered an artifact path read backwards.
+std::string ConvertedRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_INKLING_ROOT"))
         return env;
-    return "/mnt/fast_storage/lsx_model/thinkingmachines/Inkling";
+    return manifest_query::ConvertedDirFor("inkling");
 }
 
 fs::path ConvertedFixture()
@@ -204,7 +208,7 @@ TEST_CASE("inkling base pinned upload covers every plane and Free releases",
 TEST_CASE("inkling base real vault index matches the frozen passport",
           "[inkling][load]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling tree absent: " + root.string());
 

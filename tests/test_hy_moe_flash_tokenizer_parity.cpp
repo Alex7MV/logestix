@@ -12,6 +12,8 @@
 // this bridge. SKIPs (4) when the converted vault entry is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -71,11 +73,13 @@ std::vector<Case> LoadCases()
     return cases;
 }
 
+// The SOURCE checkpoint (read-only store) — what 'vault' means in the
+// registry schema; the converted tree is ConvertedDirFor/ModelRoot.
 std::filesystem::path VaultRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT"))
         return std::filesystem::path(env);
-    return std::filesystem::path("/mnt/fast_storage/lsx_model/tencent/Hy4-flash");
+    return std::filesystem::path(manifest_query::SourceDirFor("hy4-flash"));
 }
 
 } // namespace

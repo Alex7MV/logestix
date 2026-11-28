@@ -7,6 +7,7 @@
 //     `logestix/model.index.json`) plus the byte sizes of two expert records,
 //     and SKIPs when the vault is absent. No weight is loaded into VRAM here.
 #include <catch2/catch_test_macros.hpp>
+#include "test_manifest_query_root.h"
 #include "lsxcommon/index_layout.h"
 #include <lsxcommon/inkling_moe_convert.h>
 #include <lsxcommon/inkling_moe_load.h>
@@ -80,11 +81,14 @@ void operator delete[](void *p, std::size_t) noexcept { ArrFree(p); }
 
 namespace {
 
-std::string VaultRoot()
+// The CONVERTED tree (artifact) — not the checkpoint. Named for what it
+// returns: in this tree 'vault' is the read-only SOURCE store, so a helper
+// called VaultRoot() that answered an artifact path read backwards.
+std::string ConvertedRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_INKLING_2_SMALL_ROOT"))
         return env;
-    return "/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Small";
+    return manifest_query::ConvertedDirFor("inkling-2-small");
 }
 
 }  // namespace
@@ -225,7 +229,7 @@ TEST_CASE("inkling pinned load releases the query-offset array (A3.1)",
 
 TEST_CASE("inkling real vault expert store reads both codecs", "[inkling][load]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 
@@ -264,7 +268,7 @@ TEST_CASE("inkling real vault expert store reads both codecs", "[inkling][load]"
 TEST_CASE("inkling real vault index matches the frozen passport",
           "[inkling][load]")
 {
-    const fs::path root = VaultRoot();
+    const fs::path root = ConvertedRoot();
     if (!fs::exists(root / "model.index.json"))
         SKIP("converted Inkling-2-Small tree absent: " + root.string());
 

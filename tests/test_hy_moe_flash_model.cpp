@@ -2,6 +2,7 @@
 // gates, and the request guards — all host-only (label `fast`), so they run
 // without the 90 GB artifact.
 #include <catch2/catch_test_macros.hpp>
+#include "test_manifest_query_root.h"
 #include "lsxcommon/index_layout.h"
 
 #include <atomic>
@@ -136,7 +137,7 @@ TEST_CASE("hy4 model: control-prompt diagnostic", "[.hy4diag]")
 {
     const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT");
     const fs::path root = env ? fs::path(env)
-                              : fs::path("/mnt/fast_storage/lsx_model/tencent/Hy4-flash");
+                              : fs::path(manifest_query::ConvertedDirFor("hy4-flash"));
     if (!fs::exists(root / "model.index.json"))
         SKIP("converted Hy4-flash tree absent");
 

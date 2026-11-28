@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "test_manifest_query_root.h"
 #include "glm_moe_flash_constants.h"
 #include "lsxcommon/path_registry.h"
 #include "test_glm_moe_flash_fixture.h"
@@ -162,7 +163,7 @@ TEST_CASE("flash_tensor_is_nvfp4 policy")
 
 TEST_CASE("ParseFlashConfig: real checkpoint text_config")
 {
-    const std::string dir = "/mnt/llm_models/models/GLM-5.3-Flash";
+    const std::string dir = manifest_query::SourceDirFor("glm-5.3-flash");
     if (!fs::exists(dir + "/config.json")) {
         SKIP("GLM-5.3-Flash checkpoint not present");
     }

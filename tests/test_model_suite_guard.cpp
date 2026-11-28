@@ -300,6 +300,18 @@ bool IsLoaderTest(const std::string &name)
     return std::regex_match(name, re);
 }
 
+// Both spellings of the store root. Shared by the two scanners below: one asks
+// "does a loader-stage test touch a store at all", the other asks "does ANY test
+// hardcode the root" — and they must agree on what a root looks like.
+const std::vector<std::string> &StoreRootLiterals()
+{
+    static const std::vector<std::string> v = {
+        "mnt/fast_storage/lsx_model",
+        "mnt/llm_models/models",
+    };
+    return v;
+}
+
 bool IsLoaderStageTest(const std::string &name)
 {
     static const std::regex re(R"(test_[A-Za-z0-9_]+_loader\.cpp$)");
@@ -315,8 +327,10 @@ std::vector<std::string> CheckLoaderSyntheticDiscipline(
         R"inc(^\s*#\s*include\s+"(test_[A-Za-z0-9_]+_fixture\.h|test_synth_checkpoint\.h)")inc");
     static const std::regex model_stage_re(
         R"(test_(glm|qwen|deepseek|gemma|kimi|nemotron|gigachat|ornith|granite|mimo|phi)[A-Za-z0-9_]*_model\.cpp$)");
-    const std::vector<std::string> vault_markers = {
-        "mnt/llm_models/models", "huggingface.co"};
+    // The store roots plus a bare HF hub reference, which no test has a reason
+    // to name: a loader-stage test must build its checkpoint, not fetch one.
+    std::vector<std::string> vault_markers = StoreRootLiterals();
+    vault_markers.push_back("huggingface.co");
     std::error_code ec;
     for (auto &e : fs::directory_iterator(tests_dir, ec))
     {
@@ -1099,4 +1113,112 @@ TEST_CASE("suite guard: a golden with no captured raw declares a template source
 
     for (const auto &x : mislabelled) WARN("mislabelled golden: " << x);
     CHECK(mislabelled.empty());
+}
+
+// ── Every test resolves the store through the registry, never by literal ───
+//
+// The store is org-nested (`<source root>/<org>/<model>`) and the registry names
+// that shape (`models/<org>/<model>.json`, `vault.org` + `vault.dir`). A test
+// that spells the root itself hardcodes BOTH facts, so a model that changes org,
+// a root that moves disk, or a renamed directory silently turns the test into a
+// permanent SKIP — 21 files sat in exactly that state while the guard scanned
+// only two labels and two stale path spellings.
+//
+// Canonical resolution is `manifest_query::SourceDir(row)` / `ModelRoot(row)`
+// (tests/test_manifest_query_root.h): env override first, then the manifest's
+// own org/dir/profile. These cases hold every test file to it.
+namespace {
+
+// Files whose SUBJECT is the store layer: they construct roots to prove what a
+// root means, so a literal there is the code under test, not a shortcut.
+const std::set<std::string> &StoreSubjectFiles()
+{
+    static const std::set<std::string> v = {
+        "test_storage_roots.cpp",
+        "test_path_registry.cpp",
+        "test_model_suite_guard.cpp",   // this scanner and its own fixtures
+    };
+    return v;
+}
+
+// How many code lines of `name` (in `dir`) hardcode a store root. Line comments
+// are prose — many of them explain the store — so they are excluded: the thing
+// forbidden is a path the CODE uses.
+int CountStoreRootLiterals(const fs::path &dir, const std::string &name)
+{
+    std::ifstream in(dir / name);
+    if (!in.is_open()) return -1;   // absent file: distinct from "clean"
+    int hits = 0;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        const std::string code = line.substr(0, line.find("//"));
+        for (const auto &lit : StoreRootLiterals())
+            if (code.find(lit) != std::string::npos) { ++hits; break; }
+    }
+    return hits;
+}
+
+std::vector<std::string> CheckNoStoreRootLiterals(const fs::path &tests_dir,
+                                                  int *scanned)
+{
+    std::vector<std::string> v;
+    std::error_code ec;
+    if (!fs::is_directory(tests_dir, ec)) return v;
+    if (scanned) *scanned = 0;
+    for (const auto &e : fs::directory_iterator(tests_dir, ec))
+    {
+        if (!e.is_regular_file()) continue;
+        const std::string name = e.path().filename().string();
+        const std::string ext = e.path().extension().string();
+        if (ext != ".cpp" && ext != ".cu" && ext != ".h") continue;
+        if (StoreSubjectFiles().count(name)) continue;
+        if (scanned) ++*scanned;
+        const int hits = CountStoreRootLiterals(tests_dir, name);
+        if (hits > 0)
+            v.push_back(name + ": " + std::to_string(hits) +
+                        " line(s) hardcode a store root — resolve it from the "
+                        "registry (manifest_query::SourceDir(row) / "
+                        "ModelRoot(row))");
+    }
+    return v;
+}
+
+}  // namespace
+
+TEST_CASE("suite guard: no test hardcodes the model store root",
+          "[suite][guard]")
+{
+    int scanned = 0;
+    auto v = CheckNoStoreRootLiterals(fs::path(LSX_SOURCE_DIR) / "tests",
+                                      &scanned);
+    INFO("test files scanned: " << scanned);
+    REQUIRE(scanned > 100);   // an empty scan would pass every assertion below
+    std::string joined;
+    for (const auto &s : v) joined += "  " + s + "\n";
+    INFO("hardcoded store roots:\n" << joined);
+    CHECK(v.empty());
+}
+
+TEST_CASE("suite guard: the store-root scanner bites", "[suite][guard][unit]")
+{
+    // A code literal is a violation, a commented mention is not, and an absent
+    // file is distinguishable from a clean one. Without this, the case above
+    // passes on an empty offender set and reads as coverage.
+    const fs::path dir = fs::temp_directory_path() / "lsx_store_root_scan";
+    fs::create_directories(dir);
+    {
+        std::ofstream f(dir / "bad.cpp");
+        f << "const char *k = \"/mnt/fast_storage/lsx_model/microsoft/phi-4\";\n"
+             "const char *t = \"/mnt/llm_models/models/Qwen3.5-9B\";\n";
+    }
+    {
+        std::ofstream f(dir / "commented_only.cpp");
+        f << "// the store lives at /mnt/fast_storage/lsx_model in this build\n"
+             "auto root = manifest_query::SourceDir(row);\n";
+    }
+    CHECK(CountStoreRootLiterals(dir, "bad.cpp") == 2);
+    CHECK(CountStoreRootLiterals(dir, "commented_only.cpp") == 0);
+    CHECK(CountStoreRootLiterals(dir, "absent.cpp") == -1);
+    fs::remove_all(dir);
 }

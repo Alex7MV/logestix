@@ -4,6 +4,8 @@
 // tokenizer, never from this bridge. SKIPs when the source is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -21,9 +23,14 @@
 #ifndef LSX_GIGACHAT_FIXTURE_DIR
 #define LSX_GIGACHAT_FIXTURE_DIR "tests/fixtures/gigachat"
 #endif
+// The CHECKPOINT FILE, not the directory: the resolver answers the model's
+// directory, and the tokenizer sits inside it. (A migration that dropped the
+// file component passed a directory to BuildTokenizerArrowFiles, which read it
+// as bytes and died in basic_string::_M_create.)
 #ifndef LSX_GIGACHAT_TOKENIZER_PATH
 #define LSX_GIGACHAT_TOKENIZER_PATH \
-    "/mnt/fast_storage/lsx_model/ai-sage/GigaChat3.5-432B-A28B-Reasoning/tokenizer.json"
+    (manifest_query::SourceDirFor("gigachat3.5-432b-a28b-reasoning") / \
+     "tokenizer.json")
 #endif
 
 namespace {
