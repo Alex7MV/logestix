@@ -103,7 +103,7 @@ started` = no commit, no code.
 | 10 | `MemoryModel` in the governor | **done** | `8effeaf4` | probed `prop.integrated`; one pool on unified |
 | 11 | `LSX_CUDA_ARCH` accepts Ampere | **done** | `HEAD~0` | validator moved to `cmake/LsxArch.cmake`; both SASS proven in the fatbin |
 | 12 | arch-`a` object libs only for 12x | **done** | HEAD | `lsx_arch_has_12x()` + `lsx_tc_gemm_stub.cpp`; Ampere configure has 0 × `compute_120a` |
-| 13 | toolchain-agnostic toolkit guard | **not started** | — | `test_cuda_toolkit_guard.cu:5,50-51,95-97` |
+| 13 | toolchain-agnostic toolkit guard | **done** | HEAD | floor 12060; `__has_include`; device case asks the capability table; a no-fp4 twin compiles the same TU |
 | 14 | Ampere presets + degradation audit | **not started** | — | `CMakePresets.json:10-75` has no `86`; no `cmake/toolchains/` |
 | 15 | `bf16` profile for the slice | **not started** | — | `grep CodecProfile libs/lsxcommon/src` is empty |
 | 16 | 3090/Jetson acceptance + docs | **not started** | — | `docs/NVIDIA_DOCS_AMPERE.md` has been **removed** from the tree — see the note in Task 16 |
@@ -2165,7 +2165,52 @@ TEST_CASE("a forbidden arch still fails configure with a named reason") {
 
 ### Task 13: `test_cuda_toolkit_guard` becomes toolchain-agnostic
 
-> **NOT STARTED (2026-11-28).** Four concrete blockers, all in
+> **DONE.** The guard now builds and passes on CUDA 12.6 (JetPack 6.2.1) as well
+> as 13.5. All four planned blockers are closed, and the fourth one changed shape
+> (below).
+>
+> | blocker | before | now |
+> |---|---|---|
+> | `:5` | `#include <cuda_fp4.h>` unconditional → the TU does not compile under 12.6, so a SKIP could never run | behind `#if __has_include(<cuda_fp4.h>)`, with `LSX_HAS_CUDA_FP4`; both e2m1 cases `SKIP` naming the header and the version |
+> | `:14` | `kMinCudaRuntime = 13020` | `12060`, in a shared header (see below) |
+> | `:51` | `REQUIRE(CUDART_VERSION / 1000 == 13)` | gone; the floor is the check, and it is applied to the LINKED runtime too |
+> | `:97` | `REQUIRE(prop.major == 12)` | `hw::TargetFromComputeCapability(...)`, requiring a known vendor and a non-empty capability row |
+>
+> **What the plan did not anticipate: nothing could verify this.** The guard is a
+> `.cu` file, so "it accepts 12.6 now" is only observable on a JetPack machine —
+> the one machine a change to the guard cannot assume. So the threshold moved
+> into `tests/test_cuda_toolkit_rules.h` (a pure function, no CUDA includes) and a
+> new host test `test_cuda_toolkit_rules` checks it on any host, together with the
+> structural half: no bare `cuda_fp4.h` include, no major-equality clause, no
+> hand-derived device set, and one copy of the floor.
+>
+> **The strongest claim — "it COMPILES without cuda_fp4.h" — is now testable on a
+> 13.5 host.** `test_cuda_toolkit_guard_nofp4` compiles the SAME source with
+> `LSX_TOOLKIT_GUARD_HIDE_FP4_HEADER`, a documented test hook that makes the
+> `__has_include` branch false: if the file ever regains a bare include, that
+> target stops compiling here instead of on the Orin. Measured: 6 cases pass, 2
+> skip with the reason, `LSX_HAS_CUDA_FP4 == 0` asserted.
+>
+> **Evidence:** `ctest --preset linux-debug` **190/190**; the three toolkit
+> targets 3/3; the real guard reports
+> `device 0: … RTX 5090 CC 12.0 -> target 'nvidia:sm_120'`, i.e. the answer comes
+> from the table rather than a literal; `test_cuda_toolkit_rules` 5 cases (2 of
+> them structural, RED before the rewrite).
+>
+> **Refinements over the plan's text:**
+>
+> - the capability table is linked by compiling `libs/lsxcommon/src/hardware_target.cpp`
+>   into the test executable, not by linking all of `lsxcommon`: a fast, GPU-free
+>   guard has no use for the device object libs, and this keeps the single source
+>   of truth without the weight.
+> - the plan listed three fp4 cases (`:59-93`); there are two, and both are
+>   gated. The third (`pack order`) already asserted a two-element packing and is
+>   the second case.
+> - the driver-stamp cases (`:104-172`) are untouched, as the plan intended: they
+>   are toolkit-version arithmetic and are what catches a stale build dir after a
+>   toolkit upgrade — more valuable on a second machine, not less.
+>
+> **Original note, for the record:** Four concrete blockers, all in
 > `tests/test_cuda_toolkit_guard.cu`:
 >
 > | line | today | why it breaks on 12.6 / Ampere |

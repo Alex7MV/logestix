@@ -1521,15 +1521,65 @@ target_compile_options(test_cuda_toolkit_guard_cu PRIVATE
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_link_libraries(test_cuda_toolkit_guard_cu PRIVATE
     Catch2::Catch2WithMain CUDA::cudart)
+# The guard asks the capability table which devices are supported instead of
+# re-deriving it ("prop.major == 12"), so it needs that header — and ONLY that:
+# the .cpp below is compiled straight into the test rather than linking all of
+# lsxcommon, whose device object libs a fast, GPU-free guard has no use for.
+target_include_directories(test_cuda_toolkit_guard_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
 
 foreach(qt test_cuda_toolkit_guard)
-    add_executable(${qt})
+    add_executable(${qt}
+        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src/hardware_target.cpp")
+    target_include_directories(${qt} PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
-    target_link_libraries(${qt} PRIVATE test_cuda_toolkit_guard_cu Catch2::Catch2WithMain)
+    target_link_libraries(${qt} PRIVATE test_cuda_toolkit_guard_cu Catch2::Catch2WithMain
+        CUDA::cudart)
     lsx_copy_arrow_dlls(${qt})
     add_test(NAME ${qt} COMMAND ${qt})
     set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
 endforeach()
+
+# ── The same guard, compiled as if cuda_fp4.h did not exist ───────────────
+# The real requirement is "builds on JetPack 6.2.1 / CUDA 12.6", where the header
+# is absent. Proving that on a 13.5 host needs the header hidden at preprocessing
+# time, so this target compiles the SAME source with the test hook that does it:
+# if the file ever regains a bare #include, this target stops compiling — on the
+# machine where the mistake is made, instead of on the Orin.
+add_library(test_cuda_toolkit_guard_nofp4_cu OBJECT
+    test_cuda_toolkit_guard.cu
+)
+set_target_properties(test_cuda_toolkit_guard_nofp4_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_cuda_toolkit_guard_nofp4_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${LSX_CUDA_GENCODE_FLAGS}>)
+target_compile_definitions(test_cuda_toolkit_guard_nofp4_cu PRIVATE
+    LSX_TOOLKIT_GUARD_HIDE_FP4_HEADER=1
+    LSX_CUDA_TOOLKIT_STAMP="${CMAKE_BINARY_DIR}/lsx_cuda_toolkit_stamp.txt")
+target_compile_options(test_cuda_toolkit_guard_nofp4_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_cuda_toolkit_guard_nofp4_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
+target_link_libraries(test_cuda_toolkit_guard_nofp4_cu PRIVATE
+    Catch2::Catch2WithMain CUDA::cudart)
+
+add_executable(test_cuda_toolkit_guard_nofp4
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src/hardware_target.cpp")
+target_include_directories(test_cuda_toolkit_guard_nofp4 PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
+set_target_properties(test_cuda_toolkit_guard_nofp4 PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_cuda_toolkit_guard_nofp4 PRIVATE
+    test_cuda_toolkit_guard_nofp4_cu Catch2::Catch2WithMain CUDA::cudart)
+lsx_copy_arrow_dlls(test_cuda_toolkit_guard_nofp4)
+add_test(NAME test_cuda_toolkit_guard_nofp4 COMMAND test_cuda_toolkit_guard_nofp4)
+set_tests_properties(test_cuda_toolkit_guard_nofp4 PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_cuda_toolkit_guard_nofp4 PROPERTIES LABELS fast)
 
 # `fast`, not `inference`: this is the ONLY test that can observe a build tree
 # whose objects came from a different toolkit (a stale `CUDART_VERSION` in one TU
@@ -1538,6 +1588,16 @@ endforeach()
 # SKIPs (4) where no GPU exists. Spelled literally: the label guard resolves
 # static names only, not the loop variable.
 set_tests_properties(test_cuda_toolkit_guard PROPERTIES LABELS fast)
+
+# ── The same guard's RULES, where no toolkit is installed ─────────────────
+# The guard above is a .cu file: it reads CUDART_VERSION and touches
+# cuda_fp4.h, so "it accepts CUDA 12.6 now" could only be proven on a JetPack
+# machine. The arithmetic lives in tests/test_cuda_toolkit_rules.h and is checked
+# here on any host, together with the structural half — no bare
+# `#include <cuda_fp4.h>`, no major-equality clause, no hand-derived CC set.
+lsx_add_test(NAME test_cuda_toolkit_rules LABEL fast
+    INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 
 # One OBJECT lib + executable per .cu test file. The previous shared
 # `test_qwen_cu` object library linked ALL 14 files into EVERY executable:
