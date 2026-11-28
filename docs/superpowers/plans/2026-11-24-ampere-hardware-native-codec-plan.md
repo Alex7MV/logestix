@@ -2474,7 +2474,7 @@ must not be papered over by weakening the gate.
 - Produces: no new codec, no new schema, no new kernel — the storage and the
   kernel both exist; this is the dispatch that connects them.
 
-- [ ] **Step 1: Write the failing test.** Convert the synthetic fixture with
+- [x] **Step 1: Write the failing test.** Convert the synthetic fixture with
   `kBf16` (in `tmp/in`, out `tmp/out`), load it, and assert the layer count is
   complete and a forward pass produces finite logits:
 
@@ -2489,18 +2489,71 @@ TEST_CASE("a bf16-profile tree loads and runs", "[phi][load][profile]") {
 }
 ```
 
-- [ ] **Step 2: Run it and confirm failure** — every layer reports
+- [x] **Step 2: Run it and confirm failure** — every layer reports
   `weights incomplete`, which is the defect above.
 
-- [ ] **Step 3: Implement** the dual-encoding dispatch in the two families.
+- [x] **Step 3: Implement** the dual-encoding dispatch in the two families.
   Keep the NVFP4 path byte-identical: a tree that has nvfp4 planes must load and
   run exactly as before, and the existing gates are the proof.
 
-- [ ] **Step 4: Run and confirm pass**, then the two families' own suites:
+- [x] **Step 4: Run and confirm pass**, then the two families' own suites:
   `ctest -R "phi_dense|qwen_dense" -j1`, then the bf16 artifact end-to-end:
   `lsxbenchmark --model <store>/microsoft/phi-4/bf16 --selfcheck`.
+  **DONE 2026-11-28 — with a correction to that last command.** The CLI
+  `--selfcheck` frames the prompt through `BuildPromptInputIds` (ChatML) and
+  phi-4 *echoes* the fragment in that frame; the torch reference does the same
+  (top-1 `The`, logit 44.0, continuation `The capital of France is Paris`). The
+  canonical probe is raw BPE (`selfcheck_frame_prompt: false`), so the proof is
+  the GATE target, pointed at the bf16 tree through a store symlink
+  (`<store>/microsoft/phi-4/nvfp4 -> .../phi-4/bf16`):
+  ```
+  test_phi_dense_selfcheck     top1 12366 'Paris' x3  hash 50215d8d9e52acda
+  test_qwen_dense_selfcheck    top1 11751 'Paris' x3  hash 3c377d3739150430
+  test_dory_dense_selfcheck    top1  6993 'Paris' x3  hash 90c751f26da60c9f
+  ```
+  Same top-1 as each model's NVFP4 profile, hash stable across cycles. The NVFP4
+  goldens re-measured unchanged by the same build (`cf51b9bbd5c913dd`,
+  `a2af669548e59c73`) — the byte-identical-path requirement, checked rather than
+  asserted.
 
-- [ ] **Step 5: Commit** — `feat: a bf16 weight path in the phi and qwen dense loaders`
+- [x] **Step 5: Commit** — `feat: a bf16 weight path in the phi, qwen and dory loaders`
+
+**As executed (deviations, all deliberate):**
+1. **One shared dispatch instead of ~40 per-projection branches.**
+   `lsxcommon::RunWeightGemm(stream, x, nv, dense, y, {seq, k, n}, acc)` in
+   `libs/lsxcommon/src/lsx_weight_gemm.cu` takes the pair each call site already
+   has and answers with the encoding the tree holds. NVFP4 is checked FIRST so
+   every existing artifact keeps the identical `RunLsxNvfp4Gemm` call; it also
+   validates the weight's own `rows`/`cols` against the requested shape, because
+   a transposed read is silent otherwise.
+2. **`gemv::DenseWeight`** (`{d_data, rows, cols, LxDtype}`) is the POD the layer
+   structs carry beside `LsxNvfp4Weight`; `valid()` is what makes "this tree has
+   the other encoding" a statement rather than a separate flag.
+3. **A third family: dory.** It is the family the Ampere target exists for (4B →
+   ~8 GiB, fits a Jetson Orin NX 16 GB). `ConvertDoryModel` gained the
+   `CodecProfile` parameter and lsxforge now passes it (the dory branch had kept
+   calling the 2-arg form; forge's own "promised codecs" cross-check caught it on
+   the first real conversion).
+4. **`RunLxGemmVec` needed the mixed operand pair.** It supported matching pairs
+   only (`kF16×kF16`, `kBF16×kBF16`, `kF32×kF32`), so bf16 weights over the
+   pipelines' FP16 activations returned `cudaErrorNotSupported` — the first live
+   run failed with `SelfCheck failed: operation not supported / prefill`.
+   `kBF16 × kF16` is now instantiated in both entries and pinned in
+   `test_lsx_gemv` as BIT-IDENTICAL to `kF16 × kF16` on the same values.
+5. **Qwen needs the dense embed/head edges**, not just the layers: a bf16 tree has
+   no `global_nvfp4.arrow`, so `pw.embed_bf16` / `pw.head_bf16` are cast into the
+   FP16 staging buffers and the pipeline's `edges_ok` accepts either pair.
+6. **`loaded` is encoding-agnostic everywhere** (phi, qwen both block types, dory
+   both mixer kinds) — that predicate WAS the defect.
+
+**Test coverage:** `tests/test_dense_bf16_load.cpp` (5 cases / 185 assertions:
+phi bf16 + its NVFP4 complement, qwen bf16 both block types + its complement,
+dory bf16 both mixer kinds), `test_lsx_gemv` (mixed pair), the dory case in
+`tests/test_codec_profile_convert.cpp`. The file is cross-family, so it is listed
+in the generator's `NON_MODEL_TESTS` beside `test_codec_profile_convert`.
+**Still to port:** the other 17 families (the shape is identical — `RunWeightGemm`
+at each NVFP4 projection site, dense fields on the layer struct, `loaded` accepts
+either, the loader uploads `CvKind::kBf16Raw` when `nv.records.empty()`).
 
 **Scope note:** the other 19 loaders need the same treatment before a bf16 profile
 of those families is loadable, but the plan's Branch-2 slice is these two, and the
@@ -2650,7 +2703,7 @@ the reason printed.
 |---|---|
 | both toolchains build | **x86 sm_86: BUILT on this host** — preset `linux-release-sm86`, **2472/2472 targets, 0 failures**, 5 apps + 639 test binaries; the app's fatbin holds **only sm_86** (0 × sm_87, 0 × sm_12x) and runs here through PTX JIT, which is what proves it is a 3090 binary and not a relabelled one. **Jetson: not run** — no aarch64 machine in this session |
 | `bf16` artifacts verified | **met** — `microsoft/phi-4/bf16` (mask 2, 43 planes) and `Qwen/Qwen3.5-9B/bf16` (mask 3, 35 planes), both `problems=0` |
-| 3090 SelfCheck green | **not met** — no 3090 attached, AND `bf16` has no loader path yet (**Task 15a**): a bf16 artifact gates but every layer loads empty |
+| 3090 SelfCheck green | **not met on that hardware, met on sm_120** — no 3090 attached; **Task 15a closed the runtime half** (a bf16 artifact used to gate and then load every layer empty). Measured on the 5090: phi-4, qwen3.5-9b and dory-1.0-4b bf16 each pass the canonical SelfCheck x3 with the same top-1 as their NVFP4 profile (`50215d8d9e52acda`, `3c377d3739150430`, `90c751f26da60c9f`) |
 | NVFP4 refusal demonstrated on 3090 | **not met** on hardware; **met as a pure function** — `CheckCodecs` refuses both artifacts' masks on `sm_86`/`sm_87` naming `nvfp4`, and `test_bootstrap_artifacts` drives the selection through both Ampere targets |
 | Jetson build + guard green | **not met** — no board |
 | model report with measured throughput | **not met** — throughput on Ampere needs the hardware |

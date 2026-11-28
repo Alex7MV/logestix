@@ -1,6 +1,8 @@
 #pragma once
 
 #include <arrow/api.h>
+
+#include "lsxcommon/codec_profile.h"
 #include <string>
 #include <vector>
 
@@ -64,9 +66,16 @@ arrow::Status WriteDoryModelIndex(const std::string &output_root,
                                   const DoryTopology &top);
 
 // Converts a Dory model directory (safetensors shards + config.json) into the
-// logestix-dory-nvfp4 arrow layout under <output_root>/logestix/.
-arrow::Status ConvertDoryModel(const std::string &input_path,
-                               const std::string &output_root);
+// logestix-dory arrow layout under <output_root>/logestix/.
+//
+// `profile` selects the weight encoding and nothing else: kNvfp4/kDefault write
+// the NVFP4-packed planes (plus the residual plane that lifts them to ~8 bits),
+// kBf16 writes the checkpoint's own BF16 planes unchanged — the profile the
+// Ampere target needs, because an NVFP4 plane cannot be executed there.
+arrow::Status ConvertDoryModel(
+    const std::string &input_path,
+    const std::string &output_root,
+    lsxcommon::CodecProfile profile = lsxcommon::CodecProfile::kDefault);
 
 // Recomputes the conversion-time VRAM profile from the SOURCE safetensors
 // inventory and rewrites the "vram" block of the model.index.json.

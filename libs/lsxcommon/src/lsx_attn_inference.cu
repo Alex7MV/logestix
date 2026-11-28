@@ -1,4 +1,5 @@
 #include "lsxcommon/lsx_attn_inference.h"
+#include "lsxcommon/lsx_weight_gemm.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/shared_experts.h"
@@ -572,6 +573,38 @@ cudaError_t RunAttnPartialRope(cudaStream_t stream, const __half *q,
     return RunAttnPartialRope(stream, q, k, cos_buf, sin_buf, q_out, k_out,
                               seq, heads, heads, head_dim, rotary_dim);
 }
+
+namespace {
+
+// ── One projection, two storage encodings ────────────────────────────────
+//
+// A layer holds its projections either as NVFP4 nibbles + scales (every
+// artifact converted before the `bf16` codec profile) or as stored BF16 planes
+// (the profile that keeps the checkpoint's own bytes, design §2.6). Exactly one
+// of the two handles is populated, so the launchers below ask for whichever is
+// present instead of assuming NVFP4. The dispatch itself is
+// lsxcommon::RunWeightGemm — NVFP4 keeps the identical call it always made,
+// dense goes to the neutral GEMV.
+inline int ProjRows(const lsx_nvfp4::LsxNvfp4Weight &nv,
+                    const gemv::DenseWeight &d)
+{
+    return nv.d_packed != nullptr ? nv.rows : d.rows;
+}
+inline int ProjCols(const lsx_nvfp4::LsxNvfp4Weight &nv,
+                    const gemv::DenseWeight &d)
+{
+    return nv.d_packed != nullptr ? nv.cols : d.cols;
+}
+// y = x·Wᵀ (or y += x·Wᵀ with acc) for the pair the layer holds.
+inline cudaError_t ProjGemm(cudaStream_t stream, const __half *x,
+                            const lsx_nvfp4::LsxNvfp4Weight &nv,
+                            const gemv::DenseWeight &dense, __half *y,
+                            int seq, int k, int n, bool acc = false)
+{
+    return RunWeightGemm(stream, x, nv, dense, y, {seq, k, n}, acc);
+}
+
+} // namespace
 
 cudaError_t RunAttnEmbed(cudaStream_t stream, const __half *embed,
                          const int32_t *ids, __half *out, int seq, int hidden)
@@ -1459,20 +1492,37 @@ cudaError_t RunAttnFusedLinearAttnKernel(
     if (nk <= 0 || kd <= 0 || nv <= 0 || vd <= 0) return cudaErrorInvalidValue;
     if (kd > 256) return cudaErrorInvalidValue;  // shared arrays sized [256]
     if (vd > 256) return cudaErrorInvalidValue;  // col[256] in delta kernel
-    if (lw.qkv.cols <= 0) return cudaErrorInvalidValue;
+    const int H = ProjCols(lw.qkv, lw.qkv_bf16);   // input dim (K)
+    if (H <= 0) return cudaErrorInvalidValue;
     cudaError_t e;
+
+    // A chunk (seq > 1) over a STORED encoding: the fast path below fuses the
+    // z/a/b projections INTO the conv kernel by reading NVFP4 nibbles in place,
+    // which a BF16 plane has none of. The same work is done by the neutral
+    // stages in RunAttnLinearAttention, so a dense chunk is one call away
+    // instead of a second copy of this machinery.
+    if (seq > 1 && !lw.qkv.d_packed)
+        return RunAttnLinearAttention(stream, lw, geo, seq, d_normed, d_out,
+                                      d_qkv, d_z, d_ab, d_g, d_beta, d_conv,
+                                      d_core, d_gated, kv_base, nullptr);
 
     if (seq == 1) {
         // Decode fast path (audit F-05): warp-per-output dots + split
         // conv/norm and gating stages. Grid scales with output count instead
         // of collapsing to one 128-thread block.
-        const int H = lw.qkv.cols;          // input dim (K)
         const int S = KD * 2 + VD;
         const bool tc_attn = QwenTcFastMath();
         {
             __half *qkv_row =
                 d_qkv + static_cast<int64_t>(kv_base) * S;
-            if (tc_attn) {
+            if (!lw.qkv.d_packed) {
+                // Stored encoding: one neutral GEMV per projection, straight
+                // into the buffers the NVFP4 paths fill, so every stage after
+                // this point runs unchanged.
+                e = ProjGemm(stream, d_normed, lw.qkv, lw.qkv_bf16, qkv_row, 1,
+                             H, S);
+                if (e != cudaSuccess) return e;
+            } else if (tc_attn) {
                 // Tensor-core W4A4 route: ONE fused GEMM for
                 // qkv|z|a|b (same input row), per-segment global scales
                 // applied by the kernel epilogue. Cuts 3 ActQuant passes
@@ -1555,7 +1605,14 @@ cudaError_t RunAttnFusedLinearAttnKernel(
             const __half *xrow = d_normed;   // t == 0
             __half *a_buf = d_ab;
             __half *b_buf = d_ab + static_cast<int64_t>(seq) * nv;
-            if (!tc_attn) {
+            if (!lw.qkv.d_packed) {
+                if ((e = ProjGemm(stream, xrow, lw.z, lw.z_bf16, d_z, 1, H, VD))
+                        != cudaSuccess) return e;
+                if ((e = ProjGemm(stream, xrow, lw.a, lw.a_bf16, a_buf, 1, H,
+                                  nv)) != cudaSuccess) return e;
+                if ((e = ProjGemm(stream, xrow, lw.b, lw.b_bf16, b_buf, 1, H,
+                                  nv)) != cudaSuccess) return e;
+            } else if (!tc_attn) {
                 if (lsx_nvfp4::LsxBitExactMode()) {
                     e = lsx_nvfp4::RunLsxNvfp4Gemm(
                         stream, xrow, lw.z.d_packed, lw.z.d_scales,
@@ -1620,9 +1677,7 @@ cudaError_t RunAttnFusedLinearAttnKernel(
             geo.rms_norm_eps, use_sigmoid_gate);
         e = cudaGetLastError(); if (e) return e;
     }
-    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_gated, lw.out.d_packed, lw.out.d_scales,
-                            lw.out.global_scale, d_out, seq, lw.out.cols,
-                            lw.out.rows);
+    return ProjGemm(stream, d_gated, lw.out, lw.out_bf16, d_out, seq, VD, H);
 }
 
 cudaError_t RunAttnMLP(cudaStream_t stream,
@@ -1630,15 +1685,16 @@ cudaError_t RunAttnMLP(cudaStream_t stream,
                        const __half *d_in, __half *d_out, __half *d_scratch)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
-    const int H = lw.mlp_gate.cols;       // input dim
-    const int I = lw.mlp_gate.rows;       // intermediate
+    const int H = ProjCols(lw.mlp_gate, lw.mlp_gate_bf16);   // input dim
+    const int I = ProjRows(lw.mlp_gate, lw.mlp_gate_bf16);   // intermediate
     if (H <= 0 || I <= 0) return cudaErrorInvalidValue;
 
     __half *d_gate = d_scratch;                 // [seq,I]
     __half *d_up   = d_scratch + (int64_t)seq * I;
 
     cudaError_t e;
-    if (!lw.mlp_gate.d_packed) return cudaErrorInvalidValue;
+    if (!lw.mlp_gate.d_packed && !lw.mlp_gate_bf16.valid())
+        return cudaErrorInvalidValue;
     const int64_t n_act = (int64_t)seq * I;
     const int threads = 256;
     const int blocks = (int)((n_act + threads - 1) / threads);
@@ -1651,13 +1707,19 @@ cudaError_t RunAttnMLP(cudaStream_t stream,
             d_gate, d_up, d_gate, n_act);
         e = cudaGetLastError(); if (e) return e;
     } else {
-        e = LaunchNvfp4Gemm(lw.mlp_gate, d_in, seq, d_gate, stream); if (e) return e;
-        e = LaunchNvfp4Gemm(lw.mlp_up,   d_in, seq, d_up, stream);   if (e) return e;
+        // Two projections, one per half. A bf16 artifact has no fused record
+        // (its plane is the checkpoint's own [2I,K] or two separate [I,K]), so
+        // this branch also carries the dense encoding.
+        e = ProjGemm(stream, d_in, lw.mlp_gate, lw.mlp_gate_bf16, d_gate, seq,
+                     H, I);
+        if (e) return e;
+        e = ProjGemm(stream, d_in, lw.mlp_up, lw.mlp_up_bf16, d_up, seq, H, I);
+        if (e) return e;
         qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_gate, n_act);
         e = cudaGetLastError(); if (e) return e;
     }
-    e = LaunchNvfp4Gemm(lw.mlp_down, d_gate, seq, d_out, stream);
-    return e;
+    return ProjGemm(stream, d_gate, lw.mlp_down, lw.mlp_down_bf16, d_out, seq,
+                    I, H);
 }
 
 // Fused MLP layer. Takes d_in as the ALREADY post-RMSNormed input stream and
@@ -1673,11 +1735,14 @@ cudaError_t RunAttnFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
     (void)geo;
     if (!lw.loaded || !d_in || !d_resid || !d_scratch || seq <= 0)
         return cudaErrorInvalidValue;
-    const int H = lw.mlp_gate.cols;   // input hidden dim
-    const int I = lw.mlp_gate.rows;   // intermediate
+    const int H = ProjCols(lw.mlp_gate, lw.mlp_gate_bf16);  // input hidden dim
+    const int I = ProjRows(lw.mlp_gate, lw.mlp_gate_bf16);  // intermediate
     if (H <= 0 || I <= 0) return cudaErrorInvalidValue;
-    if (!lw.mlp_gate.d_packed || !lw.mlp_up.d_packed || !lw.mlp_down.d_packed)
-        return cudaErrorInvalidValue;
+    const bool nv = lw.mlp_gate.d_packed && lw.mlp_up.d_packed &&
+                    lw.mlp_down.d_packed;
+    const bool dense = lw.mlp_gate_bf16.valid() && lw.mlp_up_bf16.valid() &&
+                       lw.mlp_down_bf16.valid();
+    if (!nv && !dense) return cudaErrorInvalidValue;
 
     __half *d_gate = d_scratch;                // [seq,I]
     __half *d_up   = d_scratch + (int64_t)seq * I;
@@ -1686,6 +1751,23 @@ cudaError_t RunAttnFusedMLP(cudaStream_t stream, const attn::LayerWeights &lw,
     const int64_t n_act = (int64_t)seq * I;
     const int threads = 256;
     const int blocks = (int)((n_act + threads - 1) / threads);
+
+    // Dense encoding: the producer-fused quant path below exists to feed NVFP4
+    // nibbles to a tensor-core GEMM; a stored plane needs none of it, and the
+    // down-projection accumulates into the residual exactly as acc=true does.
+    if (!nv) {
+        e = ProjGemm(stream, d_in, lw.mlp_gate, lw.mlp_gate_bf16, d_gate, seq,
+                     H, I);
+        if (e) return e;
+        e = ProjGemm(stream, d_in, lw.mlp_up, lw.mlp_up_bf16, d_up, seq, H, I);
+        if (e) return e;
+        qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_gate,
+                                                          n_act);
+        e = cudaGetLastError();
+        if (e) return e;
+        return ProjGemm(stream, d_gate, lw.mlp_down, lw.mlp_down_bf16, d_resid,
+                        seq, I, H, /*acc=*/true);
+    }
     if (lw.mlp_gate_up.d_packed) {
         // B1 fast path: single fused-weight GEMM into [seq, 2I].
         e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_in, lw.mlp_gate_up.d_packed,
@@ -1787,10 +1869,13 @@ cudaError_t RunAttnFullAttention(cudaStream_t stream,
 
     cudaError_t e;
     // 1. q_proj: [seq, H] -> [seq, NH*HD*2].
-    e = LaunchNvfp4Gemm(lw.q, d_normed, seq, d_qc, stream); if (e) return e;
+    e = ProjGemm(stream, d_normed, lw.q, lw.q_bf16, d_qc, seq, H, NH * HD * 2);
+    if (e) return e;
     // 2. k,v projections.
-    e = LaunchNvfp4Gemm(lw.k, d_normed, seq, k_row0, stream);  if (e) return e;
-    e = LaunchNvfp4Gemm(lw.v, d_normed, seq, v_row0, stream);  if (e) return e;
+    e = ProjGemm(stream, d_normed, lw.k, lw.k_bf16, k_row0, seq, H, NKV * HD);
+    if (e) return e;
+    e = ProjGemm(stream, d_normed, lw.v, lw.v_bf16, v_row0, seq, H, NKV * HD);
+    if (e) return e;
 
     // 3. Split query + gate, reshape to [seq, NH, HD], per-head RMSNorm(q).
     {
@@ -1854,8 +1939,7 @@ cudaError_t RunAttnFullAttention(cudaStream_t stream,
     }
 
     // 8. o_proj: [seq, NH*HD] -> [seq, H].
-    e = LaunchNvfp4Gemm(lw.o, d_attn, seq, d_out, stream);
-    return e;
+    return ProjGemm(stream, d_attn, lw.o, lw.o_bf16, d_out, seq, NH * HD, H);
 }
 
 // ── Linear attention (GatedDeltaNet) layer ─────────────────────────────────
@@ -1889,18 +1973,23 @@ cudaError_t RunAttnLinearAttention(cudaStream_t stream,
     const int kd = geo.linear_key_head_dim;
     const int nv = geo.linear_num_value_heads;
     const int vd = geo.linear_value_head_dim;
+    const int H = geo.hidden_size;
     const int KD = nk * kd;
     const int VD = nv * vd;
     const int S = KD * 2 + VD;
-    if (nk <= 0 || kd <= 0 || nv <= 0 || vd <= 0) return cudaErrorInvalidValue;
+    if (nk <= 0 || kd <= 0 || nv <= 0 || vd <= 0 || H <= 0)
+        return cudaErrorInvalidValue;
 
     cudaError_t e;
-    // 1. qkv, z projections via NVFP4 GEMM. For incremental decode `d_qkv`
-    //    points at the layer's persistent cache base (rows [kv_base..kv_base+seq)
-    //    of the cache); the conv1d below then reads the full history.
-    e = LaunchNvfp4Gemm(lw.qkv, d_normed, seq,
-                        d_qkv + (int64_t)kv_base * S, stream); if (e) return e;
-    e = LaunchNvfp4Gemm(lw.z,   d_normed, seq, d_z,   stream);   if (e) return e;
+    // 1. qkv, z projections in whichever encoding the layer holds. For
+    //    incremental decode `d_qkv` points at the layer's persistent cache base
+    //    (rows [kv_base..kv_base+seq) of the cache); the conv1d below then reads
+    //    the full history.
+    e = ProjGemm(stream, d_normed, lw.qkv, lw.qkv_bf16,
+                 d_qkv + (int64_t)kv_base * S, seq, H, S);
+    if (e) return e;
+    e = ProjGemm(stream, d_normed, lw.z, lw.z_bf16, d_z, seq, H, VD);
+    if (e) return e;
 
     // 2. conv1d over S channels (reads history rows [kv_base-kernel+1..kv_base+seq)).
     if (lw.d_conv1d && lw.conv_dim == S) {
@@ -1917,8 +2006,10 @@ cudaError_t RunAttnLinearAttention(cudaStream_t stream,
     // 3. a,b projections into d_ab [seq*nv*2].
     __half *a_buf = d_ab;
     __half *b_buf = d_ab + (int64_t)seq * nv;
-    e = LaunchNvfp4Gemm(lw.a, d_normed, seq, a_buf, stream); if (e) return e;
-    e = LaunchNvfp4Gemm(lw.b, d_normed, seq, b_buf, stream); if (e) return e;
+    e = ProjGemm(stream, d_normed, lw.a, lw.a_bf16, a_buf, seq, H, nv);
+    if (e) return e;
+    e = ProjGemm(stream, d_normed, lw.b, lw.b_bf16, b_buf, seq, H, nv);
+    if (e) return e;
     {
         const int threads = 256;
         const int64_t total = (int64_t)seq * nv;
@@ -1968,8 +2059,7 @@ cudaError_t RunAttnLinearAttention(cudaStream_t stream,
     }
 
     // 6. out_proj: [seq, VD] -> [seq, H].
-    e = LaunchNvfp4Gemm(lw.out, d_gated, seq, d_out, stream);
-    return e;
+    return ProjGemm(stream, d_gated, lw.out, lw.out_bf16, d_out, seq, VD, H);
 }
 
 } // namespace qwen

@@ -27,6 +27,14 @@ struct QwenPinnedWeights {
     QwenTopology top;
     lsx_nvfp4::LsxNvfp4Weight embed;        // vocab x hidden
     lsx_nvfp4::LsxNvfp4Weight head;         // vocab x hidden
+    // The same two edges as stored BF16 planes (the `bf16` codec profile, which
+    // has no global_nvfp4.arrow at all). The pipeline gathers from / projects
+    // with whichever pair is resident.
+    gemv::DenseWeight embed_bf16;
+    gemv::DenseWeight head_bf16;
+    // The two dense edges share one arena (RunUploadJobs allocates per call).
+    void *d_arena_bf16 = nullptr;
+    size_t arena_bytes_bf16 = 0;
     __half *d_final_norm = nullptr;
     int final_norm_size = 0;
     std::vector<attn::LayerWeights> layers;

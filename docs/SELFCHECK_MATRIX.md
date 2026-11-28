@@ -43,7 +43,18 @@ the new NVFP4 artifacts are bit-identical to the ones they replace — which is 
 only useful statement a re-measurement after a format migration can make. The
 trees now live under `$LSX_ARTIFACT_ROOT/<org>/<model_dir>/<profile>/`, not
 `<models_dir>/<Model>/logestix/`; every path in this file that names the old shape
-is historical. Also
+is historical.
+Also measured **2026-11-28** on the 5090, the `bf16` profile of three families
+(plan Task 15a — the runtime half of the codec contract, after the loaders learned
+to read a tree with no NVFP4 plane): phi-4 `microsoft/phi-4/bf16` SelfCheck x3
+`50215d8d9e52acda` (top-1 12366 `Paris`), Qwen3.5-9B `Qwen/Qwen3.5-9B/bf16`
+`3c377d3739150430` (11751), Dory1.0-4B
+`nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16/bf16` `90c751f26da60c9f` (6993,
+7 584 MiB resident — the profile exists so this 4B model fits a Jetson Orin NX
+16 GB). Each hash is stable across its own cycles and each top-1 equals the NVFP4
+profile's: the storage encoding moves the hash and not the answer (numeric-contract
+§1.1 item 4). FSI/CODE/DET/MCP for these trees are NOT measured — an absence, not
+a pass. Also
 closed **2026-11-19** (Muse-Glimmer-30B: the FSI golden that had been declared
 debt was captured from the source text tower at `reasoning_strength: low` — the
 chat template's own switch, which makes the answer channel the canonical formula

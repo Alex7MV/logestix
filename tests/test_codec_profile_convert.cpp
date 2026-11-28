@@ -13,11 +13,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <lsxcommon/codec_profile.h>
+#include <lsxcommon/dory_dense_convert.h>
 #include <lsxcommon/phi_dense_convert.h>
 #include <lsxcommon/qwen_dense_convert.h>
 #include <lsxcommon/schema.h>
 #include <lsxstorage/artifact.h>
 
+#include "test_dory_dense_fixture.h"
 #include "test_phi_dense_fixture.h"
 #include "test_qwen_dense_fixture.h"
 
@@ -168,6 +170,67 @@ TEST_CASE("qwen bf16 profile: no nvfp4 plane, bf16 declaration, verified mask",
         INFO("file: " << rel);
         CHECK(rel.find("nvfp4") == std::string::npos);
     }
+
+    const auto scan = lsx::storage::ScanArtifactTree(out);
+    std::string joined;
+    for (const auto &p : scan.problems) joined += "\n  " + p;
+    CAPTURE(joined);
+    REQUIRE(scan.ok);
+    CHECK((scan.mask & kNvFp4) == 0);
+    CHECK((scan.mask & kBF16) != 0);
+
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+}
+
+TEST_CASE("dory bf16 profile: no nvfp4 plane, bf16 declaration, verified mask",
+          "[dory][convert][profile]") {
+    // Dory is the family the Ampere target exists for: 4B parameters, so a
+    // bf16 tree is ~8 GiB and fits a Jetson Orin NX 16 GB, while the NVFP4
+    // tree is gated on Blackwell only. The pass-through has to keep the fused
+    // qkv / gate_up planes the loader reads (fused in the checkpoint) and drop
+    // the residual plane, which has no meaning without a base to correct.
+    const fs::path tmp = fs::temp_directory_path() / "dory_bf16_profile";
+    const fs::path out = tmp / "out";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    dorytest::WriteSafetensors(tmp, "model.safetensors",
+                               dorytest::BuildSyntheticDoryModel());
+    dorytest::WriteConfig(tmp);
+    fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                  tmp / "tokenizer.json");
+
+    auto st = lsxcommon::dory::ConvertDoryModel(tmp.string(), out.string(),
+                                                CodecProfile::kBf16);
+    INFO(st.ToString());
+    REQUIRE(st.ok());
+
+    const auto files = ArrowFiles(out);
+    REQUIRE_FALSE(files.empty());
+    for (const auto &rel : files) {
+        INFO("file: " << rel);
+        CHECK(rel.find("nvfp4") == std::string::npos);
+    }
+
+    REQUIRE(fs::exists(out / "pinned" / "layer_0.arrow"));
+    const auto dtypes = DtypesIn(out / "pinned" / "layer_0.arrow");
+    CHECK(dtypes.count("NVFP4") == 0);
+    CHECK(dtypes.count("BF16") == 1);
+
+    // The fused planes survive: a bf16 tree is the checkpoint's own layout, and
+    // the loader reads qkv_proj / gate_up_proj from it.
+    auto batch = lsxcommon::ReadRecordBatchFromFile(out / "pinned" / "layer_0.arrow");
+    REQUIRE(batch.ok());
+    auto recs = lsxcommon::PinnedSchema::UnpackBatch(*batch);
+    REQUIRE(recs.ok());
+    bool has_qkv = false, has_res = false;
+    for (const auto &r : *recs) {
+        if (r.name.find("qkv_proj") != std::string::npos) has_qkv = true;
+        if (r.name.size() > 4 && r.name.substr(r.name.size() - 4) == ".res")
+            has_res = true;
+    }
+    CHECK(has_qkv);
+    CHECK_FALSE(has_res);
 
     const auto scan = lsx::storage::ScanArtifactTree(out);
     std::string joined;

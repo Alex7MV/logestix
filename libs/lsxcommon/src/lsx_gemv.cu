@@ -149,8 +149,13 @@ cudaError_t RunLxGemmVec(cudaStream_t stream, const void *w, const void *x,
 {
     if (!w || !x || !y || seq <= 0 || N <= 0 || K <= 0)
         return cudaErrorInvalidValue;
-    // Supported operand pairs (decode paths): f16 x f16, bf16 x bf16. Output
-    // kind is dispatched at compile time.
+    // Supported operand pairs (decode paths): f16 x f16, bf16 x bf16, and the
+    // MIXED bf16 x f16 a `bf16` artifact needs (its projections are stored in
+    // BF16, its activations stay FP16). The mixed pair is not a numeric mode:
+    // ToF32() widens both operands exactly and the product is taken in fp32, so
+    // it yields the same bits as f16 x f16 on the same values. Any other pair is
+    // rejected below rather than reinterpreted. Output kind is dispatched at
+    // compile time.
     if (wdt == LxDtype::kF16 && xdt == LxDtype::kF16) {
         switch (OutKind(ydt)) {
             case 0:
@@ -174,6 +179,19 @@ cudaError_t RunLxGemmVec(cudaStream_t stream, const void *w, const void *x,
                     stream, w, x, seq, N, K, alpha, y, beta);
             default:
                 return Launch<__nv_bfloat16, __nv_bfloat16, 2>(
+                    stream, w, x, seq, N, K, alpha, y, beta);
+        }
+    }
+    if (wdt == LxDtype::kBF16 && xdt == LxDtype::kF16) {
+        switch (OutKind(ydt)) {
+            case 0:
+                return Launch<__nv_bfloat16, __half, 0>(
+                    stream, w, x, seq, N, K, alpha, y, beta);
+            case 1:
+                return Launch<__nv_bfloat16, __half, 1>(
+                    stream, w, x, seq, N, K, alpha, y, beta);
+            default:
+                return Launch<__nv_bfloat16, __half, 2>(
                     stream, w, x, seq, N, K, alpha, y, beta);
         }
     }
@@ -222,6 +240,20 @@ cudaError_t RunLxGemmVecWT(cudaStream_t stream, const void *w, const void *x,
                     stream, w, x, seq, N, K, alpha, y, beta);
             default:
                 return LaunchTW<__nv_bfloat16, __nv_bfloat16, 2>(
+                    stream, w, x, seq, N, K, alpha, y, beta);
+        }
+    }
+    // Same mixed pair as RunLxGemmVec above (bf16 artifact, fp16 activations).
+    if (wdt == LxDtype::kBF16 && xdt == LxDtype::kF16) {
+        switch (OutKind(ydt)) {
+            case 0:
+                return LaunchTW<__nv_bfloat16, __half, 0>(
+                    stream, w, x, seq, N, K, alpha, y, beta);
+            case 1:
+                return LaunchTW<__nv_bfloat16, __half, 1>(
+                    stream, w, x, seq, N, K, alpha, y, beta);
+            default:
+                return LaunchTW<__nv_bfloat16, __half, 2>(
                     stream, w, x, seq, N, K, alpha, y, beta);
         }
     }

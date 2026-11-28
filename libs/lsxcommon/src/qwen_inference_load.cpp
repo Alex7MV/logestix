@@ -22,6 +22,23 @@
 
 namespace lsxcommon::attn {
 void lsxcommon::attn::LayerWeights::Free() {
+    if (d_arena_bf16) {
+        cudaFree(d_arena_bf16);
+        d_arena_bf16 = nullptr;
+        arena_bytes_bf16 = 0;
+        qkv_bf16 = gemv::DenseWeight{};
+        z_bf16 = gemv::DenseWeight{};
+        b_bf16 = gemv::DenseWeight{};
+        a_bf16 = gemv::DenseWeight{};
+        out_bf16 = gemv::DenseWeight{};
+        q_bf16 = gemv::DenseWeight{};
+        k_bf16 = gemv::DenseWeight{};
+        v_bf16 = gemv::DenseWeight{};
+        o_bf16 = gemv::DenseWeight{};
+        mlp_gate_bf16 = gemv::DenseWeight{};
+        mlp_up_bf16 = gemv::DenseWeight{};
+        mlp_down_bf16 = gemv::DenseWeight{};
+    }
     if (d_arena) {
         cudaFree(d_arena);
         d_arena = nullptr;
@@ -61,6 +78,13 @@ namespace lsxcommon::qwen {
 void QwenPinnedWeights::Free() {
     embed.Free();
     head.Free();
+    if (d_arena_bf16) {
+        cudaFree(d_arena_bf16);
+        d_arena_bf16 = nullptr;
+        arena_bytes_bf16 = 0;
+    }
+    embed_bf16 = gemv::DenseWeight{};
+    head_bf16 = gemv::DenseWeight{};
     cudaFree(d_final_norm); d_final_norm = nullptr;
     for (auto &l : layers) l.Free();
     layers.clear();
@@ -163,6 +187,58 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
                                   &lw.arena_bytes, stream, ring, bytes_acc, nullptr);
     if (e != cudaSuccess) return e;
 
+    // ── The stored (non-quantized) encoding ────────────────────────────────
+    //
+    // A `bf16` artifact holds the checkpoint's own planes and NO
+    // `*_nvfp4.arrow`, so every UploadNvfp4Weight() below is a no-op and the
+    // projections must be read from the raw batch as BF16 (CvKind::kBf16Raw is
+    // a passthrough: the value is stored, so there is nothing to reconstruct).
+    if (nv.records.empty()) {
+        struct DenseJob {
+            const char *suffix;
+            gemv::DenseWeight *out;
+        };
+        const DenseJob cand[12] = {
+            {is_linear ? "linear_attn.in_proj_qkv.weight" : "self_attn.q_proj.weight",
+             is_linear ? &lw.qkv_bf16 : &lw.q_bf16},
+            {is_linear ? "linear_attn.in_proj_z.weight" : "self_attn.k_proj.weight",
+             is_linear ? &lw.z_bf16 : &lw.k_bf16},
+            {is_linear ? "linear_attn.in_proj_b.weight" : "self_attn.v_proj.weight",
+             is_linear ? &lw.b_bf16 : &lw.v_bf16},
+            {is_linear ? "linear_attn.in_proj_a.weight" : "self_attn.o_proj.weight",
+             is_linear ? &lw.a_bf16 : &lw.o_bf16},
+            {is_linear ? "linear_attn.out_proj.weight" : nullptr,
+             is_linear ? &lw.out_bf16 : nullptr},
+            {"mlp.gate_proj.weight", &lw.mlp_gate_bf16},
+            {"mlp.up_proj.weight", &lw.mlp_up_bf16},
+            {"mlp.down_proj.weight", &lw.mlp_down_bf16},
+        };
+        std::vector<UploadJob> djobs;
+        std::vector<const DenseJob *> owners;
+        for (const auto &c : cand) {
+            if (c.suffix == nullptr || c.out == nullptr) continue;
+            const auto *t = fastload::FindTensorSuffix(raw, c.suffix);
+            if (t == nullptr || t->rank < 2) continue;
+            djobs.push_back({t, const_cast<void **>(&c.out->d_data),
+                             CvKind::kBf16Raw});
+            owners.push_back(&c);
+        }
+        if (!djobs.empty()) {
+            e = fastload::RunUploadJobs(std::move(djobs), &lw.d_arena_bf16,
+                                        &lw.arena_bytes_bf16, stream, ring,
+                                        bytes_acc, nullptr);
+            if (e != cudaSuccess) return e;
+            // rows/cols from the tensor's own shape, so a GEMV cannot be handed
+            // a transposed view of a [N,K] plane, and dtype says how to read it.
+            for (const auto *o : owners) {
+                const auto *t = fastload::FindTensorSuffix(raw, o->suffix);
+                o->out->rows = static_cast<int>(t->shape[0]);
+                o->out->cols = static_cast<int>(t->shape[1]);
+                o->out->dtype = gemv::LxDtype::kBF16;
+            }
+        }
+    }
+
     if (is_linear) {
         e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(nv, "linear_attn.in_proj_qkv.weight"), lw.qkv, stream, ring, bytes_acc, nullptr);
         if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(nv, "linear_attn.in_proj_z.weight"), lw.z, stream, ring, bytes_acc, nullptr);
@@ -211,11 +287,19 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
     // Mark the layer usable only when its essential weights actually uploaded;
     // missing records previously left loaded=true and failed later as cryptic
     // GEMM null-pointer errors.
+    // Each clause accepts EITHER encoding: testing only d_packed is what left
+    // every layer of a bf16 tree marked incomplete (defect A3.13) while the
+    // weights were in fact resident.
     const bool attn_ok = is_linear
-        ? (lw.qkv.d_packed && lw.out.d_packed)
-        : (lw.q.d_packed && lw.k.d_packed && lw.v.d_packed && lw.o.d_packed);
-    const bool mlp_ok = lw.mlp_gate.d_packed && lw.mlp_up.d_packed &&
-                        lw.mlp_down.d_packed;
+        ? ((lw.qkv.d_packed && lw.out.d_packed) ||
+           (lw.qkv_bf16.valid() && lw.out_bf16.valid()))
+        : ((lw.q.d_packed && lw.k.d_packed && lw.v.d_packed && lw.o.d_packed) ||
+           (lw.q_bf16.valid() && lw.k_bf16.valid() && lw.v_bf16.valid() &&
+            lw.o_bf16.valid()));
+    const bool mlp_ok =
+        (lw.mlp_gate.d_packed && lw.mlp_up.d_packed && lw.mlp_down.d_packed) ||
+        (lw.mlp_gate_bf16.valid() && lw.mlp_up_bf16.valid() &&
+         lw.mlp_down_bf16.valid());
     lw.loaded = attn_ok && mlp_ok && lw.d_input_norm && lw.d_post_norm;
     if (!lw.loaded)
         log::error("[qwen_load] layer weights incomplete; layer marked not loaded");
@@ -310,6 +394,53 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
             e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv_res, "lm_head.weight"),
                                   pw.head, stream, ring, bytes_acc, nullptr);
         if (e != cudaSuccess) { pw.Free(); return false; }
+    }
+
+    // Global dense edges: a bf16 tree has no global_nvfp4.arrow, so embed and
+    // head have to become resident some other way or a decode step has no
+    // table to gather from and no matrix to project the logits with.
+    if (pw.embed.d_packed == nullptr && pw.head.d_packed == nullptr &&
+        fs::exists(pinned_dir / "global.arrow")) {
+        auto raw_res = LoadTensorBatchViews(pinned_dir / "global.arrow");
+        if (!raw_res.ok()) {
+            log::error("[qwen_load] global.arrow read failed: " +
+                       raw_res.status().ToString());
+            pw.Free();
+            return false;
+        }
+        struct EdgeJob {
+            const char *suffix;
+            gemv::DenseWeight *out;
+        };
+        const EdgeJob edges[2] = {
+            {"embed_tokens.weight", &pw.embed_bf16},
+            {"lm_head.weight", &pw.head_bf16},
+        };
+        std::vector<UploadJob> ejobs;
+        std::vector<const EdgeJob *> owners;
+        for (const auto &ej : edges) {
+            const auto *t = fastload::FindTensorSuffix(*raw_res, ej.suffix);
+            if (t == nullptr || t->rank < 2) continue;
+            ejobs.push_back({t, const_cast<void **>(&ej.out->d_data),
+                             CvKind::kBf16Raw});
+            owners.push_back(&ej);
+        }
+        if (!ejobs.empty()) {
+            cudaError_t e = fastload::RunUploadJobs(
+                std::move(ejobs), &pw.d_arena_bf16, &pw.arena_bytes_bf16,
+                stream, ring, bytes_acc, nullptr);
+            if (e != cudaSuccess) { pw.Free(); return false; }
+            for (const auto *o : owners) {
+                const auto *t = fastload::FindTensorSuffix(*raw_res, o->suffix);
+                o->out->rows = static_cast<int>(t->shape[0]);
+                o->out->cols = static_cast<int>(t->shape[1]);
+                o->out->dtype = gemv::LxDtype::kBF16;
+            }
+            log::info(absl::StrCat("[qwen_load] dense edges: embed ",
+                                   pw.embed_bf16.rows, "x",
+                                   pw.embed_bf16.cols, ", head ",
+                                   pw.head_bf16.rows, "x", pw.head_bf16.cols));
+        }
     }
 
     // Per-layer.

@@ -19,6 +19,31 @@
   "profiles": {
     "nvfp4": {
       "status": "not-built"
+    },
+    "bf16": {
+      "status": "built",
+      "artifact": {
+        "sha256": "fdaf5160b9eb6dc0efcdb18db450cfa4d346971518cbc81fe49d8afd361acf9c",
+        "bytes": 9904,
+        "tree_bytes": 7974577264,
+        "planes": 75,
+        "store": "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16/bf16"
+      },
+      "codecs": [
+        "bf16"
+      ],
+      "codec_mask": 2,
+      "target": "nvidia:sm_120",
+      "gates": {
+        "selfcheck": {
+          "result": "pass",
+          "cycles": 3,
+          "top1_token": 6993,
+          "text": "Paris",
+          "logits_hash": "90c751f26da60c9f",
+          "date": "2026-11-28"
+        }
+      }
     }
   },
   "lifecycle_tu": [

@@ -1,6 +1,7 @@
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/qwen_dense_inference_pipeline.h"
 #include "lsxcommon/lsx_tc_gemm.h"
+#include "lsxcommon/lsx_weight_gemm.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/sampling.h"
@@ -10,8 +11,10 @@
 #include "lsx_kernels_quant.cuh"
 #include "nvfp4_scale.h"
 #include "qwen_reduce.cuh"
+#include "lsx_kernels_common.cuh"
 
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <algorithm>
 #include <atomic>
@@ -56,7 +59,12 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         result.error_msg = "invalid eos_id";
         return cudaErrorInvalidValue;
     }
-    if (!pw.embed.d_packed || !pw.head.d_packed) {
+    // Either encoding satisfies the edges: an NVFP4 tree carries the quantized
+    // pair, a `bf16` tree carries the stored planes (defect A3.13).
+    const bool edges_ok =
+        (pw.embed.d_packed && pw.head.d_packed) ||
+        (pw.embed_bf16.valid() && pw.head_bf16.valid());
+    if (!edges_ok) {
         result.error_msg = "embed/head weights missing";
         return cudaErrorInvalidValue;
     }
@@ -159,17 +167,42 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     float *d_betaf = pf; pf += float_sz[1];
     float *d_maxv_scratch = pf; pf += float_sz[2];
 
-    // Dequant embed + head to half for gather / logits GEMM.
-    e = lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.embed.d_packed, pw.embed.packed_bytes,
-                             pw.embed.d_scales, pw.embed.scale_bytes,
-                             pw.embed.global_scale, d_embed_h,
-                             (int64_t)V * H);
-    if (e != cudaSuccess) { result.error_msg = "dequant embed"; cudaFree(base); return e; }
-    e = lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.head.d_packed, pw.head.packed_bytes,
-                             pw.head.d_scales, pw.head.scale_bytes,
-                             pw.head.global_scale, d_head_h,
-                             (int64_t)V * H);
-    if (e != cudaSuccess) { result.error_msg = "dequant head"; cudaFree(base); return e; }
+    // Stage embed + head as FP16 for the gather and the logits projection. An
+    // NVFP4 tree dequantizes once per call; a `bf16` tree stores the planes
+    // verbatim and only needs the widening cast (BF16 -> FP16 is exact for every
+    // value in FP16's range, which the checkpoint's weights are).
+    if (pw.embed_bf16.valid()) {
+        const int64_t n = static_cast<int64_t>(V) * H;
+        lsxcommon::kernels::Bf16ToF16Kernel<__nv_bfloat16, __half>
+            <<<(int)((n + 255) / 256), 256, 0, stream>>>(
+                static_cast<const __nv_bfloat16 *>(pw.embed_bf16.d_data),
+                d_embed_h, n);
+        if ((e = cudaGetLastError()) != cudaSuccess) {
+            result.error_msg = "cast embed"; cudaFree(base); return e;
+        }
+    } else {
+        e = lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.embed.d_packed, pw.embed.packed_bytes,
+                                 pw.embed.d_scales, pw.embed.scale_bytes,
+                                 pw.embed.global_scale, d_embed_h,
+                                 (int64_t)V * H);
+        if (e != cudaSuccess) { result.error_msg = "dequant embed"; cudaFree(base); return e; }
+    }
+    if (pw.head_bf16.valid()) {
+        const int64_t n = static_cast<int64_t>(V) * H;
+        lsxcommon::kernels::Bf16ToF16Kernel<__nv_bfloat16, __half>
+            <<<(int)((n + 255) / 256), 256, 0, stream>>>(
+                static_cast<const __nv_bfloat16 *>(pw.head_bf16.d_data),
+                d_head_h, n);
+        if ((e = cudaGetLastError()) != cudaSuccess) {
+            result.error_msg = "cast head"; cudaFree(base); return e;
+        }
+    } else {
+        e = lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.head.d_packed, pw.head.packed_bytes,
+                                 pw.head.d_scales, pw.head.scale_bytes,
+                                 pw.head.global_scale, d_head_h,
+                                 (int64_t)V * H);
+        if (e != cudaSuccess) { result.error_msg = "dequant head"; cudaFree(base); return e; }
+    }
 
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
@@ -266,7 +299,8 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                seq, H, eps);
             if (e != cudaSuccess) return fail(e, "finalnorm");
             // head logits: LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits)
-            e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
+            e = lsxcommon::RunWeightGemm(stream, d_postin, pw.head,
+                                         pw.head_bf16, d_logits, {seq, H, V});
             if (e != cudaSuccess) return fail(e, "head");
             // argmax last row
             {
@@ -412,7 +446,8 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                seq, H, eps);
             if (e != cudaSuccess) return fail(e, "finalnorm");
             // head logits
-            e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
+            e = lsxcommon::RunWeightGemm(stream, d_postin, pw.head,
+                                         pw.head_bf16, d_logits, {seq, H, V});
             if (e != cudaSuccess) return fail(e, "head");
 
             kv->kv_rows += seq;

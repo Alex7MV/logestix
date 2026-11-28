@@ -1603,6 +1603,18 @@ set_tests_properties(test_cuda_toolkit_guard PROPERTIES LABELS fast)
 # ── The bf16 codec profile in the converters (plan Task 15) ───────────────
 # A profile is a real branch, not a flag the CLI reads and then ignores: the
 # nvfp4 code path must not run at all, or the artifact cannot gate onto Ampere.
+# ── Dual-encoding load (plan Task 15a, defect A3.13) ─────────────────────
+# A bf16 artifact gates and then must LOAD: every layer complete, and the dense
+# plane is the one the pipeline can dispatch to. Device work, so the lock and a
+# timeout are explicit.
+lsx_add_test(NAME test_dense_bf16_load LABEL inference
+    LINK lsxcommon
+    INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"
+    DEFINE "TOKENIZER_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\""
+    TIMEOUT 600)
+set_tests_properties(test_dense_bf16_load
+    PROPERTIES RESOURCE_LOCK "gpu" SKIP_RETURN_CODE 4)
+
 lsx_add_test(NAME test_codec_profile_convert LABEL convert
     LINK lsxcommon lsxstorage
     INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"

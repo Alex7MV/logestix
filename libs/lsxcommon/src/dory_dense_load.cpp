@@ -26,6 +26,16 @@ namespace fs = std::filesystem;
 
 void DoryLayerWeights::Free()
 {
+    if (d_arena_bf16) {
+        cudaFree(d_arena_bf16);
+        d_arena_bf16 = nullptr;
+        arena_bytes_bf16 = 0;
+    }
+    qkv_bf16 = gemv::DenseWeight{};
+    g_bf16 = gemv::DenseWeight{};
+    o_bf16 = gemv::DenseWeight{};
+    gate_up_bf16 = gemv::DenseWeight{};
+    down_bf16 = gemv::DenseWeight{};
     qkv.Free();
     g.Free();
     o.Free();
@@ -115,6 +125,39 @@ cudaError_t UploadResidual(const DenseNvfp4BatchViews &nv, const char *suffix,
                                        nullptr);
 }
 
+// The stored encoding: upload the named raw planes as BF16 and describe them so
+// the neutral GEMV can be handed one without guessing its shape. RunUploadJobs()
+// allocates ONE arena per call, and a mixer's planes travel together.
+cudaError_t UploadDensePlanes(const TensorBatchViews &raw,
+                              const std::vector<std::pair<const char *,
+                                                          gemv::DenseWeight *>> &planes,
+                              DoryLayerWeights &lw, cudaStream_t stream,
+                              fastload::PinnedStagingRing &ring,
+                              std::uint64_t &bytes_acc)
+{
+    std::vector<fastload::UploadJob> jobs;
+    std::vector<gemv::DenseWeight *> owners;
+    for (const auto &p : planes) {
+        const auto *t = fastload::FindTensorSuffix(raw, p.first);
+        if (t == nullptr || t->rank < 2) continue;
+        jobs.push_back({t, const_cast<void **>(&p.second->d_data),
+                        fastload::CvKind::kBf16Raw});
+        owners.push_back(p.second);
+    }
+    if (jobs.empty()) return cudaErrorInvalidValue;
+    cudaError_t e = fastload::RunUploadJobs(std::move(jobs), &lw.d_arena_bf16,
+                                           &lw.arena_bytes_bf16, stream, ring,
+                                           bytes_acc, nullptr);
+    if (e != cudaSuccess) return e;
+    for (size_t i = 0; i < owners.size(); ++i) {
+        const auto *t = fastload::FindTensorSuffix(raw, planes[i].first);
+        owners[i]->rows = static_cast<int>(t->shape[0]);
+        owners[i]->cols = static_cast<int>(t->shape[1]);
+        owners[i]->dtype = gemv::LxDtype::kBF16;
+    }
+    return cudaSuccess;
+}
+
 cudaError_t LoadAttentionLayer(const TensorBatchViews &raw,
                                const DenseNvfp4BatchViews &nv,
                                const DoryTopology &top, DoryLayerWeights &lw,
@@ -183,9 +226,25 @@ cudaError_t LoadAttentionLayer(const TensorBatchViews &raw,
     if ((e = UploadF32(v_alpha, &lw.d_alpha, stream, bytes_acc)) != cudaSuccess)
         return e;
 
+    // A `bf16` tree carries no *_nvfp4.arrow at all: every upload above was a
+    // no-op, and the mixer's planes must be taken from the raw batch instead.
+    if (nv.records.empty()) {
+        if ((e = UploadDensePlanes(
+                 raw,
+                 {{"mixer.qkv_proj.weight", &lw.qkv_bf16},
+                  {"mixer.g_proj.weight", &lw.g_bf16},
+                  {"mixer.o_proj.weight", &lw.o_bf16}},
+                 lw, stream, ring, bytes_acc)) != cudaSuccess)
+            return e;
+    }
+
     lw.is_attention = true;
-    lw.loaded = lw.qkv.d_packed != nullptr && lw.g.d_packed != nullptr &&
-                lw.o.d_packed != nullptr;
+    // Encoding-agnostic: the mixer is complete when its three projections are
+    // resident, in whichever encoding the artifact holds (defect A3.13).
+    lw.loaded = ((lw.qkv.d_packed != nullptr && lw.g.d_packed != nullptr &&
+                  lw.o.d_packed != nullptr) ||
+                 (lw.qkv_bf16.valid() && lw.g_bf16.valid() &&
+                  lw.o_bf16.valid()));
     if (!lw.loaded)
         log::error("[dory_load] an attention mixer is incomplete");
     return cudaSuccess;
@@ -242,8 +301,18 @@ cudaError_t LoadMlpLayer(const TensorBatchViews &raw,
     if ((e = UploadF32(v_alpha, &lw.d_alpha, stream, bytes_acc)) != cudaSuccess)
         return e;
 
+    if (nv.records.empty()) {
+        if ((e = UploadDensePlanes(
+                 raw,
+                 {{"mixer.gate_up_proj.weight", &lw.gate_up_bf16},
+                  {"mixer.down_proj.weight", &lw.down_bf16}},
+                 lw, stream, ring, bytes_acc)) != cudaSuccess)
+            return e;
+    }
+
     lw.is_attention = false;
-    lw.loaded = lw.gate_up.d_packed != nullptr && lw.down.d_packed != nullptr;
+    lw.loaded = ((lw.gate_up.d_packed != nullptr && lw.down.d_packed != nullptr) ||
+                 (lw.gate_up_bf16.valid() && lw.down_bf16.valid()));
     if (!lw.loaded) log::error("[dory_load] an mlp mixer is incomplete");
     return cudaSuccess;
 }
@@ -386,7 +455,10 @@ bool LoadDoryPinnedWeights(const std::string &output_root,
         const auto raw_name = pinned_dir / absl::StrCat("layer_", l, ".arrow");
         const auto nv_name =
             pinned_dir / absl::StrCat("layer_", l, "_nvfp4.arrow");
-        if (!fs::exists(raw_name) || !fs::exists(nv_name)) {
+        // The raw plane is mandatory under either encoding; the NVFP4 batch is
+        // not — a `bf16` tree has no *_nvfp4.arrow at all, and its projections
+        // come from the raw planes (defect A3.13).
+        if (!fs::exists(raw_name)) {
             log::error(absl::StrCat("[dory_load] missing layer files for ", l));
             pw.Free();
             return false;
@@ -398,18 +470,22 @@ bool LoadDoryPinnedWeights(const std::string &output_root,
             pw.Free();
             return false;
         }
-        auto nv = LoadDenseNvfp4BatchViews(nv_name);
-        if (!nv.ok()) {
-            log::error("[dory_load] " + nv_name.string() + " read failed: " +
-                       nv.status().ToString());
-            pw.Free();
-            return false;
+        DenseNvfp4BatchViews nv;
+        if (fs::exists(nv_name)) {
+            auto nv_res = LoadDenseNvfp4BatchViews(nv_name);
+            if (!nv_res.ok()) {
+                log::error("[dory_load] " + nv_name.string() +
+                           " read failed: " + nv_res.status().ToString());
+                pw.Free();
+                return false;
+            }
+            nv = std::move(*nv_res);
         }
         auto &lw = pw.layers[static_cast<size_t>(l)];
         const cudaError_t lerr =
-            attention ? LoadAttentionLayer(*raw, *nv, pw.top, lw, stream, ring,
+            attention ? LoadAttentionLayer(*raw, nv, pw.top, lw, stream, ring,
                                            bytes_acc)
-                      : LoadMlpLayer(*raw, *nv, pw.top, lw, stream, ring,
+                      : LoadMlpLayer(*raw, nv, pw.top, lw, stream, ring,
                                      bytes_acc);
         if (lerr != cudaSuccess) {
             log::error(absl::StrCat("[dory_load] layer ", l,

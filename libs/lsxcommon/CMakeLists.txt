@@ -799,6 +799,10 @@ target_link_libraries(lsxcommon_ornith_cu
 # always ran it; consumers delegate here.
 add_library(lsxcommon_dense_cu OBJECT
     src/lsx_dense_inference.cu
+    # The encoding-agnostic GEMM: one dispatch for NVFP4 vs a stored (bf16)
+    # plane, so a family pipeline does not carry the branch at every projection
+    # (defect A3.13 / plan Task 15a).
+    src/lsx_weight_gemm.cu
 )
 set_target_properties(lsxcommon_dense_cu PROPERTIES
     CUDA_ARCHITECTURES OFF

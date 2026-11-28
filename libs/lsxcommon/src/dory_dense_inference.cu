@@ -31,6 +31,7 @@
 #include "lsxcommon/lsx_dense_inference.h"
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_weight_gemm.h"
 
 #include "lsx_kernels_common.cuh"
 #include "lsx_kernels_math.cuh"
@@ -39,6 +40,7 @@ namespace lsxcommon {
 namespace dory {
 
 using lsx_nvfp4::RunLsxNvfp4Gemm;
+using lsxcommon::RunWeightGemm;  // NVFP4 or a stored plane (dual encoding)
 
 namespace {
 
@@ -824,9 +826,10 @@ cudaError_t RunAttentionMixer(cudaStream_t stream, const DoryPinnedWeights &pw,
     const float eps = static_cast<float>(frozen::kJustNormEps);
     (void)I;
 
-    cudaError_t e = RunLsxNvfp4Gemm(stream, ws.x, lw.qkv.d_packed,
-                                    lw.qkv.d_scales, lw.qkv.global_scale,
-                                    ws.qkv, seq, H, Q + 2 * KV);
+    // One projection through whichever encoding the mixer holds: NVFP4 nibbles
+    // in an NVFP4 tree, a stored BF16 plane in a `bf16` tree (defect A3.13).
+    cudaError_t e = RunWeightGemm(stream, ws.x, lw.qkv, lw.qkv_bf16, ws.qkv,
+                                  {seq, H, Q + 2 * KV});
     if (e != cudaSuccess) return e;
     if (lw.qkv_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.x, lw.qkv_res.d_packed,
@@ -834,8 +837,7 @@ cudaError_t RunAttentionMixer(cudaStream_t stream, const DoryPinnedWeights &pw,
                             ws.qkv, seq, H, Q + 2 * KV, true);
         if (e != cudaSuccess) return e;
     }
-    e = RunLsxNvfp4Gemm(stream, ws.x, lw.g.d_packed, lw.g.d_scales,
-                        lw.g.global_scale, ws.gate, seq, H, Q);
+    e = RunWeightGemm(stream, ws.x, lw.g, lw.g_bf16, ws.gate, {seq, H, Q});
     if (e != cudaSuccess) return e;
     if (lw.g_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.x, lw.g_res.d_packed, lw.g_res.d_scales,
@@ -869,8 +871,7 @@ cudaError_t RunAttentionMixer(cudaStream_t stream, const DoryPinnedWeights &pw,
     e = AttnGateNorm(stream, ws.attn, ws.attn, ws.gate, lw.d_sgate2, seq, Q, eps);
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.attn, lw.o.d_packed, lw.o.d_scales,
-                        lw.o.global_scale, ws.proj, seq, Q, H);
+    e = RunWeightGemm(stream, ws.attn, lw.o, lw.o_bf16, ws.proj, {seq, Q, H});
     if (e != cudaSuccess) return e;
     if (lw.o_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.attn, lw.o_res.d_packed,
@@ -889,9 +890,8 @@ cudaError_t RunMlpMixer(cudaStream_t stream, const DoryPinnedWeights &pw,
     const int I = top.intermediate_size;
     const float eps = static_cast<float>(frozen::kJustNormEps);
 
-    cudaError_t e = RunLsxNvfp4Gemm(stream, ws.x, lw.gate_up.d_packed,
-                                    lw.gate_up.d_scales, lw.gate_up.global_scale,
-                                    ws.gate_up, seq, H, 2 * I);
+    cudaError_t e = RunWeightGemm(stream, ws.x, lw.gate_up, lw.gate_up_bf16,
+                                  ws.gate_up, {seq, H, 2 * I});
     if (e != cudaSuccess) return e;
     if (lw.gate_up_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.x, lw.gate_up_res.d_packed,
@@ -903,8 +903,8 @@ cudaError_t RunMlpMixer(cudaStream_t stream, const DoryPinnedWeights &pw,
     e = SuvSwiGLUNorm(stream, ws.act, ws.gate_up, lw.d_suv_gate, lw.d_suv_up,
                       seq, I, eps);
     if (e != cudaSuccess) return e;
-    e = RunLsxNvfp4Gemm(stream, ws.act, lw.down.d_packed, lw.down.d_scales,
-                        lw.down.global_scale, ws.proj, seq, I, H);
+    e = RunWeightGemm(stream, ws.act, lw.down, lw.down_bf16, ws.proj,
+                      {seq, I, H});
     if (e != cudaSuccess) return e;
     if (lw.down_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.act, lw.down_res.d_packed,

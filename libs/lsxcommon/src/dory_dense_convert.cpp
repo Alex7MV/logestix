@@ -369,6 +369,18 @@ bool FuseRows(const std::vector<const RawTensor *> &parts, RawTensor &out)
 }
 
 // Quantizes one source tensor to NVFP4 plus the residual plane (w - dequant).
+// A raw tensor as it is written into a PinnedSchema batch. Used by the
+// pass-through profile, where the plane is stored exactly as it arrived.
+TensorRecord ToRecord(RawTensor &&t)
+{
+    TensorRecord r;
+    r.name = t.name;
+    r.dtype = t.dtype;
+    r.shape = t.shape;
+    r.data = std::move(t.data);
+    return r;
+}
+
 arrow::Status QuantizeWithResidual(const RawTensor &src,
                                    std::vector<DenseNvfp4Record> &out)
 {
@@ -561,8 +573,17 @@ arrow::Status WriteDoryModelIndex(const std::string &output_root,
 // ── Converter ──────────────────────────────────────────────────────────────
 
 arrow::Status ConvertDoryModel(const std::string &input_path,
-                               const std::string &output_root)
+                               const std::string &output_root,
+                               lsxcommon::CodecProfile profile)
 {
+    // ONE branch for the weight encoding: topology, index, tokenizer and the
+    // raw per-layer reference scalars are written identically under either
+    // profile, so an artifact of either kind loads through the same loader.
+    const bool quantize = lsxcommon::ProfileUsesNvfp4Weights(profile);
+    log::info(absl::StrFormat("dory conversion: codec profile '%s' (%s weights)",
+                              lsxcommon::CodecProfileName(profile),
+                              quantize ? "NVFP4-packed" : "passthrough"));
+
     auto model = scan_directory(input_path);
     if (model.shards.empty())
         return arrow::Status::Invalid("no safetensors shards found in ",
@@ -668,9 +689,15 @@ arrow::Status ConvertDoryModel(const std::string &input_path,
             qkv.name = absl::StrCat(lp, "mixer.qkv_proj.weight");
             g.name = absl::StrCat(lp, "mixer.g_proj.weight");
             o.name = absl::StrCat(lp, "mixer.o_proj.weight");
-            ARROW_RETURN_NOT_OK(QuantizeWithResidual(qkv, nv_layer));
-            ARROW_RETURN_NOT_OK(QuantizeWithResidual(g, nv_layer));
-            ARROW_RETURN_NOT_OK(QuantizeWithResidual(o, nv_layer));
+            if (quantize) {
+                ARROW_RETURN_NOT_OK(QuantizeWithResidual(qkv, nv_layer));
+                ARROW_RETURN_NOT_OK(QuantizeWithResidual(g, nv_layer));
+                ARROW_RETURN_NOT_OK(QuantizeWithResidual(o, nv_layer));
+            } else {
+                raw_layer.push_back(ToRecord(std::move(qkv)));
+                raw_layer.push_back(ToRecord(std::move(g)));
+                raw_layer.push_back(ToRecord(std::move(o)));
+            }
             ARROW_RETURN_NOT_OK(raw("mixer.sqk"));
             ARROW_RETURN_NOT_OK(raw("mixer.s_gate"));
             ARROW_RETURN_NOT_OK(raw("attn_alpha"));
@@ -686,8 +713,13 @@ arrow::Status ConvertDoryModel(const std::string &input_path,
                                               l);
             gate_up.name = absl::StrCat(lp, "mixer.gate_up_proj.weight");
             down.name = absl::StrCat(lp, "mixer.down_proj.weight");
-            ARROW_RETURN_NOT_OK(QuantizeWithResidual(gate_up, nv_layer));
-            ARROW_RETURN_NOT_OK(QuantizeWithResidual(down, nv_layer));
+            if (quantize) {
+                ARROW_RETURN_NOT_OK(QuantizeWithResidual(gate_up, nv_layer));
+                ARROW_RETURN_NOT_OK(QuantizeWithResidual(down, nv_layer));
+            } else {
+                raw_layer.push_back(ToRecord(std::move(gate_up)));
+                raw_layer.push_back(ToRecord(std::move(down)));
+            }
             ARROW_RETURN_NOT_OK(raw("mixer.suv_gate"));
             ARROW_RETURN_NOT_OK(raw("mixer.suv_up"));
             ARROW_RETURN_NOT_OK(raw("mlp_alpha"));
@@ -697,9 +729,10 @@ arrow::Status ConvertDoryModel(const std::string &input_path,
         ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(raw_layer),
             pinned_dir / absl::StrCat("layer_", l, ".arrow")));
-        ARROW_RETURN_NOT_OK(WriteBatch(
-            DenseNvfp4Schema::MakeBatch(nv_layer),
-            pinned_dir / absl::StrCat("layer_", l, "_nvfp4.arrow")));
+        if (!nv_layer.empty())
+            ARROW_RETURN_NOT_OK(WriteBatch(
+                DenseNvfp4Schema::MakeBatch(nv_layer),
+                pinned_dir / absl::StrCat("layer_", l, "_nvfp4.arrow")));
     }
 
     top.total_pinned_tensors = total_pinned;
@@ -720,18 +753,19 @@ arrow::Status ConvertDoryModel(const std::string &input_path,
                 vram_inventory.push_back(
                     {t.name, t.numel(), t.byte_size()});
 
-        top.vram = EstimateVram(
-            vram_inventory,
-            {+[](const std::string &n) {
-                 return dory_tensor_is_nvfp4(
-                     classify_dory_tensor(n).kind);
-             },
-             nullptr,
-             +[](const std::string &n) {
-                 return dory_tensor_is_nvfp4(
-                     classify_dory_tensor(n).kind);
-             }},
-            vg);
+        // A pass-through tree has no quantized weight (and no residual plane),
+        // so the inventory is priced at its raw bytes: leaving the NVFP4 rules
+        // in place would under-report the resident footprint by ~4x.
+        VramTensorPolicy vpol;
+        if (quantize) {
+            vpol.is_nvfp4 = +[](const std::string &n) {
+                return dory_tensor_is_nvfp4(classify_dory_tensor(n).kind);
+            };
+            vpol.has_residual = +[](const std::string &n) {
+                return dory_tensor_is_nvfp4(classify_dory_tensor(n).kind);
+            };
+        }
+        top.vram = EstimateVram(vram_inventory, vpol, vg);
         log::info(absl::StrFormat(
             "VRAM profile: min=%s optimal=%s max=%s (ctx=%lld, kv slots=%d)",
             FormatBytesHuman(top.vram.min_bytes),

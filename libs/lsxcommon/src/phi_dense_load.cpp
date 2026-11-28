@@ -26,6 +26,15 @@ namespace phi {
 
 void PhiLayerWeights::Free()
 {
+    if (d_arena_bf16) {
+        cudaFree(d_arena_bf16);
+        d_arena_bf16 = nullptr;
+        arena_bytes_bf16 = 0;
+        qkv_bf16 = gemv::DenseWeight{};
+        o_bf16 = gemv::DenseWeight{};
+        mlp_gate_up_bf16 = gemv::DenseWeight{};
+        mlp_down_bf16 = gemv::DenseWeight{};
+    }
     if (d_arena) {
         cudaFree(d_arena);
         d_arena = nullptr;
@@ -122,6 +131,53 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
                               lw.mlp_gate_up, stream, ring, bytes_acc, nullptr);
     if (e != cudaSuccess) return e;
 
+    // ── The high-precision encoding (the `bf16` codec profile) ─────────────
+    //
+    // A bf16 tree has no NVFP4 records at all, so every upload above was a no-op
+    // and lw.qkv.d_packed stayed null. The same four projections are then read
+    // from the `raw` planes as BF16 and kept device-resident AS BF16
+    // (CvKind::kBf16Raw is a passthrough: the value is stored, so there is
+    // nothing to reconstruct). The inference pipeline dispatches to
+    // gemv::RunLxGemmVec for these.
+    if (!lw.qkv.d_packed) {   // an NVFP4 tree keeps the NVFP4 path only
+        struct DenseJob {
+            const char *suffix;
+            gemv::DenseWeight *out;
+        };
+        const DenseJob candidates[] = {
+            {"self_attn.qkv_proj.weight", &lw.qkv_bf16},
+            {"self_attn.o_proj.weight", &lw.o_bf16},
+            {"mlp.gate_up_proj.weight", &lw.mlp_gate_up_bf16},
+            {"mlp.down_proj.weight", &lw.mlp_down_bf16},
+        };
+        // The job and its owner travel together: RunUploadJobs is free to skip
+        // nothing, but a `continue` here would silently shift every later
+        // pointer, and the shape patch below must describe the SAME tensor.
+        std::vector<UploadJob> jobs_dense;
+        std::vector<const DenseJob *> owners;
+        for (const auto &c : candidates) {
+            const auto *t = FindTensorSuffix(raw, c.suffix);
+            if (t == nullptr || t->rank < 2) continue;
+            jobs_dense.push_back({t, const_cast<void **>(&c.out->d_data),
+                                  CvKind::kBf16Raw});
+            owners.push_back(&c);
+        }
+        if (!jobs_dense.empty()) {
+            e = RunUploadJobs(std::move(jobs_dense), &lw.d_arena_bf16,
+                              &lw.arena_bytes_bf16, stream, ring, bytes_acc,
+                              nullptr);
+            if (e != cudaSuccess) return e;
+            // rows/cols come from the tensor's own shape, so the GEMV cannot be
+            // handed a transposed view of a [N,K] plane.
+            for (const auto *owner : owners) {
+                const auto *t = FindTensorSuffix(raw, owner->suffix);
+                owner->out->rows = static_cast<int>(t->shape[0]);
+                owner->out->cols = static_cast<int>(t->shape[1]);
+                owner->out->dtype = gemv::LxDtype::kBF16;
+            }
+        }
+    }
+
     // Residual planes (optional: absent on a legacy 4-bit-only tree). They are
     // uploaded with the same helper; a missing record leaves the weight null
     // and the decode simply skips the accumulate pass.
@@ -191,9 +247,16 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
         view(lw.v, lw.qkv.d_packed + qp + kp, lw.qkv.d_scales + qs + ks, kn, kp,
              ks);
     }
-    const bool attn_ok = lw.o.d_packed && lw.qkv.d_packed;
-    const bool mlp_ok = lw.mlp_gate.d_packed && lw.mlp_up.d_packed &&
-                        lw.mlp_down.d_packed;
+    // "Loaded" is an ENCODING-AGNOSTIC statement: the projections this layer
+    // needs are resident, in whichever encoding the artifact holds. Testing only
+    // d_packed is what left every layer of a bf16 tree marked incomplete
+    // (defect A3.13) while the weights were in fact there.
+    const bool attn_ok =
+        (lw.o.d_packed && lw.qkv.d_packed) ||
+        (lw.o_bf16.valid() && lw.qkv_bf16.valid());
+    const bool mlp_ok =
+        (lw.mlp_gate.d_packed && lw.mlp_up.d_packed && lw.mlp_down.d_packed) ||
+        (lw.mlp_gate_up_bf16.valid() && lw.mlp_down_bf16.valid());
     lw.loaded = attn_ok && mlp_ok && lw.d_input_norm && lw.d_post_norm;
     if (!lw.loaded)
         log::error(

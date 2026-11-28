@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 
 #include "lsxcommon/phi_dense_constants.h"
+#include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 
 namespace lsxcommon {
@@ -51,8 +52,23 @@ struct PhiLayerWeights {
     lsx_nvfp4::LsxNvfp4Weight mlp_gate_up_res;
     lsx_nvfp4::LsxNvfp4Weight mlp_down_res;
 
+    // The SAME four projections in the high-precision encoding (the `bf16`
+    // codec profile): device-resident BF16 planes, consumed by
+    // gemv::RunLxGemmVec. Exactly one encoding is present per tree — a loader
+    // fills whichever the artifact holds, and the pipeline dispatches on
+    // `valid()` / `d_packed`. Why both: an NVFP4 plane cannot be executed on
+    // Ampere, and a bf16 tree has no nibbles to upload (defect A3.13).
+    gemv::DenseWeight qkv_bf16;
+    gemv::DenseWeight o_bf16;
+    gemv::DenseWeight mlp_gate_up_bf16;
+    gemv::DenseWeight mlp_down_bf16;
+
     void *d_arena = nullptr;
     size_t arena_bytes = 0;
+    // Separate arena for the dense planes: RunUploadJobs() allocates one arena
+    // per call and the two encodings are uploaded by different calls.
+    void *d_arena_bf16 = nullptr;
+    size_t arena_bytes_bf16 = 0;
 
     void Free();
 };

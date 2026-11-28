@@ -23,6 +23,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_weight_gemm.h"
 #include "lsxcommon/shared_experts.h"
 
 #include "lsx_kernels_act.cuh"
@@ -274,14 +275,16 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
                                    H, static_cast<float>(top.rms_norm_eps));
     if (e != cudaSuccess) return e;
 
-    if (lw.qkv.d_packed) {
+    if (lw.qkv.d_packed || lw.qkv_bf16.valid()) {
         // One GEMV over the fused [NH*HD + 2*NKV*HD, K] weight, then split.
-        e = RunLsxNvfp4Gemm(stream, ws.norm, lw.qkv.d_packed, lw.qkv.d_scales,
-                            lw.qkv.global_scale, ws.qkv, seq, H,
-                            (NH + 2 * NKV) * HD);
+        // RunWeightGemm picks the encoding the tree holds: NVFP4 nibbles, or the
+        // stored BF16 plane (the bf16 codec profile). Same contract either way.
+        e = RunWeightGemm(stream, ws.norm, lw.qkv, lw.qkv_bf16, ws.qkv,
+                          {seq, H, (NH + 2 * NKV) * HD});
         if (e != cudaSuccess) return e;
         // Residual plane: the same GEMV accumulating into the same buffer, so
-        // the effective weight precision is ~8 bits at 2x the read.
+        // the effective weight precision is ~8 bits at 2x the read. A bf16 tree
+        // has no residual — the value is already stored exactly.
         if (lw.qkv_res.d_packed) {
             e = RunLsxNvfp4Gemm(stream, ws.norm, lw.qkv_res.d_packed,
                                 lw.qkv_res.d_scales, lw.qkv_res.global_scale,
@@ -329,8 +332,8 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
                          static_cast<float>(top.attention_scale), kv_base);
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.attn, lw.o.d_packed, lw.o.d_scales,
-                        lw.o.global_scale, ws.proj, seq, NH * HD, H);
+    e = RunWeightGemm(stream, ws.attn, lw.o, lw.o_bf16, ws.proj,
+                      {seq, NH * HD, H});
     if (e != cudaSuccess) return e;
     if (lw.o_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.attn, lw.o_res.d_packed,
@@ -348,9 +351,8 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
                        static_cast<float>(top.rms_norm_eps));
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.norm, lw.mlp_gate_up.d_packed,
-                        lw.mlp_gate_up.d_scales, lw.mlp_gate_up.global_scale,
-                        ws.gate_up, seq, H, 2 * I);
+    e = RunWeightGemm(stream, ws.norm, lw.mlp_gate_up, lw.mlp_gate_up_bf16,
+                      ws.gate_up, {seq, H, 2 * I});
     if (e != cudaSuccess) return e;
     if (lw.mlp_gate_up_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.norm, lw.mlp_gate_up_res.d_packed,
@@ -362,9 +364,8 @@ cudaError_t RunLayer(cudaStream_t stream, const PhiPinnedWeights &pw,
     e = PhiSwiGLU(stream, ws.gate_up, ws.act, I,
                       static_cast<int64_t>(seq) * I);
     if (e != cudaSuccess) return e;
-    e = RunLsxNvfp4Gemm(stream, ws.act, lw.mlp_down.d_packed,
-                        lw.mlp_down.d_scales, lw.mlp_down.global_scale, ws.down,
-                        seq, I, H);
+    e = RunWeightGemm(stream, ws.act, lw.mlp_down, lw.mlp_down_bf16, ws.down,
+                      {seq, I, H});
     if (e != cudaSuccess) return e;
     if (lw.mlp_down_res.d_packed) {
         e = RunLsxNvfp4Gemm(stream, ws.act, lw.mlp_down_res.d_packed,

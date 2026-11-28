@@ -996,7 +996,8 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info(
             "NVIDIA-Nemotron-Labs-Dory1.0-4B pipeline (logestix-dory-nvfp4 "
             "layout)");
-        auto st = lsxcommon::dory::ConvertDoryModel(input_path, output_path);
+        auto st = lsxcommon::dory::ConvertDoryModel(input_path, output_path,
+                                                    codec_profile);
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("dory conversion failed: %s", st.ToString()));

@@ -81,7 +81,16 @@
       ],
       "codec_mask": 3,
       "target": "nvidia:sm_120",
-      "gates": {}
+      "gates": {
+        "selfcheck": {
+          "result": "pass",
+          "cycles": 3,
+          "top1_token": 11751,
+          "text": "Paris",
+          "logits_hash": "3c377d3739150430",
+          "date": "2026-11-28"
+        }
+      }
     }
   },
   "lifecycle_tu": [

@@ -19,6 +19,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 
 namespace lsxcommon {
@@ -68,11 +69,26 @@ struct LayerWeights {
     // scalar path keeps using mlp_gate/mlp_up.
     lsx_nvfp4::LsxNvfp4Weight mlp_gate_up;
 
+    // ── The SAME projections in a stored (non-quantized) encoding ───────────
+    //
+    // The `bf16` codec profile keeps the checkpoint's own BF16 planes (design
+    // §2.6), so a loader fills whichever set the artifact holds and the
+    // attention/MLP launchers dispatch on `valid()` / `d_packed`. Exactly one
+    // set is present per tree: an NVFP4 artifact has no BF16 plane to upload,
+    // and a bf16 artifact has no nibbles (defect A3.13).
+    gemv::DenseWeight qkv_bf16, z_bf16, b_bf16, a_bf16, out_bf16;
+    gemv::DenseWeight q_bf16, k_bf16, v_bf16, o_bf16;
+    gemv::DenseWeight mlp_gate_bf16, mlp_up_bf16, mlp_down_bf16;
+
     // Non-null when the layer was uploaded arena-backed: every d_* 1D tensor
     // pointer above is a view into this single allocation and Free() releases
     // the arena instead of the individual pointers.
     void *d_arena = nullptr;
     size_t arena_bytes = 0;
+    // Separate arena for the dense planes: RunUploadJobs() allocates one arena
+    // per call and the two encodings are uploaded by different calls.
+    void *d_arena_bf16 = nullptr;
+    size_t arena_bytes_bf16 = 0;
 
     void Free();
 };

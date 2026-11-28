@@ -154,6 +154,73 @@ TEST_CASE("RunLxGemmVec honors alpha/beta (f16, bf16 and f32 out)",
     w.Free(); x.Free();
 }
 
+// A `bf16` artifact (codec profile §2.6) stores its projections in BF16 while
+// every dense pipeline keeps activations in FP16, so the decode GEMV is asked
+// for the pair bf16-weight x f16-activation. ToF32() widens both operands
+// exactly and the product is fp32, so that pair must produce the SAME bits as
+// the fp16 x fp16 call on the same values — not merely a close result. Asserting
+// exactness is what keeps a mixed call from silently degrading to a rounded
+// path, and it is the property the bf16 SelfCheck goldens rely on.
+TEST_CASE("RunLxGemmVec runs a bf16 weight plane over f16 activations",
+          "[lsxgemv]")
+{
+    constexpr int seq = 2, N = 65, K = 96;
+    std::vector<__nv_bfloat16> w_bf((size_t)N * K);
+    std::vector<__half> w_f16((size_t)N * K);
+    for (size_t i = 0; i < w_bf.size(); ++i) {
+        w_bf[i] = __float2bfloat16_rn(NextRand());
+        // Exact by construction inside fp16's normal range: bf16 has 7 explicit
+        // mantissa bits, fp16 has 10.
+        w_f16[i] = __float2half(__bfloat162float(w_bf[i]));
+    }
+    F16Buf x;
+    x.Alloc((size_t)seq * K);
+
+    void *d_w_bf = nullptr;
+    void *d_w_f16 = nullptr;
+    float *d_y_mixed = nullptr;
+    float *d_y_same = nullptr;
+    REQUIRE(cudaMalloc(&d_w_bf, w_bf.size() * sizeof(__nv_bfloat16)) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d_w_f16, w_f16.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_y_mixed, (size_t)seq * N * sizeof(float)) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d_y_same, (size_t)seq * N * sizeof(float)) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(d_w_bf, w_bf.data(), w_bf.size() * sizeof(__nv_bfloat16),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_w_f16, w_f16.data(), w_f16.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    REQUIRE(gemv::RunLxGemmVec(nullptr, d_w_bf, x.d, seq, N, K,
+                               gemv::LxDtype::kBF16, gemv::LxDtype::kF16, 1.0f,
+                               d_y_mixed, gemv::LxDtype::kF32, 0.0f) ==
+            cudaSuccess);
+    REQUIRE(gemv::RunLxGemmVec(nullptr, d_w_f16, x.d, seq, N, K,
+                               gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
+                               d_y_same, gemv::LxDtype::kF32, 0.0f) ==
+            cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<float> got((size_t)seq * N), ref((size_t)seq * N);
+    REQUIRE(cudaMemcpy(got.data(), d_y_mixed, got.size() * sizeof(float),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ref.data(), d_y_same, ref.size() * sizeof(float),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    for (int i = 0; i < seq * N; ++i) CHECK(got[i] == ref[i]);
+
+    // The accumulation still has to be the reference one, not zeros.
+    std::vector<float> want;
+    RefNK(w_f16, x.h, std::vector<float>((size_t)seq * N, 0.0f), 1.0f, 0.0f,
+          seq, N, K, want);
+    for (int i = 0; i < seq * N; ++i)
+        CHECK(std::abs(got[i] - want[i]) < 1e-3f * std::abs(want[i]) + 1e-4f);
+
+    cudaFree(d_w_bf); cudaFree(d_w_f16);
+    cudaFree(d_y_mixed); cudaFree(d_y_same);
+    x.Free();
+}
+
 TEST_CASE("RunLxGemmVecWT honors alpha/beta (K-major layout)", "[lsxgemv]")
 {
     constexpr int seq = 2, N = 65, K = 100;

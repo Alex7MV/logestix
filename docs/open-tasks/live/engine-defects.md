@@ -260,7 +260,8 @@ Checked and clean by inspection:
   `model` object should convert, since `bos` is optional by construction).
 
 ### A3.13. A `bf16`-profile artifact passes the codec gate and then loads empty
-- **Status: open.** Found 2026-11-28 by running the first bf16 artifact end to end
+- **Status: closed 2026-11-28** on the phi, qwen and dory loaders + pipelines
+  (plan Task 15a). Found 2026-11-28 by running the first bf16 artifact end to end
   (branch `build/ampere-aot-sm86-sm87`, plan Task 15). Not a pre-existing red:
   nothing could produce a bf16 artifact before that task, so nothing could reach
   this path.
@@ -295,3 +296,41 @@ Checked and clean by inspection:
   stay byte-identical (its gates are the proof).
 - **Scope:** phi-4 and Qwen3.5-9B first (the Branch-2 slice); the other families
   need the same change before a bf16 profile of them is loadable.
+- **Closed by (2026-11-28, branch `build/ampere-aot-sm86-sm87`):** one shared
+  dispatch, `lsxcommon::RunWeightGemm` (`lsx_weight_gemm.{h,cu}`), takes the
+  NVFP4 handle and the dense handle of one projection and answers with the
+  encoding the tree holds — NVFP4 keeps the identical `RunLsxNvfp4Gemm` call,
+  dense goes to `gemv::RunLxGemmVec`. `gemv::DenseWeight`
+  (`{d_data, rows, cols, LxDtype}`) is the handle the layer structs carry beside
+  `LsxNvfp4Weight`. Every `loaded` test now accepts EITHER encoding, and every
+  loader uploads the raw planes as BF16 (`CvKind::kBf16Raw`, a passthrough) when
+  the tree has no `*_nvfp4.arrow`. Three families wired: phi (`qkv/o/gate_up/
+  down`), qwen (both block types + the MLP split + the dense embed/head edges)
+  and dory (`qkv/g/o` and `gate_up/down` mixers; `ConvertDoryModel` gained the
+  `CodecProfile` parameter lsxforge now passes).
+- **Also fixed on the way:** `RunLxGemmVec` supported only MATCHING operand
+  pairs, so `kBF16` weights over the pipelines' FP16 activations fell through to
+  `cudaErrorNotSupported` (the first live bf16 run failed with
+  `SelfCheck failed: operation not supported / prefill`). The mixed pair
+  `kBF16 × kF16` is now instantiated in both `RunLxGemmVec` and
+  `RunLxGemmVecWT`, and `test_lsx_gemv` pins it as BIT-IDENTICAL to the
+  `kF16 × kF16` call on the same values — a numeric-mode change would show there.
+- **Measured (canonical gate, real weights, RTX 5090, `linux-debug`):**
+  ```
+  phi-4   bf16  top1_tok=12366 'Paris'  x3  logits_hash=50215d8d9e52acda
+  qwen3.5 bf16  top1_tok=11751 'Paris'  x3  logits_hash=3c377d3739150430
+  dory 4b bf16  top1_tok= 6993 'Paris'  x3  logits_hash=90c751f26da60c9f
+  ```
+  Each hash is identical across its three cycles (the driver asserts it), and
+  each tree's top-1 token equals the NVFP4 profile's — the storage encoding moves
+  the hash, the answer does not (numeric-contract §1.1 item 4 as amended). The
+  NVFP4 goldens are unchanged by the same build (phi-4 `cf51b9bbd5c913dd`,
+  qwen `a2af669548e59c73`), which is what keeps the dual dispatch honest.
+  Recorded in `models/*/*.json` (`profiles.<name>.gates.selfcheck`). The dory
+  bf16 tree is 7 584 MiB resident — the reason the profile exists.
+- **Not a defect, for the record:** `lsxbenchmark --model <path> --selfcheck`
+  frames the prompt through `BuildPromptInputIds` (ChatML), and phi-4 *echoes*
+  the fragment in that frame — the torch reference does the same (top-1 `The`,
+  logit 44, continuation `The capital of France is Paris`). That is why the
+  canonical probe is raw BPE (`selfcheck_frame_prompt: false`), and why the CLI
+  path is not the gate.

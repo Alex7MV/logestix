@@ -95,7 +95,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - geometry: `libs/lsxcommon/include/lsxcommon/dory_dense_constants.h` (frozen constants, static_assert-checked)
 - format `logestix-dory-nvfp4`, forge `--dory`
 - tokenizer kind 9
-- store `nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16` (env `LSX_TEST_DORY_1_0_4B_ROOT`); `nvfp4` (preferred) — not built
+- store `nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16` (env `LSX_TEST_DORY_1_0_4B_ROOT`); `nvfp4` (preferred) — not built; `bf16` — built for `nvidia:sm_120`, codecs bf16, sha256 `fdaf5160b9eb…`, selfcheck pass
 - lifecycle TUs: `dory_dense_model.cpp`, `dory_dense_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 94.23 t/s (r3, 2026-11-10)
@@ -555,7 +555,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - geometry: `libs/lsxcommon/include/lsxcommon/phi_dense_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--phi`
 - tokenizer kind 8
-- store `microsoft/phi-4` (env `LSX_TEST_PHI_4_ROOT`); `nvfp4` (preferred) — built for `nvidia:sm_120`, codecs bf16|nvfp4, sha256 `52762163acb7…`, selfcheck pass, fsi pass, code pass, det pass, mcp pass; `bf16` — built for `nvidia:sm_120`, codecs bf16, sha256 `bfd5851f9ba3…`
+- store `microsoft/phi-4` (env `LSX_TEST_PHI_4_ROOT`); `nvfp4` (preferred) — built for `nvidia:sm_120`, codecs bf16|nvfp4, sha256 `52762163acb7…`, selfcheck pass, fsi pass, code pass, det pass, mcp pass; `bf16` — built for `nvidia:sm_120`, codecs bf16, sha256 `bfd5851f9ba3…`, selfcheck pass
 - lifecycle TUs: `phi_dense_model.cpp`, `phi_dense_inference.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 71.29 t/s (r3, 2026-10-24)
@@ -580,7 +580,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - class `Qwen3_5_9BModel`, namespace `Qwen3_5_9BModel`
 - geometry: `libs/lsxcommon/src/qwen_dense_model.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--qwen`
-- store `Qwen/Qwen3.5-9B` (env `LSX_TEST_QWEN3_5_9B_ROOT`); `nvfp4` (preferred) — built for `nvidia:sm_120`, codecs f32|bf16|nvfp4, sha256 `da928c0e8dde…`, selfcheck pass, fsi pass, code pass, det pass, mcp pass; `bf16` — built for `nvidia:sm_120`, codecs f32|bf16, sha256 `8c9ea3064aa4…`
+- store `Qwen/Qwen3.5-9B` (env `LSX_TEST_QWEN3_5_9B_ROOT`); `nvfp4` (preferred) — built for `nvidia:sm_120`, codecs f32|bf16|nvfp4, sha256 `da928c0e8dde…`, selfcheck pass, fsi pass, code pass, det pass, mcp pass; `bf16` — built for `nvidia:sm_120`, codecs f32|bf16, sha256 `8c9ea3064aa4…`, selfcheck pass
 - lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
 - gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 170.0 t/s (r3, 2026-11-05)
