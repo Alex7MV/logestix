@@ -57,9 +57,9 @@ executed up to the end of Branch 1 and stopped there. This revision records the
 implementation diverged from the text below: a later executor reads this document
 as a description of the tree, so a stale interface here is a defect. Of the original
 25 tasks, **nine are done** (1–7, 4a, 9a), **two are done-with-residue** (8, 9), **one
-is partial** (9b) and **thirteen have no code at all** (10 and 11–22). Five tasks are
-**new** (8a, 9c, 9d, 9e, 9f): each is a hole the finished code exposed, not a change
-of scope.
+is partial** (9b) and **thirteen have no code at all** (10 and 11–22). Six tasks are
+**new** (8a, 8b, 9c, 9d, 9e, 9f): each is a hole the finished code exposed, not a
+change of scope.
 
 > **Executor note (2026-11-28).** `AGENTS.md` forbids Task subagents, so the header's
 > `subagent-driven-development` option is not available in this repository: execute
@@ -114,6 +114,7 @@ started` = no commit, no code.
 | 21 | per-profile goldens | **not started** | — | — |
 | 22 | 3090 + Orin acceptance | **not started** | — | — |
 | 8a | flagless conversion publishes an artifact | **new, not started** | — | defect F6 |
+| 8b | eight converters stop writing `mtp/` | **new, not started** | — | defect F10; blocks every MoE conversion |
 | 9c | expert plane declares its codec | **new, not started** | — | defect F3; blocks 15/18 |
 | 9d | rule 5 enforced; index-codec readers gone | **new, not started** | — | defect F4 |
 | 9e | target-aware profile selection + `--explain-artifact` | **new, not started** | — | defect F5, open task `V` |
@@ -177,17 +178,19 @@ in the task that owns the code. The first two are specific to the cold start: wi
 the old trees gone, there is no real data left to catch them, so the tests are the
 only defence.
 
-1. **A converter keeps an old spelling** — nine converters today write `mtp/`, and
-   several spell NVFP4 as a `U8` `.packed`/`.scales` pair (gemma, Muse, kimi, mimo,
-   inkling). Carried into the new format, the first case ships planes the loader
-   never reads (inflating the mask) and the second makes the codec unreadable
-   without context. → Task 7 (rules D1–D5, `--verify` fails both) and the converter
-   edits in Task 8.
+1. **A converter keeps an old spelling** — eight converters still write `mtp/`
+   today, and several spell NVFP4 as a `U8` `.packed`/`.scales` pair (gemma, Muse,
+   kimi, mimo, inkling). Carried into the new format, the first case ships planes
+   the loader never reads (and now makes the conversion's own scan refuse the
+   finished tree) and the second makes the codec unreadable without context.
+   → Task 7 (rules D1–D5, `--verify` fails both) and **Task 8b** (the `mtp/`
+   writers) + the converter edits in Task 8.
 2. **A codec declaration survives in `model.index.json`** — five fields
    (`expert_nvfp4[]`, `expert_fp8[]`, `mlp_nvfp4`, `attn_nvfp4`, `head_nvfp4`) are
-   read by six files to pick a kernel per layer. Left there, they can disagree with
-   `artifact.fb` and the gate would pass a model that executes an undeclared codec.
-   → **Task 9b**.
+   still written by five converters and read by two inkling loaders **plus the
+   arrow verifier**, which derives an exponent map from them. Left there, they can
+   disagree with `artifact.fb` and the gate would pass a model that executes an
+   undeclared codec. → **Task 9b**, and **Task 9d** for the residue.
 3. **Nothing has ever been converted, so a wrong rule cannot be caught against
    reality** — the nine-row inventory in spec §1.3 was measured from data that is now
    deleted. → **Task 9a** treats the first real conversion as a contract test: two
@@ -966,6 +969,10 @@ TEST_CASE("a tree containing mtp/ is rejected: v1 ships no ballast") {
 > - `kDefault` is a **separate profile that emits nothing** (`finish` returns
 >   before `EmitArtifact`, `main.cpp:538-541`). That is a contract hole — see
 >   **Task 8a**.
+> - **Step 3's "every profile stops writing `mtp/`" was not done.** Eight
+>   converters still write `base / "mtp"`, which makes their trees unusable with
+>   `--codec-profile` at all (`ContentDirs()` has no `mtp`, so `ScanArtifactTree`
+>   refuses the finished tree). → **Task 8b**.
 > - `--codec-profile` also requires `LSX_ARTIFACT_ROOT` and a manifest row for
 >   the input; the output path is then `ArtifactProfileDir(identity, profile)` and
 >   `--output` is ignored. Both refusals happen before a byte is read.
@@ -1097,6 +1104,79 @@ TEST_CASE("the declared planes of the default profile are nvfp4's") {
   "nvfp4"`, `lsxforge --verify --input <dir>` green.
 
 - [ ] **Step 5: Commit** — `fix: a flagless conversion publishes an nvfp4 artifact instead of a tree nothing can load`
+
+### Task 8b: The eight converters that still write `mtp/` must stop
+
+**Why this blocks the artifact path for MoE families.** `VerifyArtifact` and
+`ScanArtifactTree` accept content only under `pinned|experts|router|shared|ple`
+(`lsxstorage/src/verify.cpp:49-54`), because v1 ships no ballast (spec §1.4). Eight
+converters still create `base / "mtp"` and write planes into it whenever the
+checkpoint carries MTP tensors, so such a conversion is refused **after** the whole
+tree is written, by the scan:
+
+```
+artifact scan: converted tree holds a file the load path cannot reach: mtp/…
+               (v1 ships no ballast: an unreachable plane is not written)
+```
+
+The plan put this in Task 8 step 3 ("every profile stops writing `mtp/`"); it was
+not done, and it is invisible to the `fast` suite because no test converts one of
+these families with a profile.
+
+| converter | `mtp_dir` write |
+|---|---|
+| `alice_moe_convert.cpp` | `:317`, `:554`, `:557` |
+| `gigachat_moe_37b_convert.cpp` | `:598`, `:785` |
+| `gigachat_moe_convert.cpp` | `:413`, `:579` |
+| `mimo_moe_convert.cpp` | `:412`, `:542` |
+| `ornith_moe_convert.cpp` | `:401`, `:715`, `:719` |
+| `qwen_moe_convert.cpp` | `:332`, `:605`, `:609` |
+| `qwen_moe_exp_convert.cpp` | `:495`, `:916`, `:920` |
+| `xing_moe_convert.cpp` | `:693`, `:857` |
+
+(`deepseek_moe_v41_convert.cpp:92,265,488` is the opposite case — it *excludes*
+`mtp` with a counted record — and is the pattern to copy.)
+
+**Files:**
+- Modify: the eight converters above — delete the `mtp_dir` construction and its
+  writes; keep the tensor-classification branch that routes `mtp.*` tensors away
+  from `pinned/`, and log the count that was dropped (a silent drop is data loss
+  nobody can audit)
+- Test: `libs`-side `tests/test_arrow_tree_integrity.cpp` or a per-family `convert`
+  target: a converted fixture of one MoE family must contain no `mtp/`
+
+**Interfaces:**
+- Consumes: Task 7 (`ScanArtifactTree`'s content-dir rule is the detector).
+- Produces: no new API. The rule is a property of every converter: **a plane the
+  load path cannot reach is not written, and what is skipped is counted.**
+
+- [ ] **Step 1: Write the failing test** — convert one family's fixture **that
+  carries MTP tensors** (the write is conditional on the bucket being non-empty,
+  which is why a fixture without them would pass vacuously) and assert:
+
+```cpp
+TEST_CASE("a converted moe fixture carries no mtp ballast") {
+    const auto a = convert_fixture("qwen_moe");
+    REQUIRE(a.ok);
+    CHECK_FALSE(fs::exists(a.dir / "mtp"));
+    CHECK(lsx::storage::ScanArtifactTree(a.dir).ok);
+    CHECK(VerifyArtifact(a.dir, /*deep=*/true).ok);
+}
+```
+
+- [ ] **Step 2: Run it and confirm failure** — the tree contains `mtp/` and the
+  scan reports the unreachable file.
+
+- [ ] **Step 3: Implement** in the eight files; the dropped-tensor count goes into
+  the same log line each converter already uses for its excluded categories
+  (`deepseek_moe_v41_convert.cpp:488` is the wording to match).
+
+- [ ] **Step 4: Run and confirm pass**, then each touched family's `convert`
+  target: `ctest -R "alice|gigachat|mimo|ornith|qwen_moe|xing" -L convert -j1`.
+  A `mtp/` still present means a write site was missed — grep for `mtp_dir` in
+  `libs/lsxcommon/src` and expect zero hits.
+
+- [ ] **Step 5: Commit** — `refactor: eight moe converters stop writing mtp ballast, and count what they drop`
 
 ### Task 9: The admission gate in `ModelBase::BeginLoad`
 
@@ -1733,7 +1813,8 @@ TEST_CASE("the perf row of a built profile is not older than its artifact") {
      weights (`dory-1.0-4b`, `granite-switch-4.1-8b`) — width of coverage, not
      depth.
   3. The MoE families (`inkling`, `gemma`, `qwen35moe`, `ornith`) after Task 9c,
-     because their expert planes need the declared codec.
+     because their expert planes need the declared codec — and the eight families
+     in Task 8b cannot be converted at all until their `mtp/` write is gone.
   4. The large rows last, and only when a gate needs them: a conversion is
      minutes-to-hours and the artifact is target-independent, so there is no
      ordering hazard (spec §1.9).
@@ -2596,6 +2677,14 @@ The four declared-debt counters agree with the matrix: `fsi` 11, `code` 11, `det
 11, `mcp` 9 rows without a golden — a *declared* absence, enforced in both
 directions by `test_model_suite_guard`.
 
+**One rule the fast suite cannot see.** Spec §1.4 forbids ballast, and
+`ContentDirs()` (`lsxstorage/src/verify.cpp:49-54`) is where that becomes
+enforceable: `{pinned, experts, router, shared, ple}`. `grep -rn 'mtp_dir'
+libs/lsxcommon/src` returns **8 files / 33 hits**, and each of them writes planes
+into `base / "mtp"`. So eight families' `--codec-profile` conversions are refused
+by the scan *after* the whole tree is written — a failure no `fast` test can reach,
+because no `fast` test converts a MoE family. That is finding F10 and Task 8b.
+
 ### D. Findings and their owners
 
 | # | finding | owner |
@@ -2609,6 +2698,7 @@ directions by `test_model_suite_guard`.
 | F7 | Three checkpoints on disk have no registry row (ERNIE + two Mellum) | Task 9f + open task `W` |
 | F8 | `phi-4` and `qwen3.5-9b` perf rows predate their artifacts; both lack a stage-9 report | **Task 9f** |
 | F9 | Branch 2/3 have no code at all: no `86/87` build, no `bf16`/`int8` profile, no Ampere presets, and the doc the plan amends was deleted from the tree | Tasks 11–22, 16 |
+| F10 | eight converters still write `mtp/`, which `ScanArtifactTree` refuses — so those families cannot be converted with a profile at all, after a full run | **Task 8b** |
 
 ## Self-review of this plan
 
@@ -2675,7 +2765,8 @@ command or a test run, and the commands are in § *Lifecycle audit*.
   verifier currently *contradicts* I1 on expert planes by assuming NVFP4). I2 →
   Tasks 1–3 (done). I3 → Task 9 (done). I4 → **storage half done** (Tasks 4–9),
   selection half open (**9e**), production half open (**15**, **9f**). I5 → Tasks
-  4–8, 10 (done except Task 10). The §4 numeric-contract amendment is still
+  4–8, 10 (done except Task 10), with §1.4's no-ballast rule still violated by
+  eight converters (**8b**). The §4 numeric-contract amendment is still
   unapplied and is now owned explicitly by **Task 16**. So the design is not
   "implemented"; it is "implemented for one codec profile on one target family,
   with named owners for the rest".
@@ -2704,7 +2795,7 @@ command or a test run, and the commands are in § *Lifecycle audit*.
   readers still do it: Task 9d). Added: #9 "the tool reports success and publishes
   nothing" (Task 8a) and #10 "the registry says `built` and the store disagrees"
   (Task 9f).
-- **Proportion.** The audit added ~10 KB of status, evidence and five tasks; it
-  removed no design. The plan is now 30 tasks — 25 original, of which 9 are done,
+- **Proportion.** The audit added ~12 KB of status, evidence and six tasks; it
+  removed no design. The plan is now 31 tasks — 25 original, of which 9 are done,
   2 done-with-residue, 1 partial and 13 not started — and it says which is which at
   the top, so a reader no longer has to diff the document against the tree.
