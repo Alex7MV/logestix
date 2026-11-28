@@ -2278,6 +2278,20 @@ target_link_libraries(test_gemma_moe_convert PRIVATE lsxcommon Catch2::Catch2Wit
 lsx_copy_arrow_dlls(test_gemma_moe_convert)
 
 
+# ── Gemma-4-12B-it (dense, unified wrapper) model/passport test ────────────
+# Host-only: the frozen passport, the geometry gate and the factory row. No
+# weights, no CUDA context (a converted tree is not needed to prove that the
+# engine refuses the wrong one).
+add_executable(test_gemma_dense_12b_model test_gemma_dense_12b_model.cpp)
+target_include_directories(test_gemma_dense_12b_model PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(test_gemma_dense_12b_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+lsx_copy_arrow_dlls(test_gemma_dense_12b_model)
+
+
 # ── Gemma-4-31B-it (dense) kernel tests ───────────────────────────────────
 add_executable(test_gemma_dense_kernels test_gemma_dense_kernels.cpp)
 target_link_libraries(test_gemma_dense_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -2325,7 +2339,7 @@ add_executable(test_gemma_dense_convert test_gemma_dense_convert.cpp)
 target_compile_definitions(test_gemma_dense_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_gemma_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_link_libraries(test_gemma_dense_convert PRIVATE lsxcommon lsxstorage Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_gemma_dense_convert)
 
@@ -4572,6 +4586,12 @@ lsx_add_test(NAME test_model_independence_guard
 # Guard: ctest category-label discipline (fast | inference | perf).
 # Host-only static scan of tests/CMakeLists.txt (see spec 2026-09-10).
 lsx_add_test(NAME test_ctest_labels_guard
+    # absl::StrJoin is header-inline, and its failure path ODR-uses
+    # absl::raw_log_internal::internal_log_function. GCC emits that call inline,
+    # clang (the AOCC Release tree) leaves an undefined reference, so this guard
+    # linked under g++ and failed to LINK under clang++ — no assertion ever ran
+    # there. Link the abseil pieces the header needs.
+    LINK absl::strings absl::log_internal_log_sink_set
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
            "LSX_MANIFEST_GENERATED_DIR=\"${LSX_MANIFEST_GENERATED_DIR}\"")
 
@@ -5406,6 +5426,24 @@ target_link_libraries(test_gemma_dense_det_selfcheck PRIVATE lsxcommon Catch2::C
 target_compile_definitions(test_gemma_dense_det_selfcheck PRIVATE
     "LSX_GATE_MODEL=\"gemma-4-31b-it\"" "LSX_GATE_KIND=\"det\""
     "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+add_executable(test_gemma_dense_12b_fsi_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_dense_12b_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_12b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_12b_fsi_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-12b-it\"" "LSX_GATE_KIND=\"fsi\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+add_executable(test_gemma_dense_12b_code_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_dense_12b_code_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_12b_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_12b_code_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-12b-it\"" "LSX_GATE_KIND=\"code\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+add_executable(test_gemma_dense_12b_det_selfcheck test_parity_gate.cpp)
+target_include_directories(test_gemma_dense_12b_det_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_12b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_12b_det_selfcheck PRIVATE
+    "LSX_GATE_MODEL=\"gemma-4-12b-it\"" "LSX_GATE_KIND=\"det\""
+    "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
 add_executable(test_gigachat_moe_fsi_selfcheck test_parity_gate.cpp)
 target_include_directories(test_gigachat_moe_fsi_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gigachat_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -5986,6 +6024,10 @@ add_executable(test_gemma_dense_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_gemma_dense_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_compile_definitions(test_gemma_dense_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gemma-4-31b-it\"")
+add_executable(test_gemma_dense_12b_selfcheck test_selfcheck_driver.cpp)
+target_include_directories(test_gemma_dense_12b_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_gemma_dense_12b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_gemma_dense_12b_selfcheck PRIVATE "LSX_SELFCHECK_MODEL=\"gemma-4-12b-it\"")
 add_executable(test_gemma_moe_selfcheck test_selfcheck_driver.cpp)
 target_include_directories(test_gemma_moe_selfcheck PRIVATE "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(test_gemma_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
