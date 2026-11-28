@@ -45,7 +45,7 @@ using namespace inklingtest;
 
 namespace {
 
-// There is no models/*.json row yet (the decode engine is the last stage), so
+// There is no models/<org>/<model>.json row yet (the decode engine is the last stage), so
 // the generated registration list does not carry this class. The test registers
 // it itself; the factory row arrives with the manifest in the closing commit.
 void RegisterInklingOnce()

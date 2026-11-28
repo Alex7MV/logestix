@@ -24,7 +24,7 @@ post-mortem, and its own `## Archive` (line 1502) + `## Maintenance rule`
 
 ## Non-goals
 
-- Not touching `models/*.json`, `docs/MODELS.md`, the generators, or any test —
+- Not touching `models/<org>/<model>.json`, `docs/MODELS.md`, the generators, or any test —
   this is a documentation change inside `docs/`. The 20 missing stage-9 reports
   stay a listed open item, not part of this change.
 - Not creating a second source of truth: the archive index stays in
@@ -43,7 +43,7 @@ post-mortem, and its own `## Archive` (line 1502) + `## Maintenance rule`
 |---|---|---|
 | A | Clean the single file down to ~600–700 lines: open items only, narratives archived, `## Archive` table compressed, section order repaired | Cheapest, zero risk — but the file stays one monolith and the 2/3-of-a-file ingestion narrative grows back with the next ingests |
 | **B** | **Index + live files: `OPEN_TASKS.md` becomes a ≤150-line index, content moves to `docs/open-tasks/live/` by area and by model** | **Chosen.** Reading cost per question drops by ~20x; each move is verbatim so the trail survives; no schema or code touched |
-| C | B, plus open items move into `models/*.json` and narratives become stage-9 reports | Right eventually, but it changes the manifest schema the generator and guards validate. Out of scope for a documentation repair |
+| C | B, plus open items move into `models/<org>/<model>.json` and narratives become stage-9 reports | Right eventually, but it changes the manifest schema the generator and guards validate. Out of scope for a documentation repair |
 
 ## The file map
 

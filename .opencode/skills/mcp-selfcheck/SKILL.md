@@ -6,7 +6,7 @@
 > SOURCE is the shared `tests/test_parity_gate.cpp` compiled with
 > `LSX_GATE_MODEL` / `LSX_GATE_KIND=mcp`. Do **not** create a per-family gate
 > file. The model row (artifact dir, SKIP text) comes from
-> `models/<model_type>.json`, and the build half is one call:
+> `models/<org>/<model>.json`, and the build half is one call:
 > `lsx_add_parity_gate(NAME … MODEL … KIND mcp)` (`cmake/LsxTestHelpers.cmake`).
 >
 > **Status: pilot.** Wired on `phi-4` and `qwen3.5-9b` only. `mcp` is in
@@ -72,7 +72,7 @@ illustrative request from being adopted as its error response.
    Framing facts (chat-template kwargs, vendor system turns, DeepSeek release
    encoders) come from `tools/fsi_capture.py`'s `OVERRIDES` — one table for every
    gate. If a model needs a quirk, add it THERE, not in a second copy.
-2. **Manifest**: add the stage + the override to `models/<model_type>.json`:
+2. **Manifest**: add the stage + the override to `models/<org>/<model>.json`:
    ```json
    "stages": { "mcp": ["test_<family>_mcp_selfcheck"] },
    "target_overrides": {

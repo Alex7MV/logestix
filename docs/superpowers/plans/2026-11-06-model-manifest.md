@@ -5,7 +5,7 @@
 > **This repository forbids subagents** (`AGENTS.md` § Autonomous Mode). Use
 > `executing-plans` (native execution) only.
 
-**Goal:** Make `models/<model_type>.json` the single source of truth for every
+**Goal:** Make `models/<org>/<model>.json` the single source of truth for every
 registered model, and derive the guard registries, ctest registration, parity
 gates, model registry and documentation from it so they cannot drift.
 
@@ -41,7 +41,7 @@ Python 3 (generator only, build-time), git.
 - Generated artifacts are **never committed**, except `docs/MODELS.md` and the
   regenerated rows of `docs/SELFCHECK_MATRIX.md`, which are verified by
   `--check`.
-- `models/<model_type>.json` filenames sort stably; `model_type` equals the
+- `models/<org>/<model>.json` filenames sort stably; `model_type` equals the
   model class's `kType` and the `LsxModelFactory` key.
 - Windows: the preset must keep working. (The old `qwen|gemma` test restriction
   was REMOVED at the operator's request during execution — see the amendment at
@@ -321,7 +321,7 @@ git commit -m "build: generate the model manifest table at configure time"
 ### Task 3: Author the 35 manifests and prove the transcription (shadow mode)
 
 **Files:**
-- Create: `models/<model_type>.json` for all 35 registered models (three commits)
+- Create: `models/<org>/<model>.json` for all 35 registered models (three commits)
 - Create: `docs/MODELS.md` (generated, committed)
 - Modify: `tools/gen_model_manifest.py` (`--docs` sections + the 15-line budget)
 
@@ -622,7 +622,7 @@ git commit -m "refactor: one parity-gate driver replaces 105 copied gate files"
 - Create: `tests/test_selfcheck_driver.cpp`
 - Delete: the `tests/test_*_selfcheck.cpp` files whose cases are all covered by a
   hook (24 candidates; keep any file with a family-specific case)
-- Modify: `models/*.json` (`tool_roundtrip`, `auto_path_determinism`)
+- Modify: `models/<org>/<model>.json` (`tool_roundtrip`, `auto_path_determinism`)
 - Modify: `tools/gen_model_manifest.py` (selfcheck source switch)
 
 **Interfaces:**

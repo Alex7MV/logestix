@@ -1,0 +1,121 @@
+{
+  "model_type": "kimi-k3",
+  "display_name": "kimi-k3",
+  "family": "kimi",
+  "variant": null,
+  "model_class": "KimiK3Model",
+  "model_header": "kimi_moe_k3_model.h",
+  "passport": "libs/lsxcommon/src/kimi_moe_k3_constants.h",
+  "namespace": "lsxcommon::kimi_k3::frozen",
+  "format_tag": "",
+  "forge_flag": "--kimi_k3",
+  "tokenizer_kind": 2,
+  "vault": {
+    "org": "moonshotai",
+    "dir": "Kimi-K3",
+    "env": "LSX_TEST_KIMI_K3_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "not-built"
+    }
+  },
+  "lifecycle_tu": [
+    "kimi_moe_k3_model.cpp",
+    "kimi_moe_k3_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_kimi_k3_convert"
+    ],
+    "load": [
+      "test_kimi_k3_loader",
+      "test_kimi_k3_tokenizer_parity"
+    ],
+    "model": [
+      "test_kimi_k3_model",
+      "test_kimi_k3_tool_framing",
+      "test_kimi_k3_constants"
+    ],
+    "kernels": [
+      "test_kimi_k3_kernels"
+    ],
+    "selfcheck": [
+      "test_kimi_k3_selfcheck"
+    ],
+    "fsi": [
+      "test_kimi_k3_fsi_selfcheck"
+    ],
+    "code": [
+      "test_kimi_k3_code_selfcheck"
+    ],
+    "det": [
+      "test_kimi_k3_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_kimi_k3"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_kimi_k3",
+    "timeout": 21600
+  },
+  "target_overrides": {
+    "test_kimi_k3_loader": {
+      "timeout": 300
+    },
+    "test_kimi_k3_tokenizer_parity": {
+      "label": "fast",
+      "env": []
+    },
+    "test_kimi_k3_model": {
+      "timeout": 600,
+      "skip": true
+    },
+    "test_kimi_k3_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_kimi_k3_constants": {
+      "label": "fast",
+      "env": [],
+      "sources": [
+        "test_kimi_pro_constants.cpp"
+      ]
+    },
+    "test_kimi_k3_kernels": {
+      "timeout": 300
+    },
+    "test_kimi_k3_selfcheck": {
+      "timeout": 5400,
+      "form": "selfcheck"
+    },
+    "test_kimi_k3_fsi_selfcheck": {
+      "timeout": 7200,
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_kimi_k3_code_selfcheck": {
+      "timeout": 7200,
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_kimi_k3_det_selfcheck": {
+      "timeout": 7200,
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_perf_baseline_kimi_k3": {
+      "env": []
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-03-Kimi-K3.md",
+  "notes": "Host-store bound (~0.3 t/s: 27 GiB routed + 9.5 GiB streamed per token): the two 2048-token modes plus the probe need a long budget (21600 s).",
+  "selfcheck_max_gen": 64,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
+}

@@ -21,7 +21,7 @@
 - Routed experts go through the neutral `ExpertStore` (`GcExpertStore` already exists) — no family-private owning container.
 - One GPU workload at a time; `test_ctest_labels_guard` owns the `RESOURCE_LOCK "gpu"` rule; skip-capable targets set `SKIP_RETURN_CODE 4`.
 - Frozen geometry: compile-time constants + `static_assert`, and `Load` must fail on a passport mismatch. Runtime `config.json` reads are not allowed in the model path.
-- Every model target registration comes from `models/<model_type>.json`; never hand-edit `tests/CMakeLists.txt` or a guard registry for a model target.
+- Every model target registration comes from `models/<org>/<model>.json`; never hand-edit `tests/CMakeLists.txt` or a guard registry for a model target.
 - NVIDIA docs are read from `/home/alexmv2025/projects/cuda/docs` (the MCP dump) before touching NVFP4/CUDA kernel semantics.
 - Working directory for scratch: `/mnt/fast_storage/tmp`. Vault: `/mnt/fast_storage/huggingface`.
 

@@ -117,8 +117,8 @@ MCP case is captured from a running source the honest `raw` and the honest
   model-neutral: the test owns the model and passes a `ModelRequest`; the
   harness never loads weights.
 - `tests/test_parity_gate.cpp` — the shared driver gains a fourth `LSX_GATE_KIND`
-  (`mcp`); the model row still comes from `models/<model_type>.json`.
-- `models/*.json` — stage `mcp` after `det`, target
+  (`mcp`); the model row still comes from `models/<org>/<model>.json`.
+- `models/<org>/<model>.json` — stage `mcp` after `det`, target
   `test_<family>_mcp_selfcheck`, `form: parity`, `kind: mcp`. The generator
   (`tools/gen_model_manifest.py`) owns the ctest registration; the executable
   is built by `lsx_add_parity_gate` (`cmake/LsxTestHelpers.cmake`).

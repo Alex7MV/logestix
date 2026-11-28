@@ -9,7 +9,7 @@
 > `LSX_GATE_MODEL` / `LSX_GATE_KIND`. Do **not** create a per-family gate file:
 > 105 of them were deleted because three shipped a SKIP naming a neighbour model,
 > and the model row (vault dir, SKIP text, declared debt) now comes from
-> `models/<model_type>.json`. See skill `ingesting-a-model` § "The manifest is the
+> `models/<org>/<model>.json`. See skill `ingesting-a-model` § "The manifest is the
 > only registry you write by hand".
 
 ## Overview

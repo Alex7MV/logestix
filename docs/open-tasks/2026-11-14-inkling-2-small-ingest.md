@@ -16,7 +16,7 @@ Source checkpoint: `/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Small
 ## 0.1 Classification
 
 **New family.** `model_type: inkling2`, architecture `Inkling2ForConditionalGeneration`.
-No existing `models/*.json` row shares the geometry (`ling` is Bailing/KDA+MLA,
+No existing `models/<org>/<model>.json` row shares the geometry (`ling` is Bailing/KDA+MLA,
 `kimi-k3` is KDA+MLA, neither is this). The nearest *structural* neighbour is
 Kimi-K3 (AttnRes depth mixer, tiktoken BPE, sized MoE, host expert store) and it
 is used as the code skeleton only — no geometry, passport or fixture is borrowed

@@ -1,0 +1,124 @@
+{
+  "model_type": "inkling-2-mini",
+  "display_name": "inkling-2-mini",
+  "family": "inkling",
+  "variant": "mini",
+  "model_class": "InklingMoeLoopModel",
+  "model_header": "inkling_moe_loop_model.h",
+  "passport": "libs/lsxcommon/src/inkling_moe_loop_constants.h",
+  "namespace": "lsxcommon::inkling::loop::frozen",
+  "format_tag": "logestix-inkling-2-mini",
+  "forge_flag": "--inkling_loop",
+  "tokenizer_kind": 2,
+  "vault": {
+    "org": "thinkingmachines",
+    "dir": "Inkling-2-Mini",
+    "env": "LSX_TEST_INKLING_2_MINI_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "not-built"
+    }
+  },
+  "lifecycle_tu": [
+    "inkling_moe_loop_model.cpp",
+    "inkling_moe_loop_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_inkling_moe_loop_convert"
+    ],
+    "load": [
+      "test_inkling_moe_loop_loader"
+    ],
+    "model": [
+      "test_inkling_moe_loop_constants",
+      "test_inkling_moe_loop_model",
+      "test_inkling_moe_loop_pipeline",
+      "test_inkling_moe_loop_tool_framing"
+    ],
+    "kernels": [
+      "test_inkling_moe_loop_kernels"
+    ],
+    "selfcheck": [
+      "test_inkling_moe_loop_selfcheck"
+    ],
+    "fsi": [
+      "test_inkling_moe_loop_fsi_selfcheck"
+    ],
+    "code": [
+      "test_inkling_moe_loop_code_selfcheck"
+    ],
+    "det": [
+      "test_inkling_moe_loop_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_inkling_2_mini"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_inkling_2_mini",
+    "vault_subdir": "Inkling-2-Mini",
+    "timeout": 7200
+  },
+  "target_overrides": {
+    "test_inkling_moe_loop_convert": {
+      "timeout": 300,
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_inkling_moe_loop_loader": {
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_inkling_moe_loop_model": {
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_inkling_moe_loop_pipeline": {
+      "env": [
+        "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+      ]
+    },
+    "test_inkling_moe_loop_constants": {
+      "label": "fast",
+      "env": []
+    },
+    "test_inkling_moe_loop_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_inkling_moe_loop_selfcheck": {
+      "form": "selfcheck",
+      "timeout": 3600
+    },
+    "test_inkling_moe_loop_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi",
+      "timeout": 3600
+    },
+    "test_inkling_moe_loop_code_selfcheck": {
+      "form": "parity",
+      "kind": "code",
+      "timeout": 3600
+    },
+    "test_inkling_moe_loop_det_selfcheck": {
+      "form": "parity",
+      "kind": "det",
+      "timeout": 3600
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "notes": "Looped inkling2: 24 layers, [6,18) x3 passes, per-pass KV/conv slots. NVFP4 experts 0-19, MXFP8 20-23, BF16 dense; no RoPE.",
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 32,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true,
+  "report": "docs/model-reports/2026-11-21-Inkling-2-Mini.md"
+}

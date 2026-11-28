@@ -1,0 +1,159 @@
+{
+  "model_type": "phi-4",
+  "display_name": "phi-4",
+  "family": "phi",
+  "variant": null,
+  "model_class": "Phi4Model",
+  "model_header": "phi_dense_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/phi_dense_constants.h",
+  "namespace": "lsxcommon::phi::frozen",
+  "format_tag": "",
+  "forge_flag": "--phi",
+  "tokenizer_kind": 8,
+  "vault": {
+    "org": "microsoft",
+    "dir": "phi-4",
+    "env": "LSX_TEST_PHI_4_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "built",
+      "artifact": {
+        "sha256": "52762163acb732dc72ddce84a75851894a61a865f858c5f938c08b165dc1b3ba",
+        "bytes": 10824,
+        "tree_bytes": 17399424244,
+        "planes": 83,
+        "store": "microsoft/phi-4/nvfp4"
+      },
+      "codecs": [
+        "bf16",
+        "nvfp4"
+      ],
+      "codec_mask": 34,
+      "target": "nvidia:sm_120",
+      "gates": {
+        "selfcheck": {
+          "result": "pass",
+          "cycles": 3,
+          "top1_token": 12366,
+          "text": "Paris",
+          "logits_hash": "cf51b9bbd5c913dd",
+          "date": "2026-11-28"
+        },
+        "fsi": {
+          "result": "pass",
+          "cases": "3/3",
+          "date": "2026-11-28"
+        },
+        "code": {
+          "result": "pass",
+          "cases": "3/3",
+          "date": "2026-11-28"
+        },
+        "det": {
+          "result": "pass",
+          "cases": "3/3",
+          "deterministic": true,
+          "date": "2026-11-28"
+        },
+        "mcp": {
+          "result": "pass",
+          "cases": "3/3",
+          "exact": true,
+          "date": "2026-11-28"
+        }
+      }
+    }
+  },
+  "lifecycle_tu": [
+    "phi_dense_model.cpp",
+    "phi_dense_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_phi_dense_convert"
+    ],
+    "load": [
+      "test_phi_dense_loader"
+    ],
+    "model": [
+      "test_phi_dense_model",
+      "test_phi_tool_framing"
+    ],
+    "kernels": [
+      "test_phi_dense_kernels",
+      "test_dense_kernels"
+    ],
+    "selfcheck": [
+      "test_phi_dense_selfcheck"
+    ],
+    "fsi": [
+      "test_phi_dense_fsi_selfcheck"
+    ],
+    "code": [
+      "test_phi_dense_code_selfcheck"
+    ],
+    "det": [
+      "test_phi_dense_det_selfcheck"
+    ],
+    "mcp": [
+      "test_phi_dense_mcp_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_phi_4"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_phi_4",
+    "vault_subdir": "phi-4",
+    "timeout": 3000
+  },
+  "target_overrides": {
+    "test_phi_dense_convert": {
+      "env": []
+    },
+    "test_phi_dense_loader": {
+      "skip": false,
+      "env": []
+    },
+    "test_phi_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_phi_dense_kernels": {
+      "skip": false
+    },
+    "test_dense_kernels": {
+      "skip": false,
+      "form": "helper"
+    },
+    "test_phi_dense_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_phi_dense_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_phi_dense_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_phi_dense_selfcheck": {
+      "form": "selfcheck"
+    },
+    "test_phi_dense_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
+    }
+  },
+  "tool_roundtrip": false,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "",
+  "notes": "",
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
+}

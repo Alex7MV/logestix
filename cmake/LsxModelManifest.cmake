@@ -1,6 +1,6 @@
 # Model manifest wiring.
 #
-# `models/<model_type>.json` is the single source of truth for one ingested
+# `models/<org>/<model>.json` is the single source of truth for one ingested
 # model. This module runs tools/gen_model_manifest.py at configure time and
 # publishes three generated artifacts under ${CMAKE_BINARY_DIR}/generated/:
 #
@@ -57,11 +57,17 @@ function(lsx_configure_model_manifest)
     endif()
 
     set(_models "")
+    # models/<org>/<model>.json — one file per model, nested by the store's own
+    # org segment. The stem is no longer the model_type (the file is named after
+    # the store directory, which is a download spelling), so the label list is
+    # used for messages only; identity comes from the manifest's own field.
     file(GLOB _manifest_files CONFIGURE_DEPENDS
-        "${PROJECT_SOURCE_DIR}/models/*.json")
+        "${PROJECT_SOURCE_DIR}/models/*/*.json")
     foreach(_f IN LISTS _manifest_files)
         get_filename_component(_stem "${_f}" NAME_WE)
-        list(APPEND _models "${_stem}")
+        get_filename_component(_org "${_f}" DIRECTORY)
+        get_filename_component(_org "${_org}" NAME)
+        list(APPEND _models "${_org}/${_stem}")
     endforeach()
     list(SORT _models)
 

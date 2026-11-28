@@ -1,0 +1,124 @@
+{
+  "model_type": "hy-memory-30b-a3b",
+  "display_name": "hy-memory-30b-a3b",
+  "family": "hy",
+  "variant": null,
+  "model_class": "HyMemoryModel",
+  "model_header": "hy_moe_model.h",
+  "passport": "libs/lsxcommon/src/hy_moe_constants.h",
+  "namespace": "lsxcommon::hy::frozen",
+  "format_tag": "logestix-hy-nvfp4",
+  "forge_flag": "--hy",
+  "tokenizer_kind": 0,
+  "vault": {
+    "org": "tencent",
+    "dir": "Hy-Memory-30B-A3B",
+    "env": "LSX_TEST_HY_MEMORY_30B_A3B_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "not-built"
+    }
+  },
+  "lifecycle_tu": [
+    "hy_moe_model.cpp",
+    "hy_moe_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_hy_moe_convert"
+    ],
+    "load": [
+      "test_hy_moe_loader",
+      "test_hy_moe_chat_framing",
+      "test_hy_moe_tokenizer_parity"
+    ],
+    "model": [
+      "test_hy_moe_model",
+      "test_hy_moe_tool_framing"
+    ],
+    "kernels": [
+      "test_hy_moe_kernels"
+    ],
+    "selfcheck": [
+      "test_hy_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_hy_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_hy_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_hy_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_hy_memory_30b_a3b"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_hy_memory_30b_a3b",
+    "vault_subdir": "Hy-Memory-30B-A3B",
+    "timeout": 3000,
+    "resource_lock": "gpu"
+  },
+  "target_overrides": {
+    "test_hy_moe_convert": {
+      "resource_lock": "gpu"
+    },
+    "test_hy_moe_loader": {
+      "label": "fast",
+      "resource_lock": "gpu"
+    },
+    "test_hy_moe_chat_framing": {
+      "env": []
+    },
+    "test_hy_moe_tokenizer_parity": {
+      "env": []
+    },
+    "test_hy_moe_model": {
+      "timeout": 300,
+      "skip": true,
+      "resource_lock": "gpu"
+    },
+    "test_hy_moe_tool_framing": {
+      "label": "fast",
+      "env": []
+    },
+    "test_hy_moe_kernels": {
+      "resource_lock": "gpu"
+    },
+    "test_hy_moe_selfcheck": {
+      "timeout": 1800,
+      "resource_lock": "gpu",
+      "form": "selfcheck"
+    },
+    "test_hy_moe_fsi_selfcheck": {
+      "timeout": 1800,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_hy_moe_code_selfcheck": {
+      "timeout": 1800,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_hy_moe_det_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": true,
+  "golden_debt": {},
+  "report": "",
+  "notes": "",
+  "selfcheck_max_gen": 16,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
+}

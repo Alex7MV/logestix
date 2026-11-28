@@ -2,7 +2,7 @@
 
 #include "lsxcommon/model_factory.h"
 
-// The registration list is generated from models/*.json at configure time
+// The registration list is generated from models/<org>/<model>.json at configure time
 // (tools/gen_model_manifest.py --registry). A model that exists as a manifest
 // row and a class is therefore always reachable through LsxModelFactory; the
 // list can no longer fall behind, which is what "that model does not exist"

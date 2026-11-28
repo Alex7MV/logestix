@@ -1,7 +1,7 @@
 // Model identity from the manifest (host-only).
 //
 // The artifact path is <root>/<family>/<model_type>/<profile>, and both identity
-// fields must come from models/<model_type>.json — not from the checkpoint's
+// fields must come from models/<org>/<model>.json — not from the checkpoint's
 // directory name, which is a download spelling. "Qwen3.5-9B" is the vault dir;
 // `qwen3.5-9b` is the model_type that appears in the path.
 #include <catch2/catch_test_macros.hpp>

@@ -71,7 +71,7 @@ that decides it, and it is where a model is won or lost: every number you skip
 here comes back as a silently wrong token.
 
 **0.1 Classify: new family, sibling variant, or unsupported?**
-- Existing `model_type` in `models/*.json` and the same architecture → **sibling
+- Existing `model_type` in `models/<org>/<model>.json` and the same architecture → **sibling
   variant**: add a manifest row (same `family`, own `variant`, shared `namespace`
   is forbidden so give it its own passport or reuse the parent's class) and reuse
   the parent's loader/kernels. Do NOT write a new constants header when the
@@ -553,7 +553,7 @@ token sets below are what it currently accepts.
 
 ## The manifest is the only registry you write by hand
 
-`models/<model_type>.json` is the single source of truth for one ingested model.
+`models/<org>/<model>.json` is the single source of truth for one ingested model.
 Write it (stage 1), then everything the guards and ctest need is GENERATED at
 configure time into `${CMAKE_BINARY_DIR}/generated/`:
 
@@ -665,7 +665,7 @@ are shared drivers parameterised by the manifest:
       checkpoint template, plus a host `fast` test on a synthetic tokenizer.
       The verdict (target name, or "generic") is written into the tool-verdict
       table of `test_model_suite_guard.cpp` in the same commit.
-- [ ] `models/<model_type>.json` written and `python3
+- [ ] `models/<org>/<model>.json` written and `python3
       tools/gen_model_manifest.py --strict` clean; `--docs docs/MODELS.md`
       regenerated in the same commit.
 - [ ] SelfCheck ≥3 bit-exact cycles (the shared driver does it; a family case
@@ -712,7 +712,7 @@ ctest --preset linux-debug -j 24
 
 # 2. YOUR row's own lifecycle targets, by the manifest's model_type. This is the
 #    model's convert → load → model → kernels → selfcheck → fsi/code/det → perf
-#    set, derived from models/<model_type>.json — there is nothing to look up.
+#    set, derived from models/<org>/<model>.json — there is nothing to look up.
 ctest --test-dir build/linux-debug -R "<model_type>" -j 1
 
 # 3. Optionally the immediate siblings that share the TUs you edited. Name them

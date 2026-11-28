@@ -1,0 +1,134 @@
+{
+  "model_type": "beam",
+  "display_name": "beam",
+  "family": "beam",
+  "variant": null,
+  "model_class": "BeamMoeModel",
+  "model_header": "beam_moe_model.h",
+  "passport": "libs/lsxcommon/src/beam_moe_constants.h",
+  "namespace": "lsxcommon::beam::frozen",
+  "format_tag": "logestix-beam-nvfp4",
+  "forge_flag": "--beam",
+  "tokenizer_kind": 6,
+  "vault": {
+    "org": "reflection",
+    "dir": "Beam-1.0-501B-A23B",
+    "env": "LSX_TEST_BEAM_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "not-built"
+    }
+  },
+  "lifecycle_tu": [
+    "beam_moe_model.cpp",
+    "beam_moe_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_beam_moe_convert"
+    ],
+    "load": [
+      "test_beam_moe_loader",
+      "test_beam_tokenizer_split",
+      "test_beam_tokenizer_parity"
+    ],
+    "model": [
+      "test_beam_moe_model",
+      "test_beam_tool_framing"
+    ],
+    "kernels": [
+      "test_beam_moe_kernels"
+    ],
+    "selfcheck": [
+      "test_beam_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_beam_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_beam_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_beam_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_beam"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_beam",
+    "vault_subdir": "Beam-1.0-501B-A23B",
+    "timeout": 3000,
+    "resource_lock": "gpu"
+  },
+  "target_overrides": {
+    "test_beam_moe_convert": {
+      "resource_lock": "gpu"
+    },
+    "test_beam_moe_loader": {
+      "label": "fast",
+      "resource_lock": "gpu"
+    },
+    "test_beam_tokenizer_split": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_beam_tokenizer_parity": {
+      "env": []
+    },
+    "test_beam_moe_model": {
+      "timeout": 300,
+      "skip": true,
+      "resource_lock": "gpu"
+    },
+    "test_beam_tool_framing": {
+      "label": "fast",
+      "skip": true,
+      "env": []
+    },
+    "test_beam_moe_kernels": {
+      "resource_lock": "gpu"
+    },
+    "test_beam_moe_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu",
+      "form": "selfcheck"
+    },
+    "test_beam_moe_fsi_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_beam_moe_code_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_beam_moe_det_selfcheck": {
+      "timeout": 3600,
+      "resource_lock": "gpu",
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {
+    "code": "declared debt (see docs/OPEN_TASKS.md)",
+    "det": "declared debt (see docs/OPEN_TASKS.md)",
+    "fsi": "declared debt (see docs/OPEN_TASKS.md)"
+  },
+  "report": "docs/model-reports/2026-10-31-Beam-1.0-501B-A23B.md",
+  "notes": "",
+  "aliases": [
+    "beam-1.0-501b-a23b"
+  ],
+  "selfcheck_max_gen": 256,
+  "selfcheck_bit_exact": true,
+  "selfcheck_frame_prompt": true
+}

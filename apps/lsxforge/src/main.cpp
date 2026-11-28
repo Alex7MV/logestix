@@ -480,7 +480,7 @@ int main(int argc, char* argv[]) {
             if (!identity.has_value()) {
                 lsxcommon::log::error(absl::StrCat(
                     "cannot place artifact: '", input_path,
-                    "' is not a model in the manifest (models/*.json); every "
+                    "' is not a model in the manifest (models/<org>/<model>.json); every "
                     "convertible model needs a manifest row"));
                 lsxcommon::Core::Shutdown();
                 return 2;

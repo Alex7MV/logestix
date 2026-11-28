@@ -139,7 +139,7 @@ mask 35 (f32|bf16|nvfp4). Evidence and the gate verdicts:
 
 ### Model manifest migration (2026-11-06) — what it did not cover
 
-The registry moved from six hand-maintained projections to `models/*.json`.
+The registry moved from six hand-maintained projections to `models/<org>/<model>.json`.
 Closed: the guard registries, the ctest registration, the factory list, the
 parity-gate and selfcheck test files, the `AGENTS.md` model narrative
 (1109 -> 164 lines) and the `README.md` inventory.
@@ -171,7 +171,7 @@ missing report cannot read as "not applicable". The 20 without one:
 The gap is not cosmetic: for these models the per-model *reasoning* (why a family
 pins `FastMathMode::kOff`, why its residual plane exists, what the measured
 bottleneck is) lives only in `AGENTS.md`'s git history and in `docs/open-tasks/`
-sessions, not in a document a reader can be pointed at. `models/*.json:report`
+sessions, not in a document a reader can be pointed at. `models/<org>/<model>.json:report`
 now carries a validation rule — a declared path must exist — so writing one is a
 one-line manifest change.
 
@@ -187,7 +187,7 @@ target set.
   registration against what CMake produced *before* the manifests existed: 421 of
   the 511 targets are model targets (the other 90 are guard/kernel/infrastructure
   tests). Today it prints `compared 421 targets, 0 difference(s)`, which is the
-  only record that the transcription into `models/*.json` was exact rather than
+  only record that the transcription into `models/<org>/<model>.json` was exact rather than
   approximately exact.
 - **CI never runs it, and should not.** The snapshot describes the tree on
   2026-11-06. The first model added after that date makes the check report

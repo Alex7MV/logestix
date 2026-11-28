@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate every derived representation of the logestix model registry.
 
-`models/<model_type>.json` is the single source of truth for one ingested model.
+`models/<org>/<model>.json` is the single source of truth for one ingested model.
 Everything that used to be hand-maintained in five places is emitted from it:
 
     --header   -> model_manifest.h        (C++ table for guards and gate drivers)
@@ -89,6 +89,18 @@ OPTIONAL_STAGES = ("perf", "mcp")
 # name does not end in one of these spells a gate the driver has no branch for.
 PARITY_KINDS = ("fsi", "code", "det", "mcp")
 
+# Codec names a profile may declare. They are `PlaneCodec`'s spellings
+# (libs/lsxcommon/hardware_target.h) in lower case: the mask an artifact encodes
+# and the mask a manifest promises must be the same vocabulary, or the load gate
+# compares two languages.
+CODEC_NAMES = ("f32", "f16", "bf16", "nvfp4", "fp8", "int8", "int4")
+
+# Gates a profile records measurements for. Same five stages the lifecycle
+# defines; `selfcheck` is Paris, the rest are the parity gates.
+PROFILE_GATES = ("selfcheck", "fsi", "code", "det", "mcp")
+PROFILE_STATUS = ("built", "not-built")
+GATE_RESULTS = ("pass", "fail", "debt")
+
 
 def kind_of(target_name):
     """`test_x_det_selfcheck` -> `det`; anything else -> the empty string."""
@@ -110,6 +122,9 @@ MODEL_FIELDS = ("model_type", "display_name", "family", "variant", "model_class"
                 "forge_flag", "tokenizer_kind", "vault", "lifecycle_tu",
                 "stages", "golden_debt", "target_overrides", "perf", "aliases",
                 "resource_lock", "report", "notes",
+                # Registry layout: one file per model at models/<org>/<model>.json,
+                # whose PROFILES object says what each codec profile of it holds.
+                "preferred_profile", "profiles",
                 "tool_roundtrip", "auto_path_determinism", "cooperative_cancel",
                 "selfcheck_frame_prompt", "selfcheck_max_gen",
                 "selfcheck_bit_exact")
@@ -122,7 +137,13 @@ MODEL_FIELDS = ("model_type", "display_name", "family", "variant", "model_class"
 # test_manifest_sync is what catches a field added to the C++ RowKey and not here,
 # or the reverse.
 ROW_FIELDS = ("model_type", "family", "variant", "model_class", "model_header",
-              "passport", "namespace", "format_tag", "vault_dir", "vault_env",
+              "passport", "namespace", "format_tag",
+              # Where the model LIVES, in the store's own spelling. The store is
+              # org-nested (`<root>/<org>/<model>/<profile>`), so a row that
+              # carried only `vault_dir` named a directory that does not exist:
+              # `<root>/phi-4` vs the real `<root>/microsoft/phi-4`. `profile` is
+              # the artifact directory the suite's gates expect.
+              "vault_org", "vault_dir", "vault_profile", "vault_env",
               "tokenizer_kind", "tool_roundtrip", "auto_path_determinism",
               "cooperative_cancel", "selfcheck_frame_prompt",
               "selfcheck_max_gen", "selfcheck_bit_exact")
@@ -167,8 +188,19 @@ class Manifest:
     format_tag: str
     forge_flag: str
     tokenizer_kind: int
+    vault_org: str
     vault_dir: str
+    # The profile a gate should look for by default: `preferred_profile` from the
+    # manifest, validated to be a key of `profiles`.
+    vault_profile: str
     vault_env: str
+    # profile name -> {"status", "artifact", "codecs", "codec_mask", "target",
+    # "gates"}; the registry's answer to "what does this model hold, and how was
+    # each variant measured".
+    profiles: dict
+    # Directory the manifest was read from, relative to models/ ("microsoft").
+    # Empty for a top-level file (the self-test's temporary rows).
+    rel_dir: str
     lifecycle_tu: list
     stages: dict
     golden_debt: dict
@@ -268,7 +300,9 @@ def row_values(m) -> dict:
         "passport": m.passport,
         "namespace": m.ns,
         "format_tag": m.format_tag,
+        "vault_org": m.vault_org,
         "vault_dir": m.vault_dir,
+        "vault_profile": m.vault_profile,
         "vault_env": m.vault_env,
         "tokenizer_kind": m.tokenizer_kind,
         "tool_roundtrip": int(m.tool_roundtrip),
@@ -308,6 +342,16 @@ def load_one(path: Path) -> Manifest:
     model_type = _req(doc, "model_type", path.name, str)
 
     expected_env = "LSX_TEST_" + re.sub(r"[.\-]", "_", model_type).upper() + "_ROOT"
+    profiles, preferred_profile = parse_profiles(doc, path.name)
+    org = vault.get("org")
+    if not isinstance(org, str) or not org.strip():
+        raise ManifestError(
+            path.name, "vault.org",
+            f"vault.org must be the store's org segment for "
+            f"{vault.get('dir')!r} "
+            f"(e.g. 'microsoft'), got {org!r} — the store is org-nested, so a "
+            f"row without one names <root>/<model>, a path no `ls` shows")
+
     if vault.get("env") != expected_env:
         raise ManifestError(
             path.name, "vault.env",
@@ -326,8 +370,15 @@ def load_one(path: Path) -> Manifest:
         format_tag=doc.get("format_tag", ""),
         forge_flag=doc.get("forge_flag", ""),
         tokenizer_kind=int(doc.get("tokenizer_kind", 0)),
+        vault_org=org,
         vault_dir=_req(vault, "dir", path.name + ":vault", str),
+        # Optional in the FILE, resolved here so a row cannot carry an empty
+        # profile: `nvfp4` is what an empty `--codec-profile` produces
+        # (`CodecProfileName(kDefault)`, codec_profiles.cpp), i.e. the profile a
+        # row's gates look for unless the row says otherwise.
+        vault_profile=preferred_profile,
         vault_env=vault["env"],
+        profiles=profiles,
         lifecycle_tu=list(doc.get("lifecycle_tu", [])),
         stages=stages,
         golden_debt=dict(doc.get("golden_debt", {})),
@@ -344,8 +395,196 @@ def load_one(path: Path) -> Manifest:
         report=doc.get("report", ""),
         notes=doc.get("notes", ""),
         path=path.name,
-        root=path.parent.parent,
+        root=_repo_root(path),
+        rel_dir=(path.parent.name if path.parent.name != "models" else ""),
     )
+
+
+def parse_profiles(doc, where):
+    """Validate a manifest's `profiles` object; return (profiles, preferred).
+
+    The registry describes a model as a SET of codec profiles, each an artifact
+    with its own codecs and its own measured gate results:
+
+        "profiles": {
+          "nvfp4":       {"status": "built", "artifact": {...}, "codecs": [...],
+                          "codec_mask": 34, "target": "nvidia:sm_120",
+                          "gates": {"selfcheck": {...}, "fsi": {...}, ...}},
+          "bf16":        {"status": "not-built"}
+        }
+
+    Two rules carry the weight:
+
+      * a profile's metrics are EVIDENCE, so `status: built` requires a real
+        artifact recording (a sha256 digest and a positive size). Metrics
+        without an artifact would claim a measurement of a tree that does not
+        exist — the exact failure that let a deleted tree keep a green verdict.
+      * a `not-built` profile may not carry codecs, artifact or gate metrics at
+        all, for the same reason in reverse: a declaration of absence is honest,
+        a declaration of absence carrying passes is not.
+
+    An unknown key is an error rather than ignored, like every other manifest
+    field (`selfcheck_frame_promt` is the precedent).
+    """
+    raw = doc.get("profiles")
+    if not isinstance(raw, dict) or not raw:
+        raise ManifestError(
+            where, "profiles",
+            "a model declares at least one codec profile under 'profiles' "
+            "(e.g. {\"nvfp4\": {\"status\": \"not-built\"}}); an empty or "
+            "missing block describes no artifact at all")
+    preferred = doc.get("preferred_profile")
+    if not isinstance(preferred, str) or preferred not in raw:
+        raise ManifestError(
+            where, "preferred_profile",
+            f"preferred_profile must name a key of profiles "
+            f"({sorted(raw)}), got {preferred!r}")
+
+    allowed = {"status", "artifact", "codecs", "codec_mask", "target", "gates",
+               "notes"}
+    out = {}
+    for name, body in raw.items():
+        if not isinstance(body, dict):
+            raise ManifestError(where, f"profiles.{name}",
+                                "expected an object")
+        unknown = set(body) - allowed
+        if unknown:
+            raise ManifestError(
+                where, f"profiles.{name}",
+                f"unknown field(s) {sorted(unknown)}; known: {sorted(allowed)}")
+        status = body.get("status", "not-built")
+        if status not in PROFILE_STATUS:
+            raise ManifestError(
+                where, f"profiles.{name}.status",
+                f"status must be one of {list(PROFILE_STATUS)}, got {status!r}")
+        entry = {"status": status}
+
+        if status == "not-built":
+            carried = [k for k in ("artifact", "codecs", "codec_mask", "target",
+                                   "gates") if k in body]
+            if carried:
+                raise ManifestError(
+                    where, f"profiles.{name}",
+                    f"a not-built profile cannot carry {carried}: metrics and "
+                    f"codecs are evidence of an artifact, and claiming them for "
+                    f"one that was never built is a fabricated verdict. Drop "
+                    f"them or set status to 'built'.")
+            if body.get("notes"):
+                entry["notes"] = body["notes"]
+            out[name] = entry
+            continue
+
+        art = body.get("artifact")
+        if not isinstance(art, dict):
+            raise ManifestError(
+                where, f"profiles.{name}.artifact",
+                "a built profile records its artifact ({sha256, bytes, ...})")
+        dig = art.get("sha256")
+        if not isinstance(dig, str) or len(dig) != 64 or \
+                any(c not in "0123456789abcdef" for c in dig):
+            raise ManifestError(
+                where, f"profiles.{name}.artifact.sha256",
+                f"artifact.sha256 must be 64 lower-case hex characters, got "
+                f"{dig!r} — the digest is what pins a verdict to a tree")
+        size = art.get("bytes")
+        if not isinstance(size, int) or size <= 0:
+            raise ManifestError(
+                where, f"profiles.{name}.artifact.bytes",
+                f"artifact.bytes must be a positive integer, got {size!r}")
+        entry["artifact"] = dict(art)
+
+        codecs = body.get("codecs")
+        if not isinstance(codecs, list) or not codecs:
+            raise ManifestError(
+                where, f"profiles.{name}.codecs",
+                "a built profile lists the plane codecs it contains")
+        bad = [c for c in codecs if c not in CODEC_NAMES]
+        if bad:
+            raise ManifestError(
+                where, f"profiles.{name}.codecs",
+                f"unknown codec(s) {bad}; known: {list(CODEC_NAMES)}")
+        entry["codecs"] = list(codecs)
+
+        if "codec_mask" in body:
+            mask = body["codec_mask"]
+            if not isinstance(mask, int) or mask <= 0:
+                raise ManifestError(
+                    where, f"profiles.{name}.codec_mask",
+                    f"codec_mask must be a positive integer bitmask, got {mask!r}")
+            entry["codec_mask"] = mask
+        if not isinstance(body.get("target"), str) or not body["target"]:
+            raise ManifestError(
+                where, f"profiles.{name}.target",
+                "a built profile names the hardware target it was built for "
+                "(e.g. 'nvidia:sm_120')")
+        entry["target"] = body["target"]
+
+        gates = body.get("gates", {})
+        if not isinstance(gates, dict):
+            raise ManifestError(where, f"profiles.{name}.gates",
+                                "expected an object of gate -> measurement")
+        bad_gates = set(gates) - set(PROFILE_GATES)
+        if bad_gates:
+            raise ManifestError(
+                where, f"profiles.{name}.gates",
+                f"unknown gate(s) {sorted(bad_gates)}; known: {list(PROFILE_GATES)}")
+        clean_gates = {}
+        for gate, m in gates.items():
+            if not isinstance(m, dict):
+                raise ManifestError(where, f"profiles.{name}.gates.{gate}",
+                                    "expected an object")
+            res = m.get("result")
+            if res not in GATE_RESULTS:
+                raise ManifestError(
+                    where, f"profiles.{name}.gates.{gate}.result",
+                    f"result must be one of {list(GATE_RESULTS)}, got {res!r}")
+            if "date" not in m:
+                raise ManifestError(
+                    where, f"profiles.{name}.gates.{gate}",
+                    "a measurement records the date it was taken")
+            clean_gates[gate] = dict(m)
+        entry["gates"] = clean_gates
+        if body.get("notes"):
+            entry["notes"] = body["notes"]
+        out[name] = entry
+    return out, preferred
+
+
+def _repo_root(path: Path) -> Path:
+    """The repository root for a manifest at models/<org>/<model>.json.
+
+    `path.parent.parent` was correct while the registry was flat
+    (`models/<model>.json`) and silently became `models/` the moment the files
+    moved under their org: every passport/source lookup then resolved against
+    the registry directory, and the base row failed with "no source for target".
+    Walking up to the directory that owns `models/` cannot drift with depth.
+    """
+    for parent in path.resolve().parents:
+        if (parent / "models").is_dir() and (parent / "tools").is_dir():
+            return parent
+    return path.parent.parent
+
+
+def registry_path_error(m) -> str:
+    """Rule 0: the registry is NESTED BY ORG.
+
+    A row lives at `models/<vault.org>/<vault.dir>.json` — the same spelling the
+    source and artifact stores use (`<root>/<org>/<model>`), so a reader can move
+    between the registry and a `ls` of the store without translating names. A row
+    whose path disagrees with its own `vault` block describes a location no `ls`
+    shows, and the next reader has to guess which of the two is true.
+
+    Returns the violation, or "" when the row is where it says it is. Dotfile
+    stems are exempt: the self-test writes temporary rows at `models/` root.
+    """
+    if m.path.startswith("."):
+        return ""
+    want = f"{m.vault_dir}.json"
+    if m.rel_dir == m.vault_org and m.path == want:
+        return ""
+    found = f"models/{m.rel_dir + '/' if m.rel_dir else ''}{m.path}"
+    return (f"registry path does not match its vault block: expected "
+            f"models/{m.vault_org}/{want}, found {found}")
 
 
 def strip_comments(text: str) -> str:
@@ -369,6 +608,15 @@ def validate(manifests, root: Path, partial: bool = False,
         errors.append(f"{m.path}:{where}: {msg}")
 
     for m in manifests:
+        # rule 0: the registry is NESTED BY ORG — a row lives at
+        # models/<vault.org>/<vault.dir>.json, the same spelling the source and
+        # artifact stores use. A row whose path disagrees with its own `vault`
+        # block describes a location no `ls` shows, and the next reader has to
+        # guess which of the two is true.
+        path_err = registry_path_error(m)
+        if path_err:
+            add(m, "vault", path_err)
+
         # rule 2: every stage is covered or its absence is declared
         for stage in STAGES:
             names = m.stages.get(stage, [])
@@ -628,7 +876,7 @@ def non_model_tests(root: Path):
     commit, which keeps the orphan check (Review Focus #1) honest.
     """
     claimed = set()
-    for path in sorted((root / "models").glob("*.json")):
+    for path in sorted((root / "models").glob("*/*.json")):
         try:
             doc = json.loads(path.read_text())
         except json.JSONDecodeError:
@@ -696,10 +944,11 @@ def emit_header(manifests) -> str:
     rows = []
     for m in models:
         rows.append(
-            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s, %s, %d, %s},"
+            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s, %s, %d, %s},"
             % (cstr(m.model_type), cstr(m.family), cstr(m.variant),
                cstr(m.model_class), cstr(m.model_header), cstr(m.passport),
-               cstr(m.ns), cstr(m.format_tag), cstr(m.vault_dir),
+               cstr(m.ns), cstr(m.format_tag), cstr(m.vault_org),
+               cstr(m.vault_dir), cstr(m.vault_profile),
                cstr(m.vault_env), m.tokenizer_kind,
                "true" if m.tool_roundtrip else "false",
                "true" if m.auto_path_determinism else "false",
@@ -728,14 +977,18 @@ def emit_header(manifests) -> str:
             debt.append("    {%s, %s, %s}," % (
                 cstr(m.model_type), cstr(stage), cstr(m.golden_debt[stage])))
 
-    return f"""// generated by tools/gen_model_manifest.py from models/*.json -- do not edit
+    return f"""// generated by tools/gen_model_manifest.py from models/<org>/<model>.json -- do not edit
 #pragma once
 #include <cstddef>
 namespace lsxmanifest {{
 struct ModelRow {{
     const char *model_type; const char *family; const char *variant;
     const char *model_class; const char *model_header; const char *passport;
-    const char *ns; const char *format_tag; const char *vault_dir;
+    const char *ns; const char *format_tag;
+    // The store's own spelling: the checkpoint is
+    // <source root>/<vault_org>/<vault_dir> and the artifact is
+    // <artifact root>/<vault_org>/<vault_dir>/<vault_profile>.
+    const char *vault_org; const char *vault_dir; const char *vault_profile;
     const char *vault_env; int tokenizer_kind; bool tool_roundtrip;
     bool auto_path_determinism; bool cooperative_cancel;
     bool selfcheck_frame_prompt; int selfcheck_max_gen;
@@ -786,7 +1039,7 @@ def emit_cmake(manifests) -> str:
     manifest's label and timeout silently win over another's.
     """
     emitted = set()
-    out = ["# generated by tools/gen_model_manifest.py from models/*.json -- do not edit", ""]
+    out = ["# generated by tools/gen_model_manifest.py from models/<org>/<model>.json -- do not edit", ""]
     for m in sorted(manifests, key=lambda x: x.model_type):
         out.append(f"# ---- {m.model_type}" + (f" ({m.notes})" if m.notes else ""))
         for t in sorted(m.targets(), key=lambda x: (STAGES.index(x.stage), x.name)):
@@ -982,7 +1235,16 @@ def emit_model_section(m, baseline) -> str:
             + (f", forge `{m.forge_flag}`" if m.forge_flag else ""))
     if m.tokenizer_kind:
         out.append(f"- tokenizer kind {m.tokenizer_kind}")
-    out.append(f"- vault `{m.vault_dir}` (override `{m.vault_env}`)")
+    # The store is org-nested and split, so a row has to name its qualified
+    # location and its codec profile. A line that named only `vault_dir` pointed
+    # at `<root>/phi-4`, a path no `ls` shows: the catalogue described a layout
+    # the store had stopped using. The ROOTS are identical for every row and are
+    # stated once in the legend below the title.
+    # One line, because the catalogue has a per-model character budget and the
+    # profile facts belong next to the location they describe anyway.
+    out.append(f"- store `{m.vault_org}/{m.vault_dir}` (env `{m.vault_env}`); "
+               + "; ".join(profile_line(name, body, m.vault_profile)
+                           for name, body in m.profiles.items()))
     out.append(f"- lifecycle TUs: "
                f"{', '.join(f'`{t}`' for t in m.lifecycle_tu) or 'none declared'}")
     out.append(f"- gates: {'; '.join(gates)}")
@@ -1000,16 +1262,42 @@ def emit_model_section(m, baseline) -> str:
     return "\n".join(out) + "\n"
 
 
+def profile_line(name, body, preferred):
+    """One catalogue phrase per codec profile: what it holds and how it scored.
+
+    A `not-built` profile says so in one word; a built one names its codecs, the
+    hardware target, the artifact digest prefix and the gate tally, because those
+    are the four facts that make a verdict auditable.
+    """
+    tag = f"`{name}`" + (" (preferred)" if name == preferred else "")
+    if body.get("status") != "built":
+        return f"{tag} — not built"
+    art = body.get("artifact", {})
+    gates = body.get("gates") or {}
+    tally = ", ".join(
+        f"{g} {'pass' if gates[g]['result'] == 'pass' else gates[g]['result']}"
+        for g in ("selfcheck", "fsi", "code", "det", "mcp") if g in gates)
+    return (f"{tag} — built for `{body['target']}`, codecs "
+            f"{'|'.join(body['codecs'])}, sha256 `{art.get('sha256', '')[:12]}…`"
+            + (f", {tally}" if tally else ""))
+
+
 def emit_docs(manifests, baseline) -> str:
     lines = [
         "# Models — generated catalogue",
         "",
-        "<!-- generated by tools/gen_model_manifest.py from models/*.json;",
+        "<!-- generated by tools/gen_model_manifest.py from models/<org>/<model>.json;",
         "     do not edit. `ctest -R test_manifest_sync` fails on any drift. -->",
         "",
         f"{len(manifests)} registered models. Per-model narrative, rationale and",
         "history live in `docs/model-reports/`; gate verdicts in",
         "`docs/SELFCHECK_MATRIX.md`; throughput in `tests/perf/perf_baselines.json`.",
+        "",
+        "Layout: the source store is org-nested — a checkpoint is "
+        "`<source root>/<org>/<model>` (`LSX_SOURCE_ROOT`, default "
+        "`/mnt/fast_storage/lsx_model`) — and the artifact store MIRRORS it: "
+        "`<artifact root>/<org>/<model>/<profile>` (`LSX_ARTIFACT_ROOT`). Each row "
+        "below gives `<org>/<model>` and the profile; the roots are not repeated.",
         "",
         "Legend: `gates: <stage>: yes` means the stage target and its golden exist — not that every probe passed (measured verdicts, including documented red cells, are in `docs/SELFCHECK_MATRIX.md`); `debt` means the golden was never captured.",
         "",
@@ -1051,7 +1339,10 @@ def check_matrix(manifests, root):
 
 def load_manifests(root: Path, partial=False):
     mdir = root / "models"
-    paths = sorted(mdir.glob("*.json")) if mdir.is_dir() else []
+    # models/<org>/<model>.json — one file per model, nested by the store's own
+    # org segment. A flat file at models/ root is refused by rule 0 rather than
+    # silently ignored, which is why the glob is */*.json and not **/*.json.
+    paths = sorted(mdir.glob("*/*.json")) if mdir.is_dir() else []
     manifests = [load_one(p) for p in paths]
     return manifests
 
@@ -1125,13 +1416,16 @@ def diff_cmake(manifests, baseline_path):
 def self_test(root: Path):
     """Every schema rule is reported, proven against a LIVE manifest.
 
-    The base is a real `models/*.json` row, mutated in memory. A checked-in copy
+    The base is a real `models/<org>/<model>.json` row, mutated in memory. A checked-in copy
     of one was the obvious first design and it went stale the first time the tree
     moved (the deleted per-family gate files made the "valid" fixture invalid). A
     mutation of the real base cannot drift: if the base changes shape, this fails
     loudly.
     """
-    base_path = root / "models" / "flint.json"
+    # The registry is nested by org (models/<org>/<model>.json), so the
+    # self-test's base row is addressed the same way — a self-test that could
+    # not find a real row would silently stop proving anything.
+    base_path = root / "models" / "RecursiveSI" / "flint.json"
     if not base_path.is_file():
         print(f"error: {base_path} is missing (self-test needs a real base row)",
               file=sys.stderr)
@@ -1140,8 +1434,12 @@ def self_test(root: Path):
 
     cases = []
 
-    def add(name, mutate, needle, cross_model=False):
-        cases.append((name, mutate, needle, cross_model))
+    def add(name, mutate, needle, cross_model=False, base="flint"):
+        # Which row the case mutates. Most rules are about the row's SHAPE and
+        # `flint` proves them; a rule about a BUILT profile needs a row that has
+        # one, and mutating a `not-built` row could not express it at all
+        # (there is no artifact to strip).
+        cases.append((name, mutate, needle, cross_model, base))
 
     def unknown_stage(d):
         d["stages"]["mystery"] = ["test_x"]
@@ -1207,6 +1505,85 @@ def self_test(root: Path):
     # stage that claims it. Both rules exist because `kind` was declared 143
     # times and read by nothing, so a row could claim MCP coverage while running
     # the DET gate and every guard would stay green.
+    # The org is what makes a row resolvable in an org-nested store: without it
+    # `<root>/<model>` names a directory no `ls` shows, and every gate resolves
+    # a path that has never existed.
+    def vault_org_missing(d):
+        d["vault"].pop("org", None)
+
+    add("vault_org_missing", vault_org_missing, "vault.org")
+
+    def vault_org_empty(d):
+        d["vault"]["org"] = ""
+
+    add("vault_org_empty", vault_org_empty, "vault.org must be")
+
+    # ── registry layout + per-profile schema ─────────────────────────────
+    # The registry names WHERE a model lives and WHAT each codec profile of it
+    # contains. A row that disagrees with its own path describes a location no
+    # `ls` shows; a profile that reports gate metrics without an artifact hash
+    # reports evidence for a tree that does not exist.
+    def assign(name, value):
+        def mut(d):
+            d["profiles"]["nvfp4"]["artifact"][name] = value
+        return mut
+
+    def no_profiles(d):
+        d["profiles"] = {}
+
+    add("profiles_empty", no_profiles, "profiles")
+
+    def preferred_missing(d):
+        d["preferred_profile"] = "bf16"
+
+    add("preferred_profile_missing", preferred_missing,
+        "preferred_profile")
+
+    def built_without_hash(d):
+        d["profiles"]["nvfp4"]["artifact"].pop("sha256", None)
+
+    add("built_without_hash", built_without_hash, "sha256", base="phi4")
+
+    def built_short_hash(d):
+        d["profiles"]["nvfp4"]["artifact"]["sha256"] = "deadbeef"
+
+    add("built_short_hash", built_short_hash, "64 lower-case hex",
+        base="phi4")
+
+    def built_bad_codec(d):
+        d["profiles"]["nvfp4"]["codecs"] = ["bf16", "fp7"]
+
+    add("built_bad_codec", built_bad_codec, "unknown codec", base="phi4")
+
+    def built_no_target(d):
+        d["profiles"]["nvfp4"].pop("target", None)
+
+    add("built_no_target", built_no_target, "hardware target", base="phi4")
+
+    def gate_without_date(d):
+        d["profiles"]["nvfp4"]["gates"]["fsi"].pop("date", None)
+
+    add("gate_without_date", gate_without_date, "records the date",
+        base="phi4")
+
+    def gate_bad_result(d):
+        d["profiles"]["nvfp4"]["gates"]["fsi"]["result"] = "green"
+
+    add("gate_bad_result", gate_bad_result, "result must be one of",
+        base="phi4")
+
+    def unbuilt_with_gates(d):
+        d["profiles"]["nvfp4"] = {"status": "not-built",
+                                  "gates": {"fsi": {"result": "pass"}}}
+
+    add("unbuilt_with_gates", unbuilt_with_gates,
+        "cannot carry")
+
+    def unknown_gate(d):
+        d["profiles"]["nvfp4"]["gates"]["parity"] = {"result": "pass"}
+
+    add("unknown_gate", unknown_gate, "unknown gate", base="phi4")
+
     def kind_mismatch(d):
         d["target_overrides"]["test_flint_moe_det_selfcheck"]["kind"] = "mcp"
 
@@ -1234,16 +1611,32 @@ def self_test(root: Path):
             print("  " + e, file=sys.stderr)
         return 1
 
-    peer_path = root / "models" / "glm-5.2.json"
+    # A row with a BUILT profile, for the artifact/measurement rules.
+    phi4_path = root / "models" / "microsoft" / "phi-4.json"
+    if not phi4_path.is_file():
+        print("error: self-test needs models/microsoft/phi-4.json (a BUILT "
+              "profile) to prove the artifact rules", file=sys.stderr)
+        return 2
+    bases = {"flint": base, "phi4": json.loads(phi4_path.read_text())}
+    errs, _warn = validate([load_one(phi4_path)], root, partial=True)
+    if errs:
+        print("error: the built-profile base does not validate:",
+              file=sys.stderr)
+        for e in errs:
+            print("  " + e, file=sys.stderr)
+        return 1
+
+    peer_path = root / "models" / "zai-org" / "GLM-5.2.json"
     peer = load_one(peer_path) if peer_path.is_file() else None
     if peer is None:
-        print("error: self-test needs models/glm-5.2.json as the second model",
+        print("error: self-test needs models/zai-org/GLM-5.2.json as the "
+              "second model",
               file=sys.stderr)
         return 2
 
     ok = 0
-    for name, mutate, needle, cross_model in cases:
-        doc = json.loads(json.dumps(base))
+    for name, mutate, needle, cross_model, base_key in cases:
+        doc = json.loads(json.dumps(bases[base_key]))
         mutate(doc)
         tmp = root / "models" / f".self-test-{name}.json"
         try:
@@ -1262,9 +1655,33 @@ def self_test(root: Path):
                   file=sys.stderr)
             for e in errs:
                 print("  " + e, file=sys.stderr)
-    print(f"{ok}/{len(cases)} schema violations reported (base: "
+    # ── the path rule, checked directly ──────────────────────────────────
+    # The loop above writes temporary rows as `models/.self-test-*.json`, and the
+    # rule exempts dotfile stems (that is what keeps those fixtures loadable), so
+    # a mutation could never observe it. Prove it where it is observable: three
+    # shapes, one accepted and two refused.
+    import dataclasses
+    real = load_one(base_path)
+    path_checks = [
+        ("path_ok", real, ""),
+        ("path_wrong_dir",
+         dataclasses.replace(real, vault_dir="Some-Other-Dir"),
+         "registry path does not match its vault block"),
+        ("path_wrong_org",
+         dataclasses.replace(real, vault_org="someone-else"),
+         "registry path does not match its vault block"),
+    ]
+    for name, row, needle in path_checks:
+        got = registry_path_error(row)
+        if needle in got:
+            ok += 1
+        else:
+            print(f"{name}: expected {needle!r} in {got!r}", file=sys.stderr)
+    total = len(cases) + len(path_checks)
+
+    print(f"{ok}/{total} schema violations reported (base: "
           f"{base_path.name}, live)")
-    return 0 if ok == len(cases) else 1
+    return 0 if ok == total else 1
 
 
 def main(argv=None):

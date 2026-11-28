@@ -2,7 +2,7 @@
 
 // Host-only accessors over the generated model manifest table.
 //
-// `tests/model_manifest.h` is generated from `models/*.json` at configure time
+// `tests/model_manifest.h` is generated from `models/<org>/<model>.json` at configure time
 // (cmake/LsxModelManifest.cmake). Every guard and gate driver reads the model
 // registry through these functions instead of keeping its own hand-written
 // rows — that is what makes "one file per model" true rather than aspirational.
@@ -11,6 +11,7 @@
 // and it is included by tests, which are host-only by construction.
 
 #include <algorithm>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -66,10 +67,12 @@ inline bool IsDeclaredDebt(std::string_view model, std::string_view stage)
     return false;
 }
 
-// Where this model's converted tree lives: the per-model override first, then
-// the platform default. Tests never spell a vault directory name themselves -
-// that is how two models came to point at one tree.
-inline std::string ModelRoot(const lsxmanifest::ModelRow &row);
+// Where this model's ARTIFACT lives: the per-model env override first, then
+// <LSX_ARTIFACT_ROOT>/<org>/<model_dir>/<profile>. Defined in
+// test_manifest_query_root.h, which needs lsxstorage; this declaration lets a
+// guard name the type without linking it. Tests never spell a store directory
+// name themselves - that is how two models came to point at one tree.
+inline std::filesystem::path ModelRoot(const lsxmanifest::ModelRow &row);
 
 
 // A SKIP message that names THIS model and the directory it looked in, so a
@@ -81,7 +84,11 @@ inline std::string SkipMessage(const lsxmanifest::ModelRow &row,
     out += " ";
     out += what;
     out += " not present in ";
+    out += row.vault_org;
+    out += "/";
     out += row.vault_dir;
+    out += "/";
+    out += row.vault_profile;
     return out;
 }
 

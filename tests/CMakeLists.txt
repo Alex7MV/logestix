@@ -5,7 +5,7 @@ lsx_warning_policy()
 # any target that consumes it (CMake set() is order-dependent).
 set(LSX_KERNEL_BUDGETS "${CMAKE_CURRENT_SOURCE_DIR}/perf/kernel_budgets.json")
 
-# ── Model test registration (generated from models/*.json) ────────────────
+# ── Model test registration (generated from models/<org>/<model>.json) ────────────────
 # The add_test/set_tests_properties calls for every manifest-claimed target are
 # emitted at configure time into ${CMAKE_BINARY_DIR}/generated/model_targets.cmake.
 # Build wiring for those targets (add_executable, the CUDA OBJECT libraries,
@@ -4397,7 +4397,7 @@ add_test(NAME test_mcp_selfcheck COMMAND test_mcp_selfcheck)
 # ── MCPSelfCheck: the MCP protocol-payload gate (pilot: two models) ───────
 # Every model is asked for the same three JSON-RPC 2.0 payloads, so the wiring is
 # one call per (model, target) through the shared helper. The add_test/property
-# half is emitted from models/*.json into model_targets.cmake, so the label, the
+# half is emitted from models/<org>/<model>.json into model_targets.cmake, so the label, the
 # skip code and the GPU lock come from the manifest and cannot drift here.
 #
 # SCOPE, stated so it cannot read as coverage: the gate ships on the two
@@ -5898,16 +5898,23 @@ set_tests_properties(test_dedup_scan PROPERTIES LABELS fast)
 set_tests_properties(test_dedup_scan PROPERTIES TIMEOUT 120)
 
 # ── Model manifest sync (the generated registries cannot drift) ───────────
-# models/<model_type>.json is the single source of truth; this target proves the
+# models/<org>/<model>.json is the single source of truth; this target proves the
 # compiled table, the committed catalogue and the test-file ownership all agree
 # with it. It regenerates docs/MODELS.md in memory and fails on any difference.
 lsx_add_test(NAME test_manifest_sync
     SOURCES test_manifest_sync.cpp
-    LINK lsxcommon
+    # lsxstorage: the artifact-root half of the store layout (roots.h) — the
+    # registry now names where the ARTIFACT lives, so this guard resolves it the
+    # same way the gates do.
+    LINK lsxcommon lsxstorage
     INCLUDE "${LSX_MANIFEST_GENERATED_DIR}"
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
            "LSX_GENERATED_DIR=\"${LSX_MANIFEST_GENERATED_DIR}\""
            "LSX_PYTHON3=\"${LSX_PYTHON3}\""
+    # SKIP: the store-layout cases skip when the source store or
+    # LSX_ARTIFACT_ROOT is absent. The row/table/`--check` assertions never do,
+    # so a machine without the stores still proves the registry self-consistent.
+    SKIP
     LABEL fast)
 
 # ── Hy4-flash (hy4-flash): one executable per lifecycle stage ───────────────

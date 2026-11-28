@@ -13,13 +13,13 @@ share one description; every other bullet names one file. `AGENTS.md` is a route
 
 **Machine-checked equivalents — the source of truth when prose disagrees:**
 
-The registries are no longer hand-written: `models/<model_type>.json` holds one
+The registries are no longer hand-written: `models/<org>/<model>.json` holds one
 row per model and `${CMAKE_BINARY_DIR}/generated/model_manifest.h` is the
 compiled projection of it (`lsxmanifest::kModels` / `kTargets` / `kLifecycle` /
 `kDebt`). The guards below read that table, so a row here — and a paragraph in
 any skill — can be stale while the table cannot.
 
-- `models/*.json` + `test_manifest_sync.cpp` — model → vault directory, passport
+- `models/<org>/<model>.json` + `test_manifest_sync.cpp` — model → vault directory, passport
   header, owning namespace, format tag, tokenizer kind, lifecycle-stage targets,
   declared golden debt. Per-model catalogue: `docs/MODELS.md` (generated).
 - `test_model_suite_guard.cpp::Suites()` — model → lifecycle stages → ctest

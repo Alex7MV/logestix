@@ -53,7 +53,7 @@ reason, perf baseline key, lifecycle TUs.
 
 ## 3. Goals
 
-1. **One file per model is the source of truth**: `models/<model_type>.json`.
+1. **One file per model is the source of truth**: `models/<org>/<model>.json`.
 2. Every other representation is **generated** from it and **cannot drift**:
    guard registries, ctest registration, parity-gate targets, `model_registry.cpp`,
    `docs/MODELS.md`, the `docs/SELFCHECK_MATRIX.md` table, `AGENTS.md` tables.
@@ -110,7 +110,7 @@ Things that would make this a failure even if it builds:
 the ingestion procedure stays manual, so the same drift returns in the new file.
 Rejected as a *plan*; accepted as a *consequence* of B.
 
-**B. Model manifest as the single source of truth.** One `models/*.json` per
+**B. Model manifest as the single source of truth.** One `models/<org>/<model>.json` per
 model; generated registries, ctest targets, gate TUs, `model_registry.cpp` and
 docs; a sync test that fails on drift. Removes the duplicate projections, makes
 ingestion mechanical, and produces A for free. **Chosen.**
@@ -123,9 +123,51 @@ adds a new drift source. Deferred; only sensible on top of B.
 
 ### 8.1 The manifest
 
-Location: `models/<model_type>.json` in the repository root, one file per
-registered model, sorted by filename for stable diffs. `model_type` is the
-registry key (`T::kType`), so the filename is not load-bearing beyond ordering.
+Location: `models/<org>/<model>.json` in the repository root — nested by the
+store's own org segment, one file per registered model, sorted by path for stable
+diffs. `model_type` inside the file is the registry key (`T::kType`); the
+directory is `vault.org` and the stem is `vault.dir`, so the path can be found by
+`ls`-ing the source store and the row is checked against its own `vault` block
+(`registry_path_error`, generator rule 0).
+
+The registry describes a model as a SET of codec profiles, because one checkpoint
+converts to several native trees (invariant I4) and each is a different artifact
+with its own codecs and its own measured results:
+
+```jsonc
+"preferred_profile": "nvfp4",
+"profiles": {
+  "nvfp4": {
+    "status": "built",
+    "artifact": { "sha256": "<64 hex>", "bytes": 10824,
+                  "tree_bytes": 17399424244, "planes": 83,
+                  "store": "microsoft/phi-4/nvfp4" },
+    "codecs": ["bf16", "nvfp4"], "codec_mask": 34, "target": "nvidia:sm_120",
+    "gates": {
+      "selfcheck": { "result": "pass", "cycles": 3, "top1_token": 12366,
+                     "text": "Paris", "logits_hash": "cf51b9bbd5c913dd",
+                     "date": "2026-11-28" },
+      "fsi": { "result": "pass", "cases": "3/3", "date": "2026-11-28" },
+      "code": { "...": "..." }, "det": { "...": "..." }, "mcp": { "...": "..." }
+    }
+  },
+  "bf16": { "status": "not-built" }
+}
+```
+
+Two rules make this evidence rather than decoration:
+
+* `status: built` requires an artifact recording — a 64-hex `sha256` and a
+  positive `bytes` — plus a non-empty `codecs` list, a `target`, and a `date` on
+  every gate measurement. A verdict is pinned to a tree by its digest; without a
+  digest there is nothing to pin it to.
+* `status: not-built` may carry **nothing** but `notes`. Codecs, artifact or gate
+  metrics on an unbuilt profile are a fabricated verdict — the failure mode that
+  let a deleted tree keep a green row in the matrix.
+
+`preferred_profile` must name a key of `profiles`; it is what the compiled table
+exposes as `vault_profile`, i.e. the profile a gate looks for when the operator
+does not choose one.
 
 ```jsonc
 {
@@ -141,9 +183,12 @@ registry key (`T::kType`), so the filename is not load-bearing beyond ordering.
   "forge_flag": "--flint",
   "tokenizer_kind": 4,
   "vault": {
-    "dir": "Recursive-Flint",
+    "org": "RecursiveSI",
+    "dir": "flint",
     "env": "LSX_TEST_FLINT_ROOT"
   },
+  "preferred_profile": "nvfp4",
+  "profiles": { "nvfp4": { "status": "not-built" } },
   "lifecycle_tu": ["flint_moe_model.cpp", "flint_moe_inference_pipeline.cu"],
   "stages": {
     "convert":   ["test_flint_moe_convert"],
@@ -311,7 +356,7 @@ reviewable.
 
 | phase | content | proof |
 |---|---|---|
-| **P1** | `models/*.json` for all 35 models, transcribed mechanically from the existing registries; generator `--docs`; `docs/MODELS.md` generated; `test_manifest_sync` (label `fast`) | generated doc matches hand knowledge; nothing else changes |
+| **P1** | `models/<org>/<model>.json` for all 35 models, transcribed mechanically from the existing registries; generator `--docs`; `docs/MODELS.md` generated; `test_manifest_sync` (label `fast`) | generated doc matches hand knowledge; nothing else changes |
 | **P2** | guards consume `generated/model_manifest.h`; delete `kPassports`, `FamilyStems`, `kGoldenDebt`, `Suites()`, `kLifecycle` hand rows; assertions unchanged | fixes the 5 missing families; guard tests keep passing |
 | **P3** | one `test_parity_gate.cpp` + generated targets; delete 105 files; delete `test_parity_selfcheck_naming_guard` | target/property diff identical; the 3 stale `SKIP` strings disappear |
 | **P4** | ctest registration for model targets from the manifest; delete the hand blocks | `ctest --test-dir … -N` output identical |

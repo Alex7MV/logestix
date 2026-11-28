@@ -140,7 +140,7 @@ endfunction()
 #
 # Only the executable lives here: add_test and its properties are emitted into
 # the build tree from the manifest (cmake/LsxModelManifest.cmake), so the label,
-# timeout, skip code and GPU lock cannot drift from models/*.json.
+# timeout, skip code and GPU lock cannot drift from models/<org>/<model>.json.
 #
 # The fsi/code/det gates that predate this helper are still written out block by
 # block in tests/CMakeLists.txt. That is a consolidation for a dedup phase, not

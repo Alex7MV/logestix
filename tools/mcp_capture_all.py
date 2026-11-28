@@ -20,7 +20,7 @@ REPO = os.path.dirname(HERE)
 def main():
     only = sys.argv[1:] or None
     rows = []
-    for path in sorted(glob.glob(os.path.join(REPO, "models", "*.json"))):
+    for path in sorted(glob.glob(os.path.join(REPO, "models", "*", "*.json"))):
         doc = json.load(open(path))
         model_type = doc["model_type"]
         if only and model_type not in only:

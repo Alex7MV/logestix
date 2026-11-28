@@ -1,0 +1,104 @@
+{
+  "model_type": "gigachat4-708b-a41b",
+  "display_name": "gigachat4-708b-a41b",
+  "family": "gigachat",
+  "variant": "708b",
+  "model_class": "GigaChat4Moe708BModel",
+  "model_header": "../include/lsxcommon/gigachat_moe_708b_model.h",
+  "passport": "libs/lsxcommon/src/gigachat_moe_708b_constants.h",
+  "namespace": "lsxcommon::gigachat4_708b::frozen",
+  "format_tag": "logestix-gigachat4-708b-nvfp4",
+  "forge_flag": "--gigachat4-708b",
+  "tokenizer_kind": 3,
+  "vault": {
+    "org": "ai-sage",
+    "dir": "GigaChat4-708B-A41B",
+    "env": "LSX_TEST_GIGACHAT4_708B_A41B_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "not-built"
+    }
+  },
+  "lifecycle_tu": [
+    "gigachat_moe_708b_model.cpp"
+  ],
+  "stages": {
+    "convert": [
+      "test_gigachat_moe_708b_convert"
+    ],
+    "load": [
+      "test_gigachat_moe_708b_loader",
+      "test_gigachat_moe_708b_weight_graph",
+      "test_gigachat_moe_708b_tokenizer_parity"
+    ],
+    "model": [
+      "test_gigachat_moe_708b_model"
+    ],
+    "kernels": [
+      "test_gigachat_moe_708b_kernels"
+    ],
+    "selfcheck": [
+      "test_gigachat_moe_708b_selfcheck"
+    ],
+    "fsi": [
+      "test_gigachat_moe_708b_fsi_selfcheck"
+    ],
+    "code": [
+      "test_gigachat_moe_708b_code_selfcheck"
+    ],
+    "det": [
+      "test_gigachat_moe_708b_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_gigachat4_708b"
+    ]
+  },
+  "target_overrides": {
+    "test_gigachat_moe_708b_loader": {
+      "label": "fast",
+      "skip": false,
+      "env": []
+    },
+    "test_gigachat_moe_708b_kernels": {
+      "label": "fast"
+    },
+    "test_gigachat_moe_708b_tokenizer_parity": {
+      "label": "fast",
+      "env": []
+    },
+    "test_gigachat_moe_708b_selfcheck": {
+      "form": "selfcheck"
+    },
+    "test_gigachat_moe_708b_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_gigachat_moe_708b_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_gigachat_moe_708b_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    }
+  },
+  "perf": {
+    "target": "test_perf_baseline_gigachat4_708b",
+    "vault_subdir": "GigaChat4-708B-A41B",
+    "timeout": 5400
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false,
+  "golden_debt": {},
+  "aliases": [
+    "gigachat4-708b-a41b"
+  ],
+  "notes": "GigaChat4 708B-A41B: 64 layers, 61 MoE (256 experts, top-8), 16 full-attention DSA layers; the expert set streams from host RAM",
+  "report": "docs/model-reports/2026-11-27-GigaChat4-708B-A41B.md"
+}

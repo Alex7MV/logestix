@@ -25,7 +25,7 @@ namespace lsxcommon {
 namespace granite_switch {
 
 // The converted-tree format tag. It is written by the index writer and read by
-// models/*.json:format_tag, so the catalogue states the format instead of
+// models/<org>/<model>.json:format_tag, so the catalogue states the format instead of
 // guessing it (the reason `format_tag` is empty for most of the tree is that the
 // tag lives inside each converter's writer, with no constant to point at).
 inline constexpr const char *kFormatTag = "logestix-granite-switch";

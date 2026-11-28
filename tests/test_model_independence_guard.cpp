@@ -49,7 +49,7 @@ const fs::path kIncDir = LSX_SOURCE_DIR "/libs/lsxcommon/include/lsxcommon";
 fs::path PassportPath(const char *header)
 {
     const std::string h = header;
-    // models/*.json spells the passport repo-relative
+    // models/<org>/<model>.json spells the passport repo-relative
     // ("libs/lsxcommon/src/x.h"), the old literal spelled it src-relative.
     const std::string kRepoPrefix = "libs/lsxcommon/";
     if (h.rfind(kRepoPrefix, 0) == 0)
@@ -71,7 +71,7 @@ struct PassportRow {
     const char *ns;  // fully qualified namespace holding the constants
 };
 
-// Built from models/*.json (tests/model_manifest.h). The registry used to be a
+// Built from models/<org>/<model>.json (tests/model_manifest.h). The registry used to be a
 // hand-written literal here, which is how five families (beam, hy, minimax,
 // mistral, xing) fell out of the cross-family checks without a single failure.
 const std::vector<PassportRow> &Passports()
@@ -408,7 +408,7 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         const char *model_type;
         std::vector<const char *> path;  // TUs forming the generation path
     };
-    // From models/*.json: one row per model, listing the TUs of its generation
+    // From models/<org>/<model>.json: one row per model, listing the TUs of its generation
     // path. A model with no declared path fails below rather than passing
     // silently - that is the check the hand-written table used to provide.
     // The TUs come from the generated table, which already owns stable storage

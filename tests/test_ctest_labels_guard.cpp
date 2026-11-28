@@ -146,8 +146,29 @@ std::vector<LabelCall> ParseLabelCalls(const std::string& text)
         auto hb = text.cbegin();
         while (std::regex_search(hb, text.cend(), hm, helper_open)) {
             const auto body_begin = hm.suffix().first;
-            const auto body_end = std::find(body_begin, text.cend(), ')');
-            const std::string body(body_begin, body_end);
+            // The call ends at the matching ')' — NOT at the first one. A CMake
+            // comment inside a call is still part of the text, so a comment
+            // carrying a parenthesis ("(roots.h)", "(see the spec)") used to
+            // truncate the body before LABEL and make a correctly labelled
+            // target read as unlabelled. Comments are skipped, and depth is
+            // tracked for CMake's own nested calls.
+            auto body_end = body_begin;
+            int depth = 0;
+            bool in_comment = false;
+            for (; body_end != text.cend(); ++body_end) {
+                const char c = *body_end;
+                if (in_comment) {
+                    if (c == '\n') in_comment = false;
+                    continue;
+                }
+                if (c == '#') { in_comment = true; continue; }
+                if (c == '(') ++depth;
+                else if (c == ')') {
+                    if (depth == 0) break;
+                    --depth;
+                }
+            }
+            std::string body(body_begin, body_end);
             std::smatch nm, lm;
             if (std::regex_search(body, lm, helper_label) &&
                 std::regex_search(body, nm, helper_name)) {
@@ -488,6 +509,43 @@ std::vector<std::string> CheckSkipCapableHaveCode(
             }
         }
         begin = m.suffix().first;
+    }
+    // The helper's own `SKIP` keyword sets SKIP_RETURN_CODE 4 inside
+    // lsx_add_test, so a target registered that way is configured correctly.
+    // Recognising only the literal `set_tests_properties(...)` spelling made the
+    // guard report correct CMake as a violation — the false positive that gets
+    // "fixed" by deleting the SKIP.
+    {
+        static const std::regex helper_open(R"(lsx_add_(?:cuda_)?test\s*\()");
+        static const std::regex helper_name(R"(NAME\s+([A-Za-z0-9_]+))");
+        static const std::regex helper_skip(R"(\bSKIP\b)");
+        std::smatch hm;
+        auto hb = cmake_text.cbegin();
+        while (std::regex_search(hb, cmake_text.cend(), hm, helper_open)) {
+            const auto body_begin = hm.suffix().first;
+            auto body_end = body_begin;
+            int depth = 0;
+            bool in_comment = false;
+            for (; body_end != cmake_text.cend(); ++body_end) {
+                const char c = *body_end;
+                if (in_comment) {
+                    if (c == '\n') in_comment = false;
+                    continue;
+                }
+                if (c == '#') { in_comment = true; continue; }
+                if (c == '(') ++depth;
+                else if (c == ')') {
+                    if (depth == 0) break;
+                    --depth;
+                }
+            }
+            const std::string body(body_begin, body_end);
+            std::smatch nm;
+            if (std::regex_search(body, helper_skip) &&
+                std::regex_search(body, nm, helper_name))
+                has_code.insert(nm[1]);
+            hb = (body_end == cmake_text.cend()) ? body_end : body_end + 1;
+        }
     }
     static const std::regex skip_call(R"(\bSKIP\s*\()");
     for (const auto& t : tests)
@@ -988,4 +1046,68 @@ TEST_CASE("ctest labels guard: tests/ file naming uniformity",
         joined += s + "\n";
     INFO("naming violations:\n" << joined);
     REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: a comment cannot hide a helper's LABEL",
+          "[labels][guard]")
+{
+    // The helper-body scan ends at the first ')', and a CMake comment inside a
+    // call is still part of the text. A comment carrying a parenthesis —
+    // "(roots.h)", "(see the spec)" — therefore truncated the body before
+    // LABEL and the target read as UNLABELED even though it was labelled
+    // correctly. Found because a comment naming libs/lsxstorage's roots.h did
+    // exactly that.
+    const std::string cm = R"(lsx_add_test(NAME t1
+    SOURCES t1.cpp
+    LINK lsxcommon lsxstorage
+    # the artifact-root half lives in roots.h (see libs/lsxstorage)
+    LABEL fast))";
+    const auto calls = ParseLabelCalls(cm);
+    REQUIRE(calls.size() == 1);
+    CHECK(calls[0].names == std::vector<std::string>{"t1"});
+    CHECK(calls[0].label == "fast");
+    CHECK(CheckLabelCoverage({"t1"}, calls).empty());
+}
+
+TEST_CASE("ctest labels guard: the helper's SKIP keyword counts as a skip code",
+          "[labels][guard]")
+{
+    // `lsx_add_test(... SKIP ...)` sets SKIP_RETURN_CODE 4 inside the helper, so
+    // a target registered that way is correctly configured. The guard only
+    // understood the literal `set_tests_properties(... SKIP_RETURN_CODE 4)`
+    // spelling, so it reported such a target as a violation — a false positive
+    // on correct CMake, and the kind that gets "fixed" by deleting the SKIP.
+    const fs::path dir = fs::temp_directory_path() / "lsx_skip_helper";
+    fs::create_directories(dir);
+    // Assembled from pieces on purpose: this guard scans every tests/*.cpp for
+    // the literal `SKIP(` to decide what is skip-capable, and a test that
+    // SIMULATES a skip-capable source must not make the guard's own file look
+    // like one. (It did, and the guard reported itself.)
+    const std::string kSkipCall = std::string("SK") + "IP(\"absent\");";
+    {
+        std::ofstream f(dir / "t_with_skip.cpp");
+        f << "TEST_CASE(\"x\") { if (nothing) " << kSkipCall << " }\n";
+    }
+    {
+        std::ofstream f(dir / "t_without_skip.cpp");
+        f << "TEST_CASE(\"y\") { if (nothing) " << kSkipCall << " }\n";
+    }
+    const std::string cm = R"(lsx_add_test(NAME t_with_skip
+    SOURCES t_with_skip.cpp
+    LABEL fast
+    SKIP)
+lsx_add_test(NAME t_without_skip
+    SOURCES t_without_skip.cpp
+    LABEL fast))";
+    const auto v = CheckSkipCapableHaveCode({"t_with_skip", "t_without_skip"},
+                                            cm, dir);
+    std::string joined;
+    for (const auto& s : v) joined += s + "\n";
+    INFO("violations:\n" << joined);
+    // The correctly-configured one must NOT be reported...
+    CHECK(joined.find("t_with_skip") == std::string::npos);
+    // ...and the one with no code at all still must be, or this test would pass
+    // by accepting everything.
+    CHECK(joined.find("t_without_skip") != std::string::npos);
+    fs::remove_all(dir);
 }

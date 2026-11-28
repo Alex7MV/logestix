@@ -62,7 +62,11 @@ machine-checked registry disagree, the registry wins.
 
 ## The model registry
 
-`models/<model_type>.json` is the single source of truth for one ingested model.
+`models/<org>/<model>.json` is the single source of truth for one ingested model:
+nested by the store's org, with a `profiles` object naming each codec profile's
+artifact (`sha256`, bytes), its codecs and its measured SelfCheck/FSI/CODE/DET/MCP
+results. `status: built` requires an artifact digest; `not-built` may carry no
+metrics at all, so a verdict can never outlive the tree it described.
 Everything derived from it is generated at configure time into
 `${CMAKE_BINARY_DIR}/generated/` and must never be hand-edited:
 

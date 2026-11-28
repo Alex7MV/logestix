@@ -45,7 +45,7 @@ fs::path CacheRoot();
 // Where the artifact of (family, model_type, profile) lives:
 //   <ArtifactRoot>/<family>/<model_type>/<profile>
 //
-// model_type is the manifest field (`models/<model_type>.json`), NOT the vault
+// model_type is the manifest field (`models/<org>/<model>.json`), NOT the vault
 // directory name: "Qwen3.5-9B" is a download spelling, `qwen3.5-9b` is the
 // identity. The profile directory IS the artifact — there is no intermediate
 // `logestix/` segment (design §2.4.2).

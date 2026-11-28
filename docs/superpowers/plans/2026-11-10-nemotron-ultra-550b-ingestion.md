@@ -23,7 +23,7 @@
 - Every device-labelled target declares `RESOURCE_LOCK "gpu"`; one GPU workload at a time. `fast` targets stay unlocked.
 - Tests register through the generated `model_targets.cmake` (manifest row) plus `add_executable` wiring in `tests/CMakeLists.txt`. Test registration uses `lsx_add_test`/`lsx_add_cuda_test` for non-model targets.
 - Every skip-capable target sets `SKIP_RETURN_CODE 4` (from the manifest stage defaults).
-- `models/<model_type>.json` is the only registry written by hand. `docs/MODELS.md` is generated: `python3 tools/gen_model_manifest.py --docs docs/MODELS.md --root .`.
+- `models/<org>/<model>.json` is the only registry written by hand. `docs/MODELS.md` is generated: `python3 tools/gen_model_manifest.py --docs docs/MODELS.md --root .`.
 - Build presets: `linux-release-znver4-aocc` (perf + real-weight gates), `linux-debug` (fast sweep). Binaries land in `build/<preset>/apps/` and `build/<preset>/tests/`.
 - Vault root for every run: `LSX_MODEL_ROOT=/mnt/fast_storage/huggingface`.
 - Scratch space: `/mnt/fast_storage/tmp` (never `/tmp` for multi-GB artifacts).

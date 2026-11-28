@@ -54,7 +54,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// The family vocabulary comes from models/*.json. The hand-written literal that
+// The family vocabulary comes from models/<org>/<model>.json. The hand-written literal that
 // used to live here listed 15 of 20 families, so "no test may include another
 // family's fixture" silently passed for beam, hy, minimax, mistral and xing.
 const std::set<std::string> &FamilyStems()
@@ -960,7 +960,7 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
     // Declared debt, as "<model>:<stage>". Every entry is a real gap; keeping the
     // list here rather than inferring it means the test output names what is
     // missing instead of merely counting what is present.
-    // From models/*.json: a gap without a declared reason is a manifest error
+    // From models/<org>/<model>.json: a gap without a declared reason is a manifest error
     // (validation rule 2), so this set and the registry cannot disagree.
     std::set<std::string> kGoldenDebt;
     for (std::size_t i = 0; i < lsxmanifest::kDebtCount; ++i)

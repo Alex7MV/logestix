@@ -101,7 +101,7 @@ manifest at configure time — a mechanism decision, not a patch.
 **Status: open — one instance found and recorded, one instance fixed.**
 
 Found while ingesting `granite-switch-4.1-8b`, which is the first family member
-added *after* its sibling in the manifest era. A `models/*.json` row claims
+added *after* its sibling in the manifest era. A `models/<org>/<model>.json` row claims
 targets by name, and `test_model_suite_guard` checks that a claimed target
 EXISTS — not that it tests the model that claims it. So a source with a
 hard-coded model name can sit under two rows and verify only one of them, while

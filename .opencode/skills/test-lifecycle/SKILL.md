@@ -86,7 +86,7 @@ against `lsxcommon`. Dependency include paths live only in `lsx_dep_includes`
 | `test_infrastructure_guard` | no `${CMAKE_BINARY_DIR}/_deps` include paths, exactly one definition of the shared converter helpers (`ReadTensorData`, `WriteBatch`, `WriteExpertArrow`, `ExpertArrowPath`, `QuantizeSlice`), `CUDA_ARCHITECTURES` only `${LSX_CUDA_ARCH}`/`OFF` |
 | `test_code_naming_guard.cpp` | model file-naming scheme (`SchemeRegex()` / `AllowedCommon()`) |
 | `test_model_independence_guard.cpp` | unique frozen-geometry passport per model, no cross-family borrowing, `LsxFastMathScope` in `Infer` (`kPassports`, `consumers`) |
-| `test_manifest_sync.cpp` | `models/*.json` is the registry: the compiled table equals the manifests, `docs/MODELS.md` is current (`--check`), no `tests/test_*.{cpp,cu}` file is unclaimed (`--strict`), every row resolves through `LsxModelFactory`, and no `docs/SELFCHECK_MATRIX.md` row names a model with no manifest |
+| `test_manifest_sync.cpp` | `models/<org>/<model>.json` is the registry: the compiled table equals the manifests, `docs/MODELS.md` is current (`--check`), no `tests/test_*.{cpp,cu}` file is unclaimed (`--strict`), every row resolves through `LsxModelFactory`, and no `docs/SELFCHECK_MATRIX.md` row names a model with no manifest |
 | `test_manifest_generator_selftest` | the generator's own schema validator: mutates a live manifest and asserts all eight rules fire |
 | `test_model_suite_guard.cpp` | the per-model suite is autonomous AND complete (`Suites()`, projected from the generated `kTargets`): every lifecycle stage (convert → load → model → kernels → selfcheck → fsi → code → det → **perf**) has a registered ctest target; every family test target is claimed by a row (no orphans) and every row declares the full stage set; `SKIP_RETURN_CODE 4` on the selfcheck/fsi/code/det targets; **loader/model stage tests must run on synthetic fixtures** — no vault path, and no cross-family fixture borrowing (the synthetic primitives live only in `tests/test_synth_checkpoint.h`). One case also pairs every row against `tests/fixtures/{fsi,code,det}`: a parity golden that is missing **and not declared in `kGoldenDebt`** fails, and a `kGoldenDebt` row whose golden now exists fails too |
 | `test_ctest_labels_guard.cpp` | every test target carries a label; every skip-capable target (`SKIP(` in its source) has `SKIP_RETURN_CODE 4`; `test_perf_baseline.cpp` carries an NDEBUG Release guard (all in addition to the label/TIMEOUT/preset/router checks) |
@@ -94,7 +94,7 @@ against `lsxcommon`. Dependency include paths live only in `lsx_dep_includes`
 | `test_logging_guard.cpp` | host logging goes through spdlog / `lsxcommon::log`: no `std::cout`/`std::cerr`/`std::clog`, no `printf`/`fprintf`/`vprintf`/`vfprintf`/`puts`/`putchar`/`perror` in `libs/` and `apps/`; the exception allowlist is exact-trimmed-line and two-way (an undeclared call and a stale entry both fail) |
 | `test_cuda_toolkit_guard.cu` | CUDA runtime ≥13.2, header/runtime match, `cuda_fp4` E2M1 semantics, Blackwell-only GPUs |
 
-Extending a model means adding a `models/<model_type>.json` row — the registries
+Extending a model means adding a `models/<org>/<model>.json` row — the registries
 those guards read are GENERATED from it at configure time, so there is no registry
 to hand-edit. What a manifest needs is skill `ingesting-a-model`.
 
@@ -122,7 +122,7 @@ Measured 2026-11-22: `linux-debug-inference` is **350 targets across 43 models**
 device target carries `RESOURCE_LOCK "gpu"` the sweep must run `-j1`, so a model
 ingestion that runs "the sweep" spends hours on targets its diff cannot reach.
 Run the model's own row instead — the targets are derived from
-`models/<model_type>.json`, so `-R` on the model_type is the whole set.
+`models/<org>/<model>.json`, so `-R` on the model_type is the whole set.
 
 Other OS profiles: `ctest --preset windows-debug` (fast) — the same label
 filters as Linux; a model test is not skipped or filtered by OS. Preset names are built

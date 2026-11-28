@@ -14,7 +14,7 @@
 
 - **Verbatim moves.** No prose is rewritten, summarised or trimmed when it changes file. Only heading level changes (`##`→`###`, `###`→`####`) and the new header/routing text are new words.
 - **IDs never renumber.** `A1`, `A2`, `K`, `M`, `Q`, `R`…`R20`, `S1`–`S7`, `T`/`T.1`, `G1`, `G2`/`G2a`/`G2b`, `G8a`, `G9`, `U` are stable; `tests/CMakeLists.txt` and ~12 `tests/*.cpp` comments cite them.
-- **Docs only.** No change under `libs/`, `apps/`, `tests/`, `tools/gen_model_manifest.py`, `models/*.json`. `tools/check_open_tasks.py` is the only new code.
+- **Docs only.** No change under `libs/`, `apps/`, `tests/`, `tools/gen_model_manifest.py`, `models/<org>/<model>.json`. `tools/check_open_tasks.py` is the only new code.
 - **No ctest wiring.** The checker runs by hand; a docs guard does not belong in the 140-target `fast` sweep.
 - **Archive files are never edited.** New facts go to the live file.
 - **Commit only on explicit request** (`AGENTS.md`). The plan stops at a verified working tree otherwise.

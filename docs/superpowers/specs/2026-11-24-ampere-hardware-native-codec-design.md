@@ -198,7 +198,7 @@ outlived its usefulness.
 ## 1. Evidence base (what was measured, not assumed)
 
 Recon on 2026-11-24, re-measured 2026-11-27, against
-`/mnt/fast_storage/lsx_model` (39 checkpoints over 18 orgs) and `models/*.json`
+`/mnt/fast_storage/lsx_model` (39 checkpoints over 18 orgs) and `models/<org>/<model>.json`
 (47 manifest rows).
 
 ### 1.1 Inventory (cold start, 2026-11-27)
@@ -208,12 +208,12 @@ only; the artifact store starts empty.
 
 | quantity | value | consequence |
 |---|---|---|
-| manifest rows (`models/*.json`) | **47** | the registry is the contract for what can be converted |
+| manifest rows (`models/<org>/<model>.json`) | **47** | the registry is the contract for what can be converted |
 | source checkpoints on disk | **39** over 18 orgs, of which 38 are representable by the manifest | `ERNIE-5.5-Flash-Base-BF16` has **no manifest row**; the store is `<org>/<model>` |
 | converted trees on disk | **0** | **the whole real-weight suite is dark until bootstrap** |
 | `.arrow` files anywhere in the vault | **0** | nothing to read, nothing to compare against |
 | free space on the vault volume | **2.6 TB of 15 TB (82 % used)** | the disk constraint of the previous revision is **gone** |
-| surviving non-artifact evidence | `tests/fixtures/{fsi,code,det}/*.json`, `tests/perf/perf_baselines.json`, `models/*.json` | goldens and perf rows are independent of artifacts and **must not be lost** |
+| surviving non-artifact evidence | `tests/fixtures/{fsi,code,det}/*.json`, `tests/perf/perf_baselines.json`, `models/<org>/<model>.json` | goldens and perf rows are independent of artifacts and **must not be lost** |
 
 #### 1.1.1 The deletion is complete (verified 2026-11-27)
 

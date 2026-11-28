@@ -1,0 +1,94 @@
+{
+  "model_type": "ornith-1.5-35b-a3b",
+  "display_name": "ornith-1.5-35b-a3b",
+  "family": "ornith",
+  "variant": null,
+  "model_class": "OrnithMoeModel",
+  "model_header": "ornith_moe_model.h",
+  "passport": "libs/lsxcommon/src/ornith_moe_constants.h",
+  "namespace": "lsxcommon::ornith::frozen",
+  "format_tag": "",
+  "forge_flag": "--ornith",
+  "tokenizer_kind": 7,
+  "vault": {
+    "org": "ornith-ai",
+    "dir": "Ornith-1.5-35B-A3B",
+    "env": "LSX_TEST_ORNITH_1_5_35B_A3B_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "not-built"
+    }
+  },
+  "lifecycle_tu": [
+    "ornith_moe_model.cpp",
+    "lsx_moe_inference_pipeline.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_ornith_moe_convert"
+    ],
+    "load": [
+      "test_ornith_moe_loader"
+    ],
+    "model": [
+      "test_ornith_moe_model"
+    ],
+    "kernels": [
+      "test_ornith_moe_kernels"
+    ],
+    "selfcheck": [
+      "test_ornith_moe_selfcheck"
+    ],
+    "fsi": [
+      "test_ornith_moe_fsi_selfcheck"
+    ],
+    "code": [
+      "test_ornith_moe_code_selfcheck"
+    ],
+    "det": [
+      "test_ornith_moe_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_ornith"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_ornith",
+    "vault_subdir": "Ornith-1.5-35B-A3B",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_ornith_moe_loader": {
+      "skip": false
+    },
+    "test_ornith_moe_kernels": {
+      "resource_lock": "gpu"
+    },
+    "test_ornith_moe_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_ornith_moe_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_ornith_moe_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_ornith_moe_selfcheck": {
+      "form": "selfcheck"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "",
+  "notes": "",
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": true
+}

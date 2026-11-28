@@ -43,7 +43,7 @@ format tag distinguishable). Per the ingestion protocol § 0.1 this is a
 **sibling**: reuse the parent's converter family, loader, kernel set, expert
 cache, tool codec and base lifecycle class. No new constants header, no new
 kernels. Documented precedent for the split: `NemotronHModel` vs
-`NemotronNvfp4Model` already exist and `models/*.json` already carries both rows.
+`NemotronNvfp4Model` already exist and `models/<org>/<model>.json` already carries both rows.
 
 **0.2 Geometry** — read from `config.json` + the safetensors index (6513 tensor
 names classified, not sampled):
