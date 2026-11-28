@@ -258,3 +258,40 @@ Checked and clean by inspection:
 - **Next step:** decide which side is wrong — the fixture's edit (it removes more
   than the bos entry) or the converter's failure mode (a tokenizer without a
   `model` object should convert, since `bos` is optional by construction).
+
+### A3.13. A `bf16`-profile artifact passes the codec gate and then loads empty
+- **Status: open.** Found 2026-11-28 by running the first bf16 artifact end to end
+  (branch `build/ampere-aot-sm86-sm87`, plan Task 15). Not a pre-existing red:
+  nothing could produce a bf16 artifact before that task, so nothing could reach
+  this path.
+- **Measured:**
+  ```
+  lsxbenchmark --model <store>/microsoft/phi-4/bf16 --selfcheck
+  [load] phi-4 profile=bf16 codecs=bf16 target=nvidia:sm_120      <- gate admits
+  [phi_load] layer weights incomplete; layer marked not loaded    <- x32 (every layer)
+  exit 1
+  ```
+- **Cause:** the dense loaders are NVFP4-only. `PhiDenseLoader::LoadLayer`
+  (`libs/lsxcommon/src/phi_dense_load.cpp:89-197`) resolves every projection
+  through `fastload::FindNvfp4Suffix(nv, …)` and sets
+  `lw.loaded = attn_ok && mlp_ok && lw.d_input_norm && lw.d_post_norm`, where
+  `attn_ok`/`mlp_ok` are `LsxNvfp4Weight::d_packed` non-null. A bf16 tree has no
+  nvfp4 records — its weights are the `raw` BF16 planes — so every layer is
+  marked not loaded. `QwenDenseLoader` is the same shape; 21 loaders in the tree
+  hold `LsxNvfp4Weight` and nothing else.
+- **Not a kernel gap:** `gemv::RunLxGemmVec` already accepts `LxDtype::kBF16`
+  (`lsx_gemv.h:19,26`), so the arithmetic exists. What is missing is the dispatch
+  that connects a bf16-resident layer to it.
+- **Consequence:** Branch 2's acceptance ("loads, gates, SelfCheck correct" on a
+  3090) cannot be met for the `bf16` profile — and the reason is the loader, not
+  the absent hardware. The two bf16 artifacts in the store are therefore
+  *gateable but not runnable*; they must not be recorded as usable in any report.
+- **Fix shape (plan Task 15a, test-first steps written):** the layer-weight
+  structs gain a dense variant (device pointer + shape + `LxDtype`) beside
+  `LsxNvfp4Weight`; the loaders resolve the same suffix in `raw` when `nv` has no
+  record and accept EITHER encoding as "loaded"; the inference pipelines dispatch
+  per projection — NVFP4 → `RunLxNvfp4Gemm`, bf16 → `gemv::RunLxGemmVec`. Fixed
+  geometry either way, so R3 holds within the target group. The NVFP4 path must
+  stay byte-identical (its gates are the proof).
+- **Scope:** phi-4 and Qwen3.5-9B first (the Branch-2 slice); the other families
+  need the same change before a bf16 profile of them is loadable.

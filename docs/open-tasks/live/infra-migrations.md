@@ -108,18 +108,17 @@ other profiles of a model when it refuses the current one. The selection half is
 closed (below); ONE half remains open, found by the bootstrap conversion of real
 weights (plan Task 9a step 4):
 
-- **No converter knows what a codec profile is.** `--codec-profile` is read only
-  in `apps/lsxforge/src/main.cpp` (`DeclaredPlanes` + the cross-check that the
-  scanned tree carries no codec the profile did not declare). `grep -rn
-  codec_profile libs/lsxcommon/src` is empty, so every family converter emits
-  NVFP4 unconditionally: `lsxforge --phi --codec-profile bf16` quantizes exactly
-  as it does for `nvfp4` and is then **refused at the end of a full conversion**
-  by its own cross-check ("promised codecs … but the tree holds more"). A second
-  profile of one model cannot be produced today, so "on `nvidia:sm_86` the bf16
-  profile is chosen" has no artifact to choose.
-  **Fix shape:** give the converters a profile parameter at the quantization
-  call site (phi/qwen dense first — the two bootstrap models), not a per-family
-  copy of the profile table.
+- **CLOSED 2026-11-28 (branch `build/ampere-aot-sm86-sm87`, plan Task 15): the
+  converters know what a codec profile is.** `CodecProfile`, its spellings and one
+  predicate (`ProfileUsesNvfp4Weights`) moved to
+  `libs/lsxcommon/include/lsxcommon/codec_profile.h`, `ConvertPhiModel` /
+  `ConvertQwenModel` take the profile and fold it into their existing
+  `*_tensor_is_nvfp4(kind)` decision, and `lsxforge` passes the profile it parsed
+  instead of only validating it. Measured: `microsoft/phi-4/bf16` (mask 2, 43
+  planes) and `Qwen/Qwen3.5-9B/bf16` (mask 3, 35 planes), both `--verify` green,
+  both registered in their manifests. **The remaining half is NOT this item** —
+  the artifact now exists but no loader can read it: see `A3.13`
+  (`docs/open-tasks/live/engine-defects.md`).
 - **CLOSED 2026-11-28 (branch `build/ampere-aot-sm86-sm87`): `Resolve()` now
   SELECTS instead of guessing.** `lsx::storage::SelectProfile(org, model_dir,
   supported_mask, preference)` keeps the storage layer codec-agnostic by taking
