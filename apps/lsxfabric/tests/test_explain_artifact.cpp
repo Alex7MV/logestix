@@ -177,3 +177,50 @@ TEST_CASE("explain refuses an unknown model instead of inventing one",
     CHECK(rc != 0);
     CHECK(text.find("no-such-model") != std::string::npos);
 }
+
+TEST_CASE("an explicitly named profile is what the loader would take, and the "
+          "report says so",
+          "[explain][profile]") {
+    // The bug this case pins: the report re-ran its own ranking even when the
+    // operator had NAMED a profile, so `--localmodel .../bf16` printed
+    // "(named explicitly)" beside bf16 and then `chosen: nvfp4` — a report that
+    // disagrees with the loader it explains. BeginLoad hands the path to
+    // Resolve(), which returns the named profile, so the report must too.
+    TempDir root;
+    ScopedEnv env("LSX_ARTIFACT_ROOT", root.path().c_str());
+    MakeProfile(root.path(), "microsoft", "phi-4", "bf16", kF32 | kBF16);
+    MakeProfile(root.path(), "microsoft", "phi-4", "nvfp4", kF32 | kBF16 | kNvFp4);
+
+    // A Blackwell mask: nvfp4 outranks bf16, so a re-ranking would pick nvfp4.
+    int rc = 1;
+    const auto text = lsxfabric::ExplainArtifact(
+        (root.path() / "microsoft/phi-4/bf16").string(), kF32 | kBF16 | kNvFp4,
+        kRank, &rc);
+    INFO(text);
+    CHECK(rc == 0);
+    const auto chosen_at = text.find("chosen:");
+    REQUIRE(chosen_at != std::string::npos);
+    const std::string chosen_line = text.substr(chosen_at);
+    CHECK(chosen_line.find("bf16") != std::string::npos);
+    CHECK(chosen_line.find("nvfp4") == std::string::npos);
+}
+
+TEST_CASE("a named profile the target CANNOT run is refused, not silently "
+          "swapped",
+          "[explain][profile]") {
+    // The other half of the same rule: honouring a choice is not the same as
+    // pretending it is loadable. An operator who names nvfp4 on a bf16-only mask
+    // gets a non-zero exit and the reason — not a quiet substitution of bf16.
+    TempDir root;
+    ScopedEnv env("LSX_ARTIFACT_ROOT", root.path().c_str());
+    MakeProfile(root.path(), "microsoft", "phi-4", "bf16", kF32 | kBF16);
+    MakeProfile(root.path(), "microsoft", "phi-4", "nvfp4", kF32 | kBF16 | kNvFp4);
+
+    int rc = 0;
+    const auto text = lsxfabric::ExplainArtifact(
+        (root.path() / "microsoft/phi-4/nvfp4").string(), kF32 | kBF16, kRank,
+        &rc);
+    INFO(text);
+    CHECK(rc != 0);
+    CHECK(text.find("nvfp4") != std::string::npos);
+}

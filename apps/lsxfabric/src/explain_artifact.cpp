@@ -5,6 +5,8 @@
 
 #include <absl/strings/str_cat.h>
 
+#include "lsxcommon/hardware_target.h"
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -12,26 +14,6 @@
 namespace lsxfabric {
 
 namespace {
-
-// "f32,bf16,nvfp4" for the mask, in ascending bit order — the same spelling the
-// load gate uses, so an operator comparing the two logs sees the same words.
-std::string MaskText(uint64_t mask)
-{
-    static const struct {
-        uint64_t bit;
-        const char *name;
-    } kRows[] = {{1ull << 0, "f32"},   {1ull << 1, "bf16"},  {1ull << 2, "f16"},
-                 {1ull << 3, "i8"},    {1ull << 4, "mxfp8"}, {1ull << 5, "nvfp4"},
-                 {1ull << 6, "mxfp4"}};
-    if (mask == 0) return "none";
-    std::string out;
-    for (const auto &row : kRows) {
-        if ((mask & row.bit) == 0) continue;
-        if (!out.empty()) out.push_back(',');
-        out.append(row.name);
-    }
-    return out;
-}
 
 int RankOf(const std::vector<std::string> &preference, const std::string &name)
 {
@@ -52,12 +34,17 @@ std::string ExplainArtifact(const std::string &model_or_path, uint64_t supported
     const auto resolved =
         lsx::storage::Resolve(model_or_path, supported, preference);
 
-    // An explicit profile is a choice: report it and stop. Re-ranking it would
-    // answer a question the operator did not ask.
+    // Is the caller's argument a CHOICE rather than a model name?
+    //
+    // Decided by comparing what Resolve() honoured with what selection would
+    // pick, not by searching the string for a profile name: the string heuristic
+    // said "explicit" whenever a profile name appeared anywhere in the path, and
+    // then re-ranked it anyway — a report that disagreed with the loader.
+    const auto selected = lsx::storage::SelectProfile(
+        resolved.org, resolved.model_dir, supported, preference);
     const bool explicit_profile =
         resolved.status == lsx::storage::ResolveStatus::kArtifact &&
-        !resolved.profile.empty() &&
-        (model_or_path.find(resolved.profile) != std::string::npos);
+        (!selected.has_value() || selected->dir != resolved.dir);
 
     std::vector<lsx::storage::Resolved> candidates;
     if (!resolved.org.empty() && !resolved.model_dir.empty())
@@ -65,7 +52,8 @@ std::string ExplainArtifact(const std::string &model_or_path, uint64_t supported
             lsx::storage::ListProfiles(resolved.org, resolved.model_dir);
 
     out += absl::StrCat("model:     ", model_or_path, "\n");
-    out += absl::StrCat("target:    supports [", MaskText(supported), "]\n");
+    out += absl::StrCat("target:    supports [",
+                        lsxcommon::hw::FormatMask(supported), "]\n");
     if (resolved.org.empty() || resolved.model_dir.empty()) {
         out += absl::StrCat("resolved:  ",
                             lsx::storage::ResolveStatusName(resolved.status), " (",
@@ -93,7 +81,8 @@ std::string ExplainArtifact(const std::string &model_or_path, uint64_t supported
         }
         const uint64_t used = read.info.used_codecs;
         const bool fits = (used & ~supported) == 0;
-        out += absl::StrCat("  ", cand.profile, "  codecs=[", MaskText(used),
+        out += absl::StrCat("  ", cand.profile, "  codecs=[",
+                            lsxcommon::hw::FormatMask(used),
                             "]  rank=", RankOf(preference, cand.profile),
                             "  ", fits ? "compatible" : "incompatible",
                             (explicit_profile && cand.profile == resolved.profile)
@@ -102,16 +91,41 @@ std::string ExplainArtifact(const std::string &model_or_path, uint64_t supported
                             "\n");
     }
 
-    // The choice: what the loader would take for this target.
-    const auto chosen = lsx::storage::SelectProfile(resolved.org, resolved.model_dir,
-                                                   supported, preference);
-    if (!chosen.has_value()) {
+    // The choice. A named profile is what the loader will use — BeginLoad hands
+    // the path straight to Resolve() — so the report must not re-rank it; and a
+    // named profile the target cannot execute is a REFUSAL, not a reason to
+    // quietly substitute a sibling the operator did not ask for.
+    if (explicit_profile) {
+        const auto read = lsx::storage::ReadArtifact(resolved.dir);
+        const uint64_t used = read.status == lsx::storage::ReadStatus::kOk
+                                  ? read.info.used_codecs
+                                  : 0;
+        if ((used & ~supported) != 0) {
+            out += absl::StrCat("chosen:    ", resolved.profile,
+                                "  REFUSED on this target (needs [",
+                                lsxcommon::hw::FormatMask(used),
+                                "], target has [",
+                                lsxcommon::hw::FormatMask(supported), "])\n");
+            out += absl::StrCat("           a compatible sibling exists: ",
+                                selected.has_value() ? selected->profile
+                                                     : std::string("none"),
+                                "\n");
+            if (rc != nullptr) *rc = 1;
+            return out;
+        }
+        out += absl::StrCat("chosen:    ", resolved.profile, "  -> ",
+                            resolved.dir.string(), "  (named explicitly)\n");
+        if (rc != nullptr) *rc = 0;
+        return out;
+    }
+
+    if (!selected.has_value()) {
         out += "chosen:    no compatible profile\n";
         if (rc != nullptr) *rc = 1;
         return out;
     }
-    out += absl::StrCat("chosen:    ", chosen->profile, "  -> ",
-                        chosen->dir.string(), "\n");
+    out += absl::StrCat("chosen:    ", selected->profile, "  -> ",
+                        selected->dir.string(), "\n");
     if (rc != nullptr) *rc = 0;
     return out;
 }
