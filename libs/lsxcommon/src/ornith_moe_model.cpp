@@ -180,7 +180,9 @@ bool OrnithMoeModelBase::Load()
             // expert-cache VRAM utilization with a small central reserve.
             slots = lifecycle::ExpertCacheSlots(
                 free_bytes, per_expert, total_experts,
-                perf::CurrentKnobs().expert_slots_pct);
+                perf::CurrentKnobs().expert_slots_pct,
+                lifecycle::ExpertCacheReserveBytes(
+                    ResourceGovernor::Instance().hardware()));
             if (slots > 0 && slots < total_experts)
                 log::info(absl::StrCat(
                     "[ornith-moe-model] free=", free_bytes >> 20, "MiB, ",

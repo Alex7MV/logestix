@@ -7,6 +7,14 @@
 
 namespace lsxcommon {
 
+// How the accelerator's memory relates to the host's (design §2.8).
+//
+// kDiscrete: separate VRAM and RAM, two budgets (every desktop card).
+// kUnified:  the GPU shares system RAM — Jetson Orin/Nano — so `vram_*` is the
+//            fixed boot CARVE-OUT, not what the model may use, and a weight
+//            lease and a host lease are drawn from ONE physical pool.
+enum class MemoryModel { kDiscrete, kUnified };
+
 // One-time snapshot of the machine the governor plans for. Filled by
 // ProbeHardware() or injected by tests through GovernorOptions.hw_override.
 struct HardwareProfile {
@@ -17,6 +25,13 @@ struct HardwareProfile {
     int gpu_sm_count = 0;
     std::uint64_t vram_total_bytes = 0;
     std::uint64_t vram_free_bytes = 0;
+    // Probe-derived, never inferred from `gpu_name`: a name is a marketing
+    // string, and guessing "Orin" from it would silently change the arithmetic
+    // on a machine nobody tested. kDiscrete is the default so every existing
+    // baseline keeps the arithmetic it was measured under.
+    MemoryModel memory_model = MemoryModel::kDiscrete;
+    // kUnified only: the RAM the GPU may actually draw on. 0 on kDiscrete.
+    std::uint64_t unified_shared_bytes = 0;
 };
 
 // Injectable raw probes. Production values are wired in ProbeHardware();
@@ -26,6 +41,10 @@ struct HardwareQueries {
     void (*ram_bytes)(std::uint64_t *total, std::uint64_t *available) = nullptr;
     void (*gpu_info)(std::string *name, int *sm_count) = nullptr;
     void (*vram_bytes)(std::uint64_t *total, std::uint64_t *free_b) = nullptr;
+    // Reports whether the device shares system RAM, and how much of it the GPU
+    // may use. Null leaves the profile discrete, which is the safe default:
+    // guessing "unified" would halve a reserve on a machine with its own VRAM.
+    void (*unified_shared)(bool *integrated, std::uint64_t *shared_bytes) = nullptr;
 };
 
 // Pure aggregation: null query entries leave the corresponding fields at
@@ -133,6 +152,12 @@ public:
     std::uint64_t CommittedVramBytes() const;
     std::uint64_t CommittedRamBytes() const;
 
+    // The VRAM budget a lease may claim: total minus the keep-out, or — on
+    // unified memory — the shared system pool, because the carve-out reported by
+    // cudaMemGetInfo is fixed at boot and says nothing about what a model may
+    // use. Public so a load report can state the budget it planned against.
+    std::uint64_t GrantableVramBytes() const;
+
     // Bookkeeping sanity (spec: drift reconciliation at Infer boundaries):
     // queried_free + our committed VRAM must not exceed total + slack.
     // Returns false (and logs a warning) on drift. Never throws.
@@ -179,6 +204,40 @@ namespace lifecycle {
 // its full budget. The load-time allocators degrade by halves when an
 // allocation fails, so an optimistic estimate costs a retry, not a crash.
 inline constexpr std::size_t kExpertCacheVramReserveBytes = 8ull << 30;
+
+// The expert-cache reserve for a given budget: min(8 GiB, 25 % of it).
+//
+// The constant above is calibrated on a 5090. On a 16 GB Jetson Orin it would be
+// half the machine, so the reserve has to scale with the budget it is taken from
+// — and it is a FUNCTION, not a second constant, so the two cannot drift and
+// both call sites share one rule (design §2.8).
+//
+// Pure and host-only: no probe, no device, so the whole ladder is testable where
+// no Jetson is attached.
+inline constexpr std::size_t ExpertCacheReserveBytes(
+    std::uint64_t budget_bytes) noexcept
+{
+    const std::uint64_t quarter = budget_bytes / 4;
+    return static_cast<std::size_t>(
+        quarter < kExpertCacheVramReserveBytes ? quarter
+                                               : kExpertCacheVramReserveBytes);
+}
+
+// The reserve for a probed machine. This is the overload a LOADER calls, and the
+// distinction it makes is the whole point of the memory model:
+//
+//   kDiscrete — the calibrated 8 GiB constant, EXACTLY. A 5090 must keep the
+//               arithmetic every existing perf baseline was measured under; a
+//               "min(8 GiB, 25 %)" applied to its free-VRAM reading would
+//               quietly hand the expert cache an extra quarter of a GiB.
+//   kUnified  — min(8 GiB, 25 % of the shared pool), because on a 16 GB Orin the
+//               constant is half the machine.
+inline constexpr std::size_t ExpertCacheReserveBytes(
+    const HardwareProfile &hw) noexcept
+{
+    if (hw.memory_model != MemoryModel::kUnified) return kExpertCacheVramReserveBytes;
+    return ExpertCacheReserveBytes(hw.unified_shared_bytes);
+}
 
 // Pure, host-only slot estimator: usable = (free - reserve) * slots_pct / 100,
 // clamped to the model's total expert count. per_expert_bytes == 0 (unknown

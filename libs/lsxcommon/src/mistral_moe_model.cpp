@@ -160,7 +160,9 @@ bool MistralSmall4MoeModel::Load()
             // time (the 2048-token bench OOMs with 1838 slots).
             slots = lifecycle::ExpertCacheSlots(
                 free_bytes, per_expert, total_experts,
-                perf::CurrentKnobs().expert_slots_pct);
+                perf::CurrentKnobs().expert_slots_pct,
+                lifecycle::ExpertCacheReserveBytes(
+                    ResourceGovernor::Instance().hardware()));
         }
     }
     if (slots <= 0) slots = 4;

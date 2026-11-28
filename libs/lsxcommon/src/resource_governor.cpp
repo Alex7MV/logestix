@@ -35,6 +35,14 @@ bool ResourceGovernor::Initialize(const GovernorOptions &opts)
                  hw_.cpu_cores, hw_.ram_available_bytes >> 20,
                  hw_.ram_total_bytes >> 20, hw_.gpu_name, hw_.gpu_sm_count,
                  hw_.vram_free_bytes >> 20, hw_.vram_total_bytes >> 20);
+    // The memory model decides the budget and the reserve rule, so it is stated
+    // rather than inferred by whoever reads the log next.
+    if (hw_.memory_model == MemoryModel::kUnified)
+        spdlog::info("[governor] unified memory: shared pool={} MiB, "
+                     "expert-cache reserve={} MiB (min(8 GiB, 25%))",
+                     hw_.unified_shared_bytes >> 20,
+                     lifecycle::ExpertCacheReserveBytes(
+                         hw_.unified_shared_bytes) >> 20);
     initialized_ = true;
     return true;
 }
@@ -68,11 +76,62 @@ std::uint64_t ResourceGovernor::CommittedRamBytes() const
     return ram_committed_;
 }
 
+namespace {
+
+// Which budget a lease of `kind` draws on, given the memory model.
+//
+// Discrete: two independent pools — VRAM leases against (total - keep-out), host
+// leases against RAM. Unified: ONE physical pool, so a host lease is charged
+// against the same committed counter the device uses; otherwise a 16 GiB Orin
+// happily accepts a 15 GiB model and then OOMs the OS, which is the failure
+// design §2.8 exists to prevent.
+struct BudgetView {
+    bool from_vram_counter = true;   // which `committed` field to charge
+    std::uint64_t grantable = 0;
+};
+
+BudgetView BudgetFor(const HardwareProfile &hw, const GovernorOptions &opts,
+                     LeaseKind kind)
+{
+    BudgetView v;
+    const bool vram = IsVramLease(kind);
+    const bool unified = hw.memory_model == MemoryModel::kUnified &&
+                         hw.unified_shared_bytes > 0;
+    if (!unified) {
+        v.from_vram_counter = vram;
+        v.grantable = vram ? (hw.vram_total_bytes > opts.vram_keep_out_bytes
+                                  ? hw.vram_total_bytes - opts.vram_keep_out_bytes
+                                  : 0)
+                           : hw.ram_total_bytes;
+        return v;
+    }
+    // One pool: every kind is charged against the same counter, and the budget
+    // is the shared system pool.
+    v.from_vram_counter = true;
+    v.grantable = hw.unified_shared_bytes;
+    return v;
+}
+
+} // namespace
+
 std::uint64_t ResourceGovernor::GrantableVramLocked() const
 {
+    // Unified memory: the device draws on system RAM, and `vram_total_bytes`
+    // (cudaMemGetInfo) is only the boot carve-out. Budgeting against the
+    // carve-out refuses a model that would fit — a 10 GiB model on a 16 GiB Orin
+    // against an 8 GiB carve-out — so the shared pool is the budget.
+    if (hw_.memory_model == MemoryModel::kUnified &&
+        hw_.unified_shared_bytes > 0)
+        return hw_.unified_shared_bytes;
     return hw_.vram_total_bytes > opts_.vram_keep_out_bytes
                ? hw_.vram_total_bytes - opts_.vram_keep_out_bytes
                : 0;
+}
+
+std::uint64_t ResourceGovernor::GrantableVramBytes() const
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    return GrantableVramLocked();
 }
 
 // ── Adaptive resize + drift reconciliation ──────────────────────────────────
@@ -86,10 +145,10 @@ bool ResourceGovernor::ResizeLease(Lease &lease, std::uint64_t new_bytes)
     new_bytes = std::clamp(new_bytes, lease.min_bytes_, lease.max_bytes_);
     if (new_bytes == lease.bytes_) return true;
 
-    const bool vram = IsVramLease(lease.kind_);
-    std::uint64_t &committed = vram ? vram_committed_ : ram_committed_;
-    const std::uint64_t grantable =
-        vram ? GrantableVramLocked() : hw_.ram_total_bytes;
+    const BudgetView budget = BudgetFor(hw_, opts_, lease.kind_);
+    std::uint64_t &committed =
+        budget.from_vram_counter ? vram_committed_ : ram_committed_;
+    const std::uint64_t grantable = budget.grantable;
 
     if (new_bytes > lease.bytes_ &&
         committed - lease.bytes_ + new_bytes > grantable) {
@@ -188,10 +247,10 @@ Lease ResourceGovernor::Acquire(LeaseKind kind, std::uint64_t bytes,
         spdlog::error("[governor] Acquire before Initialize()");
         return {};
     }
-    const bool vram = IsVramLease(kind);
-    std::uint64_t &committed = vram ? vram_committed_ : ram_committed_;
-    const std::uint64_t grantable =
-        vram ? GrantableVramLocked() : hw_.ram_total_bytes;
+    const BudgetView budget = BudgetFor(hw_, opts_, kind);
+    std::uint64_t &committed =
+        budget.from_vram_counter ? vram_committed_ : ram_committed_;
+    const std::uint64_t grantable = budget.grantable;
 
     std::uint64_t lo = policy.min_bytes, hi = policy.max_bytes;
     if (policy.mode == LeasePolicy::Mode::kAdaptive) {
@@ -202,8 +261,8 @@ Lease ResourceGovernor::Acquire(LeaseKind kind, std::uint64_t bytes,
     if (committed + bytes > grantable) {
         spdlog::error("[governor] {} lease REFUSED: requested {} MiB, "
                       "committed {} MiB, grantable {} MiB",
-                      vram ? "VRAM" : "RAM", bytes >> 20, committed >> 20,
-                      grantable >> 20);
+                      budget.from_vram_counter ? "VRAM" : "RAM", bytes >> 20,
+                      committed >> 20, grantable >> 20);
         if (policy.mode == LeasePolicy::Mode::kRequired) {
             if (!opts_.relax_memory_refusal) return {};
             // relaxed (tests only): grant anyway, accounting may exceed
@@ -221,7 +280,12 @@ Lease ResourceGovernor::Acquire(LeaseKind kind, std::uint64_t bytes,
 void ResourceGovernor::ReleaseLeaseBytes(LeaseKind kind, std::uint64_t bytes)
 {
     std::lock_guard<std::mutex> lk(mu_);
-    std::uint64_t &committed = IsVramLease(kind) ? vram_committed_ : ram_committed_;
+    // The same view Acquire used: on unified memory the host leases were charged
+    // against the device counter, so returning them to the host counter would
+    // leak the budget and eventually refuse every acquisition.
+    const BudgetView budget = BudgetFor(hw_, opts_, kind);
+    std::uint64_t &committed =
+        budget.from_vram_counter ? vram_committed_ : ram_committed_;
     // A lease may outlive Shutdown() (which resets the counters) or a relaxed
     // over-commit; releasing more than is booked must clamp to zero instead of
     // wrapping the unsigned counter to ~2^64.
@@ -253,6 +317,18 @@ HardwareProfile BuildHardwareProfile(const HardwareQueries &q)
     if (q.ram_bytes) q.ram_bytes(&hw.ram_total_bytes, &hw.ram_available_bytes);
     if (q.gpu_info) q.gpu_info(&hw.gpu_name, &hw.gpu_sm_count);
     if (q.vram_bytes) q.vram_bytes(&hw.vram_total_bytes, &hw.vram_free_bytes);
+    if (q.unified_shared) {
+        bool integrated = false;
+        std::uint64_t shared = 0;
+        q.unified_shared(&integrated, &shared);
+        if (integrated) {
+            hw.memory_model = MemoryModel::kUnified;
+            // A probe that reports integrated without saying how much is
+            // incoherent; the host's total RAM is then the only sane answer, and
+            // a lease can at least not exceed it.
+            hw.unified_shared_bytes = shared > 0 ? shared : hw.ram_total_bytes;
+        }
+    }
     return hw;
 }
 
@@ -311,12 +387,40 @@ static void QueryVram(std::uint64_t *total, std::uint64_t *free_b)
     *free_b = fb;
 }
 
+// Unified memory, from the DEVICE: `prop.integrated` is what the driver reports
+// for a GPU that shares system RAM (Jetson Orin/Nano). The name is not consulted
+// — "Orin" in a marketing string is not a memory model (design §2.8).
+//
+// The size is the host's physical RAM rather than the carve-out: on unified
+// memory the carve-out is fixed at boot and the remainder is still available to
+// the GPU through the same physical pages.
+static void QueryUnifiedShared(bool *integrated, std::uint64_t *shared_bytes)
+{
+    *integrated = false;
+    *shared_bytes = 0;
+    int ndev = 0;
+    if (cudaGetDeviceCount(&ndev) != cudaSuccess || ndev < 1) return;
+    cudaDeviceProp p{};
+    if (cudaGetDeviceProperties(&p, 0) != cudaSuccess) return;
+    if (!p.integrated) return;
+    *integrated = true;
+    std::uint64_t ram_total = 0, ram_avail = 0;
+#if defined(_WIN32)
+    QueryRamWin(&ram_total, &ram_avail);
+#else
+    QueryRamPosix(&ram_total, &ram_avail);
+#endif
+    *shared_bytes = ram_total;
+}
+
 HardwareProfile ProbeHardware()
 {
 #if defined(_WIN32)
-    HardwareQueries q{QueryCoresWin, QueryRamWin, QueryGpuInfo, QueryVram};
+    HardwareQueries q{QueryCoresWin, QueryRamWin, QueryGpuInfo, QueryVram,
+                      QueryUnifiedShared};
 #else
-    HardwareQueries q{QueryCoresPosix, QueryRamPosix, QueryGpuInfo, QueryVram};
+    HardwareQueries q{QueryCoresPosix, QueryRamPosix, QueryGpuInfo, QueryVram,
+                      QueryUnifiedShared};
 #endif
     return BuildHardwareProfile(q);
 }

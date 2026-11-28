@@ -3062,6 +3062,11 @@ lsx_copy_arrow_dlls(test_resource_governor)
 
 add_test(NAME test_resource_governor COMMAND test_resource_governor)
 
+# ── Unified memory (design §2.8): the Jetson arithmetic, host-only ─────────
+# Injected through GovernorOptions.hw_override, so no device is needed: the
+# point is the budget arithmetic, not the probe.
+lsx_add_test(NAME test_governor_unified_memory LABEL fast LINK lsxcommon)
+
 add_executable(test_hardware_profile test_hardware_profile.cpp)
 target_link_libraries(test_hardware_profile PRIVATE lsxcommon Catch2::Catch2WithMain)
 
