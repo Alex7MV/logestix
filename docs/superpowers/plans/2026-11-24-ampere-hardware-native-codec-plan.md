@@ -51,6 +51,74 @@ store?" — withdrawn. The intermediate path segment is removed, so
 "detect a tree by folder name" sites to test `artifact.fb`, and adds a `fast` guard
 that the segment cannot come back.
 
+**Revision 2026-11-28 (status audit — what is built, what is not).** The plan was
+executed up to the end of Branch 1 and stopped there. This revision records the
+*measured* state instead of re-planning it, and it corrects every task whose
+implementation diverged from the text below: a later executor reads this document
+as a description of the tree, so a stale interface here is a defect. Of the original
+25 tasks, **nine are done** (1–7, 4a, 9a), **two are done-with-residue** (8, 9), **one
+is partial** (9b) and **thirteen have no code at all** (10 and 11–22). Five tasks are
+**new** (8a, 9c, 9d, 9e, 9f): each is a hole the finished code exposed, not a change
+of scope.
+
+> **Executor note (2026-11-28).** `AGENTS.md` forbids Task subagents, so the header's
+> `subagent-driven-development` option is not available in this repository: execute
+> inline with `superpowers:executing-plans`, one task per commit, and run the scoped
+> verification AGENTS.md prescribes for each change (the `fast` preset plus that
+> model's own targets; label sweeps only for shared-layer work).
+
+Store and lifecycle facts, measured 2026-11-28 (method and evidence in
+§ *Lifecycle audit*):
+
+| quantity | measured value |
+|---|---|
+| registry rows (`models/<org>/<model>.json`) | **48**, each declaring all 10 stages and all 5 gate targets |
+| checkpoints under `LSX_SOURCE_ROOT=/mnt/fast_storage/lsx_model` | **51 directories over 24 orgs**: 48 correspond to registry rows, **3 do not** (`baidu/ERNIE-5.5-Flash-Base-BF16`, `JetBrains/Mellum2-12B-A2.5B-Thinking`, `JetBrains/Mellum2.1-12B-A2.5B-Instruct` — open task `W`) |
+| artifacts under `LSX_ARTIFACT_ROOT=/mnt/fast_storage/lsx_artifact` | **3** — `microsoft/phi-4/nvfp4`, `Qwen/Qwen3.5-9B/nvfp4`, `google/gemma-4-12B-it/nvfp4` |
+| profiles other than `nvfp4` | **0** — no converter can produce one (**Task 9f**) |
+| `lsxforge --verify` on those three | green: `declared_mask == actual_mask` (34 / 35 / 34), 0 problems, `--verify` deep-clean on `test_bootstrap_artifacts` |
+| rows whose real-weight gates actually ran | **3 of 48**; the other 45 SKIP naming `<org>/<dir>/<profile>` |
+| `ctest --preset linux-debug` (label `fast`) | **184/184 green**, 11 skipped, 166 s |
+
+### Task status (2026-11-28)
+
+`done` = the task's tests exist and pass; `residue` = the deliverable exists but a
+hole inside it, named by a new task; `partial` = half the deliverable; `not
+started` = no commit, no code.
+
+| # | task | status | landed in | evidence / hole |
+|---|---|---|---|---|
+| 1 | `PlaneCodec` enum, names, parsing | **done** | `bb6612eb` | `hardware_target.h`; 17 cases |
+| 2 | `HardwareTarget` + `SupportedCodecs` | **done** | `bb6612eb` | one `switch`, Ampere row = F32/BF16/F16/I8 |
+| 3 | `CheckCodecs` + `ActiveTarget` | **done** | `bb6612eb` | probed once; `SetActiveTargetForTesting` is the only override |
+| 4 | `libs/lsxstorage` skeleton + roots | **done** | `cef08396` | both roots now `std::optional` (`a7afd49e`) |
+| 4a | remove the `logestix/` segment | **done** | `8c691a89` | `test_path_shape_guard` (6 cases, 2 allowlisted files) |
+| 5 | `artifact.fb` schema, reader, verifier | **done** | `a7873320` | `artifact.fbs` v1 + `layer_codec[]`; 6 cases |
+| 6 | `EmitArtifact` writer | **done** | `a6788275` | tmp+rename, digests, self-verify; 12 cases |
+| 7 | `VerifyArtifact` + `--verify` | **done** | `2c27c7de` | 19 cases; D1–D5 enforced per *dtype column* only → **9c** |
+| 8 | `--codec-profile` + emitter wired | **residue** | `1b8f324b` | emitter skipped for the default profile → **8a** |
+| 9 | admission gate in `BeginLoad` | **residue** | `b4c05cb1` | 5 stages; profile choice not target-aware → **9e** |
+| 9a | bootstrap conversion | **done, not as written** | `7575c87e` | 3 `nvfp4` artifacts, no `bf16`; slice never grew → **9f** |
+| 9b | per-layer codec map leaves the index | **partial** | `a7873320` | `layer_codec[]` + `LayerUsesCodec` exist; index keys still written/read → **9d** |
+| 10 | `MemoryModel` in the governor | **not started** | — | `resource_governor.h:12-20,181` |
+| 11 | `LSX_CUDA_ARCH` accepts Ampere | **not started** | — | `CMakeLists.txt:38-53` |
+| 12 | arch-`a` object libs only for 12x | **not started** | — | `libs/lsxcommon/CMakeLists.txt:651-671`, `tests/CMakeLists.txt:1440-1460` |
+| 13 | toolchain-agnostic toolkit guard | **not started** | — | `test_cuda_toolkit_guard.cu:5,50-51,95-97` |
+| 14 | Ampere presets + degradation audit | **not started** | — | `CMakePresets.json:10-75` has no `86`; no `cmake/toolchains/` |
+| 15 | `bf16` profile for the slice | **not started** | — | `grep CodecProfile libs/lsxcommon/src` is empty |
+| 16 | 3090/Jetson acceptance + docs | **not started** | — | `docs/NVIDIA_DOCS_AMPERE.md` has been **removed** from the tree — see the note in Task 16 |
+| 17 | INT8 weight quantizer | **not started** | — | — |
+| 18 | `int8-w8a16` converter side | **not started** | — | — |
+| 19 | W8A16 decode GEMV | **not started** | — | — |
+| 20 | W8A16 prefill GEMM | **not started** | — | — |
+| 21 | per-profile goldens | **not started** | — | — |
+| 22 | 3090 + Orin acceptance | **not started** | — | — |
+| 8a | flagless conversion publishes an artifact | **new, not started** | — | defect F6 |
+| 9c | expert plane declares its codec | **new, not started** | — | defect F3; blocks 15/18 |
+| 9d | rule 5 enforced; index-codec readers gone | **new, not started** | — | defect F4 |
+| 9e | target-aware profile selection + `--explain-artifact` | **new, not started** | — | defect F5, open task `V` |
+| 9f | grow the artifact store + registry/store guard | **new, not started** | — | defect F1/F7/F8 |
+
 ## Global Constraints
 
 - **No software emulation (I1).** A profile may only contain `PlaneCodec` values the
@@ -144,6 +212,17 @@ only defence.
 An eighth, operational: **a half-written tree with no `artifact.fb`** makes the gate
 refuse for a reason that looks like a codec bug. → `PreflightDisk` (Tasks 6, 8).
 
+Two more, added by the 2026-11-28 status audit because the shipped code shows they
+are reachable today, not hypothetically:
+
+9. **A tool reports success and publishes nothing** — `lsxforge` without
+   `--codec-profile` writes a tree, exits 0 and emits no `artifact.fb`, so the tree
+   the user just "converted" can never load. → **Task 8a**.
+10. **The registry claims a profile the store does not hold** — `status: built` is
+    hand-written and no compiled guard compares it with `IsArtifactDir()` or with
+    the perf row's date, so a verdict can outlive the tree it described. →
+    **Task 9f**.
+
 ---
 
 # Branch 1 — `feat/lsxstorage-hardware-codec-contract`
@@ -152,6 +231,15 @@ Branch from `main`. Merges alone; produces working, testable software without
 Branch 2 (all existing 5090 behaviour preserved after reconversion).
 
 ### Task 1: `PlaneCodec` enum, names, parsing
+
+> **DONE (`bb6612eb`).** Steps 1–5 executed; `tests/test_hardware_target.cpp`
+> carries **17 cases** (the three below plus the parse/format edges).
+> **As built, differs from the text below:** the enum members *are* the bit
+> values (`kF32 = 1ull << 0`, …) and `Mask()` is a `static_cast`, so there is no
+> second `1 << n` table to drift; `kNone = 0` exists so a parsed name is never
+> confused with "unset". `PlaneCodecName`/`ParsePlaneCodec` read one
+> `kCodecNames[]` table, so a name cannot parse to one codec and render as
+> another. The header carries no absl/Arrow/FlatBuffers, as required.
 
 **Files:**
 - Create: `libs/lsxcommon/include/lsxcommon/hardware_target.h`
@@ -166,7 +254,7 @@ Branch 2 (all existing 5090 behaviour preserved after reconversion).
   `const char *PlaneCodecName(PlaneCodec)`; `bool ParsePlaneCodec(std::string_view,
   PlaneCodec *)`; `std::string FormatMask(CodecMask)`.
 
-- [ ] **Step 1: Write the failing test** — `tests/test_hardware_target.cpp`:
+- [x] **Step 1: Write the failing test** — `tests/test_hardware_target.cpp`:
 
 ```cpp
 TEST_CASE("plane codec bits are stable") {
@@ -195,24 +283,37 @@ TEST_CASE("FormatMask renders exactly the set bits, ascending") {
 }
 ```
 
-- [ ] **Step 2: Run it and confirm failure**
+- [x] **Step 2: Run it and confirm failure**
 
 Run: `cmake --build build/linux-debug --target test_hardware_target -j` → FAIL to
 compile (`hardware_target.h` not found).
 Register the target first with `lsx_add_test(NAME test_hardware_target LABEL fast)`
 so the failure is a link/compile failure of a known target, not a missing target.
 
-- [ ] **Step 3: Implement** `hardware_target.h` (POD only, `#include <cstdint>`,
+- [x] **Step 3: Implement** `hardware_target.h` (POD only, `#include <cstdint>`,
   `<string>`, `<string_view>`; no absl/arrow/flatbuffers) and `hardware_target.cpp`.
   `PlaneCodecName` returns the lowercase names used by `--codec-profile` and
   `artifact.fb`; `ParsePlaneCodec` accepts exactly those plus `"i8"` for `kI8Sym`.
   Comment at the top: *storage encoding, not execution path* (spec §2.2).
 
-- [ ] **Step 4: Run and confirm pass** — `ctest --test-dir build/linux-debug -R test_hardware_target`
+- [x] **Step 4: Run and confirm pass** — `ctest --test-dir build/linux-debug -R test_hardware_target`
 
-- [ ] **Step 5: Commit** — `feat: add PlaneCodec storage-encoding enum with names and parsing`
+- [x] **Step 5: Commit** — `feat: add PlaneCodec storage-encoding enum with names and parsing`
 
 ### Task 2: `HardwareTarget` + the `SupportedCodecs` table
+
+> **DONE (`bb6612eb`).** The table is one `switch` with the hardware reason per
+> row. **As built, differs from the text below:** `TargetFromId` takes
+> `std::string_view` (not `std::string`); `operator==`/`operator!=` were added so
+> tests and callers compare targets without spelling `.Id()`. The CPU row is not
+> a second table: `SupportedCodecs` derives the mask from the arch *string* via
+> `CpuMaskForArch`, so `TargetFromId("cpu:avx512+bf16")` and
+> `TargetFromCpuFeatures(true,true,…)` cannot disagree. `TargetFromCpuFeatures`
+> with no usable ISA returns `Vendor::kUnknown` (gate fails closed) rather than a
+> `cpu:` id with an empty mask. Ampere's row is
+> `F32|BF16|F16|I8` with the GA10x reason in the comment
+> (`mma.m16n8k16` f16/bf16, `mma.m16n8k32.s8`, no E4M3/E2M1) — consistent with
+> the Ampere reference (§A2/§A4 of the MCP export).
 
 **Files:**
 - Modify: `libs/lsxcommon/include/lsxcommon/hardware_target.h`, `src/hardware_target.cpp`
@@ -228,7 +329,7 @@ so the failure is a link/compile failure of a known target, not a missing target
   `HardwareTarget TargetFromCpuFeatures(bool avx512, bool bf16, bool fp16, bool vnni,
   bool neon, bool dotprod)`.
 
-- [ ] **Step 1: Write the failing test** — the table, verbatim from spec §2.3:
+- [x] **Step 1: Write the failing test** — the table, verbatim from spec §2.3:
 
 ```cpp
 TEST_CASE("Blackwell executes all seven plane codecs") {
@@ -282,20 +383,32 @@ TEST_CASE("unknown compute capability yields kUnknown, not a default") {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure** — unimplemented symbols.
+- [x] **Step 2: Run and confirm failure** — unimplemented symbols.
 
-- [ ] **Step 3: Implement** the table as one `switch` on `(vendor, arch)` with the
+- [x] **Step 3: Implement** the table as one `switch` on `(vendor, arch)` with the
   hardware reason as a comment per row (spec §2.3). `TargetFromComputeCapability`
   returns `kUnknown` for anything outside `{12.0, 12.1, 8.6, 8.7}` — including
   `8.0`, per AGENTS.md. `TargetFromCpuFeatures` builds the arch string from feature
   flags in a **fixed order**: `avx512`, `+bf16`, `+fp16`, `+vnni`; for neon,
   `neon`, `+dotprod`.
 
-- [ ] **Step 4: Run and confirm pass.**
+- [x] **Step 4: Run and confirm pass.**
 
-- [ ] **Step 5: Commit** — `feat: add HardwareTarget and the SupportedCodecs capability table`
+- [x] **Step 5: Commit** — `feat: add HardwareTarget and the SupportedCodecs capability table`
 
 ### Task 3: `CheckCodecs` — I3 as a pure function — and `ActiveTarget`
+
+> **DONE (`bb6612eb`).** `CheckCodecs` is the three-line function this task
+> specified, with two refusal wordings added: an unknown vendor says *"no
+> supported accelerator detected"* and a named-but-unimplemented target says
+> *"not implemented in this build"* — both distinct from "you are missing codec
+> X", which is what the operator needs to read. `ActiveTarget()` probes once
+> under a `std::mutex` (not `std::once_flag`, because
+> `ResetActiveTargetForTesting()` must be able to drop the cached probe);
+> `hardware_target.cpp` may call `cudaGetDeviceCount`/`cudaGetDeviceProperties`
+> because it is a host TU in `lsxcommon`, never reached from `.cu`. A present but
+> untargeted device (sm_80/sm_89) deliberately does **not** fall through to the
+> CPU row.
 
 **Files:**
 - Modify: `libs/lsxcommon/include/lsxcommon/hardware_target.h`, `src/hardware_target.cpp`
@@ -308,7 +421,7 @@ TEST_CASE("unknown compute capability yields kUnknown, not a default") {
   `const HardwareTarget &ActiveTarget()`; `void SetActiveTargetForTesting(const
   HardwareTarget &)`; `void ResetActiveTargetForTesting()`.
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```cpp
 TEST_CASE("gate allows a subset and reports the exact missing bits") {
@@ -337,9 +450,9 @@ TEST_CASE("ActiveTarget override is scoped to the test process") {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure.**
+- [x] **Step 2: Run and confirm failure.**
 
-- [ ] **Step 3: Implement.** `CheckCodecs` is three lines: unknown vendor → refuse;
+- [x] **Step 3: Implement.** `CheckCodecs` is three lines: unknown vendor → refuse;
   `SupportedCodecs(t) == 0` → refuse "target not implemented"; otherwise
   `missing = used & ~supported`. `ActiveTarget()` resolves once under
   `std::once_flag`: `cudaGetDeviceProperties(&p, 0)` when a device exists (guard the
@@ -347,12 +460,37 @@ TEST_CASE("ActiveTarget override is scoped to the test process") {
   (`__builtin_cpu_supports("avx512f")`, `"avx512bf16"`, `"avx512fp16"`,
   `"avx512vnni"`; NEON via `__aarch64__` + `__ARM_FEATURE_DOTPROD`).
 
-- [ ] **Step 4: Run and confirm pass** on the 5090 host — `ActiveTarget().Id()` must
+- [x] **Step 4: Run and confirm pass** on the 5090 host — `ActiveTarget().Id()` must
   be `nvidia:sm_120` there; add a `SKIP`-guarded case asserting that.
 
-- [ ] **Step 5: Commit** — `feat: add the codec admission gate as a pure function plus active-target resolution`
+- [x] **Step 5: Commit** — `feat: add the codec admission gate as a pure function plus active-target resolution`
 
 ### Task 4: `libs/lsxstorage` skeleton and root resolution
+
+> **DONE (`cef08396`, then reshaped).** `libs/lsxstorage` exists with
+> `roots.h/.cpp`, links spdlog + FlatBuffers, and `lsxcommon::lsx_model_models_dir()` /
+> `lsx_cache_dir()` / `lsx_cache_path()` are one-line forwarders. **As built,
+> supersedes several details below — do not re-create them:**
+>
+> - `ArtifactDir(org, model_dir, profile)`, **not** `(family, model, profile)`:
+>   the artifact store mirrors the source store `<org>/<model>/<profile>`
+>   (`8c691a89`), so the first two segments are the *store's* spelling
+>   (`microsoft`, `phi-4`), not the manifest's family/model_type.
+> - Both roots are `std::optional<fs::path>` and **neither has a default**:
+>   `LSX_SOURCE_ROOT` and `LSX_ARTIFACT_ROOT` are required configuration
+>   (`a7afd49e`). The plan's "SourceRoot falls back to the platform default" is
+>   withdrawn — a guessed store is how a loader reads the wrong tree.
+> - `LegacyDir()` is **deleted** (the `logestix/` segment is gone, Task 4a).
+> - Added by the re-measurement (`72904bef`, `1c6ad30a`, `a7afd49e`):
+>   `FindSourceModel(name, why*)`, `ListSourceModels()`, `ListPlaceholderDirs()`
+>   — the source store is org-nested, so finding a checkpoint by name is no
+>   longer a path join, and a download that exists without weights must be
+>   distinguishable from one that does not exist.
+>
+> The test block below is the *pre-org-nesting* contract and is kept for the
+> precedence questions it asks (optional root, cache precedence, forwarders);
+> the literal expectations are in `tests/test_storage_roots.cpp` (**26 cases**),
+> which is the authority.
 
 **Files:**
 - Create: `libs/lsxstorage/CMakeLists.txt`
@@ -369,7 +507,7 @@ TEST_CASE("ActiveTarget override is scoped to the test process") {
 - Constraint: `lsxstorage` links FlatBuffers (from the `flatbuffers` target already
   in `third_party`) + spdlog only. **It must not link or include `lsxcommon`.**
 
-- [ ] **Step 1: Write the failing test** — use `setenv`/`unsetenv` in a RAII helper:
+- [x] **Step 1: Write the failing test** — use `setenv`/`unsetenv` in a RAII helper:
 
 ```cpp
 TEST_CASE("artifact root is optional and never invented") {
@@ -408,26 +546,39 @@ TEST_CASE("cache dir precedence is unchanged by the move") {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure** (target absent).
+- [x] **Step 2: Run and confirm failure** (target absent).
 
-- [ ] **Step 3: Implement** by *moving* `path_registry.cpp`'s body into
+- [x] **Step 3: Implement** by *moving* `path_registry.cpp`'s body into
   `lsx::storage` and leaving `lsxcommon::lsx_model_models_dir()` /
   `lsx_cache_dir()` / `lsx_cache_path()` as one-line forwarders. Update
   `libs/CMakeLists.txt` ordering. `libs/lsxcommon/CMakeLists.txt` gains
   `target_link_libraries(... lsxstorage)` on the host-only target that now needs it.
 
-- [ ] **Step 4: Run and confirm pass**, then prove no regression:
+- [x] **Step 4: Run and confirm pass**, then prove no regression:
   `ctest --test-dir build/linux-debug -R "test_storage_roots|test_core|test_path" `.
 
-- [ ] **Step 5: Commit** — `refactor: move model-root resolution into libs/lsxstorage behind forwarders`
+- [x] **Step 5: Commit** — `refactor: move model-root resolution into libs/lsxstorage behind forwarders`
 
 ### Task 4a: Remove the `logestix/` path segment
 
-**Why.** Every converted tree used to live at `<base>/<Model>/logestix/` inside the
-source vault, so 538 sites spell `fs::path(x) / "logestix"`. The artifact store makes
-that segment redundant (spec §2.4.2), and it is actively harmful because three
-detection sites use the folder *name* as the "is this a converted tree?" marker
-instead of `artifact.fb`.
+> **DONE (`8c691a89`, folded together with the org-nested artifact path).**
+> Measured now: `grep -rn '"logestix"' libs apps tests` returns 6 lines, all
+> comments or the two allowlisted sites (`path_registry.cpp` for
+> `~/.cache/logestix`, `tools/lsx_paths.py` for recognising a pre-split tree).
+> `IsArtifactDir()` exists in `lsxstorage/artifact.h` and the three former
+> folder-name detectors use it. `tests/test_path_shape_guard.cpp` has **6 cases**
+> and scans `libs/`, `apps/`, `tests/` — plus the Python spelling, which the plan
+> missed and a reference runbook actually uses.
+>
+> **As built:** the rewrite was not a blind scripted removal — the artifact path
+> was *redefined* to mirror the source store in the same commit, so 538 sites did
+> not become `fs::path(x)` but `ArtifactDir(org, model_dir, profile)` where an
+> artifact was meant. Anything the plan describes as "one mechanical rewrite" is
+> therefore historical.
+
+**Why.** The artifact store made that segment redundant (spec §2.4.2), and it was
+actively harmful because three detection sites used the folder *name* as the "is
+this a converted tree?" marker instead of `artifact.fb`.
 
 **Files:**
 - Modify (`libs/` 144 sites / 84 files, `apps/` 3 / 1, `tests/` 391 / 142 — mechanical
@@ -446,7 +597,7 @@ instead of `artifact.fb`.
   `<LSX_ARTIFACT_ROOT>/<org>/<model_dir>/<profile>/{artifact.fb,pinned,experts,…}`.
   No API change; `cfg_.model_path` stays the thing every join hangs off.
 
-- [ ] **Step 1: Write the failing guard test** (the shape of `test_logging_guard`:
+- [x] **Step 1: Write the failing guard test** (the shape of `test_logging_guard`:
   scan sources, allowlist the one legitimate use):
 
 ```cpp
@@ -474,23 +625,41 @@ TEST_CASE("the tree detectors key on artifact.fb, not on a directory name") {
 (`fs::exists(dir / "artifact.fb")`) introduced here so the three detector sites stop
 testing a directory *name*. It deliberately says nothing about validity.
 
-- [ ] **Step 2: Run and confirm failure** — the guard finds 538 sites.
+- [x] **Step 2: Run and confirm failure** — the guard finds 538 sites.
 
-- [ ] **Step 3: Implement** the rewrite. Order matters: (a) guard test in place, (b)
+- [x] **Step 3: Implement** the rewrite. Order matters: (a) guard test in place, (b)
   scripted `/"logestix"` removal across the three trees, (c) hand-fix the three
   detector call sites (`IsArtifactDir`) and the `ResolvePinnedDir` fallbacks, (d)
   `ResolvePinnedDir` collapses to `model_path / "pinned"`, (e) run the full `fast`
   sweep.
 
-- [ ] **Step 4: Run and confirm pass** — `ctest --preset linux-debug`. Note honestly in
+- [x] **Step 4: Run and confirm pass** — `ctest --preset linux-debug`. Note honestly in
   the commit message that the *positive* path — a real converted artifact loading from
   the new layout — cannot be proven until Task 9a exists; what this task proves is
   that no site still spells the old segment and that the detectors key on
   `artifact.fb`.
 
-- [ ] **Step 5: Commit** — `refactor: drop the redundant logestix path segment from artifact layout`
+- [x] **Step 5: Commit** — `refactor: drop the redundant logestix path segment from artifact layout`
 
 ### Task 5: `artifact.fb` schema, reader, verifier
+
+> **DONE (`a7873320`).** `libs/lsxstorage/schema/artifact.fbs` (v1, identifier
+> `LSXA`), `artifact.h`, `artifact.cpp`, `tests/test_storage_artifact.cpp`
+> (**6 cases**). `ReadStatus` is exactly the five planned states — no `kLegacy`.
+> **As built, differs from the text below:**
+>
+> - `ArtifactInfo` carries more than the plan listed, all of it load-bearing:
+>   `org`/`model_dir` (so a profile can be enumerated from `artifact.fb` alone),
+>   `layer_codec[]`, `chat_template_sha256` + `has_chat_template_digest` (written
+>   since Task 6 and read by nothing until 2026-11-28 — a recorded digest that no
+>   reader checks is a hollow field; `VerifyArtifact` now refuses a drifted
+>   template), `source_dir`, `layer_count`, `pinned_tensors`, `expert_files`.
+> - `IsArtifactDir()` lives here, not only in the verifier: the presence test is
+>   what replaced "is there a directory named logestix?".
+> - **No committed `.fb` fixtures.** Every case builds its artifact in a
+>   `TempDir` through `EmitArtifact`/raw bytes, so the repo ships no binary blob
+>   and a fixture cannot go stale against the schema. `tests/fixtures/storage/`
+>   does not exist.
 
 **Files:**
 - Create: `libs/lsxstorage/schema/artifact.fbs` (schema from spec §2.4.3, verbatim)
@@ -508,7 +677,7 @@ testing a directory *name*. It deliberately says nothing about validity.
   `ReadResult ReadArtifact(const fs::path &artifact_dir)`,
   `ReadResult ReadArtifactFile(const fs::path &fb)`.
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```cpp
 TEST_CASE("missing artifact.fb is kMissing, not an exception") {
@@ -541,20 +710,36 @@ TEST_CASE("format_version other than 1 is kBadVersion with the version in detail
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure.**
+- [x] **Step 2: Run and confirm failure.**
 
-- [ ] **Step 3: Implement.** `ReadArtifact` = `MemoryMappedFile::Open` (mmap only, per
+- [x] **Step 3: Implement.** `ReadArtifact` = `MemoryMappedFile::Open` (mmap only, per
   AGENTS.md) → `flatbuffers::Verifier` over the mapped range → plain-struct copy-out.
   `artifact.h` **must not** include flatbuffers: the `.fb` accessors live in an
   anonymous namespace inside `artifact.cpp`. Generate the three fixtures as
   `.fb` files committed under `tests/fixtures/storage/` (small, produced by the
   writer in Task 6).
 
-- [ ] **Step 4: Run and confirm pass.**
+- [x] **Step 4: Run and confirm pass.**
 
-- [ ] **Step 5: Commit** — `feat: add artifact.fb FlatBuffers schema with mmap reader and verifier`
+- [x] **Step 5: Commit** — `feat: add artifact.fb FlatBuffers schema with mmap reader and verifier`
 
 ### Task 6: `EmitArtifact` — writer with digests and tokenizer copy
+
+> **DONE (`a6788275`).** `artifact_writer.h/.cpp` + `src/sha256.{h,cpp}`;
+> `tests/test_storage_artifact_writer.cpp` (**12 cases**): tmp+fsync+rename,
+> digests, self-re-read, mask re-derivation, and no `artifact.fb` left behind on
+> failure. **As built, differs from the text below:**
+>
+> - `ArtifactSpec` also carries `org`/`model_dir`/`source_dir`/`target_id` and
+>   **`chat_template_text`**. The last one is the fix for the real-weight defect of
+>   2026-11-28: `microsoft/phi-4` carries its template inline in
+>   `tokenizer_config.json` with no `.jinja` beside the weights, so "copy the
+>   `.jinja`" produced `chat_template == ""` on a checkpoint that does have a
+>   template. The writer materializes the inline text as `chat_template.jinja`
+>   and digests it like any other sidecar.
+> - `PreflightDisk(dir, bytes, error*)` is forwarded from here and called by
+>   `lsxforge` with a **conservative 8 GiB constant estimate**, not a per-model
+>   estimate: it is a half-written-tree guard, not a capacity schedule.
 
 **Files:**
 - Create: `libs/lsxstorage/include/lsxstorage/artifact_writer.h`, `src/artifact_writer.cpp`
@@ -573,7 +758,7 @@ TEST_CASE("format_version other than 1 is kBadVersion with the version in detail
   std::string *error)` — true iff free space ≥ `bytes_needed`. A guard against a
   half-written tree (2.6 TB is free), used by `lsxforge` before a conversion starts.
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```cpp
 TEST_CASE("emit writes artifact.fb whose used_codecs is the OR of its planes") {
@@ -617,18 +802,43 @@ TEST_CASE("emit re-verifies what it wrote and fails on a mask mismatch") {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure.**
+- [x] **Step 2: Run and confirm failure.**
 
-- [ ] **Step 3: Implement**: write to `artifact.fb.tmp`, `fsync`, `rename`; digest
+- [x] **Step 3: Implement**: write to `artifact.fb.tmp`, `fsync`, `rename`; digest
   every plane with SHA-256 over the mapped file; copy the tokenizer and template
   copies; then `ReadArtifact` + `VerifyArtifact(deep=false)` what was written and
   return 0 + `*error` on any disagreement.
 
-- [ ] **Step 4: Run and confirm pass.**
+- [x] **Step 4: Run and confirm pass.**
 
-- [ ] **Step 5: Commit** — `feat: add atomic artifact.fb writer with plane digests and tokenizer copy`
+- [x] **Step 5: Commit** — `feat: add atomic artifact.fb writer with plane digests and tokenizer copy`
 
 ### Task 7: `VerifyArtifact` + `lsxforge --verify` integration
+
+> **DONE (`2c27c7de`).** `lsxstorage/src/verify.cpp` (`VerifyArtifact`,
+> `ScanArtifactTree`), `tests/test_storage_verify.cpp` (**19 cases**), and
+> `lsxforge --verify` prints `declared_mask=… actual_mask=… problems=…` and
+> exits non-zero on any problem. Measured on the three real artifacts: 34 / 35 /
+> 34, 0 problems.
+> **As built — and this is where the mask's honesty is decided:**
+>
+> - The codec of a file is taken from its **Arrow schema shape first**, then
+>   from the `dtype` column only for the 4-column `PinnedSchema`. That is
+>   deliberate: a `DenseNvfp4Schema` file records the dtype it was quantized
+>   *from* (`"BF16"`), so trusting the column reported NVFP4 planes as BF16.
+> - **Hole, owned by new Task 9c:** the 9-column `ExpertSchema` has no dtype
+>   column, and the verifier hard-codes `kExpert → kNvFp4`. A BF16 or INT8 expert
+>   plane is therefore unrepresentable, and a mixed NVFP4+MXFP8 expert tree
+>   (Inkling-2-Small) verifies against a mask that is simply wrong. This blocks
+>   the `bf16`/`int8-w8a16` profiles for every MoE family, so 9c is scheduled
+>   before Task 15.
+> - `ScanArtifactTree()` was added (not in the plan): forge cannot carry a
+>   hand-written plane table per family for 40 pipelines, so it **scans** what
+>   the converter wrote and the profile declaration becomes a cross-check
+>   ("the tree holds no codec the profile did not promise"). The plan's
+>   "declare, then verify" is now "scan, then cross-check both ways".
+> - `--verify` does **not** yet reject a `model.index.json` that still carries
+>   codec keys (rule 5) — that is residue of Task 9b, carried by Task 9d.
 
 **Files:**
 - Modify: `libs/lsxstorage/src/artifact.cpp` (+ `.h`: `VerifyReport`,
@@ -645,7 +855,7 @@ TEST_CASE("emit re-verifies what it wrote and fails on a mask mismatch") {
   &, bool deep)`; `lsxforge --verify` exits non-zero on any problem and prints
   `declared=… actual=…`.
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```cpp
 TEST_CASE("verify recomputes the mask from the files and catches drift") {
@@ -718,9 +928,9 @@ TEST_CASE("a tree containing mtp/ is rejected: v1 ships no ballast") {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure.**
+- [x] **Step 2: Run and confirm failure.**
 
-- [ ] **Step 3: Implement.** `VerifyArtifact` walks the tree, classifies each file with
+- [x] **Step 3: Implement.** `VerifyArtifact` walks the tree, classifies each file with
   the existing schema-shape logic, and enforces **rules D1–D5 (spec §1.3)** — a
   *verification-only* check, never used at runtime:
   - D1: a weight plane with `dtype == "U8"` is a **failure** (message names `NVFP4`
@@ -735,12 +945,30 @@ TEST_CASE("a tree containing mtp/ is rejected: v1 ships no ballast") {
     is a failure naming it as unreachable, because v1 ships no ballast.
   `deep` also re-digests. `--verify` requires `artifact.fb` and prints both masks.
 
-- [ ] **Step 4: Run and confirm pass**; then
+- [x] **Step 4: Run and confirm pass**; then
   `ctest -R "test_storage_verify|test_arrow_tree_integrity"`.
 
-- [ ] **Step 5: Commit** — `feat: verify artifact.fb masks and digests against the converted tree`
+- [x] **Step 5: Commit** — `feat: verify artifact.fb masks and digests against the converted tree`
 
 ### Task 8: `--codec-profile` in `lsxforge`, emitter wired once
+
+> **DONE, WITH RESIDUE (`1b8f324b`).** `apps/lsxforge/src/codec_profiles.{h,cpp}`,
+> `ABSL_FLAG(codec_profile)` + the `--codec-profile` spelling alias,
+> `apps/lsxforge/tests/test_forge_codec_profile.cpp` (**8 cases**, label `fast`),
+> `PreflightDisk` before any work, and one emitter call in the `finish` lambda.
+> **As built, differs from the text below:**
+>
+> - `DeclaredPlanes(profile, PipelineKind, layers)` is **coarse on purpose** — two
+>   kinds (`kDense`, `kMoe`) x 3 rows, not one row per pipeline. The real plane
+>   list comes from `ScanArtifactTree(output_path)`; the declaration is the
+>   cross-check (`scan.mask & ~promised == 0`), which is the only shape that
+>   scaled to 40 pipelines.
+> - `kDefault` is a **separate profile that emits nothing** (`finish` returns
+>   before `EmitArtifact`, `main.cpp:538-541`). That is a contract hole — see
+>   **Task 8a**.
+> - `--codec-profile` also requires `LSX_ARTIFACT_ROOT` and a manifest row for
+>   the input; the output path is then `ArtifactProfileDir(identity, profile)` and
+>   `--output` is ignored. Both refusals happen before a byte is read.
 
 **Files:**
 - Modify: `apps/lsxforge/src/main.cpp` (`ABSL_FLAG(codec_profile)`, plane tables,
@@ -759,7 +987,7 @@ TEST_CASE("a tree containing mtp/ is rejected: v1 ships no ballast") {
   from Task 6. **No `DropsBallast`**: every profile drops ballast identically
   (spec §1.4), so there is nothing to branch on.
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```cpp
 TEST_CASE("unknown codec profile is rejected before any conversion starts") {
@@ -795,9 +1023,9 @@ TEST_CASE("a conversion that cannot fit on disk is refused before it writes") {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure.**
+- [x] **Step 2: Run and confirm failure.**
 
-- [ ] **Step 3: Implement.** Parse → validate → **`PreflightDisk`** against the
+- [x] **Step 3: Implement.** Parse → validate → **`PreflightDisk`** against the
   estimated artifact size → run the selected pipeline → on `arrow::Status::OK()`,
   build the `ArtifactSpec` from `DeclaredPlanes(...)` and call `EmitArtifact` into
   the profile dir from `lsx::storage::ArtifactDir(family, model, profile)`. On
@@ -806,12 +1034,98 @@ TEST_CASE("a conversion that cannot fit on disk is refused before it writes") {
   **Every profile stops writing `mtp/`**: the nine converters that emit it lose that
   code path in this task, so no artifact can carry an unreachable plane.
 
-- [ ] **Step 4: Run and confirm pass**; one real conversion of a tiny model into a
+- [x] **Step 4: Run and confirm pass**; one real conversion of a tiny model into a
   temp artifact root, then `lsxforge --verify` on it.
 
-- [ ] **Step 5: Commit** — `feat: add --codec-profile and emit artifact.fb from every forge pipeline`
+- [x] **Step 5: Commit** — `feat: add --codec-profile and emit artifact.fb from every forge pipeline`
+  — *true for every explicit profile; the flagless `kDefault` path still returns
+  before the emitter, which is Task 8a's defect.*
+
+### Task 8a: The flagless conversion must still publish an artifact
+
+**Why this is a defect, not a preference.** `artifact.fb` is mandatory at load
+(`Global Constraints`, §0.2), yet `lsxforge --phi --input <src>` — the shape in
+every pre-contract runbook, the shape `ABSL_FLAG(output, "converted_model")`
+defaults to — returns 0 and writes **no** `artifact.fb`, because `finish()`
+short-circuits on `CodecProfile::kDefault` (`apps/lsxforge/src/main.cpp:538-541`).
+The result is a tree that `lsxforge --verify` rejects and `BeginLoad` refuses
+forever, from a tool that reported success. Two sources of truth for "what does a
+conversion produce" is exactly the second-source-of-truth failure §0.5 forbids.
+
+**Files:**
+- Modify: `apps/lsxforge/src/main.cpp` (`finish`, the profile validation block)
+- Modify: `apps/lsxforge/src/codec_profiles.{h,cpp}` (`kDefault` becomes an alias,
+  or is deleted)
+- Test: `apps/lsxforge/tests/test_forge_codec_profile.cpp` (extend, label `fast`)
+
+**Interfaces:**
+- Consumes: Task 8.
+- Produces: `CodecProfile ResolveCodecProfile(CodecProfile p)` — `kDefault` maps to
+  `kNvFp4`; there is no code path in `finish` that returns before emitting when
+  the output is an artifact directory.
+
+- [ ] **Step 1: Write the failing test** (label `fast`, no GPU — assert on the
+  emitted file, not on a full conversion):
+
+```cpp
+TEST_CASE("the default profile is the nvfp4 profile, not a no-op profile") {
+    CHECK(ResolveCodecProfile(CodecProfile::kDefault) == CodecProfile::kNvFp4);
+    CHECK(CodecProfileName(ResolveCodecProfile(CodecProfile::kDefault)) ==
+          std::string("nvfp4"));
+}
+TEST_CASE("the declared planes of the default profile are nvfp4's") {
+    CHECK(DeclaredPlanes(CodecProfile::kDefault, PipelineKind::kDense, 4) ==
+          DeclaredPlanes(CodecProfile::kNvFp4, PipelineKind::kDense, 4));
+}
+```
+
+- [ ] **Step 2: Run it and confirm failure** — `DeclaredPlanes(kDefault, …)`
+  currently answers nvfp4 rows (they share a `case`), so the second case may pass;
+  the first fails to compile, which is the point.
+
+- [ ] **Step 3: Implement.** In `finish`, delete the early return for `kDefault`.
+  Resolve the profile once at flag-parsing time (`codec_profile =
+  ResolveCodecProfile(codec_profile)`), so the emitter, the cross-check and the
+  recorded `spec.profile` all speak `nvfp4`. A flagless conversion with no
+  artifact root keeps writing to `--output` (existing behaviour) but now says so
+  at `warn`: *"no LSX_ARTIFACT_ROOT: writing an artifact to --output, which no
+  other tool will find"* — a diagnostic, not a refusal, because a scratch
+  conversion is a legitimate use.
+
+- [ ] **Step 4: Run and confirm pass**, then one scratch conversion of a 2-layer
+  fixture with **no** `--codec-profile`: `artifact.fb` exists, `profile ==
+  "nvfp4"`, `lsxforge --verify --input <dir>` green.
+
+- [ ] **Step 5: Commit** — `fix: a flagless conversion publishes an nvfp4 artifact instead of a tree nothing can load`
 
 ### Task 9: The admission gate in `ModelBase::BeginLoad`
+
+> **DONE, WITH RESIDUE (`b4c05cb1`).** `BeginLoad` is the five-stage pipeline —
+> resolve → read → **identity** → gate → rebind → tokenizer — with the refusal
+> texts this task specified; `tests/test_load_codec_gate.cpp` has **10 cases**
+> (gate refusal on Ampere naming the codec and the target, the same artifact
+> admitted on Blackwell, rebind ordering, source-only, absent path, synthetic
+> escape, `LayerUsesCodec`, an artifact of another model, a mis-pinned
+> `model_type`). `tests/test_artifact_migration_audit.cpp` was correctly never
+> written (the per-tree audit was withdrawn with the cold start).
+>
+> **As built, differs from the text below (and from spec §2.5):**
+>
+> - **Stage (2b) IDENTITY is new.** `IdentityAllows(cfg_.model_type, info)`
+>   compares the caller's declared `model_type` against `artifact.fb`'s, once for
+>   every family, replacing ten hand-written `format`-tag comparisons in loaders
+>   (`768b8a8a`). An **empty** declaration is the autodetect path and passes by
+>   construction.
+> - `Resolve(model_or_path)` takes **no target**; the plan's
+>   `Resolve(path, ActiveTarget())` does not exist. The gate is still target-aware,
+>   the *choice of profile* is not — that is **Task 9e**.
+> - On refusal the gate lists the profiles this device *can* run, computed with
+>   `ListProfiles(org, model_dir)` + `CheckCodecs` per sibling (a read of each
+>   `artifact.fb`), not with the planned
+>   `ListCompatibleProfiles(family, model, target)`.
+> - `cfg_.synthetic` is the documented escape and is now set by 37 `model`-stage
+>   fixtures; without it the gate refused every converted fixture in the tree
+>   (2026-11-28 finding).
 
 **Files:**
 - Modify: `libs/lsxcommon/src/model_base.cpp` (`BeginLoad`)
@@ -830,7 +1144,7 @@ TEST_CASE("a conversion that cannot fit on disk is refused before it writes") {
   const std::string &model, const HardwareTarget &)`; `BeginLoad` order =
   resolve → read → gate → rebind → tokenizer.
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```cpp
 TEST_CASE("a tree without artifact.fb is refused with the reconversion command") {
@@ -891,9 +1205,9 @@ TEST_CASE("every model that HAS an artifact has a loadable profile on sm_120") {
 }
 ```
 
-- [ ] **Step 2: Run and confirm failure.**
+- [x] **Step 2: Run and confirm failure.**
 
-- [ ] **Step 3: Implement** the five-stage `BeginLoad` from spec §2.5, with the exact
+- [x] **Step 3: Implement** the five-stage `BeginLoad` from spec §2.5, with the exact
   refusal texts. `Resolve` precedence: (a) path already contains `artifact.fb`
   → `kArtifact`; (b) artifact root set and a compatible profile of that model exists
   → `kArtifact`; (c) source dir exists, or `LSX_MODEL_ROOT/<Model>/logestix` exists
@@ -901,12 +1215,12 @@ TEST_CASE("every model that HAS an artifact has a loadable profile on sm_120") {
   (d) `kNotFound`.
   There is **no `kLegacy`** — spec §2.4.1.
 
-- [ ] **Step 4: Run and confirm pass**, then the suite guards:
+- [x] **Step 4: Run and confirm pass**, then the suite guards:
   `ctest -R "test_load_codec_gate|test_model_suite_guard|test_model_independence_guard|test_manifest_sync"`.
   Fix any fast test that went red because its fixture is not marked `synthetic` —
   that is the gate working, and it is the expected work in this task.
 
-- [ ] **Step 5: Add a guard that the empty store stays diagnostic.** With zero
+- [x] **Step 5: Add a guard that the empty store stays diagnostic.** With zero
   artifacts, the failure a user actually hits is "I pointed at a source dir". Assert
   the exact message names the source dir, says it is not a LogestiX artifact, and
   gives the `lsxforge` command — for a source dir, for an empty directory, and for a
@@ -914,9 +1228,35 @@ TEST_CASE("every model that HAS an artifact has a loadable profile on sm_120") {
   (a hand-rolled or partially-converted tree: the shape that would have been
   loadable before the contract, and must not be now).
 
-- [ ] **Step 6: Commit** — `feat: enforce the hardware codec gate in BeginLoad`
+- [x] **Step 6: Commit** — `feat: enforce the hardware codec gate in BeginLoad`
 
 ### Task 9a: Bootstrap conversion — the task that turns the real-weight suite back on
+
+> **DONE, BUT NOT AS WRITTEN (`7575c87e`).** The converter/emitter was exercised
+> against real checkpoints for the first time and three defects were fixed
+> (documented in spec §1 revision 2026-11-28): the tokenizer/template copy never
+> ran on a real tree because it looked under the *artifact* dir; an inline
+> template in `tokenizer_config.json` needed materializing; and 37 `model`-stage
+> fixtures needed `cfg_.synthetic`.
+>
+> **What differs from the steps below, and why it matters:**
+>
+> - The slice was converted **`nvfp4` first and only** — `microsoft/phi-4/nvfp4`,
+>   `Qwen/Qwen3.5-9B/nvfp4` — plus a third model added later,
+>   `google/gemma-4-12B-it/nvfp4` (`a8615734`). The plan's `bf16`-first order
+>   existed to unblock Ampere acceptance; that ordering did not happen, and it is
+>   why Branch 2 has nothing to load. **No `bf16` artifact exists anywhere.**
+> - Step 4 (`--explain-artifact` showing a target-dependent pick) **could not be
+>   executed**: the flag does not exist and there is no second profile to choose
+>   between. It is carried by **Task 9e**.
+> - `tests/test_bootstrap_artifacts.cpp` (label `inference`, `RESOURCE_LOCK "gpu"`)
+>   exists with **5 cases** and hard-codes the two `nvfp4` paths on purpose, so it
+>   cannot pass vacuously on an empty store. Measured 2026-11-28: green, 375 s
+>   (deep re-digest of 34 GiB).
+> - The gates that were dark now **run** for those three models and only those:
+>   SelfCheck ×3 + FSI + CODE + DET + MCP, verdicts in `docs/SELFCHECK_MATRIX.md`
+>   and in each row's `profiles.<p>.gates`. Growing the set beyond three is
+>   **Task 9f**.
 
 **Why this is a task and not a follow-up.** With every converted tree deleted, 22 test
 files that resolve `LSX_TEST_*_ROOT` and 27 that touch a converted tree SKIP, and per
@@ -934,7 +1274,7 @@ Branch 1 is verified against real weights. This task is a Branch-1 exit criterio
 - Produces: no new API. It is the first real use of `EmitArtifact`, and any defect it
   exposes is fixed here or written back into the spec (§1.3).
 
-- [ ] **Step 1: Convert the two slice models, `bf16` first**
+- [x] **Step 1: Convert the two slice models, `bf16` first**
 
 ```
 export LSX_ARTIFACT_ROOT=<store>
@@ -948,7 +1288,7 @@ Expected: `--verify` green on both; masks `bf16,f32`; **no `mtp/`**; `artifact.f
 `tokenizer.json` and `chat_template.jinja` present inside each artifact. A failure
 here is a converter defect — fix the converter, not the check.
 
-- [ ] **Step 2: Assert the contract on real bytes (this is the test that cannot be
+- [x] **Step 2: Assert the contract on real bytes (this is the test that cannot be
   faked by fixtures)**
 
 ```cpp
@@ -974,7 +1314,7 @@ TEST_CASE("a bf16 artifact gates clean on sm_86 and on sm_120") {
 }
 ```
 
-- [ ] **Step 3: Run the gates that were dark**, on the 5090, sequentially
+- [x] **Step 3: Run the gates that were dark**, on the 5090, sequentially
   (one GPU workload at a time):
 
 ```
@@ -996,9 +1336,28 @@ Expected: two candidates listed; on `nvidia:sm_120` the `nvfp4` one is chosen, o
 `nvidia:sm_86` the `bf16` one — the first real demonstration of multi-artifact
 autoselect.
 
-- [ ] **Step 5: Commit** — `feat: bootstrap the artifact store with the bf16 and nvfp4 slices`
+- [x] **Step 5: Commit** — `feat: bootstrap the artifact store with the bf16 and nvfp4 slices`
 
 ### Task 9b: Per-layer codec map leaves `model.index.json`
+
+> **PARTIAL (`a7873320` delivered the storage half; no commit migrated the
+> readers).** Exists: `Artifact::layer_codec[]` in `artifact.fbs`; forge writes
+> it (a uniform copy of the scanned mask, `main.cpp:590-591`); `ModelBase::artifact()`
+> and `ModelBase::LayerUsesCodec(layer, codec)` (`model_base.cpp:151-158`); a case
+> in `test_load_codec_gate.cpp:197` proving the answer comes from the artifact.
+> **Does not exist:**
+>
+> | residue | where | owner |
+> |---|---|---|
+> | 5 converters still **write** codec keys | `inkling_moe_convert.cpp:1012`, `inkling_moe_loop_convert.cpp:1149`, `muse_dense_convert.cpp:341-342`, `gemma_dense_convert.cpp:385-387`, `gemma_moe_convert.cpp:336` | 9d |
+> | 2 loaders still **read** `expert_nvfp4`/`expert_fp8` | `inkling_moe_load.cpp:131-143`, `inkling_moe_loop_load.cpp:146-158` | 9d |
+> | the arrow verifier infers expert codec **from the index** (`LoadExpertCodec`) | `arrow_tree_verify.cpp:63-140` | 9c + 9d |
+> | `--verify` has **no** rule-5 check | `lsxstorage/src/verify.cpp` (grep `model.index.json` → sidecar list only) | 9d |
+>
+> The plan's cost estimate here was wrong in both directions and is corrected by
+> spec §2.4.3: the codec fields are read by **two files in one family** (inkling),
+> not six files in two; but **five** converters write them, not four — `muse` and
+> both `gemma` writers were missed.
 
 **Why this exists.** `model.index.json` currently declares codecs
 (`mlp_nvfp4`, `attn_nvfp4`, `head_nvfp4`, `expert_nvfp4[]`, `expert_fp8[]`) and six
@@ -1072,7 +1431,331 @@ TEST_CASE("a mixed-layer artifact is still gated as a whole") {
 
 - [ ] **Step 5: Commit** — `refactor: move the per-layer codec map from model.index.json into artifact.fb`
 
+### Task 9c: An expert plane declares its codec — the verifier may not assume NVFP4
+
+**Why this blocks Branches 2 and 3.** `VerifyArtifact` and `ScanArtifactTree` take
+a file's codec from its Arrow **schema shape** (`lsxstorage/src/verify.cpp`), and
+`SchemaShape::kExpert` — the 9-column `ExpertSchema`
+(`w1_weight … w3_global_scale`) — is hard-coded to `kNvFp4` with no dtype column
+to consult. Consequences, all live:
+
+1. A **BF16** expert plane (Branch 2's `bf16` profile for any MoE family) verifies
+   as NVFP4, so the mask says `nvfp4` while the bytes are BF16 → the gate refuses
+   the artifact on Ampere for a codec it does not contain, and forge's own
+   cross-check (`scan.mask & ~promised`) refuses the conversion.
+2. An **INT8** expert plane (Branch 3) is unrepresentable for the same reason.
+3. A **mixed** NVFP4+MXFP8 expert tree (Inkling-2-Small, Inkling-2-Mini) verifies
+   against a mask that is simply wrong — `--verify` cannot catch a codec drift on
+   the one family that has a per-layer mix.
+
+This is free to fix **now** and expensive later: the three existing artifacts
+carry no expert planes, so no artifact is invalidated by changing the schema.
+
+**Files:**
+- Modify: `libs/lsxstorage/src/verify.cpp` (`ClassifyShape`, the `kExpert` branch
+  of both `VerifyArtifact` and `ScanArtifactTree`)
+- Modify: `libs/lsxcommon/src/converter.cpp` (the `ExpertSchema` writer) and the
+  family expert writers that build that schema themselves
+  (`inkling_moe_convert.cpp`, `inkling_moe_loop_convert.cpp`, `gemma_moe_convert.cpp`)
+- Modify: `libs/lsxcommon/src/arrow_tree_verify.cpp` — `LoadExpertCodec` and the
+  `elements_per_byte` map are deleted in favour of the declared column (Task 9d
+  removes the last caller)
+- Test: `tests/test_storage_verify.cpp` (extend, label `fast`)
+
+**Interfaces:**
+- Consumes: Task 5, 6, 7.
+- Produces: `ExpertSchema` = the 9 weight columns **plus** `dtype:string`, one row
+  per expert, values exactly the D1 spellings (`NVFP4`, `F8_E4M3`, `I8`, `BF16`);
+  `ClassifyShape` returns `kExpert` only for the 10-column shape; a 9-column
+  expert file is a verification **failure** naming the missing declaration (D1/D4:
+  ambiguity is a conversion defect).
+
+- [ ] **Step 1: Write the failing tests:**
+
+```cpp
+TEST_CASE("a bf16 expert plane sets the bf16 bit, not nvfp4") {
+    TempDir d;
+    write_expert(d.path(), "experts/layer_0/exp_0.arrow", /*dtype=*/"BF16");
+    const auto r = VerifyArtifact(d.path(), false);
+    CHECK((r.actual_mask & Mask(PlaneCodec::kBF16)) != 0);
+    CHECK((r.actual_mask & Mask(PlaneCodec::kNvFp4)) == 0);
+}
+TEST_CASE("a mixed expert tree reports both bits and both layers") {
+    TempDir d;                       // layer 0 NVFP4, layer 1 E4M3
+    write_expert(d.path(), "experts/layer_0/exp_0.arrow", "NVFP4");
+    write_expert(d.path(), "experts/layer_1/exp_0.arrow", "F8_E4M3");
+    CHECK(VerifyArtifact(d.path(), false).actual_mask ==
+          (Mask(PlaneCodec::kNvFp4) | Mask(PlaneCodec::kMxFp8)));
+}
+TEST_CASE("a 9-column expert file is refused: it declares no codec") {
+    TempDir d;
+    write_legacy_expert(d.path(), "experts/layer_0/exp_0.arrow");
+    const auto r = VerifyArtifact(d.path(), false);
+    REQUIRE_FALSE(r.ok);
+    CHECK(r.problems[0].find("dtype") != std::string::npos);
+}
+```
+
+- [ ] **Step 2: Run them and confirm failure** — the first two fail because
+  `kExpert` ignores the column; the third fails because the 9-column shape is
+  still accepted.
+
+- [ ] **Step 3: Implement.** `ClassifyShape` requires all ten columns; the codec
+  comes from the `dtype` column through the same `CodecForDtype()` the pinned path
+  uses (so `"U8"` stays a failure, D1), with `IsCompanionName()` still deciding
+  companions. Then write the column: one string per row, constant inside a file
+  (a file is one plane). Families whose expert store is not the 9-column schema
+  (`experts/layer_N/…` written by a bespoke writer) get the same column from their
+  own writer — the rule is "one plane, one declared codec", not "one schema".
+
+- [ ] **Step 4: Run and confirm pass** — `ctest -R "test_storage_verify|test_arrow_tree_integrity"`,
+  then the two families' convert targets: `ctest -R "inkling|gemma" -R "convert" -j1`.
+  The three existing artifacts must still verify (they ship no expert planes):
+  `ctest -R test_bootstrap_artifacts`.
+
+- [ ] **Step 5: Commit** — `feat: an expert plane declares its codec, so the verifier stops assuming NVFP4`
+
+### Task 9d: Rule 5 is enforced, and the last index-codec readers go
+
+**Why.** Task 9b's whole point was that `model.index.json` must carry **no** codec
+key (spec §2.4.3 rule 5), so `artifact.fb` cannot be contradicted. Today nothing
+enforces it: `--verify` treats `model.index.json` as a sidecar and never opens it,
+five converters still write the keys, two inkling loaders still read
+`expert_nvfp4`/`expert_fp8`, and `arrow_tree_verify.cpp:63-140` derives an
+`elements_per_byte` map from them — a second source of truth in the one place that
+must not have one.
+
+**Files:**
+- Modify: `libs/lsxstorage/src/verify.cpp` — parse `model.index.json` (mmap +
+  simdjson, the tree's existing JSON path) and fail on any of
+  `mlp_nvfp4`, `attn_nvfp4`, `head_nvfp4`, `expert_nvfp4`, `expert_fp8`
+- Modify: `libs/lsxcommon/src/inkling_moe_load.cpp:131-143`,
+  `inkling_moe_loop_load.cpp:146-158` → `LayerUsesCodec(layer, …)`
+- Delete: `libs/lsxcommon/src/arrow_tree_verify.cpp`'s `LoadExpertCodec` +
+  `ExpertCodecMap` (their codec knowledge came from the index)
+- Modify: the five converters listed in Task 9b's table — stop emitting the keys
+- Test: `tests/test_storage_verify.cpp`, `tests/test_layer_codec_source.cpp`
+  (create, label `fast`), the inkling/gemma `convert`+`load`+`model` targets
+
+**Interfaces:**
+- Consumes: Tasks 7, 9c.
+- Produces: no new API. `VerifyReport::problems` gains the exact key name, e.g.
+  `"model.index.json still declares codec 'expert_nvfp4': the codec map lives in
+  artifact.fb's layer_codec"`.
+
+- [ ] **Step 1: Write the failing test** (the case the plan put in Task 9b's step 1,
+  which was never written):
+
+```cpp
+TEST_CASE("an artifact whose model.index.json still declares codecs is rejected") {
+    TempDir d; make_minimal_tree(d.path());
+    write_index_with(d.path(), R"({"num_layers":2,"expert_nvfp4":[true,true]})");
+    REQUIRE(EmitArtifact(minimal_spec(d.path()), d.path(), nullptr) != 0);
+    const auto r = VerifyArtifact(d.path(), false);
+    REQUIRE_FALSE(r.ok);
+    CHECK(r.problems[0].find("expert_nvfp4") != std::string::npos);
+    CHECK(r.problems[0].find("layer_codec") != std::string::npos);
+}
+```
+
+- [ ] **Step 2: Run and confirm failure** — the artifact verifies clean today.
+
+- [ ] **Step 3: Implement.** Readers first (so the writers cannot remove a key that
+  something still needs): the inkling loaders ask `LayerUsesCodec`; the
+  `arrow_tree_verify` exponent map is deleted once 9c lands the declared column.
+  Then stop writing the keys. Then the `--verify` rule, with the message above.
+
+- [ ] **Step 4: Run and confirm pass**, then the two families on their own labels
+  (one GPU workload at a time): `ctest -R "inkling|gemma" -j1`. A red here is a
+  family defect the migration exposed, not a reason to relax the rule.
+
+- [ ] **Step 5: Commit** — `refactor: the codec map lives only in artifact.fb, and --verify enforces it`
+
+### Task 9e: Target-aware profile selection + `--explain-artifact`
+
+**Why.** Invariant I4 says `lsxfabric` **selects** the best compatible artifact. The
+storage half ships; the selection half does not, and the code is actively
+misleading about it:
+
+- `lsx::storage::Resolve(model)` picks *"the first profile that IS an artifact"*
+  by iterating `fs::directory_iterator` — unspecified order — while the comment
+  beside it claims *"in the same sorted order ListProfiles uses"*
+  (`lsxstorage/src/resolve.cpp:135-154`). With one profile per model this is
+  invisible; with two it is filesystem-dependent.
+- Nothing consults `SupportedCodecs(ActiveTarget())` when choosing. The gate then
+  refuses the arbitrarily chosen profile and prints the usable list — a good
+  error, but not a selection (open task `V`).
+- `lsxfabric` has no `--explain-artifact` flag (spec §2.7 names it as the only new
+  diagnostic flag), so "why did it pick that one" is unanswerable from the CLI.
+
+**Files:**
+- Modify: `libs/lsxstorage/include/lsxstorage/resolve.h`, `src/resolve.cpp` — add
+  `SelectProfile`, fix `Resolve`'s model-name branch, delete the false comment
+- Modify: `libs/lsxcommon/src/model_base.cpp` — `BeginLoad`'s resolve stage calls
+  `SelectProfile` with the active mask and the preference table
+- Modify: `apps/lsxfabric/src/main.cpp` + `cli.{h,cpp}` — `--explain-artifact`
+- Test: `tests/test_storage_resolve_profile.cpp` (create, label `fast`, no GPU)
+
+**Interfaces:**
+- Consumes: Tasks 4, 5, 9.
+- Produces:
+  `std::optional<Resolved> SelectProfile(const std::string &org, const std::string &model_dir, hw-codec-mask-as-uint64_t supported, const std::vector<std::string> &preference);`
+  — storage stays codec-agnostic by taking the mask and an ordered name list;
+  `lsxcommon` supplies them (`SupportedCodecs(ActiveTarget())` and
+  `{"nvfp4","int8-w8a16","mxfp8","bf16"}` — operator ruling: compressed-native
+  first on the 5090). Ties break on profile name ascending, so two runs agree.
+
+- [ ] **Step 1: Write the failing test:**
+
+```cpp
+TEST_CASE("selection prefers the compressed profile the target can execute") {
+    TempDir root; make_profile(root.path(), "microsoft/phi-4", "bf16",  kBF16);
+    make_profile(root.path(), "microsoft/phi-4", "nvfp4", kNvFp4|kBF16);
+    const auto blackwell = SelectProfile("microsoft", "phi-4",
+        Mask(PlaneCodec::kF32)|Mask(PlaneCodec::kBF16)|Mask(PlaneCodec::kNvFp4),
+        kPreference);
+    REQUIRE(blackwell.has_value());
+    CHECK(blackwell->profile == "nvfp4");
+    const auto ampere = SelectProfile("microsoft", "phi-4",
+        Mask(PlaneCodec::kF32)|Mask(PlaneCodec::kBF16), kPreference);
+    REQUIRE(ampere.has_value());
+    CHECK(ampere->profile == "bf16");
+}
+TEST_CASE("no compatible profile is nullopt, never the first one on disk") {
+    TempDir root; make_profile(root.path(), "microsoft/phi-4", "nvfp4", kNvFp4);
+    CHECK_FALSE(SelectProfile("microsoft", "phi-4", Mask(PlaneCodec::kBF16),
+                              kPreference).has_value());
+}
+TEST_CASE("the same store answers the same profile twice") { /* 10 iterations */ }
+TEST_CASE("an explicit profile path is a choice and is never re-ranked") {
+    TempDir root; make_profile(root.path(), "microsoft/phi-4", "bf16", kBF16);
+    make_profile(root.path(), "microsoft/phi-4", "nvfp4", kNvFp4|kBF16);
+    const auto r = Resolve((root.path()/"microsoft/phi-4/bf16").string());
+    REQUIRE(r.status == ResolveStatus::kArtifact);
+    CHECK(r.profile == "bf16");            // even with nvfp4 present
+}
+```
+
+- [ ] **Step 2: Run and confirm failure** — `SelectProfile` does not exist; the
+  fourth case already passes and must keep passing.
+
+- [ ] **Step 3: Implement.** `ListProfiles` already returns a name-sorted vector of
+  `Resolved`; `SelectProfile` reads each candidate's `used_codecs`, keeps
+  `used & ~supported == 0`, sorts by `(preference index, profile name)` and returns
+  the head. `Resolve`'s model-name branch delegates to it with the preference table
+  from its caller — storage takes the list as a parameter, so it has no opinion of
+  its own. `--explain-artifact` prints one line per candidate
+  (`profile mask=… compatible=yes/no rank=N`) then the choice, and exits 0 without
+  loading a model.
+
+- [ ] **Step 4: Run and confirm pass** — `ctest -R "test_storage_resolve_profile|test_load_codec_gate|test_storage_roots"`,
+  then `lsxfabric --localmodel phi-4 --explain-artifact` on this host (one
+  candidate until Task 9f produces a second).
+
+- [ ] **Step 5: Commit** — `feat: select an artifact profile by target capability, and explain the choice`
+
+### Task 9f: Grow the artifact store beyond three models
+
+**Why this is now the largest open item in the plan.** Measured 2026-11-28: **3 of
+48** registry rows have an artifact, so **45 rows'** real-weight stages SKIP — and
+per AGENTS.md a gate that SKIPs is not a pass. Every stage target exists
+(`docs/MODELS.md` declares all 10 for all 48 rows), the goldens exist or are
+declared debt, and nothing can run. The plan's Task 9a was written to end this with
+two models; that was the right *first* step, not the end state.
+
+**Files:**
+- Modify: `models/<org>/<model>.json` — `profiles.<p>.status`/`artifact`/`gates`
+  for each model converted
+- Modify: `docs/SELFCHECK_MATRIX.md`, `docs/MODELS.md` (regenerate via
+  `python3 tools/gen_model_manifest.py --docs docs/MODELS.md --root .`)
+- Modify: `tests/perf/perf_baselines.json` — re-seed the perf row for a model
+  whose artifact was reconverted (a row that predates its artifact is a claim about
+  a tree that no longer exists)
+- Test: `tests/test_registry_store_consistency.cpp` (create, label `fast`,
+  `SKIP` when the artifact root is unset)
+
+**Interfaces:**
+- Consumes: Tasks 8a, 9c, 9d (a conversion that publishes nothing, or a verifier
+  that mislabels an expert plane, would put wrong rows in the registry).
+- Produces:
+  - `tools/gen_model_manifest.py` + `cmake/LsxModelManifest.cmake` emit a **new
+    table** `lsxmanifest::kProfiles[]`:
+    `struct ProfileRow { const char *model_type; const char *profile; const char *status; unsigned long long codec_mask; const char *store_path; };`
+    Today the generated table carries only `vault_profile` (the *preferred* one),
+    so no compiled guard can see that a model has two profiles — which is why the
+    registry can drift from the store unnoticed.
+  - No runtime API. The guard below is the deliverable that keeps the store and the
+    registry from drifting.
+
+- [ ] **Step 0: Extend the generator first**, because the guard cannot be written
+  against a table that does not exist: one `kProfiles[]` row per
+  `models/<org>/<model>.json` → `profiles.<name>`, with `status`, `codec_mask` and
+  `artifact.store` (empty for `not-built`). `test_manifest_generator_selftest`
+  gets a case for the new table, and `test_manifest_sync` already fails on drift
+  between the compiled table and the manifests.
+
+- [ ] **Step 1: Write the failing guard** — the registry can currently claim
+  `status: built` with no artifact on disk, or ship an artifact no row mentions:
+
+```cpp
+TEST_CASE("every row that claims a built profile has that artifact, and vice versa") {
+    if (!lsx::storage::ArtifactRoot()) SKIP("LSX_ARTIFACT_ROOT unset");
+    for (std::size_t i = 0; i < lsxmanifest::kProfileCount; ++i) {
+        const auto &p = lsxmanifest::kProfiles[i];
+        const auto *row = manifest_query::FindModel(p.model_type);
+        REQUIRE(row != nullptr);
+        const auto dir = *lsx::storage::ArtifactRoot() / row->vault_org /
+                         row->vault_dir / p.profile;
+        const bool on_disk = IsArtifactDir(dir);
+        INFO(p.model_type << " " << p.profile << " " << p.status);
+        CHECK(on_disk == (std::string_view(p.status) == "built"));
+        if (!on_disk) continue;
+        const auto r = ReadArtifact(dir);
+        REQUIRE(r.status == ReadStatus::kOk);
+        CHECK(r.info.used_codecs == p.codec_mask);   // the row cites the mask
+    }
+}
+TEST_CASE("the perf row of a built profile is not older than its artifact") {
+    if (!lsx::storage::ArtifactRoot()) SKIP("LSX_ARTIFACT_ROOT unset");
+    // artifact.fb's created_utc vs perf_baselines.json's date for that model
+}
+```
+
+- [ ] **Step 2: Run and confirm failure** — phi-4 and Qwen3.5-9B carry perf rows
+  dated 2026-10-24 / 2026-11-05 against artifacts created 2026-11-28, so the
+  second case fails, which is the point. (Their `nvfp4` codec layout is unchanged,
+  so re-seeding is a re-run, not a new measurement — say so in the commit.)
+
+- [ ] **Step 3: Convert, in this order, recording each row as it lands**
+  1. `bf16` for `phi-4` and `Qwen3.5-9B` — blocked on Task 15, and the artifact
+     Branch 2 needs.
+  2. The cheap dense families that already have a full lifecycle suite and small
+     weights (`dory-1.0-4b`, `granite-switch-4.1-8b`) — width of coverage, not
+     depth.
+  3. The MoE families (`inkling`, `gemma`, `qwen35moe`, `ornith`) after Task 9c,
+     because their expert planes need the declared codec.
+  4. The large rows last, and only when a gate needs them: a conversion is
+     minutes-to-hours and the artifact is target-independent, so there is no
+     ordering hazard (spec §1.9).
+
+- [ ] **Step 4: Run and confirm pass** — the guard green, then the new rows' own
+  stage targets (`ctest -R "<model_type>" -j1`, one GPU workload at a time), then
+  `ctest --preset linux-debug` for the registry/generator guards.
+
+- [ ] **Step 5: Commit** — `feat: grow the artifact store and guard it against the registry`
+
 ### Task 10: `MemoryModel` (unified memory) in the governor
+
+> **NOT STARTED (2026-11-28).** `grep -n "MemoryModel\|unified_shared_bytes"
+> libs/lsxcommon/{include/lsxcommon/resource_governor.h,src/resource_governor.cpp}`
+> is empty. **Anchors as of today:** `HardwareProfile` is
+> `resource_governor.h:12-20`; `HardwareQueries` (the injectable probes) is
+> `:24-29`, so a `unified_shared_bytes` probe must be added there too or the unit
+> tests cannot substitute a fake; `lifecycle::kExpertCacheVramReserveBytes` is
+> `:181` and the `ExpertCacheSlots(..., reserve)` parameter that consumes it is
+> `:192`. Nothing in `lifecycle_strategy.cpp` names the constant — the two call
+> sites are `resource_governor.h` itself and the tests, so the plan's third file
+> is a no-op as the tree stands.
 
 **Files:**
 - Modify: `libs/lsxcommon/include/lsxcommon/resource_governor.h`
@@ -1118,25 +1801,64 @@ TEST_CASE("a permanent-weights lease on unified memory is counted once") {
 
 - [ ] **Step 5: Commit** — `feat: model unified memory in the resource governor`
 
-**Branch 1 exit criteria:** `ctest --preset linux-debug` green (all `fast` guards,
-~3 min); **Task 9a done** — two `bf16` artifacts converted, verified, gating clean on
-both `sm_120` and `sm_86`, with their SelfCheck ×3 + FSI + CODE + DET running (not
-SKIPping) on the 5090; the `nvfp4` siblings exist and `--explain-artifact` shows the
-target-dependent pick; **Task 9b done** — no `model.index.json` in the tree carries a
-codec key, and the inkling/gemma suites are green reading the artifact instead;
-**Task 4a done** — the path-shape guard is green and the bootstrapped artifacts live at
-`<ROOT>/<org>/<model_dir>/<profile>/` with no intermediate segment;
-`docs/superpowers/specs/…-design.md` committed; `docs/numeric-contract.md` §1/§1.1
-amended; `docs/OPEN_TASKS.md` records the cold start and the artifact root.
+**Branch 1 exit criteria — measured 2026-11-28:**
+
+| criterion | state |
+|---|---|
+| `ctest --preset linux-debug` green (all `fast` guards) | **met** — 184/184, 166 s, 11 legitimate skips |
+| Task 9a: two artifacts converted, verified, gating on `sm_120` and `sm_86` | **partly met** — three `nvfp4` artifacts exist and verify; the *Ampere* half is unproven because no `bf16` profile is producible (Task 15) |
+| Task 9a step 3: the gates that were dark now RUN (SelfCheck ×3, FSI, CODE, DET, MCP) | **met for 3 of 48 rows** — `phi-4`, `qwen3.5-9b` all green; `gemma-4-12b-it` FSI red (documented source near-tie, `R22`) |
+| Task 9a step 4: `nvfp4` sibling + `--explain-artifact` shows the target-dependent pick | **not met** — no second profile and no flag (Task 9e, Task 9f) |
+| Task 9b: no `model.index.json` carries a codec key; inkling/gemma read the artifact | **not met** — 5 writers, 2 readers, 1 verifier (Task 9d) |
+| Task 4a: path-shape guard green, artifacts at `<ROOT>/<org>/<model_dir>/<profile>/` | **met** — 6-case guard, 3 artifacts in that shape |
+| spec committed | **met** |
+| `docs/numeric-contract.md` §1/§1.1 amended | **not met** — no codec/profile scoping in the contract yet (moved into Task 16, which owns the doc amendments) |
+| `docs/OPEN_TASKS.md` records the cold start and the artifact root | **met indirectly** — items `V` and `W` state the measured store position; the plan's own evidence lives here and in `docs/SELFCHECK_MATRIX.md` |
+
+So: the *code* half of Branch 1 is done and green; the half that needed real
+artifacts is done for three models and is the input to Branch 2. **Branch 1 is
+closed with three carry-over tasks (9c, 9d, 9e, 8a) and one coverage task (9f),
+not reopened.**
 
 ---
 
 # Branch 2 — `build/ampere-aot-sm86-sm87`
 
+> **NOT STARTED (2026-11-28).** No commit exists for Tasks 11–16: the build accepts
+> only `120`/`121`, both arch-`a` object libs are unconditional, the toolkit guard
+> asserts Blackwell by name, there are no Ampere presets, no converter emits `bf16`,
+> and `docs/NVIDIA_DOCS_AMPERE.md` — which Task 16 was going to amend — has been
+> removed from the tree. Each task below carries a *status* note with the exact
+> current anchors and the traps the intervening commits created.
+
 Branches from Branch 1 (needs `SupportedCodecs`). Scope: build + `bf16` profile +
 live 3090 acceptance. **No new GEMM** (operator option c).
 
 ### Task 11: `LSX_CUDA_ARCH` accepts Ampere and emits both SASS
+
+> **NOT STARTED (2026-11-28).** The validator is `CMakeLists.txt:38-53`: one regex
+> `^12[01][af]?$`, a FATAL naming Blackwell only, and
+> `--generate-code=arch=compute_${arch},code=[compute_${arch},sm_${arch}]` per
+> entry. A `86;87` configure fails today with the Blackwell-only message.
+>
+> **Anchors and traps as the tree stands:**
+>
+> - The acceptance rule must be added **inside `lsx_cuda_gencode_flags()`** and
+>   nowhere else: `test_infrastructure_guard` fails any `CUDA_ARCHITECTURES` that
+>   carries an arch spelling and any literal `--generate-code=` outside this
+>   function, which is the mechanism that keeps CMake 4.x from substituting
+>   `compute_75`.
+> - `tests/test_infrastructure_guard.cpp:572` asserts the default literal
+>   `set(LSX_CUDA_ARCH "120;121"` still in the file — keep the default and add the
+>   Ampere case beside it, do not change the default.
+> - `FindNonFamilyGencodeLiterals` (`:517-537`) matches only
+>   `compute_(12[0-9])`, so a hand-rolled `--generate-code=arch=compute_86` would
+>   slip past the guard. Widen the pattern to `(12[0-9]|8[67])` **in the same
+>   commit**, or the new arch gets a second, unchecked way in.
+> - `sm_86a`/`sm_87a`/`sm_86f` do not exist (no `-a` family on GA10x): a suffix on
+>   an 8x entry must fail with its own message, not fall into the Blackwell text.
+> - Suggested regex: `^(12[01][af]?|8[67])$`, FATAL text
+>   *"supported: 120/121 (Blackwell consumer), 86 (GA102), 87 (GA10B)"*.
 
 **Files:**
 - Modify: `CMakeLists.txt:35-54`
@@ -1175,6 +1897,25 @@ TEST_CASE("a forbidden arch still fails configure with a named reason") {
 
 ### Task 12: arch-`a` object libs are emitted only for 12x
 
+> **NOT STARTED (2026-11-28).** Both object libs hard-code the `a` targets:
+> `libs/lsxcommon/CMakeLists.txt:651-671` (`lsxcommon_tc_cu`,
+> `--generate-code=arch=compute_120a,code=sm_120a;--generate-code=arch=compute_121a,code=sm_121a`)
+> and the test-side twin at `tests/CMakeLists.txt:1440-1460`. Neither is
+> conditional, so an `86;87` configure asks nvcc for `compute_120a` on a
+> toolchain/target set that does not contain it.
+>
+> **Anchors:** the three `prop.major` probes that are the only callers are
+> `lsx_tc_gemm.cu:908`, `:1086`, `:1148` — they return `cudaErrorNotSupported` /
+> `false` off-12x, which is why the link can succeed without the object libs.
+> The `nm` check the plan asks for is on the final `lsxbenchmark` binary of an
+> 86-only build: `nm -C | grep lsx_tc` must be empty.
+>
+> **As the guard stands:** `test_infrastructure_guard` deliberately *sanctions*
+> literal `compute_12xa` lines (`:545-556`), so wrapping them in an `if()` does not
+> trip it. Add the new assertion ("`lsxcommon_tc_cu` absent when no 12x arch is
+> targeted") to that same guard, because a configure-scratch assertion cannot see a
+> target-registration decision any other way.
+
 **Files:**
 - Modify: `libs/lsxcommon/CMakeLists.txt:640-660`
 - Modify: `tests/CMakeLists.txt:1377-1392`
@@ -1198,6 +1939,24 @@ TEST_CASE("a forbidden arch still fails configure with a named reason") {
 - [ ] **Step 5: Commit** — `build: emit arch-a tensor-core objects only when a 12.x arch is targeted`
 
 ### Task 13: `test_cuda_toolkit_guard` becomes toolchain-agnostic
+
+> **NOT STARTED (2026-11-28).** Four concrete blockers, all in
+> `tests/test_cuda_toolkit_guard.cu`:
+>
+> | line | today | why it breaks on 12.6 / Ampere |
+> |---|---|---|
+> | `5` | `#include <cuda_fp4.h>` unconditional | the TU does not even compile under CUDA 12.6, so the planned `SKIP` can never run — the include must move **inside** `__has_include` |
+> | `50-51` | `CUDART_VERSION >= kMinCudaRuntime` **and** `CUDART_VERSION / 1000 == 13` | the major-equality assertion is a Blackwell/CUDA-13.5 assumption |
+> | `95-97` | `REQUIRE(prop.major == 12)` for every present device | the supported set is `{12.0, 12.1, 8.6, 8.7}` |
+> | `59-93` | three `cuda_fp4.h` cases | keep verbatim, but behind `__has_include` |
+>
+> **Refinement:** the device case must be written against
+> `lsxcommon::hw::TargetFromComputeCapability(prop.major, prop.minor)` and assert
+> `vendor != Vendor::kUnknown`, not against a literal `major ==`. Then the guard
+> and the capability table cannot disagree. The driver-stamp cases
+> (`:104-172`) are toolkit-version arithmetic and stay unchanged — they are what
+> catches a stale build dir after a toolkit upgrade, and that matters more on a
+> second machine than on this one.
 
 **Files:**
 - Modify: `tests/test_cuda_toolkit_guard.cu:14,50-51,59-85,88-96`
@@ -1233,6 +1992,29 @@ TEST_CASE("cuda_toolkit_guard: present devices are in the supported set") {
 
 ### Task 14: Ampere build presets + the runtime degradation audit
 
+> **NOT STARTED (2026-11-28).** `CMakePresets.json` has six configure presets
+> (`windows-debug`, `windows-release`, `linux-debug`, `linux-release`,
+> `linux-release-znver4`, `linux-release-znver4-aocc`) and none sets
+> `LSX_CUDA_ARCH`. `cmake/toolchains/` does not exist.
+>
+> **Anchors and traps:**
+>
+> - A configure preset in this file is not self-contained: `CMakePresets.json`
+>   also carries test presets that name each build preset, and `ctest --preset`
+>   resolves through them. A new build preset without its test presets (at least
+>   `-fast`, `-inference`, `-convert` + the plain one) is a half-added preset.
+> - The Jetson toolchain file must pin `CMAKE_CUDA_COMPILER=/usr/local/cuda-12.6/bin/nvcc`,
+>   `LSX_LTO=OFF`, `LSX_ARCH_ZNVER4=OFF`, no `-march`, and must **not** inherit the
+>   AOCC preset's x86-only `CMAKE_INSTALL_RPATH` entries.
+> - The degradation audit is three probes (`lsx_tc_gemm.cu:908, :1086, :1148`);
+>   each already returns `cudaErrorNotSupported`/`false` off-12x. Record in the
+>   header comment that with the Branch-1 gate an NVFP4 artifact cannot reach an
+>   Ampere device at all, so these are defence in depth, not the gate.
+> - Keep the accepted-arch regex in **one** file that both the CMake function and
+>   `tests/test_arch_support_guard.cpp` read (a small `cmake/LsxArch.cmake` holding
+>   the pattern as a variable). Two hand-copied regexes drift the moment someone
+>   adds `89`.
+
 **Files:**
 - Modify: `CMakePresets.json` (add `linux-release-sm86`, `jetson-orin-release`)
 - Create: `cmake/toolchains/jetson-orin.cmake` (CUDA 12.6 root, `aarch64`, no LTO,
@@ -1259,6 +2041,35 @@ TEST_CASE("cuda_toolkit_guard: present devices are in the supported set") {
 - [ ] **Step 5: Commit** — `build: add sm_86 and JetPack 6.2.1 presets with an arch-support guard`
 
 ### Task 15: `bf16` codec profile for the 2-model slice
+
+> **NOT STARTED (2026-11-28) — and unimplementable as written until one thing
+> moves.** `grep -rn "CodecProfile" libs/lsxcommon/src` is empty: the two dense
+> converters quantize unconditionally, and the enum they would branch on lives in
+> **`apps/lsxforge/src/codec_profiles.h`**, which `libs/` cannot include.
+>
+> **Refinement 1 — the enum moves down.** Put `enum class CodecProfile` in
+> `libs/lsxcommon/include/lsxcommon/codec_profile.h` (POD, `<cstdint>` only, safe
+> from `.cu`). `lsxforge` keeps the *policy* it owns (`DeclaredPlanes`,
+> `ParseCodecProfile`, the CLI) and re-exports the enum. Without this the
+> converter signature cannot express a profile and the task turns into a
+> per-family copy of the table — the exact thing spec §2.6 forbids.
+>
+> **Refinement 2 — the branch point is one predicate, not the whole converter.**
+> In `phi_dense_convert.cpp` the decision is `phi_tensor_is_nvfp4(kind)`
+> (`:202-213`, used at `:383` and `:508/:513`); in `qwen_dense_convert.cpp` the
+> twin is `qwen_tensor_is_nvfp4` (`:206`, used at `:606`). The `bf16` profile
+> makes that predicate answer `false` for every kind, so weights flow through the
+> existing `PinnedSchema` passthrough with `dtype = "BF16"` — **no quantizer, no
+> new schema, no new Arrow batch type**. Entry points to change:
+> `ConvertPhiModel(input, output)` (`phi_dense_convert.h:53`, call site
+> `main.cpp:946`) and its Qwen twin take a `CodecProfile`.
+>
+> **Refinement 3 — the mask must come out right the first time.** The scanned mask
+> for a `bf16` tree is `bf16,f32`; if the converter keeps writing
+> `pinned/global_nvfp4.arrow` the scan reports `nvfp4` and forge's own cross-check
+> refuses the conversion at the end of a multi-hour run. So the plan's step 1 case
+> (`CHECK_FALSE(fs::exists(a.dir/"pinned"/"layer_0_nvfp4.arrow"))`) is the cheap
+> canary — run it on a 2-layer fixture **before** touching the real checkpoint.
 
 **Files:**
 - Modify: `libs/lsxcommon/src/phi_dense_convert.cpp`, `qwen_dense_convert.cpp`
@@ -1305,6 +2116,29 @@ TEST_CASE("a bf16 artifact of a model with an FP8 MTP head carries no mxfp8 bit"
 - [ ] **Step 5: Commit** — `feat: add the bf16 codec profile to the phi and qwen dense converters`
 
 ### Task 16: Live 3090 acceptance + documentation amendments
+
+> **NOT STARTED (2026-11-28), and one file in its list no longer exists.**
+> `docs/NVIDIA_DOCS_AMPERE.md` was **removed from the repository** as NVIDIA
+> copyrighted material (`docs/NVIDIA_DOCS.md` records the removal and the
+> decision); editing `:22-27` of it is impossible and re-adding it would undo a
+> deliberate legal choice. The offline export the operator keeps is
+> `/home/alexmv2025/projects/cuda/docs/NVIDIA_DOCS_AMPERE.md` — the same 2026-09
+> snapshot §A1–A8 of which this plan already cites for sm_86/sm_87 limits.
+>
+> **Where the amendments actually go:**
+>
+> | amendment | file |
+> |---|---|
+> | Ampere is a supported target (policy) | `AGENTS.md` — **operator-reviewed text, applied by them**, as the plan already says |
+> | what Ampere executes and why (first-party words) | a new `docs/ampere-support.md`: the capability table row, the `mma.m16n8k16`/IMMA reasons, the 99 KB sm_86 / 163 KB sm_87 smem tiers, no FP8/FP4 |
+> | R3 scoping to a target set | `docs/numeric-contract.md` §1/§1.1 (spec §4's amendment — still unapplied, and this is the task that owns it) |
+> | per-profile goldens | `docs/numeric-contract.md` §4 + Task 21's resolver |
+> | measured numbers | `docs/model-reports/2026-11-24-ampere-bf16-slice.md` + `tests/perf/perf_baselines.json` |
+>
+> **Do not** reproduce NVIDIA text in the repo: `docs/NVIDIA_DOCS.md`'s rule is
+> that anything a kernel depends on is re-derived in first-party words and pinned
+> in code or a regression test. The CUDA facts this branch needs are already
+> pinned that way in `hardware_target.cpp`'s table comments.
 
 **Files:**
 - Modify: `AGENTS.md` (Ampere policy — **operator-reviewed text, applied by them**)
@@ -1354,6 +2188,14 @@ the model report committed with measured throughput.
 
 # Branch 3 — `feat/int8-w8a16-sm86-sm87`
 
+> **NOT STARTED (2026-11-28).** No file this branch names exists:
+> `int8_quant.{h,cu}`, `lsx_gemv_int8.cu`, `lsx_gemm_w8a16.cu`,
+> `tests/test_int8_quant.cu`, `tests/test_lsx_gemv_int8.cu`,
+> `tests/test_gemm_w8a16.cu`. The branch also inherits two prerequisites that did
+> not exist when it was written: `CodecProfile` must be visible to `libs/`
+> (Task 15, refinement 1) and expert planes must declare their codec (Task 9c),
+> or an INT8 MoE tree verifies as NVFP4 and is refused on Ampere.
+
 Branches from Branch 2. Scope: `int8-w8a16` profile + deterministic W8A16 decode GEMV
 and prefill GEMM, validated on a live 3090 and Orin NX 16 GB.
 
@@ -1365,6 +2207,15 @@ rounding and the path stays deterministic and device-property-independent (R3 wi
 the `{sm_86, sm_87}` set).
 
 ### Task 17: Per-channel symmetric INT8 weight quantizer
+
+> **NOT STARTED (2026-11-28).** The scope note below still holds exactly:
+> `converter.cpp:660` (`(dtype == "I8" || dtype == "U8") && !src_scale.empty()`)
+> carries int8 planes through, `converter.cpp:309` accepts `I8` as a source dtype,
+> and nothing quantizes. **Anchor:** the quantizer's surface is the same as
+> `gpu::quantize_tensor_gpu` (used at `phi_dense_convert.cpp:391`, `:428`), so
+> `RunInt8QuantizePerChannel` should mirror its signature and its launch geometry
+> conventions rather than invent a second style; the reference it must beat for
+> determinism is `RunLxGemmVec`'s fixed warp-per-row geometry (`lsx_gemv.h:26`).
 
 **Scope note (2026-11-27 re-measurement).** `kI8Sym` **storage already exists**: 768
 int8 tensors ship in `DeepSeek-V4-Flash`, written by the generic passthrough at
@@ -1410,6 +2261,12 @@ TEST_CASE("determinism: two runs on identical input are bit-identical") { … }
 
 ### Task 18: `int8-w8a16` codec profile — converter side
 
+> **NOT STARTED (2026-11-28).** Depends on Task 17 (quantizer), Task 15's enum move
+> (`CodecProfile` must be visible to `libs/`) and Task 9c if the family is MoE. The
+> `PinnedSchema` part of the note below is accurate — `dtype = "I8"` already passes
+> the verifier's `CodecForDtype()` and clears D1 — so this task is a converter
+> change plus a mask assertion, not a format change.
+
 **Files:**
 - Modify: `libs/lsxcommon/src/phi_dense_convert.cpp`, `qwen_dense_convert.cpp`
 - Modify: `apps/lsxforge/src/codec_profiles.h` (`kInt8W8A16` for `kDense`)
@@ -1448,6 +2305,14 @@ TEST_CASE("int8 profile byte size is ~half the bf16 profile for the same model")
 
 ### Task 19: W8A16 decode GEMV
 
+> **NOT STARTED (2026-11-28).** `lsx_gemv.h` currently exposes exactly two entry
+> points — `RunLxGemmVec` (`:26`) and `RunLxGemmVecWT` (`:31`) — so the new
+> `RunLxGemmVecInt8` is the third and must take the same `(stream, w, x, …)` shape
+> with the per-row scale inserted after `w`; a different argument order is how a
+> family ends up with two GEMV conventions. One kernel serves sm_86 and sm_87: the
+> geometry must fit the **99 KB** sm_86 shared-memory tier, since the 163 KB sm_87
+> tier is not a licence to size for Orin.
+
 **Files:**
 - Create: `libs/lsxcommon/src/lsx_gemv_int8.cu`
 - Modify: `libs/lsxcommon/include/lsxcommon/lsx_gemv.h` (add the entry point)
@@ -1482,6 +2347,18 @@ TEST_CASE("w8a16 gemv is bit-identical between two launch shapes of the same pro
 - [ ] **Step 5: Commit** — `feat: add deterministic W8A16 decode GEMV`
 
 ### Task 20: W8A16 prefill GEMM (the one new MMA kernel)
+
+> **NOT STARTED (2026-11-28). One numeric fact to state before writing the kernel:**
+> W8A16 dequantizes the weight tile to `__half`/`__nv_bfloat16` in shared memory and
+> then uses **`mma.sync.aligned.m16n8k16` (f16/bf16, f32 accumulate)** — the int8
+> `mma.sync` family is for W8A8 and is *not* used here, because activations stay
+> 16-bit (that is what keeps the path deterministic and the error bounded by
+> per-channel weight rounding, per the numeric note above). Consequences for the
+> tile: the smem budget is a 16-bit tile, not an int8 one; `cp.async` needs only
+> 4-byte alignment (16-byte `.cg` for the aligned bulk of the tile); and the tile
+> must fit the **99 KB sm_86** tier so one kernel serves both 3090 and Orin.
+> Everything else in this task's step 3 — fixed tile schedule, no TMA, no
+> mbarrier, no tcgen05 — stands.
 
 **Files:**
 - Create: `libs/lsxcommon/src/lsx_gemm_w8a16.cu`
@@ -1519,6 +2396,27 @@ TEST_CASE("w8a16 gemm returns NotSupported on a non-Ampere device it was not bui
 
 ### Task 21: Per-profile goldens and the numeric declaration
 
+> **NOT STARTED (2026-11-28), and the file list is incomplete.** Golden resolution
+> happens in **two** places, not one, and they must agree or `lsxbenchmark
+> --fsi-selfcheck` and `ctest -R test_*_fsi_selfcheck` will read different files:
+>
+> | site | code |
+> |---|---|
+> | CLI | `libs/lsxcommon/src/model_runtime.cpp:297` (fsi), `:331` (code), `:366` (mcp), `:401` (det) — each builds `<dir>/<Type()>.json` |
+> | test driver | `tests/test_parity_gate.cpp:60-76` (`GoldenDir()`/`GoldenPath()`), one implementation for all four gates |
+>
+> There is no `ResolveGolden()` function to modify: the plan's Task 21 names
+> `fsi_selfcheck.cpp` / `code_selfcheck.cpp` / `det_selfcheck.cpp` /
+> `selfcheck_common.cpp`, and those hold the *comparison*, not the path. The rule
+> belongs next to each path construction — one small helper in `lsxcommon`
+> (`GoldenPathFor(model_type, profile, dir)`) called by all five sites, with the
+> test driver calling the same helper so the two cannot diverge.
+>
+> **Profile discovery order** (the helper's contract): the loaded artifact's
+> `profile`, else the manifest's `vault_profile` when the model is not an artifact
+> yet. Then `<model_type>@<profile>.json` if it exists, else `<model_type>.json`
+> (the historical `nvfp4` spelling, which is why no existing golden moves).
+
 **Files:**
 - Modify: `libs/lsxcommon/src/fsi_selfcheck.cpp`, `code_selfcheck.cpp`,
   `det_selfcheck.cpp`, `selfcheck_common.cpp` (resolve `<type>@<profile>.json`,
@@ -1549,6 +2447,12 @@ TEST_CASE("a missing profile golden is reported as debt, not as a pass") { … }
 - [ ] **Step 5: Commit** — `feat: resolve parity goldens per codec profile`
 
 ### Task 22: Live acceptance on RTX 3090 and Orin NX 16 GB
+
+> **NOT STARTED (2026-11-28).** It also depends on numbers that do not exist yet:
+> the artifact store holds three `nvfp4` artifacts and no second profile, so the
+> "third profile of the same two models — the multi-artifact case in full" starts
+> from one profile, not two. Task 9f schedules the conversions in the order that
+> makes this task's steps executable.
 
 **Files:**
 - Create: `docs/model-reports/2026-11-24-ampere-int8-w8a16.md`
@@ -1598,6 +2502,113 @@ perf rows seeded for both Ampere targets; profile rank corrected from measuremen
 it disagrees with the assumption.
 
 ---
+
+## Lifecycle audit (2026-11-28)
+
+This is the evidence behind the revision note and the task statuses above. It asks
+one question per AGENTS.md's lifecycle gate — *did every stage actually run, and is
+a SKIP distinguishable from a pass?*
+
+**Method** (all reproducible on this host):
+
+```bash
+export LSX_SOURCE_ROOT=/mnt/fast_storage/lsx_model
+export LSX_ARTIFACT_ROOT=/mnt/fast_storage/lsx_artifact
+ctest --preset linux-debug                                   # 184/184 fast, 166 s
+lsxforge --verify --input <root>/microsoft/phi-4/nvfp4       # declared=34 actual=34
+ctest -R "test_phi_dense|test_phi_tool_framing|test_perf_baseline_phi_4|\
+test_bootstrap_artifacts|test_load_codec_gate" -j1           # 12 pass, 1 skip (perf)
+ctest -R "test_dory_dense_selfcheck|test_dory_dense_fsi_selfcheck" -j1 -V
+# registry vs store, per row: count rows, profiles, status, and which artifacts
+# exist — the script below walks models/*/*.json and $LSX_ARTIFACT_ROOT
+python3 - <<'PY'
+import glob, json, os
+root = os.environ['LSX_ARTIFACT_ROOT']
+for f in sorted(glob.glob('models/*/*.json')):
+    d = json.load(open(f))
+    for name, p in d.get('profiles', {}).items():
+        store = p.get('artifact', {}).get('store')
+        on_disk = bool(store) and os.path.isfile(os.path.join(root, store, 'artifact.fb'))
+        print(d['model_type'], name, p.get('status'), 'on_disk' if on_disk else '-')
+PY
+# -> 48 rows, 1 profile each, 3 built == 3 on disk, 45 not built
+```
+
+### A. The registry and the store agree on what exists, and disagree with reality
+
+| check | result |
+|---|---|
+| rows declaring all 10 stages + all 5 gate targets | **48 / 48** — the *structure* of the lifecycle gate is complete for every model |
+| rows with `status: built` | **3** (`phi-4`, `qwen3.5-9b`, `gemma-4-12b-it`), all `nvfp4` |
+| artifacts on disk | **3**, each at the exact `<org>/<model_dir>/<profile>` path its row names, all deep-verify green |
+| registered rows with no artifact | **45** — every real-weight stage for them SKIPs |
+| checkpoints on disk with no registry row | **3** — `baidu/ERNIE-5.5-Flash-Base-BF16` (534 GB, open task `W`) **and two the registry has never seen**: `JetBrains/Mellum2-12B-A2.5B-Thinking`, `JetBrains/Mellum2.1-12B-A2.5B-Instruct` (23 GB each, both with `config.json` + weights) |
+| registry rows with a profile count > 1 | **0** — every row declares exactly one profile; `preferred_profile` is `nvfp4` for all 48 |
+
+The spec's inventory (§1.1: "39 checkpoints over 18 orgs") is now **51 over 24**.
+The two Mellum downloads are new since it was written; task `W`'s fix shape ("every
+checkpoint under the source root belongs to a row or is declared as an uningested
+download") is what would have caught them, and it is now a three-model gap, not one.
+
+### B. The three artifact-backed rows, stage by stage
+
+| stage | `phi-4` (`nvfp4`) | `qwen3.5-9b` (`nvfp4`) | `gemma-4-12b-it` (`nvfp4`) |
+|---|---|---|---|
+| convert | pass | pass | pass |
+| `--verify` | 34/34, 0 problems | 35/35, 0 problems | 34/34, 0 problems |
+| load / model / kernels | pass | pass | pass |
+| SelfCheck "Paris" ×3 | pass, `cf51b9bbd5c913dd` | pass, `a2af669548e59c73` | pass, `31d7a1672d89ccdc` |
+| FSI | **pass 3/3** | **pass 3/3** | **FAIL 1/3** — documented `R22`: the *source* is a 0.556-logit near-tie at the fork |
+| CODE | pass 3/3 | pass 3/3 | pass 3/3 |
+| DET | pass 3/3 | pass 3/3 | pass 3/3 |
+| MCP | pass 3/3 | pass 3/3 | pass 3/3 (byte-exact) |
+| perf row (2048 tokens) | **71.83 t/s, dated 2026-10-24** | **160.92 t/s, dated 2026-10-23** | 59.85 t/s, 2026-11-28 |
+| stage-9 report | **missing** (`"report": ""`) | **missing** (`"report": ""`) | present |
+| tool round-trip hook | not declared | not declared | declared |
+
+Two real defects in this table, neither of which any test catches:
+
+1. **The perf rows of `phi-4` and `qwen3.5-9b` predate their artifacts.** Both were
+   re-converted on 2026-11-28; the numbers are from 2026-10-24 / 2026-10-23. The
+   `nvfp4` codec layout is unchanged, so the numbers are probably still true — but
+   "probably" is what a registry exists to avoid. Owner: **Task 9f**, step 1.
+2. **Two of the three bootstrap artifacts have no stage-9 report.** The lifecycle
+   gate ends in a publishable report (`docs/model-reports/YYYY-MM-DD-<name>.md`);
+   `phi-4` and `qwen3.5-9b` have an empty `report` field while their gates are
+   recorded. Owner: Task 9f when those rows are touched, or a `docs:` commit of its
+   own.
+
+### C. A SKIP is distinguishable from a pass — verified
+
+`test_dory_dense_selfcheck` and `test_dory_dense_fsi_selfcheck` (a model with no
+artifact) skip with
+
+```
+dory-1.0-4b converted model not present in nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16/nvfp4
+```
+
+— it names the model, the org, the directory and the profile it looked in, and the
+skip is `SKIP_RETURN_CODE 4` with a declared stage target, so it cannot be mistaken
+for green. That is the behaviour the cold start was designed to produce, and it is
+what makes the 45 missing artifacts an honest gap rather than a silent one.
+
+The four declared-debt counters agree with the matrix: `fsi` 11, `code` 11, `det`
+11, `mcp` 9 rows without a golden — a *declared* absence, enforced in both
+directions by `test_model_suite_guard`.
+
+### D. Findings and their owners
+
+| # | finding | owner |
+|---|---|---|
+| F1 | 45 of 48 rows have no artifact, so their lifecycle gates SKIP | **Task 9f** |
+| F2 | No converter can produce a second profile; the `bf16` profile that unblocks Ampere does not exist | **Task 15** (+ 8a, 9c) |
+| F3 | `VerifyArtifact` assumes an expert plane is NVFP4 (no dtype column), so `bf16`/`int8` MoE trees cannot be verified or gated | **Task 9c** |
+| F4 | `model.index.json` still holds a codec map in 5 writers, 2 readers and the arrow verifier; `--verify` does not enforce rule 5 | **Task 9d** |
+| F5 | Profile selection is directory-order, not target-aware; `--explain-artifact` does not exist | **Task 9e** |
+| F6 | A flagless `lsxforge` run exits 0 and publishes no `artifact.fb` — a tree nothing can load | **Task 8a** |
+| F7 | Three checkpoints on disk have no registry row (ERNIE + two Mellum) | Task 9f + open task `W` |
+| F8 | `phi-4` and `qwen3.5-9b` perf rows predate their artifacts; both lack a stage-9 report | **Task 9f** |
+| F9 | Branch 2/3 have no code at all: no `86/87` build, no `bf16`/`int8` profile, no Ampere presets, and the doc the plan amends was deleted from the tree | Tasks 11–22, 16 |
 
 ## Self-review of this plan
 
@@ -1654,3 +2665,46 @@ it disagrees with the assumption.
   moves into `artifact.fb`, readers go through `ModelBase::LayerUsesCodec`), at a
   stated cost of 6 files in 2 families — and the plan now records that the split
   between the two files is settled **per field**, not per file.
+
+### Re-review after the status audit (2026-11-28)
+
+Run against the tree, not against the text — every claim below was checked with a
+command or a test run, and the commands are in § *Lifecycle audit*.
+
+- **Spec coverage, re-stated honestly.** I1 → Tasks 2 + 9 (done) **and 9c** (the
+  verifier currently *contradicts* I1 on expert planes by assuming NVFP4). I2 →
+  Tasks 1–3 (done). I3 → Task 9 (done). I4 → **storage half done** (Tasks 4–9),
+  selection half open (**9e**), production half open (**15**, **9f**). I5 → Tasks
+  4–8, 10 (done except Task 10). The §4 numeric-contract amendment is still
+  unapplied and is now owned explicitly by **Task 16**. So the design is not
+  "implemented"; it is "implemented for one codec profile on one target family,
+  with named owners for the rest".
+- **Two planned interfaces were unimplementable as written and are corrected
+  above**, which is the strongest argument for recording the audit in the plan
+  rather than in a chat log: (a) Task 15 needs `CodecProfile` **inside `libs/`**,
+  but the enum lives in `apps/lsxforge`, so the task as written would have produced
+  a per-family copy of the profile table — the exact thing spec §2.6 forbids;
+  (b) Task 16 amends `docs/NVIDIA_DOCS_AMPERE.md`, which no longer exists and must
+  not return.
+- **Type consistency re-checked across the new tasks.** `CodecProfile` moves to
+  `lsxcommon/codec_profile.h` and `lsxforge` re-exports it, so Task 8's
+  `ParseCodecProfile`/`DeclaredPlanes` keep their signatures. `SelectProfile` takes
+  the capability as a **`uint64_t` mask plus an ordered name list**, not as
+  `hw::CodecMask`/`hw::PlaneCodec`: `lsxstorage` must stay below `lsxcommon`
+  (Task 4's constraint), and the mask crossing the boundary as an integer is
+  already how `artifact.fb` stores it. `PlaneCodec`'s numeric values (1<<0..1<<6)
+  and `artifact.fbs`'s `bit_flags` **indices** (0..6) are the same seven bits by
+  two different spellings — the `.fbs` comment says so, and
+  `test_manifest_sync`-style drift here would reinterpret every artifact, so
+  Task 5's case is the guard.
+- **Review focus, updated.** The original seven failure modes stand, and the audit
+  found that two of them are live rather than hypothetical: #1 (a converter keeping
+  an old spelling — the *verifier* now keeps one instead, for expert planes: Task
+  9c) and #2 (a codec declaration outside `artifact.fb` — five writers and two
+  readers still do it: Task 9d). Added: #9 "the tool reports success and publishes
+  nothing" (Task 8a) and #10 "the registry says `built` and the store disagrees"
+  (Task 9f).
+- **Proportion.** The audit added ~10 KB of status, evidence and five tasks; it
+  removed no design. The plan is now 30 tasks — 25 original, of which 9 are done,
+  2 done-with-residue, 1 partial and 13 not started — and it says which is which at
+  the top, so a reader no longer has to diff the document against the tree.
