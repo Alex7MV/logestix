@@ -52,6 +52,9 @@
     "det": [
       "test_minimax_moe_det_selfcheck"
     ],
+    "mcp": [
+      "test_minimax_moe_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_minimax_m3"
     ]
@@ -106,11 +109,17 @@
       "resource_lock": "gpu",
       "form": "parity",
       "kind": "det"
+    },
+    "test_minimax_moe_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,
   "auto_path_determinism": false,
-  "golden_debt": {},
+  "golden_debt": {
+    "mcp": "not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md"
+  },
   "report": "",
   "notes": "",
   "selfcheck_max_gen": 16,

@@ -1,13 +1,15 @@
 # MCPSelfCheck — capture and parity findings
 
 - **Date**: 2026-11-28
-- **Scope**: pilot of MCPSelfCheck
+- **Scope**: MCPSelfCheck
   (`docs/superpowers/specs/2026-11-28-mcp-selfcheck-design.md`)
-- **Status**: mechanism complete, gated on **two** models —
-  `microsoft/phi-4/nvfp4` and `Qwen/Qwen3.5-9B/nvfp4`, the pair whose converted
-  artifacts this branch verified end to end. The other 45 manifest rows have no
-  `mcp` stage, no golden and no target, and `test_model_suite_guard` treats the
-  stage as a pilot rather than a gap (see "Rollout" below).
+- **Status**: mechanism complete, and (operator directive, 2026-11-28) a
+  **required lifecycle stage** with the same standing as SelfCheck/FSI/CODE/DET:
+  all 48 manifest rows declare the stage and have a target, 39 goldens are
+  captured, and 9 rows declare `golden_debt.mcp` because their source directory
+  is an empty placeholder and no artifact exists. Three rows have run on real
+  weights — `microsoft/phi-4/nvfp4`, `Qwen/Qwen3.5-9B/nvfp4` and
+  `google/gemma-4-12B-it/nvfp4` — all 3/3 byte-exact. See "Rollout" below.
 
 The gate is **protocol-defined**, and that is its one real departure from
 FSI/CODE/DET: JSON-RPC 2.0 fixes the payload, so `expected` comes from
@@ -91,13 +93,17 @@ lsx_add_parity_gate(NAME test_phi_dense_mcp_selfcheck MODEL phi-4 KIND mcp)
 lsx_add_parity_gate(NAME test_qwen_dense_mcp_selfcheck MODEL qwen3.5-9b KIND mcp)
 ```
 
-`mcp` is in `gen_model_manifest.py`'s `OPTIONAL_STAGES` and absent from
-`test_model_suite_guard`'s `kRequired`. That is a statement about rollout, not
-importance: it lets the 45 not-yet-rolled-out rows stay honest without a
-fabricated per-row debt entry, while a row that DOES declare `mcp` still gets
-every check — target registered, `SKIP_RETURN_CODE 4` present, golden present or
-declared as debt. Adding a third model is a manifest row, a golden capture and
-one CMake line; nothing in the harness changes.
+`mcp` **is** in `test_model_suite_guard`'s `kRequired` and is no longer in
+`gen_model_manifest.py`'s `OPTIONAL_STAGES` (operator directive, 2026-11-28: it
+is a lifecycle gate, not a pilot). Every row declares the stage, every row has a
+target from one `lsx_add_parity_gate(... KIND mcp)` line, and the golden-coverage
+guard applies to it unchanged — an undeclared gap fails, a stale debt row fails.
+
+The roll-out is recorded in
+`docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md`, including the reason
+each of the nine debt rows cannot be captured today (empty source-store
+placeholder, no artifact) and the one-command re-capture once a checkpoint
+returns.
 
 ## Anti-goals, restated because they are easy to erode
 

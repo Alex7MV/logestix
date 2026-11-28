@@ -53,6 +53,9 @@
     "det": [
       "test_muse_dense_det_selfcheck"
     ],
+    "mcp": [
+      "test_muse_dense_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_muse_glimmer_30b"
     ]
@@ -114,6 +117,10 @@
       "form": "parity",
       "kind": "det",
       "timeout": 3600
+    },
+    "test_muse_dense_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

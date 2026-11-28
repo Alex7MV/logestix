@@ -400,12 +400,16 @@ server.
   the source safetensors, committed golden, separate
   `test_<family>_fsi_selfcheck` target, suite-guard `fsi` row):
   **REQUIRED SUB-SKILL** `fsi-selfcheck`.
-- **MCP payload gate — optional, and only if the row is being rolled out to it.**
-  `test_<family>_mcp_selfcheck` + `tests/fixtures/mcp/<model_type>.json` +
-  `"mcp"` in the manifest's `stages`. It is NOT a lifecycle requirement yet
-  (pilot on `phi-4` and `qwen3.5-9b`); a new row that wants it also removes
-  nothing from the required set, because `mcp` is not in it. Sub-skill
-  `mcp-selfcheck`.
+- Add the **MCP payload gate** — a REQUIRED stage, the fourth parity gate
+  (`mcp` is in the suite guard's `kRequired`): `test_<family>_mcp_selfcheck` +
+  `tests/fixtures/mcp/<model_type>.json` + `"mcp"` in the manifest's `stages` +
+  the `{"form": "parity", "kind": "mcp"}` override + one
+  `lsx_add_parity_gate(... KIND mcp)` line. The golden is **protocol-defined**
+  (JSON-RPC 2.0), so it is captured tokenizer-only with **no forward pass** —
+  `python3 tools/mcp_capture.py --model <ckpt> --type <model_type> --out …` or
+  `tools/mcp_capture_all.py` for every row. A row whose checkpoint is gone and
+  has no artifact cannot produce the framed prompt: declare `golden_debt.mcp`
+  with the reason in the same commit. Sub-skill **`mcp-selfcheck`**.
 - Add the perf baseline — **three** things, not two: an entry in
   `tests/perf/perf_baselines.json`, a `TEST_CASE("perf baseline: <model_type>")`
   in `tests/test_perf_baseline.cpp`, **and** an
@@ -691,11 +695,13 @@ are shared drivers parameterised by the manifest:
       regenerated in the same commit.
 - [ ] SelfCheck ≥3 bit-exact cycles (the shared driver does it; a family case
       outside the hooks gets its own file).
-- [ ] FSI/CODE/DET goldens captured from the source and the gates **run** (a
-      SKIP is not a pass). If one is red on a borderline answer, follow
-      "Parity fix: the residual plane" in stage 2 — and record the outcome
-      (green, or the measured reason it cannot be green on this card) in
-      `docs/SELFCHECK_MATRIX.md` + `docs/OPEN_TASKS.md`.
+- [ ] FSI/CODE/DET/MCP goldens captured and the gates **run** (a SKIP is not a
+      pass). MCP's golden is protocol-defined, so it is captured tokenizer-only
+      with no forward pass; if the checkpoint is gone and no artifact exists,
+      declare `golden_debt.mcp` in the same commit. If a gate is red on a
+      borderline answer, follow "Parity fix: the residual plane" in stage 2 —
+      and record the outcome (green, or the measured reason it cannot be green on
+      this card) in `docs/SELFCHECK_MATRIX.md` + `docs/OPEN_TASKS.md`.
 - [ ] perf entry in `tests/perf/perf_baselines.json` + a `TEST_CASE` in
       `test_perf_baseline.cpp`; the `perf` stage target in the manifest supplies
       the ctest registration (label `perf`, `SKIP_RETURN_CODE 4`).

@@ -52,6 +52,9 @@
     "det": [
       "test_inkling_moe_varloop_det_selfcheck"
     ],
+    "mcp": [
+      "test_inkling_moe_varloop_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_tml_d24_varloop_research"
     ]
@@ -108,6 +111,10 @@
       "form": "parity",
       "kind": "det",
       "timeout": 3600
+    },
+    "test_inkling_moe_varloop_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

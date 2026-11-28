@@ -91,18 +91,20 @@ python3 tools/gen_model_manifest.py --docs docs/MODELS.md --root .
 ## The lifecycle gate (+ the direction to grow)
 
 Every model must satisfy: SelfCheck ("Paris", >= 3 bit-exact cycles), FSI, CODE,
-DET (`docs/SELFCHECK_MATRIX.md`), a native tool round-trip, and a seeded perf
-row at the canonical 2048-token protocol. A gate that SKIPs is **not** a pass;
+DET, MCP (`docs/SELFCHECK_MATRIX.md`), a native tool round-trip, and a seeded
+perf row at the canonical 2048-token protocol. A gate that SKIPs is **not** a pass;
 a gate whose golden was never captured is declared debt in the manifest, and
 `test_model_suite_guard` fails an undeclared gap.
 
-**MCP is a pilot, not a lifecycle requirement yet.** `mcp::RunMcpSelfCheck`
-(`--mcp-selfcheck`, `LSX_MCP_GOLDEN_DIR`) asks for the three JSON-RPC 2.0
-payloads an agent harness emits and compares JSON DOCUMENTS, not bytes — its
-golden is protocol-defined, so key order is free and only the fields are gated.
-It is wired on `phi-4` and `qwen3.5-9b` only: the stage is in
-`OPTIONAL_STAGES` and out of `kRequired`, so the other 45 rows are neither
-reported as broken nor claimed as covered. Skill **`mcp-selfcheck`**.
+**MCP is a lifecycle gate, with the same standing as SelfCheck/FSI/CODE/DET.**
+`mcp::RunMcpSelfCheck` (`--mcp-selfcheck`, `LSX_MCP_GOLDEN_DIR`) asks for the
+three JSON-RPC 2.0 payloads an agent harness emits and compares JSON DOCUMENTS,
+not bytes — its golden is protocol-defined, so key order is free and only the
+fields are gated. Every row declares the stage and has a target; `mcp` is in
+`kRequired` (operator directive, 2026-11-28 — it was a pilot only during the
+roll-out). A row whose framed prompt could not be captured declares
+`golden_debt.mcp`, the same treatment the other parity gates get, so a gap is
+never silent. Skill **`mcp-selfcheck`**.
 
 Shared kernel layers exist so families do not copy each other: `lsx_nvfp4`
 (the only NVFP4 path), `lsx_gemv` (**the only GEMM path** — cuBLAS is not linked),

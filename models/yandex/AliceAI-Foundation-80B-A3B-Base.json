@@ -52,6 +52,9 @@
     "det": [
       "test_alice_moe_det_selfcheck"
     ],
+    "mcp": [
+      "test_alice_moe_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_alice_foundation_80b_a3b"
     ]
@@ -98,6 +101,10 @@
       "timeout": 1800,
       "form": "parity",
       "kind": "det"
+    },
+    "test_alice_moe_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

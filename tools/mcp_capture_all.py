@@ -37,9 +37,13 @@ def main():
         # the row before the download lands (docs/open-tasks infra-migrations).
         # Saying "no tokenizer" here sends the next operator after a missing
         # Python package when the real answer is "the weights are not on disk".
+        # iterdir() yields Path objects, not names: `name.endswith` on one is an
+        # AttributeError, which is how this loop crashed the moment it ran
+        # against a non-empty checkpoint.
         has_checkpoint = any(
-            name in ("config.json", "params.json") or
-            name.endswith(".safetensors") for name in checkpoint.iterdir())
+            entry.name in ("config.json", "params.json") or
+            entry.name.endswith(".safetensors")
+            for entry in checkpoint.iterdir())
         if not has_checkpoint:
             rows.append((model_type, "", "empty placeholder (weights not "
                                          "downloaded) at " + str(checkpoint)))

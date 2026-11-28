@@ -55,6 +55,9 @@
     "det": [
       "test_gemma_moe_det_selfcheck"
     ],
+    "mcp": [
+      "test_gemma_moe_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_gemma_4_26b_a4b_it"
     ]
@@ -105,6 +108,10 @@
     },
     "test_gemma_moe_selfcheck": {
       "form": "selfcheck"
+    },
+    "test_gemma_moe_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

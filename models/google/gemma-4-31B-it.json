@@ -50,6 +50,9 @@
     "det": [
       "test_gemma_dense_det_selfcheck"
     ],
+    "mcp": [
+      "test_gemma_dense_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_gemma_4_31b_it"
     ]
@@ -82,6 +85,10 @@
     },
     "test_gemma_dense_selfcheck": {
       "form": "selfcheck"
+    },
+    "test_gemma_dense_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

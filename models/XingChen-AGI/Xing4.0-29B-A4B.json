@@ -52,6 +52,9 @@
     "det": [
       "test_xing_moe_det_selfcheck"
     ],
+    "mcp": [
+      "test_xing_moe_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_xing_4_0_29b_a4b"
     ]
@@ -94,6 +97,10 @@
     },
     "test_xing_moe_selfcheck": {
       "form": "selfcheck"
+    },
+    "test_xing_moe_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

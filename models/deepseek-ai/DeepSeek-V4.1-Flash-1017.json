@@ -55,6 +55,9 @@
     "det": [
       "test_deepseek_moe_v41_1017_det_selfcheck"
     ],
+    "mcp": [
+      "test_deepseek_moe_v41_1017_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_deepseek_v41_flash_1017"
     ]
@@ -112,6 +115,10 @@
     "test_deepseek_moe_v41_1017_det_selfcheck": {
       "form": "parity",
       "kind": "det"
+    },
+    "test_deepseek_moe_v41_1017_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

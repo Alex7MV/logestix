@@ -55,6 +55,9 @@
     "det": [
       "test_granite_switch_8b_det_selfcheck"
     ],
+    "mcp": [
+      "test_granite_switch_8b_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_granite_switch_4_1_8b"
     ]
@@ -108,6 +111,10 @@
       "skip": true,
       "env": [],
       "source": "test_granite_switch_tokenizer_parity.cpp"
+    },
+    "test_granite_switch_8b_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": false,

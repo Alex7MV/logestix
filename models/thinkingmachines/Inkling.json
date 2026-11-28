@@ -52,6 +52,9 @@
     "det": [
       "test_inkling_moe_base_det_selfcheck"
     ],
+    "mcp": [
+      "test_inkling_moe_base_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_inkling"
     ]
@@ -106,6 +109,10 @@
     "test_inkling_moe_base_constants": {
       "label": "fast",
       "env": []
+    },
+    "test_inkling_moe_base_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

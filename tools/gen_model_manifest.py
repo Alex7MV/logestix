@@ -74,16 +74,17 @@ STAGE_LOCKS = {stage: "gpu" for stage in
 SYNTHETIC_ENV = "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
 SYNTHETIC_STAGES = ("convert", "load", "model")
 
-# Stages that are allowed to be absent without a debt reason. `perf` is one
-# because a baseline is seeded only when a model is measured; `mcp` is one
-# because the gate shipped as a PILOT on the two bootstrap artifacts
-# (microsoft/phi-4/nvfp4, Qwen/Qwen3.5-9B/nvfp4) rather than on all 47 rows.
-# Keeping it in this list is a claim about ROLLOUT, not about importance: the
-# rule this list relaxes is "an empty stage is a gap unless declared", and the
-# honest statement for the other 45 rows today is "not rolled out yet", not a
-# fabricated debt entry per row. When the gate reaches a row, the stage appears
-# and test_model_suite_guard starts enforcing its target and its golden.
-OPTIONAL_STAGES = ("perf", "mcp")
+# Stages that are allowed to be absent without a debt reason. `perf` is the only
+# one left: a baseline is seeded only when a model is measured, so "absent" means
+# "no number recorded yet", not "this model cannot have a number".
+#
+# `mcp` is NOT in this list any more (operator directive, 2026-11-28). MCP is a
+# lifecycle gate with the same standing as SelfCheck/FSI/CODE/DET, not a pilot:
+# every row declares the stage, every row has a target, and a row without a
+# golden declares the gap. The pilot list existed for ROLLOUT, and the rollout
+# finished — keeping it here would relax "an empty stage is a gap unless
+# declared" for a gate that is now required.
+OPTIONAL_STAGES = ("perf",)
 
 # The gate kinds tests/test_parity_gate.cpp compiles. A parity target whose
 # name does not end in one of these spells a gate the driver has no branch for.

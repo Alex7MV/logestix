@@ -176,12 +176,14 @@ not taken: it needs its own A/B across families.
   green.
 - 2026-11-28 **MCP payload gate enabled and PASSED 3/3** (byte-exact to the
   protocol template): stage + `kind: mcp` override in the manifest,
-  `lsx_add_parity_gate(... KIND mcp)` next to the other two pilots, golden
-  captured tokenizer-only by `tools/mcp_capture.py`. This makes the row the
-  third `mcp` pilot. `mcp` stays in `OPTIONAL_STAGES` and out of the suite
-  guard's `kRequired` — rollout, not importance: moving it into `kRequired`
-  enters ~44 rows with no target in one commit, which is the change the
-  `mcp-selfcheck` skill reserves for "the commit that adds the last target".
+  `lsx_add_parity_gate(... KIND mcp)`, golden captured tokenizer-only by
+  `tools/mcp_capture.py`.
+- 2026-11-28 **MCP became a required lifecycle stage** (operator directive), not
+  a pilot: `mcp` moved into `test_model_suite_guard`'s `kRequired` and out of
+  `OPTIONAL_STAGES` for all 48 rows; 39 goldens captured, 9 rows declare
+  `golden_debt.mcp` (empty source-store placeholders). This row needed no change
+  for that — it was already the third row wired. See
+  [`../../2026-11-28-mcp-gate-rollout-closed.md`](../../2026-11-28-mcp-gate-rollout-closed.md).
 - **Not run, deliberately:** the `convert`/`inference` label sweeps. This is a
   model-local change verified with `ctest -R gemma_dense -j 1` (13/13) plus
   `ctest --preset linux-debug -j 16` for the guards.

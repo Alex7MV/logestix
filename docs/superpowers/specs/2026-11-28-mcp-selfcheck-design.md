@@ -123,7 +123,7 @@ MCP case is captured from a running source the honest `raw` and the honest
   (`tools/gen_model_manifest.py`) owns the ctest registration; the executable
   is built by `lsx_add_parity_gate` (`cmake/LsxTestHelpers.cmake`).
 - `tests/CMakeLists.txt` — the host unit test plus one
-  `lsx_add_parity_gate(... KIND mcp)` line per model in the pilot (two today).
+  `lsx_add_parity_gate(... KIND mcp)` line per model (48 rows).
 - `apps/lsxbenchmark` — `--mcp-selfcheck`, `LSX_MCP_GOLDEN_DIR`, `kOff`.
 - Guards extended in the same commit: `test_model_suite_guard` (stage order,
   required stage set, `SKIP_RETURN_CODE 4`, golden-or-declared-debt, and the
@@ -151,8 +151,9 @@ Five things were decided during the build, none of which the first draft had:
 1. **Rollout is two models, not 47.** The gate ships on
    `microsoft/phi-4/nvfp4` and `Qwen/Qwen3.5-9B/nvfp4` — the pair whose
    artifacts this branch verified end to end. That choice is expressed in the
-   machinery, not in prose: `mcp` is in the generator's `OPTIONAL_STAGES` and
-   absent from `test_model_suite_guard`'s `kRequired`. A row that does not
+   machinery, not in prose (the original pilot gate has since closed — `mcp` is
+   now in `kRequired` and out of `OPTIONAL_STAGES`, see the 2026-11-28 rollout
+   archive). A row that does not
    declare the stage is neither a gap nor coverage; a row that does declare it
    gets the target check, the skip code, and the golden-or-debt check like every
    other stage. The alternative — a `golden_debt` entry per un-rolled-out row —

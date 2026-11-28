@@ -6,7 +6,7 @@
 // cover the FULL model lifecycle (Model Ingestion Protocol):
 //
 //     convert -> load -> model -> kernels -> selfcheck -> fsi -> code -> det
-//     (-> mcp, a pilot stage on two rows; see kRequired below)
+//     -> mcp (see kRequired below: mcp is required, not a pilot)
 //
 // This guard enforces the structural side of that directive:
 //   1. Every model suite declares every lifecycle stage in its registry row
@@ -14,7 +14,7 @@
 //      Stages shared between sibling variants (e.g. the dense converter reused
 //      by qwen3.8-27b) point at the SAME target on purpose — the sharing is
 //      explicit, never silent.
-//   2. Every selfcheck / fsi / code / det-stage target declares ctest
+//   2. Every selfcheck / fsi / code / det / mcp-stage target declares ctest
 //      SKIP_RETURN_CODE 4 (real weights and golden are optional; absence must
 //      skip, not fail).
 //   3. No test file includes another model FAMILY's fixture/header. Family is
@@ -915,19 +915,22 @@ TEST_CASE("suite guard: every suite row declares the full stage set",
           "[suite][guard]")
 {
     // The header invariant promises convert -> load -> model -> kernels ->
-    // selfcheck -> fsi -> code -> det for EVERY row, but nothing enforced the
-    // stage list — only that the named targets exist. A row that quietly
+    // selfcheck -> fsi -> code -> det -> mcp for EVERY row, but nothing enforced
+    // the stage list — only that the named targets exist. A row that quietly
     // dropped "model" stayed green forever.
+    //
+    // `mcp` IS required (operator directive, 2026-11-28). It is a lifecycle gate
+    // with the same standing as SelfCheck/FSI/CODE/DET — the JSON-RPC 2.0
+    // payloads an agent harness emits are part of what a served model must be
+    // able to produce. It was a pilot only while the roll-out was in progress;
+    // every row now declares a target, so `mcp` is no longer in the generator's
+    // OPTIONAL_STAGES either. A row whose golden could not be captured declares
+    // `golden_debt.mcp` (the golden-coverage test below), which is the same
+    // treatment the other three parity gates get — "not measured here, and here
+    // is why" — never silence.
     static const std::vector<const char *> kRequired = {
-        "convert", "load", "model", "kernels",
-        "selfcheck", "fsi", "code", "det", "perf"};
-    // `mcp` is deliberately NOT here. It shipped as a pilot on the two
-    // bootstrap artifacts (phi-4, qwen3.5-9b), so requiring it of all 47 rows
-    // would report 45 correct suites as broken. That is not the same as leaving
-    // it unenforced: the golden-coverage test below gates the stage for every
-    // row that DECLARES it, and kRequired still covers the nine stages every
-    // row must carry. A row that declares `mcp` and then drops its target fails
-    // "every model suite covers the full lifecycle" like any other stage.
+        "convert", "load",          "model",     "kernels", "selfcheck",
+        "fsi",     "code",          "det",       "mcp",     "perf"};
     // DeepSeek-V4-Flash has no converter in the repo by design (it ingests a
     // pre-converted logestix layout), so "convert" is exempt for that row only.
     static const std::set<std::string> kConvertExempt = {"deepseek-v4-flash"};

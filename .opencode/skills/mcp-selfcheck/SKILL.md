@@ -9,9 +9,12 @@
 > `models/<org>/<model>.json`, and the build half is one call:
 > `lsx_add_parity_gate(NAME … MODEL … KIND mcp)` (`cmake/LsxTestHelpers.cmake`).
 >
-> **Status: pilot.** Wired on `phi-4` and `qwen3.5-9b` only. `mcp` is in
-> `OPTIONAL_STAGES` and out of the suite guard's `kRequired`, so the other 45
-> rows are neither declared broken nor claimed as covered. See `Rollout` below.
+> **Status: a required lifecycle stage** (operator directive, 2026-11-28), with
+> the same standing as SelfCheck/FSI/CODE/DET. Every manifest row declares the
+> stage and has a target; `mcp` is in `test_model_suite_guard`'s `kRequired` and
+> no longer in the generator's `OPTIONAL_STAGES`. A row whose framed prompt could
+> not be captured declares `golden_debt.mcp` — a measured, named gap, never
+> silence. See `Rollout` below for how the roll-out was completed.
 
 ## Overview
 
@@ -79,7 +82,7 @@ illustrative request from being adopted as its error response.
      "test_<family>_mcp_selfcheck": { "form": "parity", "kind": "mcp" }
    }
    ```
-3. **CMake**: one line, next to the other pilots in `tests/CMakeLists.txt`:
+3. **CMake**: one line, with the other rows in `tests/CMakeLists.txt`:
    ```cmake
    lsx_add_parity_gate(NAME test_<family>_mcp_selfcheck MODEL <type> KIND mcp)
    ```
@@ -121,18 +124,34 @@ models spend tokens before the payload; if `raw` ends mid-thought, raise
 
 ## Rollout
 
-`mcp` is in `OPTIONAL_STAGES` (`tools/gen_model_manifest.py`) and NOT in
-`test_model_suite_guard`'s `kRequired`. Both are deliberate and both are about
-rollout, not importance:
+The roll-out is **complete** (2026-11-28). What used to be a two-row pilot is now
+the required lifecycle stage, and the machinery says so rather than a comment:
 
-- an absent stage would otherwise need a `golden_debt` entry per row, i.e. 45
-  fabricated declarations for a gate that has not been rolled out;
-- a row that DOES declare `mcp` still gets every check — target registered,
-  `SKIP_RETURN_CODE 4`, golden present or declared as debt, GPU lock, label;
-- adding the 46th model is a manifest row, a capture and one CMake line.
+- `tools/gen_model_manifest.py`: `OPTIONAL_STAGES = ("perf",)` — only `perf` is
+  relaxed (a baseline exists once a model is measured). `mcp` is not.
+- `tests/test_model_suite_guard.cpp`: `kRequired` contains `"mcp"`, so dropping
+  the stage fails the same test as dropping `selfcheck`.
+- the golden-coverage guard already listed `mcp` in `kGoldenStages`, so the
+  two-way rule now applies to a required stage: an **undeclared** gap fails, and
+  a **stale** debt row fails.
 
-When the gate reaches every row, move `mcp` into `kRequired` and out of
-`OPTIONAL_STAGES` in the same commit that adds the last target.
+Current state: 48 rows declare the stage, 48 targets exist (one
+`lsx_add_parity_gate ... KIND mcp` each), 39 goldens are captured and 9 rows
+carry `golden_debt.mcp`. Those nine are the empty source-store placeholders
+(`minimax-m3`, `flint`, `mimo-v2.6-flash-rl`, `ling`, `mistral-large-4-1t`,
+`kimi-k3`, `beam`, `step-5-preview`, `glm-5.2`): no weights, no artifact, so the
+`input_ids` cannot be produced. Re-capture is one command when a checkpoint
+returns:
+
+```bash
+LSX_SOURCE_ROOT=<store> python3 tools/mcp_capture_all.py          # every row
+LSX_SOURCE_ROOT=<store> python3 tools/mcp_capture_all.py <model>  # one row
+```
+
+Adding a model to the gate is therefore NOT a rollout decision any more — a new
+manifest row without `stages.mcp` is a broken suite, exactly like one without
+`selfcheck`. Capture the golden while the checkpoint is on disk; if it genuinely
+cannot be captured, declare `golden_debt.mcp` with the reason in the same commit.
 
 ## Verification
 
@@ -143,5 +162,6 @@ ctest --test-dir build/linux-debug -R "test_model_suite_guard|test_manifest_sync
 python3 tools/mcp_capture.py --selftest
 ```
 
-Green means: the host criterion tests pass, both pilot targets PASS on their
-converted artifacts, and the three guards are green.
+Green means: the host criterion test passes, every row that has a converted
+artifact PASSes its real-weight target, every row without one SKIPs (exit 4, and
+its message names the model and the directory), and the three guards are green.

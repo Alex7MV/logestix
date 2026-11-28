@@ -53,6 +53,9 @@
     "det": [
       "test_hy_moe_det_selfcheck"
     ],
+    "mcp": [
+      "test_hy_moe_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_hy_memory_30b_a3b"
     ]
@@ -110,6 +113,10 @@
       "resource_lock": "gpu",
       "form": "parity",
       "kind": "det"
+    },
+    "test_hy_moe_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

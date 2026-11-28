@@ -19,7 +19,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--alice`
 - store `yandex/AliceAI-Foundation-80B-A3B-Base` (env `LSX_TEST_ALICE_FOUNDATION_80B_A3B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `alice_moe_model.cpp`, `alice_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 45.88 t/s (r3, 2026-11-03)
 - report: `docs/model-reports/2026-11-03-AliceAI-Foundation-80B-A3B-Base.md`
 - notes: Perf TEST_CASE had no add_test until 2026-10 (same silent-rot trap as xing).
@@ -33,9 +33,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 6
 - store `reflection/Beam-1.0-501B-A23B` (env `LSX_TEST_BEAM_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `beam_moe_model.cpp`, `beam_moe_inference.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: debt
 - perf: 1.6 t/s (r3, 2026-10-31)
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md); mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: `docs/model-reports/2026-10-31-Beam-1.0-501B-A23B.md`
 
 ## deepseek-v4-flash
@@ -46,7 +46,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--deepseek_nvfp4`
 - store `deepseek-ai/DeepSeek-V4-Flash` (env `LSX_TEST_DEEPSEEK_V4_FLASH_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `deepseek_moe_model.cpp`, `deepseek_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: yes
 - perf: 8.37 t/s (r3, 2026-09-15)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
 - report: **not written** (stage-9 debt)
@@ -59,7 +59,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--deepseek_pro`
 - store `deepseek-ai/DeepSeek-V4-Pro-0813` (env `LSX_TEST_DEEPSEEK_V4_PRO_0813_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `deepseek_moe_pro_model.cpp`, `deepseek_moe_pro_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 0.79 t/s (r3, 2026-10-26)
 - report: **not written** (stage-9 debt)
 
@@ -71,7 +71,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--deepseek_v41`
 - store `deepseek-ai/DeepSeek-V4.1-Flash` (env `LSX_TEST_DEEPSEEK_V4_1_FLASH_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `deepseek_moe_v41_model.cpp`, `deepseek_moe_v41_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 7.7 t/s (r3, 2026-09-23)
 - report: **not written** (stage-9 debt)
 
@@ -83,7 +83,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--deepseek_v41`
 - store `deepseek-ai/DeepSeek-V4.1-Flash-1017` (env `LSX_TEST_DEEPSEEK_V4_1_FLASH_1017_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `deepseek_moe_v41_model.cpp`, `deepseek_moe_v41_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 16.27 t/s (r3, 2026-11-22)
 - report: `docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md`
 - notes: Sibling of deepseek-v4.1-flash: identical config/tokenizer/index, re-trained weights
@@ -97,7 +97,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 9
 - store `nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16` (env `LSX_TEST_DORY_1_0_4B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `dory_dense_model.cpp`, `dory_dense_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 94.23 t/s (r3, 2026-11-10)
 - report: `docs/model-reports/2026-11-10-NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16.md`
 - notes: looped nGPT: 16+40*2+16 mixers/token, per_loop KV, 2 loops
@@ -111,9 +111,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 4
 - store `RecursiveSI/flint` (env `LSX_TEST_FLINT_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `flint_moe_model.cpp`, `flint_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: debt
 - perf: not seeded
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md); mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: **not written** (stage-9 debt)
 
 ## gemma-4-12b-it
@@ -139,7 +139,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 11
 - store `google/gemma-4-26B-A4B-it` (env `LSX_TEST_GEMMA_4_26B_A4B_IT_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `gemma_base_model.cpp`, `gemma_moe_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 128.34 t/s (r3, 2026-10-24)
 - report: **not written** (stage-9 debt)
 
@@ -152,7 +152,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 11
 - store `google/gemma-4-31B-it` (env `LSX_TEST_GEMMA_4_31B_IT_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `gemma_dense_model.cpp`, `gemma_dense_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 47.63 t/s (r3, 2026-10-24)
 - report: **not written** (stage-9 debt)
 
@@ -165,7 +165,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 3
 - store `ai-sage/GigaChat3.5-432B-A28B-Reasoning` (env `LSX_TEST_GIGACHAT3_5_432B_A28B_REASONING_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `gigachat_moe_model.cpp`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 11.1 t/s (r3, 2026-11-01)
 - report: `docs/model-reports/2026-10-31-GigaChat3.5-432B-A28B-Reasoning.md`
 
@@ -178,7 +178,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 3
 - store `ai-sage/GigaChat4-37B-A4B` (env `LSX_TEST_GIGACHAT4_37B_A4B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `gigachat_moe_37b_model.cpp`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 56.12 t/s (r3, 2026-11-26)
 - report: `docs/model-reports/2026-11-26-GigaChat4-37B-A4B.md`
 - notes: GDN + DSA MLA + MoE; GatedNorm is not zero-centred; softcap 30
@@ -192,7 +192,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 3
 - store `ai-sage/GigaChat4-708B-A41B` (env `LSX_TEST_GIGACHAT4_708B_A41B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `gigachat_moe_708b_model.cpp`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 3.68 t/s (r3, 2026-11-27)
 - report: `docs/model-reports/2026-11-27-GigaChat4-708B-A41B.md`
 - notes: GigaChat4 708B-A41B: 64 layers, 61 MoE (256 experts, top-8), 16 full-attention DSA layers; the expert set streams from host RAM
@@ -206,9 +206,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 8
 - store `zai-org/GLM-5.2` (env `LSX_TEST_GLM_5_2_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `glm_moe_model.cpp`, `glm_moe_inference.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: debt
 - perf: not seeded
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md); mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: **not written** (stage-9 debt)
 
 ## glm-5.3-flash
@@ -220,7 +220,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 8
 - store `zai-org/GLM-5.3-Flash` (env `LSX_TEST_GLM_5_3_FLASH_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `glm_moe_flash_model.cpp`, `glm_moe_flash_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 12.27 t/s (r3, 2026-10-24)
 - report: **not written** (stage-9 debt)
 
@@ -233,7 +233,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 10
 - store `ibm-granite/granite-4.2-30b` (env `LSX_TEST_GRANITE_4_2_30B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `granite_dense_model.cpp`, `granite_dense_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 76.47 t/s (r3, 2026-11-03)
 - report: `docs/model-reports/2026-11-03-granite-4.2-30b.md`
 
@@ -245,7 +245,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format `logestix-granite-switch`, forge `--granite_switch`
 - store `ibm-granite/granite-switch-4.1-30b` (env `LSX_TEST_GRANITE_SWITCH_4_1_30B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `granite_dense_switch_model.cpp`, `granite_dense_switch_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 70.07 t/s (r3, 2026-10-31)
 - report: `docs/model-reports/2026-10-31-granite-switch-4.1-30b.md`
 
@@ -257,7 +257,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format `logestix-granite-switch`, forge `--granite_switch`
 - store `ibm-granite/granite-switch-4.1-8b` (env `LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `granite_dense_switch_model.cpp`, `granite_dense_switch_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 153.85 t/s (r3, 2026-11-07)
 - report: `docs/model-reports/2026-11-07-Granite-Switch-4.1-8B.md`
 - notes: Sibling of the 30B: 40 layers, FFN 12800, theta 1e7, residual 0.22
@@ -270,7 +270,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format `logestix-hy-nvfp4`, forge `--hy`
 - store `tencent/Hy-Memory-30B-A3B` (env `LSX_TEST_HY_MEMORY_30B_A3B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `hy_moe_model.cpp`, `hy_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 76.11 t/s (r3, 2026-10-30)
 - report: **not written** (stage-9 debt)
 
@@ -282,7 +282,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--hy_simulmt`
 - store `tencent/Hy-SimulMT-30B-A3B` (env `LSX_TEST_HY_SIMULMT_30B_A3B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `hy_moe_simulmt_model.cpp`, `hy_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: yes
 - perf: 74.85 t/s (r3, 2026-10-31)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
 - report: `docs/model-reports/2026-10-31-hy-simulmt-30b-a3b.md`
@@ -296,7 +296,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 13
 - store `tencent/Hy4-flash` (env `LSX_TEST_HY4_FLASH_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `hy_moe_flash_model.cpp`, `hy_moe_flash_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 6.03 t/s (r3, 2026-11-24)
 - report: `docs/model-reports/2026-11-24-Hy4-flash.md`
 - notes: Engram/ViT/DFly2 cut and counted. SelfCheck, CODE and DET green; FSI 2/3 (FSI-TEST-02 numericises where the golden is symbolic).
@@ -310,7 +310,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 2
 - store `thinkingmachines/Inkling` (env `LSX_TEST_INKLING_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `inkling_moe_base_model.cpp`, `inkling_moe_base_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 1.66 t/s (r3, 2026-11-18)
 - report: `docs/model-reports/2026-11-18-Inkling.md`
 - notes: Original inkling arch (NOT inkling2): rel-bank attention, static sconv, 256 experts top-6 + 2 shared-sink, muP /24 head, BF16 -> NVFP4.
@@ -324,7 +324,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 2
 - store `thinkingmachines/Inkling-2-Mini` (env `LSX_TEST_INKLING_2_MINI_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `inkling_moe_loop_model.cpp`, `inkling_moe_loop_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 32.1 t/s (r3, 2026-11-22)
 - report: `docs/model-reports/2026-11-21-Inkling-2-Mini.md`
 - notes: Looped inkling2: 24 layers, [6,18) x3 passes, per-pass KV/conv slots. NVFP4 experts 0-19, MXFP8 20-23, BF16 dense; no RoPE.
@@ -338,7 +338,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 2
 - store `thinkingmachines/Inkling-2-Small` (env `LSX_TEST_INKLING_2_SMALL_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `inkling_moe_model.cpp`, `inkling_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 1.46 t/s (r3, 2026-11-15)
 - report: `docs/model-reports/2026-11-15-Inkling-2-Small.md`
 - notes: Mixed-precision release: NVFP4 experts on 0-39, MXFP8 on 40-47, BF16 dense; no RoPE (learned relative bank), AttnRes depth mixing.
@@ -352,7 +352,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 2
 - store `thinkingmachines/TML-d24-varloop-research` (env `LSX_TEST_TML_D24_VARLOOP_RESEARCH_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `inkling_moe_varloop_model.cpp`, `inkling_moe_loop_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 32.02 t/s (r3, 2026-11-22)
 - report: `docs/model-reports/2026-11-22-TML-d24-varloop-research.md`
 - notes: Varloop sibling of inkling-2-mini: same 24-layer tower, pass count 1..5 chosen at load (default 3); mixed NVFP4/MXFP8 experts.
@@ -365,7 +365,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--kimi`
 - store `moonshotai/Kimi-K2.7-Code` (env `LSX_TEST_KIMI_K2_7_CODE_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `kimi_moe_model.cpp`, `kimi_moe_inference.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: yes
 - perf: 5.04 t/s (r3, 2026-11-06)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
 - report: **not written** (stage-9 debt)
@@ -379,8 +379,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 2
 - store `moonshotai/Kimi-K3` (env `LSX_TEST_KIMI_K3_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `kimi_moe_k3_model.cpp`, `kimi_moe_k3_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: debt
 - perf: 0.49 t/s (r3, 2026-11-06)
+- debt: mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: `docs/model-reports/2026-11-03-Kimi-K3.md`
 - notes: Host-store bound (~0.3 t/s: 27 GiB routed + 9.5 GiB streamed per token): the two 2048-token modes plus the probe need a long budget (21600 s).
 
@@ -393,7 +394,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 2
 - store `moonshotai/Kimi-K3.1-Pro` (env `LSX_TEST_KIMI_K3_1_PRO_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `kimi_moe_pro_model.cpp`, `kimi_moe_k3_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 0.51 t/s (r3, 2026-11-06)
 - report: `docs/model-reports/2026-11-05-Kimi-K3.1-Pro.md`
 - notes: Same host-store bound as kimi-k3; the Pro adds the tiny indexer set, which is resident. Measured basis ~0.125 t/s: 2 x 2048 tokens ~= 9.1 h, plus two 23 GB loads, cooldown and DRAM probe ~= 9.6 h (43200 s).
@@ -407,9 +408,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 5
 - store `inclusionAI/Ling-3.1-flash` (env `LSX_TEST_LING_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `ling_moe_model.cpp`, `ling_moe_inference.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: debt
 - perf: 2.41 t/s (r3, 2026-10-31)
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md); mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: **not written** (stage-9 debt)
 
 ## mimo-v2.6-flash-rl
@@ -420,11 +421,11 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--mimo`
 - store `XiaomiMiMo/MiMo-V2.6-Flash-RL` (env `LSX_TEST_MIMO_V2_6_FLASH_RL_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `mimo_moe_model.cpp`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: debt
 - perf: not seeded
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md); mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: **not written** (stage-9 debt)
-- notes: Perf baseline had never been measured before it got a ctest target (2026-10).
+- notes: Perf baseline never measured before it got a target.
 
 ## minimax-m3
 
@@ -435,8 +436,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 3
 - store `MiniMaxAI/MiniMax-M3` (env `LSX_TEST_MINIMAX_M3_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `minimax_moe_model.cpp`, `minimax_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: debt
 - perf: 2.98 t/s (r3, 2026-10-28)
+- debt: mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: **not written** (stage-9 debt)
 
 ## minimax-m3.1-flash
@@ -447,7 +449,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--minimax_flash`
 - store `MiniMaxAI/MiniMax-M3.1-Flash` (env `LSX_TEST_MINIMAX_M3_1_FLASH_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `minimax_moe_flash_model.cpp`, `minimax_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 6.18 t/s (r3, 2026-10-31)
 - report: `docs/model-reports/2026-10-31-MiniMax-M3.1-Flash.md`
 
@@ -459,8 +461,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--mistral_large4`
 - store `mistralai/Mistral-Large-4-1T-A52B` (env `LSX_TEST_MISTRAL_LARGE_4_1T_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `mistral_moe_large4_model.cpp`, `mistral_moe_large4_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: debt
 - perf: 1.03 t/s (r3, 2026-11-02)
+- debt: mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: `docs/model-reports/2026-11-02-Mistral-Large-4-1T-A52B.md`
 
 ## mistral-small-4-119b
@@ -472,7 +475,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 9
 - store `mistralai/Mistral-Small-4-119B-2603-NVFP4` (env `LSX_TEST_MISTRAL_SMALL_4_119B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `mistral_moe_model.cpp`, `mistral_moe_inference.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: yes
 - perf: 45.77 t/s (perf, 2026-11-06)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
 - report: `docs/model-reports/2026-11-06-Mistral-Small-4-119B-2603-NVFP4.md`
@@ -486,7 +489,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 3
 - store `meta-models/Muse-Glimmer-30B` (env `LSX_TEST_MUSE_GLIMMER_30B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `muse_dense_model.cpp`, `muse_dense_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 53.34 t/s (r3, 2026-11-19)
 - report: `docs/model-reports/2026-11-19-Muse-Glimmer-30B.md`
 - notes: Dense gated attention: 52 layers, hidden 6656, 32Q/2KV x128, [sliding x3, full-NoPE] x13, centered norms, untied FP16 head, softcap 20. BF16 -> NVFP4.
@@ -500,7 +503,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 9
 - store `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (env `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `nemotron_moe_model.cpp`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 121.16 t/s (r3, 2026-11-13)
 - report: `docs/model-reports/2026-11-13-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.md`
 - notes: BF16: 127.31 t/s (r3 121.16); parity goldens source-captured, 3 rows red with a measured mechanism - report 2026-11-13
@@ -513,7 +516,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--nemotron_nvfp4`
 - store `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4` (env `LSX_TEST_NEMOTRON_3_5_LIGHTNING_30B_A3B_NVFP4_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `nemotron_moe_nvfp4_model.cpp`, `nemotron_moe_model.cpp`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: yes
 - perf: 120.39 t/s (r3, 2026-11-01)
 - debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
 - report: `docs/model-reports/2026-11-01-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4.md`
@@ -527,7 +530,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 9
 - store `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16` (env `LSX_TEST_NEMOTRON_ULTRA_550B_A55B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `nemotron_moe_ultra_model.cpp`, `nemotron_moe_ultra_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 1.75 t/s (r3, 2026-11-11)
 - report: `docs/model-reports/2026-11-11-NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16.md`
 - notes: separate lineage; 1.78 t/s (r3 1.75)
@@ -541,7 +544,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 7
 - store `ornith-ai/Ornith-1.5-35B-A3B` (env `LSX_TEST_ORNITH_1_5_35B_A3B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `ornith_moe_model.cpp`, `lsx_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 72.48 t/s (r3, 2026-10-23)
 - report: **not written** (stage-9 debt)
 
@@ -567,7 +570,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 7
 - store `Qwen/Qwen3.5-35B-A3B` (env `LSX_TEST_QWEN3_5_35B_A3B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `qwen_moe_model.cpp`, `lsx_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 77.56 t/s (r3, 2026-11-04)
 - report: **not written** (stage-9 debt)
 
@@ -591,7 +594,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format `logestix-qwen36moe`, forge `--qwen36moe`
 - store `Qwen/Qwen3.6-35B-A3B` (env `LSX_TEST_QWEN3_6_35B_A3B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `qwen_moe_model.cpp`, `lsx_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 73.39 t/s (r3, 2026-10-23)
 - report: **not written** (stage-9 debt)
 
@@ -603,7 +606,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--qwen`
 - store `Qwen/Qwen3.8-27B` (env `LSX_TEST_QWEN3_8_27B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `qwen_base_model.cpp`, `qwen_dense_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 60.15 t/s (r3, 2026-11-03)
 - report: `docs/model-reports/2026-11-03-Qwen3.8-27B.md`
 
@@ -616,7 +619,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - tokenizer kind 7
 - store `Qwen/Qwen3.8-Flash-Next` (env `LSX_TEST_QWEN3_8_FLASH_NEXT_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `qwen_moe_exp_model.cpp`, `qwen_moe_exp_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 33.91 t/s (r3, 2026-11-04)
 - report: `docs/model-reports/2026-11-04-Qwen3.8-Flash-Next.md`
 
@@ -628,9 +631,9 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format `logestix-step5-nvfp4`, forge `--step`
 - store `stepfun-ai/Step-5-Preview` (env `LSX_TEST_STEP_5_PREVIEW_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `step_moe_model.cpp`, `step_moe_inference_pipeline.cu`
-- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: no
+- gates: selfcheck: yes; fsi: debt; code: debt; det: debt; mcp: debt
 - perf: 1.83 t/s (r3, 2026-10-31)
-- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md)
+- debt: code — declared debt (see docs/OPEN_TASKS.md); det — declared debt (see docs/OPEN_TASKS.md); fsi — declared debt (see docs/OPEN_TASKS.md); mcp — not capturable: vault dir empty (checkpoint reclaimed), no artifact, so the checkpoint's tokenizer is gone; see docs/open-tasks/2026-11-28-mcp-gate-rollout-closed.md
 - report: `docs/model-reports/2026-10-31-Step-5-Preview.md`
 
 ## xing4.0-29b-a4b
@@ -641,7 +644,7 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - format not declared, forge `--xing`
 - store `XingChen-AGI/Xing4.0-29B-A4B` (env `LSX_TEST_XING4_0_29B_A4B_ROOT`); `nvfp4` (preferred) — not built
 - lifecycle TUs: `xing_moe_model.cpp`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 123.92 t/s (r3, 2026-10-23)
 - report: **not written** (stage-9 debt)
 - notes: Perf TEST_CASE had no add_test until 2026-10: the baseline was only ever recorded by invoking the binary directly, so it looked maintained while having no ctest wiring. A baseline with no target is a baseline that silently rots.

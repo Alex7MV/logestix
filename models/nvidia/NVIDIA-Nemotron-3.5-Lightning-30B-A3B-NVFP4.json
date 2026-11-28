@@ -53,6 +53,9 @@
     "det": [
       "test_nemotron_moe_nvfp4_det_selfcheck"
     ],
+    "mcp": [
+      "test_nemotron_moe_nvfp4_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_nemotron_nvfp4"
     ]
@@ -91,6 +94,10 @@
     },
     "test_nemotron_moe_nvfp4_selfcheck": {
       "form": "selfcheck"
+    },
+    "test_nemotron_moe_nvfp4_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

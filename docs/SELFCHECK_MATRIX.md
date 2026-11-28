@@ -28,7 +28,7 @@ declared 3 passes, and its goldens are source-captured like the sibling's),
 extended **2026-11-28** (Gemma-4-12B-IT, the `gemma4_unified` dense sibling of
 the 31B: 48 layers / 3840 wide, 8-bit effective projections via a residual
 plane, 12.0 GiB; SelfCheck x3 `31d7a1672d89ccdc`, CODE 3/3, DET 3/3, **MCP 3/3
-byte-exact** — the third `mcp` pilot row; its FSI-02 red is a SOURCE near-tie —
+byte-exact** — the third row wired to the MCP gate; its FSI-02 red is a SOURCE near-tie —
 the source itself prefers `1` over `Rate` at the fork by 0.556 logits — see
 `docs/model-reports/2026-11-28-Gemma-4-12B-IT.md`),
 re-measured **2026-11-28** (**phi-4** and **qwen3.5-9b** — the two bootstrap
@@ -72,9 +72,10 @@ because it fails when a registered target is missing.
 | **DET** | same, plus R>=3 byte-identical `gen_tokens` runs (`tools/det_capture.py`) | 3 prompts |
 | **MCP** | JSON-RPC 2.0 payloads the harness emits (`tools/mcp_prompts.json`), compared as **documents** (key order free), plus a recorded byte-exactness flag | 3 prompts |
 
-MCP is a **pilot**: it is wired on the three rows in §1a and on no others, so it
-does not appear as a column in the per-model table — an empty cell there would
-read as a failure or as coverage, and it is neither.
+MCP is a **required lifecycle stage** (operator directive, 2026-11-28), so it is
+a per-model column like the other three parity gates. Every row declares the
+stage and has a target; a row whose golden could not be captured carries
+`golden_debt.mcp` and is called out in §2, exactly like an FSI/CODE/DET debt.
 
 `SKIP` (ctest exit code 4) is **not** a pass: it means the converted tree or the
 golden is absent. A golden that was never captured looks exactly like a passing
@@ -82,44 +83,54 @@ one in a ctest summary, which is why the debt rows are called out below.
 
 ## 1. Converted tree in the vault **and** goldens present — real verdicts
 
-| model (passport) | SelfCheck | FSI | CODE | DET |
-|---|---|---|---|---|
-| alice-foundation-80b-a3b | PASS | 3/3 | 3/3 | 3/3 |
-| granite-switch-4.1-8b | PASS (x3, `930dd592ea5f5834`) | 3/3 | 3/3 | **2/3** (DET-02) |
-| glm-5.3-flash | PASS | 3/3 | 3/3 | 3/3 |
-| **gemma-4-26b-a4b-it** | PASS | 3/3 | 3/3 | 3/3 |
-| **gemma-4-31b-it** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
-| **gemma-4-12b-it** | PASS (x3, `31d7a1672d89ccdc`) | **2/3** (FSI-02) | 3/3 | 3/3 |
-| granite-4.2-30b | PASS | 3/3 | 3/3 | 3/3 |
-| ornith-1.5-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
-| phi-4 | PASS (x3, `cf51b9bbd5c913dd`) | 3/3 | 3/3 | 3/3 |
-| **dory-1.0-4b** | PASS (x3, `f100088895adb12d`) | 3/3 | 3/3 | 3/3 (reasoning mode) |
-| qwen3.5-9b | PASS (x3, `a2af669548e59c73`) | 3/3 | 3/3 | 3/3 |
-| **qwen3.5-35b-a3b** | PASS (x3, `f4c91be5f2206d56`) | 3/3 | 3/3 | 3/3 |
-| qwen3.6-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
-| qwen3.8-27b | PASS | 3/3 | 3/3 | 3/3 |
-| qwen3.8-flash-next | PASS (+ eos) | 3/3 | 3/3 | 3/3 |
-| xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 |
-| **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 |
-| deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 |
-| **deepseek-v4.1-flash** | PASS (x3, `b759bc84b820b4de`) ‡ | **1/3** | **1/3** | **2/3** (DET-03) |
-| **deepseek-v4.1-flash-1017** | PASS (x3, `94974df500455a90`, framed) § | 3/3 | **2/3** (CODE-03) § | 3/3 (deterministic=true) |
-| **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
-| **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 |
-| **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 |
-| **hy4-flash** | PASS (x3, `923e8ab7c8027eb2`, framed) ‖ | **2/3** (FSI-02) | 3/3 (template) | 3/3 (template) |
-| **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) |
-| **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 |
-| **gigachat4-37b-a4b** | PASS (x3, `20148869d4404e55`, framed) | 3/3 (template) | 3/3 (template) | 3/3 (template) |
-| **gigachat4-708b-a41b** | PASS (x3, `4c91393c68d0b3e8`, framed) | **2/3** (FSI-02, template golden) | 3/3 (template) | **2/3** (DET-03, template) |
-| **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) |
-| **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) |
-| **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 |
-| **inkling** (base) | PASS (x3, framed, inline-reasoning) | 3/3 (template) | 3/3 (template) | 3/3 |
-| **inkling-2-mini** | PASS (x3, `12e684ecd27e40d7`, framed) | 3/3 (source) | 3/3 (source) | 3/3 |
-| **tml-d24-varloop-research** | PASS (x3, `98a2c3c532c9b013`, framed, 3 passes) | 3/3 (source) | 3/3 (source) | **2/3** (DET-02: source AND engine resolve the prompt echo `DET-Validation-Core-02`, so both extract `DET`) |
-| **muse-glimmer-30b** | PASS (x3, `3374b7bc94231955`, raw) | 3/3 | 3/3 | 3/3 |
+| model (passport) | SelfCheck | FSI | CODE | DET | MCP |
+|---|---|---|---|---|---|
+| alice-foundation-80b-a3b | PASS | 3/3 | 3/3 | 3/3 | — |
+| granite-switch-4.1-8b | PASS (x3, `930dd592ea5f5834`) | 3/3 | 3/3 | **2/3** (DET-02) | — |
+| glm-5.3-flash | PASS | 3/3 | 3/3 | 3/3 | — |
+| **gemma-4-26b-a4b-it** | PASS | 3/3 | 3/3 | 3/3 | — |
+| **gemma-4-31b-it** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 | — |
+| **gemma-4-12b-it** | PASS (x3, `31d7a1672d89ccdc`) | **2/3** (FSI-02) | 3/3 | 3/3 | 3/3 |
+| granite-4.2-30b | PASS | 3/3 | 3/3 | 3/3 | — |
+| ornith-1.5-35b-a3b | PASS | 3/3 | 3/3 | 3/3 | — |
+| phi-4 | PASS (x3, `cf51b9bbd5c913dd`) | 3/3 | 3/3 | 3/3 | 3/3 |
+| **dory-1.0-4b** | PASS (x3, `f100088895adb12d`) | 3/3 | 3/3 | 3/3 (reasoning mode) | — |
+| qwen3.5-9b | PASS (x3, `a2af669548e59c73`) | 3/3 | 3/3 | 3/3 | 3/3 |
+| **qwen3.5-35b-a3b** | PASS (x3, `f4c91be5f2206d56`) | 3/3 | 3/3 | 3/3 | — |
+| qwen3.6-35b-a3b | PASS | 3/3 | 3/3 | 3/3 | — |
+| qwen3.8-27b | PASS | 3/3 | 3/3 | 3/3 | — |
+| qwen3.8-flash-next | PASS (+ eos) | 3/3 | 3/3 | 3/3 | — |
+| xing4.0-29b-a4b | PASS | 3/3 | 3/3 | 3/3 | — |
+| **mistral-large-4-1t** | PASS (x3, `747bf131f1ac557f`) | 3/3 (template) | 3/3 (template) | 3/3 | **debt** (§2) |
+| deepseek-v4-pro-0813 | PASS | **2/3** (FSI-02) | 3/3 | 3/3 | — |
+| **deepseek-v4.1-flash** | PASS (x3, `b759bc84b820b4de`) ‡ | **1/3** | **1/3** | **2/3** (DET-03) | — |
+| **deepseek-v4.1-flash-1017** | PASS (x3, `94974df500455a90`, framed) § | 3/3 | **2/3** (CODE-03) § | 3/3 (deterministic=true) | — |
+| **minimax-m3** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 | **debt** (§2) |
+| **minimax-m3.1-flash** | PASS | 3/3 | 3/3 | 3/3 | — |
+| **hy-memory-30b-a3b** | PASS | 3/3 | 3/3 | 3/3 | — |
+| **hy4-flash** | PASS (x3, `923e8ab7c8027eb2`, framed) ‖ | **2/3** (FSI-02) | 3/3 (template) | 3/3 (template) | — |
+| **granite-switch-4.1-30b** | PASS | 3/3 | 3/3 | **2/3** (DET-02) | — |
+| **gigachat3.5-432b-a28b-reasoning** | PASS | 3/3 | 3/3 | 3/3 | — |
+| **gigachat4-37b-a4b** | PASS (x3, `20148869d4404e55`, framed) | 3/3 (template) | 3/3 (template) | 3/3 (template) | — |
+| **gigachat4-708b-a41b** | PASS (x3, `4c91393c68d0b3e8`, framed) | **2/3** (FSI-02, template golden) | 3/3 (template) | **2/3** (DET-03, template) | — |
+| **kimi-k3** | PASS (x3, `5c1e227265d6a27b`, framed) | not run (template golden) | not run (template golden) | not run (template golden) | **debt** (§2) |
+| **kimi-k3.1-pro** | PASS (x3, `98ec1bbb372c9181`, framed) | not run (debt: ~1.1 h/case) | not run (debt) | not run (debt) | — |
+| **inkling-2-small** | PASS (x3, `323d30463a3d2b72`, framed) | 3/3 (template) | 3/3 (template) | 3/3 | — |
+| **inkling** (base) | PASS (x3, framed, inline-reasoning) | 3/3 (template) | 3/3 (template) | 3/3 | — |
+| **inkling-2-mini** | PASS (x3, `12e684ecd27e40d7`, framed) | 3/3 (source) | 3/3 (source) | 3/3 | — |
+| **tml-d24-varloop-research** | PASS (x3, `98a2c3c532c9b013`, framed, 3 passes) | 3/3 (source) | 3/3 (source) | **2/3** (DET-02: source AND engine resolve the prompt echo `DET-Validation-Core-02`, so both extract `DET`) | — |
+| **muse-glimmer-30b** | PASS (x3, `3374b7bc94231955`, raw) | 3/3 | 3/3 | 3/3 | — |
 
+- **The MCP column is read like the other three.** `3/3` = the gate ran on that
+  row's converted artifact and all three JSON-RPC 2.0 payloads matched as
+  documents; `**debt**` = the golden could not be captured and the row declares
+  `golden_debt.mcp` (§2 names the reason — every one of them is a source-store
+  directory that is an empty placeholder, with no artifact either); `—` = the
+  golden IS committed but the gate has not run on real weights on this host,
+  because there is no converted artifact. The `—` rows are the honest middle
+  state the pilot-era "absent stage" used to hide: the gate is wired, its input
+  exists, and the artifact is what is missing. Running `ctest -R "_mcp_selfcheck"`
+  after converting a row moves it to `3/3` — no code change.
 - **All 37 SelfCheck targets were re-run serially on 2026-11-07, after the probe
   was restored** (120 min, `-j1`, one GPU). The list is
   `tools/gen_model_manifest.py --print-selfcheck-targets`, derived from the
@@ -390,7 +401,7 @@ one in a ctest summary, which is why the debt rows are called out below.
   is what an identical geometry with re-trained weights should produce
   (`docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md`).
 
-### 1a. MCP payload verdicts (pilot — three rows, measured 2026-11-28)
+### 1a. MCP payload verdicts (measured 2026-11-28)
 
 | model (artifact) | MCP-TEST-01 | MCP-TEST-02 | MCP-TEST-03 | byte-exact vs template |
 |---|---|---|---|---|

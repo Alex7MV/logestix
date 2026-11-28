@@ -53,6 +53,9 @@
     "det": [
       "test_qwen_dense_27b_det_selfcheck"
     ],
+    "mcp": [
+      "test_qwen_dense_27b_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_qwen3_8_27b"
     ]
@@ -96,6 +99,10 @@
     },
     "test_qwen_dense_27b_selfcheck": {
       "form": "selfcheck"
+    },
+    "test_qwen_dense_27b_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

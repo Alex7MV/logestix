@@ -56,6 +56,9 @@
     "det": [
       "test_nemotron_ultra_det_selfcheck"
     ],
+    "mcp": [
+      "test_nemotron_ultra_mcp_selfcheck"
+    ],
     "perf": [
       "test_perf_baseline_nemotron_ultra"
     ]
@@ -110,6 +113,10 @@
     "test_nemotron_ultra_det_selfcheck": {
       "form": "parity",
       "kind": "det"
+    },
+    "test_nemotron_ultra_mcp_selfcheck": {
+      "form": "parity",
+      "kind": "mcp"
     }
   },
   "tool_roundtrip": true,

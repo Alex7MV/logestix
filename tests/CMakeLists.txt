@@ -4627,19 +4627,19 @@ add_executable(test_mcp_selfcheck test_mcp_selfcheck.cpp)
 target_link_libraries(test_mcp_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_mcp_selfcheck COMMAND test_mcp_selfcheck)
 
-# ── MCPSelfCheck: the MCP protocol-payload gate (pilot: three models) ────
+# ── MCPSelfCheck: the MCP protocol-payload gate (every row) ───────────────
 # Every model is asked for the same three JSON-RPC 2.0 payloads, so the wiring is
 # one call per (model, target) through the shared helper. The add_test/property
-# half is emitted from models/<org>/<model>.json into model_targets.cmake, so the label, the
-# skip code and the GPU lock come from the manifest and cannot drift here.
+# half is emitted from models/<org>/<model>.json into model_targets.cmake, so the
+# label, the skip code and the GPU lock come from the manifest and cannot drift
+# here.
 #
-# SCOPE, stated so it cannot read as coverage: the gate ships on three rows —
-# the two bootstrap artifacts (microsoft/phi-4/nvfp4, Qwen/Qwen3.5-9B/nvfp4) and
-# google/gemma-4-12B-it/nvfp4. The other manifest
-# rows have no `mcp` stage, no golden and NO target, which is why
-# test_model_suite_guard keeps `mcp` out of its required-stage set: a stage that
-# three rows declare must not be reported as a gap in the rest, and must not be
-# reported as covered either.
+# SCOPE: MCP is a LIFECYCLE gate, not a pilot (operator directive, 2026-11-28) —
+# every manifest row declares the stage and every row has a target below, and
+# test_model_suite_guard lists `mcp` in kRequired. A row whose framed prompt
+# could not be captured declares `golden_debt.mcp`, which is the same treatment
+# FSI/CODE/DET get: a measured gap with a reason, never silence. A row with no
+# converted artifact SKIPs (exit 4) exactly like its other parity stages.
 lsx_add_parity_gate(NAME test_phi_dense_mcp_selfcheck MODEL phi-4 KIND mcp)
 lsx_add_parity_gate(NAME test_qwen_dense_mcp_selfcheck MODEL qwen3.5-9b KIND mcp)
 # Third model: the dense Gemma-4 12B. Its chat template is byte-identical to the
@@ -4648,6 +4648,51 @@ lsx_add_parity_gate(NAME test_qwen_dense_mcp_selfcheck MODEL qwen3.5-9b KIND mcp
 # decode path.
 lsx_add_parity_gate(NAME test_gemma_dense_12b_mcp_selfcheck MODEL gemma-4-12b-it
     KIND mcp)
+lsx_add_parity_gate(NAME test_minimax_moe_flash_mcp_selfcheck MODEL minimax-m3.1-flash KIND mcp)
+lsx_add_parity_gate(NAME test_minimax_moe_mcp_selfcheck MODEL minimax-m3 KIND mcp)
+lsx_add_parity_gate(NAME test_qwen_moe_mcp_selfcheck MODEL qwen3.5-35b-a3b KIND mcp)
+lsx_add_parity_gate(NAME test_qwen_moe_36_mcp_selfcheck MODEL qwen3.6-35b-a3b KIND mcp)
+lsx_add_parity_gate(NAME test_qwen_dense_27b_mcp_selfcheck MODEL qwen3.8-27b KIND mcp)
+lsx_add_parity_gate(NAME test_qwen_moe_exp_mcp_selfcheck MODEL qwen3.8-flash-next KIND mcp)
+lsx_add_parity_gate(NAME test_flint_moe_mcp_selfcheck MODEL flint KIND mcp)
+lsx_add_parity_gate(NAME test_mimo_moe_mcp_selfcheck MODEL mimo-v2.6-flash-rl KIND mcp)
+lsx_add_parity_gate(NAME test_xing_moe_mcp_selfcheck MODEL xing4.0-29b-a4b KIND mcp)
+lsx_add_parity_gate(NAME test_gigachat_moe_mcp_selfcheck MODEL gigachat3.5-432b-a28b-reasoning KIND mcp)
+lsx_add_parity_gate(NAME test_gigachat_moe_37b_mcp_selfcheck MODEL gigachat4-37b-a4b KIND mcp)
+lsx_add_parity_gate(NAME test_gigachat_moe_708b_mcp_selfcheck MODEL gigachat4-708b-a41b KIND mcp)
+lsx_add_parity_gate(NAME test_deepseek_moe_mcp_selfcheck MODEL deepseek-v4-flash KIND mcp)
+lsx_add_parity_gate(NAME test_deepseek_moe_pro_mcp_selfcheck MODEL deepseek-v4-pro-0813 KIND mcp)
+lsx_add_parity_gate(NAME test_deepseek_moe_v41_1017_mcp_selfcheck MODEL deepseek-v4.1-flash-1017 KIND mcp)
+lsx_add_parity_gate(NAME test_deepseek_moe_v41_mcp_selfcheck MODEL deepseek-v4.1-flash KIND mcp)
+lsx_add_parity_gate(NAME test_gemma_moe_mcp_selfcheck MODEL gemma-4-26b-a4b-it KIND mcp)
+lsx_add_parity_gate(NAME test_gemma_dense_mcp_selfcheck MODEL gemma-4-31b-it KIND mcp)
+lsx_add_parity_gate(NAME test_granite_dense_mcp_selfcheck MODEL granite-4.2-30b KIND mcp)
+lsx_add_parity_gate(NAME test_granite_switch_mcp_selfcheck MODEL granite-switch-4.1-30b KIND mcp)
+lsx_add_parity_gate(NAME test_granite_switch_8b_mcp_selfcheck MODEL granite-switch-4.1-8b KIND mcp)
+lsx_add_parity_gate(NAME test_ling_moe_mcp_selfcheck MODEL ling KIND mcp)
+lsx_add_parity_gate(NAME test_muse_dense_mcp_selfcheck MODEL muse-glimmer-30b KIND mcp)
+lsx_add_parity_gate(NAME test_mistral_moe_large4_mcp_selfcheck MODEL mistral-large-4-1t KIND mcp)
+lsx_add_parity_gate(NAME test_mistral_moe_mcp_selfcheck MODEL mistral-small-4-119b KIND mcp)
+lsx_add_parity_gate(NAME test_kimi_moe_mcp_selfcheck MODEL kimi-k2.7-code KIND mcp)
+lsx_add_parity_gate(NAME test_kimi_pro_mcp_selfcheck MODEL kimi-k3.1-pro KIND mcp)
+lsx_add_parity_gate(NAME test_kimi_k3_mcp_selfcheck MODEL kimi-k3 KIND mcp)
+lsx_add_parity_gate(NAME test_nemotron_ultra_mcp_selfcheck MODEL nemotron-ultra-550b-a55b KIND mcp)
+lsx_add_parity_gate(NAME test_nemotron_moe_mcp_selfcheck MODEL nemotron-3.5-lightning-30b-a3b KIND mcp)
+lsx_add_parity_gate(NAME test_nemotron_moe_nvfp4_mcp_selfcheck MODEL nemotron-3.5-lightning-30b-a3b-nvfp4 KIND mcp)
+lsx_add_parity_gate(NAME test_dory_dense_mcp_selfcheck MODEL dory-1.0-4b KIND mcp)
+lsx_add_parity_gate(NAME test_ornith_moe_mcp_selfcheck MODEL ornith-1.5-35b-a3b KIND mcp)
+lsx_add_parity_gate(NAME test_beam_moe_mcp_selfcheck MODEL beam KIND mcp)
+lsx_add_parity_gate(NAME test_step_moe_mcp_selfcheck MODEL step-5-preview KIND mcp)
+lsx_add_parity_gate(NAME test_hy_moe_mcp_selfcheck MODEL hy-memory-30b-a3b KIND mcp)
+lsx_add_parity_gate(NAME test_hy_moe_simulmt_mcp_selfcheck MODEL hy-simulmt-30b-a3b KIND mcp)
+lsx_add_parity_gate(NAME test_hy_moe_flash_mcp_selfcheck MODEL hy4-flash KIND mcp)
+lsx_add_parity_gate(NAME test_inkling_moe_loop_mcp_selfcheck MODEL inkling-2-mini KIND mcp)
+lsx_add_parity_gate(NAME test_inkling_moe_mcp_selfcheck MODEL inkling-2-small KIND mcp)
+lsx_add_parity_gate(NAME test_inkling_moe_base_mcp_selfcheck MODEL inkling KIND mcp)
+lsx_add_parity_gate(NAME test_inkling_moe_varloop_mcp_selfcheck MODEL tml-d24-varloop-research KIND mcp)
+lsx_add_parity_gate(NAME test_alice_moe_mcp_selfcheck MODEL alice-foundation-80b-a3b KIND mcp)
+lsx_add_parity_gate(NAME test_glm_moe_mcp_selfcheck MODEL glm-5.2 KIND mcp)
+lsx_add_parity_gate(NAME test_glm_moe_flash_mcp_selfcheck MODEL glm-5.3-flash KIND mcp)
 
 # ── Test category labels (fast | convert | inference | perf) ──────────────
 # fast     — host-only: runs on every default ctest invocation.
