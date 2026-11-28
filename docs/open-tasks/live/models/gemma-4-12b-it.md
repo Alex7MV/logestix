@@ -174,6 +174,14 @@ not taken: it needs its own A/B across families.
 - 2026-11-28 stages 1-8 + 9: converter/loader/kernels/model/passport, manifest,
   real-weight gates, perf seeded, report written. FSI 2/3 (R22); everything else
   green.
+- 2026-11-28 **MCP payload gate enabled and PASSED 3/3** (byte-exact to the
+  protocol template): stage + `kind: mcp` override in the manifest,
+  `lsx_add_parity_gate(... KIND mcp)` next to the other two pilots, golden
+  captured tokenizer-only by `tools/mcp_capture.py`. This makes the row the
+  third `mcp` pilot. `mcp` stays in `OPTIONAL_STAGES` and out of the suite
+  guard's `kRequired` — rollout, not importance: moving it into `kRequired`
+  enters ~44 rows with no target in one commit, which is the change the
+  `mcp-selfcheck` skill reserves for "the commit that adds the last target".
 - **Not run, deliberately:** the `convert`/`inference` label sweeps. This is a
   model-local change verified with `ctest -R gemma_dense -j 1` (13/13) plus
   `ctest --preset linux-debug -j 16` for the guards.

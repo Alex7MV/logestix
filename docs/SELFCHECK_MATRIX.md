@@ -27,9 +27,10 @@ load time from the trained range 1..5; the row's SelfCheck is at the checkpoint'
 declared 3 passes, and its goldens are source-captured like the sibling's),
 extended **2026-11-28** (Gemma-4-12B-IT, the `gemma4_unified` dense sibling of
 the 31B: 48 layers / 3840 wide, 8-bit effective projections via a residual
-plane, 12.0 GiB; SelfCheck x3 `31d7a1672d89ccdc`; its FSI-02 red is a SOURCE
-near-tie — the source itself prefers `1` over `Rate` at the fork by 0.556
-logits — see `docs/model-reports/2026-11-28-Gemma-4-12B-IT.md`),
+plane, 12.0 GiB; SelfCheck x3 `31d7a1672d89ccdc`, CODE 3/3, DET 3/3, **MCP 3/3
+byte-exact** — the third `mcp` pilot row; its FSI-02 red is a SOURCE near-tie —
+the source itself prefers `1` over `Rate` at the fork by 0.556 logits — see
+`docs/model-reports/2026-11-28-Gemma-4-12B-IT.md`),
 re-measured **2026-11-28** (**phi-4** and **qwen3.5-9b** — the two bootstrap
 artifacts of the hardware-native codec contract, after every converted tree in the
 vault was deleted on 2026-11-27). Both were converted from their real checkpoints
@@ -71,7 +72,7 @@ because it fails when a registered target is missing.
 | **DET** | same, plus R>=3 byte-identical `gen_tokens` runs (`tools/det_capture.py`) | 3 prompts |
 | **MCP** | JSON-RPC 2.0 payloads the harness emits (`tools/mcp_prompts.json`), compared as **documents** (key order free), plus a recorded byte-exactness flag | 3 prompts |
 
-MCP is a **pilot**: it is wired on the two rows below and on no others, so it
+MCP is a **pilot**: it is wired on the three rows in §1a and on no others, so it
 does not appear as a column in the per-model table — an empty cell there would
 read as a failure or as coverage, and it is neither.
 
@@ -389,14 +390,15 @@ one in a ctest summary, which is why the debt rows are called out below.
   is what an identical geometry with re-trained weights should produce
   (`docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md`).
 
-### 1a. MCP payload verdicts (pilot — two rows, measured 2026-11-28)
+### 1a. MCP payload verdicts (pilot — three rows, measured 2026-11-28)
 
 | model (artifact) | MCP-TEST-01 | MCP-TEST-02 | MCP-TEST-03 | byte-exact vs template |
 |---|---|---|---|---|
 | phi-4 (`microsoft/phi-4/nvfp4`) | PASS | PASS | PASS | yes — the payload is fenced in a ```json block and otherwise identical |
 | qwen3.5-9b (`Qwen/Qwen3.5-9B/nvfp4`) | PASS | PASS | PASS | yes — emitted bare, no fence |
+| gemma-4-12b-it (`google/gemma-4-12B-it/nvfp4`) | PASS | PASS | PASS | yes — emitted bare, no fence |
 
-Both models reproduce the committed template exactly, which is why the
+All three models reproduce the committed template exactly, which is why the
 byte-exactness flag is `yes` on both even though they disagree on fencing: the
 flag compares the extracted payload, not the surrounding stream. A re-keyed
 golden still passes with the flag `no`, and a one-token protocol error fails and

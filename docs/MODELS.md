@@ -123,12 +123,12 @@ Legend: `gates: <stage>: yes` means the stage target and its golden exist — no
 - geometry: `libs/lsxcommon/include/lsxcommon/gemma_dense_12b_constants.h` (frozen constants, static_assert-checked)
 - format not declared, forge `--gemma4dense`
 - tokenizer kind 11
-- store `google/gemma-4-12B-it` (env `LSX_TEST_GEMMA_4_12B_IT_ROOT`); `nvfp4` (preferred) — built for `nvidia:sm_120`, codecs bf16|nvfp4, sha256 `304a2760d4bc…`, selfcheck pass, fsi fail, code pass, det pass
+- store `google/gemma-4-12B-it` (env `LSX_TEST_GEMMA_4_12B_IT_ROOT`); `nvfp4` (preferred) — built for `nvidia:sm_120`, codecs bf16|nvfp4, sha256 `304a2760d4bc…`, selfcheck pass, fsi fail, code pass, det pass, mcp pass
 - lifecycle TUs: `gemma_dense_12b_model.cpp`, `gemma_dense_model.cpp`, `gemma_dense_inference.cu`
-- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: no
+- gates: selfcheck: yes; fsi: yes; code: yes; det: yes; mcp: yes
 - perf: 48.77 t/s (r3, 2026-11-28)
 - report: `docs/model-reports/2026-11-28-Gemma-4-12B-IT.md`
-- notes: Dense sibling of gemma-4-31b-it in the `gemma4_unified` wrapper: 48 layers, 3840 wide; vision_embedder + audio stripped.
+- notes: Dense sibling of gemma-4-31b-it (gemma4_unified wrapper): 48 layers, 3840 wide; vision_embedder + audio stripped.
 
 ## gemma-4-26b-a4b-it
 

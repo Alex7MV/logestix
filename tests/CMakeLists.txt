@@ -4627,21 +4627,27 @@ add_executable(test_mcp_selfcheck test_mcp_selfcheck.cpp)
 target_link_libraries(test_mcp_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_mcp_selfcheck COMMAND test_mcp_selfcheck)
 
-# ── MCPSelfCheck: the MCP protocol-payload gate (pilot: two models) ───────
+# ── MCPSelfCheck: the MCP protocol-payload gate (pilot: three models) ────
 # Every model is asked for the same three JSON-RPC 2.0 payloads, so the wiring is
 # one call per (model, target) through the shared helper. The add_test/property
 # half is emitted from models/<org>/<model>.json into model_targets.cmake, so the label, the
 # skip code and the GPU lock come from the manifest and cannot drift here.
 #
-# SCOPE, stated so it cannot read as coverage: the gate ships on the two
-# bootstrap artifacts (microsoft/phi-4/nvfp4, Qwen/Qwen3.5-9B/nvfp4) — the pair
-# with a converted tree this branch verified end to end. The other 45 manifest
+# SCOPE, stated so it cannot read as coverage: the gate ships on three rows —
+# the two bootstrap artifacts (microsoft/phi-4/nvfp4, Qwen/Qwen3.5-9B/nvfp4) and
+# google/gemma-4-12B-it/nvfp4. The other manifest
 # rows have no `mcp` stage, no golden and NO target, which is why
 # test_model_suite_guard keeps `mcp` out of its required-stage set: a stage that
-# only two rows declare must not be reported as a gap in the other 45, and must
-# not be reported as covered either.
+# three rows declare must not be reported as a gap in the rest, and must not be
+# reported as covered either.
 lsx_add_parity_gate(NAME test_phi_dense_mcp_selfcheck MODEL phi-4 KIND mcp)
 lsx_add_parity_gate(NAME test_qwen_dense_mcp_selfcheck MODEL qwen3.5-9b KIND mcp)
+# Third model: the dense Gemma-4 12B. Its chat template is byte-identical to the
+# 31B sibling's, and the gate is protocol-defined, so the only thing it asks of
+# the checkpoint is the framed prompt (captured tokenizer-only) and the neutral
+# decode path.
+lsx_add_parity_gate(NAME test_gemma_dense_12b_mcp_selfcheck MODEL gemma-4-12b-it
+    KIND mcp)
 
 # ── Test category labels (fast | convert | inference | perf) ──────────────
 # fast     — host-only: runs on every default ctest invocation.
