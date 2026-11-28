@@ -25,6 +25,11 @@ extended **2026-11-22** (TML-d24-varloop-research: the `is_varloop` sibling of
 Inkling-2-Mini — same tower and artifact layout, with the pass count chosen at
 load time from the trained range 1..5; the row's SelfCheck is at the checkpoint's
 declared 3 passes, and its goldens are source-captured like the sibling's),
+extended **2026-11-28** (Gemma-4-12B-IT, the `gemma4_unified` dense sibling of
+the 31B: 48 layers / 3840 wide, 8-bit effective projections via a residual
+plane, 12.0 GiB; SelfCheck x3 `31d7a1672d89ccdc`; its FSI-02 red is a SOURCE
+near-tie — the source itself prefers `1` over `Rate` at the fork by 0.556
+logits — see `docs/model-reports/2026-11-28-Gemma-4-12B-IT.md`),
 re-measured **2026-11-28** (**phi-4** and **qwen3.5-9b** — the two bootstrap
 artifacts of the hardware-native codec contract, after every converted tree in the
 vault was deleted on 2026-11-27). Both were converted from their real checkpoints
@@ -83,6 +88,7 @@ one in a ctest summary, which is why the debt rows are called out below.
 | glm-5.3-flash | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-26b-a4b-it** | PASS | 3/3 | 3/3 | 3/3 |
 | **gemma-4-31b-it** | PASS | **2/3** (FSI-01) | 3/3 | 3/3 |
+| **gemma-4-12b-it** | PASS (x3, `31d7a1672d89ccdc`) | **2/3** (FSI-02) | 3/3 | 3/3 |
 | granite-4.2-30b | PASS | 3/3 | 3/3 | 3/3 |
 | ornith-1.5-35b-a3b | PASS | 3/3 | 3/3 | 3/3 |
 | phi-4 | PASS (x3, `cf51b9bbd5c913dd`) | 3/3 | 3/3 | 3/3 |

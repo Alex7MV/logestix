@@ -26,6 +26,18 @@ DET 3/3, FSI 2/3. Open items:
   Getting this gate green needs ~8 bits on every linear (~33.7 GiB resident),
   i.e. a 48 GiB card or a different block format. Full trail:
   `open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md` §5.
+- **The shared converter now emits residual planes (2026-11-28).** The dense
+  Gemma-4 converter/loader/kernels now serve two checkpoints (this one and the
+  12B), and the residual plane is written for every projection because the 12B's
+  FSI gate needs it (1/3 -> 2/3). Consequence for THIS row: a fresh `--
+  gemma4dense` conversion of the 31B produces the ~8-bit layout, i.e. roughly
+  33 GiB, which still does not fit the 32 GB card — so re-converting it here
+  would trade a loadable 4-bit tree for an unloadable one. A 4-bit-only tree
+  keeps loading unchanged (the loader leaves the plane null and the decode skips
+  the accumulate pass; pinned by `test_gemma_dense_loader` "tolerates its
+  absence"), and the vault holds no 31B artifact since 2026-11-27, so nothing is
+  broken today. **Before re-converting the 31B, make the plane a per-model
+  choice** rather than an unconditional write in the shared converter.
 - **Scalar prefill is a choice, not a workaround.** The shared TC M-tile
   defect this gate was originally found by is fixed (2026-10-10, archived);
   gemma keeps the scalar path because running it through TC moves the first
