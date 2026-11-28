@@ -23,6 +23,8 @@
 #include "inkling_moe_constants.h"
 
 #include <simdjson.h>
+
+#include "lsxstorage/artifact.h"
 #include "inkling_moe_model.h"
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/model_runtime.h>
@@ -96,7 +98,13 @@ bool CachedFixtureIsCurrent(const fs::path &out)
     int64_t layout = 0;
     if (doc["layout"].get_int64().get(layout) != simdjson::SUCCESS)
         return false;
-    return layout == lsxcommon::kIndexLayout;
+    if (layout != lsxcommon::kIndexLayout) return false;
+    // A cache of a GENERATED tree must also be a tree the current contract
+    // accepts. The generation tag cannot see a schema change: an expert plane
+    // that predates the declared-codec column (Task 9c) still says layout 2 and
+    // is still refused by the verifier, so reusing it silently loaded a tree
+    // whose per-layer codec could not be established.
+    return lsx::storage::ScanArtifactTree(out).ok;
 }
 
 fs::path EnsureSyntheticModel()

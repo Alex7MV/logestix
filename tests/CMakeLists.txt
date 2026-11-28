@@ -359,7 +359,7 @@ target_link_libraries(test_inkling_moe_loop_tool_framing PRIVATE lsxcommon
 add_executable(test_inkling_moe_loop_model test_inkling_moe_loop_model.cpp)
 target_include_directories(test_inkling_moe_loop_model PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-target_link_libraries(test_inkling_moe_loop_model PRIVATE lsxcommon
+target_link_libraries(test_inkling_moe_loop_model PRIVATE lsxcommon lsxstorage
     simdjson::simdjson Catch2::Catch2WithMain)
 
 # SelfCheck gate: the real converted tree in the vault; SKIP 4 when absent.
@@ -584,7 +584,7 @@ target_link_libraries(test_inkling_moe_tool_framing PRIVATE lsxcommon
 add_executable(test_inkling_moe_model test_inkling_moe_model.cpp)
 target_include_directories(test_inkling_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
-target_link_libraries(test_inkling_moe_model PRIVATE lsxcommon
+target_link_libraries(test_inkling_moe_model PRIVATE lsxcommon lsxstorage
     simdjson::simdjson Catch2::Catch2WithMain)
 # The kernel executable is created next to its CUDA object library below
 # (test_inkling_cu).
@@ -3006,6 +3006,10 @@ lsx_add_test(NAME test_storage_artifact_writer LABEL fast LINK lsxstorage
 # Links lsxcommon too: it asserts the duplicated codec bits still match
 # hw::PlaneCodec, which is the guard on the deliberate duplication.
 lsx_add_test(NAME test_storage_verify LABEL fast LINK lsxstorage lsxcommon)
+
+# ── Rule 5 (design §2.4.3): model.index.json owns geometry, artifact.fb owns
+# codecs. An index that still declares one of the five codec fields is refused.
+lsx_add_test(NAME test_index_codec_rule LABEL fast LINK lsxstorage)
 
 # ── Required index fields: registry guard (see libs/lsxcommon/index_fields.h) ──
 lsx_add_test(NAME test_index_fields LABEL fast LINK lsxcommon

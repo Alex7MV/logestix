@@ -3,9 +3,11 @@
 #include "lsxcommon/inkling_moe_loop_inference_pipeline.h"
 #include "lsxcommon/inkling_moe_loop_load.h"
 #include "lsxcommon/inkling_moe_loop_tool_format.h"
+#include "lsxcommon/layer_codec_map.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxstorage/artifact.h"
 #include "lsxcommon/prompt_bridge.h"
 
 #include <absl/strings/str_format.h>
@@ -60,6 +62,19 @@ bool InklingMoeLoopModel::Load()
         return AbortLoad();
     }
     cudaStreamSynchronize(stream());
+
+    // Per-layer expert codec from artifact.fb::layer_codec (design §2.4.3 rule
+    // 5); a synthetic fixture falls back to the per-file derivation the emitter
+    // and verifier share. See the inkling sibling for why there is no default.
+    {
+        std::vector<uint64_t> layer_codec;
+        if (const auto *a = artifact(); a != nullptr && !a->layer_codec.empty()) {
+            layer_codec = a->layer_codec;
+        } else {
+            layer_codec = lsx::storage::ScanArtifactTree(cfg_.model_path).layer_codec;
+        }
+        ProjectLayerCodecs(layer_codec, &top_.expert_nvfp4, &top_.expert_fp8);
+    }
 
     // The loader sizes every plane from `pw.top`, so the topology must be in
     // place before it runs.

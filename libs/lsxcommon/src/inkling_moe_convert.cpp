@@ -1014,14 +1014,12 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
         j << "  \"total_experts\": " << experts_written << ",\n";
         int_array("full_layers", top.full_layers, true);
         int_array("sliding_layers", top.sliding_layers, true);
-        bool_array("expert_nvfp4", top.expert_nvfp4, true);
-        {
-            // Which expert layers carry the release's MXFP8 plane (E4M3 bytes +
-            // per-32 ue8m0, duplicated to a per-16 count).
-            std::vector<bool> fp8(top.expert_nvfp4.size(), false);
-            for (size_t i = 0; i < fp8.size(); ++i) fp8[i] = !top.expert_nvfp4[i];
-            bool_array("expert_fp8", fp8, true);
-        }
+        // NO per-layer codec keys here (design §2.4.3 rule 5). Which expert
+        // layer is NVFP4 and which is MXFP8 is recorded in
+        // artifact.fb::layer_codec, derived by the emitter from the bytes it
+        // just wrote; the index keeps geometry only. Two sources of truth for
+        // one fact is how a reader picks a kernel the artifact never declared.
+        (void)top.expert_nvfp4;
         j << FormatVramJson(vram) << "\n}";
         std::ofstream out(base / "model.index.json");
         out << j.str();

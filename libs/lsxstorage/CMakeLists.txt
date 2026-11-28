@@ -46,6 +46,12 @@ target_link_libraries(lsxstorage PUBLIC
     spdlog::spdlog
 )
 
+# simdjson for ONE check: rule 5 (design §2.4.3) has to read model.index.json to
+# prove it carries no codec field. Header-only in this target, PRIVATE: the
+# public headers stay JSON-free, and the dependency direction is unchanged
+# (lsxstorage still sits below lsxcommon).
+target_link_libraries(lsxstorage PRIVATE simdjson::simdjson)
+
 # Arrow is needed by src/verify.cpp only, but the link must be PUBLIC: lsxstorage
 # is a STATIC library, so a PRIVATE dependency does not reach the consumers that
 # actually resolve the symbols (they failed to link with `undefined reference to

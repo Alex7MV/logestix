@@ -382,9 +382,8 @@ arrow::Status WriteGemmaDenseModelIndex(const std::string &output_root,
     j << "{\n"
       << "  \"layout\": 2,\n"
       << "  \"model\": \"" << top.model_name << "\",\n"
-      << "  \"mlp_nvfp4\": true,\n"
-      << "  \"attn_nvfp4\": true,\n"
-      << "  \"head_nvfp4\": true,\n"
+      // No codec keys (design §2.4.3 rule 5): the per-layer map is
+      // artifact.fb::layer_codec. The index keeps geometry only.
       << "  \"num_layers\": " << top.num_layers << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
         if (i) j << ",";

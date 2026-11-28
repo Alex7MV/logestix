@@ -17,6 +17,8 @@
 #include <arrow/io/memory.h>
 #include <arrow/ipc/reader.h>
 
+#include <simdjson.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -252,6 +254,86 @@ bool ReadFileFacts(const fs::path &path, FileFacts *facts, std::string *error)
     return true;
 }
 
+// ── Rule 5: the index owns geometry, artifact.fb owns codecs ──────────────
+//
+// The five fields below used to live in model.index.json and were read by six
+// files to pick a kernel per layer. artifact.fb::layer_codec replaced them, so
+// an index that still carries one is a SECOND source of truth for the same
+// fact — and if the two disagree, the gate passes an artifact that executes a
+// codec it never declared (design §0.5).
+//
+// The check parses the JSON and looks at KEYS, not text: the field names are
+// ordinary prose as well ("the per-layer expert_nvfp4 map"), and a text scan
+// would both miss a nested declaration and refuse a harmless note. An index the
+// parser cannot read is a problem rather than a pass — a check that answers
+// "fine" when it cannot read the file is exactly the hole it exists to close.
+constexpr const char *kIndexCodecKeys[] = {"mlp_nvfp4", "attn_nvfp4",
+                                           "head_nvfp4", "expert_nvfp4",
+                                           "expert_fp8"};
+
+void CheckIndexDeclaresNoCodec(const fs::path &artifact_dir,
+                               VerifyReport *report)
+{
+    const fs::path index = artifact_dir / "model.index.json";
+    std::error_code ec;
+    if (!fs::is_regular_file(index, ec)) return;   // nothing to contradict
+
+    // mmap, like every other JSON/Arrow read on the host path (R-A1).
+    auto file = arrow::io::MemoryMappedFile::Open(index.string(),
+                                                 arrow::io::FileMode::READ);
+    if (!file.ok()) {
+        report->problems.push_back("cannot open model.index.json: " +
+                                   file.status().ToString());
+        return;
+    }
+    auto size = (*file)->GetSize();
+    if (!size.ok() || *size <= 0) {
+        report->problems.push_back("cannot size model.index.json: " +
+                                   size.status().ToString());
+        return;
+    }
+    // An index is geometry: kilobytes. A megabyte is already a defect, and
+    // reading it would be unbounded work inside a verification pass.
+    constexpr int64_t kMaxIndexBytes = int64_t{4} << 20;
+    if (*size > kMaxIndexBytes) {
+        report->problems.push_back(
+            "model.index.json is " + std::to_string(*size) +
+            " bytes, which is not an index (limit 4 MiB)");
+        return;
+    }
+    auto buf = arrow::AllocateBuffer(*size);
+    if (!buf.ok()) {
+        report->problems.push_back("cannot allocate for model.index.json: " +
+                                   buf.status().ToString());
+        return;
+    }
+    if (!(*file)->Read(*size, (*buf)->mutable_data()).ok()) {
+        report->problems.push_back("cannot read model.index.json");
+        return;
+    }
+
+    simdjson::dom::parser parser;
+    simdjson::dom::element doc;
+    const auto view = std::string_view(
+        reinterpret_cast<const char *>((*buf)->data()),
+        static_cast<size_t>(*size));
+    if (parser.parse(view).get(doc) != simdjson::SUCCESS) {
+        report->problems.push_back(
+            "model.index.json is not readable JSON, so it cannot be shown to "
+            "declare no codec (rule 5: codecs live in artifact.fb::layer_codec)");
+        return;
+    }
+
+    for (const char *key : kIndexCodecKeys) {
+        simdjson::dom::element value;
+        if (doc[key].get(value) != simdjson::SUCCESS) continue;
+        report->problems.push_back(
+            std::string("model.index.json still declares codec '") + key +
+            "': the per-layer codec map lives in artifact.fb::layer_codec "
+            "(design §2.4.3 rule 5) — stop writing it in the converter");
+    }
+}
+
 } // namespace
 
 VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep)
@@ -437,6 +519,9 @@ VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep)
     };
     template_digest_ok();
 
+    // Rule 5: the index may not declare a codec (design §2.4.3).
+    CheckIndexDeclaresNoCodec(artifact_dir, &report);
+
     // Digests.
     if (deep) {
         for (const auto &p : read.info.planes) {
@@ -616,26 +701,35 @@ ScanReport ScanArtifactTree(const fs::path &tree_root)
         out.planes.push_back(std::move(plane));
     }
 
-    // Recover the layer count from the file naming the converters use
-    // (`layer_<n>.arrow`, `layer_<nnn>.arrow`, `exp_<n>.arrow` inside
-    // `layer_<n>/`). A tree with no per-layer naming reports 0 and the caller
-    // says so rather than inventing one.
+    // Recover the layer count AND the per-layer codec map from the file naming
+    // the converters use (`layer_<n>.arrow`, `layer_<nnn>.arrow`,
+    // `exp_<m>.arrow` inside `layer_<n>/`). One pass, because both answers come
+    // from the same fact: which layer a classified file belongs to.
+    //
+    // The map is per LAYER, not "the tree mask repeated": a mixed tree has to
+    // report each layer's own codec, and the readers of artifact.fb::layer_codec
+    // ask exactly that question.
+    std::vector<uint64_t> per_layer;
+    const auto note_layer = [&per_layer](int idx, uint64_t mask) {
+        if (idx < 0) return;
+        if (per_layer.size() <= static_cast<size_t>(idx))
+            per_layer.resize(static_cast<size_t>(idx) + 1, 0);
+        per_layer[static_cast<size_t>(idx)] |= mask;
+    };
     std::error_code name_ec;
     for (const auto &[rel, mask] : per_file_mask) {
-        (void)mask;
+        // Layer index from either component: the file stem (`layer_007.arrow`)
+        // or the directory (`experts/layer_7/exp_0.arrow`).
+        int layer_idx = -1;
         const auto file = fs::path(rel).filename().string();
-        std::string digits;
         const auto us = file.rfind('_');
         if (us != std::string::npos) {
-            for (size_t i = us + 1; i < file.size() && std::isdigit(
-                     static_cast<unsigned char>(file[i])); ++i)
+            std::string digits;
+            for (size_t i = us + 1; i < file.size() &&
+                 std::isdigit(static_cast<unsigned char>(file[i])); ++i)
                 digits.push_back(file[i]);
+            if (!digits.empty()) layer_idx = std::atoi(digits.c_str());
         }
-        if (!digits.empty()) {
-            const int idx = std::atoi(digits.c_str());
-            out.layer_count = std::max(out.layer_count, idx + 1);
-        }
-        // experts/layer_<n>/exp_<m>.arrow
         const auto parent = fs::path(rel).parent_path().filename().string();
         const auto pus = parent.rfind('_');
         if (pus != std::string::npos) {
@@ -643,11 +737,17 @@ ScanReport ScanArtifactTree(const fs::path &tree_root)
             for (size_t i = pus + 1; i < parent.size() &&
                  std::isdigit(static_cast<unsigned char>(parent[i])); ++i)
                 pd.push_back(parent[i]);
-            if (!pd.empty())
-                out.layer_count = std::max(out.layer_count, std::atoi(pd.c_str()) + 1);
+            // A directory index wins: `experts/layer_7/exp_3.arrow` must be
+            // layer 7, not layer 3.
+            if (!pd.empty()) layer_idx = std::atoi(pd.c_str());
         }
+        if (layer_idx < 0) continue;
+        out.layer_count = std::max(out.layer_count, layer_idx + 1);
+        note_layer(layer_idx, mask);
         (void)name_ec;
     }
+    per_layer.resize(static_cast<size_t>(out.layer_count), 0);
+    out.layer_codec = std::move(per_layer);
 
     out.ok = out.problems.empty();
     return out;

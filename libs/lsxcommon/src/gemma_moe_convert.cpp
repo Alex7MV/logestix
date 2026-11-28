@@ -333,7 +333,7 @@ arrow::Status WriteGemmaModelIndex(const std::string &output_root,
     j << "{\n"
       << "  \"layout\": 2,\n"
       << "  \"model\": \"gemma-4-26B-A4B-it\",\n"
-      << "  \"mlp_nvfp4\": true,\n      \"attn_nvfp4\": true,\n      \"head_nvfp4\": true,\n"
+      // No codec keys (design §2.4.3 rule 5): artifact.fb owns the map.
       << "  \"residual\": \"attn+mlp\",\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"layer_types\": [";

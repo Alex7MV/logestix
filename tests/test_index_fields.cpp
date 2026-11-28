@@ -62,8 +62,21 @@ std::vector<fs::path> Sources(const char *sub)
 }
 
 // A converter writes an index when it opens model.index.json for output.
-bool WritesAnIndex(const std::string &text)
+// Does this FILE write a model.index.json?
+//
+// The text heuristic (mentions the filename + has an ofstream) is what caught
+// the 18 rotting `format` tags, so it stays. It needs one exclusion: a MODEL
+// file reads the index and may legitimately mention it in prose while opening
+// ofstreams for something else entirely (inkling's model writes logits dumps) —
+// flagging that file demanded that a comment stop naming the file it talks
+// about, which is the wrong trade. Converters, repack tools and every other
+// index writer carry no `_model.cpp` suffix.
+bool WritesAnIndex(const fs::path &path, const std::string &text)
 {
+    if (path.filename().string().size() > 10 &&
+        path.filename().string().compare(path.filename().string().size() - 10,
+                                         10, "_model.cpp") == 0)
+        return false;
     return text.find("model.index.json") != std::string::npos &&
            text.find("ofstream") != std::string::npos;
 }
@@ -86,7 +99,7 @@ TEST_CASE("every converter writes the layout generation", "[index_fields]") {
     std::vector<std::string> missing;
     for (const auto &p : Sources("libs")) {
         const auto text = ReadFile(p);
-        if (!WritesAnIndex(text)) continue;
+        if (!WritesAnIndex(p, text)) continue;
         if (text.find("\\\"layout\\\":") == std::string::npos)
             missing.push_back(fs::relative(p, LSX_SOURCE_DIR).string());
     }

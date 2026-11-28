@@ -614,12 +614,19 @@ int main(int argc, char* argv[]) {
         spec.model_name = codec_identity.model_type;
         spec.source_dir = std::filesystem::path(input_path).filename().string();
         spec.target_id = lsxcommon::hw::ActiveTarget().Id();
-        // Per-layer map: every layer of this profile carries the codec set the
-        // scanner derived. A family with a genuinely mixed per-layer mix will
-        // override this once it writes its own layer map; until then this is the
-        // honest statement "the profile is uniform in codec".
+        // Per-layer map, straight from the scan: `scan.layer_codec[i]` is the
+        // codec set of layer i, derived from that layer's own files. Repeating
+        // the tree mask once per layer was a lie for a mixed tree (Inkling ships
+        // NVFP4 and MXFP8 layers in one artifact) and the six readers of this
+        // map ask "which codec is layer N?" — so the answer has to be per layer.
         const int layers = std::max(1, scan.layer_count);
-        spec.layer_codec.assign(static_cast<size_t>(layers), scan.mask);
+        spec.layer_codec = scan.layer_codec;
+        spec.layer_codec.resize(static_cast<size_t>(layers), 0);
+        for (auto &entry : spec.layer_codec) {
+            // A layer no file mentions carries the tree mask: a tree with no
+            // per-layer naming (one flat file) still has one codec.
+            if (entry == 0) entry = scan.mask;
+        }
         spec.layer_count = layers;
         for (const auto &p : scan.planes)
             spec.planes.push_back({p.role, p.codec_bit, p.path, p.bytes});

@@ -1151,12 +1151,9 @@ arrow::Status ConvertInklingLoopModelWithSpec(const std::string &input_dir,
         j << "  \"total_experts\": " << experts_written << ",\n";
         int_array("full_layers", top.full_layers, true);
         int_array("sliding_layers", top.sliding_layers, true);
-        bool_array("expert_nvfp4", top.expert_nvfp4, true);
-        {
-            std::vector<bool> fp8(top.expert_nvfp4.size(), false);
-            for (size_t i = 0; i < fp8.size(); ++i) fp8[i] = !top.expert_nvfp4[i];
-            bool_array("expert_fp8", fp8, true);
-        }
+        // NO per-layer codec keys (design §2.4.3 rule 5): the map lives in
+        // artifact.fb::layer_codec, derived by the emitter from the bytes.
+        (void)top.expert_nvfp4;
         j << FormatVramJson(vram) << "\n}";
         std::ofstream out(base / "model.index.json");
         out << j.str();

@@ -130,6 +130,13 @@ struct ScanReport {
     // so the caller does not have to re-parse model.index.json. 0 when no
     // per-layer file naming can be recovered.
     int layer_count = 0;
+    // Per-layer codec mask, index = physical layer, derived from the same
+    // per-file classification that produced `mask`. This is what artifact.fb
+    // records as `layer_codec`, and it is per LAYER on purpose: a mixed tree
+    // (Inkling: NVFP4 layers + MXFP8 layers) must not be recorded as one mask
+    // repeated N times, because a reader asks "which codec is layer N?".
+    // Size == layer_count; a layer no file mentions stays 0.
+    std::vector<uint64_t> layer_codec;
 };
 
 ScanReport ScanArtifactTree(const fs::path &tree_root);

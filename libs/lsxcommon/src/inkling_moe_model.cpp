@@ -4,9 +4,11 @@
 #include "lsxcommon/inkling_moe_load.h"
 #include "lsxcommon/inkling_moe_tool_format.h"
 #include "lsxcommon/prompt_bridge.h"
+#include "lsxcommon/layer_codec_map.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxstorage/artifact.h"
 
 #include <absl/strings/str_format.h>
 
@@ -57,6 +59,24 @@ bool InklingMoeModel::Load()
         return AbortLoad();
     }
     cudaStreamSynchronize(stream());
+
+    // Per-layer expert codec, from the artifact (design §2.4.3 rule 5).
+    //
+    // The topology parser no longer reads the codec flags out of
+    // model.index.json: artifact.fb::layer_codec is the authority, and the
+    // artifact is what BeginLoad just admitted. A synthetic fixture has no
+    // artifact, so it falls back to the same per-file derivation the emitter
+    // and the verifier use — never to a default, because "assume NVFP4" is how
+    // an 8-bit expert layer would be sized as half its bytes.
+    {
+        std::vector<uint64_t> layer_codec;
+        if (const auto *a = artifact(); a != nullptr && !a->layer_codec.empty()) {
+            layer_codec = a->layer_codec;
+        } else {
+            layer_codec = lsx::storage::ScanArtifactTree(cfg_.model_path).layer_codec;
+        }
+        ProjectLayerCodecs(layer_codec, &top_.expert_nvfp4, &top_.expert_fp8);
+    }
 
     // The loader sizes every plane from `pw.top`, so the topology must be in
     // place before it runs (it was the one field the first cut set too late:

@@ -697,3 +697,41 @@ TEST_CASE("a 9-column expert file is refused: it declares no codec",
     CAPTURE(joined);
     CHECK(named);
 }
+
+// ── The per-layer map comes from the BYTES, per layer ─────────────────────
+//
+// `layer_codec` in artifact.fb used to be written as "the tree's whole mask,
+// repeated once per layer" (forge filled a uniform vector). That is true for a
+// uniform tree and a lie for a mixed one — Inkling ships NVFP4 layers and MXFP8
+// layers in the same artifact, and the six readers of that map pick a kernel per
+// layer. The scan derives it from the same per-file classification it already
+// does, so the map and the mask cannot disagree.
+
+TEST_CASE("scan reports a per-layer codec map, not one mask repeated",
+          "[storage_verify][scan][layer]") {
+    TempDir d;
+    WriteExpertArrow(d.path() / "experts" / "layer_0" / "exp_0.arrow", "NVFP4");
+    WriteExpertArrow(d.path() / "experts" / "layer_1" / "exp_0.arrow", "F8_E4M3");
+    const auto scan = ScanArtifactTree(d.path());
+    std::string joined;
+    for (const auto &p : scan.problems) joined += "\n  " + p;
+    CAPTURE(joined);
+    REQUIRE(scan.ok);
+    REQUIRE(scan.layer_codec.size() == 2);
+    CHECK(scan.layer_codec[0] == kNvFp4);
+    CHECK(scan.layer_codec[1] == kMxFp8);
+    // The tree mask stays the union (D5).
+    CHECK((scan.mask & (kNvFp4 | kMxFp8)) == (kNvFp4 | kMxFp8));
+}
+
+TEST_CASE("a layer with two planes reports their union", "[storage_verify][scan][layer]") {
+    TempDir d;
+    WriteExpertArrow(d.path() / "experts" / "layer_3" / "exp_0.arrow", "NVFP4");
+    WritePinnedArrow(d.path() / "pinned" / "layer_3.arrow",
+                     {{"norm.weight", "F32"}});
+    const auto scan = ScanArtifactTree(d.path());
+    REQUIRE(scan.ok);
+    REQUIRE(scan.layer_codec.size() == 4);   // gap layers 0..2 stay 0
+    CHECK(scan.layer_codec[3] == (kNvFp4 | kF32));
+    CHECK(scan.layer_codec[0] == 0);
+}

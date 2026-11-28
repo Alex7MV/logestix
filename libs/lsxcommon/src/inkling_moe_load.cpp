@@ -128,25 +128,16 @@ arrow::Status LoadInklingTopology(const std::string &model_path,
             if (e.get_int64().get(v) == simdjson::SUCCESS)
                 out.sliding_layers.push_back(static_cast<int>(v));
         }
-    if (auto arr = root["expert_nvfp4"].get_array();
-        arr.error() == simdjson::SUCCESS)
-        for (auto e : arr.value()) {
-            bool v = false;
-            if (e.get_bool().get(v) == simdjson::SUCCESS)
-                out.expert_nvfp4.push_back(v);
-        }
-    if (auto arr = root["expert_fp8"].get_array();
-        arr.error() == simdjson::SUCCESS)
-        for (auto e : arr.value()) {
-            bool v = false;
-            if (e.get_bool().get(v) == simdjson::SUCCESS)
-                out.expert_fp8.push_back(v);
-        }
+    // NO per-layer codec keys are read here (design §2.4.3 rule 5). Which
+    // expert layers are NVFP4 and which are MXFP8 comes from
+    // artifact.fb::layer_codec, projected onto these flags by the model after
+    // BeginLoad — one source of truth, and the index cannot contradict it.
     // A tree converted before the MXFP8 plane existed has every expert plane in
     // NVFP4 (i.e. layers 40-47 were requantized); treat the missing field as
     // all-false rather than failing, so old artifacts still load.
-    if (out.expert_fp8.empty() && !out.expert_nvfp4.empty())
-        out.expert_fp8.assign(out.expert_nvfp4.size(), false);
+    // A tree with no per-layer evidence leaves both flags empty; the model
+    // fills them from the artifact, and a loader that needs one before that
+    // fails rather than assuming NVFP4.
 
     if (out.num_layers <= 0 || out.hidden <= 0 || out.num_experts <= 0 ||
         static_cast<int>(out.full_layers.size() + out.sliding_layers.size()) !=

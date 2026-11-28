@@ -338,8 +338,7 @@ arrow::Status WriteMuseDenseModelIndex(const std::string &output_root,
     j << "{\n"
       << "  \"layout\": 2,\n"
       << "  \"model\": \"" << frozen::kModelType << "\",\n"
-      << "  \"mlp_nvfp4\": true,\n"
-      << "  \"attn_nvfp4\": true,\n"
+      // No codec keys (design §2.4.3 rule 5): artifact.fb owns the map.
       << "  \"head_fp16\": true,\n"
       << "  \"num_layers\": " << top.num_layers << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
