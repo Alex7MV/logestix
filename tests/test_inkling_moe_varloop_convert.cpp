@@ -23,6 +23,8 @@
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
 
+#include "lsxstorage/artifact.h"
+
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -210,8 +212,20 @@ TEST_CASE("varloop synthetic convert emits logestix-inkling-2-varloop",
     CHECK(experts == kExperts);
     // The mixed codec split survives the varloop pipeline unchanged.
     std::vector<bool> codecs;
-    for (auto v : doc["expert_nvfp4"].get_array())
-        codecs.push_back(v.get_bool().value());
+    // Rule 5: the index carries no per-layer codec key. The split is read back
+    // from the bytes the converter just wrote — the same derivation artifact.fb
+    // records in layer_codec — so this still proves the mixed NVFP4/MXFP8 planes
+    // landed where the source put them.
+    {
+        const auto scan = lsx::storage::ScanArtifactTree(out);
+        std::string joined;
+        for (const auto &p : scan.problems) joined += "\n  " + p;
+        CAPTURE(joined);
+        REQUIRE(scan.ok);
+        REQUIRE(scan.layer_codec.size() == static_cast<size_t>(kLayers));
+        for (uint64_t layer_mask : scan.layer_codec)
+            codecs.push_back((layer_mask & (1ull << 5)) != 0);
+    }
     REQUIRE(codecs.size() == static_cast<size_t>(kLayers));
     for (int l = 0; l < kLayers; ++l)
         CHECK(codecs[static_cast<size_t>(l)] == (l < kNovfp4Layers));

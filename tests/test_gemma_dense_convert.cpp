@@ -331,9 +331,13 @@ TEST_CASE("gemma dense convert happy path", "[gemma_dense][convert]") {
                                std::istreambuf_iterator<char>());
         CHECK(json.find("\"layout\": 2") !=
               std::string::npos);
-        CHECK(json.find("\"mlp_nvfp4\": true") != std::string::npos);
-        CHECK(json.find("\"attn_nvfp4\": true") != std::string::npos);
-        CHECK(json.find("\"head_nvfp4\": true") != std::string::npos);
+        // No codec keys in the index (design §2.4.3 rule 5): the per-layer map
+        // is artifact.fb::layer_codec, derived from the bytes. The index keeps
+        // geometry, so the assertion is that the keys are ABSENT — a test that
+        // keeps demanding them would pin the second source of truth back in.
+        CHECK(json.find("\"mlp_nvfp4\"") == std::string::npos);
+        CHECK(json.find("\"attn_nvfp4\"") == std::string::npos);
+        CHECK(json.find("\"head_nvfp4\"") == std::string::npos);
     }
     auto top2 = lsxcommon::gemma_dense::load_gemma_dense_topology(
         (out / "model.index.json").string());

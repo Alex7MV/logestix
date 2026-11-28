@@ -396,7 +396,8 @@ TEST_CASE("gemma converter emits NVFP4 records for dense MLP",
         std::ifstream idx(out / "model.index.json");
         std::string json((std::istreambuf_iterator<char>(idx)),
                          std::istreambuf_iterator<char>());
-        CHECK(json.find("\"mlp_nvfp4\": true") != std::string::npos);
+        // Rule 5: no codec keys in the index — the map lives in artifact.fb.
+        CHECK(json.find("\"mlp_nvfp4\"") == std::string::npos);
     }
 
     // Release every handle before the cleanup: Windows refuses to delete a

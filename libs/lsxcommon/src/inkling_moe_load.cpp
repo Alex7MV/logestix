@@ -11,6 +11,9 @@
 #include <absl/strings/str_format.h>
 #include <simdjson.h>
 
+#include "lsxcommon/layer_codec_map.h"
+#include "lsxstorage/artifact.h"
+
 #include "lsxcommon/synthetic_geometry.h"
 
 #include <cstring>
@@ -135,9 +138,19 @@ arrow::Status LoadInklingTopology(const std::string &model_path,
     // A tree converted before the MXFP8 plane existed has every expert plane in
     // NVFP4 (i.e. layers 40-47 were requantized); treat the missing field as
     // all-false rather than failing, so old artifacts still load.
-    // A tree with no per-layer evidence leaves both flags empty; the model
-    // fills them from the artifact, and a loader that needs one before that
-    // fails rather than assuming NVFP4.
+    // No per-layer evidence in the index (rule 5 removed those keys), so derive
+    // it from the BYTES: the same classification artifact.fb records, pointed at
+    // a tree that may not have an artifact yet (a fixture, or the moment between
+    // conversion and emit). Doing it here keeps the topology self-sufficient for
+    // every caller — including the tests that parse it directly, with no model
+    // to project for them — and the model may still override it from
+    // artifact.fb, which is the authority once one exists.
+    if (out.expert_nvfp4.empty() || out.expert_fp8.empty()) {
+        const auto scan = lsx::storage::ScanArtifactTree(model_path);
+        if (!scan.layer_codec.empty())
+            lsxcommon::ProjectLayerCodecs(scan.layer_codec, &out.expert_nvfp4,
+                                          &out.expert_fp8);
+    }
 
     if (out.num_layers <= 0 || out.hidden <= 0 || out.num_experts <= 0 ||
         static_cast<int>(out.full_layers.size() + out.sliding_layers.size()) !=
