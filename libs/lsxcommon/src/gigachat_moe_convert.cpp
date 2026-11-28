@@ -410,8 +410,10 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
 
     const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
-    const fs::path mtp_dir = base / "mtp";
-    for (const fs::path &d : {base, pinned_dir, mtp_dir})
+    // No mtp/: v1 ships no ballast (design §1.4) — the MTP head is counted in
+    // the index (`dropped_mtp_tensors`) and never written, so every plane in
+    // the tree is one the load path reaches.
+    for (const fs::path &d : {base, pinned_dir})
     {
         std::error_code ec;
         fs::create_directories(d, ec);
@@ -419,7 +421,6 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
 
     absl::flat_hash_map<int, std::vector<DenseNvfp4Record>> nvfp4_by_layer;
     absl::flat_hash_map<int, std::vector<TensorRecord>> raw_by_layer;
-    absl::flat_hash_map<int, std::vector<TensorRecord>> mtp_by_layer;
     std::vector<TensorRecord> global_raw;
     int64_t total_pinned = 0;
 
@@ -435,15 +436,7 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
         {
             auto p = classify_gigachat_tensor(t.name);
             if (p.kind == GigaChatTensorKind::Mtp)
-            {
-                TensorRecord r;
-                r.name = t.name;
-                r.dtype = t.dtype;
-                r.shape = t.shape;
-                r.data = ReadTensorData(input_dir, shard, t);
-                mtp_by_layer[p.layer].push_back(std::move(r));
-                continue;
-            }
+                continue;   // counted above; never applied, so never stored
             constexpr std::string_view kScale = ".weight_scale_inv";
             if (t.name.size() >= kScale.size() &&
                 std::string_view(t.name).substr(t.name.size() -
@@ -574,9 +567,6 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
     for (auto &[layer, recs] : raw_by_layer)
         ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(recs),
                                          pinned_dir / LayerFile(layer, ".arrow")));
-    for (auto &[layer, recs] : mtp_by_layer)
-        ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(recs),
-                                         mtp_dir / LayerFile(layer, ".arrow")));
 
     // Model Ingestion Protocol stage 4 (tokenizer bridge). GigaChat's
     // checkpoint is a byte-level BPE with the Llama-3/o200k case-run
@@ -678,9 +668,7 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
           << ",\n    \"context_tokens\": " << vram.context_tokens << "\n  }"
           << ",\n  \"tokenizer\": \""
           << (tokenizer_ok ? "arrow-bpe" : "fixture") << "\""
-          << ",\n  \"deferred\": {\"mtp\": \"stored\", \"mtp_layers\": [40,41,42]"
-             ", \"mtp_tensors\": "
-          << mtp_count << "}"
+          << ",\n  \"dropped_mtp_tensors\": " << mtp_count
           << ",\n  \"total_pinned_tensors\": " << total_pinned
           << ",\n  \"total_experts\": " << total_experts << "\n}";
         std::ofstream out(base / "model.index.json");

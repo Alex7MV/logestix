@@ -261,8 +261,8 @@ TEST_CASE("synthetic checkpoint conversion produces logestix layout",
     // router + shared
     REQUIRE(fs::exists(out / "router" / "layer_0.arrow"));
     REQUIRE(fs::exists(out / "shared" / "layer_0_nvfp4.arrow"));
-    // mtp subtree stored
-    REQUIRE(fs::exists(out / "mtp"));
+    // no ballast subtree: v1 writes no mtp/ planes (design §1.4)
+    REQUIRE_FALSE(fs::exists(out / "mtp"));
     qwen_moe_exp_test::ExpUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
     fs::remove_all(dir, ec);
     fs::remove_all(out, ec);

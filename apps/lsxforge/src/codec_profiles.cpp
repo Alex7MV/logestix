@@ -53,6 +53,15 @@ const char *CodecProfileName(CodecProfile p)
     return "nvfp4";  // kDefault: the historical layout
 }
 
+CodecProfile ResolveCodecProfile(CodecProfile p)
+{
+    // One profile language. `kDefault` is "the flag was not passed", and the
+    // layout a flagless conversion produces has always been nvfp4; resolving it
+    // here is what lets the emitter run on EVERY conversion instead of being
+    // skipped for the one flag value most runbooks pass.
+    return p == CodecProfile::kDefault ? CodecProfile::kNvFp4 : p;
+}
+
 std::vector<lsx::storage::PlaneDecl> DeclaredPlanes(CodecProfile p,
                                                    PipelineKind kind,
                                                    int layers)

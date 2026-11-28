@@ -55,7 +55,10 @@ inline void Add(std::vector<synthtest::FakeTensor> &ts, const std::string &name,
     ts.push_back(std::move(t));
 }
 
-inline void WriteAliceConfigJson(const fs::path &dir)
+// `mtp_layers` > 0 asks for a checkpoint that carries the multi-token-prediction
+// head. The default is 0 because most Alice tests are about the live path; the
+// no-ballast case (Task 8b) is the one that needs it.
+inline void WriteAliceConfigJson(const fs::path &dir, int mtp_layers = 0)
 {
     std::ofstream f(dir / "config.json");
     f << "{\n"
@@ -76,7 +79,7 @@ inline void WriteAliceConfigJson(const fs::path &dir)
       << "  \"moe_intermediate_size\": " << kMoeInter << ",\n"
       << "  \"shared_expert_intermediate_size\": " << kSharedInter << ",\n"
       << "  \"block_attn_res_block_size\": " << kBlockAttnRes << ",\n"
-      << "  \"mtp_num_hidden_layers\": 0,\n"
+      << "  \"mtp_num_hidden_layers\": " << mtp_layers << ",\n"
       << "  \"rms_norm_eps\": 1e-6,\n"
       << "  \"partial_rotary_factor\": 0.25,\n"
       << "  \"rope_theta\": 1000000.0,\n"
@@ -94,7 +97,7 @@ inline void WriteAliceConfigJson(const fs::path &dir)
     f << "]\n}\n";
 }
 
-inline void WriteAliceShard(const fs::path &dir)
+inline void WriteAliceShard(const fs::path &dir, bool with_mtp = false)
 {
     std::vector<synthtest::FakeTensor> ts;
     Add(ts, "model.embed_tokens.weight", {kVocab, kHidden});
@@ -151,6 +154,14 @@ inline void WriteAliceShard(const fs::path &dir)
         Add(ts, b + "mlp.experts.gate_up_proj",
             {kExperts, 2 * kMoeInter, kHidden});
         Add(ts, b + "mlp.experts.down_proj", {kExperts, kHidden, kMoeInter});
+    }
+    if (with_mtp) {
+        // The MTP head: one raw tensor (the router) and the fused expert pair,
+        // which the converter would otherwise write under mtp/experts.
+        Add(ts, "mtp.mlp.gate.weight", {kExperts, kHidden});
+        Add(ts, "mtp.mlp.experts.gate_up_proj",
+            {kExperts, 2 * kMoeInter, kHidden});
+        Add(ts, "mtp.mlp.experts.down_proj", {kExperts, kHidden, kMoeInter});
     }
     synthtest::WriteSafetensors(dir, "model-00001-of-00001.safetensors", ts);
 }

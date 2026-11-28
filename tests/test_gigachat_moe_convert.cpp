@@ -116,13 +116,15 @@ TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
     CHECK(json.find("\"layout\": 2") !=
           std::string::npos);
     CHECK(json.find("\"full_attention_layers\": [1]") != std::string::npos);
-    CHECK(json.find("\"mtp\": \"stored\"") != std::string::npos);
+    // No ballast in v1: the MTP head is not stored, so the index carries no
+    // `mtp: stored` declaration to go stale against a directory that is absent.
+    CHECK(json.find("\"mtp\": \"stored\"") == std::string::npos);
     CHECK(json.find("\"total_experts\": 2") != std::string::npos);
     CHECK(fs::exists(dst / "pinned" / "global.arrow"));
     CHECK(fs::exists(dst / "pinned" / "layer_000_nvfp4.arrow"));
     CHECK(fs::exists(dst / "pinned" / "layer_001_nvfp4.arrow"));
     CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_0.arrow"));
-    CHECK(fs::exists(dst / "mtp" / "layer_040.arrow"));
+    CHECK_FALSE(fs::exists(dst / "mtp"));
     // Model Ingestion Protocol stage 4: the converter owns the tokenizer
     // bridge. GigaChat's checkpoint is the Llama-3/o200k case-run BPE, so the
     // emitted metadata must say tokenizer_kind 3 (not the legacy kind 0, which

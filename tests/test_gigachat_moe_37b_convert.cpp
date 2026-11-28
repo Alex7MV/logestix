@@ -157,8 +157,9 @@ TEST_CASE("gigachat4 converter emits the logestix-gigachat4-nvfp4 layout",
     // Routed experts: one file per expert, all three projections.
     CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_0.arrow"));
     CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_1.arrow"));
-    // MTP layer is stored and counted, never applied.
-    CHECK(fs::exists(dst / "mtp" / "layer_002.arrow"));
+    // MTP layer is counted, never applied — and in v1 never written: a plane
+    // the load path cannot reach makes the whole artifact unpublishable.
+    CHECK_FALSE(fs::exists(dst / "mtp"));
 
     // Tokenizer bridge (stage 4): byte-level BPE of the Llama-3 case-run kind.
     CHECK(json.find("\"tokenizer\": \"arrow-bpe\"") != std::string::npos);

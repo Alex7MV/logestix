@@ -46,6 +46,14 @@ enum class PipelineKind {
 // their own code, not from here).
 bool ParseCodecProfile(std::string_view name, CodecProfile *out);
 
+// The profile an EMITTER should build for a given parse result.
+//
+// kDefault exists only to say "the flag was absent". A conversion must always
+// produce an artifact.fb (design §0.2), and the flagless conversion historically
+// produced the nvfp4 layout, so kDefault resolves to kNvFp4 — there is one
+// profile language and no code path that publishes a tree with no declaration.
+CodecProfile ResolveCodecProfile(CodecProfile p);
+
 // Canonical name for logs and for artifact.fb's profile/profile_arg fields.
 const char *CodecProfileName(CodecProfile p);
 

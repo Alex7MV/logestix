@@ -398,8 +398,9 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";
-    const fs::path mtp_dir = base / "mtp";
-    for (const fs::path &d : {base, pinned_dir, router_dir, shared_dir, mtp_dir}) {
+    // No mtp/: v1 ships no ballast (design §1.4), so the artifact's mask names
+    // only planes the load path can reach.
+    for (const fs::path &d : {base, pinned_dir, router_dir, shared_dir}) {
         std::error_code ec;
         fs::create_directories(d, ec);
     }
@@ -411,8 +412,6 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
     absl::btree_map<int, std::vector<TensorRecord>> shared_gate_by_layer;
     std::vector<DenseNvfp4Record> global_nvfp4;
     std::vector<TensorRecord> global_raw;
-    std::vector<DenseNvfp4Record> mtp_nvfp4;
-    std::vector<TensorRecord> mtp_raw;
 
     int mtp_tensors = 0;
     int64_t total_pinned = 0;
@@ -430,24 +429,10 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
                                               t.name);
 
             if (p.kind == OrnithMoeTensorKind::Mtp) {
+                // MTP subtree: never applied at inference (HF parity — the
+                // reference implementation ignores ^mtp.*) and therefore not
+                // stored. COUNTED, because a silent drop is unauditable.
                 ++mtp_tensors;
-                // MTP subtree: converted and stored, never applied at
-                // inference (HF parity — the reference implementation ignores
-                // ^mtp.*). Norms stay high precision; the rest is NVFP4.
-                const bool keep_raw = t.name.find("norm") != std::string::npos;
-                if (keep_raw) {
-                    TensorRecord r;
-                    r.name = t.name; r.dtype = t.dtype; r.shape = t.shape;
-                    r.data = std::move(data);
-                    mtp_raw.push_back(std::move(r));
-                } else {
-                    DenseNvfp4Record r;
-                    r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                    if (!QuantizeSliceBf16(data.data(), t.numel(), r))
-                        return arrow::Status::IOError(
-                            "GPU quantization failed for ", t.name);
-                    mtp_nvfp4.push_back(std::move(r));
-                }
                 continue;
             }
 
@@ -709,16 +694,6 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             PinnedSchema::MakeBatch(recs),
             shared_dir / absl::StrCat("layer_", layer, "_gate.arrow")));
     }
-    if (!mtp_nvfp4.empty()) {
-        ARROW_RETURN_NOT_OK(
-            WriteBatch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
-                        mtp_dir / "mtp_nvfp4.arrow"));
-    }
-    if (!mtp_raw.empty()) {
-        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(mtp_raw),
-                                        mtp_dir / "mtp_raw.arrow"));
-    }
-
     top.total_pinned_tensors = static_cast<int>(total_pinned);
 
     const fs::path tok_path = fs::path(input_dir) / "tokenizer.json";
@@ -769,8 +744,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
         if (top.bos_token_id >= 0)
             j << ",\n  \"bos_token_id\": " << top.bos_token_id;
         j << ",\n  \"skipped_visual_tensors\": " << visual_skipped
-          << ",\n  \"deferred\": {\"mtp\": \"stored\", \"mtp_tensors\": "
-          << mtp_tensors << "}"
+          << ",\n  \"dropped_mtp_tensors\": " << mtp_tensors
           << ",\n  \"tokenizer\": \"" << (tokenizer_ok ? "binary" : "fixture")
           << "\""
           << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
@@ -779,7 +753,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
         out << j.str();
     }
 
-    for (const fs::path &dir : {pinned_dir, router_dir, shared_dir, mtp_dir}) {
+    for (const fs::path &dir : {pinned_dir, router_dir, shared_dir}) {
         std::error_code ec;
         for (fs::directory_iterator it(dir, ec), end; !ec && it != end;
              it.increment(ec)) {
@@ -795,7 +769,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
 
     lsxcommon::log::info(absl::StrFormat(
         "Ornith-MoE conversion: %d layers x %d experts, %d visual tensors "
-        "skipped, %d MTP tensors stored, %d pinned tensors",
+        "skipped, %d MTP tensors dropped (no ballast), %d pinned tensors",
         top.num_layers, top.num_experts, visual_skipped, mtp_tensors,
         top.total_pinned_tensors));
     return arrow::Status::OK();

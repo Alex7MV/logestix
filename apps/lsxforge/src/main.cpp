@@ -452,8 +452,9 @@ int main(int argc, char* argv[]) {
                 lsxcommon::Core::Shutdown();
                 return 2;
             }
-            if (lsxforge::DeclaredPlanes(codec_profile,
-                                         lsxforge::PipelineKind::kDense, 1)
+            if (lsxforge::DeclaredPlanes(
+                    lsxforge::ResolveCodecProfile(codec_profile),
+                    lsxforge::PipelineKind::kDense, 1)
                     .empty()) {
                 lsxcommon::log::error(
                     absl::StrCat("--codec-profile ", raw,
@@ -463,7 +464,38 @@ int main(int argc, char* argv[]) {
                 return 2;
             }
         }
-        if (codec_profile != lsxforge::CodecProfile::kDefault) {
+        // ONE profile language: an absent flag means the nvfp4 layout, not "no
+        // artifact". `finish` below emits unconditionally, so a flagless run
+        // publishes a loadable artifact instead of a tree nothing can open.
+        //
+        // WHERE it goes still depends on the flag: an explicit --codec-profile
+        // is a store conversion and lands in <root>/<org>/<model>/<profile>;
+        // a flagless run keeps writing to --output, which is what makes a
+        // fixture conversion and an unregistered checkpoint possible at all.
+        const bool explicit_profile = !absl::GetFlag(FLAGS_codec_profile).empty();
+        codec_profile = lsxforge::ResolveCodecProfile(codec_profile);
+        codec_profile_name = lsxforge::CodecProfileName(codec_profile);
+
+        if (!explicit_profile) {
+            // Scratch conversion: --output is the destination. The artifact is
+            // still emitted (a tree without artifact.fb cannot be loaded), and
+            // the identity is the manifest's when the checkpoint has a row,
+            // else a path-derived one.
+            const auto identity = lsxforge::ModelIdentityFor(input_path);
+            if (identity.has_value()) {
+                codec_identity = *identity;
+            } else {
+                const std::filesystem::path p(input_path);
+                codec_identity.model_type = p.filename().string();
+                codec_identity.family = codec_identity.model_type;
+                codec_identity.model_dir = codec_identity.model_type;
+                codec_identity.org = p.parent_path().filename().string();
+                lsxcommon::log::warn(absl::StrCat(
+                    "no manifest row for '", input_path,
+                    "': writing a scratch artifact to --output with a "
+                    "path-derived identity; no other tool will find it"));
+            }
+        } else {
             if (!lsx::storage::ArtifactRoot().has_value()) {
                 lsxcommon::log::error(
                     "--codec-profile requires LSX_ARTIFACT_ROOT (an absolute "
@@ -535,10 +567,9 @@ int main(int argc, char* argv[]) {
             lsxcommon::Core::Shutdown();
             return rc;
         }
-        if (codec_profile == lsxforge::CodecProfile::kDefault) {
-            lsxcommon::Core::Shutdown();
-            return 0;
-        }
+        // Every conversion publishes an artifact — a tree without artifact.fb
+        // is not a product (design §0.2) and cannot be loaded. A flagless run
+        // used to return here and leave exactly such a tree behind.
         std::string err;
         const auto scan = lsx::storage::ScanArtifactTree(output_path);
         if (!scan.ok) {

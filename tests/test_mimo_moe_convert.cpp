@@ -29,8 +29,10 @@ TEST_CASE("mimo converter emits a valid logestix-mimo-nvfp4 layout",
         mimotest::ReadFileText(out / "model.index.json");
     CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"num_layers\": 2") != std::string::npos);
-    CHECK(idx.find("\"deferred\"") != std::string::npos);
-    CHECK(idx.find("\"mtp\"") != std::string::npos);
+    // v1 ships no ballast: no `deferred` block and no mtp declaration, because
+    // nothing was stored to defer.
+    CHECK(idx.find("\"deferred\"") == std::string::npos);
+    CHECK(idx.find("\"mtp\"") == std::string::npos);
 
     // All four routed experts of the MoE layer landed as NVFP4 ExpertSchema.
     for (int e = 0; e < 4; ++e)

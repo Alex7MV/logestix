@@ -690,8 +690,10 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
 
     const fs::path base = output_root;
     const fs::path pinned_dir = base / "pinned";
-    const fs::path mtp_dir = base / "mtp";
-    for (const fs::path &d : {base, pinned_dir, mtp_dir})
+    // No mtp/: v1 ships no ballast (design §1.4). The MTP layer is counted in
+    // the index (`mtp_tensors`) and not written, so every plane in the tree is
+    // one the load path can reach.
+    for (const fs::path &d : {base, pinned_dir})
     {
         std::error_code ec;
         fs::create_directories(d, ec);
@@ -700,7 +702,6 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
     absl::flat_hash_map<int, std::vector<DenseNvfp4Record>> nvfp4_by_layer;
     absl::flat_hash_map<int, std::vector<TensorRecord>> raw_by_layer;
     std::vector<DenseNvfp4Record> global_nvfp4;
-    std::vector<TensorRecord> mtp_raw;
     // layer -> {record base -> global_scale} for the loader's dequant path.
     absl::flat_hash_map<int, std::vector<std::pair<std::string, float>>> layer_scales;
 
@@ -799,12 +800,9 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
                 break;
             }
             case XingTensorKind::Mtp:
-            {
-                TensorRecord r;
-                ARROW_RETURN_NOT_OK(RawRecord(input_dir, ref, r));
-                mtp_raw.push_back(std::move(r));
+                // Never applied at inference, so never stored. Already counted
+                // by the classification pass above (the index reports it).
                 break;
-            }
             }
         }
     }
@@ -852,9 +850,6 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
     for (auto &[layer, recs] : nvfp4_by_layer)
         ARROW_RETURN_NOT_OK(WriteBatchOr(DenseNvfp4Schema::MakeBatch(recs),
                                          pinned_dir / LayerFile(layer, "_nvfp4.arrow")));
-    if (!mtp_raw.empty())
-        ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(mtp_raw),
-                                         mtp_dir / "raw.arrow"));
 
     // Tokenizer: SentencePiece-BPE (tokenizer.model). Synthetic fixtures omit
     // it; a real checkpoint must carry it.

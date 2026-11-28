@@ -3,6 +3,7 @@
 // logestix-alice-nvfp4 layout, expert count, and the layer-0 AttnRes absence.
 #include <catch2/catch_test_macros.hpp>
 #include "lsxcommon/index_layout.h"
+#include "lsxstorage/artifact.h"
 #include <lsxcommon/alice_moe_convert.h>
 #include <lsxcommon/schema.h>
 #include <simdjson.h>
@@ -173,4 +174,42 @@ TEST_CASE("alice vram profile streams routed experts as NVFP4",
     REQUIRE(optimal_bytes > min_bytes);          // KV cache + workspace
     REQUIRE(max_bytes > optimal_bytes);          // routed-expert pool
     REQUIRE(max_bytes - optimal_bytes == expert_nvfp4_bytes);
+}
+
+TEST_CASE("Alice converter drops the MTP head instead of writing mtp/ "
+          "ballast",
+          "[alice][convert][ballast]")
+{
+    // v1 ships no ballast (design §1.4). A plane the load path cannot reach is
+    // not written, and the artifact scan refuses a tree that contains one — so
+    // a converter that still writes mtp/ can never publish an artifact, after a
+    // full conversion. Alice is the case with the widest MTP surface (a raw
+    // router, a quantized linear, and a whole fused-expert subtree), which is
+    // why it is the family that pins the rule for the others.
+    REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
+    const fs::path in = fs::temp_directory_path() / "alice_mtp_in";
+    const fs::path out = fs::temp_directory_path() / "alice_mtp_out";
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+    WriteAliceConfigJson(in, /*mtp_layers=*/1);
+    WriteAliceShard(in, /*with_mtp=*/true);
+
+    auto st = lsxcommon::alice::ConvertAliceModel(in.string(), out.string());
+    INFO(st.ToString());
+    REQUIRE(st.ok());
+
+    CHECK_FALSE(fs::exists(out / "mtp"));
+
+    // And the tree is publishable: the same scan `lsxforge` runs before it
+    // writes artifact.fb finds nothing unreachable.
+    const auto scan = lsx::storage::ScanArtifactTree(out);
+    std::string joined;
+    for (const auto &p : scan.problems) joined += "\n  " + p;
+    CAPTURE(joined);
+    CHECK(scan.ok);
+
+    std::error_code ec;
+    fs::remove_all(in, ec);
+    fs::remove_all(out, ec);
 }

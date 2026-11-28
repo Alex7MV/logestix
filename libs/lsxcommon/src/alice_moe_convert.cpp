@@ -314,8 +314,10 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
     const fs::path experts_dir = base / "experts";
-    const fs::path mtp_dir = base / "mtp";
-    for (const fs::path &d : {base, pinned_dir, experts_dir, mtp_dir}) {
+    // No mtp/: v1 ships no ballast (design §1.4). The MTP head is counted and
+    // dropped, so every plane in the tree is one the load path reaches and the
+    // artifact scan has nothing to refuse.
+    for (const fs::path &d : {base, pinned_dir, experts_dir}) {
         std::error_code ec;
         fs::create_directories(d, ec);
     }
@@ -323,8 +325,7 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     absl::btree_map<int, std::vector<DenseNvfp4Record>> nvfp4_by_layer;
     absl::btree_map<int, std::vector<TensorRecord>> raw_by_layer;
     std::vector<TensorRecord> global_raw;
-    std::vector<DenseNvfp4Record> mtp_nvfp4;
-    std::vector<TensorRecord> mtp_raw;
+    int64_t mtp_dropped = 0;
 
     int64_t total_pinned = 0;
 
@@ -338,27 +339,10 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
                                               t.name);
 
             if (p.kind == AliceTensorKind::Mtp) {
-                if (ends_with(t.name, "mlp.experts.gate_up_proj") ||
-                    ends_with(t.name, "mlp.experts.down_proj"))
-                    continue;  // dedicated expert pass
-                const bool raw = t.name.find("norm") != std::string::npos ||
-                                 ends_with(t.name, "mlp.gate.weight") ||
-                                 ends_with(t.name, "e_score_correction_bias") ||
-                                 ends_with(t.name, "shared_expert_gate.weight");
-                if (raw) {
-                    TensorRecord r;
-                    r.name = t.name; r.dtype = t.dtype; r.shape = t.shape;
-                    r.data = std::move(data);
-                    mtp_raw.push_back(std::move(r));
-                } else {
-                    DenseNvfp4Record r;
-                    r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                    if (!QuantizeSliceBf16(data.data(), t.numel(), r))
-                        return arrow::Status::IOError(
-                            "GPU quantization failed for ", t.name);
-                    mtp_nvfp4.push_back(std::move(r));
-                }
-                ++total_pinned;
+                // The MTP head is never applied at inference, so it is not
+                // stored: v1 ships no ballast (design §1.4). COUNTED rather
+                // than silently skipped — a drop nobody can see is data loss.
+                ++mtp_dropped;
                 continue;
             }
 
@@ -434,13 +418,12 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     }
 
     // Fused-expert split. gate_up_proj[e] is [2I,H]: gate = rows [0,I), up =
-    // rows [I,2I). down_proj[e] is [H,I]. MTP experts use a synthetic layer key
-    // equal to num_layers and are written under mtp/experts.
+    // rows [I,2I). down_proj[e] is [H,I]. MTP experts are dropped with the rest
+    // of the MTP head (no ballast, design §1.4) and counted as such.
     const int E = top.num_experts;
     const int I = top.moe_intermediate_size;
     const int H = top.hidden_size;
     const int64_t row_bytes = static_cast<int64_t>(H) * 2;  // BF16 row
-    const int kMtpLayerKey = top.num_layers;
     using ExpertKey = std::pair<int, int>;
     absl::btree_map<ExpertKey, std::pair<DenseNvfp4Record, DenseNvfp4Record>>
         gate_up_w1_w3;
@@ -451,9 +434,11 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
             const bool gu = ends_with(t.name, "mlp.experts.gate_up_proj");
             const bool dn = ends_with(t.name, "mlp.experts.down_proj");
             if (!gu && !dn) continue;
-            const bool is_mtp = t.name.rfind("mtp.", 0) == 0;
-            const int layer = is_mtp ? kMtpLayerKey
-                                     : classify_alice_tensor(t.name).layer;
+            if (t.name.rfind("mtp.", 0) == 0) {
+                ++mtp_dropped;   // MTP experts: dropped, never written
+                continue;
+            }
+            const int layer = classify_alice_tensor(t.name).layer;
             auto data = ReadTensorData(input_dir, shard, t);
             if (data.empty() ||
                 static_cast<int64_t>(data.size()) != t.byte_size())
@@ -534,10 +519,6 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     for (int l = 0; l < top.num_layers; ++l)
         ARROW_RETURN_NOT_OK(write_layer_experts(
             l, experts_dir / absl::StrCat("layer_", l)));
-    if (top.mtp_num_hidden_layers > 0)
-        ARROW_RETURN_NOT_OK(write_layer_experts(kMtpLayerKey,
-                                                mtp_dir / "experts"));
-
     if (!global_raw.empty())
         ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(global_raw),
                                         pinned_dir / "global.arrow"));
@@ -549,13 +530,6 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
         ARROW_RETURN_NOT_OK(WriteBatch(
             PinnedSchema::MakeBatch(recs),
             pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
-    if (!mtp_nvfp4.empty())
-        ARROW_RETURN_NOT_OK(WriteBatch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
-                                        mtp_dir / "nvfp4.arrow"));
-    if (!mtp_raw.empty())
-        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(mtp_raw),
-                                        mtp_dir / "raw.arrow"));
-
     total_pinned += static_cast<int64_t>(E) * 3;  // expert tensors
     top.total_pinned_tensors = static_cast<int>(total_pinned);
 
@@ -586,8 +560,8 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     std::vector<VramTensorInfo> vram_inventory;
     for (const auto &shard : model.shards)
         for (const auto &t : shard.tensors) {
-            // The MTP tree is stored under mtp/ and counted as deferred; the
-            // loader never uploads it, so it is not a runtime weight.
+            // The MTP head is not stored at all (no ballast); it is also not a
+            // runtime weight, so it stays out of the VRAM profile either way.
             if (t.name.rfind("mtp.", 0) == 0) continue;
             vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
         }
@@ -651,7 +625,7 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     }
 
     // Every produced arrow file must re-open cleanly.
-    for (const fs::path &dir : {pinned_dir, experts_dir, mtp_dir}) {
+    for (const fs::path &dir : {pinned_dir, experts_dir}) {
         std::error_code ec;
         for (fs::recursive_directory_iterator it(dir, ec), end;
              !ec && it != end; it.increment(ec)) {
@@ -666,8 +640,10 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
     }
 
     lsxcommon::log::info(absl::StrFormat(
-        "Alice conversion: %d layers x %d experts, %d pinned tensors",
-        top.num_layers, top.num_experts, top.total_pinned_tensors));
+        "Alice conversion: %d layers x %d experts, %d pinned tensors, "
+        "%d mtp tensors dropped (no ballast)",
+        top.num_layers, top.num_experts, top.total_pinned_tensors,
+        static_cast<int>(mtp_dropped)));
     return arrow::Status::OK();
 }
 

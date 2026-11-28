@@ -169,8 +169,8 @@ TEST_CASE("Xing synthetic convert emits logestix-xing-nvfp4", "[xing][convert]")
     for (int e = 0; e < 2; ++e)
         REQUIRE(fs::exists(log_root / "experts" / "layer_2" /
                            absl::StrCat("exp_", e, ".arrow")));
-    // MTP is stored, not dropped.
-    REQUIRE(fs::exists(log_root / "mtp" / "raw.arrow"));
+    // v1 ships no ballast: the MTP layer is dropped and counted, not written.
+    REQUIRE_FALSE(fs::exists(log_root / "mtp"));
 
     std::ifstream f(log_root / "model.index.json");
     const std::string json((std::istreambuf_iterator<char>(f)),

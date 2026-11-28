@@ -33,6 +33,28 @@ bool HasExpertsPlane(const std::vector<PlaneDecl> &v)
 
 } // namespace
 
+TEST_CASE("the default profile is the nvfp4 profile, not a no-op profile", "[forge_profile]") {
+    // `kDefault` is what a flagless `lsxforge --phi --input <src>` carries. It
+    // used to short-circuit the emitter, so that run exited 0 and published a
+    // tree with no artifact.fb — a tree lsxforge --verify rejects and BeginLoad
+    // refuses forever. There is one profile language now, and it is nvfp4.
+    CHECK(ResolveCodecProfile(CodecProfile::kDefault) == CodecProfile::kNvFp4);
+    CHECK(std::string(CodecProfileName(ResolveCodecProfile(CodecProfile::kDefault))) ==
+          "nvfp4");
+}
+
+TEST_CASE("the default profile declares the same planes as nvfp4", "[forge_profile]") {
+    const auto mask_of = [](CodecProfile p, PipelineKind k) {
+        uint64_t m = 0;
+        for (const auto &plane : DeclaredPlanes(p, k, 4)) m |= plane.codec_bit;
+        return m;
+    };
+    CHECK(mask_of(CodecProfile::kDefault, PipelineKind::kDense) ==
+          mask_of(CodecProfile::kNvFp4, PipelineKind::kDense));
+    CHECK(mask_of(CodecProfile::kDefault, PipelineKind::kMoe) ==
+          mask_of(CodecProfile::kNvFp4, PipelineKind::kMoe));
+}
+
 TEST_CASE("unknown codec profile is rejected", "[forge_profile]") {
     CodecProfile p{};
     CHECK_FALSE(ParseCodecProfile("fp8", &p));

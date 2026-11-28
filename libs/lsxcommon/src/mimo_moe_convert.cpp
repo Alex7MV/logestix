@@ -409,8 +409,8 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
 
     const fs::path base = fs::path(output_root);
     const fs::path pinned_dir = base / "pinned";
-    const fs::path mtp_dir = base / "mtp";
-    for (const fs::path &d : {base, pinned_dir, mtp_dir})
+    // No mtp/: v1 ships no ballast (design §1.4) — dropped and counted above.
+    for (const fs::path &d : {base, pinned_dir})
     {
         std::error_code ec;
         fs::create_directories(d, ec);
@@ -418,7 +418,6 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
 
     absl::flat_hash_map<int, std::vector<DenseNvfp4Record>> nvfp4_by_layer;
     absl::flat_hash_map<int, std::vector<TensorRecord>> raw_by_layer;
-    absl::flat_hash_map<int, std::vector<TensorRecord>> mtp_by_layer;
     std::vector<TensorRecord> global_raw;
     int64_t total_pinned = 0;
 
@@ -431,15 +430,7 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
             auto p = classify_mimo_tensor(t.name);
             if (p.kind == MiMoTensorKind::Multimodal) continue;
             if (p.kind == MiMoTensorKind::Mtp)
-            {
-                TensorRecord r;
-                r.name = t.name;
-                r.dtype = t.dtype;
-                r.shape = t.shape;
-                r.data = ReadTensorData(input_dir, shard, t);
-                mtp_by_layer[p.layer].push_back(std::move(r));
-                continue;
-            }
+                continue;   // counted above; never applied, so never stored
             if (IsScaleTensor(t.name)) continue;  // consumed with its `.weight`
             if (mimo_tensor_is_expert(p.kind)) continue;  // expert pass
 
@@ -537,9 +528,6 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
     for (auto &[layer, recs] : raw_by_layer)
         ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(recs),
                                          pinned_dir / LayerFile(layer, ".arrow")));
-    for (auto &[layer, recs] : mtp_by_layer)
-        ARROW_RETURN_NOT_OK(WriteBatchOr(PinnedSchema::MakeBatch(recs),
-                                         mtp_dir / LayerFile(layer, ".arrow")));
 
     // Conversion-time VRAM profile.
     VramGeometry vg;
@@ -610,9 +598,7 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
           << ",\n    \"optimal_bytes\": " << vram.optimal_bytes
           << ",\n    \"max_bytes\": " << vram.max_bytes
           << ",\n    \"context_tokens\": " << vram.context_tokens << "\n  }"
-          << ",\n  \"deferred\": {\"mtp\": \"stored\", \"mtp_layers\": [0,1,2]"
-             ", \"mtp_tensors\": "
-          << mtp_count << "}"
+          << ",\n  \"dropped_mtp_tensors\": " << mtp_count
           << ",\n  \"total_pinned_tensors\": " << total_pinned
           << ",\n  \"total_experts\": " << total_experts << "\n}";
         std::ofstream out(base / "model.index.json");

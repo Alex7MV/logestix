@@ -2,6 +2,7 @@
 #include <catch2/catch_approx.hpp>
 #include "test_qwen_moe_fixture.h"
 #include "lsxcommon/qwen_moe_convert.h"
+#include "lsxstorage/artifact.h"
 
 #include <filesystem>
 
@@ -214,8 +215,21 @@ TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
     CHECK(fs::exists(base / "shared" / "layer_0_nvfp4.arrow"));
     CHECK(fs::exists(base / "shared" / "layer_0_gate.arrow"));
 
-    // 7) MTP stored but separate from the live path.
-    CHECK(fs::exists(base / "mtp" / "mtp_nvfp4.arrow"));
+    // 7) No ballast: the MTP head is not written in v1 (design §1.4). It used to
+    // be stored under mtp/ and declared `deferred`, which is a plane the load
+    // path cannot reach — and a tree containing one is REFUSED by the artifact
+    // scan, so the conversion could never publish an artifact.fb. The tensors
+    // are still classified and counted (that is how the operator learns what was
+    // dropped), they are just not written.
+    CHECK_FALSE(fs::exists(base / "mtp"));
+    {
+        const auto scan = lsx::storage::ScanArtifactTree(base);
+        std::string joined;
+        for (const auto &p : scan.problems) joined += "\n  " + p;
+        CAPTURE(joined);
+        CHECK(scan.ok);
+        CHECK((scan.mask & (1ull << 5)) != 0);   // nvfp4 is still the body
+    }
 
     // 8) Determinism: byte-identical index on re-conversion.
     {

@@ -110,9 +110,10 @@ TEST_CASE("ConvertQwen36MoeModel synthetic roundtrip (format/model/bos)",
     // Synthetic config carries no bos: record_bos must NOT emit the field.
     CHECK(j.find("bos_token_id") == std::string::npos);
 
-    // Unified layout: expert split + MTP store.
+    // Unified layout: expert split, and NO MTP store — v1 ships no ballast
+    // (design §1.4), so an unreachable plane is not written at all.
     CHECK(fs::exists(out / "experts" / "layer_0" / "exp_0.arrow"));
-    CHECK(fs::exists(out / "mtp" / "mtp_nvfp4.arrow"));
+    CHECK_FALSE(fs::exists(out / "mtp"));
 
     // Determinism: byte-identical index on re-conversion.
     fs::path out2 = fs::temp_directory_path() / "lsx_qwen36_out2";

@@ -492,10 +492,11 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
     const fs::path pinned_dir = base / "pinned";
     const fs::path router_dir = base / "router";
     const fs::path shared_dir = base / "shared";
-    const fs::path mtp_dir = base / "mtp";
     const fs::path ple_dir = base / "ple";
+    // No mtp/: v1 ships no ballast (design §1.4) — a plane the load path cannot
+    // reach is not written, and the MTP head is never read at inference.
     for (const fs::path &d :
-         {base, pinned_dir, router_dir, shared_dir, mtp_dir, ple_dir}) {
+         {base, pinned_dir, router_dir, shared_dir, ple_dir}) {
         std::error_code ec;
         fs::create_directories(d, ec);
     }
@@ -512,8 +513,7 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
     std::vector<TensorRecord> ple_meta_records;
     std::vector<DenseNvfp4Record> global_nvfp4;
     std::vector<TensorRecord> global_raw;
-    std::vector<DenseNvfp4Record> mtp_nvfp4;
-    std::vector<TensorRecord> mtp_raw;
+    int64_t mtp_dropped = 0;
 
     int64_t total_pinned = 0;
 
@@ -529,24 +529,12 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
                 return arrow::Status::IOError("failed to read tensor data: ",
                                               t.name);
 
-            // MTP subtree: converted and stored, never applied at inference
-            // (HF parity — modeling_qwen4_exp.py ignores ^mtp.* on load).
-            // Norms stay high precision; everything else is NVFP4.
+            // MTP subtree: never applied at inference (HF parity —
+            // modeling_qwen4_exp.py ignores ^mtp.* on load) and therefore not
+            // stored: v1 ships no ballast (design §1.4). COUNTED, because a
+            // silent drop is data loss nobody can audit.
             if (p.kind == ExpTensorKind::Mtp) {
-                const bool keep_raw = t.name.find("norm") != std::string::npos;
-                if (keep_raw) {
-                    TensorRecord r;
-                    r.name = t.name; r.dtype = t.dtype; r.shape = t.shape;
-                    r.data = std::move(data);
-                    mtp_raw.push_back(std::move(r));
-                } else {
-                    DenseNvfp4Record r;
-                    r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
-                    if (!QuantizeSliceBf16(data.data(), t.numel(), r))
-                        return arrow::Status::IOError(
-                            "GPU quantization failed for ", t.name);
-                    mtp_nvfp4.push_back(std::move(r));
-                }
+                ++mtp_dropped;
                 continue;
             }
 
@@ -910,16 +898,6 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
         ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(ple_meta_records),
                                         ple_dir / "meta.arrow"));
     }
-    if (!mtp_nvfp4.empty()) {
-        ARROW_RETURN_NOT_OK(
-            WriteBatch(DenseNvfp4Schema::MakeBatch(mtp_nvfp4),
-                        mtp_dir / "mtp_nvfp4.arrow"));
-    }
-    if (!mtp_raw.empty()) {
-        ARROW_RETURN_NOT_OK(WriteBatch(PinnedSchema::MakeBatch(mtp_raw),
-                                        mtp_dir / "mtp_raw.arrow"));
-    }
-
     top.total_pinned_tensors = static_cast<int>(total_pinned);
 
     // Tokenizer: mandatory for real checkpoints; synthetic fixtures may omit
@@ -998,7 +976,7 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
 
     // Final verification: every produced arrow file must re-open cleanly.
     for (const fs::path &dir :
-         {pinned_dir, router_dir, shared_dir, mtp_dir, ple_dir}) {
+         {pinned_dir, router_dir, shared_dir, ple_dir}) {
         std::error_code ec;
         for (fs::directory_iterator it(dir, ec), end; !ec && it != end;
              it.increment(ec)) {

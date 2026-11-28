@@ -157,8 +157,9 @@ TEST_CASE("gigachat4-708b converter writes its own identity",
     CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_0.arrow"));
     CHECK(fs::exists(dst / "experts" / "layer_1" / "exp_1.arrow"));
     CHECK(json.find("\"total_experts\": 2") != std::string::npos);
-    // MTP ballast stored and counted, never applied.
-    CHECK(fs::exists(dst / "mtp" / "layer_002.arrow"));
+    // No MTP ballast: the head is dropped and counted (design §1.4), because a
+    // plane the load path cannot reach makes the artifact unpublishable.
+    CHECK_FALSE(fs::exists(dst / "mtp"));
 }
 
 TEST_CASE("gigachat4-708b frozen gate refuses the 37B geometry",

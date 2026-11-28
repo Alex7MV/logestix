@@ -237,15 +237,16 @@ TEST_CASE("ornith HF converter roundtrip strips vision and defers MTP",
     REQUIRE(fs::exists(base / "experts" /
                        ("layer_" + std::to_string(
                                       ornithtest::OrnithCfg().num_layers - 1))));
-    // MTP: stored, never applied.
-    REQUIRE(fs::exists(base / "mtp" / "mtp_nvfp4.arrow"));
-    REQUIRE(fs::exists(base / "mtp" / "mtp_raw.arrow"));
+    // v1 ships no ballast (design §1.4): the MTP head is counted, not written.
+    // Storing it put planes in the tree that the load path cannot reach, and the
+    // artifact scan refuses such a tree — so the conversion could never publish.
+    REQUIRE_FALSE(fs::exists(base / "mtp"));
 
     const std::string idx = ReadText(base / "model.index.json");
     CHECK(idx.find("\"layout\": 2") != std::string::npos);
     CHECK(idx.find("\"skipped_visual_tensors\": 3") != std::string::npos);
-    CHECK(idx.find("\"deferred\": {\"mtp\": \"stored\"") != std::string::npos);
-    CHECK(idx.find("\"mtp_tensors\": 6") != std::string::npos);
+    // No `deferred` block: nothing was deferred, the tensors were dropped.
+    CHECK(idx.find("\"deferred\"") == std::string::npos);
 
     // The HF plain norm is ALREADY the runtime offset form: it must pass
     // through untouched (no -1.0 shift, no F32 upcast).
