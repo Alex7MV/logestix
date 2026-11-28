@@ -93,6 +93,7 @@ std::filesystem::path SourceModelDir()
 TEST_CASE("nemotron tokenizer bridge reproduces the reference ids",
           "[nemotron][tokenizer][inference]")
 {
+    manifest_query::RequireSourceRoot();
     const std::filesystem::path model = SourceModelDir();
     if (!std::filesystem::exists(model / "tokenizer.json"))
         SKIP(std::string("vault Nemotron tokenizer not present: ") + model.string());

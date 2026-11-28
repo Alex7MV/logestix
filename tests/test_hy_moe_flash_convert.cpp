@@ -46,6 +46,7 @@ fs::path VaultRoot()
 TEST_CASE("hy4 convert: the classifier covers every real tensor name",
           "[hy4][fast]")
 {
+    manifest_query::RequireSourceRoot();
     const fs::path index = VaultRoot() / "model.safetensors.index.json";
     if (!fs::exists(index))
         SKIP("Hy4-flash index not present at " + index.string());
@@ -135,6 +136,7 @@ TEST_CASE("hy4 convert: an unclassified name is a hard error", "[hy4][fast]")
 
 TEST_CASE("hy4 convert: layer shapes come from the config lists", "[hy4][fast]")
 {
+    manifest_query::RequireSourceRoot();
     const fs::path root = VaultRoot();
     if (!fs::exists(root / "config.json"))
         SKIP("Hy4-flash config not present at " + root.string());

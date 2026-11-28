@@ -12,6 +12,7 @@
 #include "model_identity.h"
 
 #include "model_manifest.h"
+#include "test_manifest_query_root.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -49,15 +50,13 @@ private:
     bool had_ = false;
 };
 
-// The checkpoint of a registry row: `<source root>/<org>/<model_dir>`. Spelled
-// here (not in a literal) so a store that moves disk cannot leave this test
-// reading a path that does not exist.
+// The checkpoint of a registry row, through the SAME resolver the rest of the
+// suite uses (`manifest_query::SourceDirFor`), so there is one place that knows
+// the store layout and one place that decides what to do when no store is
+// configured — the source root has no default any more.
 std::filesystem::path CheckpointOf(std::string_view model_type)
 {
-    for (const auto &row : lsxmanifest::kModels)
-        if (model_type == row.model_type)
-            return lsx::storage::SourceRoot() / row.vault_org / row.vault_dir;
-    return {};
+    return manifest_query::SourceDirFor(model_type);
 }
 
 } // namespace
@@ -193,10 +192,11 @@ TEST_CASE("the checkpoint's own template is what phi-4 records",
     // The real checkpoint, if it is on this box: this is the case the conversion
     // caught, and asserting it against the real file is what makes the fix
     // meaningful rather than a fixture agreeing with itself.
+    manifest_query::RequireSourceRoot();
     const std::filesystem::path cfg =
         CheckpointOf("phi-4") / "tokenizer_config.json";
     if (!std::filesystem::exists(cfg))
-        SKIP("microsoft/phi-4 is not in the source store");
+        SKIP("microsoft/phi-4 is not in the source store: " + cfg.string());
     const auto tpl = lsxforge::ChatTemplateFromTokenizerConfig(cfg.string());
     REQUIRE_FALSE(tpl.empty());
     CHECK(tpl.find("<|im_start|>") != std::string::npos);

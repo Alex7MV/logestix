@@ -7,7 +7,7 @@
 history live in `docs/model-reports/`; gate verdicts in
 `docs/SELFCHECK_MATRIX.md`; throughput in `tests/perf/perf_baselines.json`.
 
-Layout: the source store is org-nested — a checkpoint is `<source root>/<org>/<model>` (`LSX_SOURCE_ROOT`, default `/mnt/fast_storage/lsx_model`) — and the artifact store MIRRORS it: `<artifact root>/<org>/<model>/<profile>` (`LSX_ARTIFACT_ROOT`). Each row below gives `<org>/<model>` and the profile; the roots are not repeated.
+Layout: the source store is org-nested — a checkpoint is `<source root>/<org>/<model>` (`LSX_SOURCE_ROOT`, which has NO default) — and the artifact store MIRRORS it: `<artifact root>/<org>/<model>/<profile>` (`LSX_ARTIFACT_ROOT`, also no default). Each row below gives `<org>/<model>` and the profile; the roots are not repeated.
 
 Legend: `gates: <stage>: yes` means the stage target and its golden exist — not that every probe passed (measured verdicts, including documented red cells, are in `docs/SELFCHECK_MATRIX.md`); `debt` means the golden was never captured.
 

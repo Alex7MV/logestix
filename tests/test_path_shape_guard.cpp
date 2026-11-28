@@ -15,6 +15,7 @@
 #include "lsxstorage/artifact.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -256,11 +257,16 @@ TEST_CASE("the legacy-segment scanner reads both languages and skips prose",
 // scanner in test_model_suite_guard could not see them, because the root
 // arrived through the API rather than as a string.
 //
-// The rule that closes it: `lsx_model_models_dir()` is called in exactly one
+// The rule that closes it: the source-root accessor is called in exactly one
 // place — the resolver (`manifest_query::SourceDirFor` / `ConvertedDirFor` /
 // `SourceDir(row)`) — plus the files whose SUBJECT is the store layer. A test
 // that wants a model path asks for it by model_type; an app asks
 // `lsx::storage::Resolve` (which searches artifacts by name) or the registry.
+//
+// The accessor is `lsx::storage::SourceRoot()`, which returns std::optional and
+// has NO default: since the compiled-in root was removed a caller cannot even get
+// a path without first checking that a store is configured, so this rule guards
+// the join rather than the missing check.
 
 namespace {
 
@@ -289,8 +295,9 @@ std::string MaskComments(const std::string &s)
 const std::vector<std::string> &SourceRootAllowlist()
 {
     static const std::vector<std::string> v = {
-        "path_registry.h",            // declares it
-        "path_registry.cpp",          // forwards to lsx::storage::SourceRoot()
+        "roots.h",                    // declares it
+        "roots.cpp",                  // implements it and the search over it
+        "resolve.cpp",                // joins a qualified name to it
         "test_manifest_query_root.h", // the resolver every test asks
         "test_manifest_sync.cpp",     // subject IS the store layer
         "test_storage_roots.cpp",
@@ -312,12 +319,24 @@ std::vector<std::string> SourceRootCalls(const fs::path &dir)
             continue;
         const std::string text = MaskComments(ReadFile(path));
         // Assembled: this scanner's own needle must not read as a call site.
-        const std::string needle = std::string("lsx_model_models_") + "dir()";
+        // A substring match covers both spellings — `lsx::storage::SourceRoot()`
+        // outside the library and the unqualified call inside it — but it must
+        // NOT match a longer identifier that merely ends in the same letters
+        // (`manifest_query::RequireSourceRoot()` skips when no store is
+        // configured; it is not a caller of the accessor).
+        const std::string needle = std::string("SourceRoo") + "t()";
         size_t at = text.find(needle);
         while (at != std::string::npos) {
-            const size_t line = 1 + std::count(text.begin(), text.begin() + at, '\n');
-            out.push_back(fs::relative(path, LSX_SOURCE_DIR).string() + ":" +
-                          std::to_string(line));
+            const bool standalone =
+                at == 0 ||
+                !(std::isalnum(static_cast<unsigned char>(text[at - 1])) ||
+                  text[at - 1] == '_');
+            if (standalone) {
+                const size_t line =
+                    1 + std::count(text.begin(), text.begin() + at, '\n');
+                out.push_back(fs::relative(path, LSX_SOURCE_DIR).string() + ":" +
+                              std::to_string(line));
+            }
             at = text.find(needle, at + 1);
         }
     }
@@ -348,7 +367,7 @@ TEST_CASE("the source-root scanner is not vacuous", "[path_shape]")
     std::error_code ec;
     fs::remove_all(dir, ec);
     fs::create_directories(dir, ec);
-    const std::string call = std::string("lsx_model_models_") + "dir()";
+    const std::string call = std::string("SourceRoo") + "t()";
 
     {
         // Two calls on lines 1 and 3: the scanner must report both, with the

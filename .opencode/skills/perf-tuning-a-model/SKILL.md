@@ -211,7 +211,8 @@ Rules that bite:
   `manifest_query::ConvertedDirFor(model_type)`, i.e.
   `<LSX_ARTIFACT_ROOT>/<org>/<model>/<profile>`, with the row's own
   `LSX_TEST_<MODEL>_ROOT` override still winning. A direct binary run needs
-  `LSX_ARTIFACT_ROOT` exported; there is no subdir env any more (the old
+  `LSX_ARTIFACT_ROOT` exported (neither store root has a default); there is no
+  subdir env any more (the old
   `LSX_PERF_VAULT_SUBDIR` carried the store's directory name and was joined onto
   the SOURCE root without the org, which is why every perf target SKIPped).
 - **Ordering**: run perf last, after every other GPU task (host-resource

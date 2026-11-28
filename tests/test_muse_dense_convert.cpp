@@ -197,6 +197,7 @@ TEST_CASE("muse dense topology parse: missing file errors",
 
 TEST_CASE("muse dense topology parse: real checkpoint config",
           "[muse_dense][convert]") {
+    manifest_query::RequireSourceRoot();
     namespace fs = std::filesystem;
     std::string root;
     if (const char *env = std::getenv("LSX_TEST_MUSE_GLIMMER_30B_ROOT");

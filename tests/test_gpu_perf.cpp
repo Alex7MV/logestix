@@ -4,6 +4,7 @@
 #include "lsxcommon/resource_governor.h"
 #include "lsxcommon/perf_calibration.h"
 #include "lsxcommon/path_registry.h"
+#include "lsxstorage/roots.h"
 #include <filesystem>
 #include <system_error>
 #include "lsxcommon/lsx_inference_nvfp4.h"
@@ -214,9 +215,14 @@ TEST_CASE("Perf cache path lands in the per-user cache, not the vault",
     REQUIRE(p.find("perf-cache") != std::string::npos);
     REQUIRE(p.find("rtx 5090.json") != std::string::npos);
     // The calibration cache is host state, not model data: it must live under
-    // lsx_cache_dir() and never inside the model vault.
+    // lsx_cache_dir() and never inside a model store. Asserted against the roots
+    // that ARE configured, so the case holds with no store configured at all —
+    // neither root has a default any more.
     REQUIRE(p.rfind(lsxcommon::lsx_cache_dir(), 0) == 0);
-    REQUIRE(p.rfind(lsxcommon::lsx_model_models_dir(), 0) != 0);
+    if (const auto source = lsx::storage::SourceRoot(); source.has_value())
+        CHECK(p.rfind(source->string(), 0) != 0);
+    if (const auto artifact = lsx::storage::ArtifactRoot(); artifact.has_value())
+        CHECK(p.rfind(artifact->string(), 0) != 0);
 }
 
 #include <cstddef>

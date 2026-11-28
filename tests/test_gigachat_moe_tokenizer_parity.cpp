@@ -78,6 +78,7 @@ std::vector<Case> LoadCases()
 TEST_CASE("GigaChat o200k tokenizer reproduces the checkpoint ids exactly",
           "[gigachat][tokenizer]")
 {
+    manifest_query::RequireSourceRoot();
     const char *env = std::getenv("LSX_GIGACHAT_TOKENIZER");
     const std::filesystem::path tok =
         env ? std::filesystem::path(env)

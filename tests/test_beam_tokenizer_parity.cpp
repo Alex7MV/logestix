@@ -73,6 +73,7 @@ std::vector<Case> LoadCases()
 TEST_CASE("Beam tokenizer reproduces the checkpoint ids exactly",
           "[beam][tokenizer]")
 {
+    manifest_query::RequireSourceRoot();
     const char *env = std::getenv("LSX_BEAM_TOKENIZER");
     const std::filesystem::path tok =
         env ? std::filesystem::path(env)

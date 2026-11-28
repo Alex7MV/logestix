@@ -70,6 +70,7 @@ std::vector<Case> LoadCases()
 TEST_CASE("kimi tiktoken bridge reproduces the reference ids",
           "[kimi][tokenizer][fast]")
 {
+    manifest_query::RequireSourceRoot();
     const std::filesystem::path model =
         manifest_query::SourceDirFor("kimi-k2.7-code");
     if (!std::filesystem::exists(model / "tiktoken.model"))

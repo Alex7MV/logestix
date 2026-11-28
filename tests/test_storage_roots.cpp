@@ -113,35 +113,60 @@ TEST_CASE("artifact dir is empty when no artifact root is configured",
     CHECK(lsx::storage::ArtifactDir("microsoft", "phi-4", "nvfp4").empty());
 }
 
-TEST_CASE("source root falls back to LSX_MODEL_ROOT then the platform default",
-          "[storage_roots]") {
+TEST_CASE("source root falls back to LSX_MODEL_ROOT", "[storage_roots]") {
     {
         ScopedEnv a("LSX_SOURCE_ROOT", nullptr);
         ScopedEnv b("LSX_MODEL_ROOT", "/m");
-        CHECK(lsx::storage::SourceRoot() == fs::path("/m"));
+        REQUIRE(lsx::storage::SourceRoot().has_value());
+        CHECK(*lsx::storage::SourceRoot() == fs::path("/m"));
     }
     {
         ScopedEnv a("LSX_SOURCE_ROOT", "/s");
         ScopedEnv b("LSX_MODEL_ROOT", "/m");
-        CHECK(lsx::storage::SourceRoot() == fs::path("/s"));
+        REQUIRE(lsx::storage::SourceRoot().has_value());
+        CHECK(*lsx::storage::SourceRoot() == fs::path("/s"));
     }
 }
 
-TEST_CASE("the source root default moved to the org-nested store",
+TEST_CASE("an unset source root is a configuration error, not a default",
           "[storage_roots]") {
-    // The vault is gone; checkpoints live at <root>/<org>/<model>.
+    // There is no compiled-in checkpoint root. A root the binary invents is a
+    // path the operator never chose, and with the org-nested store an invented
+    // root silently points at nothing — so the whole tree would SKIP as
+    // "weights absent" instead of saying "you forgot to configure a store".
+    // `ArtifactRoot()` has followed this rule since the split; the source root
+    // was the odd one out.
     ScopedEnv a("LSX_SOURCE_ROOT", nullptr);
     ScopedEnv b("LSX_MODEL_ROOT", nullptr);
-#if defined(_WIN32)
-    CHECK(lsx::storage::SourceRoot() == fs::path(R"(D:\Programs\lsx_model)"));
-#else
-    CHECK(lsx::storage::SourceRoot() == fs::path("/mnt/fast_storage/lsx_model"));
-#endif
+
+    CHECK_FALSE(lsx::storage::SourceRoot().has_value());
+    CHECK(lsx::storage::ListSourceModels().empty());
+
+    std::string why;
+    CHECK_FALSE(lsx::storage::FindSourceModel("phi-4", &why).has_value());
+    CHECK(why.find("LSX_SOURCE_ROOT") != std::string::npos);
+    CHECK(why.find("not set") != std::string::npos);
+    // The message must not name an invented location.
+    CHECK(why.find("/mnt/") == std::string::npos);
+
+    // A directory sweep cannot silently become a sweep of the cwd either.
+    CHECK(lsx::storage::ListPlaceholderDirs("").empty());
 }
 
-TEST_CASE("lsxcommon forwards to lsxstorage verbatim", "[storage_roots]") {
-    ScopedEnv a("LSX_MODEL_ROOT", "/m");
-    CHECK(lsxcommon::lsx_model_models_dir() == "/m");
+TEST_CASE("a checkpoint path is not resolved from the cwd when no root is set",
+          "[storage_roots]") {
+    // `Resolve("<org>/<model>")` joins a QUALIFIED name to the source root. With
+    // no root configured, that join must not degrade to a path relative to the
+    // process's working directory — the caller would get a directory that
+    // happens to exist there and a load that fails much later.
+    ScopedEnv a("LSX_SOURCE_ROOT", nullptr);
+    ScopedEnv b("LSX_MODEL_ROOT", nullptr);
+    ScopedEnv c("LSX_ARTIFACT_ROOT", nullptr);
+
+    const auto r = lsx::storage::Resolve("microsoft/phi-4");
+    CHECK(r.status == lsx::storage::ResolveStatus::kNotFound);
+    CHECK(r.dir.empty());
+    CHECK(r.detail.find("LSX_SOURCE_ROOT") != std::string::npos);
 }
 
 TEST_CASE("an unset artifact root is never silently replaced by a legacy path",

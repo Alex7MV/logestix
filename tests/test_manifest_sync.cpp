@@ -14,6 +14,8 @@
 //      cannot silently stop running: Review Focus #1 of the migration plan.
 //
 // A mutated manifest MUST fail here - see the plan's Task 10 negative test.
+#include "lsxstorage/roots.h"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <absl/strings/str_cat.h>
@@ -23,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <fstream>
 #include <set>
 #include <string>
@@ -284,7 +287,12 @@ TEST_CASE("manifest sync: the source path a row names holds its checkpoint",
 {
     // Only rows whose weights are on this box can be checked; a row whose
     // directory is an empty placeholder is a download gap, not a manifest bug.
-    const std::filesystem::path source_root(lsxcommon::lsx_model_models_dir());
+    const std::optional<std::filesystem::path> configured =
+        lsx::storage::SourceRoot();
+    if (!configured)
+        SKIP("LSX_SOURCE_ROOT is not set — there is no checkpoint store to "
+             "resolve against, and it has no default");
+    const std::filesystem::path source_root = *configured;
     std::error_code ec;
     if (!std::filesystem::is_directory(source_root, ec))
         SKIP("source store not present: " << source_root.string());

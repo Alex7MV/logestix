@@ -205,12 +205,20 @@ model.
 ## Where models come from: two org-nested stores
 
 Nothing is downloaded, converted or loaded by guessing a path. There are two
-roots, kept apart on purpose, and both are laid out the way Hugging Face lays a
-download out — **`<org>/<model>`**:
+roots, kept apart on purpose, **neither with a default**, and both laid out the
+way Hugging Face lays a download out — **`<org>/<model>`**.
+
+Both must be exported before anything real-weight can run; the binary will not
+invent either one:
+
+```bash
+export LSX_SOURCE_ROOT=/data/checkpoints   # <org>/<model> checkpoints, read-only
+export LSX_ARTIFACT_ROOT=/data/artifacts   # converted trees, one dir per profile
+```
 
 | store | contents | env | default |
 |---|---|---|---|
-| **source** (read-only) | the checkpoint as downloaded: `config.json`, `*.safetensors`, `tokenizer.json`, `chat_template.jinja` | `LSX_SOURCE_ROOT`, then the pre-split `LSX_MODEL_ROOT` | `/mnt/fast_storage/lsx_model` (Linux), `D:\Programs\lsx_model` (Windows) |
+| **source** (read-only) | the checkpoint as downloaded: `config.json`, `*.safetensors`, `tokenizer.json`, `chat_template.jinja` | `LSX_SOURCE_ROOT`, then the pre-split `LSX_MODEL_ROOT` | **none** — unset is a configuration error, not a fallback |
 | **artifact** (writable) | the converted LogestiX tree, one directory per codec profile | `LSX_ARTIFACT_ROOT` | **none** — unset is a configuration error, not a fallback |
 | host cache | per-GPU perf calibration only, never model data | `LSX_CACHE_DIR` | `$XDG_CACHE_HOME/logestix` / `~/.cache/logestix` |
 
@@ -235,7 +243,8 @@ An artifact exists only because someone converted a checkpoint — the repo ship
 no weights:
 
 ```bash
-export LSX_ARTIFACT_ROOT=/data/lsx_artifact     # required for conversion
+export LSX_SOURCE_ROOT=/data/checkpoints        # where the checkpoint lives
+export LSX_ARTIFACT_ROOT=/data/lsx_artifact     # where the artifact is written
 lsxforge --input <org>/<model> --codec-profile nvfp4 --<family>
 # -> $LSX_ARTIFACT_ROOT/<org>/<model>/nvfp4/
 ```

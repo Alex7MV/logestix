@@ -1,16 +1,18 @@
 #pragma once
 
-// ModelRoot() needs lsxcommon's path registry and lsxstorage's artifact root,
-// which the host-only guard tests do not all link. Keeping the definition in its
-// own header means a guard can include test_manifest_query.h (table accessors
-// only) and a gate driver can include this one too.
+// ModelRoot() needs lsxstorage's roots (both are std::optional now), which the
+// host-only guard tests do not all link. Keeping the definition in its own
+// header means a guard can include test_manifest_query.h (table accessors only)
+// and a gate driver can include this one too.
 
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
-#include <lsxcommon/path_registry.h>
+#include <catch2/catch_test_macros.hpp>
+
 #include <lsxstorage/roots.h>
 
 #include "test_manifest_query.h"
@@ -33,10 +35,28 @@ inline std::filesystem::path ArtifactDir(const lsxmanifest::ModelRow &row)
 // Exported separately because the two halves of the split store answer
 // different questions, and a caller that converts reads the checkpoint while a
 // caller that loads reads the artifact.
+//
+// Empty when no source root is configured — it has no default (see
+// `lsx::storage::SourceRoot`). A caller that reads a checkpoint must say so with
+// `RequireSourceRoot()` rather than join onto an empty path, which would become
+// a path relative to the process's working directory.
 inline std::filesystem::path SourceDir(const lsxmanifest::ModelRow &row)
 {
-    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           row.vault_org / row.vault_dir;
+    const std::optional<std::filesystem::path> root =
+        lsx::storage::SourceRoot();
+    if (!root) return {};
+    return *root / row.vault_org / row.vault_dir;
+}
+
+// SKIPs with the reason when no source root is configured. Call this first in
+// any case that reads a checkpoint: `exists("tokenizer.json")` on an empty root
+// answers "no such file" for a reason the operator cannot act on.
+inline void RequireSourceRoot()
+{
+    if (!lsx::storage::SourceRoot().has_value())
+        SKIP("LSX_SOURCE_ROOT is not set — there is no checkpoint store to "
+             "resolve against, and it has no default (export it to the "
+             "directory that holds <org>/<model>)");
 }
 
 // The directory a gate should load from.

@@ -58,6 +58,7 @@ fs::path ModelDir()
 TEST_CASE("Step-5 tokenizer bridge matches the checkpoint tokenizer",
           "[step][tokenizer]")
 {
+    manifest_query::RequireSourceRoot();
     const fs::path tok = ModelDir() / "tokenizer.json";
     if (!fs::exists(tok)) SKIP(std::string("Step-5-Preview tokenizer.json not present: ") + tok.string());
 

@@ -7,11 +7,20 @@
 // download writable by a conversion and left no place for a second codec
 // profile of the same model. This layer splits the two:
 //
-//   LSX_SOURCE_ROOT    read-only checkpoints (default: the vault base)
-//   LSX_ARTIFACT_ROOT  converted artifacts   (default: UNSET)
-//   LSX_MODEL_ROOT     the pre-split single vault; kept only as the source
-//                      default and so LegacyDir() can name an old layout
+//   LSX_SOURCE_ROOT    read-only checkpoints      (default: NONE)
+//   LSX_ARTIFACT_ROOT  converted artifacts        (default: NONE)
+//   LSX_MODEL_ROOT     the pre-split single vault; still accepted as a second
+//                      spelling of the source root, so an existing shell keeps
+//                      working — but it is not a default either
 //   LSX_CACHE_DIR      per-user host cache (perf calibration), never a model
+//
+// No root has a compiled-in default, and that is deliberate: a root the binary
+// invents is a path the operator never chose. With the org-nested store an
+// invented root does not even fail loudly — it points at `<root>/<org>/<model>`
+// for a `<root>` that holds nothing, so every model reads as "weights absent"
+// and the real problem (an unconfigured store) is invisible. Both roots are
+// therefore std::optional<fs::path> and an unset one is the caller's error to
+// report, not a fallback to take silently.
 //
 // No function here reads a codec or touches a model file: this is location
 // only. The load gate in ModelBase::BeginLoad asks libs/lsxcommon.
@@ -28,9 +37,10 @@ namespace lsx::storage {
 
 namespace fs = std::filesystem;
 
-// Read-only checkpoint root. Precedence: LSX_SOURCE_ROOT, then LSX_MODEL_ROOT,
-// then the compile-time platform default (the vault base).
-fs::path SourceRoot();
+// Read-only checkpoint root: LSX_SOURCE_ROOT, then the pre-split
+// LSX_MODEL_ROOT, then NOTHING. nullopt means the store is not configured — a
+// configuration error the caller reports, never a path to invent.
+std::optional<fs::path> SourceRoot();
 
 // Writable artifact root, or nullopt when LSX_ARTIFACT_ROOT is unset or not an
 // absolute existing-capable path. There is no default on purpose: writing a

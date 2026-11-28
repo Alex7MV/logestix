@@ -33,8 +33,8 @@ artifact     <LSX_ARTIFACT_ROOT>/<org>/<model>/<profile> converted, one dir per 
 
 | root | env | default |
 |---|---|---|
-| source | `LSX_SOURCE_ROOT`, then the pre-split `LSX_MODEL_ROOT` | `/mnt/fast_storage/lsx_model` (`D:\Programs\lsx_model`) |
-| artifact | `LSX_ARTIFACT_ROOT` | **none** — writing gigabytes to an invented location is the bug this split prevents, so an unset root is an error, not a fallback |
+| source | `LSX_SOURCE_ROOT`, then the pre-split `LSX_MODEL_ROOT` | **none** — must be exported |
+| artifact | `LSX_ARTIFACT_ROOT` | **none** — must be exported |
 | cache | `LSX_CACHE_DIR` | `$XDG_CACHE_HOME/logestix` / `~/.cache/logestix` (`%LOCALAPPDATA%\logestix\cache`) |
 
 - **The profile directory IS the artifact.** There is no `logestix/` segment any
@@ -257,11 +257,13 @@ Snapshot 2026-09-14. Regenerate the raw list with:
 rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 ```
 
-**Prod — vault**
+**Prod — stores (neither has a default; both must be exported)**
 
 | variable | meaning |
 |---|---|
-| `LSX_MODEL_ROOT` | absolute path to the models directory (overrides the compile-time `kModelRootBase`) |
+| `LSX_SOURCE_ROOT` | absolute path to the checkpoint store: it holds `<org>/<model>`. Read-only. |
+| `LSX_ARTIFACT_ROOT` | absolute path to the converted-artifact store: it holds `<org>/<model>/<profile>`. An artifact is never written without it. |
+| `LSX_MODEL_ROOT` | the pre-split spelling of the source root; still honoured, second in precedence. Not a fallback for either variable above. |
 
 **Prod — perf / dispatch**
 

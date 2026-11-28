@@ -75,6 +75,7 @@ std::vector<Case> LoadCases()
 
 TEST_CASE("ultra tokenizer bridge reproduces the reference ids", "[ultra][tokenizer]")
 {
+    manifest_query::RequireSourceRoot();
     namespace fs = std::filesystem;
     const fs::path model = manifest_query::SourceDirFor("nemotron-ultra-550b-a55b");
     std::error_code ec;

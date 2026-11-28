@@ -73,6 +73,7 @@ std::vector<Case> LoadCases()
 TEST_CASE("MistralLarge4 tokenizer reproduces the checkpoint ids exactly",
           "[mistral_large4][tokenizer]")
 {
+    manifest_query::RequireSourceRoot();
     const char *env = std::getenv("LSX_MISTRAL_LARGE4_TOKENIZER");
     const std::filesystem::path tok =
         env ? std::filesystem::path(env)

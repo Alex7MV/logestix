@@ -31,7 +31,10 @@ set_tests_properties(test_forge_codec_profile PROPERTIES LABELS fast)
 add_executable(test_model_identity test_model_identity.cpp ../src/model_identity.cpp)
 target_include_directories(test_model_identity PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
-    "${LSX_MANIFEST_GENERATED_DIR}")
+    "${LSX_MANIFEST_GENERATED_DIR}"
+    # `test_manifest_query_root.h` — the suite's one model-path resolver, so this
+    # test learns the store layout the same way every other one does.
+    "${PROJECT_SOURCE_DIR}/tests")
 target_link_libraries(test_model_identity PRIVATE lsxstorage Catch2::Catch2WithMain)
 add_test(NAME test_model_identity COMMAND test_model_identity)
 set_tests_properties(test_model_identity PROPERTIES LABELS fast)

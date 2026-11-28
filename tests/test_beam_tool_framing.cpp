@@ -181,6 +181,7 @@ TEST_CASE("beam tool parameters that are not strings stay JSON", "[beam][tool]")
 TEST_CASE("beam parses the real-weight native call token stream",
           "[beam][tool][real-tokenizer]")
 {
+    manifest_query::RequireSourceRoot();
     // The checkpoint's own tokenizer, resolved from the registry (the store is
     // org-nested: reflection/Beam-1.0-501B-A23B). A literal here pointed at a
     // pre-store directory that no longer exists, so the case always SKIPped.

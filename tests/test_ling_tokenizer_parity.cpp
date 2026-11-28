@@ -73,6 +73,7 @@ std::vector<Case> LoadCases()
 TEST_CASE("Ling o200k tokenizer reproduces the checkpoint ids exactly",
           "[ling][tokenizer]")
 {
+    manifest_query::RequireSourceRoot();
     const char *env = std::getenv("LSX_LING_TOKENIZER");
     const std::filesystem::path tok =
         env ? std::filesystem::path(env) : std::filesystem::path(

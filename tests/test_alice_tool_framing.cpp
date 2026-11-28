@@ -36,6 +36,7 @@ fs::path AliceTokenModelDir()
 
 bool BuildDb(ArrowTokenizerDb &db, fs::path &out)
 {
+    manifest_query::RequireSourceRoot();
     const fs::path spm = AliceTokenModelDir() / "tokenizer.model";
     if (!fs::exists(spm)) return false;
     out = fs::temp_directory_path() / "alice_tool_tok";

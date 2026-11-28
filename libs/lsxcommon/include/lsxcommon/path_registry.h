@@ -4,28 +4,25 @@
 
 namespace lsxcommon {
 
-// Compile-time platform selector for the SOURCE root. Overridable at runtime
-// with LSX_SOURCE_ROOT, then LSX_MODEL_ROOT (the pre-split spelling); when both
-// are unset the platform default below is used.
+// Compile-time platform constants are gone: neither model root has a default.
+// Both are configured at runtime —
 //
-// The store is ORG-NESTED: <root>/<org>/<model>, the way Hugging Face lays a
-// download out. `lsx::storage::FindSourceModel("phi-4")` searches one level and
-// reports an ambiguous name rather than picking an org.
-#if defined(_WIN32)
-constexpr const char* kModelRootBase = "D:\\Programs\\lsx_model";
-#else
-// The model vault moved on 2026-10; LSX_MODEL_ROOT still overrides this.
-constexpr const char* kModelRootBase = "/mnt/fast_storage/lsx_model";
-#endif
-
-// "<base>" — the read-only models directory holding named checkpoints. This is
-// the SOURCE root: converted artifacts live under LSX_ARTIFACT_ROOT, never in
-// the vault (libs/lsxstorage, design §2.4.1). Kept here because the platform
-// default is compile-time and callers include this header for it.
-std::string lsx_model_models_dir();
+//   LSX_SOURCE_ROOT    read-only checkpoints  <root>/<org>/<model>   (no default)
+//   LSX_ARTIFACT_ROOT  converted artifacts    <root>/<org>/<model>/<profile>
+//                                              (no default)
+//
+// — and both answer std::optional. A `constexpr kModelRootBase` here was read as
+// "the vault lives at X" even after the store moved and split, so a reader could
+// not tell a configured path from an invented one. Location lives in
+// libs/lsxstorage/include/lsxstorage/roots.h (`lsx::storage::SourceRoot`,
+// `ArtifactRoot`, `ArtifactDir`), which this library forwards from.
+//
+// The store is ORG-NESTED, the way Hugging Face lays a download out.
+// `lsx::storage::FindSourceModel("phi-4")` searches one level and reports an
+// ambiguous name rather than picking an org.
 
 // Per-user cache root for host-side state that is NOT part of a model
-// (per-GPU perf calibration). Never inside the model vault: a cache that a
+// (per-GPU perf calibration). Never inside a model store: a cache that a
 // converter or a test can overwrite must not sit next to model data.
 //   LSX_CACHE_DIR  -> used verbatim
 //   Linux          -> $XDG_CACHE_HOME/logestix, else $HOME/.cache/logestix

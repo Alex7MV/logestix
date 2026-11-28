@@ -162,6 +162,7 @@ TEST_CASE("flash_tensor_is_nvfp4 policy")
 
 TEST_CASE("ParseFlashConfig: real checkpoint text_config")
 {
+    manifest_query::RequireSourceRoot();
     const fs::path dir = manifest_query::SourceDirFor("glm-5.3-flash");
     if (!fs::exists(dir / "config.json")) {
         SKIP(std::string("GLM-5.3-Flash checkpoint not present: ") +

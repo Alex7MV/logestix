@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "lsxcommon/path_registry.h"
+#include "lsxstorage/roots.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -18,43 +19,59 @@ void set_model_root(const char *value)
         unsetenv("LSX_MODEL_ROOT");
 #endif
 }
-} // namespace
 
-TEST_CASE("path_registry platform root base", "[path_registry]")
+// Both spellings of the source root, cleared together: a case that asserts
+// "nothing is configured" must not be satisfied by the other variable.
+void unset_source_roots()
 {
     set_model_root(nullptr);
-    const std::string models = lsxcommon::lsx_model_models_dir();
-    REQUIRE_FALSE(models.empty());
 #if defined(_WIN32)
-    CHECK(models == R"(D:\Programs\lsx_model)");
+    _putenv_s("LSX_SOURCE_ROOT", "");
 #else
-    CHECK(models == "/mnt/fast_storage/lsx_model");
+    unsetenv("LSX_SOURCE_ROOT");
 #endif
 }
 
-TEST_CASE("path_registry LSX_MODEL_ROOT overrides the compile-time base", "[path_registry]")
+void set_source_root(const char *value)
 {
-    const std::string override_root =
-        (std::filesystem::temp_directory_path() / "lsx-vault").string();
-    set_model_root(override_root.c_str());
-    CHECK(lsxcommon::lsx_model_models_dir() == override_root);
-
-    set_model_root(nullptr);
 #if defined(_WIN32)
-    CHECK(lsxcommon::lsx_model_models_dir() == R"(D:\Programs\lsx_model)");
+    _putenv_s("LSX_SOURCE_ROOT", value ? value : "");
 #else
-    CHECK(lsxcommon::lsx_model_models_dir() == "/mnt/fast_storage/lsx_model");
+    if (value)
+        setenv("LSX_SOURCE_ROOT", value, 1);
+    else
+        unsetenv("LSX_SOURCE_ROOT");
 #endif
+}
+} // namespace
+
+TEST_CASE("no compiled-in checkpoint root exists at all", "[path_registry]") {
+    // The source root is configured or absent — never assumed. This is the
+    // Windows half of the same rule: a `D:\Programs\lsx_model` default in the
+    // binary is a path the operator never chose, and on Linux it would be a
+    // drive letter that cannot exist.
+    unset_source_roots();
+    CHECK_FALSE(lsx::storage::SourceRoot().has_value());
+
+    // And it becomes configured by the variable alone, with no fallback anywhere.
+    set_source_root("/configured/store");
+    REQUIRE(lsx::storage::SourceRoot().has_value());
+    CHECK(*lsx::storage::SourceRoot() == std::filesystem::path("/configured/store"));
+    unset_source_roots();
 }
 
 TEST_CASE("path_registry cache root is per-user, never in the vault", "[path_registry]")
 {
     const std::string cache = lsxcommon::lsx_cache_dir();
     REQUIRE_FALSE(cache.empty());
-    // The cache must not live inside the model vault: a converter or a test
+    // The cache must not live inside a model store: a converter or a test
     // writing there must not be able to clobber model data (or vice versa).
-    const std::string models = lsxcommon::lsx_model_models_dir();
-    REQUIRE(cache.rfind(models, 0) != 0);
+    // Asserted against the roots that ARE configured, so it holds with no source
+    // root at all as well as with one.
+    if (const auto source = lsx::storage::SourceRoot(); source.has_value())
+        CHECK(cache.rfind(source->string(), 0) != 0);
+    if (const auto artifact = lsx::storage::ArtifactRoot(); artifact.has_value())
+        CHECK(cache.rfind(artifact->string(), 0) != 0);
 }
 
 TEST_CASE("path_registry LSX_CACHE_DIR overrides the cache root", "[path_registry]")

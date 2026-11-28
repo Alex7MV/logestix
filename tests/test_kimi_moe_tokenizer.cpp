@@ -196,6 +196,7 @@ TEST_CASE("BuildTokenizerArrowFilesTikToken fills sparse id gaps",
 
 TEST_CASE("Kimi real vault tokenizer builds", "[kimi][tokenizer][real-model]")
 {
+    manifest_query::RequireSourceRoot();
     namespace fs = std::filesystem;
     const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
     auto dir = env ? fs::path(env)

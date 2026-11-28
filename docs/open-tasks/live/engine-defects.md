@@ -228,6 +228,23 @@ Checked and clean by inspection:
   are closed on every branch (`zmq_msg_close` before `continue`/`break`).
 - `taskmosaic` chat watcher: joined at the end of the scope that spawns it.
 
+### A3.12. `test_kimi_moe_loader` red on `main` (pre-existing)
+
+- `test_kimi_moe_loader` fails at its own fixture conversion:
+  `REQUIRE(lsxcommon::kimi::ConvertKimiModel(in.string(), out).ok())` →
+  `false`, immediately after `Reading: model-00001-of-00001.safetensors`. The
+  synthetic checkpoint the case builds is no longer accepted by the converter it
+  is meant to exercise, so two cases in that target are red.
+- Reproduced 2026-11-28 by stashing an unrelated branch's changes and rebuilding
+  at `207cac43`: identical failures, same two lines. So it is not caused by that
+  branch — filed for the same reason as `A3.7`/`A3.8`,
+  a red `inference` label on `main` makes a later "the sweep is green" claim
+  false unless it is named.
+- **Next step:** the converter rejects the fixture without a message that names
+  the tensor or the key, so first give `ConvertKimiModel` a reason for this path
+  (it currently returns a bare failure status), then decide whether the fixture
+  or the converter is wrong.
+
 ### A3.11. `test_qwen_dense_converter_integrity` red on `main` (pre-existing)
 - `Qwen: tokenizer without bos special still converts` fails with
   `ConvertQwenModel error: Invalid: tokenizer: no model object` — the test

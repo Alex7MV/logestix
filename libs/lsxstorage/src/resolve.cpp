@@ -234,10 +234,14 @@ Resolved Resolve(const std::string &model_or_path)
     // (4) A source checkpoint by name, under <SourceRoot>/<org>/<model>.
     // The name may arrive bare ("phi-4") or already qualified ("microsoft/phi-4");
     // both are things a user types, and the qualified form skips the search.
+    // An unconfigured store is reported as such: joining a qualified name to a
+    // root that does not exist would silently become a path relative to the cwd,
+    // and a caller would load whatever happens to sit there.
     const fs::path given_rel(model_or_path);
-    if (given_rel.has_parent_path() &&
+    const auto source_root = SourceRoot();
+    if (source_root.has_value() && given_rel.has_parent_path() &&
         given_rel.parent_path() != given_rel.parent_path().parent_path()) {
-        const auto qualified = SourceRoot() / given_rel;
+        const auto qualified = *source_root / given_rel;
         if (LooksLikeSourceModel(qualified)) {
             r.status = ResolveStatus::kSourceOnly;
             r.dir = qualified;
@@ -263,8 +267,9 @@ Resolved Resolve(const std::string &model_or_path)
     // A manifest model_type ("glm-5.2") is an IDENTITY, not a directory name;
     // the store spells the directory "GLM-5.2". Say so, because the search above
     // matched artifacts by identity and the source search cannot — the registry
-    // that knows the mapping sits above this layer.
-    if (model_or_path.find('/') == std::string::npos) {
+    // that knows the mapping sits above this layer. Only relevant when a store is
+    // configured at all; otherwise the "no store" reason is the whole answer.
+    if (source_root.has_value() && model_or_path.find('/') == std::string::npos) {
         r.detail += " (a model_type is not a directory name: under the source "
                     "root the store spells the directory as the download does)";
     }

@@ -3,22 +3,9 @@
 #include <algorithm>
 #include <cstdlib>
 
-#if defined(_WIN32)
-#include "lsxcommon/path_registry.h"  // only for the platform default base
-#endif
-
 namespace lsx::storage {
 
 namespace {
-
-// Platform default for the checkpoint vault. Kept byte-identical to
-// lsxcommon::kModelRootBase so a tree configured today and a tree configured
-// before the split resolve the same sources.
-#if defined(_WIN32)
-constexpr const char *kDefaultSourceBase = R"(D:\Programs\lsx_model)";
-#else
-constexpr const char *kDefaultSourceBase = "/mnt/fast_storage/lsx_model";
-#endif
 
 const char *NonEmptyEnv(const char *name)
 {
@@ -28,11 +15,14 @@ const char *NonEmptyEnv(const char *name)
 
 } // namespace
 
-fs::path SourceRoot()
+std::optional<fs::path> SourceRoot()
 {
     if (const char *v = NonEmptyEnv("LSX_SOURCE_ROOT")) return fs::path(v);
+    // The pre-split spelling still resolves a store, so a shell that exported
+    // LSX_MODEL_ROOT before the split keeps working — but it is not a DEFAULT
+    // and nothing substitutes for it: an unconfigured store stays unconfigured.
     if (const char *v = NonEmptyEnv("LSX_MODEL_ROOT")) return fs::path(v);
-    return fs::path(kDefaultSourceBase);
+    return std::nullopt;
 }
 
 std::optional<fs::path> ArtifactRoot()
@@ -100,9 +90,10 @@ bool HoldsCheckpoint(const fs::path &dir)
 std::vector<fs::path> ListPlaceholderDirs(const std::string &model)
 {
     std::vector<fs::path> out;
-    const fs::path root = SourceRoot();
+    const auto root = SourceRoot();
+    if (!root.has_value()) return out;   // no store configured: nothing to list
     std::error_code org_ec;
-    for (const auto &org_entry : fs::directory_iterator(root, org_ec)) {
+    for (const auto &org_entry : fs::directory_iterator(*root, org_ec)) {
         if (org_ec) break;
         if (!org_entry.is_directory()) continue;
         std::error_code model_ec;
@@ -123,10 +114,11 @@ std::vector<fs::path> ListPlaceholderDirs(const std::string &model)
 std::vector<SourceModelRef> ListSourceModels()
 {
     std::vector<SourceModelRef> out;
-    const fs::path root = SourceRoot();
+    const auto root = SourceRoot();
+    if (!root.has_value()) return out;   // no store configured: nothing to list
 
     std::error_code org_ec;
-    for (const auto &org_entry : fs::directory_iterator(root, org_ec)) {
+    for (const auto &org_entry : fs::directory_iterator(*root, org_ec)) {
         if (org_ec) break;
         if (!org_entry.is_directory()) continue;
         std::error_code model_ec;
@@ -153,6 +145,17 @@ std::optional<fs::path> FindSourceModel(const std::string &model,
 {
     if (model.empty()) {
         if (why != nullptr) *why = "empty model name";
+        return std::nullopt;
+    }
+
+    // "No store configured" is the first thing to say, not a search that finds
+    // nothing: the two produce the same nullopt, and only one of them is fixed by
+    // a different argument.
+    const auto root = SourceRoot();
+    if (!root.has_value()) {
+        if (why != nullptr)
+            *why = "LSX_SOURCE_ROOT is not set and has no default: export it to "
+                   "the directory that holds <org>/<model>";
         return std::nullopt;
     }
 
@@ -191,7 +194,7 @@ std::optional<fs::path> FindSourceModel(const std::string &model,
                        ") with no weights: the checkpoint is not downloaded";
             } else {
                 *why = "'" + model + "' is not a checkpoint under " +
-                       SourceRoot().string() + " (<org>/<model>)";
+                       root->string() + " (<org>/<model>)";
             }
         }
         return std::nullopt;
@@ -205,7 +208,7 @@ std::optional<fs::path> FindSourceModel(const std::string &model,
             list += m.org + "/" + m.model;
         }
         if (why != nullptr)
-            *why = "'" + model + "' is ambiguous under " + SourceRoot().string() +
+            *why = "'" + model + "' is ambiguous under " + root->string() +
                    ": " + list + " (qualify it as <org>/<model>)";
         return std::nullopt;
     }

@@ -105,6 +105,7 @@ bool GetBool(simdjson::dom::object &o, const char *key)
 
 TEST_CASE("hy4 passport: geometry equals the checkpoint config", "[hy4][fast]")
 {
+    manifest_query::RequireSourceRoot();
     const auto model_dir = VaultRoot();
     const auto cfg_path = model_dir / "config.json";
     if (!std::filesystem::exists(cfg_path))
@@ -214,6 +215,7 @@ TEST_CASE("hy4 passport: geometry equals the checkpoint config", "[hy4][fast]")
 TEST_CASE("hy4 passport: no rope scaling, untied head, fp32 head flag",
           "[hy4][fast]")
 {
+    manifest_query::RequireSourceRoot();
     const auto model_dir = VaultRoot();
     const auto cfg_path = model_dir / "config.json";
     if (!std::filesystem::exists(cfg_path))

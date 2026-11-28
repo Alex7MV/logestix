@@ -6,6 +6,9 @@ The store is ORG-NESTED and split in two:
     source      <LSX_SOURCE_ROOT>/<org>/<model>            the download
     artifact    <LSX_ARTIFACT_ROOT>/<org>/<model>/<profile> the converted tree
 
+NEITHER root has a default. An unset one is `NotConfigured` (source) or `None`
+(artifact), never a path this module invents.
+
 `models/<org>/<model>.json` is the only thing that knows the org, so every
 Python tool that needs a model path asks THIS file, not `os.path.join(root,
 "Some-Model")` — a join without the org names a directory that never exists.
@@ -20,20 +23,28 @@ import json
 import os
 import pathlib
 
-DEFAULT_SOURCE_ROOT = "/mnt/fast_storage/lsx_model"
+
+class NotConfigured(RuntimeError):
+    """A store root the operator never set. There is no default to fall back on."""
 
 
 def repo_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent.parent
 
 
-def source_root() -> pathlib.Path:
-    """LSX_SOURCE_ROOT, then the pre-split LSX_MODEL_ROOT, then the default."""
+def source_root():
+    """LSX_SOURCE_ROOT, then the pre-split LSX_MODEL_ROOT, or None.
+
+    No default: a root the helper invents is a path the operator never chose, and
+    with the org-nested store it does not even fail loudly — it points at
+    `<root>/<org>/<model>` for a root that holds nothing, so every model reads as
+    "not downloaded" instead of "the store is unconfigured".
+    """
     for name in ("LSX_SOURCE_ROOT", "LSX_MODEL_ROOT"):
         value = os.environ.get(name)
         if value:
             return pathlib.Path(value)
-    return pathlib.Path(DEFAULT_SOURCE_ROOT)
+    return None
 
 
 def artifact_root():
@@ -60,10 +71,20 @@ def row_for(model_or_path):
 
 
 def source_dir(model_or_path) -> pathlib.Path:
-    """`<source root>/<org>/<model>` for a model_type or store directory name."""
+    """`<source root>/<org>/<model>` for a model_type or store directory name.
+
+    Raises NotConfigured when no source root is set: returning "" or a bare
+    `<org>/<model>` would turn "you forgot to configure a store" into a relative
+    path that resolves against the cwd.
+    """
     row = row_for(model_or_path)
     if row:
-        return source_root() / row["vault"]["org"] / row["vault"]["dir"]
+        root = source_root()
+        if root is None:
+            raise NotConfigured(
+                "LSX_SOURCE_ROOT is not set and has no default: export it to the "
+                "directory that holds <org>/<model>")
+        return root / row["vault"]["org"] / row["vault"]["dir"]
     return pathlib.Path(str(model_or_path))
 
 

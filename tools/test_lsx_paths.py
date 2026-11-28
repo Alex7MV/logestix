@@ -68,6 +68,25 @@ class StoreCase(unittest.TestCase):
         self.env.stop()
         self.tmp.cleanup()
 
+    # ── no default, in either language ────────────────────────────────────
+    def test_an_unset_source_root_is_not_invented(self):
+        # The C++ side has no compiled-in checkpoint root; neither may this
+        # helper. An invented root points at `<root>/<org>/<model>` for a root
+        # that holds nothing, so every model reads as "not downloaded".
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in ("LSX_SOURCE_ROOT", "LSX_MODEL_ROOT"):
+                os.environ.pop(name, None)
+            self.assertIsNone(lsx_paths.source_root())
+            with self.assertRaises(lsx_paths.NotConfigured) as raised:
+                lsx_paths.source_dir("qwen3.5-9b")
+            self.assertIn("LSX_SOURCE_ROOT", str(raised.exception))
+            self.assertIn("no default", str(raised.exception))
+            # The artifact side answers None rather than raising: a caller can
+            # report it without an exception, and ArtifactRoot has no default
+            # either.
+            os.environ.pop("LSX_ARTIFACT_ROOT", None)
+            self.assertIsNone(lsx_paths.artifact_root())
+
     # ── source ────────────────────────────────────────────────────────────
     def test_source_dir_includes_the_org(self):
         self.assertEqual(lsx_paths.source_dir("qwen3.5-9b"),

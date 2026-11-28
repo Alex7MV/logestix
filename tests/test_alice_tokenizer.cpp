@@ -85,6 +85,7 @@ std::string Decode(const lsxcommon::ArrowTokenizerDb &db,
 
 TEST_CASE("sp-bpe builder parses the real tokenizer.model", "[alice][fast]")
 {
+    manifest_query::RequireSourceRoot();
     const fs::path src = AliceTokenModelDir() / "tokenizer.model";
     if (!fs::exists(src)) SKIP(std::string("alice tokenizer.model not present: ") + src.string());
 
@@ -109,6 +110,7 @@ TEST_CASE("sp-bpe builder parses the real tokenizer.model", "[alice][fast]")
 
 TEST_CASE("sp-bpe encode/decode matches sentencepiece goldens", "[alice][fast]")
 {
+    manifest_query::RequireSourceRoot();
     const fs::path src = AliceTokenModelDir() / "tokenizer.model";
     if (!fs::exists(src)) SKIP(std::string("alice tokenizer.model not present: ") + src.string());
 
