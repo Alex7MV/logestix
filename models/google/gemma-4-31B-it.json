@@ -98,5 +98,6 @@
   "notes": "",
   "selfcheck_max_gen": 2,
   "selfcheck_bit_exact": false,
-  "selfcheck_frame_prompt": false
+  "selfcheck_frame_prompt": false,
+  "convert_residual_plane": false
 }

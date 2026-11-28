@@ -21,6 +21,13 @@ struct ModelIdentity {
     std::string family;      // "qwen"       — artifact.fb field
     std::string org;         // "Qwen"       — artifact store path segment 1
     std::string model_dir;   // "Qwen3.5-9B" — artifact store path segment 2
+    // Conversion knobs the MANIFEST owns because their right value differs
+    // between siblings of one architecture. `convert_residual_plane` is read by
+    // the dense Gemma-4 pipeline: true for gemma-4-12B-it (12.0 GB, fits the
+    // card), false for gemma-4-31b-it (the plane would make it 33.7 GiB and
+    // unloadable). Defaulted false so a converter that ignores it produces a
+    // loadable 4-bit tree rather than an unloadable one.
+    bool convert_residual_plane = false;
 };
 
 // Resolves a checkpoint directory (or a bare name) to its manifest identity.

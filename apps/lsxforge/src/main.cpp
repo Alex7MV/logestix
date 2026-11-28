@@ -1242,10 +1242,21 @@ int main(int argc, char* argv[]) {
     }
 
     case lsxforge::Pipeline::kGemma4Dense: {
-        lsxcommon::log::info(
-            "Gemma-4 dense pipeline (logestix-gemma-dense layout)");
+        // The residual plane is a PER-MODEL conversion choice, taken from the
+        // manifest row: one converter serves both dense Gemma-4 sizes and the
+        // plane's cost is proportional to the model (+5.7 GB at 12B, fits; ~+17 GB
+        // at 31B, 33.7 GiB, does not). A model with no manifest row cannot be
+        // converted through the codec-profile path anyway, so the lookup being
+        // empty here means "not identified" and the safe 4-bit default applies.
+        lsxcommon::gemma_dense::GemmaDenseConvertOptions gd_opts;
+        if (const auto ident = lsxforge::ModelIdentityFor(input_path))
+            gd_opts.residual_plane = ident->convert_residual_plane;
+        lsxcommon::log::info(absl::StrFormat(
+            "Gemma-4 dense pipeline (logestix-gemma-dense layout), residual "
+            "plane: %s",
+            gd_opts.residual_plane ? "attn+mlp" : "none (4-bit only)"));
         auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
-            input_path, output_path);
+            input_path, output_path, gd_opts);
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("Gemma-4 dense conversion failed: %s",

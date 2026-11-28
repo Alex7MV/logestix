@@ -97,7 +97,8 @@ std::string RowKey(const lsxmanifest::ModelRow &r)
                         r.cooperative_cancel ? 1 : 0, "\t",
                         r.selfcheck_frame_prompt ? 1 : 0, "\t",
                         r.selfcheck_max_gen, "\t",
-                        r.selfcheck_bit_exact ? 1 : 0);
+                        r.selfcheck_bit_exact ? 1 : 0, "\t",
+                        r.convert_residual_plane ? 1 : 0);
 }
 
 std::string Escaped(const std::string &s)

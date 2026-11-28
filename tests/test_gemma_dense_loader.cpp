@@ -16,7 +16,12 @@
 
 namespace {
 
-std::filesystem::path MakeConvertedSynthetic()
+// The loader's own fixture is built with the residual plane ON, because that is
+// the tree the loader's residual coverage is about. (The plane is a per-model
+// conversion option now — see GemmaDenseConvertOptions — so a fixture that wants
+// it must ask, and a 4-bit-only fixture is what the legacy case below builds.)
+std::filesystem::path MakeConvertedSynthetic(
+    bool residual_plane = true)
 {
     namespace fs = std::filesystem;
     auto tmp = fs::temp_directory_path() / "gemma4dense_loader_test";
@@ -28,8 +33,10 @@ std::filesystem::path MakeConvertedSynthetic()
     fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                   tmp / "tokenizer.json");
     auto out = tmp / "out";
-    const auto st =
-        lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(), out.string());
+    const auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
+        tmp.string(), out.string(),
+        lsxcommon::gemma_dense::GemmaDenseConvertOptions{
+            .residual_plane = residual_plane});
     REQUIRE(st.ok());
     return out;
 }
@@ -286,5 +293,44 @@ TEST_CASE("loader uploads the residual plane and tolerates its absence",
         CHECK(pw.layers[1].attn_q_res.d_packed != nullptr);   // untouched layer
         pw.Free();
     }
+    fs::remove_all(out.parent_path());
+}
+
+// A tree converted with `residual_plane = false` — exactly what the 31B row will
+// produce, since the plane does not fit that model's card budget — must load with
+// every residual plane null and the BASE planes intact. This is the whole-tree
+// version of the legacy case above: not "one layer stripped", but the shape a
+// real 4-bit-only artifact has.
+TEST_CASE("a 4-bit-only tree loads with every residual plane null",
+          "[gemma_dense][loader]") {
+    namespace fs = std::filesystem;
+    auto out = MakeConvertedSynthetic(/*residual_plane=*/false);
+
+    lsxcommon::gemma_dense::GemmaDensePinnedWeights pw;
+    REQUIRE(lsxcommon::gemma_dense::LoadGemmaDensePinnedWeights(
+                out.string(), pw, nullptr) == cudaSuccess);
+    REQUIRE(pw.layers.size() == 4);
+    for (size_t l = 0; l < pw.layers.size(); ++l) {
+        const auto &lw = pw.layers[l];
+        INFO("layer " << l);
+        // Base planes present: "off" means 4 bits, not "empty".
+        CHECK(lw.attn_q.d_packed != nullptr);
+        CHECK(lw.attn_k.d_packed != nullptr);
+        CHECK(lw.attn_o.d_packed != nullptr);
+        CHECK(lw.mlp_gate.d_packed != nullptr);
+        CHECK(lw.mlp_up.d_packed != nullptr);
+        CHECK(lw.mlp_down.d_packed != nullptr);
+        // No residual anywhere, so the decode skips the accumulate pass.
+        CHECK(lw.attn_q_res.d_packed == nullptr);
+        CHECK(lw.attn_k_res.d_packed == nullptr);
+        CHECK(lw.attn_v_res.d_packed == nullptr);
+        CHECK(lw.attn_o_res.d_packed == nullptr);
+        CHECK(lw.mlp_gate_res.d_packed == nullptr);
+        CHECK(lw.mlp_up_res.d_packed == nullptr);
+        CHECK(lw.mlp_down_res.d_packed == nullptr);
+    }
+    // Half the resident bytes of the same tree with the plane: 4-bit only.
+    CHECK(pw.resident_bytes > 0);
+    pw.Free();
     fs::remove_all(out.parent_path());
 }

@@ -155,6 +155,22 @@ needs >8 bits, which the 31B sibling documents as unreachable in 32 GB — for t
 12B it would be ~25 GiB of weights, i.e. it fits, but it halves throughput again.
 Both are decisions, not fixes.
 
+## Residual plane: declared per model (`convert_residual_plane`)
+
+One converter serves both dense Gemma-4 sizes, so the plane cannot be a converter
+constant: its cost is the size of the projection set (+5.7 GB here -> 12.0 GB,
+which fits the card; ~+17 GB on the 31B -> 33.7 GiB, which does not). This row
+declares `"convert_residual_plane": true`; `models/google/gemma-4-31B-it.json`
+declares `false`. `lsxforge` reads the value through `ModelIdentityFor` into
+`GemmaDenseConvertOptions`, and the converter RECORDS what it wrote in
+`model.index.json` (`"residual": "attn+mlp"` / `"none"`), so a tree cannot claim a
+plane it does not hold.
+
+Pinned by `tests/test_gemma_dense_convert.cpp` (a `residual_plane=false` tree has
+no `.res` records, an index saying `"none"`, and still passes the artifact scan)
+and by `tests/test_gemma_dense_12b_model.cpp` "the residual plane is declared per
+model, not per converter" (12B true / 31B false, both directions).
+
 ## Perf: 59.85 t/s auto vs 48.77 bit-exact, attributed
 
 12 830 211 776 B resident, 2048-token protocol, TTFT 283 ms, ~757 GB/s

@@ -368,7 +368,8 @@ GemmaDenseTopology load_gemma_dense_topology(const std::string &config_path)
 }
 
 arrow::Status WriteGemmaDenseModelIndex(const std::string &output_root,
-                                       const GemmaDenseTopology &top)
+                                       const GemmaDenseTopology &top,
+                                       bool residual_plane)
 {
     namespace fs = std::filesystem;
     const auto dir = fs::path(output_root);
@@ -410,7 +411,8 @@ arrow::Status WriteGemmaDenseModelIndex(const std::string &output_root,
         j << top.eos_ids[i];
     }
     j << "]"
-      << ",\n  \"residual\": \"attn+mlp\","
+      << ",\n  \"residual\": \""
+      << (residual_plane ? "attn+mlp" : "none") << "\","
       << "\n  \"pad_id\": " << top.pad_id
       << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
       << ",\n  \"skipped_visual_tensors\": " << top.skipped_visual_tensors
@@ -425,7 +427,8 @@ arrow::Status WriteGemmaDenseModelIndex(const std::string &output_root,
 // ── Converter ───────────────────────────────────────────────────────────────
 
 arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
-                                     const std::string &output_root)
+                                     const std::string &output_root,
+                                     const GemmaDenseConvertOptions &opts)
 {
     namespace fs = std::filesystem;
 
@@ -664,10 +667,15 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
                 // as one more GEMV with acc=true. A single 4-bit plane carries
                 // ~0.09 relative L2 error over the whole body, and this family's
                 // FSI gate is a near-tie decision that the accumulated error
-                // moves. Two planes give ~8 effective bits for 2x the
-                // projection bytes — 12B fits that on a 32 GB card (the 31B's
-                // 33.7 GiB does not).
-                if (p.kind != TensorKind::Embed) {
+                // moves. Two planes give ~8 effective bits for 2x the projection
+                // bytes.
+                //
+                // PER MODEL, not unconditional: the cost is roughly the size of
+                // the projection set, so it is +5.7 GB at 12B (fits a 32 GB
+                // card) and ~+17 GB at 31B (33.7 GiB total, which does NOT fit).
+                // The caller passes the manifest row's declaration; see
+                // GemmaDenseConvertOptions.
+                if (opts.residual_plane && p.kind != TensorKind::Embed) {
                     std::vector<uint8_t> rpk, rsc;
                     float rgs = 1.0f;
                     if (!gpu::quantize_residual_tensor_gpu(
@@ -711,8 +719,9 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
             *batch, pinned_dir / absl::StrCat("layer_", layer, ".arrow")));
     }
     spdlog::info("gemma-4 dense: {} layers converted, {} vision tensors stored "
-                 "and counted, {} pinned records",
-                 top.num_layers, skipped_visual, total_pinned);
+                 "and counted, {} pinned records, residual plane: {}",
+                 top.num_layers, skipped_visual, total_pinned,
+                 opts.residual_plane ? "attn+mlp" : "none (4-bit only)");
 
     top.total_pinned_tensors = static_cast<int>(total_pinned);
     top.skipped_visual_tensors = static_cast<int>(skipped_visual);
@@ -753,7 +762,8 @@ arrow::Status ConvertGemmaDenseModel(const std::string &input_path,
                      top.vram.context_tokens);
     }
 
-    ARROW_RETURN_NOT_OK(WriteGemmaDenseModelIndex(output_root, top));
+    ARROW_RETURN_NOT_OK(
+        WriteGemmaDenseModelIndex(output_root, top, opts.residual_plane));
 
     // Tokenizer bridge (mandatory): the real checkpoint resolves specials via
     // tokenizer_config.json strings ("<bos>"/"<eos>"/"<pad>").

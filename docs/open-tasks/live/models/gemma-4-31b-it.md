@@ -26,18 +26,25 @@ DET 3/3, FSI 2/3. Open items:
   Getting this gate green needs ~8 bits on every linear (~33.7 GiB resident),
   i.e. a 48 GiB card or a different block format. Full trail:
   `open-tasks/2026-10-24-gemma4-moe-residual-plane-closed.md` §5.
-- **The shared converter now emits residual planes (2026-11-28).** The dense
-  Gemma-4 converter/loader/kernels now serve two checkpoints (this one and the
-  12B), and the residual plane is written for every projection because the 12B's
-  FSI gate needs it (1/3 -> 2/3). Consequence for THIS row: a fresh `--
-  gemma4dense` conversion of the 31B produces the ~8-bit layout, i.e. roughly
-  33 GiB, which still does not fit the 32 GB card — so re-converting it here
-  would trade a loadable 4-bit tree for an unloadable one. A 4-bit-only tree
-  keeps loading unchanged (the loader leaves the plane null and the decode skips
-  the accumulate pass; pinned by `test_gemma_dense_loader` "tolerates its
-  absence"), and the vault holds no 31B artifact since 2026-11-27, so nothing is
-  broken today. **Before re-converting the 31B, make the plane a per-model
-  choice** rather than an unconditional write in the shared converter.
+- **The residual plane is per-model, and this row declares it OFF (resolved
+  2026-11-28).** The dense Gemma-4 converter/loader/kernels serve two checkpoints
+  (this one and the 12B) and the plane is what clears the 12B's FSI gate
+  (1/3 -> 2/3), but its cost is proportional to the model: +5.7 GB at 12B
+  (12.0 GB total, fits a 32 GB card) versus the ~33.7 GiB this row measures for
+  an ~8-bit body, which does not fit. Writing it unconditionally would make a
+  fresh 31B conversion produce a tree nobody can load, so the choice is a
+  manifest field, not converter code:
+  `models/google/gemma-4-31B-it.json` → `"convert_residual_plane": false`
+  (the 12B row carries `true`), read by `lsxforge` through
+  `ModelIdentityFor` into `GemmaDenseConvertOptions`.
+  Verified end to end on 2026-11-28 with the same binary: the 12B resolves
+  `residual plane: attn+mlp` and this row resolves
+  `residual plane: none (4-bit only)`. Pinned both ways by
+  `tests/test_gemma_dense_12b_model.cpp` "the residual plane is declared per
+  model, not per converter" and by the converter tests that assert a
+  `residual_plane=false` tree has no `.res` records and an index saying
+  `"residual": "none"`. A 4-bit-only tree keeps loading unchanged (the loader
+  leaves the plane null and the decode skips the accumulate pass).
 - **Scalar prefill is a choice, not a workaround.** The shared TC M-tile
   defect this gate was originally found by is fixed (2026-10-10, archived);
   gemma keeps the scalar path because running it through TC moves the first

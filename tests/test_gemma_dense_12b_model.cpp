@@ -162,3 +162,27 @@ TEST_CASE("gemma-4-12B passport matches the real checkpoint's config.json",
                     lsxcommon::gemma_dense::frozen::kFrozen, top)
                     .empty());
 }
+
+// The residual plane is declared PER MODEL in the registry, because its cost is
+// per model and the two members sit on opposite sides of the card's budget:
+//
+//   gemma-4-12b-it  4-bit 6.3 GB -> +5.7 GB = 12.0 GB   (fits; FSI 1/3 -> 2/3)
+//   gemma-4-31b-it  4-bit 16.5 GiB -> +17 GiB = 33.7 GiB (does not fit 32 GB)
+//
+// A shared converter constant cannot express that, and getting it wrong is
+// expensive in one direction only: a 31B tree with the plane cannot be loaded at
+// all. The declaration is therefore a manifest field that the generated row
+// carries, and this test pins BOTH directions so neither can drift.
+TEST_CASE("the residual plane is declared per model, not per converter",
+          "[gemma_dense_12b][model]") {
+    const auto *r12 = manifest_query::FindModel("gemma-4-12b-it");
+    const auto *r31 = manifest_query::FindModel("gemma-4-31b-it");
+    REQUIRE(r12 != nullptr);
+    REQUIRE(r31 != nullptr);
+    // The 12B NEEDS it: FSI-01 is a near-tie that the 4-bit body flips, and
+    // 12.0 GB fits the card.
+    CHECK(r12->convert_residual_plane);
+    // The 31B must NOT get one by default: 33.7 GiB does not fit, so a fresh
+    // conversion would produce an unloadable tree.
+    CHECK_FALSE(r31->convert_residual_plane);
+}

@@ -39,6 +39,9 @@ std::optional<ModelIdentity> ModelIdentityFor(const std::string &input_path)
         // and nothing downstream could tell that from the real location.
         id.model_dir = std::string(vault);
         id.org = row.vault_org != nullptr ? std::string(row.vault_org) : "";
+        // Per-model conversion knobs travel with the identity: the conversion
+        // branch asks the registry, never a hand-written table inside lsxforge.
+        id.convert_residual_plane = row.convert_residual_plane;
         if (id.org.empty()) return std::nullopt;   // cannot place it honestly
         return id;
     }

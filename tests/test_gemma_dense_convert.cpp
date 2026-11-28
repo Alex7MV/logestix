@@ -711,8 +711,9 @@ TEST_CASE("dense gemma conversions carry a residual plane on every projection",
                                tmp / "tokenizer.json");
 
     const auto out = tmp / "out";
-    auto cst = lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(),
-                                                              out.string());
+    auto cst = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
+        tmp.string(), out.string(),
+        lsxcommon::gemma_dense::GemmaDenseConvertOptions{.residual_plane = true});
     if (!cst.ok()) FAIL("ConvertGemmaDenseModel: " << cst.ToString());
     REQUIRE(cst.ok());
 
@@ -841,8 +842,10 @@ TEST_CASE("dense gemma residual plane excludes the tied embed/lm_head table",
     std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
                                tmp / "tokenizer.json");
     const auto out = tmp / "out";
-    REQUIRE(lsxcommon::gemma_dense::ConvertGemmaDenseModel(tmp.string(),
-                                                           out.string())
+    REQUIRE(lsxcommon::gemma_dense::ConvertGemmaDenseModel(
+                tmp.string(), out.string(),
+                lsxcommon::gemma_dense::GemmaDenseConvertOptions{
+                    .residual_plane = true})
                 .ok());
     auto g = lsxcommon::LoadDenseNvfp4BatchViews(out / "pinned" /
                                                  "global_nvfp4.arrow");
@@ -852,4 +855,87 @@ TEST_CASE("dense gemma residual plane excludes the tied embed/lm_head table",
     CHECK(g->records[0].name.find(".res") == std::string::npos);
     g->keepalive.reset();
     remove_all(tmp);
+}
+
+// ── The residual plane is a per-model decision, not a converter constant ────
+//
+// ONE converter serves every dense Gemma-4 size, and the plane's cost is
+// proportional to the model: ~+5.7 GB at 12B (7.0 -> 12.0 GiB, fits a 32 GB card)
+// and ~+16.7 GB at 31B (17 -> 33.7 GiB, which does NOT: the 31B row records that
+// measurement). Writing it unconditionally would make a fresh 31B conversion
+// produce a tree nobody can load, so the choice travels from the model's
+// manifest row into the converter as an explicit option.
+//
+// The DEFAULT is 4-bit only on purpose. Forgetting to declare the option costs
+// precision — which the FSI gate reports — and never produces an unloadable
+// tree; the opposite default would fail silently in the expensive direction.
+TEST_CASE("residual plane off: a 4-bit-only tree, no .res records",
+          "[gemma_dense][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_no_residual";
+    remove_all(tmp);
+    create_directories(tmp);
+    synthtest::WriteSafetensors(
+        tmp, "model.safetensors",
+        gemma_dense_test::BuildSyntheticGemmaUnifiedModel());
+    gemma_dense_test::WriteUnifiedConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_gemma_tok.json",
+                               tmp / "tokenizer.json");
+    const auto out = tmp / "out";
+    // ResidualPlane off — the 31B shape.
+    auto st = lsxcommon::gemma_dense::ConvertGemmaDenseModel(
+        tmp.string(), out.string(),
+        lsxcommon::gemma_dense::GemmaDenseConvertOptions{.residual_plane = false});
+    if (!st.ok()) FAIL("ConvertGemmaDenseModel: " << st.ToString());
+    REQUIRE(st.ok());
+
+    // No projection carries a second plane.
+    for (int layer : {0, 3}) {
+        auto batch = lsxcommon::LoadTensorBatchViews(
+            out / "pinned" / ("layer_" + std::to_string(layer) + ".arrow"));
+        REQUIRE(batch.ok());
+        for (const auto &t : batch->tensors) {
+            INFO(t.name);
+            CHECK(std::string(t.name).find(".res.") == std::string::npos);
+        }
+        // The base planes are still there, so "off" means 4 bits, not "empty".
+        CHECK(batch->tensors.size() > 10);
+        batch->keepalive.reset();
+    }
+    {
+        auto g = lsxcommon::LoadDenseNvfp4BatchViews(out / "pinned" /
+                                                     "global_nvfp4.arrow");
+        REQUIRE(g.ok());
+        REQUIRE(g->records.size() == 1);   // the tied table, base only
+        g->keepalive.reset();
+    }
+
+    // The index says so, instead of claiming a plane the tree does not hold.
+    {
+        std::ifstream idx(out / "model.index.json");
+        const std::string json((std::istreambuf_iterator<char>(idx)),
+                               std::istreambuf_iterator<char>());
+        CHECK(json.find("\"residual\": \"none\"") != std::string::npos);
+        CHECK(json.find("attn+mlp") == std::string::npos);
+    }
+
+    // And the artifact scan still accepts it: a 4-bit-only tree is a valid
+    // artifact, not a half-written one.
+    {
+        const auto scan = lsx::storage::ScanArtifactTree(out);
+        std::string joined;
+        for (const auto &q : scan.problems) joined += "  " + q + "\n";
+        INFO("artifact scan problems:\n" << joined);
+        REQUIRE(scan.problems.empty());
+    }
+    remove_all(tmp);
+}
+
+// The shipped default is 4-bit only, and that is a safety property, not an
+// accident of the code: forgetting the option costs precision (visible in the
+// FSI gate) and can never produce the unloadable tree.
+TEST_CASE("residual plane defaults to off (the safe direction)",
+          "[gemma_dense][convert]") {
+    lsxcommon::gemma_dense::GemmaDenseConvertOptions dflt{};
+    CHECK_FALSE(dflt.residual_plane);
 }

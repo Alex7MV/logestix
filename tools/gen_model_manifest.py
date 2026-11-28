@@ -128,7 +128,16 @@ MODEL_FIELDS = ("model_type", "display_name", "family", "variant", "model_class"
                 "preferred_profile", "profiles",
                 "tool_roundtrip", "auto_path_determinism", "cooperative_cancel",
                 "selfcheck_frame_prompt", "selfcheck_max_gen",
-                "selfcheck_bit_exact")
+                "selfcheck_bit_exact",
+                # Conversion knobs whose right value differs BETWEEN siblings of
+                # one architecture, so it cannot live as a converter constant.
+                # One converter serves both dense Gemma-4 sizes and the second
+                # NVFP4 plane (the residual) costs about the size of the
+                # projection set: +5.7 GB at 12B (12.0 GB total, fits a 32 GB
+                # card) vs ~+17 GB at 31B (33.7 GiB, which does not). Default
+                # false: forgetting to declare it costs precision, which the FSI
+                # gate reports, and can never produce an unloadable tree.
+                "convert_residual_plane")
 
 # The subset that `--print-model-rows` and the compiled ModelRow carry, named by
 # MANIFEST key. It is the emitter's field order, not a copy of it: `row_values`
@@ -147,7 +156,8 @@ ROW_FIELDS = ("model_type", "family", "variant", "model_class", "model_header",
               "vault_org", "vault_dir", "vault_profile", "vault_env",
               "tokenizer_kind", "tool_roundtrip", "auto_path_determinism",
               "cooperative_cancel", "selfcheck_frame_prompt",
-              "selfcheck_max_gen", "selfcheck_bit_exact")
+              "selfcheck_max_gen", "selfcheck_bit_exact",
+              "convert_residual_plane")
 
 
 class ManifestError(Exception):
@@ -213,6 +223,9 @@ class Manifest:
     selfcheck_frame_prompt: bool
     selfcheck_max_gen: int
     selfcheck_bit_exact: bool
+    # Conversion-time choice, per model: the second NVFP4 plane (the residual)
+    # on every projection. See MODEL_FIELDS for why it is data and not code.
+    convert_residual_plane: bool
     resource_lock: str
     aliases: list
     report: str
@@ -315,6 +328,7 @@ def row_values(m) -> dict:
         "selfcheck_frame_prompt": int(m.selfcheck_frame_prompt),
         "selfcheck_max_gen": m.selfcheck_max_gen,
         "selfcheck_bit_exact": int(m.selfcheck_bit_exact),
+        "convert_residual_plane": int(m.convert_residual_plane),
     }
 
 
@@ -396,6 +410,7 @@ def load_one(path: Path) -> Manifest:
         selfcheck_frame_prompt=bool(doc.get("selfcheck_frame_prompt", False)),
         selfcheck_max_gen=int(doc.get("selfcheck_max_gen", 2)),
         selfcheck_bit_exact=bool(doc.get("selfcheck_bit_exact", True)),
+        convert_residual_plane=bool(doc.get("convert_residual_plane", False)),
         report=doc.get("report", ""),
         notes=doc.get("notes", ""),
         path=path.name,
@@ -960,7 +975,7 @@ def emit_header(manifests) -> str:
     rows = []
     for m in models:
         rows.append(
-            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s, %s, %d, %s},"
+            "    {%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %s, %s, %s, %s, %d, %s, %s},"
             % (cstr(m.model_type), cstr(m.family), cstr(m.variant),
                cstr(m.model_class), cstr(m.model_header), cstr(m.passport),
                cstr(m.ns), cstr(m.format_tag), cstr(m.vault_org),
@@ -971,7 +986,8 @@ def emit_header(manifests) -> str:
                "true" if m.cooperative_cancel else "false",
                "true" if m.selfcheck_frame_prompt else "false",
                m.selfcheck_max_gen,
-               "true" if m.selfcheck_bit_exact else "false"))
+               "true" if m.selfcheck_bit_exact else "false",
+               "true" if m.convert_residual_plane else "false"))
     targets = []
     for m in models:
         for t in sorted(m.targets(), key=lambda x: (x.stage, x.name)):
@@ -1009,6 +1025,10 @@ struct ModelRow {{
     bool auto_path_determinism; bool cooperative_cancel;
     bool selfcheck_frame_prompt; int selfcheck_max_gen;
     bool selfcheck_bit_exact;
+    // Conversion-time choice for this model (see MODEL_FIELDS): the second NVFP4
+    // plane (the residual) on every projection. TRUE only where the ~8-bit body
+    // still fits the card the model is served on.
+    bool convert_residual_plane;
 }};
 struct TargetRow {{
     const char *model_type; const char *stage; const char *target;
