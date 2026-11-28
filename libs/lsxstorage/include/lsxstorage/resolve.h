@@ -18,7 +18,9 @@
 // Deliberately separate from artifact.h: this decides WHERE, artifact.h decides
 // WHAT, and the gate is the one place both are consulted.
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -43,6 +45,9 @@ struct Resolved {
     std::string org;       // "microsoft": the artifact store's first segment
     std::string model_dir; // "phi-4": the second, in the store's spelling
     std::string detail;    // human-readable reason, always set
+    // The codec mask artifact.fb declares, when it was read. Selection compares
+    // it with the target's capability; Resolve() alone leaves it 0.
+    uint64_t used_codecs = 0;
 };
 
 // Resolves `model_or_path`.
@@ -51,6 +56,31 @@ struct Resolved {
 // which is what keeps `lsxfabric --localmodel <artifact>` and every test that
 // passes an explicit tree working unchanged.
 Resolved Resolve(const std::string &model_or_path);
+
+// Resolves `model_or_path` for a DEVICE that can execute `supported` codecs,
+// choosing among the model's profiles instead of letting directory order decide.
+//
+// An explicit profile — a path, a path inside one, or `<org>/<model>/<profile>`
+// — is a CHOICE and is resolved exactly as Resolve() does it: selection never
+// second-guesses an operator. Only a MODEL is selected among, and the extras are
+// the two switches policy needs:
+//
+//   `supported`  the codec mask the active target executes (lsxcommon supplies
+//                SupportedCodecs(ActiveTarget()) — storage has no opinion about
+//                hardware, and must not depend on the codec header to have one).
+//   `preference` profile names in decreasing desirability. A name the table does
+//                not mention is still selectable and sorts after the ranked ones
+//                by name, so a new profile is never invisible and two runs agree.
+Resolved Resolve(const std::string &model_or_path, uint64_t supported,
+                 const std::vector<std::string> &preference);
+
+// The best profile of one model that `supported` can execute, or nullopt when
+// none can. Sorted by (rank in `preference`, profile name), so the answer is
+// deterministic and independent of filesystem order.
+std::optional<Resolved> SelectProfile(const std::string &org,
+                                     const std::string &model_dir,
+                                     uint64_t supported,
+                                     const std::vector<std::string> &preference);
 
 // Every artifact profile of one model that exists under the artifact root,
 // sorted (profile name ascending) for a deterministic choice. Empty when the

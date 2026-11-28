@@ -6,8 +6,12 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
 #include "cli.h"
+#include "explain_artifact.h"
 #include "fabric_server.h"
 #include "validator.h"
+
+#include "lsxcommon/hardware_target.h"
+#include "lsxstorage/resolve.h"
 
 #include <atomic>
 #include <csignal>
@@ -41,6 +45,20 @@ int main(int argc, char *argv[]) {
     lsxcommon::Core::Initialize("logestix_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
+
+    // --explain-artifact answers a question ABOUT the store, so it runs before
+    // the engine session and never loads a model: it is safe to run while
+    // another process holds the GPU (design §2.7).
+    if (cli.explain_artifact) {
+        int explain_rc = 0;
+        const std::string report = lsxfabric::ExplainArtifact(
+            cli.model_path,
+            lsxcommon::hw::SupportedCodecs(lsxcommon::hw::ActiveTarget()),
+            lsxcommon::hw::CodecProfilePreference(), &explain_rc);
+        lsxcommon::log::info(report);
+        lsxcommon::Core::Shutdown();
+        return explain_rc;
+    }
 
     int rc = 0;
     // Scoped engine session: the per-GPU auto perf policy is resolved for

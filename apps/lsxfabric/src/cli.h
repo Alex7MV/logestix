@@ -13,6 +13,10 @@ struct FabricCliArgs {
     int max_gen = 64;
     bool validate = false;
     bool testprompt = false;
+    // --explain-artifact: print why this model would load the profile it would
+    // load, and exit. The only diagnostic flag added by the codec contract
+    // (design §2.7); it never loads a model, so it is safe beside a running one.
+    bool explain_artifact = false;
     bool serve = false;
     std::string listen = "tcp://*:5555";
     std::string listen_cancel = "tcp://*:5556";

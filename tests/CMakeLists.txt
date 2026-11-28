@@ -3011,6 +3011,11 @@ lsx_add_test(NAME test_storage_verify LABEL fast LINK lsxstorage lsxcommon)
 # codecs. An index that still declares one of the five codec fields is refused.
 lsx_add_test(NAME test_index_codec_rule LABEL fast LINK lsxstorage)
 
+# ── Target-aware profile selection (design §2.7, invariant I4) ─────────────
+# With one profile per model the choice was directory-iteration order; with two
+# it decides which artifact loads. Host-only: the capability arrives as a mask.
+lsx_add_test(NAME test_storage_select_profile LABEL fast LINK lsxstorage)
+
 # ── Required index fields: registry guard (see libs/lsxcommon/index_fields.h) ──
 lsx_add_test(NAME test_index_fields LABEL fast LINK lsxcommon
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")

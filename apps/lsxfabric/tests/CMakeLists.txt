@@ -28,3 +28,15 @@ lsx_copy_arrow_dlls(test_fabric_server)
 add_test(NAME test_fabric_server COMMAND test_fabric_server)
 set_tests_properties(test_fabric_server PROPERTIES LABELS fast)
 set_tests_properties(test_fabric_server PROPERTIES TIMEOUT 120)
+
+# --explain-artifact (design §2.7): the selection report, formatted by the app
+# and tested without a GPU or a model load.
+add_executable(test_explain_artifact test_explain_artifact.cpp
+    ../src/explain_artifact.cpp)
+target_include_directories(test_explain_artifact PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(test_explain_artifact PRIVATE lsxcommon lsxstorage
+    Catch2::Catch2WithMain)
+lsx_copy_arrow_dlls(test_explain_artifact)
+add_test(NAME test_explain_artifact COMMAND test_explain_artifact)
+set_tests_properties(test_explain_artifact PROPERTIES LABELS fast)

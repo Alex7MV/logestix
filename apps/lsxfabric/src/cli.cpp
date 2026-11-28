@@ -16,6 +16,7 @@ bool IsKnownFlag(const char *s) {
     return std::strcmp(s, "--localmodel") == 0 ||
            std::strcmp(s, "--validate") == 0 ||
            std::strcmp(s, "--testprompt") == 0 ||
+           std::strcmp(s, "--explain-artifact") == 0 ||
            std::strcmp(s, "--max-gen") == 0 ||
            std::strcmp(s, "--serve") == 0 ||
            std::strcmp(s, "--listen") == 0 ||
@@ -52,6 +53,8 @@ FabricCliArgs ParseFabricCliArgs(int argc, char *argv[]) {
             a.validate = true;
         } else if (std::strcmp(argv[i], "--testprompt") == 0) {
             a.testprompt = true;
+        } else if (std::strcmp(argv[i], "--explain-artifact") == 0) {
+            a.explain_artifact = true;
         } else if (std::strcmp(argv[i], "--serve") == 0) {
             a.serve = true;
         } else if (std::strcmp(argv[i], "--listen") == 0) {

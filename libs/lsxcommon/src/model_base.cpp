@@ -176,7 +176,15 @@ bool ModelBase::BeginLoad(const std::string &model_path)
     }
 
     // ── (1) RESOLVE: source dir / bare name / artifact dir -> artifact dir ──
-    const auto resolved = lsx::storage::Resolve(model_path);
+    //
+    // Target-aware: when the caller names a MODEL and it has several profiles,
+    // the one this device can execute is chosen here (design §2.7). Passing the
+    // capability in is what turns "whichever the directory iterator reached
+    // first" into a selection — and an explicit profile path still wins, because
+    // an operator who names an artifact has made the choice already.
+    const auto resolved = lsx::storage::Resolve(
+        model_path, hw::SupportedCodecs(hw::ActiveTarget()),
+        hw::CodecProfilePreference());
     if (resolved.status != lsx::storage::ResolveStatus::kArtifact) {
         log::error(absl::StrFormat(
             "[load] %s is not a LogestiX artifact (%s). %s", model_path,

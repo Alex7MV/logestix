@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace lsxcommon {
 namespace hw {
@@ -137,6 +138,29 @@ bool ParsePlaneCodec(std::string_view name, PlaneCodec *out);
 // for an empty mask. This exact text appears in refusal messages, so it is
 // pinned by tests.
 std::string FormatMask(CodecMask mask);
+
+// ── Profile preference (design §2.7, invariant I4) ─────────────────────────
+//
+// Which of a model's compatible profiles a device should load, most desirable
+// first. The rationale is bytes per element: the most compressed profile the
+// target can EXECUTE wins, which is also the throughput order — and a profile
+// with no kernel on that target is excluded by the capability mask, not by this
+// list.
+//
+// `int8-w8a16` leads because on sm_120 it is native AND half the bytes of
+// nvfp4's neighbours, but the list is a policy, not a measurement: spec §8.2
+// says the order between nvfp4 and int8-w8a16 on Blackwell must be corrected
+// from the Branch-3 perf rows, and this is the one place to correct it.
+//
+// Declared here (host-only, no allocation in the hot path) so that a caller
+// cannot invent its own order: storage takes the list as a parameter and has no
+// opinion, lsxcommon has exactly one.
+inline const std::vector<std::string> &CodecProfilePreference()
+{
+    static const std::vector<std::string> v = {"int8-w8a16", "nvfp4", "mxfp8",
+                                               "bf16"};
+    return v;
+}
 
 } // namespace hw
 } // namespace lsxcommon

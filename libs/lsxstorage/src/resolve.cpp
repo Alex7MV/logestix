@@ -41,6 +41,16 @@ const char *ResolveStatusName(ResolveStatus s)
 
 Resolved Resolve(const std::string &model_or_path)
 {
+    // No target: an explicit profile still resolves, and a model name falls back
+    // to the first artifact in profile-name order (which is what ListProfiles
+    // returns, so it is at least deterministic). Callers that know the device
+    // use the target-aware overload below and get a real CHOICE.
+    return Resolve(model_or_path, /*supported=*/~uint64_t{0}, {});
+}
+
+Resolved Resolve(const std::string &model_or_path, uint64_t supported,
+                 const std::vector<std::string> &preference)
+{
     Resolved r;
     if (model_or_path.empty()) {
         r.detail = "empty model path";
@@ -132,26 +142,14 @@ Resolved Resolve(const std::string &model_or_path)
                            rel_parts[2] + "'";
                 return r;
             }
-            // No profile named: the first one that IS an artifact, in the same
-            // sorted order ListProfiles uses, so two runs agree.
-            std::error_code prof_ec;
-            for (const auto &profile_dir :
-                 fs::directory_iterator(model_dir, prof_ec)) {
-                if (prof_ec) break;
-                if (!profile_dir.is_directory()) continue;
-                if (!IsArtifactDir(profile_dir.path())) continue;
-                r.status = ResolveStatus::kArtifact;
-                r.dir = profile_dir.path();
-                r.org = rel_parts[0];
-                r.model_dir = rel_parts[1];
-                r.profile = profile_dir.path().filename().string();
-                const auto read = ReadArtifact(profile_dir.path());
-                if (read.status == ReadStatus::kOk) {
-                    r.family = read.info.family;
-                    r.model_type = read.info.model_type;
-                }
-                return r;
-            }
+            // No profile named: SELECT one the device can execute. Directory
+            // iteration order is unspecified, so "the first artifact I meet" was
+            // a coin flip the moment a model had two profiles (design §2.7).
+            if (const auto chosen =
+                    SelectProfile(rel_parts[0], rel_parts[1], supported,
+                                  preference);
+                chosen.has_value())
+                return *chosen;
             r.status = ResolveStatus::kSourceOnly;
             r.org = rel_parts[0];
             r.model_dir = rel_parts[1];
@@ -204,23 +202,17 @@ Resolved Resolve(const std::string &model_or_path)
                         (read.info.model_type == model_or_path ||
                          read.info.model_type == wanted_leaf);
                     by_identity_any = by_identity_any || by_identity;
-                    if (!by_dir && !by_identity) continue;
-                    r.status = ResolveStatus::kArtifact;
-                    r.dir = profile_dir.path();
-                    r.org = org_dir.path().filename().string();
-                    r.model_dir = name;
-                    r.profile = profile_dir.path().filename().string();
-                    if (read.status == ReadStatus::kOk) {
-                        r.family = read.info.family;
-                        r.model_type = read.info.model_type;
-                        r.org = read.info.org.empty() ? r.org : read.info.org;
-                        r.model_dir = read.info.model_dir.empty() ? r.model_dir
-                                                                  : read.info.model_dir;
-                    }
-                    return r;
                 }
                 if (!by_dir && !by_identity_any) continue;
-                // The model exists but has no converted profile.
+                // The model is this one. SELECT among its profiles for the
+                // device, rather than taking whichever the directory iterator
+                // reached first (design §2.7, invariant I4).
+                if (const auto chosen = SelectProfile(
+                        org_dir.path().filename().string(), name, supported,
+                        preference);
+                    chosen.has_value())
+                    return *chosen;
+                // The model exists but has no profile this target can run.
                 r.status = ResolveStatus::kSourceOnly;
                 r.model_dir = name;
                 r.org = org_dir.path().filename().string();
@@ -311,6 +303,46 @@ std::vector<Resolved> ListProfiles(const std::string &org,
                   return a.profile < b.profile;
               });
     return out;
+}
+
+std::optional<Resolved> SelectProfile(const std::string &org,
+                                     const std::string &model_dir_name,
+                                     uint64_t supported,
+                                     const std::vector<std::string> &preference)
+{
+    auto candidates = ListProfiles(org, model_dir_name);
+    if (candidates.empty()) return std::nullopt;
+
+    // Rank: index in `preference`, or "after every ranked name" for a profile
+    // the table does not mention (still selectable — the table is a
+    // preference, not a filter, and a new profile must not be invisible).
+    const auto rank_of = [&preference](const std::string &profile) {
+        for (size_t i = 0; i < preference.size(); ++i)
+            if (preference[i] == profile) return static_cast<int>(i);
+        return static_cast<int>(preference.size());
+    };
+
+    std::vector<Resolved> compatible;
+    for (auto &cand : candidates) {
+        // The mask the artifact DECLARES, read back from artifact.fb. A profile
+        // whose manifest cannot be read is not selectable: choosing it would
+        // hand BeginLoad a tree it is about to refuse.
+        const auto read = ReadArtifact(cand.dir);
+        if (read.status != ReadStatus::kOk) continue;
+        cand.used_codecs = read.info.used_codecs;
+        if ((cand.used_codecs & ~supported) != 0) continue;
+        compatible.push_back(std::move(cand));
+    }
+    if (compatible.empty()) return std::nullopt;
+
+    std::sort(compatible.begin(), compatible.end(),
+              [&rank_of](const Resolved &a, const Resolved &b) {
+                  const int ra = rank_of(a.profile);
+                  const int rb = rank_of(b.profile);
+                  if (ra != rb) return ra < rb;
+                  return a.profile < b.profile;   // total order, reproducible
+              });
+    return compatible.front();
 }
 
 } // namespace lsx::storage
