@@ -2558,7 +2558,7 @@ download") is what would have caught them, and it is now a three-model gap, not 
 | `--verify` | 34/34, 0 problems | 35/35, 0 problems | 34/34, 0 problems |
 | load / model / kernels | pass | pass | pass |
 | SelfCheck "Paris" ×3 | pass, `cf51b9bbd5c913dd` | pass, `a2af669548e59c73` | pass, `31d7a1672d89ccdc` |
-| FSI | **pass 3/3** | **pass 3/3** | **FAIL 1/3** — documented `R22`: the *source* is a 0.556-logit near-tie at the fork |
+| FSI | **pass 3/3** | **pass 3/3** | **FAIL 2/3** (FSI-02 red) — documented `R22`: the *source* is a 0.556-logit near-tie at the fork |
 | CODE | pass 3/3 | pass 3/3 | pass 3/3 |
 | DET | pass 3/3 | pass 3/3 | pass 3/3 |
 | MCP | pass 3/3 | pass 3/3 | pass 3/3 (byte-exact) |
