@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_inkling_2_small",
-    "vault_subdir": "Inkling-2-Small",
     "timeout": 7200
   },
   "target_overrides": {

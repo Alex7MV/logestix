@@ -69,7 +69,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_glm_5_2",
-    "vault_subdir": "GLM-5.2",
     "timeout": 1200
   },
   "target_overrides": {

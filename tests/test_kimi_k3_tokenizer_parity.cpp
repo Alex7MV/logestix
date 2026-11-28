@@ -6,6 +6,8 @@
 // Real-vault target: SKIPs when the checkpoint is absent (SKIP_RETURN_CODE 4).
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdlib>
@@ -16,7 +18,6 @@
 #include <vector>
 
 #include <lsxcommon/converter.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace {
@@ -70,10 +71,9 @@ TEST_CASE("kimi tiktoken bridge reproduces the reference ids",
           "[kimi-k3][tokenizer][fast]")
 {
     const std::filesystem::path model =
-        std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-        "Kimi-K3";
+        manifest_query::SourceDirFor("kimi-k3");
     if (!std::filesystem::exists(model / "tiktoken.model"))
-        SKIP("vault Kimi tokenizer not present");
+        SKIP(std::string("vault Kimi tokenizer not present: ") + model.string());
 
     const auto pinned =
         std::filesystem::temp_directory_path() / "kimi_k3_tok_parity";

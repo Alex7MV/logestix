@@ -61,7 +61,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_granite_switch_4_1_30b",
-    "vault_subdir": "granite-switch-4.1-30b",
     "timeout": 3000
   },
   "target_overrides": {

@@ -11,13 +11,15 @@ Engine side: run a generation with KIMI_DUMP_LAYERS=0,1,30,60 (writes
 /tmp/kimi_layer_<L>.bin = int32 seq, int32 hidden, seq*hidden bf16 rows).
 
 Usage:
-  KIMI_DUMP_LAYERS=0,1,30,60 LSX_MODEL_ROOT=/mnt/fast_storage/huggingface \
+  KIMI_DUMP_LAYERS=0,1,30,60 LSX_MODEL_ROOT=<parent of the org dirs> \
       ./build/linux-release-znver4-aocc/tests/test_kimi_moe_selfcheck
   python3 tools/kimi_layer_oracle.py \
-      --model /mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code \
+      --model <source root>/moonshotai/Kimi-K2.7-Code \
       --ids "The capital of France is" --layers 0,1,30,60 --dump-dir /tmp
 """
 import argparse
+
+import lsx_paths
 import glob
 import json
 import math
@@ -67,13 +69,12 @@ class Pinned:
 
     def __init__(self, model_dir, layer):
         self.t = {}
-        path = os.path.join(model_dir, "logestix", "pinned",
-                            f"layer_{layer}.arrow")
+        art = lsx_paths.artifact_dir(model_dir)
+        path = art / "pinned" / f"layer_{layer}.arrow"
         tb = pa.ipc.open_file(path).read_all()
         for r in tb.to_pylist():
             self.t[r["name"]] = (r["shape"], r["dtype"], r["data"])
-        idx = json.load(open(os.path.join(model_dir, "logestix",
-                                          "model.index.json")))
+        idx = json.load(open(art / "model.index.json"))
         self.gs = idx["mla_nvfp4"][str(layer)]
 
     def bf16(self, name, shape):

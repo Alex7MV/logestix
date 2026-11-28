@@ -12,8 +12,13 @@
 #include <string>
 
 int main(int argc, char* argv[]) {
-    auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
-                       / "DeepSeek-V4-Flash").string();
+    // A model IDENTITY, not a path. `lsx::storage::Resolve` searches the
+    // artifact store for it (and reports a source-only checkpoint as the
+    // fixable thing it is). The old default built
+    // `<source root>/DeepSeek-V4-Flash` — without the org the store nests it
+    // under, and pointing at the read-only checkpoint rather than the
+    // converted tree — so the default could never load.
+    auto model_path = "deepseek-v4-flash";
     bool info = false;
     bool infofull = false;
     for (int i = 1; i < argc; ++i) {

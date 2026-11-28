@@ -14,6 +14,8 @@
 // the driver's EOS contract and not the process history. §E1d is the open item.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -21,7 +23,6 @@
 
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 #include "qwen_moe_exp_model.h"
@@ -55,8 +56,7 @@ std::filesystem::path ConvertedPath()
 {
     if (const char *env = std::getenv("LSX_TEST_QWEN38_MODEL_DIR"))
         return std::filesystem::path(env);
-    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           "Qwen3.8-Flash-Next";
+    return manifest_query::ConvertedDirFor("qwen3.8-flash-next");
 }
 
 } // namespace
@@ -71,7 +71,7 @@ TEST_CASE("qwen3.8-flash-next stops on EOS instead of running the budget",
 {
     const std::filesystem::path model_dir = ConvertedPath();
     if (!std::filesystem::exists(model_dir / "pinned"))
-        SKIP("Qwen3.8-Flash-Next converted model directory not present");
+        SKIP(std::string("Qwen3.8-Flash-Next converted model directory not present: ") + model_dir.string());
 
     // Pin the expert-cache residency so the gate is a pure function of its own
     // inputs. Load sizes the cache from the free VRAM it can see, so without
@@ -139,7 +139,7 @@ TEST_CASE("qwen3.8-flash-next answers identically from a second model instance",
 {
     const std::filesystem::path model_dir = ConvertedPath();
     if (!std::filesystem::exists(model_dir / "pinned"))
-        SKIP("Qwen3.8-Flash-Next converted model directory not present");
+        SKIP(std::string("Qwen3.8-Flash-Next converted model directory not present: ") + model_dir.string());
 
     const ScopedEnv slots("LSX_QWEN38_EXPERT_CACHE_SLOTS", "1024");
 

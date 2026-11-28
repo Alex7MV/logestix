@@ -8,6 +8,8 @@
 // when the converted vault entry is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -21,7 +23,6 @@
 #include <simdjson.h>
 
 #include <lsxcommon/hy_moe_tool_format.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 #ifndef LSX_HY_FIXTURE_DIR
@@ -43,8 +44,7 @@ struct Case {
 bool LoadVaultDb(lsxcommon::ArrowTokenizerDb &db)
 {
     const std::filesystem::path root =
-        std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-        "Hy-Memory-30B-A3B" / "pinned";
+        manifest_query::ConvertedDirFor("hy-memory-30b-a3b") / "pinned";
     const std::filesystem::path v = root / "tokenizer_vocab.arrow";
     const std::filesystem::path m = root / "tokenizer_merges.arrow";
     if (!std::filesystem::exists(v) || !std::filesystem::exists(m)) return false;
@@ -125,7 +125,10 @@ TEST_CASE("Hy native renderer reproduces the checkpoint chat framing",
           "[hy][framing]")
 {
     lsxcommon::ArrowTokenizerDb db;
-    if (!LoadVaultDb(db)) SKIP("converted Hy-Memory vault entry absent");
+    if (!LoadVaultDb(db))
+        SKIP(std::string("converted Hy-Memory vault entry absent: ") +
+             manifest_query::ConvertedDirFor("hy-memory-30b-a3b").string() +
+             "/pinned");
     const auto cases = LoadCases();
     REQUIRE(cases.size() >= 10);
     for (const auto &c : cases) {

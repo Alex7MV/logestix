@@ -132,12 +132,15 @@ what you strip, and the feasibility numbers.
   the original `config.json` and the safetensors (pattern:
   `lsxcommon::qwen::ConvertQwenModel`, `libs/lsxcommon/src/qwen_dense_convert.cpp`).
 - Emit a structural manifest stripped of multimodal ballast.
-- **PATH DIRECTION**: results are saved under the conversion output root,
-  `<output>/logestix/` (+ `pinned/`, `experts/`). The models directory comes
-  from `lsxcommon::lsx_model_models_dir()` (`libs/lsxcommon/src/path_registry.cpp`);
-  converters never write anywhere else in the vault, and the old central
-  `model-metadata/` block is gone (host state such as the per-GPU perf
-  calibration lives in `lsx_cache_dir()`). No hardcoded paths in converters.
+- **PATH DIRECTION**: results are saved in the ARTIFACT store, one directory per
+  codec profile — `<LSX_ARTIFACT_ROOT>/<org>/<model>/<profile>/` holding
+  `artifact.fb`, `model.index.json`, `pinned/`, `experts/`, the tokenizer and the
+  chat template. There is no `logestix/` segment: the profile directory IS the
+  artifact, and the org/model names come from `models/<org>/<model>.json`
+  (`lsxforge::ModelIdentityFor` + `ArtifactProfileDir`), never from the path the
+  operator typed. A converter writes nothing into the read-only checkpoint; the
+  old central `model-metadata/` block is gone (host state such as the per-GPU
+  perf calibration lives in `lsx_cache_dir()`). No hardcoded paths in converters.
 - Test: see **Converter test rules** below — a `convert`-labelled synthetic E2E.
 
 #### Converter test rules (fixed)
@@ -169,6 +172,13 @@ fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
    `config.json` in `ParseFlashConfig`) with `SKIP()` when the model is absent;
    full weight reads/conversions never. Synthetic fixtures do not replace
    tests that validate the real format's field names.
+   **Never spell the path**: the store is org-nested and only
+   `models/<org>/<model>.json` knows the org, so a test asks
+   `manifest_query::SourceDirFor("<model_type>")` for the checkpoint or
+   `ConvertedDirFor("<model_type>")` for the artifact (it reads `pinned/`,
+   `model.index.json`, `artifact.fb`) — never `lsx_model_models_dir() / "<Dir>"`.
+   The SKIP message must name the path it looked at (`+ dir.string()`), or
+   "absent" and "wrong path" read the same in a ctest log.
 
 ### 2. Quantization and compression (NVFP4)
 

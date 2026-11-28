@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_xing_4_0_29b_a4b",
-    "vault_subdir": "Xing4.0-29B-A4B",
     "timeout": 1200
   },
   "target_overrides": {

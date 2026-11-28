@@ -11,7 +11,7 @@ so this reference does not read the engine's artifact interpretation.
 Usage:
   PYTHONPATH=/mnt/fast_storage/tmp/inkling2-mini/tf/deps:/mnt/fast_storage/tmp/inkling2-mini/tf/x \
       python3 tools/inkling_loop_transformers.py \
-      --vault /mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini \
+      --vault <source root>/thinkingmachines/Inkling-2-Mini \
       --prompt "The capital of France is" --max-gen 32 \
       --out /mnt/fast_storage/tmp/inkling2-mini/probes/paris.json
 
@@ -19,6 +19,7 @@ Usage:
 the native user turn exactly like chat_template.jinja (effort line included).
 --ids feeds comma-separated token ids directly (no tokenizer).
 """
+import lsx_paths
 import argparse
 import json
 import time
@@ -27,7 +28,7 @@ from pathlib import Path
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--vault", default="/mnt/fast_storage/lsx_model/thinkingmachines/Inkling-2-Mini")
+    ap.add_argument("--vault", default=str(lsx_paths.source_dir("inkling-2-mini")))
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--ids", default=None, help="comma separated token ids (overrides --prompt)")
     ap.add_argument("--raw", action="store_true", help="do not frame the prompt")

@@ -2,7 +2,7 @@
   "format": "logestix-code-golden",
   "version": 1,
   "model_type": "qwen3.8-27b",
-  "source": "/mnt/llm_models/models/Qwen3.8-27B",
+  "source": "Qwen/Qwen3.8-27B",
   "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
   "prompts": [
     {

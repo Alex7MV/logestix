@@ -61,7 +61,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_deepseek_v41_flash",
-    "vault_subdir": "DeepSeek-V4.1-Flash",
     "timeout": 3000
   },
   "target_overrides": {

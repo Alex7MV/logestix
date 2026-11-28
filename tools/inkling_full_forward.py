@@ -16,6 +16,8 @@ Usage:
                                       [--unembed bf16] [--attn bf16]
 """
 import argparse
+
+import lsx_paths
 import json
 import math
 import struct
@@ -63,7 +65,7 @@ def main() -> int:
     ap.add_argument("--topk", type=int, default=5)
     args = ap.parse_args()
 
-    base = Path(args.vault) / "logestix"
+    base = lsx_paths.artifact_dir(args.vault)
     src = Path(args.vault)
     idx = json.loads((base / "model.index.json").read_text())
     H = idx["hidden_size"]; L = idx["num_layers"]

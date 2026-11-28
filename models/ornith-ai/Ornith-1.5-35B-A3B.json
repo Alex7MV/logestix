@@ -56,7 +56,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_ornith",
-    "vault_subdir": "Ornith-1.5-35B-A3B",
     "timeout": 1200
   },
   "target_overrides": {

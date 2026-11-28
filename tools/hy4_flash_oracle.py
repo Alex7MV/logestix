@@ -23,6 +23,7 @@ No published implementation of this architecture exists (transformers ships
 `hy_v4`, not `hy_v4_flash`: Engram, the 64-head sliding layers, LatentMoE and
 the compressed indexer are all absent), so this file IS the reference of record
 for the engine's parity gates and for the FSI/CODE/DET goldens. It is written
+import lsx_paths
 from the checkpoint's own tensor names, its config.json and its model card, and
 every semantic decision it makes is named in a comment with the evidence.
 
@@ -37,7 +38,7 @@ Design rules, all of which exist to keep it honest:
   * it prints per-layer diagnostics next to the logits, so a divergence can be
     LOCALISED instead of guessed at.
 
-    python3 tools/hy4_flash_oracle.py --model /mnt/fast_storage/lsx_model/tencent/Hy4-flash \
+    python3 tools/hy4_flash_oracle.py --model <source root>/tencent/Hy4-flash \
         --prompt "The capital of France is" --tokens 4
 """
 import argparse
@@ -596,7 +597,7 @@ def topk(logits, k=8):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/mnt/fast_storage/lsx_model/tencent/Hy4-flash")
+    ap.add_argument("--model", default=str(lsx_paths.source_dir("hy4-flash")))
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--tokens", type=int, default=4)
     ap.add_argument("--verbose", action="store_true")

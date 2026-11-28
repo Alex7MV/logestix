@@ -57,7 +57,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_qwen3_8_flash_next",
-    "vault_subdir": "Qwen3.8-Flash-Next",
     "timeout": 1200
   },
   "target_overrides": {

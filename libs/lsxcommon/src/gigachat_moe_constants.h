@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen GigaChat3.5-432B-A28B-Reasoning geometry (compile-time passport).
-// Source of truth: /mnt/llm_models/models/GigaChat3.5-432B-A28B-Reasoning/
+// Source of truth: <source root>/ai-sage/GigaChat3.5-432B-A28B-Reasoning/
 // config.json + safetensors inventory audit (2026-09-20), and the reference
 // modeling_gigachat3_5.py (read-only reference, not vendored). 40 layers + 3
 // MTP; MLA full-attention at {3,7,...,39}; GatedDeltaNet elsewhere; MoE 3..39;

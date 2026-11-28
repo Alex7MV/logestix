@@ -47,13 +47,27 @@ Resolved Resolve(const std::string &model_or_path)
 
     const fs::path given(model_or_path);
 
-    // (1) An artifact directory, or a path inside one: accept the profile dir
-    // itself, the conventional `logestix` subdir an older caller may still
-    // spell, and the parent of a trailing slash.
-    for (const auto &cand : {given, given}) {
+    // (1) An artifact directory, or a path one level inside one: `ls` hands out
+    // file paths, so `--model <artifact>/model.index.json` must name the same
+    // tree as `--model <artifact>`. (The pre-split layout had a `logestix`
+    // subdir to accept as well; the profile directory IS the artifact now, so
+    // that spelling is gone.)
+    for (const auto &cand : {given, given.parent_path()}) {
         if (IsArtifactDir(cand)) {
             r.status = ResolveStatus::kArtifact;
             r.dir = cand;
+            // The artifact records the store coordinates it belongs to, so the
+            // identity fields come from the file rather than from whatever
+            // path the caller happened to type.
+            const auto read = ReadArtifact(cand);
+            if (read.status == ReadStatus::kOk) {
+                r.family = read.info.family;
+                r.model_type = read.info.model_type;
+                r.org = read.info.org;
+                r.model_dir = read.info.model_dir;
+                r.profile = read.info.profile;
+            }
+            if (r.profile.empty()) r.profile = cand.filename().string();
             return r;
         }
     }
@@ -76,48 +90,70 @@ Resolved Resolve(const std::string &model_or_path)
     }
 
     // (3) A bare model name, or a path into a model: look for its artifacts.
-    // The name may be either a vault directory or a manifest model_type; both
-    // are searched because both are things a user types.
+    // The name may be either a vault directory ("Qwen3.5-9B") or a manifest
+    // model_type ("qwen3.5-9b"); both are searched because both are things a
+    // user types, and only artifact.fb knows the second — the registry, the
+    // gates and every document spell the model that way, so comparing the
+    // directory name alone answered "not found" for the tree's own vocabulary.
+    const fs::path given_path(model_or_path);
+    const std::string wanted_leaf = given_path.filename().string();
     const auto root = ArtifactRoot();
     if (root.has_value()) {
         // One error_code per loop level: sharing one across nested iterators
         // means an inner failure (a permission error in one model directory)
         // aborts the whole search.
-        std::error_code fam_ec;
-        for (const auto &family_dir : fs::directory_iterator(*root, fam_ec)) {
-            if (fam_ec) break;
-            if (!family_dir.is_directory()) continue;
+        std::error_code org_ec;
+        for (const auto &org_dir : fs::directory_iterator(*root, org_ec)) {
+            if (org_ec) break;
+            if (!org_dir.is_directory()) continue;
             std::error_code model_ec;
             for (const auto &model_dir :
-                 fs::directory_iterator(family_dir.path(), model_ec)) {
+                 fs::directory_iterator(org_dir.path(), model_ec)) {
                 if (model_ec) break;
                 if (!model_dir.is_directory()) continue;
                 const std::string name = model_dir.path().filename().string();
-                if (name != model_or_path &&
-                    name != fs::path(model_or_path).filename().string())
-                    continue;
+                const bool by_dir = name == model_or_path || name == wanted_leaf;
+                // An identity can only be known from an artifact, but a model
+                // directory with NO profile still answers the caller's question
+                // when the identity matches another profile of it — and when the
+                // caller typed the model_type, "not converted yet" is the fix,
+                // not "no such model".
+                bool by_identity_any = false;
                 std::error_code prof_ec;
                 for (const auto &profile_dir :
                      fs::directory_iterator(model_dir.path(), prof_ec)) {
                     if (prof_ec) break;
                     if (!profile_dir.is_directory()) continue;
                     if (!IsArtifactDir(profile_dir.path())) continue;
+                    // Identity comes from the artifact, not from the path: one
+                    // read is what a caller needs anyway, and it cannot disagree
+                    // with the directory it sits in.
+                    const auto read = ReadArtifact(profile_dir.path());
+                    const bool by_identity =
+                        read.status == ReadStatus::kOk &&
+                        (read.info.model_type == model_or_path ||
+                         read.info.model_type == wanted_leaf);
+                    by_identity_any = by_identity_any || by_identity;
+                    if (!by_dir && !by_identity) continue;
                     r.status = ResolveStatus::kArtifact;
                     r.dir = profile_dir.path();
-                    r.org = family_dir.path().filename().string();
+                    r.org = org_dir.path().filename().string();
                     r.model_dir = name;
                     r.profile = profile_dir.path().filename().string();
-                    const auto read = ReadArtifact(profile_dir.path());
                     if (read.status == ReadStatus::kOk) {
                         r.family = read.info.family;
                         r.model_type = read.info.model_type;
+                        r.org = read.info.org.empty() ? r.org : read.info.org;
+                        r.model_dir = read.info.model_dir.empty() ? r.model_dir
+                                                                  : read.info.model_dir;
                     }
                     return r;
                 }
+                if (!by_dir && !by_identity_any) continue;
                 // The model exists but has no converted profile.
                 r.status = ResolveStatus::kSourceOnly;
                 r.model_dir = name;
-                r.org = family_dir.path().filename().string();
+                r.org = org_dir.path().filename().string();
                 r.detail = "'" + name + "' has no converted artifact under " +
                            root->string();
                 return r;
@@ -154,6 +190,14 @@ Resolved Resolve(const std::string &model_or_path)
     r.detail = why.empty() ? ("no artifact and no source checkpoint for '" +
                               model_or_path + "'")
                            : why;
+    // A manifest model_type ("glm-5.2") is an IDENTITY, not a directory name;
+    // the store spells the directory "GLM-5.2". Say so, because the search above
+    // matched artifacts by identity and the source search cannot — the registry
+    // that knows the mapping sits above this layer.
+    if (model_or_path.find('/') == std::string::npos) {
+        r.detail += " (a model_type is not a directory name: under the source "
+                    "root the store spells the directory as the download does)";
+    }
     return r;
 }
 

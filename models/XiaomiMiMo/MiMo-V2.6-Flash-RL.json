@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_mimo_v2_6_flash_rl",
-    "vault_subdir": "MiMo-V2.6-Flash-RL",
     "timeout": 1200
   },
   "target_overrides": {

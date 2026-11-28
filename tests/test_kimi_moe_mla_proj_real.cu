@@ -7,12 +7,13 @@
 // SKIPs when the converted Kimi tree is absent (SKIP_RETURN_CODE 4).
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include "kimi_moe_kernels.h"
 #include "lsxcommon/kimi_moe_load.h"
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "nvfp4_scale.h"
-#include "lsxcommon/path_registry.h"
 #include "lsxcommon/schema.h"
 
 #include <cuda_fp16.h>
@@ -34,8 +35,7 @@ std::filesystem::path ModelDir()
 {
     const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
     return env ? std::filesystem::path(env)
-               : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                     "Kimi-K2.7-Code";
+               : manifest_query::ConvertedDirFor("kimi-k2.7-code");
 }
 
 // E2M1 magnitudes by nibble code (bit 3 = sign).
@@ -378,7 +378,7 @@ TEST_CASE("pinned MLA projection GEMV matches the host NVFP4 decoder on real "
     const std::filesystem::path model = ModelDir();
     const std::filesystem::path log_root = model;
     if (!std::filesystem::exists(log_root / "pinned" / "layer_0.arrow"))
-        SKIP("converted Kimi model directory not present");
+        SKIP(std::string("converted Kimi model directory not present: ") + log_root.string());
 
     SECTION("o_proj (K=8192, N=7168, kp=8)") { CheckProjection(log_root, "o_proj"); }
     SECTION("kv_a (K=7168, N=576, kp=4)") { CheckProjection(log_root, "kv_a_proj_with_mqa"); }

@@ -30,8 +30,10 @@
 #include <vector>
 
 #include <lsxcommon/byte_unicode.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
+#include <lsxstorage/roots.h>
+
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -156,25 +158,43 @@ std::int32_t CountLiftedBytes(const lsxcommon::ArrowTokenizerDb &db)
 TEST_CASE("every converted vocabulary keeps the decode->encode round-trip",
           "[tokenizer][vocab][real-model]")
 {
-    const fs::path models_root = lsxcommon::lsx_model_models_dir();
-    if (!fs::exists(models_root)) {
-        SKIP("models directory not present: " + models_root.string());
+    // Walk the ARTIFACT store, which mirrors the source store's org nesting:
+    //   <artifact root>/<org>/<model_dir>/<profile>/pinned/tokenizer_vocab.arrow
+    // The old walk assumed the pre-split layout `<models root>/<Model>/pinned/`
+    // — a flat directory under the SOURCE root that no conversion writes to any
+    // more, so the sweep either skipped or found nothing at all.
+    const std::optional<fs::path> artifact_root = lsx::storage::ArtifactRoot();
+    if (!artifact_root) {
+        SKIP("LSX_ARTIFACT_ROOT unset — there are no converted trees to walk");
     }
 
-    std::vector<fs::path> found;
-    for (const auto &entry : fs::directory_iterator(models_root)) {
-        if (!entry.is_directory()) continue;
-        if (fs::exists(entry.path() / "pinned" /
-                       "tokenizer_vocab.arrow"))
-            found.push_back(entry.path());
+    struct Converted {
+        std::string name;      // the store's spelling: what a family declares
+        fs::path dir;          // the profile directory, the artifact itself
+    };
+    std::vector<Converted> found;
+    std::error_code ec;
+    for (const auto &org : fs::directory_iterator(*artifact_root, ec)) {
+        if (ec || !org.is_directory()) continue;
+        for (const auto &model : fs::directory_iterator(org.path(), ec)) {
+            if (ec || !model.is_directory()) continue;
+            for (const auto &profile : fs::directory_iterator(model.path(), ec)) {
+                if (ec || !profile.is_directory()) continue;
+                if (fs::exists(profile.path() / "pinned" /
+                               "tokenizer_vocab.arrow"))
+                    found.push_back({model.path().filename().string(),
+                                     profile.path()});
+            }
+        }
     }
     if (found.empty()) {
         SKIP("no converted model with a pinned vocabulary under " +
-             models_root.string());
+             artifact_root->string());
     }
 
-    for (const auto &root : found) {
-        const std::string name = root.filename().string();
+    for (const auto &entry : found) {
+        const std::string &name = entry.name;
+        const fs::path &root = entry.dir;
         CAPTURE(name);
         const KnownFamily *known = FindKnown(name);
         REQUIRE(known != nullptr);   // a new family must declare its contract

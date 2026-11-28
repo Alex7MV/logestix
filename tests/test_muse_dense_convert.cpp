@@ -203,9 +203,10 @@ TEST_CASE("muse dense topology parse: real checkpoint config",
         env && *env)
         root = env;
     else
-        root = manifest_query::SourceDirFor("muse-glimmer-30b");
+        root = manifest_query::SourceDirFor("muse-glimmer-30b").string();
     if (!fs::exists(fs::path(root) / "config.json"))
-        SKIP("Muse-Glimmer-30B source checkpoint not present");
+        SKIP(std::string("Muse-Glimmer-30B source checkpoint not present: ") +
+             root);
 
     auto top = lsxcommon::muse_dense::load_muse_dense_topology(
         (fs::path(root) / "config.json").string());

@@ -20,7 +20,6 @@
 
 #include "test_manifest_query_root.h"
 #include "glm_moe_flash_constants.h"
-#include "lsxcommon/path_registry.h"
 #include "test_glm_moe_flash_fixture.h"
 
 namespace fs = std::filesystem;
@@ -163,9 +162,10 @@ TEST_CASE("flash_tensor_is_nvfp4 policy")
 
 TEST_CASE("ParseFlashConfig: real checkpoint text_config")
 {
-    const std::string dir = manifest_query::SourceDirFor("glm-5.3-flash");
-    if (!fs::exists(dir + "/config.json")) {
-        SKIP("GLM-5.3-Flash checkpoint not present");
+    const fs::path dir = manifest_query::SourceDirFor("glm-5.3-flash");
+    if (!fs::exists(dir / "config.json")) {
+        SKIP(std::string("GLM-5.3-Flash checkpoint not present: ") +
+             dir.string());
     }
     auto top = ParseFlashConfig(dir);
     REQUIRE(top.error_msg.empty());
@@ -368,7 +368,7 @@ namespace {
 
 fs::path GlmFlashSourceDir()
 {
-    return fs::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.3-Flash";
+    return manifest_query::SourceDirFor("glm-5.3-flash");
 }
 
 } // namespace
@@ -377,7 +377,8 @@ TEST_CASE("real checkpoint: hybrid pattern + semantics match the passport")
 {
     const fs::path dir = GlmFlashSourceDir();
     const std::string cfg = dir.string() + "/config.json";
-    if (!fs::exists(cfg)) SKIP("GLM-5.3-Flash checkpoint not present");
+    if (!fs::exists(cfg))
+        SKIP(std::string("GLM-5.3-Flash checkpoint not present: ") + cfg);
 
     simdjson::dom::parser parser;
     simdjson::dom::element doc;
@@ -482,7 +483,8 @@ TEST_CASE("real checkpoint: every tensor in the index is classified")
 {
     const fs::path dir = GlmFlashSourceDir();
     const std::string index_path = dir.string() + "/model.safetensors.index.json";
-    if (!fs::exists(index_path)) SKIP("GLM-5.3-Flash checkpoint not present");
+    if (!fs::exists(index_path))
+        SKIP(std::string("GLM-5.3-Flash checkpoint not present: ") + index_path);
 
     simdjson::dom::parser parser;
     simdjson::dom::element doc;

@@ -56,7 +56,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_qwen3_5_35b_a3b",
-    "vault_subdir": "Qwen3.5-35B-A3B",
     "timeout": 1200
   },
   "target_overrides": {

@@ -62,7 +62,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_nemotron_ultra",
-    "vault_subdir": "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
     "timeout": 7200
   },
   "target_overrides": {

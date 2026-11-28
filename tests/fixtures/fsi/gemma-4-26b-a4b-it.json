@@ -2,7 +2,7 @@
   "format": "logestix-fsi-golden",
   "version": 1,
   "model_type": "gemma-4-26b-a4b-it",
-  "source": "/mnt/llm_models/models/gemma-4-26B-A4B-it",
+  "source": "google/gemma-4-26B-A4B-it",
   "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
   "prompts": [
     {

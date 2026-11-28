@@ -10,6 +10,8 @@
 // from this bridge. SKIPs (4) when the converted vault entry is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -21,7 +23,6 @@
 
 #include <simdjson.h>
 
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 #ifndef LSX_FLINT_FIXTURE_DIR
@@ -71,8 +72,7 @@ std::vector<Case> LoadCases()
 bool LoadVaultDb(lsxcommon::ArrowTokenizerDb &db)
 {
     const std::filesystem::path root =
-        std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-        "flint" / "pinned";
+        manifest_query::ConvertedDirFor("flint") / "pinned";
     const std::filesystem::path v = root / "tokenizer_vocab.arrow";
     const std::filesystem::path m = root / "tokenizer_merges.arrow";
     if (!std::filesystem::exists(v) || !std::filesystem::exists(m)) return false;
@@ -90,7 +90,9 @@ TEST_CASE("Flint tokenizer reproduces the checkpoint ids exactly",
           "[flint][tokenizer]")
 {
     lsxcommon::ArrowTokenizerDb db;
-    if (!LoadVaultDb(db)) SKIP("converted flint vault entry absent");
+    if (!LoadVaultDb(db))
+        SKIP(std::string("converted flint vault entry absent: ") +
+             manifest_query::ConvertedDirFor("flint").string() + "/pinned");
     REQUIRE(db.tokenizer_kind == 4);
     const auto cases = LoadCases();
     REQUIRE(cases.size() >= 20);

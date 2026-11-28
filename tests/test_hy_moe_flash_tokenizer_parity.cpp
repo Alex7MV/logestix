@@ -24,7 +24,6 @@
 
 #include <simdjson.h>
 
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 #ifndef LSX_HY4_FIXTURE_DIR
@@ -73,13 +72,14 @@ std::vector<Case> LoadCases()
     return cases;
 }
 
-// The SOURCE checkpoint (read-only store) — what 'vault' means in the
-// registry schema; the converted tree is ConvertedDirFor/ModelRoot.
-std::filesystem::path VaultRoot()
+// The ARTIFACT (converted tree): this reads `pinned/tokenizer_{vocab,merges}.arrow`,
+// which only a conversion writes. The registry resolves it from the model_type —
+// `<artifact root>/<org>/<model>/<profile>` — and the row's own env override wins.
+std::filesystem::path ConvertedRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_HY4_FLASH_ROOT"))
         return std::filesystem::path(env);
-    return std::filesystem::path(manifest_query::SourceDirFor("hy4-flash"));
+    return std::filesystem::path(manifest_query::ConvertedDirFor("hy4-flash"));
 }
 
 } // namespace
@@ -87,7 +87,7 @@ std::filesystem::path VaultRoot()
 TEST_CASE("hy4 tokenizer: the bridge reproduces the reference ids",
           "[hy4][fast]")
 {
-    const auto pinned = VaultRoot() / "pinned";
+    const auto pinned = ConvertedRoot() / "pinned";
     if (!std::filesystem::exists(pinned / "tokenizer_vocab.arrow"))
         SKIP("converted Hy4-flash tokenizer absent at " + pinned.string());
 

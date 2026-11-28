@@ -57,7 +57,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_minimax_m31_flash",
-    "vault_subdir": "MiniMax-M3.1-Flash",
     "timeout": 3000,
     "resource_lock": "gpu"
   },

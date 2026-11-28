@@ -1,10 +1,11 @@
 // Granite-Switch aLoRA parity against the CPU-BF16 source oracle.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/chat_conversation.h>
-#include <lsxcommon/path_registry.h>
 
 #include <simdjson.h>
 
@@ -49,8 +50,7 @@ std::filesystem::path ModelRoot()
 {
     if (const char *env = std::getenv(LSX_GSW_ROOT_ENV))
         return std::filesystem::path(env);
-    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           kModelType;
+    return manifest_query::ConvertedDirFor(kModelType);
 }
 
 std::filesystem::path GoldenPath()
@@ -141,7 +141,7 @@ TEST_CASE("granite-switch chat framing reproduces the source ids",
 {
     const auto root = ModelRoot();
     if (!std::filesystem::exists(root / "model.index.json"))
-        SKIP("granite-switch converted model not present");
+        SKIP(std::string("granite-switch converted model not present: ") + root.string());
     const auto golden_path = GoldenPath();
     if (!std::filesystem::exists(golden_path))
         SKIP("adapter parity golden not captured");
@@ -173,7 +173,7 @@ TEST_CASE("granite-switch adapter parity against the source oracle",
 {
     const auto root = ModelRoot();
     if (!std::filesystem::exists(root / "model.index.json"))
-        SKIP("granite-switch converted model not present");
+        SKIP(std::string("granite-switch converted model not present: ") + root.string());
     const auto golden_path = GoldenPath();
     if (!std::filesystem::exists(golden_path))
         SKIP("adapter parity golden not captured");

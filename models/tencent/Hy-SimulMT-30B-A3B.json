@@ -57,7 +57,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_hy_simulmt_30b_a3b",
-    "vault_subdir": "Hy-SimulMT-30B-A3B",
     "timeout": 3000,
     "resource_lock": "gpu"
   },

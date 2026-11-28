@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_ling",
-    "vault_subdir": "Ling-3.1-flash",
     "timeout": 7200,
     "resource_lock": "gpu"
   },

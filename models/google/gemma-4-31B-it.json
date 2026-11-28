@@ -56,7 +56,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_gemma_4_31b_it",
-    "vault_subdir": "gemma-4-31B-it",
     "timeout": 1200
   },
   "target_overrides": {

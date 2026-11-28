@@ -21,29 +21,46 @@ Machine-checked registries (`test_model_suite_guard`, `kPassports`, …) stay th
 source of truth for whether a model is complete; this skill is the operator's
 entry point.
 
-## 1. Vault and paths
+## 1. The two stores, and the paths into them
 
-The model root defaults to a compile-time platform constant in
-`libs/lsxcommon/include/lsxcommon/path_registry.h`, overridable at runtime with
-the `LSX_MODEL_ROOT` environment variable (an absolute path to the models
-directory):
+Models live in **two** roots, both **org-nested** exactly the way Hugging Face
+lays a download out:
 
-| platform | `kModelRootBase` (default) | converted models live in |
+```
+checkpoint   <LSX_SOURCE_ROOT>/<org>/<model>             read-only, never written
+artifact     <LSX_ARTIFACT_ROOT>/<org>/<model>/<profile> converted, one dir per codec
+```
+
+| root | env | default |
 |---|---|---|
-| Linux | `/mnt/llm_models/models` | `<base>/<Model>/logestix/` |
-| Windows | `D:\Programs\lsx_model` | `<base>\<Model>\logestix\` |
+| source | `LSX_SOURCE_ROOT`, then the pre-split `LSX_MODEL_ROOT` | `/mnt/fast_storage/lsx_model` (`D:\Programs\lsx_model`) |
+| artifact | `LSX_ARTIFACT_ROOT` | **none** — writing gigabytes to an invented location is the bug this split prevents, so an unset root is an error, not a fallback |
+| cache | `LSX_CACHE_DIR` | `$XDG_CACHE_HOME/logestix` / `~/.cache/logestix` (`%LOCALAPPDATA%\logestix\cache`) |
 
-- Every vault read/write goes through `lsx_model_models_dir()` — **no other
-  code may reconstruct the root**. The vault holds model trees only
-  (`<base>/<Model>/logestix/`); nothing else is written next to them. Host
-  state that is not model data (the per-GPU perf calibration) lives in
-  `lsx_cache_dir()` (`LSX_CACHE_DIR`, else `$XDG_CACHE_HOME/logestix` /
-  `~/.cache/logestix`; `%LOCALAPPDATA%\logestix\cache` on Windows).
-- A converted model `lsxforge` output lands in `<output>/logestix/` and carries
-  `logestix/model.index.json`, `logestix/pinned/`, and per-expert `.arrow` files.
-- **Gotcha:** the CLI apps take the **model root** (`<base>/<Model>`), *not* the
-  `logestix/` subdirectory. `--localmodel /mnt/llm_models/models/gemma-4-26B-A4B-it`
-  is right; `.../gemma-4-26B-A4B-it/logestix` silently fails to load.
+- **The profile directory IS the artifact.** There is no `logestix/` segment any
+  more: `.../microsoft/phi-4/nvfp4/` holds `artifact.fb`, `model.index.json`,
+  `pinned/`, `experts/`, the tokenizer and the chat template. Any path that
+  spells `logestix/` is pre-split and dead (`test_path_shape_guard` forbids the
+  segment in `libs/`, `apps/`, `tests/`).
+- **A converted model is written by `--codec-profile`**, and it lands at
+  `<artifact root>/<org>/<model>/<profile>`; the org and the model directory come
+  from `models/<org>/<model>.json`, not from the path you typed. `--output` is
+  ignored on that path. Without `--codec-profile` the converter writes into
+  `--output` directly (also with no `logestix/`).
+- **What the CLI apps accept** (`--model`, `--localmodel`): an artifact
+  directory, a path inside one (e.g. `.../nvfp4/model.index.json`), a bare model
+  name — the store spelling (`Qwen3.5-9B`) or the registry identity
+  (`qwen3.5-9b`) — or an org-qualified name (`Qwen/Qwen3.5-9B`). Resolution is
+  `lsx::storage::Resolve`, which searches the artifact store and reports a
+  source-only checkpoint with the conversion command, instead of "missing
+  weights".
+- **Nothing else builds a model path.** `lsx::storage::SourceRoot()` /
+  `ArtifactRoot()` / `ArtifactDir(org, model_dir, profile)` and, inside tests,
+  `manifest_query::SourceDirFor` / `ConvertedDirFor` / `ModelRoot(row)`. A join
+  of a bare model name onto a root drops the org and names a directory that does
+  not exist — that class of bug is guarded (`test_path_shape_guard`).
+- Host state that is not model data (the per-GPU perf calibration) lives in
+  `lsx_cache_dir()`, never in either store.
 
 ## 2. Applications and exact invocations
 
@@ -61,10 +78,7 @@ cmake --build build/linux-release-znver4-aocc                               # pe
 | `lsxbenchmark` | bit-exact measurement | `lsxbenchmark --model <root> --bench --bit-exact` |
 | `lsxfabric` | generate exactly as the engine does | `lsxfabric --localmodel <root> --testprompt --prompt "<p>" --max-gen 64` |
 | `lsxfabric` | load-validate a converted model through the engine | `lsxfabric --localmodel <root> --validate` |
-| `lsxforge` | convert a source checkpoint | `lsxforge --input <src> --output <src> --<family>` —
-  `--output` is the **model root**, not the destination: every converter appends
-  `logestix/` itself, so `--output <src>/logestix` silently produces
-  `<src>/logestix/logestix` |
+| `lsxforge` | convert a source checkpoint | `lsxforge --input <artifact-store path> --codec-profile nvfp4 --<family>` (`--input` is the model **identity**: the store dir, the model_type from `models/<org>/<model>.json`, or the absolute checkpoint path). With `--codec-profile` the output is `<LSX_ARTIFACT_ROOT>/<org>/<model>/<nvfp4>` and `--output` is ignored; without it the converter writes into `--output` itself — no `logestix/` segment in either case |
 | `lsxforge` | one-shot generation path | `lsxforge --input <root> --run "<prompt>"` (or `-r`) |
 | `lsxcli` | inspect a converted model | `lsxcli --model <root> --info` / `--infofull` |
 | `taskmosaic` | orchestrator stub (init + GPU log) | `taskmosaic` (no flags) |
@@ -130,7 +144,7 @@ $B/lsxfabric/lsxfabric --localmodel <vault-root> --serve \
 
 # 6. Bridge it (OpenAI + Anthropic surfaces, tool calling). The config binds
 #    a model id to the fabric endpoints from step 5 (apps/taskmosaic/src/config.h):
-#    {"models":[{"id":"my-model","model_path":"/mnt/llm_models/models/<Model>",
+#    {"models":[{"id":"my-model","model_path":"<artifact>/<org>/<model>/<profile>",
 #      "backend":{"endpoint":"tcp://127.0.0.1:5555",
 #                 "cancel_endpoint":"tcp://127.0.0.1:5556"}}],
 #     "default_model":"my-model"}
@@ -324,7 +338,7 @@ PRODUCTION code and must stay unset in a real run:
 | variable | meaning |
 |---|---|
 | `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1` | relax the frozen-geometry gates for converter/loader/model fixtures (31 targets set it) |
-| `LSX_PERF_VAULT_SUBDIR=<subdir>` | vault subdir per `test_perf_baseline_*` target (19 targets) |
+| ~~`LSX_PERF_VAULT_SUBDIR`~~ | **gone**: a perf target resolves its artifact from the registry (`ConvertedDirFor(model_type)`); the old var carried the store directory name and was joined onto the source root without the org |
 | `LSX_TEST_NEMOTRON_ROOT=<dir>` | vault path for the nemotron selfcheck |
 
 **Operator-supplied — the real-weight suites `SKIP` until you set these:**
@@ -396,8 +410,11 @@ on real weights). There memory and GPU are critical:
 
 ## Common mistakes
 
-- Passing the `logestix/` subdirectory instead of the model root to `--model` /
-  `--localmodel`.
+- Passing a **source checkpoint** where an artifact is wanted: the gates and the
+  engine load the converted tree (`<artifact root>/<org>/<model>/<profile>`), and
+  a checkpoint has no `artifact.fb`. `Resolve` says so and names the conversion.
+- Spelling a model path by hand without the org (`<root>/<Model>`): the store is
+  `<root>/<org>/<model>`. Pass the identity instead and let `Resolve` find it.
 - Measuring with `lsxfabric`: it has no numeric flag — use `lsxbenchmark --bench`.
 - Quoting a 128-token run as the baseline (warmup-affected; canonical is 2048).
 - A stale binary: rebuild the app target before measuring.

@@ -1,10 +1,11 @@
 #include <catch2/catch_all.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <lsxcommon/granite_dense_switch_convert.h>
 #include <lsxcommon/granite_dense_switch_inference.h>
 #include <lsxcommon/granite_dense_switch_load.h>
 #include <lsxcommon/model_factory.h>
-#include <lsxcommon/path_registry.h>
 
 #include "test_granite_switch_fixture.h"
 #include "test_streaming_assert.h"
@@ -38,6 +39,7 @@ std::string JoinInts(const std::vector<int> &v)
 
 #include <cuda_runtime.h>
 
+#include <string>
 #include <filesystem>
 #include <memory>
 
@@ -258,15 +260,16 @@ TEST_CASE("granite-switch native tool round-trip (real weights)",
     const char *env = std::getenv(LSX_GSW_ROOT_ENV);
     const std::filesystem::path root =
         env ? std::filesystem::path(env)
-            : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                  kModelType;
+            : manifest_query::ConvertedDirFor(kModelType);
     if (!std::filesystem::exists(root / "model.index.json"))
-        SKIP(std::string(kModelType) + " converted model not present");
+        SKIP(std::string(kModelType) + " converted model not present: " +
+             root.string());
     const std::filesystem::path golden_path =
         std::filesystem::path(LSX_GRANITE_SWITCH_FIXTURE_DIR) /
         "tool_roundtrip.json";
     if (!std::filesystem::exists(golden_path))
-        SKIP("granite-switch tool golden not captured");
+        SKIP(std::string("granite-switch tool golden not captured: ") +
+             golden_path.string());
 
     std::ifstream gf(golden_path);
     std::string gj((std::istreambuf_iterator<char>(gf)),

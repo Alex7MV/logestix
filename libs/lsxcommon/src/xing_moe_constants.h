@@ -5,7 +5,7 @@
 // gate SyntheticGeometryAllowed() (LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY).
 //
 // Source of truth (read-only reference, not vendored):
-//   /mnt/llm_models/models/Xing4.0-29B-A4B/config.json
+//   <source root>/XingChen-AGI/Xing4.0-29B-A4B/config.json
 //   .../modeling_xing4_0.py  (China Telecom AI, TeleChat lineage)
 //   .../model.safetensors.index.json  (8307 tensors, 58.1 GiB bf16)
 //

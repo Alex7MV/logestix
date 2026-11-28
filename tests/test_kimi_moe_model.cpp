@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include "test_kimi_moe_fixture.h"
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/kimi_moe_load.h"
@@ -15,7 +17,6 @@
 #include <vector>
 
 #include "lsxcommon/log.h"
-#include "lsxcommon/path_registry.h"
 #include "lsxcommon/tokenizer.h"
 
 using namespace lsxcommon;
@@ -88,10 +89,9 @@ TEST_CASE("Kimi perf baseline: decode throughput", "[kimi][model][perf][real-mod
     namespace fs = std::filesystem;
     const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
     fs::path model = env ? fs::path(env)
-                         : fs::path(lsxcommon::lsx_model_models_dir()) /
-                               "Kimi-K2.7-Code";
+                         : manifest_query::ConvertedDirFor("kimi-k2.7-code");
     if (!fs::exists(model / "pinned"))
-        SKIP("converted Kimi model directory not present");
+        SKIP(std::string("converted Kimi model directory not present: ") + model.string());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();

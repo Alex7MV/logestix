@@ -4,6 +4,8 @@
 // tokenizer must resolve the plain Harmony markers literally.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdlib>
@@ -179,9 +181,13 @@ TEST_CASE("beam tool parameters that are not strings stay JSON", "[beam][tool]")
 TEST_CASE("beam parses the real-weight native call token stream",
           "[beam][tool][real-tokenizer]")
 {
+    // The checkpoint's own tokenizer, resolved from the registry (the store is
+    // org-nested: reflection/Beam-1.0-501B-A23B). A literal here pointed at a
+    // pre-store directory that no longer exists, so the case always SKIPped.
     const fs::path real =
-        "/mnt/fast_storage/huggingface/Beam-1.0-501B-A23B/tokenizer.json";
-    if (!fs::exists(real)) SKIP("Beam source tokenizer.json absent");
+        manifest_query::SourceDirFor("beam") / "tokenizer.json";
+    if (!fs::exists(real))
+        SKIP(std::string("Beam source tokenizer.json absent: ") + real.string());
     fs::path dir = fs::temp_directory_path() / "lsx_beam_tool_real";
     std::error_code ec;
     fs::remove_all(dir, ec);

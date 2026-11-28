@@ -2,10 +2,12 @@
 // model). Reporting test: prints tok/s every run so lever impact is visible.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include "lsxcommon/model_factory.h"
-#include "lsxcommon/path_registry.h"
 #include "lsxcommon/tokenizer.h"
 
+#include <string>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -18,8 +20,7 @@ std::filesystem::path KimiPerfModelPath()
 {
     if (const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH"))
         return std::filesystem::path(env);
-    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           "Kimi-K2.7-Code";
+    return manifest_query::ConvertedDirFor("kimi-k2.7-code");
 }
 
 int PerfGenTokens()
@@ -38,7 +39,7 @@ TEST_CASE("Kimi-K2.7-Code perf baseline: decode throughput",
 {
     const std::filesystem::path model = KimiPerfModelPath();
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("converted Kimi model directory not present");
+        SKIP(std::string("converted Kimi model directory not present: ") + model.string());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();

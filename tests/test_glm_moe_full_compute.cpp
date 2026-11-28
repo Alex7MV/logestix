@@ -13,6 +13,8 @@
 //       element-for-element against the independent CPU FP64 reference
 //       (RED/GREEN) and the greedy token stream shows 0 tokens-drift.
 #include <catch2/catch_test_macros.hpp>
+
+#include "test_manifest_query_root.h"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <algorithm>
@@ -27,7 +29,6 @@
 #include <lsxcommon/glm_moe_inference.h>
 #include "lsxcommon/schema.h"
 #include <lsxcommon/glm_moe_load.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/schema.h>
 
 using lsxcommon::glm::GlmPinnedWeights;
@@ -499,9 +500,9 @@ TEST_CASE("GLM-5.2 full 79-layer SKWOS regression: multi-turn decode, no leak, "
     const char *env = std::getenv("LSX_TEST_GLM_MODEL_PATH");
     std::filesystem::path model =
         env ? std::filesystem::path(env)
-            : std::filesystem::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.2";
+            : manifest_query::ConvertedDirFor("glm-5.2");
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("GLM real model directory not present");
+        SKIP(std::string("GLM real model directory not present: ") + model.string());
 
     cudaFree(0);
     cudaStream_t st;

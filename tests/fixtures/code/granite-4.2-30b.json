@@ -2,7 +2,7 @@
   "format": "logestix-code-golden",
   "version": 1,
   "model_type": "granite-4.2-30b",
-  "source": "/mnt/llm_models/models/granite-4.2-30b",
+  "source": "ibm-granite/granite-4.2-30b",
   "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
   "prompts": [
     {

@@ -9,7 +9,7 @@ multi-space lookahead, punctuation runs, the chat/tool markers (added tokens,
 matched literally by the reference encoder) and mixed code.
 
     python3 tools/flint_tokenizer_capture.py \
-        --tokenizer /mnt/fast_storage/huggingface/flint/tokenizer.json \
+        --tokenizer <source root>/RecursiveSI/flint/tokenizer.json \
         --out tests/fixtures/flint/tokenizer_parity.jsonl
 """
 import argparse

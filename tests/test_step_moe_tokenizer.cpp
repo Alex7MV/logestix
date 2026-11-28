@@ -7,6 +7,8 @@
 // bos_id = -1).
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdlib>
@@ -16,7 +18,6 @@
 #include <vector>
 
 #include <lsxcommon/converter.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace fs = std::filesystem;
@@ -49,7 +50,7 @@ fs::path ModelDir()
 {
     if (const char *env = std::getenv("LSX_TEST_STEP_ROOT"))
         return fs::path(env);
-    return fs::path(lsxcommon::lsx_model_models_dir()) / "Step-5-Preview";
+    return manifest_query::SourceDirFor("step-5-preview");
 }
 
 } // namespace
@@ -58,7 +59,7 @@ TEST_CASE("Step-5 tokenizer bridge matches the checkpoint tokenizer",
           "[step][tokenizer]")
 {
     const fs::path tok = ModelDir() / "tokenizer.json";
-    if (!fs::exists(tok)) SKIP("Step-5-Preview tokenizer.json not present");
+    if (!fs::exists(tok)) SKIP(std::string("Step-5-Preview tokenizer.json not present: ") + tok.string());
 
     fs::path pinned = fs::temp_directory_path() / "lsx_step_tok";
     fs::remove_all(pinned);

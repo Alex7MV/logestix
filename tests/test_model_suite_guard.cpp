@@ -1159,24 +1159,29 @@ int CountStoreRootLiterals(const fs::path &dir, const std::string &name)
     return hits;
 }
 
-std::vector<std::string> CheckNoStoreRootLiterals(const fs::path &tests_dir,
+std::vector<std::string> CheckNoStoreRootLiterals(const fs::path &root,
                                                   int *scanned)
 {
     std::vector<std::string> v;
     std::error_code ec;
-    if (!fs::is_directory(tests_dir, ec)) return v;
+    if (!fs::is_directory(root, ec)) return v;
     if (scanned) *scanned = 0;
-    for (const auto &e : fs::directory_iterator(tests_dir, ec))
+    // RECURSIVE: the rule is tree-wide, and `apps/*/tests` is where it was
+    // broken next — a per-directory scan cannot see a literal one level down,
+    // which is how four of them survived in `test_model_identity.cpp`.
+    for (const auto &e : fs::recursive_directory_iterator(root, ec))
     {
+        if (ec) break;
         if (!e.is_regular_file()) continue;
         const std::string name = e.path().filename().string();
         const std::string ext = e.path().extension().string();
         if (ext != ".cpp" && ext != ".cu" && ext != ".h") continue;
         if (StoreSubjectFiles().count(name)) continue;
         if (scanned) ++*scanned;
-        const int hits = CountStoreRootLiterals(tests_dir, name);
+        const int hits = CountStoreRootLiterals(e.path().parent_path(), name);
         if (hits > 0)
-            v.push_back(name + ": " + std::to_string(hits) +
+            v.push_back(fs::relative(e.path(), LSX_SOURCE_DIR).string() + ": " +
+                        std::to_string(hits) +
                         " line(s) hardcode a store root — resolve it from the "
                         "registry (manifest_query::SourceDir(row) / "
                         "ModelRoot(row))");
@@ -1186,13 +1191,17 @@ std::vector<std::string> CheckNoStoreRootLiterals(const fs::path &tests_dir,
 
 }  // namespace
 
-TEST_CASE("suite guard: no test hardcodes the model store root",
+TEST_CASE("suite guard: nothing in tests/ or apps/ hardcodes the store root",
           "[suite][guard]")
 {
-    int scanned = 0;
+    int scanned = 0, app_scanned = 0;
     auto v = CheckNoStoreRootLiterals(fs::path(LSX_SOURCE_DIR) / "tests",
                                       &scanned);
-    INFO("test files scanned: " << scanned);
+    for (auto &x : CheckNoStoreRootLiterals(fs::path(LSX_SOURCE_DIR) / "apps",
+                                            &app_scanned))
+        v.push_back(x);
+    scanned += app_scanned;
+    INFO("sources scanned (tests + apps): " << scanned);
     REQUIRE(scanned > 100);   // an empty scan would pass every assertion below
     std::string joined;
     for (const auto &s : v) joined += "  " + s + "\n";

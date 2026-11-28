@@ -57,7 +57,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_dory_1_0_4b",
-    "vault_subdir": "NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
     "timeout": 3000
   },
   "target_overrides": {

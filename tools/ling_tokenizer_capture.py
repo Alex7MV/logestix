@@ -7,7 +7,7 @@ runs, digit runs of length 1..7, CJK runs, contractions, multi-space
 lookahead, punctuation runs, mixed code and multiline text.
 
     python3 tools/ling_tokenizer_capture.py \
-        --tokenizer /mnt/fast_storage/huggingface/Ling-3.1-flash/tokenizer.json \
+        --tokenizer <source root>/inclusionAI/Ling-3.1-flash/tokenizer.json \
         --out tests/fixtures/ling/tokenizer_parity.jsonl
 """
 import argparse

@@ -3,9 +3,10 @@
 // and correlates each against the CONVERTED NVFP4 payload. Real-model test.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include "kimi_moe_kernels.h"
 #include "lsxcommon/kimi_moe_load.h"
-#include "lsxcommon/path_registry.h"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -102,10 +103,10 @@ TEST_CASE("Kimi INT4->NVFP4 conversion matches source nibble order",
     const fs::path model = [] {
         const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
         return env ? fs::path(env)
-                   : fs::path(lsxcommon::lsx_model_models_dir()) / "Kimi-K2.7-Code";
+                   : manifest_query::ConvertedDirFor("kimi-k2.7-code");
     }();
     if (!fs::exists(model / "experts"))
-        SKIP("converted Kimi experts not present");
+        SKIP(std::string("converted Kimi experts not present: ") + model.string());
 
     constexpr int rows = lsxcommon::kimi::kKimiMoeIntermediate;
     constexpr int cols = lsxcommon::kimi::kKimiHidden;

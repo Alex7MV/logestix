@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_hy_memory_30b_a3b",
-    "vault_subdir": "Hy-Memory-30B-A3B",
     "timeout": 3000,
     "resource_lock": "gpu"
   },

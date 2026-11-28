@@ -86,7 +86,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_gigachat4_708b",
-    "vault_subdir": "GigaChat4-708B-A41B",
     "timeout": 5400
   },
   "tool_roundtrip": true,

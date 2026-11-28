@@ -4,7 +4,7 @@
 // converter (runtime cross-check against config.json / tensor shapes) and the
 // model class (static_asserts + ValidateGeometry).
 //
-// Source of truth: /mnt/llm_models/models/Qwen3.5-35B-A3B/config.json
+// Source of truth: <source root>/Qwen/Qwen3.5-35B-A3B/config.json
 // (text_config, model_type qwen3_5_moe).
 
 namespace lsxcommon::qwen_moe {

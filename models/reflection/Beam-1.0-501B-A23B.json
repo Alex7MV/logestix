@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_beam",
-    "vault_subdir": "Beam-1.0-501B-A23B",
     "timeout": 3000,
     "resource_lock": "gpu"
   },

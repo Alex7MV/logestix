@@ -700,6 +700,10 @@ set_target_properties(test_alice_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_alice_moe_kernels PRIVATE test_alice_cu lsxcommon Catch2::Catch2WithMain)
 
 add_executable(test_alice_tool_framing test_alice_tool_framing.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_alice_tool_framing PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_alice_tool_framing PRIVATE lsxstorage)
 target_link_libraries(test_alice_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 
@@ -1150,6 +1154,10 @@ target_link_libraries(test_granite_switch_prepare PRIVATE lsxcommon Catch2::Catc
 
 # ── Granite-Switch-4.1-30B model test ──
 add_executable(test_granite_switch_model test_granite_switch_model.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_granite_switch_model PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_model PRIVATE lsxstorage)
 target_compile_definitions(test_granite_switch_model PRIVATE
     # Absolute, because ctest runs with CWD = the build dir and the source's own
     # fallback is the relative "tests/fixtures/granite_switch": without this the
@@ -1166,12 +1174,19 @@ target_link_libraries(test_granite_switch_tool_framing PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 
 add_executable(test_granite_switch_tokenizer_parity test_granite_switch_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_granite_switch_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_granite_switch_tokenizer_parity PRIVATE
-    LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
-    LSX_GRANITE_SWITCH_TOKENIZER_PATH="/mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-30b/tokenizer.json")
+    LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch")
 target_link_libraries(test_granite_switch_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 add_executable(test_granite_switch_adapter_parity test_granite_switch_adapter_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_granite_switch_adapter_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_adapter_parity PRIVATE lsxstorage)
 target_compile_definitions(test_granite_switch_adapter_parity PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
     LSX_ADAPTER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/adapters")
@@ -1192,7 +1207,10 @@ target_compile_definitions(test_granite_switch_8b_adapter_parity PRIVATE
     "LSX_GSW_ROOT_ENV=\"LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT\"")
 target_include_directories(test_granite_switch_8b_adapter_parity PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
-target_link_libraries(test_granite_switch_8b_adapter_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_granite_switch_8b_adapter_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_8b_adapter_parity PRIVATE lsxcommon lsxstorage Catch2::Catch2WithMain)
 lsx_copy_arrow_dlls(test_granite_switch_8b_adapter_parity)
 
 add_executable(test_granite_switch_8b_tokenizer_parity test_granite_switch_tokenizer_parity.cpp)
@@ -1200,7 +1218,10 @@ target_compile_definitions(test_granite_switch_8b_tokenizer_parity PRIVATE
     LSX_GRANITE_SWITCH_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/granite_switch"
     "LSX_GSW_MODEL=\"granite-switch-4.1-8b\""
     "LSX_GSW_ROOT_ENV=\"LSX_TEST_GRANITE_SWITCH_4_1_8B_ROOT\"")
-target_link_libraries(test_granite_switch_8b_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_granite_switch_8b_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_granite_switch_8b_tokenizer_parity PRIVATE lsxcommon lsxstorage Catch2::Catch2WithMain)
 
 # ── phi-4 converter test (classifier + index + arrow layout) ──
 add_executable(test_phi_dense_convert test_phi_dense_convert.cpp)
@@ -1650,6 +1671,10 @@ target_link_libraries(test_mistral_moe_convert PRIVATE lsxcommon
 # ── Mistral-Large-4 tokenizer parity (source-captured golden) ─────────────
 add_executable(test_mistral_moe_large4_tokenizer_parity
     test_mistral_moe_large4_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_mistral_moe_large4_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_mistral_moe_large4_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_mistral_moe_large4_tokenizer_parity PRIVATE
     "LSX_MISTRAL_LARGE4_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mistral_large4\"")
 target_link_libraries(test_mistral_moe_large4_tokenizer_parity PRIVATE lsxcommon
@@ -1804,6 +1829,10 @@ target_link_libraries(test_mistral_moe_kernels PRIVATE lsxcommon
 
 add_executable(test_minimax_moe_tokenizer_parity
     test_minimax_moe_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_minimax_moe_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_minimax_moe_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_minimax_moe_tokenizer_parity PRIVATE
     "LSX_MINIMAX_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/minimax\"")
 target_link_libraries(test_minimax_moe_tokenizer_parity PRIVATE lsxcommon
@@ -1908,6 +1937,10 @@ lsx_copy_arrow_dlls(test_glm_moe_model)
 # ── Blackwell audit Phase 0: GLM-5.2 perf baseline harness (reporting test,
 #    SKIP without a checkpoint). The number of generated tokens — LSX_TEST_PERF_GEN_TOKENS.
 add_executable(test_blackwell_perf_glm test_blackwell_perf_glm.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_blackwell_perf_glm PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_blackwell_perf_glm PRIVATE lsxstorage)
 target_link_libraries(test_blackwell_perf_glm PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_blackwell_perf_glm)
@@ -1918,6 +1951,10 @@ set_tests_properties(test_blackwell_perf_glm PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Blackwell audit Phase 0: dense perf baseline harness (Qwen3.5-9B).
 add_executable(test_blackwell_perf_dense test_blackwell_perf_dense.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_blackwell_perf_dense PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_blackwell_perf_dense PRIVATE lsxstorage)
 target_link_libraries(test_blackwell_perf_dense PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_blackwell_perf_dense)
@@ -1928,6 +1965,10 @@ set_tests_properties(test_blackwell_perf_dense PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── MoE perf baseline harnesses: Qwen3.5-35B-A3B, gemma-4-26B-A4B-it.
 add_executable(test_blackwell_perf_moe test_blackwell_perf_moe.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_blackwell_perf_moe PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_blackwell_perf_moe PRIVATE lsxstorage)
 target_link_libraries(test_blackwell_perf_moe PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_blackwell_perf_moe)
@@ -1945,6 +1986,10 @@ set_tests_properties(test_blackwell_perf_moe_gemma PROPERTIES RESOURCE_LOCK "gpu
 
 # ── Blackwell audit Phase 0: DeepSeek-V4-Flash perf baseline harness.
 add_executable(test_blackwell_perf_deepseek test_blackwell_perf_deepseek.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_blackwell_perf_deepseek PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_blackwell_perf_deepseek PRIVATE lsxstorage)
 target_link_libraries(test_blackwell_perf_deepseek PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_blackwell_perf_deepseek)
@@ -1960,6 +2005,10 @@ set_tests_properties(test_blackwell_perf_deepseek PROPERTIES RESOURCE_LOCK "gpu"
 #    token, or on loss of bit-exactness between two identical runs. SKIP
 #    without a checkpoint.
 add_executable(test_glm_moe_prefill_seqp test_glm_moe_prefill_seqp.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_glm_moe_prefill_seqp PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_prefill_seqp PRIVATE lsxstorage)
 target_compile_definitions(test_glm_moe_prefill_seqp PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -1970,6 +2019,10 @@ lsx_copy_arrow_dlls(test_glm_moe_prefill_seqp)
 
 # ── GLM-5.2 meaningful-output test via --run (Infer output_text) ───────────
 add_executable(test_glm_moe_prompt_output test_glm_moe_prompt_output.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_glm_moe_prompt_output PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_prompt_output PRIVATE lsxstorage)
 target_compile_definitions(test_glm_moe_prompt_output PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -1980,6 +2033,10 @@ lsx_copy_arrow_dlls(test_glm_moe_prompt_output)
 
 # ── DeepSeek-V4-Flash meaningful-output test (Infer output_text) ────────
 add_executable(test_deepseek_moe_prompt_output test_deepseek_moe_prompt_output.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_deepseek_moe_prompt_output PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_deepseek_moe_prompt_output PRIVATE lsxstorage)
 target_link_libraries(test_deepseek_moe_prompt_output PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_deepseek_moe_prompt_output)
@@ -2135,6 +2192,10 @@ target_link_libraries(test_kimi_k3_tool_framing PRIVATE lsxcommon Catch2::Catch2
 
 # ── Kimi-K3 tiktoken id parity (golden from the checkpoint tokenizer) ───────
 add_executable(test_kimi_k3_tokenizer_parity test_kimi_k3_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_kimi_k3_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_k3_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_kimi_k3_tokenizer_parity PRIVATE
     LSX_KIMI_K3_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/kimi_k3")
 target_link_libraries(test_kimi_k3_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -2324,6 +2385,10 @@ add_test(NAME test_model_runtime COMMAND test_model_runtime)
 # ── Perf baseline guard (real weights, label perf — manual command) ──────
 file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_PERF)
 add_executable(test_perf_baseline test_perf_baseline.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_perf_baseline PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_perf_baseline PRIVATE lsxstorage)
 target_compile_definitions(test_perf_baseline PRIVATE
     LSX_SOURCE_DIR="${LSX_SRC_DIR_FWD_PERF}")
 target_link_libraries(test_perf_baseline PRIVATE lsxcommon
@@ -2404,6 +2469,10 @@ add_test(NAME test_tokenizer COMMAND test_tokenizer)
 
 # ── AliceAI SentencePiece-BPE tokenizer backend (model-neutral) ────────────
 add_executable(test_alice_tokenizer test_alice_tokenizer.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_alice_tokenizer PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_alice_tokenizer PRIVATE lsxstorage)
 target_compile_definitions(test_alice_tokenizer PRIVATE
     LSX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(test_alice_tokenizer PRIVATE lsxcommon
@@ -2412,6 +2481,10 @@ lsx_copy_arrow_dlls(test_alice_tokenizer)
 
 # ── GLM-5.2 Dense MLP forward test (layers 0-2) ─────────────────────────────
 add_executable(test_glm_moe_layer_compute test_glm_moe_layer_compute.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_glm_moe_layer_compute PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_layer_compute PRIVATE lsxstorage)
 target_link_libraries(test_glm_moe_layer_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_glm_moe_layer_compute)
@@ -2430,6 +2503,10 @@ lsx_copy_arrow_dlls(test_glm_moe_dense_compute)
 
 # ── GLM-5.2 MoE Layer-3 router test (top_k=8 warp selection) ───────────────
 add_executable(test_glm_moe_moe_router test_glm_moe_moe_router.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_glm_moe_moe_router PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_moe_router PRIVATE lsxstorage)
 target_link_libraries(test_glm_moe_moe_router PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_glm_moe_moe_router)
@@ -2462,6 +2539,10 @@ lsx_copy_arrow_dlls(test_glm_moe_attention)
 
 # ── GLM-5.2 full 79-layer loop + MTP epilogue test (generation) ───────
 add_executable(test_glm_moe_inference test_glm_moe_inference.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_glm_moe_inference PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_inference PRIVATE lsxstorage)
 target_link_libraries(test_glm_moe_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_glm_moe_inference)
@@ -2478,6 +2559,10 @@ lsx_copy_arrow_dlls(test_glm_moe_inference)
 #    the final speculative Layer-78 MTP logits row converges element-for-element
 #    against the independent CPU FP64 reference (RED/GREEN).
 add_executable(test_glm_moe_full_compute test_glm_moe_full_compute.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_glm_moe_full_compute PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_glm_moe_full_compute PRIVATE lsxstorage)
 target_link_libraries(test_glm_moe_full_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_glm_moe_full_compute)
@@ -3001,6 +3086,10 @@ lsx_copy_arrow_dlls(test_kimi_moe_int4_dequant ARROW_ONLY)
 
 # ── Kimi tiktoken tokenizer test ───────────────────────────────────────
 add_executable(test_kimi_moe_tokenizer test_kimi_moe_tokenizer.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_kimi_moe_tokenizer PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_tokenizer PRIVATE lsxstorage)
 target_link_libraries(test_kimi_moe_tokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_kimi_moe_tokenizer ARROW_ONLY)
@@ -3080,6 +3169,10 @@ target_link_libraries(test_kimi_moe_rope_parity PRIVATE lsxcommon Catch2::Catch2
 
 # ── Kimi tiktoken id parity (golden from the checkpoint tokenizer) ────────
 add_executable(test_kimi_moe_tokenizer_parity test_kimi_moe_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_kimi_moe_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_kimi_moe_tokenizer_parity PRIVATE
     LSX_KIMI_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/kimi")
 target_link_libraries(test_kimi_moe_tokenizer_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -3103,6 +3196,8 @@ target_compile_options(test_kimi_moe_mla_proj_real_cu PRIVATE
     ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_mla_proj_real_cu PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/libs/lsxstorage/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
@@ -3114,7 +3209,7 @@ target_link_libraries(test_kimi_moe_mla_proj_real_cu PRIVATE lsxcommon_kimi_cu)
 add_executable(test_kimi_moe_mla_proj_real)
 set_target_properties(test_kimi_moe_mla_proj_real PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_mla_proj_real PRIVATE
-    test_kimi_moe_mla_proj_real_cu lsxcommon Catch2::Catch2WithMain)
+    test_kimi_moe_mla_proj_real_cu lsxcommon lsxstorage Catch2::Catch2WithMain)
 
 # ── Kimi routed-expert FFN test ───────────────────────────────────────────
 add_library(test_kimi_moe_experts_cu OBJECT test_kimi_moe_experts.cu)
@@ -3207,6 +3302,10 @@ lsx_copy_arrow_dlls(test_kimi_moe_tc_diag ARROW_ONLY)
 
 # ── Kimi model test (factory + lifecycle) ────────────────────────────────
 add_executable(test_kimi_moe_model test_kimi_moe_model.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_kimi_moe_model PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_model PRIVATE lsxstorage)
 target_compile_definitions(test_kimi_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -3220,6 +3319,10 @@ lsx_copy_arrow_dlls(test_kimi_moe_model ARROW_ONLY)
 
 # ── Kimi perf baseline test (real weights; SKIP without a model) ──────────────
 add_executable(test_blackwell_perf_kimi test_blackwell_perf_kimi.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_blackwell_perf_kimi PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_blackwell_perf_kimi PRIVATE lsxstorage)
 target_compile_definitions(test_blackwell_perf_kimi PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -3233,6 +3336,10 @@ set_tests_properties(test_blackwell_perf_kimi PROPERTIES RESOURCE_LOCK "gpu")
 
 # ── Kimi full inference test (real weights; SKIP without a model) ─────────────
 add_executable(test_kimi_moe_inference test_kimi_moe_inference.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_kimi_moe_inference PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_kimi_moe_inference PRIVATE lsxstorage)
 target_compile_definitions(test_kimi_moe_inference PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -3255,6 +3362,8 @@ target_compile_options(test_kimi_moe_int4_real_cu PRIVATE
     ${LSX_CUDA_GENCODE_FLAGS};
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_int4_real_cu PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/libs/lsxstorage/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
@@ -3267,7 +3376,7 @@ target_link_libraries(test_kimi_moe_int4_real_cu PRIVATE lsxcommon_kimi_cu)
 add_executable(test_kimi_moe_int4_real)
 set_target_properties(test_kimi_moe_int4_real PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_int4_real PRIVATE
-    test_kimi_moe_int4_real_cu lsxcommon Catch2::Catch2WithMain)
+    test_kimi_moe_int4_real_cu lsxcommon lsxstorage Catch2::Catch2WithMain)
 
 lsx_copy_arrow_dlls(test_kimi_moe_int4_real ARROW_ONLY)
 
@@ -3631,6 +3740,10 @@ lsx_copy_arrow_dlls(test_nemotron_moe_ultra_model)
 # ── Nemotron-3-Ultra-550B tokenizer parity + per-layer oracle gate ───────
 add_executable(test_nemotron_ultra_tokenizer_parity
     test_nemotron_ultra_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_nemotron_ultra_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_nemotron_ultra_tokenizer_parity PRIVATE
     LSX_NEMOTRON_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron")
 target_link_libraries(test_nemotron_ultra_tokenizer_parity PRIVATE
@@ -3639,6 +3752,10 @@ target_include_directories(test_nemotron_ultra_tokenizer_parity PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
 add_executable(test_nemotron_ultra_layers test_nemotron_ultra_layers.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_nemotron_ultra_layers PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_ultra_layers PRIVATE lsxstorage)
 target_compile_definitions(test_nemotron_ultra_layers PRIVATE
     LSX_NEMOTRON_ULTRA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron_ultra")
 target_link_libraries(test_nemotron_ultra_layers PRIVATE
@@ -4228,6 +4345,10 @@ lsx_copy_arrow_dlls(test_nemotron_moe_nvfp4_model)
 # so one target polices the pair.
 add_executable(test_nemotron_moe_tokenizer_parity
                test_nemotron_moe_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_nemotron_moe_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_nemotron_moe_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_nemotron_moe_tokenizer_parity PRIVATE
     LSX_NEMOTRON_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/nemotron")
 target_link_libraries(test_nemotron_moe_tokenizer_parity PRIVATE
@@ -4427,6 +4548,10 @@ lsx_copy_arrow_dlls(test_qwen_moe_exp_model)
 # §E1c early-EOS gate. Its own executable on purpose: the gate is only a pure
 # function of its inputs in a fresh process (OPEN_TASKS §E1d).
 add_executable(test_qwen_moe_exp_eos_selfcheck test_qwen_moe_exp_eos_selfcheck.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_qwen_moe_exp_eos_selfcheck PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_qwen_moe_exp_eos_selfcheck PRIVATE lsxstorage)
 target_link_libraries(test_qwen_moe_exp_eos_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_eos_selfcheck PRIVATE
@@ -4758,6 +4883,10 @@ target_link_libraries(test_ling_tool_framing PRIVATE lsxcommon
 
 # ── Ling o200k tokenizer parity (source tokenizer; SKIPs when absent) ──
 add_executable(test_ling_tokenizer_parity test_ling_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_ling_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_ling_tokenizer_parity PRIVATE lsxstorage)
 target_include_directories(test_ling_tokenizer_parity PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(test_ling_tokenizer_parity PRIVATE
@@ -4943,6 +5072,10 @@ target_link_libraries(test_beam_moe_model PRIVATE lsxcommon
 
 # ── Beam native tool framing (host-only; synthetic tokenizer) ──
 add_executable(test_beam_tool_framing test_beam_tool_framing.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_beam_tool_framing PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_beam_tool_framing PRIVATE lsxstorage)
 target_compile_definitions(test_beam_tool_framing PRIVATE
     LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_link_libraries(test_beam_tool_framing PRIVATE lsxcommon
@@ -4959,6 +5092,10 @@ target_link_libraries(test_flint_moe_tool_framing PRIVATE lsxcommon
 # ── Flint tokenizer parity (source-captured golden; SKIPs without the vault) ──
 add_executable(test_flint_moe_tokenizer_parity
     test_flint_moe_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_flint_moe_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_flint_moe_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_flint_moe_tokenizer_parity PRIVATE
     "LSX_FLINT_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/flint\"")
 target_link_libraries(test_flint_moe_tokenizer_parity PRIVATE lsxcommon
@@ -4966,12 +5103,20 @@ target_link_libraries(test_flint_moe_tokenizer_parity PRIVATE lsxcommon
 
 # ── Beam tokenizer parity (source-captured golden; SKIPs without the vault) ──
 add_executable(test_beam_tokenizer_parity test_beam_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_beam_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_beam_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_beam_tokenizer_parity PRIVATE
     "LSX_BEAM_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/beam\"")
 target_link_libraries(test_beam_tokenizer_parity PRIVATE lsxcommon
     Catch2::Catch2WithMain arrow_shared)
 
 add_executable(test_hy_moe_tokenizer_parity test_hy_moe_tokenizer_parity.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_hy_moe_tokenizer_parity PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_tokenizer_parity PRIVATE lsxstorage)
 target_compile_definitions(test_hy_moe_tokenizer_parity PRIVATE
     "LSX_HY_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy\"")
 target_link_libraries(test_hy_moe_tokenizer_parity PRIVATE lsxcommon
@@ -4995,6 +5140,10 @@ target_link_libraries(test_hy_moe_tokenizer_parity PRIVATE lsxcommon
 
 # ── Hy-Memory-30B-A3B chat framing parity (real tokenizer + template) ──
 add_executable(test_hy_moe_chat_framing test_hy_moe_chat_framing.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_hy_moe_chat_framing PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_chat_framing PRIVATE lsxstorage)
 target_compile_definitions(test_hy_moe_chat_framing PRIVATE
     "LSX_HY_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy\"")
 target_link_libraries(test_hy_moe_chat_framing PRIVATE lsxcommon
@@ -5003,6 +5152,10 @@ target_link_libraries(test_hy_moe_chat_framing PRIVATE lsxcommon
 # ── Hy-SimulMT chat-framing parity (shared renderer, SimulMT template) ──
 add_executable(test_hy_moe_simulmt_tool_framing
     test_hy_moe_simulmt_tool_framing.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_hy_moe_simulmt_tool_framing PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_hy_moe_simulmt_tool_framing PRIVATE lsxstorage)
 target_compile_definitions(test_hy_moe_simulmt_tool_framing PRIVATE
     "LSX_HY_SIMULMT_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hy\"")
 target_link_libraries(test_hy_moe_simulmt_tool_framing PRIVATE lsxcommon
@@ -5077,6 +5230,10 @@ target_link_libraries(test_step_moe_tool_framing PRIVATE lsxcommon
 
 # ── Step-5-Preview tokenizer parity (real checkpoint tokenizer; SKIPs when absent) ──
 add_executable(test_step_moe_tokenizer test_step_moe_tokenizer.cpp)
+# Canonical model resolution: the path comes from the registry, not a literal.
+target_include_directories(test_step_moe_tokenizer PRIVATE
+    "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_step_moe_tokenizer PRIVATE lsxstorage)
 target_link_libraries(test_step_moe_tokenizer PRIVATE lsxcommon
     Catch2::Catch2WithMain arrow_shared)
 
@@ -5984,6 +6141,19 @@ add_test(NAME test_dedup_scan
          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 set_tests_properties(test_dedup_scan PROPERTIES LABELS fast)
 set_tests_properties(test_dedup_scan PROPERTIES TIMEOUT 120)
+
+# ── Path resolver self-test (host-only, label fast) ──────────────────────
+# tools/lsx_paths.py is the ONLY place a Python tool learns where a model
+# lives. The store is org-nested and split in two (source / artifact), so a
+# join of a bare name onto a root names a directory that never exists — five
+# operator scripts shipped exactly that and every reference run answered "no
+# such directory". These cases pin the shape, the profile segment and the two
+# refusals (empty input, unknown name) on a synthetic store.
+add_test(NAME test_lsx_paths
+         COMMAND "${LSX_PYTHON3}" "${PROJECT_SOURCE_DIR}/tools/test_lsx_paths.py"
+         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+set_tests_properties(test_lsx_paths PROPERTIES LABELS fast)
+set_tests_properties(test_lsx_paths PROPERTIES TIMEOUT 120)
 
 # ── Model manifest sync (the generated registries cannot drift) ───────────
 # models/<org>/<model>.json is the single source of truth; this target proves the

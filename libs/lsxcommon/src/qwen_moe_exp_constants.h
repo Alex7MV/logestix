@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen Qwen3.8-Flash-Next geometry (compile-time passport).
-// Source of truth: /mnt/llm_models/models/Qwen3.8-Flash-Next/config.json
+// Source of truth: <source root>/Qwen/Qwen3.8-Flash-Next/config.json
 // (text_config, model_type qwen4_exp_text) + safetensors inventory audit
 // (2026-09-02): 48 layers, GDN 16x128 QK / 48x128 V, QSA 24Q/2KV HD256,
 // indexer 4Q/1KV MQA HD128 budget 2048 compress 4, MoE 512 experts top-10

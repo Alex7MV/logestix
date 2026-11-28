@@ -3,6 +3,8 @@
 // vault); SKIPs when absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 #include <cstdlib>
 #include <filesystem>
@@ -11,7 +13,6 @@
 
 #include <lsxcommon/alice_tool_format.h>
 #include <lsxcommon/converter.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace fs = std::filesystem;
@@ -30,8 +31,7 @@ fs::path AliceTokenModelDir()
 {
     if (const char *env = std::getenv("LSX_TEST_ALICE_ROOT"))
         return fs::path(env);
-    return fs::path(lsxcommon::lsx_model_models_dir()) /
-           "AliceAI-Foundation-80B-A3B-Base";
+    return manifest_query::SourceDirFor("alice-foundation-80b-a3b");
 }
 
 bool BuildDb(ArrowTokenizerDb &db, fs::path &out)

@@ -1,18 +1,23 @@
 // Model identity from the manifest (host-only).
 //
-// The artifact path is <root>/<family>/<model_type>/<profile>, and both identity
-// fields must come from models/<org>/<model>.json — not from the checkpoint's
-// directory name, which is a download spelling. "Qwen3.5-9B" is the vault dir;
-// `qwen3.5-9b` is the model_type that appears in the path.
+// The artifact path MIRRORS the source store:
+//     <ARTIFACT_ROOT>/<org>/<model_dir>/<profile>
+// Both identity fields come from models/<org>/<model>.json — not from the
+// checkpoint's directory name, which is a download spelling, and not from the
+// path the caller typed. "Qwen3.5-9B" is the store's directory; `qwen3.5-9b` is
+// the model_type the manifest, the gates and the docs use.
 #include <catch2/catch_test_macros.hpp>
 
 #include "lsxstorage/roots.h"
 #include "model_identity.h"
 
+#include "model_manifest.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -44,24 +49,50 @@ private:
     bool had_ = false;
 };
 
+// The checkpoint of a registry row: `<source root>/<org>/<model_dir>`. Spelled
+// here (not in a literal) so a store that moves disk cannot leave this test
+// reading a path that does not exist.
+std::filesystem::path CheckpointOf(std::string_view model_type)
+{
+    for (const auto &row : lsxmanifest::kModels)
+        if (model_type == row.model_type)
+            return lsx::storage::SourceRoot() / row.vault_org / row.vault_dir;
+    return {};
+}
+
 } // namespace
 
-TEST_CASE("a vault directory resolves to its manifest identity",
-          "[model_identity]") {
-    // The two Task 9a models, by the paths they actually live at.
-    const auto qwen = lsxforge::ModelIdentityFor("/mnt/fast_storage/lsx_model/Qwen/Qwen3.5-9B");
+TEST_CASE("a store path resolves to its manifest identity", "[model_identity]") {
+    // The two Task 9a models, by the shape the store uses. The prefix is
+    // illustrative: identity comes from the leaf + the registry, never from the
+    // root, so a copy elsewhere resolves the same way (next case).
+    const auto qwen = lsxforge::ModelIdentityFor("/some/store/Qwen/Qwen3.5-9B");
     REQUIRE(qwen.has_value());
     CHECK(qwen->model_type == "qwen3.5-9b");
     CHECK(qwen->family == "qwen");
     CHECK(qwen->org == "Qwen");
     CHECK(qwen->model_dir == "Qwen3.5-9B");
 
-    const auto phi = lsxforge::ModelIdentityFor("/mnt/fast_storage/lsx_model/microsoft/phi-4");
+    const auto phi = lsxforge::ModelIdentityFor("/some/store/microsoft/phi-4");
     REQUIRE(phi.has_value());
     CHECK(phi->model_type == "phi-4");
     CHECK(phi->family == "phi");
     CHECK(phi->org == "microsoft");
     CHECK(phi->model_dir == "phi-4");
+}
+
+TEST_CASE("the org comes from the registry, not from the path it was typed with",
+          "[model_identity]") {
+    // A copy of a checkpoint on another disk, a path a script printed, an
+    // operator's scratch directory: the parent's name says nothing about which
+    // org owns the model. The registry does — and an artifact placed under a
+    // directory named after wherever the input happened to sit is exactly the
+    // bug the org-nested store exists to prevent.
+    const auto id = lsxforge::ModelIdentityFor("/tmp/some-copy/Qwen3.5-9B");
+    REQUIRE(id.has_value());
+    CHECK(id->org == "Qwen");
+    CHECK(id->model_dir == "Qwen3.5-9B");
+    CHECK(id->model_type == "qwen3.5-9b");
 }
 
 TEST_CASE("a bare model name resolves too", "[model_identity]") {
@@ -163,7 +194,7 @@ TEST_CASE("the checkpoint's own template is what phi-4 records",
     // caught, and asserting it against the real file is what makes the fix
     // meaningful rather than a fixture agreeing with itself.
     const std::filesystem::path cfg =
-        "/mnt/fast_storage/lsx_model/microsoft/phi-4/tokenizer_config.json";
+        CheckpointOf("phi-4") / "tokenizer_config.json";
     if (!std::filesystem::exists(cfg))
         SKIP("microsoft/phi-4 is not in the source store");
     const auto tpl = lsxforge::ChatTemplateFromTokenizerConfig(cfg.string());

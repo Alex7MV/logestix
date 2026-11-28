@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen Kimi-K3 geometry (compile-time passport).
-// Source of truth: /mnt/fast_storage/huggingface/Kimi-K3 (config.json +
+// Source of truth: <source root>/moonshotai/Kimi-K3 (config.json +
 // modeling_kimi_linear.py + configuration_kimi_k3.py + safetensors headers,
 // audited 2026-11-03):
 // 93 layers (layer 0 dense MLP, 1..92 Stable LatentMoE), hidden 7168,

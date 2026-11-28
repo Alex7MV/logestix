@@ -21,6 +21,8 @@ The trace must have been produced by the engine for the SAME token ids, passed
 with --tokens (comma separated).
 """
 import argparse
+
+import lsx_paths
 import json
 import sys
 from pathlib import Path
@@ -120,7 +122,7 @@ def main():
     from transformers.models.inkling2 import modeling_inkling2 as M
 
     vault = Path(args.vault)
-    base = vault / "logestix"
+    base = lsx_paths.artifact_dir(vault)
     idx = json.loads((base / "model.index.json").read_text())
     cfg_json = json.loads((vault / "config.json").read_text())
     tc = C.Inkling2TextConfig(**cfg_json["text_config"])

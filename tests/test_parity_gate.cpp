@@ -33,7 +33,6 @@
 #ifndef LSX_GATE_KIND
 #error "LSX_GATE_KIND must be defined (fsi, code, det or mcp)"
 #endif
-#include <lsxcommon/path_registry.h>
 // The golden directory MUST come from CMake, and a missing define is a BUILD
 // ERROR rather than a relative fallback. A fallback like "tests/fixtures/fsi" is
 // resolved against the process CWD, and ctest runs from the build dir, so the gate

@@ -118,7 +118,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_qwen3_5_9b",
-    "vault_subdir": "Qwen3.5-9B",
     "timeout": 1200
   },
   "target_overrides": {

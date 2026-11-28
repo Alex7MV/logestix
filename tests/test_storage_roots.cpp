@@ -9,6 +9,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "lsxcommon/path_registry.h"
+#include "lsxstorage/artifact.h"
+#include "lsxstorage/artifact_writer.h"
 #include "lsxstorage/resolve.h"
 #include "lsxstorage/roots.h"
 
@@ -179,7 +181,103 @@ void MakeCheckpoint(const fs::path &dir)
     cfg << "{}";
 }
 
+// A loadable artifact, so a resolution case can exercise the real reader: an
+// `artifact.fb` that only exists is not the same thing as one that parses.
+void MakeArtifact(const fs::path &dir, const std::string &model_type,
+                  const std::string &family, const std::string &org,
+                  const std::string &model_dir, const std::string &profile)
+{
+    lsx::storage::ArtifactSpec spec;
+    spec.model_type = model_type;
+    spec.family = family;
+    spec.profile = profile;
+    spec.org = org;
+    spec.model_dir = model_dir;
+    spec.model_name = model_dir;
+    std::string err;
+    lsx::storage::EmitArtifact(spec, dir, &err);
+    // The return value is the codec mask, which is 0 for an artifact with no
+    // planes — so the artifact is verified by reading it back, not by the mask.
+    const auto read = lsx::storage::ReadArtifact(dir);
+    INFO(err << " — " << read.detail);
+    REQUIRE(read.status == lsx::storage::ReadStatus::kOk);
+}
+
 } // namespace
+
+TEST_CASE("a model resolves by its registry identity, not only its store name",
+          "[storage_roots]") {
+    // The store spells it `Qwen/Qwen3.5-9B`; the registry, the gates and every
+    // document spell it `qwen3.5-9b`. Resolve's own contract says both are
+    // things a user types — but it compared only the directory name, so the
+    // identity the whole tree uses answered "no artifact and no source
+    // checkpoint". A CLI default written as an identity could never load.
+    TempRoot src, art;
+    MakeCheckpoint(src.path() / "Qwen" / "Qwen3.5-9B");
+    MakeArtifact(art.path() / "Qwen" / "Qwen3.5-9B" / "nvfp4", "qwen3.5-9b",
+                 "qwen", "Qwen", "Qwen3.5-9B", "nvfp4");
+    ScopedEnv s("LSX_SOURCE_ROOT", src.path().c_str());
+    ScopedEnv a("LSX_ARTIFACT_ROOT", art.path().c_str());
+
+    const auto by_identity = lsx::storage::Resolve("qwen3.5-9b");
+    REQUIRE(by_identity.status == lsx::storage::ResolveStatus::kArtifact);
+    CHECK(by_identity.model_type == "qwen3.5-9b");
+    CHECK(by_identity.org == "Qwen");
+    CHECK(by_identity.model_dir == "Qwen3.5-9B");
+    CHECK(by_identity.profile == "nvfp4");
+
+    // And the store's own spelling still resolves to the same tree.
+    const auto by_store_name = lsx::storage::Resolve("Qwen3.5-9B");
+    REQUIRE(by_store_name.status == lsx::storage::ResolveStatus::kArtifact);
+    CHECK(by_store_name.dir == by_identity.dir);
+}
+
+TEST_CASE("a model_type with no artifact says 'not converted', not 'not found'",
+          "[storage_roots]") {
+    // The registry identity is what the gates, the CLI defaults and every
+    // document use. Answering "no artifact and no source checkpoint" for a model
+    // whose directory is right there sends an operator hunting a typo instead of
+    // running the conversion.
+    TempRoot art;
+    // A model directory that exists with no profile in it.
+    fs::create_directories(art.path() / "Qwen" / "Qwen3.5-9B");
+    ScopedEnv a("LSX_ARTIFACT_ROOT", art.path().c_str());
+
+    // The store spelling still reports source-only by directory name.
+    const auto by_name = lsx::storage::Resolve("Qwen3.5-9B");
+    CHECK(by_name.status == lsx::storage::ResolveStatus::kSourceOnly);
+    CHECK(by_name.detail.find("no converted artifact") != std::string::npos);
+
+    // And the identity of a model that IS converted elsewhere in the tree.
+    TempRoot art2;
+    MakeArtifact(art2.path() / "microsoft" / "phi-4" / "nvfp4", "phi-4", "phi",
+                 "microsoft", "phi-4", "nvfp4");
+    fs::create_directories(art2.path() / "microsoft" / "phi-4" / "bf16");
+    ScopedEnv a2("LSX_ARTIFACT_ROOT", art2.path().c_str());
+    // `phi-4` resolves to its one real profile; the empty bf16 dir is not one.
+    const auto phi = lsx::storage::Resolve("phi-4");
+    REQUIRE(phi.status == lsx::storage::ResolveStatus::kArtifact);
+    CHECK(phi.profile == "nvfp4");
+    CHECK(phi.org == "microsoft");
+}
+
+TEST_CASE("a path inside an artifact resolves to the artifact", "[storage_roots]") {
+    // `ls` gives you file paths: pointing --model at model.index.json (or any
+    // file the artifact carries) must name the same tree, not "not found". The
+    // loop that was meant to accept this iterated `{given, given}` — the same
+    // candidate twice — so the parent path the comment describes was never
+    // tried.
+    TempRoot art;
+    MakeArtifact(art.path() / "Qwen" / "Qwen3.5-9B" / "nvfp4", "qwen3.5-9b",
+                 "qwen", "Qwen", "Qwen3.5-9B", "nvfp4");
+    ScopedEnv a("LSX_ARTIFACT_ROOT", art.path().c_str());
+
+    const auto inside = lsx::storage::Resolve(
+        (art.path() / "Qwen" / "Qwen3.5-9B" / "nvfp4" / "model.index.json").string());
+    REQUIRE(inside.status == lsx::storage::ResolveStatus::kArtifact);
+    CHECK(inside.profile == "nvfp4");
+    CHECK(inside.model_dir == "Qwen3.5-9B");
+}
 
 TEST_CASE("a checkpoint that ships params.json instead of config.json is a model",
           "[storage_roots]") {

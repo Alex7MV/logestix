@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen Ling-3.1-flash geometry (compile-time passport).
-// Source of truth: /mnt/fast_storage/huggingface/Ling-3.1-flash/config.json
+// Source of truth: <source root>/inclusionAI/Ling-3.1-flash/config.json
 // (BailingMoeV3ForCausalLM, model_type bailing_hybrid) + the safetensors
 // inventory (2026-10-30): 54 shards, 535 GB, BF16 edges and F8_E4M3
 // block-128 linears with F32 weight_scale_inv.

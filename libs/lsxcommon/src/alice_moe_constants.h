@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen AliceAI-Foundation-80B-A3B-Base geometry (compile-time passport).
-// Source of truth: /mnt/llm_models/models/AliceAI-Foundation-80B-A3B-Base
+// Source of truth: <source root>/yandex/AliceAI-Foundation-80B-A3B-Base
 // (config.json + modeling_alice_ai.py + safetensors audit 2026-10-01):
 // 48 layers, 12 x (3 x (KDA->MoE) -> 1 x (gated attention->MoE)), hidden 2048,
 // KDA 32/32 heads hd 128 conv 4, gated attention 16Q/2KV hd 256 partial RoPE

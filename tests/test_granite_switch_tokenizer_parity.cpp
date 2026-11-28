@@ -1,6 +1,8 @@
 // Granite-Switch byte-level BPE parity against the checkpoint tokenizer.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 #include <simdjson.h>
 
@@ -12,7 +14,6 @@
 #include <vector>
 
 #include <lsxcommon/converter.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/granite_switch_tool_format.h>
 #include <lsxcommon/tokenizer.h>
 
@@ -79,8 +80,7 @@ TEST_CASE("granite-switch tokenizer reproduces the checkpoint ids",
     const char *env = std::getenv(LSX_GSW_ROOT_ENV);
     const std::filesystem::path root =
         env ? std::filesystem::path(env)
-            : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                  LSX_GSW_MODEL;
+            : manifest_query::ConvertedDirFor(LSX_GSW_MODEL);
     const auto pinned = root / "pinned";
     if (!std::filesystem::exists(pinned / "tokenizer_vocab.arrow"))
         SKIP(std::string(LSX_GSW_MODEL) +

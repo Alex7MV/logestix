@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen GLM-5.3-Flash geometry (compile-time passport).
-// Source of truth: /mnt/llm_models/models/GLM-5.3-Flash/config.json
+// Source of truth: <source root>/zai-org/GLM-5.3-Flash/config.json
 // (text_config, model_type glm5_next) + safetensors inventory audit
 // (2026-09-04): 62 shards, 306 GB, FP8_E4M3 blockwise 128x128 with F32
 // weight_scale_inv. 45 main layers (34 KDA linear_attention + 11 DSA

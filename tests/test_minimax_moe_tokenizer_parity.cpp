@@ -8,6 +8,8 @@
 // never from this bridge. SKIPs (4) when the converted vault entry is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -20,7 +22,6 @@
 
 #include <simdjson.h>
 
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 #ifndef LSX_MINIMAX_FIXTURE_DIR
@@ -73,8 +74,7 @@ std::vector<Case> LoadCases()
 std::filesystem::path ModelRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_MINIMAX_ROOT")) return env;
-    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           "MiniMax-M3";
+    return manifest_query::ConvertedDirFor("minimax-m3");
 }
 
 } // namespace
@@ -84,7 +84,7 @@ TEST_CASE("minimax tokenizer parity against the checkpoint tokenizer",
 {
     const std::filesystem::path pinned = ModelRoot() / "pinned";
     if (!std::filesystem::exists(pinned / "tokenizer_vocab.arrow"))
-        SKIP("MiniMax-M3 converted tokenizer not present");
+        SKIP(std::string("MiniMax-M3 converted tokenizer not present: ") + pinned.string());
 
     auto v = arrow::io::MemoryMappedFile::Open(
         (pinned / "tokenizer_vocab.arrow").string(),

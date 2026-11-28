@@ -11,6 +11,8 @@
 // SKIPs (exit 4) when the Ultra vault directory is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdlib>
@@ -21,7 +23,6 @@
 #include <vector>
 
 #include <lsxcommon/model_integrity.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace {
@@ -75,8 +76,7 @@ std::vector<Case> LoadCases()
 TEST_CASE("ultra tokenizer bridge reproduces the reference ids", "[ultra][tokenizer]")
 {
     namespace fs = std::filesystem;
-    const fs::path model = fs::path(lsxcommon::lsx_model_models_dir()) /
-                           "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16";
+    const fs::path model = manifest_query::SourceDirFor("nemotron-ultra-550b-a55b");
     std::error_code ec;
     if (!fs::exists(model / "tokenizer.json", ec))
         SKIP("Ultra vault tokenizer not present: " + model.string());

@@ -9,6 +9,8 @@
 // when the converted vault entry is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -22,7 +24,6 @@
 #include <simdjson.h>
 
 #include <lsxcommon/hy_moe_tool_format.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 #ifndef LSX_HY_SIMULMT_FIXTURE_DIR
@@ -45,8 +46,7 @@ std::filesystem::path ModelRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_HY_SIMULMT_ROOT"))
         return std::filesystem::path(env);
-    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-           "Hy-SimulMT-30B-A3B";
+    return manifest_query::ConvertedDirFor("hy-simulmt-30b-a3b");
 }
 
 bool LoadVaultDb(lsxcommon::ArrowTokenizerDb &db)

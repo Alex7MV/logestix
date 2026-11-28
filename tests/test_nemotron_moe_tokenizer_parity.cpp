@@ -12,6 +12,8 @@
 // tokenizer.json, so one target polices the pair.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdlib>
@@ -23,7 +25,6 @@
 
 #include <lsxcommon/converter.h>
 #include <lsxcommon/model_integrity.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace {
@@ -78,10 +79,13 @@ std::filesystem::path SourceModelDir()
 {
     if (const char *env = std::getenv("LSX_TEST_NEMOTRON_TOKENIZER_SOURCE"))
         return std::filesystem::path(env);
-    const auto root = std::filesystem::path(lsxcommon::lsx_model_models_dir());
-    const auto bf16 = root / "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16";
+    // Both siblings are registry rows, so both spellings come from the registry;
+    // the store directories are `nvidia/NVIDIA-Nemotron-3.5-...-{BF16,NVFP4}`.
+    const auto bf16 =
+        manifest_query::SourceDirFor("nemotron-3.5-lightning-30b-a3b");
     if (std::filesystem::exists(bf16 / "tokenizer.json")) return bf16;
-    return root / "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4";
+    return manifest_query::SourceDirFor(
+        "nemotron-3.5-lightning-30b-a3b-nvfp4");
 }
 
 } // namespace
@@ -91,7 +95,7 @@ TEST_CASE("nemotron tokenizer bridge reproduces the reference ids",
 {
     const std::filesystem::path model = SourceModelDir();
     if (!std::filesystem::exists(model / "tokenizer.json"))
-        SKIP("vault Nemotron tokenizer not present");
+        SKIP(std::string("vault Nemotron tokenizer not present: ") + model.string());
 
     const auto pinned =
         std::filesystem::temp_directory_path() / "nemotron_tok_parity";

@@ -2,7 +2,7 @@
 // AttnRes + Stable LatentMoE + SiTU). Host-only, no CUDA deps.
 //
 // The values here are read off the released checkpoint
-// (/mnt/fast_storage/huggingface/Kimi-K3: config.json + safetensors headers +
+// (<source root>/moonshotai/Kimi-K3: config.json + safetensors headers +
 // modeling_kimi_linear.py); the load path cross-checks the same numbers, so a
 // passport edit without a re-audit fails Load rather than silently decoding a
 // different model.

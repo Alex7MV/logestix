@@ -3,11 +3,15 @@
 #include <cstdlib>
 #include <shared_mutex>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/gpu_perf.h"
+
+#include "lsxstorage/artifact.h"
+#include "lsxstorage/artifact_writer.h"
 
 namespace {
 
@@ -145,4 +149,102 @@ TEST_CASE("Create applies the per-GPU perf policy without engine session",
     REQUIRE(m == nullptr);
     REQUIRE(lsxcommon::perf::CurrentKnobsSource() !=
             lsxcommon::perf::PerfSource::kLegacy);
+}
+
+// ── The path a caller names vs the artifact it means ─────────────────────
+//
+// DetectType reads `<path>/model.index.json`, so it only answers for an ARTIFACT
+// directory. Everything else reached Create() as "cannot autodetect model type",
+// which named the wrong problem for the spelling the tree itself uses: the
+// registry IDENTITY (`qwen3.5-9b`) — the CLI defaults, every gate and every
+// document — and the store path `Qwen3.5-9B` that `ls` shows. Create now
+// resolves anything DetectType could not read, and reports the resolver's own
+// reason when the name really is unknown.
+namespace {
+
+// LSX_ARTIFACT_ROOT for one case, restored on scope exit: Resolve searches it.
+class ScopedRoot {
+public:
+    explicit ScopedRoot(const std::filesystem::path &p) : name_("LSX_ARTIFACT_ROOT")
+    {
+        if (const char *prev = std::getenv(name_)) { previous_ = prev; had_ = true; }
+#if defined(_WIN32)
+        _putenv_s(name_, p.string().c_str());
+#else
+        setenv(name_, p.string().c_str(), 1);
+#endif
+    }
+    ~ScopedRoot()
+    {
+#if defined(_WIN32)
+        _putenv_s(name_, had_ ? previous_.c_str() : "");
+#else
+        if (had_) setenv(name_, previous_.c_str(), 1); else unsetenv(name_);
+#endif
+    }
+    ScopedRoot(const ScopedRoot &) = delete;
+    ScopedRoot &operator=(const ScopedRoot &) = delete;
+
+private:
+    const char *name_;
+    std::string previous_;
+    bool had_ = false;
+};
+
+} // namespace
+
+TEST_CASE("Create resolves a registry identity to its artifact", "[factory]") {
+    // A store-shaped artifact written by the real emitter, so the identity comes
+    // from artifact.fb exactly as it would in production.
+    const auto root = std::filesystem::temp_directory_path() / "lsx_factory_res";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    const auto art = root / "Acme" / "Probe-Model" / "nvfp4";
+    lsx::storage::ArtifactSpec spec;
+    spec.model_type = TypedProbe::kType;
+    spec.family = "probe";
+    spec.profile = "nvfp4";
+    spec.org = "Acme";
+    spec.model_dir = "Probe-Model";
+    spec.model_name = "Probe-Model";
+    std::string err;
+    lsx::storage::EmitArtifact(spec, art, &err);
+    REQUIRE(lsx::storage::IsArtifactDir(art));
+    {
+        std::ofstream f(art / "model.index.json");
+        f << R"({"model": "typed-probe"})";
+    }
+    ScopedRoot scoped(root);
+    lsxcommon::LsxModelFactory::Register<TypedProbe>();
+
+    SECTION("the artifact directory itself") {
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = art.string();
+        REQUIRE(lsxcommon::LsxModelFactory::Create(cfg) != nullptr);
+    }
+    SECTION("the registry identity") {
+        // The spelling every CLI default and every gate uses. Before Create
+        // resolved, this was "cannot autodetect model type from typed-probe".
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = TypedProbe::kType;
+        auto m = lsxcommon::LsxModelFactory::Create(cfg);
+        REQUIRE(m != nullptr);
+        CHECK(m->Type() == TypedProbe::kType);
+    }
+    SECTION("the store's directory name") {
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = "Probe-Model";
+        REQUIRE(lsxcommon::LsxModelFactory::Create(cfg) != nullptr);
+    }
+    SECTION("a path one level inside the artifact") {
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = (art / "model.index.json").string();
+        REQUIRE(lsxcommon::LsxModelFactory::Create(cfg) != nullptr);
+    }
+    SECTION("an unknown name is refused") {
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = "not-a-model";
+        CHECK(lsxcommon::LsxModelFactory::Create(cfg) == nullptr);
+    }
+    std::filesystem::remove_all(root, ec);
 }

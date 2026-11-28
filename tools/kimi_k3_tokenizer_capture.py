@@ -17,7 +17,7 @@ The fixture is binary-safe (length-prefixed):
 
 Usage:
   python3 tools/kimi_k3_tokenizer_capture.py \
-      --model /mnt/fast_storage/huggingface/Kimi-K3 \
+      --model <source root>/moonshotai/Kimi-K3 \
       --corpus tests/fixtures/kimi_k3/tokenizer_corpus.txt \
       --out tests/fixtures/kimi_k3/tokenizer_parity.txt
 """

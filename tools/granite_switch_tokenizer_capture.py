@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Capture Granite-Switch tokenizer parity from the checkpoint tokenizer.json."""
+import lsx_paths
 import json
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ CORPUS = [
 
 def main() -> int:
     src = Path(sys.argv[1] if len(sys.argv) > 1
-               else "/mnt/fast_storage/lsx_model/ibm-granite/granite-switch-4.1-30b")
+               else str(lsx_paths.source_dir("granite-switch-4.1-30b")))
     dst = Path(sys.argv[2] if len(sys.argv) > 2
                else "tests/fixtures/granite_switch/tokenizer_parity.jsonl")
     tok = Tokenizer.from_file(str(src / "tokenizer.json"))

@@ -550,11 +550,12 @@ def main() -> int:
         if r.returncode != 0:
             print(r.stdout[-3000:]); print(r.stderr[-3000:])
             return r.returncode
-        print("converted ->", wd / "logestix")
+        # The converter writes INTO --output: the pre-split `logestix/` segment
+        # is gone (test_path_shape_guard forbids it anywhere in libs/apps).
+        print("converted ->", wd)
 
     import torch
-    model, tensors, missing, unexpected = load_into_transformers(
-        wd / "logestix")
+    model, tensors, missing, unexpected = load_into_transformers(wd)
     print("missing keys :", [m for m in missing if "rotary" not in m][:8])
     print("unexpected   :", unexpected[:8])
 

@@ -14,8 +14,9 @@ golden to rewrite.
 
 Usage:
     python3 tools/mistral_large4_template_goldens.py \
-        /mnt/fast_storage/huggingface/Mistral-Large-4-1T-A52B
+        <source root>/mistralai/Mistral-Large-4-1T-A52B
 """
+import lsx_paths
 import json
 import sys
 from pathlib import Path
@@ -45,10 +46,13 @@ def frame(body: str) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) > 2:
         print(__doc__)
         return 2
-    model_dir = Path(sys.argv[1])
+    # The store directory comes from the registry (org-nested), so an operator
+    # can run this without remembering the org.
+    model_dir = (Path(sys.argv[1]) if len(sys.argv) > 1
+                 else lsx_paths.source_dir("mistral-large-4-1t"))
     tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
     repo = Path(__file__).resolve().parent.parent
 

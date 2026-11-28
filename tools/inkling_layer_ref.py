@@ -14,6 +14,8 @@ Usage:
   python3 tools/inkling_layer_ref.py <vault> <trace.bin> [--layers N]
 """
 import argparse
+
+import lsx_paths
 import json
 import math
 import sys
@@ -375,7 +377,7 @@ def main() -> int:
                     help="seed from trace[N] and recompute only layer N")
     args = ap.parse_args()
 
-    base = Path(args.vault) / "logestix"
+    base = lsx_paths.artifact_dir(args.vault)
     _pre = None
     idx = json.loads((base / "model.index.json").read_text())
     H = idx["hidden_size"]

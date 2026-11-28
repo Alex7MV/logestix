@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_step_5_preview",
-    "vault_subdir": "Step-5-Preview",
     "timeout": 7200,
     "resource_lock": "gpu"
   },

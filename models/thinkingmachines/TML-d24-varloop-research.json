@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_tml_d24_varloop_research",
-    "vault_subdir": "TML-d24-varloop-research",
     "timeout": 7200,
     "resource_lock": "gpu"
   },

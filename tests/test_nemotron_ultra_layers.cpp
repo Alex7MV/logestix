@@ -16,6 +16,8 @@
 //
 // SKIPs (exit 4) unless both the fixture and the converted tree are present.
 #include <catch2/catch_approx.hpp>
+
+#include "test_manifest_query_root.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <cuda_fp16.h>
@@ -38,7 +40,6 @@
 #include <lsxcommon/nemotron_moe_ultra_expert_cache.h>
 #include <lsxcommon/nemotron_moe_ultra_inference.h>
 #include <lsxcommon/nemotron_moe_ultra_load.h>
-#include <lsxcommon/path_registry.h>
 
 namespace fs = std::filesystem;
 using lsxcommon::nemotron_ultra::UltraExpertCache;
@@ -58,8 +59,7 @@ fs::path ConvertedTree()
 {
     if (const char *env = std::getenv("LSX_TEST_NEMOTRON_ULTRA_550B_A55B_ROOT"))
         return env;
-    return fs::path(lsxcommon::lsx_model_models_dir()) /
-           "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16";
+    return manifest_query::ConvertedDirFor("nemotron-ultra-550b-a55b");
 }
 
 struct RefBlock {

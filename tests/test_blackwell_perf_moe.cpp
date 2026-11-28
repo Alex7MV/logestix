@@ -3,12 +3,14 @@
 // so fast-path regressions are visible in the log.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include "lsxcommon/model_factory.h"
-#include "lsxcommon/path_registry.h"
 #include "lsxcommon/tokenizer.h"
 
 #include <algorithm>
 #include <chrono>
+#include <string>
 #include <cstring>
 #include <filesystem>
 #include <spdlog/spdlog.h>
@@ -17,18 +19,20 @@
 namespace {
 
 // Converted root: unified vault convention <model>/logestix.
-std::filesystem::path VaultModelPath(const char *name)
+// The artifact of a model, by the identity the registry knows. The old helper
+// took the STORE's directory name and joined it onto the source root, which has
+// no org — so it pointed at `<root>/Qwen3.5-35B-A3B`, a path that never exists —
+// and it read the Qwen env var for the gemma case as well.
+std::filesystem::path ModelPath(const char *model_type, const char *env_name)
 {
-    if (const char *env = std::getenv("LSX_TEST_QWEN_MOE_MODEL_PATH"))
+    if (const char *env = std::getenv(env_name))
         return std::filesystem::path(env);
-    return std::filesystem::path(lsxcommon::lsx_model_models_dir()) / name;
+    return manifest_query::ConvertedDirFor(model_type);
 }
 
 std::filesystem::path QwenMoePerfModelPath()
 {
-    if (const char *env = std::getenv("LSX_TEST_QWEN_MOE_MODEL_PATH"))
-        return std::filesystem::path(env);
-    return VaultModelPath("Qwen3.5-35B-A3B");
+    return ModelPath("qwen3.5-35b-a3b", "LSX_TEST_QWEN_MOE_MODEL_PATH");
 }
 
 int PerfGenTokens()
@@ -59,7 +63,7 @@ TEST_CASE("Qwen3.5-35B-A3B perf baseline: decode throughput",
 {
     const std::filesystem::path model = QwenMoePerfModelPath();
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("Qwen3.5-35B-A3B converted model directory not present");
+        SKIP(std::string("Qwen3.5-35B-A3B converted model directory not present: ") + model.string());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();
@@ -106,9 +110,10 @@ TEST_CASE("Qwen3.5-35B-A3B perf baseline: decode throughput",
 TEST_CASE("gemma-4-26B-A4B-it perf baseline: decode throughput",
           "[gemma26moe][perf][real-model]")
 {
-    const std::filesystem::path model = VaultModelPath("gemma-4-26B-A4B-it");
+    const std::filesystem::path model =
+        ModelPath("gemma-4-26b-a4b-it", "LSX_TEST_GEMMA_MOE_MODEL_PATH");
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("gemma-4-26B-A4B-it converted model directory not present");
+        SKIP(std::string("gemma-4-26B-A4B-it converted model directory not present: ") + model.string());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();

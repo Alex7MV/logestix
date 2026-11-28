@@ -1,7 +1,7 @@
 #pragma once
 
 // Frozen Nemotron-3.5-Lightning-30B-A3B geometry (compile-time passport).
-// Source of truth: /mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16/config.json
+// Source of truth: <source root>/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16/config.json
 // (model_type nemotron_h) + safetensors inventory audit (2026-09-16): 52 layers
 // (23 mamba + 23 moe + 6 full attention at 5/12/19/26/33/42), hidden 2688,
 // mamba2 d_inner 4096 (64x64), n_groups 8, state 128, conv 4, in_proj 10304,

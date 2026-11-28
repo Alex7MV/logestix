@@ -1,7 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include "lsxcommon/converter.h"
-#include "lsxcommon/path_registry.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/tokenizer.h"
 
@@ -198,10 +199,9 @@ TEST_CASE("Kimi real vault tokenizer builds", "[kimi][tokenizer][real-model]")
     namespace fs = std::filesystem;
     const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
     auto dir = env ? fs::path(env)
-                   : fs::path(lsxcommon::lsx_model_models_dir()) /
-                         "Kimi-K2.7-Code";
+                   : manifest_query::SourceDirFor("kimi-k2.7-code");
     if (!fs::exists(dir / "tiktoken.model"))
-        SKIP("vault Kimi tokenizer not present");
+        SKIP(std::string("vault Kimi tokenizer not present: ") + dir.string());
 
     auto pinned = fs::temp_directory_path() / "kimi_tok_vault";
     fs::remove_all(pinned);

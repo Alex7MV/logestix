@@ -24,7 +24,7 @@ Decodings (mirroring libs/lsxcommon/src/nemotron_moe_nvfp4_dequant.cu):
 
 Usage:
   python3 tools/nemotron_nvfp4_oracle.py build \
-      --model /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
+      --model <source root>/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
       --out /mnt/fast_storage/tmp/nemotron_work/ref_bf16
 
   python3 tools/nemotron_nvfp4_oracle.py run \

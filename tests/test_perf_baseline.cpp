@@ -11,6 +11,8 @@
 // (prompt, max_gen) is stored inside the entry — a protocol change re-seeds.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <ctime>
 #include <cstdlib>
 #include <filesystem>
@@ -25,7 +27,6 @@
 #include "lsxcommon/model_engine.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model.h"
-#include "lsxcommon/path_registry.h"
 #include "lsxcommon/perf_baseline.h"
 
 #ifdef _WIN32
@@ -44,8 +45,7 @@ namespace fs = std::filesystem;
 namespace pb = lsxcommon::perf_baseline;
 
 struct PerfModel {
-    const char *model_type;
-    const char *vault_subdir;
+    const char *model_type;   // the registry's identity: the path resolves from it
     const char *prompt;
     int max_gen;
 };
@@ -54,156 +54,154 @@ struct PerfModel {
 // exclusion (conversion OOM) is obsolete since the GenContextBytes cache
 // sizing fix (2026-09-12) — the vault loads and benchmarks.
 const PerfModel kGemma = {
-    "gemma-4-26b-a4b-it", "gemma-4-26B-A4B-it",
+    "gemma-4-26b-a4b-it",
     "Write a detailed long essay about the history of computing, from "
     "Babbage to modern GPUs.",
     2048};
 // Gemma-4-31B-it (dense): the same 2048-token essay protocol.
 const PerfModel kGemmaDense = {
-    "gemma-4-31b-it", "gemma-4-31B-it",
+    "gemma-4-31b-it",
     "Write a detailed long essay about the history of computing, from "
     "Babbage to modern GPUs.",
     2048};
 const PerfModel kGlmFlash = {
-    "glm-5.3-flash", "GLM-5.3-Flash", "The capital of France is", 2048};
+    "glm-5.3-flash", "The capital of France is", 2048};
 // glm-5.2 and qwen3.5-9b are registered but not present in the local vault:
 // their targets SKIP until the model is converted, then seed the reference.
 const PerfModel kGlm52 = {
-    "glm-5.2", "GLM-5.2", "The capital of France is", 2048};
+    "glm-5.2", "The capital of France is", 2048};
 // Inkling-2-Small: 17B active of 594B, so the per-token expert read dominates
 // and the expected band is low. The prompt is the canonical one, like every
 // other row.
 const PerfModel kInkling = {
-    "inkling-2-small", "Inkling-2-Small", "The capital of France is", 2048};
+    "inkling-2-small", "The capital of France is", 2048};
 // Inkling base: 28B active of 952B, so the per-token expert read dominates
 // and the expected band is low (~0.5-1.5 t/s, read-bound like the sibling).
 const PerfModel kInklingBase = {
-    "inkling", "Inkling", "The capital of France is", 2048};
+    "inkling", "The capital of France is", 2048};
 // Inkling-2-Mini: 24 physical layers but 48 applications per token (the middle
 // 12 run three times), so its per-token read is the loop core's expert draw
 // twice over — the read-bound band of the family, scaled by the loop.
 const PerfModel kInklingLoop = {
-    "inkling-2-mini", "Inkling-2-Mini", "The capital of France is", 2048};
+    "inkling-2-mini", "The capital of France is", 2048};
 // TML-d24-varloop-research: the same tower with a runtime-chosen pass count. The
 // baseline is seeded at the checkpoint's declared 3 passes (the engine's
 // default), so the row is comparable with the fixed-pass sibling's; the report
 // carries the 1/3/5-pass sweep.
 const PerfModel kInklingVarloop = {
-    "tml-d24-varloop-research", "TML-d24-varloop-research",
+    "tml-d24-varloop-research",
     "The capital of France is", 2048};
 const PerfModel kDeepseek = {
-    "deepseek-v4-flash", "DeepSeek-V4-Flash", "The capital of France is",
+    "deepseek-v4-flash", "The capital of France is",
     2048};
 const PerfModel kDeepseekV41 = {
-    "deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", "The capital of France is",
+    "deepseek-v4.1-flash", "The capital of France is",
     2048};
 // The 1017 update of the same checkpoint: identical geometry, re-trained
 // weights, so it is measured at the same canonical 2048-token protocol against
 // its own row (a shared row would hide whichever of the two got slower).
 const PerfModel kDeepseekV41Flash1017 = {
-    "deepseek-v4.1-flash-1017", "DeepSeek-V4.1-Flash-1017",
+    "deepseek-v4.1-flash-1017",
     "The capital of France is", 2048};
 const PerfModel kDeepseekPro = {
-    "deepseek-v4-pro-0813", "DeepSeek-V4-Pro-0813",
+    "deepseek-v4-pro-0813",
     "The capital of France is", 2048};
 const PerfModel kQwen35 = {
-    "qwen3.5-35b-a3b", "Qwen3.5-35B-A3B", "The capital of France is", 2048};
+    "qwen3.5-35b-a3b", "The capital of France is", 2048};
 const PerfModel kQwen36 = {
-    "qwen3.6-35b-a3b", "Qwen3.6-35B-A3B", "The capital of France is", 2048};
+    "qwen3.6-35b-a3b", "The capital of France is", 2048};
 const PerfModel kQwen38 = {
-    "qwen3.8-flash-next", "Qwen3.8-Flash-Next", "The capital of France is",
+    "qwen3.8-flash-next", "The capital of France is",
     2048};
 const PerfModel kKimi = {
-    "kimi-k2.7-code", "Kimi-K2.7-Code", "The capital of France is", 2048};
+    "kimi-k2.7-code", "The capital of France is", 2048};
 const PerfModel kQwen27 = {
-    "qwen3.8-27b", "Qwen3.8-27B", "The capital of France is", 2048};
+    "qwen3.8-27b", "The capital of France is", 2048};
 const PerfModel kQwen35_9B = {
-    "qwen3.5-9b", "Qwen3.5-9B", "The capital of France is", 2048};
+    "qwen3.5-9b", "The capital of France is", 2048};
 const PerfModel kNemotron = {
-    "nemotron-3.5-lightning-30b-a3b",
-    "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "The capital of France is",
+    "nemotron-3.5-lightning-30b-a3b", "The capital of France is",
     2048};
 const PerfModel kNemotronNvfp4 = {
-    "nemotron-3.5-lightning-30b-a3b-nvfp4",
-    "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "The capital of France is",
+    "nemotron-3.5-lightning-30b-a3b-nvfp4", "The capital of France is",
     2048};
 const PerfModel kNemotronUltra = {
-    "nemotron-ultra-550b-a55b", "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "nemotron-ultra-550b-a55b",
     "The capital of France is", 2048};
 const PerfModel kGigachat = {
-    "gigachat3.5-432b-a28b-reasoning", "GigaChat3.5-432B-A28B-Reasoning",
+    "gigachat3.5-432b-a28b-reasoning",
     "The capital of France is", 2048};
 const PerfModel kGigachat4 = {
-    "gigachat4-37b-a4b", "GigaChat4-37B-A4B", "The capital of France is", 2048};
+    "gigachat4-37b-a4b", "The capital of France is", 2048};
 // The 708B's 386.9 GB expert set cannot live on the card: 488 expert touches
 // per token stream ~12.1 GB over PCIe, so this row measures the family's
 // host-store path rather than its compute path.
 const PerfModel kGigachat4_708B = {
-    "gigachat4-708b-a41b", "GigaChat4-708B-A41B", "The capital of France is",
+    "gigachat4-708b-a41b", "The capital of France is",
     2048};
 const PerfModel kOrnith = {
-    "ornith-1.5-35b-a3b", "Ornith-1.5-35B-A3B", "The capital of France is",
+    "ornith-1.5-35b-a3b", "The capital of France is",
     2048};
 const PerfModel kGranite = {
-    "granite-4.2-30b", "granite-4.2-30b", "The capital of France is", 2048};
+    "granite-4.2-30b", "The capital of France is", 2048};
 const PerfModel kGraniteSwitch = {
-    "granite-switch-4.1-30b", "granite-switch-4.1-30b",
+    "granite-switch-4.1-30b",
     "The capital of France is", 2048};
 const PerfModel kGraniteSwitch8B = {
-    "granite-switch-4.1-8b", "granite-switch-4.1-8b",
+    "granite-switch-4.1-8b",
     "The capital of France is", 2048};
 const PerfModel kMiMo = {
-    "mimo-v2.6-flash-rl", "MiMo-V2.6-Flash-RL", "The capital of France is",
+    "mimo-v2.6-flash-rl", "The capital of France is",
     2048};
 const PerfModel kPhi = {
-    "phi-4", "phi-4", "The capital of France is", 2048};
+    "phi-4", "The capital of France is", 2048};
 // Dory1.0-4B: looped nGPT, 112 mixer passes per token at 2 loops. The
 // canonical protocol prompt keeps the comparison with the rest of the matrix.
 const PerfModel kDory = {
-    "dory-1.0-4b", "NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16",
+    "dory-1.0-4b",
     "The capital of France is", 2048};
 const PerfModel kXing = {
-    "xing4.0-29b-a4b", "Xing4.0-29B-A4B", "The capital of France is", 2048};
+    "xing4.0-29b-a4b", "The capital of France is", 2048};
 const PerfModel kAlice = {
-    "alice-foundation-80b-a3b", "AliceAI-Foundation-80B-A3B-Base",
+    "alice-foundation-80b-a3b",
     "The capital of France is", 2048};
 const PerfModel kMistral = {
-    "mistral-small-4-119b", "Mistral-Small-4-119B-2603-NVFP4",
+    "mistral-small-4-119b",
     "The capital of France is", 2048};
 const PerfModel kMistralLarge4 = {
-    "mistral-large-4-1t", "Mistral-Large-4-1T-A52B",
+    "mistral-large-4-1t",
     "The capital of France is", 2048};
 const PerfModel kKimiK3 = {
-    "kimi-k3", "Kimi-K3", "The capital of France is", 2048};
+    "kimi-k3", "The capital of France is", 2048};
 const PerfModel kKimiPro = {
-    "kimi-k3.1-pro", "Kimi-K3.1-Pro", "The capital of France is", 2048};
+    "kimi-k3.1-pro", "The capital of France is", 2048};
 const PerfModel kMinimax = {
-    "minimax-m3", "MiniMax-M3", "The capital of France is", 2048};
+    "minimax-m3", "The capital of France is", 2048};
 const PerfModel kMinimaxFlash = {
-    "minimax-m3.1-flash", "MiniMax-M3.1-Flash", "The capital of France is",
+    "minimax-m3.1-flash", "The capital of France is",
     2048};
 const PerfModel kHy = {
-    "hy-memory-30b-a3b", "Hy-Memory-30B-A3B", "The capital of France is",
+    "hy-memory-30b-a3b", "The capital of France is",
     2048};
 const PerfModel kHySimulMT = {
-    "hy-simulmt-30b-a3b", "Hy-SimulMT-30B-A3B", "The capital of France is",
+    "hy-simulmt-30b-a3b", "The capital of France is",
     2048};
 const PerfModel kFlint = {
-    "flint", "flint", "The capital of France is", 2048};
+    "flint", "The capital of France is", 2048};
 // Hy4-flash: the canonical 2048-token protocol, like every streamed-expert
 // family. The row is seeded by RUNNING this target (never by editing the JSON):
 // f0e8bebe/c0a30d1c are the two commits that show what "seeded through the
 // harness" means.
 const PerfModel kHy4Flash = {
-    "hy4-flash", "Hy4-flash", "The capital of France is", 2048};
+    "hy4-flash", "The capital of France is", 2048};
 const PerfModel kLing = {
-    "ling", "Ling-3.1-flash", "The capital of France is", 2048};
+    "ling", "The capital of France is", 2048};
 const PerfModel kBeam = {
-    "beam", "Beam-1.0-501B-A23B", "The capital of France is", 2048};
+    "beam", "The capital of France is", 2048};
 const PerfModel kStep = {
-    "step-5-preview", "Step-5-Preview", "The capital of France is", 2048};
+    "step-5-preview", "The capital of France is", 2048};
 const PerfModel kMuse = {
-    "muse-glimmer-30b", "Muse-Glimmer-30B",
+    "muse-glimmer-30b",
     "Write a detailed long essay about the history of computing, from "
     "Babbage to modern GPUs.",
     2048};
@@ -310,13 +308,16 @@ struct MeasureResult {
     int expert_cache_slots = 0;
 };
 
-// ctest pins the vault subdir via env (one model per process); a direct binary
-// run falls back to the struct value.
+// The artifact to load, resolved from the registry by model_type: the row knows
+// the org, the store directory and the profile, and `ConvertedDirFor` honours
+// the row's own LSX_TEST_<MODEL>_ROOT override.
+//
+// The old form joined the store's directory name onto the SOURCE root, so it
+// asked for `<source root>/<Model>` — no org, and a checkpoint rather than the
+// converted tree — and every perf target SKIPped with the weights on disk.
 fs::path ModelDir(const PerfModel &m)
 {
-    const char *subdir_env = std::getenv("LSX_PERF_VAULT_SUBDIR");
-    return fs::path(lsxcommon::lsx_model_models_dir()) /
-           (subdir_env != nullptr ? subdir_env : m.vault_subdir);
+    return manifest_query::ConvertedDirFor(m.model_type);
 }
 
 std::optional<MeasureResult> MeasureModel(const PerfModel &m,

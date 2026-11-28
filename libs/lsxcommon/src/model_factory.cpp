@@ -1,5 +1,7 @@
 #include "lsxcommon/model_factory.h"
 
+#include "lsxstorage/resolve.h"
+
 #include <mutex>
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/str_format.h>
@@ -62,14 +64,37 @@ std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
     perf::EnsurePerfPolicyApplied();
     EnsureModelRegistry();
 
-    std::string type = cfg.model_type;
+    // `eff` because the resolve step below may replace the path: the caller
+    // named a model, and only the store knows where the artifact for it lives.
+    ModelInitConfig eff = cfg;
+    std::string type = eff.model_type;
     if (type.empty()) {
-        type = DetectType(cfg.model_path);
+        type = DetectType(eff.model_path);
         if (type.empty()) {
-            log::error(absl::StrFormat(
-                "[factory] cannot autodetect model type from %s",
-                cfg.model_path));
-            return nullptr;
+            // Autodetect reads `<path>/model.index.json`, so it only works when
+            // the caller already named an ARTIFACT directory. Everything else
+            // arrives here: the registry identity (`qwen3.5-9b` — the spelling
+            // the gates, the CLI defaults and every document use), a store
+            // directory (`Qwen3.5-9B`), an org-qualified name, a path one level
+            // inside an artifact, or a plain typo. Resolve answers all of them,
+            // and for the typo it returns the reason instead of "cannot
+            // autodetect model type", which named the wrong problem.
+            const auto resolved = lsx::storage::Resolve(eff.model_path);
+            if (resolved.status == lsx::storage::ResolveStatus::kArtifact) {
+                eff.model_path = resolved.dir.string();
+                type = DetectType(eff.model_path);
+                if (type.empty() && !resolved.model_type.empty())
+                    type = resolved.model_type;
+            }
+            if (type.empty()) {
+                log::error(absl::StrFormat(
+                    "[factory] %s is not a LogestiX artifact (%s). %s",
+                    eff.model_path,
+                    lsx::storage::ResolveStatusName(resolved.status),
+                    resolved.detail.empty() ? "convert it with lsxforge"
+                                            : resolved.detail));
+                return nullptr;
+            }
         }
     }
 
@@ -89,7 +114,9 @@ std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
         // take arbitrarily long and must never hold RegistryMutex.
         fn = it->second;
     }
-    return fn(cfg);
+    // `eff`, not `cfg`: the resolved artifact path must reach the model, or it
+    // would look for model.index.json under the identity string.
+    return fn(eff);
 }
 
 } // namespace lsxcommon

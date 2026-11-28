@@ -5,7 +5,7 @@ The engine's byte-level BPE bridge (tokenizer_kind 13, HunyuanWordStream) must
 reproduce these ids exactly; the golden is captured here, never from the bridge.
 
     python3 tools/hy4_tokenizer_capture.py \
-        --tokenizer /mnt/fast_storage/lsx_model/tencent/Hy4-flash/tokenizer.json \
+        --tokenizer <source root>/tencent/Hy4-flash/tokenizer.json \
         --out tests/fixtures/hy4/tokenizer_parity.jsonl
 
 The corpus is deliberately adversarial for this checkpoint's three-split

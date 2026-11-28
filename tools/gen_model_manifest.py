@@ -245,8 +245,11 @@ class Manifest:
             perf = self.perf or {}
             timeout = int(perf.get("timeout", timeout))
             lock = perf.get("resource_lock", lock)
-            sub = perf.get("vault_subdir", self.vault_dir)
-            env = [f"LSX_PERF_VAULT_SUBDIR={sub}"]
+            # No LSX_PERF_VAULT_SUBDIR: the perf test resolves its artifact from
+            # the registry by model_type. The old env var carried the store's
+            # directory name, which is a download spelling — and the path it was
+            # joined onto had no org, so every perf target looked for
+            # `<source root>/<Model>` and SKIPped with the weights on disk.
             perf_case = PERF_CASE_FMT.format(self.model_type)
         ov = self.target_overrides.get(name, {})
         label = ov.get("label", label)
@@ -708,6 +711,18 @@ def validate(manifests, root: Path, partial: bool = False,
         # typo would be a dead "see the report" for every reader.
         if m.report and not (root / m.report).is_file():
             add(m, "report", f"report not found: {m.report}")
+
+        # rule 14: the store's directory is named once, in `vault.dir`.
+        # `perf.vault_subdir` was a second spelling of it, and the perf test
+        # joined that spelling onto the SOURCE root — without the org, so every
+        # perf target searched `<root>/<Model>`, which never exists, and SKIPped
+        # with the weights on disk under `<root>/<org>/<Model>`. The test now
+        # resolves its artifact from `model_type`; a row that still declares the
+        # field is a row nobody has re-read.
+        if "vault_subdir" in m.perf:
+            add(m, "perf.vault_subdir",
+                "the store directory is named by `vault.dir`; this second "
+                "spelling built a path without the org — remove it")
 
         # rule 6: every stage target resolves to a source file
         for t in m.targets():
@@ -1600,6 +1615,12 @@ def self_test(root: Path):
 
     add("parity_stage_mismatch", stage_mismatch,
         "is a 'det' gate but is claimed by the 'mcp' stage")
+
+    def perf_subdir_returned(d):
+        d["perf"]["vault_subdir"] = d["vault"]["dir"]
+
+    add("perf_vault_subdir_is_a_second_spelling", perf_subdir_returned,
+        "this second spelling built a path without the org")
 
     # The unmutated base must validate: that is the control, and it is what keeps
     # this mode honest (a validator that rejected everything would still report

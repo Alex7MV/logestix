@@ -31,18 +31,14 @@ std::optional<ModelIdentity> ModelIdentityFor(const std::string &input_path)
         ModelIdentity id;
         id.model_type = row.model_type;
         id.family = row.family;
-        // Store coordinates: the org is the path component the checkpoint sits
-        // under, the model dir is its own directory name.
+        // Store coordinates come from the MANIFEST, never from the path that was
+        // typed: the artifact mirrors `<org>/<model>`, and only the registry
+        // knows which org owns the model. Deriving the org from the input's
+        // parent put the artifact under whatever directory the input happened
+        // to sit in — a copy on another disk, a scratch dir, a script's temp —
+        // and nothing downstream could tell that from the real location.
         id.model_dir = std::string(vault);
-        id.org = fs::path(input_path).parent_path().filename().string();
-        if (id.org.empty() || id.org == id.model_dir) {
-            // A bare name has no org in the path; recover it from the store so
-            // the artifact still lands beside its source.
-            std::string why;
-            if (const auto src = lsx::storage::FindSourceModel(id.model_dir, &why);
-                src.has_value())
-                id.org = src->parent_path().filename().string();
-        }
+        id.org = row.vault_org != nullptr ? std::string(row.vault_org) : "";
         if (id.org.empty()) return std::nullopt;   // cannot place it honestly
         return id;
     }

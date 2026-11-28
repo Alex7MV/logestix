@@ -5,7 +5,7 @@
 // gate SyntheticGeometryAllowed() (LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY).
 //
 // Source of truth (read-only reference, not vendored):
-//   /mnt/llm_models/models/Mistral-Small-4-119B-2603-NVFP4/params.json
+//   <source root>/mistralai/Mistral-Small-4-119B-2603-NVFP4/params.json
 //   .../consolidated.safetensors.index.json  (56313 tensors, 66 GiB)
 //   model shipped with the Mistral "consolidated" layout (params.json, no
 //   config.json), already post-training quantized to NVFP4 by llm-compressor

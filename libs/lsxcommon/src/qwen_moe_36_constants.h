@@ -4,7 +4,7 @@
 // from Qwen3.5-35B-A3B by directive: values coincide (same qwen3_5_moe
 // architecture), but the passport is owned and versioned separately.
 //
-// Source of truth: /mnt/llm_models/models/Qwen3.6-35B-A3B/config.json
+// Source of truth: <source root>/Qwen/Qwen3.6-35B-A3B/config.json
 // (text_config, model_type qwen3_5_moe).
 
 namespace lsxcommon::qwen_moe_36 {

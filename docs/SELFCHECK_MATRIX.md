@@ -521,9 +521,10 @@ ctest --test-dir build/linux-release-znver4-aocc -R \
 ctest --test-dir build/linux-release-znver4-aocc -R \
   "kimi_moe_selfcheck|deepseek_moe_v41_selfcheck"
 
-# 3c. every SelfCheck in the §1 table. The vault path now comes from the manifest
-#     (`vault_env` + `lsx_model_models_dir()`), so no per-family override is
-#     needed — the old per-family files defaulted to the retired
+# 3c. every SelfCheck in the §1 table. The path now comes from the manifest row
+#     (`manifest_query::ModelRoot` → `<artifact root>/<org>/<model>/<profile>`,
+#     with the row's `vault_env` override), so no per-family override is needed —
+#     the old per-family files defaulted to the retired
 #     /mnt/llm_models/models path and SKIPped silently, which is how the
 #     deepseek-v4.1-flash cancel defect stayed invisible for weeks.
 #     `--print-selfcheck-targets` is derived from the manifests, not typed by hand:

@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_nemotron",
-    "vault_subdir": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
     "timeout": 2400
   },
   "target_overrides": {

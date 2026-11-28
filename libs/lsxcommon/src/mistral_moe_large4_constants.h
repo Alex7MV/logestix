@@ -6,7 +6,7 @@
 // (LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY).
 //
 // Source of truth (read-only reference, not vendored):
-//   /mnt/fast_storage/huggingface/Mistral-Large-4-1T-A52B/config.json
+//   <source root>/mistralai/Mistral-Large-4-1T-A52B/config.json
 //   .../consolidated.safetensors.index.json  (56563 tensors, 988 GB)
 //   reference: transformers/models/mistral_large4/{configuration,modeling}_mistral_large4.py
 //

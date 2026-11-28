@@ -137,6 +137,24 @@ mask 35 (f32|bf16|nvfp4). Evidence and the gate verdicts:
 `.superpowers/sdd/2026-11-24-ampere-hardware-native-codec-plan/progress.md`
 (Task 9a) and `docs/SELFCHECK_MATRIX.md` §1.
 
+### W. A checkpoint in the store that no registry row describes (2026-11-28)
+
+`<LSX_SOURCE_ROOT>/baidu/ERNIE-5.5-Flash-Base-BF16` is a complete download (128
+safetensors shards, `config.json`) and there is no
+`models/baidu/ERNIE-5.5-Flash-Base-BF16.json`. The store is org-nested, so this is
+not a layout defect — it is a model the registry cannot describe: no converter, no
+passport, no geometry, therefore no row (`status: not-built` requires the row's
+architecture fields, and inventing them would claim an ingestion that does not
+exist).
+
+Measured 2026-11-28: 23 org directories on disk, 22 in the registry; 39
+checkpoints with weights on disk, 2 with a built artifact.
+
+**Fix shape:** either ingest it (Stage 0 triage in `ingesting-a-model`) or evict
+it, and add the reverse-direction check — "every checkpoint under the source root
+belongs to a row, or is declared as an uningested download" — to
+`test_model_suite_guard`, so the store and the registry cannot drift silently.
+
 ### Model manifest migration (2026-11-06) — what it did not cover
 
 The registry moved from six hand-maintained projections to `models/<org>/<model>.json`.

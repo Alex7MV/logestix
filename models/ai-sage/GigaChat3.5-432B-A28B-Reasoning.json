@@ -63,7 +63,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_gigachat",
-    "vault_subdir": "GigaChat3.5-432B-A28B-Reasoning",
     "timeout": 3600
   },
   "target_overrides": {

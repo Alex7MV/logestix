@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_minimax_m3",
-    "vault_subdir": "MiniMax-M3",
     "timeout": 3000,
     "resource_lock": "gpu"
   },

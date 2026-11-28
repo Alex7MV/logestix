@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_muse_glimmer_30b",
-    "vault_subdir": "Muse-Glimmer-30B",
     "timeout": 1800
   },
   "target_overrides": {

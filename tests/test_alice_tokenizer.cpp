@@ -4,9 +4,10 @@
 // The checkpoint is located via LSX_TEST_ALICE_ROOT (if set), else the vault;
 // SKIPs when the model or its tokenizer.model is absent.
 #include <catch2/catch_test_macros.hpp>
+
+#include "test_manifest_query_root.h"
 #include <arrow/io/file.h>
 #include <lsxcommon/converter.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 #include <simdjson.h>
 
@@ -31,8 +32,12 @@ fs::path AliceTokenModelDir()
 {
     if (const char *env = std::getenv("LSX_TEST_ALICE_ROOT"))
         return fs::path(env);
-    return fs::path(lsxcommon::lsx_model_models_dir()) /
-           "AliceAI-Foundation-80B-A3B-Base";
+    // The CHECKPOINT, not the artifact: this builds the arrow tokenizer FROM
+    // `tokenizer.model`, which the converter consumes and does not copy into the
+    // artifact (the artifact carries the resulting vocab/merges arrows and a
+    // tokenizer.json). Asking an artifact for a sentencepiece `.model` would
+    // SKIP on every converted model forever.
+    return manifest_query::SourceDirFor("alice-foundation-80b-a3b");
 }
 
 bool LoadAliceDb(lsxcommon::ArrowTokenizerDb &db, const fs::path &out)
@@ -81,7 +86,7 @@ std::string Decode(const lsxcommon::ArrowTokenizerDb &db,
 TEST_CASE("sp-bpe builder parses the real tokenizer.model", "[alice][fast]")
 {
     const fs::path src = AliceTokenModelDir() / "tokenizer.model";
-    if (!fs::exists(src)) SKIP("alice tokenizer.model not present");
+    if (!fs::exists(src)) SKIP(std::string("alice tokenizer.model not present: ") + src.string());
 
     const fs::path out = fs::temp_directory_path() / "alice_tok_meta";
     fs::remove_all(out);
@@ -105,7 +110,7 @@ TEST_CASE("sp-bpe builder parses the real tokenizer.model", "[alice][fast]")
 TEST_CASE("sp-bpe encode/decode matches sentencepiece goldens", "[alice][fast]")
 {
     const fs::path src = AliceTokenModelDir() / "tokenizer.model";
-    if (!fs::exists(src)) SKIP("alice tokenizer.model not present");
+    if (!fs::exists(src)) SKIP(std::string("alice tokenizer.model not present: ") + src.string());
 
     const fs::path out = fs::temp_directory_path() / "alice_tok_meta";
     fs::create_directories(out);
@@ -117,7 +122,9 @@ TEST_CASE("sp-bpe encode/decode matches sentencepiece goldens", "[alice][fast]")
 
     std::ifstream f(std::string(LSX_SOURCE_DIR) +
                     "/tests/fixtures/tokenizer/alice.json");
-    if (!f) SKIP("golden missing");
+    if (!f)
+        SKIP(std::string("golden missing: ") + LSX_SOURCE_DIR +
+             "/tests/fixtures/tokenizer/alice.json");
     std::string json((std::istreambuf_iterator<char>(f)),
                      std::istreambuf_iterator<char>());
     simdjson::padded_string pad(json);

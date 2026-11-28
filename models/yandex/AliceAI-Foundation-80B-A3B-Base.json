@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_alice_foundation_80b_a3b",
-    "vault_subdir": "AliceAI-Foundation-80B-A3B-Base",
     "timeout": 3000
   },
   "target_overrides": {

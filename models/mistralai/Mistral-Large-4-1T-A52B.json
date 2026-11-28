@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_mistral_large4",
-    "vault_subdir": "Mistral-Large-4-1T-A52B",
     "timeout": 9600
   },
   "target_overrides": {

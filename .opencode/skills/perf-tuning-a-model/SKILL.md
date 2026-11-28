@@ -152,8 +152,9 @@ unguarded baseline) **and** if a `TEST_CASE("perf baseline: ...")` has no
 anywhere in the ctest corpus (`tests/CMakeLists.txt` plus the generated
 `${CMAKE_BINARY_DIR}/generated/model_targets.cmake`). Add the JSON entry, the case
 **and** the manifest `perf` stage target in the same commit — the generator emits
-the `add_test` with the case string, the label, the timeout, the GPU lock and the
-`LSX_PERF_VAULT_SUBDIR`; you never write that call by hand.
+the `add_test` with the case string, the label, the timeout and the GPU lock; you
+never write that call by hand (and no model-path env is emitted: the test resolves
+its artifact from the registry).
 
 The second direction is not redundant. A `TEST_CASE` with no `add_test` looks like
 coverage when you read the source and like absence when you read ctest, and nothing
@@ -206,9 +207,13 @@ Rules that bite:
 - **A protocol change re-seeds.** An entry whose `max_gen`/`prompt` no longer
   matches the test is treated as absent and rewritten; keep the recorded prompt
   exactly.
-- **Manual invocation needs the vault subdir**: `LSX_PERF_VAULT_SUBDIR=<ModelDir>
-  test_perf_baseline "perf baseline: <model_type>"`. ctest wires it per target
-  through `ENVIRONMENT`.
+- **A perf target resolves its artifact from the registry**: `ModelDir()` is
+  `manifest_query::ConvertedDirFor(model_type)`, i.e.
+  `<LSX_ARTIFACT_ROOT>/<org>/<model>/<profile>`, with the row's own
+  `LSX_TEST_<MODEL>_ROOT` override still winning. A direct binary run needs
+  `LSX_ARTIFACT_ROOT` exported; there is no subdir env any more (the old
+  `LSX_PERF_VAULT_SUBDIR` carried the store's directory name and was joined onto
+  the SOURCE root without the org, which is why every perf target SKIPped).
 - **Ordering**: run perf last, after every other GPU task (host-resource
   policy).
 - **The harness auto-cools between targets.** One 35–45 s decode heat-soaks the
@@ -274,8 +279,10 @@ Then the traps:
   `LsxModelFactory::Create` and `InferenceEngine::InitializeEngine`; explicit
   test `SetCurrentKnobs` layers on top without re-resolving.
 - Unknown GPU: the first `Load` runs a one-time GEMV calibration on synthetic
-  NVFP4 buffers and stores the result in the vault. There is no CLI calibrate —
-  `BaseKnobs` entries are authored by hand from calibration snippets.
+  NVFP4 buffers and stores the result in the per-user cache
+  (`lsx_cache_path("perf-cache/<gpu>.json")`), never in a model store. There is
+  no CLI calibrate — `BaseKnobs` entries are authored by hand from calibration
+  snippets.
 - Knob consumers: `SetLsxGemmMaxMib`, `SetLsxSplitKGridMin` (`lsx_tc_gemm`),
   `lifecycle::ExpertCacheSlots(..., slots_pct)`, `LsxDualStreamStaging()`.
 - Tri-state `FastMathMode { kAuto, kOn, kOff }` (`fast_math_mode.h`): models

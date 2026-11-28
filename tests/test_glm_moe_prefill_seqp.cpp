@@ -10,6 +10,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -17,7 +19,6 @@
 
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/prompt_framing.h>
 #include <lsxcommon/tokenizer.h>
 
@@ -27,8 +28,7 @@ std::filesystem::path GlmModelPath()
 {
     const char *env = std::getenv("LSX_TEST_GLM_MODEL_PATH");
     return env ? std::filesystem::path(env)
-               : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                     "GLM-5.2";
+               : manifest_query::ConvertedDirFor("glm-5.2");
 }
 
 } // namespace
@@ -37,7 +37,7 @@ TEST_CASE("GLM seq-P prefill stores P KV rows and stays bit-exact", "[glm][model
 {
     const std::filesystem::path model = GlmModelPath();
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("GLM real model directory not present");
+        SKIP(std::string("GLM real model directory not present: ") + model.string());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();

@@ -24,9 +24,9 @@ identical tokenizer (byte-identical `tiktoken.model`), identical XTML wire, so
 its goldens are the same frames keyed to its own model type (`--model`).
 
 Usage:
-    python3 tools/kimi_k3_template_goldens.py /mnt/fast_storage/huggingface/Kimi-K3
+    python3 tools/kimi_k3_template_goldens.py <source root>/moonshotai/Kimi-K3
     python3 tools/kimi_k3_template_goldens.py --model kimi-k3.1-pro \
-        /mnt/fast_storage/lsx_model/moonshotai/Kimi-K3.1-Pro
+        <source root>/moonshotai/Kimi-K3.1-Pro
 """
 import json
 import sys

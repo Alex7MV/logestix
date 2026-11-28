@@ -16,7 +16,7 @@ natural element order before it is written. The fixture is plain text with
 
 Usage:
   python3 tools/kimi_rope_capture.py \
-      --model /mnt/fast_storage/lsx_model/moonshotai/Kimi-K2.7-Code \
+      --model <source root>/moonshotai/Kimi-K2.7-Code \
       --out tests/fixtures/kimi/rope_attn.txt
 """
 import argparse

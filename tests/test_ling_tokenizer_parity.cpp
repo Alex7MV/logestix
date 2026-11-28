@@ -4,6 +4,8 @@
 // tokenizer, never from this bridge. SKIPs when the source is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -21,10 +23,10 @@
 #ifndef LSX_LING_FIXTURE_DIR
 #define LSX_LING_FIXTURE_DIR "tests/fixtures/ling"
 #endif
-#ifndef LSX_LING_TOKENIZER_PATH
+// No literal: the checkpoint comes from the registry
+// (`<source root>/<org>/<model>`) — the store's org is not knowable here.
 #define LSX_LING_TOKENIZER_PATH \
-    "/mnt/fast_storage/huggingface/Ling-3.1-flash/tokenizer.json"
-#endif
+    (manifest_query::SourceDirFor("ling") / "tokenizer.json")
 
 namespace {
 
@@ -76,7 +78,7 @@ TEST_CASE("Ling o200k tokenizer reproduces the checkpoint ids exactly",
         env ? std::filesystem::path(env) : std::filesystem::path(
                                                 LSX_LING_TOKENIZER_PATH);
     if (!std::filesystem::exists(tok))
-        SKIP("Ling source tokenizer.json absent");
+        SKIP(std::string("Ling source tokenizer.json absent: ") + tok.string());
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() / "lsx_ling_tok";
     std::error_code ec;

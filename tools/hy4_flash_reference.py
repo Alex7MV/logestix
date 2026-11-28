@@ -17,9 +17,11 @@ reference the engine must reproduce. It runs on CPU in bf16 with a streamed
 state_dict, because the full tree is 411 GB and no single GPU here can hold it.
 
     /mnt/fast_storage/tmp/hy4venv2/bin/python tools/hy4_flash_reference.py \
-        --model /mnt/fast_storage/lsx_model/tencent/Hy4-flash --prompt "The capital of France is"
+        --model <source root>/tencent/Hy4-flash --prompt "The capital of France is"
 """
 import argparse
+
+import lsx_paths
 import json
 import os
 import struct
@@ -153,7 +155,8 @@ def override_from_artifact(model, root, layers, blocks=0):
     params = dict(model.named_parameters())
     params.update(dict(model.named_buffers()))
     replaced = 0
-    for path in sorted(glob.glob(os.path.join(root, "logestix", "pinned",
+    art = str(lsx_paths.artifact_dir(root))
+    for path in sorted(glob.glob(os.path.join(art, "pinned",
                                               "layer_*_nvfp4.arrow"))):
         layer = int(path.rsplit("layer_", 1)[1].split("_")[0])
         if layers and layer >= layers:
@@ -194,7 +197,7 @@ def override_from_artifact(model, root, layers, blocks=0):
                 params[key].copy_(torch.from_numpy(artifact_dequant(row)))
             replaced += 1
     print("artifact override: %d tensors replaced from %s" %
-          (replaced, os.path.join(root, "logestix")), flush=True)
+          (replaced, art), flush=True)
     for layer, blk in enumerate(model.layers):
         if blocks and layer >= blocks:
             continue
@@ -214,8 +217,9 @@ def override_experts_from_artifact(model, root, layer):
     import pyarrow as pa
     import pyarrow.ipc as ipc
 
-    paths = sorted(glob.glob(os.path.join(root, "logestix", "experts",
-                                          "layer_%d" % layer, "exp_*.arrow")),
+    paths = sorted(glob.glob(os.path.join(str(lsx_paths.artifact_dir(root)),
+                                          "experts", "layer_%d" % layer,
+                                          "exp_*.arrow")),
                    key=lambda p: int(p.rsplit("exp_", 1)[1].split(".")[0]))
     experts = model.layers[layer].mlp.experts
     gate_up = np.empty(experts.gate_up_proj.shape, dtype=np.float32)
@@ -333,7 +337,7 @@ def dump_layers(model, ids, head, out_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/mnt/fast_storage/lsx_model/tencent/Hy4-flash")
+    ap.add_argument("--model", default=str(lsx_paths.source_dir("hy4-flash")))
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--tokens", type=int, default=4)
     ap.add_argument("--ids", default="")

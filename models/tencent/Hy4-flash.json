@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_hy4_flash",
-    "vault_subdir": "Hy4-flash",
     "timeout": 3600,
     "resource_lock": "gpu"
   },

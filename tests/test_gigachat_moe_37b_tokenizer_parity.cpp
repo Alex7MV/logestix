@@ -30,13 +30,14 @@ using namespace lsxcommon;
 
 namespace {
 
-// The SOURCE checkpoint (read-only store) — what 'vault' means in the
-// registry schema; the converted tree is ConvertedDirFor/ModelRoot.
-std::filesystem::path VaultRoot()
+// The ARTIFACT (converted tree): this reads `pinned/tokenizer_{vocab,merges}.arrow`,
+// which only a conversion writes. The registry resolves it from the model_type —
+// `<artifact root>/<org>/<model>/<profile>` — and the row's own env override wins.
+std::filesystem::path ConvertedRoot()
 {
     if (const char *env = std::getenv("LSX_TEST_GIGACHAT4_37B_A4B_ROOT"))
         return env;
-    return manifest_query::SourceDirFor("gigachat4-37b-a4b");
+    return manifest_query::ConvertedDirFor("gigachat4-37b-a4b");
 }
 
 ArrowTokenizerDb LoadVaultTokenizer(const std::filesystem::path &root)
@@ -67,10 +68,11 @@ int CountId(const std::vector<int32_t> &ids, int32_t want)
 TEST_CASE("gigachat4 tokenizer bridge resolves the checkpoint's own markers",
           "[gigachat4][tokenizer]")
 {
-    const auto root = VaultRoot();
+    const auto root = ConvertedRoot();
     if (!std::filesystem::exists(root / "pinned" /
                                  "tokenizer_vocab.arrow"))
-        SKIP("converted model absent");
+        SKIP(std::string("converted model absent: ") + root.string() +
+             "/pinned/tokenizer_vocab.arrow");
 
     const auto db = LoadVaultTokenizer(root);
     // The checkpoint is the Llama-3/o200k case-run BPE (kind 3), and the
@@ -92,10 +94,11 @@ TEST_CASE("gigachat4 tokenizer bridge resolves the checkpoint's own markers",
 TEST_CASE("gigachat4 prompt framing is chatml-v5, not a raw encode",
           "[gigachat4][tokenizer]")
 {
-    const auto root = VaultRoot();
+    const auto root = ConvertedRoot();
     if (!std::filesystem::exists(root / "pinned" /
                                  "tokenizer_vocab.arrow"))
-        SKIP("converted model absent");
+        SKIP(std::string("converted model absent: ") + root.string() +
+             "/pinned/tokenizer_vocab.arrow");
 
     const auto db = LoadVaultTokenizer(root);
     ModelInitConfig cfg;
@@ -121,10 +124,11 @@ TEST_CASE("gigachat4 prompt framing is chatml-v5, not a raw encode",
 TEST_CASE("gigachat4 tokenizer round-trips a mixed-case identifier",
           "[gigachat4][tokenizer]")
 {
-    const auto root = VaultRoot();
+    const auto root = ConvertedRoot();
     if (!std::filesystem::exists(root / "pinned" /
                                  "tokenizer_vocab.arrow"))
-        SKIP("converted model absent");
+        SKIP(std::string("converted model absent: ") + root.string() +
+             "/pinned/tokenizer_vocab.arrow");
 
     const auto db = LoadVaultTokenizer(root);
     // Kind 3 (the Llama-3 case-run split) must keep the sub-word boundaries:

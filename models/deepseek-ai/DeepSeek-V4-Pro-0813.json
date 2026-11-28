@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_deepseek_v4_pro",
-    "vault_subdir": "DeepSeek-V4-Pro-0813",
     "timeout": 5400
   },
   "target_overrides": {

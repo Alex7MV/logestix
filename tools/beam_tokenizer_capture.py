@@ -5,9 +5,10 @@ The reference is the checkpoint's own tokenizer (HF `tokenizers`), never the
 logestix bridge. Only `tokenizer.json` is read.
 
     python3 tools/beam_tokenizer_capture.py \
-        /mnt/fast_storage/huggingface/Beam-1.0-501B-A23B \
+        <source root>/reflection/Beam-1.0-501B-A23B \
         tests/fixtures/beam/tokenizer_parity.jsonl
 """
+import lsx_paths
 import json
 import sys
 from pathlib import Path
@@ -50,7 +51,7 @@ CORPUS = [
 
 def main() -> int:
     src = Path(sys.argv[1] if len(sys.argv) > 1
-               else "/mnt/fast_storage/huggingface/Beam-1.0-501B-A23B")
+               else str(lsx_paths.source_dir("beam")))
     dst = Path(sys.argv[2] if len(sys.argv) > 2
                else "tests/fixtures/beam/tokenizer_parity.jsonl")
     tok = Tokenizer.from_file(str(src / "tokenizer.json"))

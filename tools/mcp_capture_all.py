@@ -6,13 +6,13 @@ tests/fixtures/mcp/*.json, kept so the capture is reproducible instead of a
 transcript of shell history. Failures are collected, not fatal: a model whose
 tokenizer cannot be framed declares `golden_debt.mcp` in its manifest.
 """
-import glob
 import json
 import os
 import subprocess
 import sys
 
-ROOT = "/mnt/fast_storage/lsx_model"
+import lsx_paths
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
@@ -20,15 +20,18 @@ REPO = os.path.dirname(HERE)
 def main():
     only = sys.argv[1:] or None
     rows = []
-    for path in sorted(glob.glob(os.path.join(REPO, "models", "*", "*.json"))):
-        doc = json.load(open(path))
+    for doc in lsx_paths.rows():
         model_type = doc["model_type"]
         if only and model_type not in only:
             continue
-        vault = doc.get("vault", {}).get("dir", "")
-        hits = glob.glob(os.path.join(ROOT, "*", vault))
-        if not hits:
-            rows.append((model_type, "", "no checkpoint directory"))
+        # The registry knows the org, so the checkpoint is one join:
+        # <source root>/<org>/<model>. The old code globbed `ROOT/*/<model>`
+        # with a hardcoded root — right by accident, and blind to
+        # LSX_SOURCE_ROOT, which is how a moved store reads as "not downloaded".
+        checkpoint = lsx_paths.source_dir(model_type)
+        if not checkpoint.is_dir():
+            rows.append((model_type, "", "no checkpoint directory at " +
+                         str(checkpoint)))
             continue
         # A placeholder directory exists but is EMPTY: the source store creates
         # the row before the download lands (docs/open-tasks infra-migrations).
@@ -36,11 +39,12 @@ def main():
         # Python package when the real answer is "the weights are not on disk".
         has_checkpoint = any(
             name in ("config.json", "params.json") or
-            name.endswith(".safetensors") for name in os.listdir(hits[0]))
+            name.endswith(".safetensors") for name in checkpoint.iterdir())
         if not has_checkpoint:
-            rows.append((model_type, "", "empty placeholder (weights not downloaded)"))
+            rows.append((model_type, "", "empty placeholder (weights not "
+                                         "downloaded) at " + str(checkpoint)))
             continue
-        rows.append((model_type, hits[0], ""))
+        rows.append((model_type, str(checkpoint), ""))
     failed = []
     for model_type, checkpoint, why in rows:
         if not checkpoint:

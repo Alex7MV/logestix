@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_granite_4_2_30b",
-    "vault_subdir": "granite-4.2-30b",
     "timeout": 3000
   },
   "target_overrides": {

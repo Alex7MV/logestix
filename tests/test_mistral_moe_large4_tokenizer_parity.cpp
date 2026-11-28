@@ -4,6 +4,8 @@
 // tokenizer.json, never from this bridge. SKIPs when the source is absent.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include <arrow/io/file.h>
 
 #include <cstdint>
@@ -21,10 +23,10 @@
 #ifndef LSX_MISTRAL_LARGE4_FIXTURE_DIR
 #define LSX_MISTRAL_LARGE4_FIXTURE_DIR "tests/fixtures/mistral_large4"
 #endif
-#ifndef LSX_MISTRAL_LARGE4_TOKENIZER_PATH
+// No literal: the checkpoint comes from the registry
+// (`<source root>/<org>/<model>`) — the store's org is not knowable here.
 #define LSX_MISTRAL_LARGE4_TOKENIZER_PATH \
-    "/mnt/fast_storage/huggingface/Mistral-Large-4-1T-A52B/tokenizer.json"
-#endif
+    (manifest_query::SourceDirFor("mistral-large-4-1t") / "tokenizer.json")
 
 namespace {
 
@@ -76,7 +78,7 @@ TEST_CASE("MistralLarge4 tokenizer reproduces the checkpoint ids exactly",
         env ? std::filesystem::path(env)
             : std::filesystem::path(LSX_MISTRAL_LARGE4_TOKENIZER_PATH);
     if (!std::filesystem::exists(tok))
-        SKIP("MistralLarge4 source tokenizer.json absent");
+        SKIP(std::string("MistralLarge4 source tokenizer.json absent: ") + tok.string());
     const std::filesystem::path dir =
         std::filesystem::temp_directory_path() / "lsx_mistral_large4_tok";
     std::error_code ec;

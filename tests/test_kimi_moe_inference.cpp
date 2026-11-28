@@ -2,6 +2,8 @@
 // Real-model test: SKIPs when no converted Kimi checkpoint is present.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_manifest_query_root.h"
+
 #include "test_streaming_assert.h"
 
 #include <cuda_runtime.h>
@@ -15,7 +17,6 @@
 
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
-#include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace {
@@ -24,8 +25,7 @@ std::filesystem::path KimiModelPath()
 {
     const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
     return env ? std::filesystem::path(env)
-               : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                     "Kimi-K2.7-Code";
+               : manifest_query::ConvertedDirFor("kimi-k2.7-code");
 }
 
 std::vector<int32_t> EncodePrompt(lsxcommon::ArrowTokenizerDb &tok,
@@ -47,7 +47,7 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
 {
     const std::filesystem::path model = KimiModelPath();
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("converted Kimi model directory not present");
+        SKIP(std::string("converted Kimi model directory not present: ") + model.string());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();
@@ -117,7 +117,7 @@ TEST_CASE("Kimi-K2.7-Code repeated inference keeps the instance usable",
 {
     const std::filesystem::path model = KimiModelPath();
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("converted Kimi model directory not present");
+        SKIP(std::string("converted Kimi model directory not present: ") + model.string());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();

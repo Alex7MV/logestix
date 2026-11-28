@@ -33,6 +33,7 @@ and the logit scale accumulate in FP32, and the softmax output is cast back to
 the activation dtype.
 """
 
+import lsx_paths
 import glob
 import json
 import math
@@ -328,8 +329,8 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--model",
-                    default="/mnt/fast_storage/huggingface/"
-                            "NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16")
+                    # org-nested store: the registry knows the org
+                    default=str(lsx_paths.source_dir("dory-1.0-4b")))
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--max-new-tokens", type=int, default=8)
     ap.add_argument("--device", default=None)

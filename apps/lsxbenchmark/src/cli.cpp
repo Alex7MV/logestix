@@ -10,9 +10,13 @@ namespace lsxbenchmark {
 
 BenchmarkCliArgs ParseBenchmarkCliArgs(int argc, char *argv[]) {
     BenchmarkCliArgs a;
-    a.model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                    "DeepSeek-V4-Flash")
-                       .string();
+    // A model IDENTITY, not a path. `lsx::storage::Resolve` searches the
+    // artifact store for it (and reports a source-only checkpoint as the
+    // fixable thing it is). The old default built
+    // `<source root>/DeepSeek-V4-Flash` — without the org the store nests it
+    // under, and pointing at the read-only checkpoint rather than the
+    // converted tree — so the default could never load.
+    a.model_path = "deepseek-v4-flash";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc)
             a.model_path = argv[++i];

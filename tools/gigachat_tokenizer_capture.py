@@ -10,7 +10,7 @@ like every o200k bridge in this repo, `arrow_tokenizer_encode` is pure BPE and
 the chat framing prepends `<s>` explicitly in BuildPromptInputIds.
 
     python3 tools/gigachat_tokenizer_capture.py \
-        --tokenizer /mnt/fast_storage/lsx_model/ai-sage/GigaChat3.5-432B-A28B-Reasoning/tokenizer.json \
+        --tokenizer <source root>/ai-sage/GigaChat3.5-432B-A28B-Reasoning/tokenizer.json \
         --out tests/fixtures/gigachat/tokenizer_parity.jsonl
 """
 import argparse

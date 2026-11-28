@@ -8,7 +8,7 @@ tool calls with nested JSON arguments, tool results, the developer role and the
 `flint_text` sanitation rules.
 
     python3 tools/flint_chat_framing_capture.py \
-        --model /mnt/fast_storage/huggingface/flint \
+        --model <source root>/RecursiveSI/flint \
         --out tests/fixtures/flint/chat_framing.jsonl
 """
 import argparse

@@ -58,7 +58,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_mistral_small_4",
-    "vault_subdir": "Mistral-Small-4-119B-2603-NVFP4",
     "timeout": 3000
   },
   "target_overrides": {

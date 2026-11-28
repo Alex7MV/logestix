@@ -17,7 +17,7 @@ multi-line text fits on one corpus line.
 
 Usage:
   python3 tools/nemotron_tokenizer_capture.py \
-      --model /mnt/fast_storage/lsx_model/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
+      --model <source root>/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
       --corpus tests/fixtures/nemotron/tokenizer_corpus.txt \
       --out tests/fixtures/nemotron/tokenizer_parity.txt
 """

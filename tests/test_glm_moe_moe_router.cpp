@@ -2,10 +2,13 @@
 // populate the 8 active expert slots of every token's routing record without
 // index out-of-bounds corruption of the output grid.
 #include <catch2/catch_test_macros.hpp>
+
+#include "test_manifest_query_root.h"
 #include <catch2/catch_approx.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <algorithm>
+#include <string>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -16,7 +19,6 @@
 
 #include "lsxcommon/glm_moe_inference.h"
 #include "lsxcommon/glm_moe_load.h"
-#include "lsxcommon/path_registry.h"
 
 using lsxcommon::glm::GlmPinnedWeights;
 using lsxcommon::glm::GlmRoutedSlot;
@@ -230,9 +232,9 @@ TEST_CASE("GLM MoE Layer 3 router on real model weights: smoke + determinism",
     const char *env = std::getenv("LSX_TEST_GLM_MODEL_PATH");
     std::filesystem::path model =
         env ? std::filesystem::path(env)
-            : std::filesystem::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.2";
+            : manifest_query::ConvertedDirFor("glm-5.2");
     if (!std::filesystem::exists(model / "pinned"))
-        SKIP("GLM real model directory not present");
+        SKIP(std::string("GLM real model directory not present: ") + model.string());
 
     cudaFree(0);
     cudaStream_t st;

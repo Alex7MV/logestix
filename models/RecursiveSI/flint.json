@@ -59,7 +59,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_flint",
-    "vault_subdir": "flint",
     "timeout": 3000,
     "resource_lock": "gpu"
   },

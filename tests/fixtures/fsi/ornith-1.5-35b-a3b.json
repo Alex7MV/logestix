@@ -2,7 +2,7 @@
   "format": "logestix-fsi-golden",
   "version": 1,
   "model_type": "ornith-1.5-35b-a3b",
-  "source": "/mnt/llm_models/models/Ornith-1.5-35B-A3B",
+  "source": "ornith-ai/Ornith-1.5-35B-A3B",
   "runtime": "transformers 5.15.1 / torch 2.13.0+cu130",
   "prompts": [
     {

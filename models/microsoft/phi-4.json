@@ -106,7 +106,6 @@
   },
   "perf": {
     "target": "test_perf_baseline_phi_4",
-    "vault_subdir": "phi-4",
     "timeout": 3000
   },
   "target_overrides": {

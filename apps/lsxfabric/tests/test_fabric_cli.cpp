@@ -28,7 +28,12 @@ TEST_CASE("fabric cli: defaults are maximum-speed generation", "[lsxfabric][cli]
     REQUIRE_FALSE(a.testprompt);
     REQUIRE(a.max_gen == 64);
     REQUIRE(a.prompt == "The capital of France is");
-    REQUIRE(a.model_path.find("DeepSeek-V4-Flash") != std::string::npos);
+    // The default is a model IDENTITY, not a path: the store is org-nested
+    // (`<root>/<org>/<model>`), so a path built here would drop the org — the
+    // old default did and pointed at a directory that never exists. Resolve
+    // turns this name into the artifact.
+    REQUIRE(a.model_path == "deepseek-v4-flash");
+    REQUIRE(a.model_path.find('/') == std::string::npos);
 }
 
 TEST_CASE("fabric cli: measurement flags moved to lsxbenchmark are not recognized",

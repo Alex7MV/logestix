@@ -9,9 +9,10 @@ grouped 1..3 aligned to the right end of a run).
 
 Usage:
     python3 tools/mistral_large4_tokenizer_capture.py \
-        /mnt/fast_storage/huggingface/Mistral-Large-4-1T-A52B \
+        <source root>/mistralai/Mistral-Large-4-1T-A52B \
         tests/fixtures/mistral_large4/tokenizer_parity.jsonl
 """
+import lsx_paths
 import json
 import sys
 from pathlib import Path
@@ -48,11 +49,15 @@ CORPUS = [
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    if not 1 <= len(sys.argv) <= 3:
         print(__doc__)
         return 2
-    model_dir = Path(sys.argv[1])
-    out = Path(sys.argv[2])
+    # The store directory comes from the registry (org-nested), so an operator
+    # can run this without remembering the org.
+    model_dir = (Path(sys.argv[1]) if len(sys.argv) > 1
+                 else lsx_paths.source_dir("mistral-large-4-1t"))
+    out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(
+        "tests/fixtures/mistral_large4/tokenizer_parity.jsonl")
     tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
     out.parent.mkdir(parents=True, exist_ok=True)
     n = 0

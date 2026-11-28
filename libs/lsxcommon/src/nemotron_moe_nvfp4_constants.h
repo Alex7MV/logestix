@@ -4,7 +4,7 @@
 // passport).
 //
 // Source of truth:
-// /mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/config.json
+// <source root>/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4/config.json
 // (model_type nemotron_h, NemotronHForCausalLM) + the safetensors inventory
 // audit of the 52 shards.
 //
