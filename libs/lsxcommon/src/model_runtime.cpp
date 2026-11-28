@@ -18,6 +18,7 @@
 #include "lsxcommon/fsi_selfcheck.h"
 #include "lsxcommon/code_selfcheck.h"
 #include "lsxcommon/det_selfcheck.h"
+#include "lsxcommon/mcp_selfcheck.h"
 
 namespace lsxcommon {
 namespace runtime {
@@ -351,6 +352,41 @@ int RunCliCodeSelfCheck(const GenerationCliArgs &args)
         lsxcommon::log::info(absl::StrFormat(
             "%s  expected='%s'  extracted='%s'  %s", c.id.c_str(),
             c.expected.c_str(), c.extracted.c_str(),
+            c.passed ? "PASS" : "FAIL"));
+    lsxcommon::log::info(
+        absl::StrFormat("result   : %s", result.all_passed ? "PASS" : "FAIL"));
+    m.model->Unload();
+    return result.all_passed ? 0 : 1;
+}
+
+int RunCliMcpSelfCheck(const GenerationCliArgs &args)
+{
+    lsxcommon::log::info(
+        "Running MCP self-check (JSON-RPC 2.0 payload parity)...");
+    const char *dir = std::getenv("LSX_MCP_GOLDEN_DIR");
+    if (!dir || !*dir) {
+        lsxcommon::log::error(
+            "LSX_MCP_GOLDEN_DIR is not set (directory with <model_type>.json)");
+        return 1;
+    }
+    CliModel m = CreateCliModel(args.model_path, FastMathMode::kOff);
+    if (!m.ok) return 1;
+    const std::string golden_path =
+        std::string(dir) + "/" + m.model->Type() + ".json";
+    mcp::McpGolden golden;
+    std::string err;
+    if (!mcp::LoadMcpGoldenFile(golden_path, golden, &err)) {
+        lsxcommon::log::error(
+            absl::StrFormat("MCP golden load failed: %s", err.c_str()));
+        m.model->Unload();
+        return 1;
+    }
+    const mcp::McpResult result = mcp::RunMcpSelfCheck(*m.model, golden);
+    lsxcommon::log::info("=== lsxbenchmark: mcp-selfcheck ===");
+    for (const mcp::McpCaseResult &c : result.cases)
+        lsxcommon::log::info(absl::StrFormat(
+            "%s  exact=%s  diff='%s'  %s", c.id.c_str(),
+            c.exact ? "yes" : "no", c.diff.c_str(),
             c.passed ? "PASS" : "FAIL"));
     lsxcommon::log::info(
         absl::StrFormat("result   : %s", result.all_passed ? "PASS" : "FAIL"));

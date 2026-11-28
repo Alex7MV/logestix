@@ -16,54 +16,11 @@
 namespace lsxcommon {
 namespace det {
 namespace {
-// Dedup Ф5: fence stripper is the shared lsxcommon::selfcheck body.
-using lsxcommon::selfcheck::Unfence;
-
-// Strip everything before the last </think> so a reasoning chain does not
-// shadow the final answer (same rule as FSI/CODE).
-std::string Preprocess(std::string_view raw)
-{
-    std::string text = Unfence(raw);
-    std::size_t after = std::string::npos;
-    if (const std::size_t c = text.rfind("</think>"); c != std::string::npos)
-        after = c + 8;
-    if (const std::size_t c = text.rfind("[COT_END]");
-        c != std::string::npos && (after == std::string::npos || c + 9 > after))
-        after = c + 9;
-    if (after != std::string::npos) text = text.substr(after);
-    return text;
-}
-
-// Model output is multi-line, and this verdict is ONE log record. Embedding bare
-// newlines in it silently breaks every line-oriented consumer: `grep 'raw=.*'`
-// returns the first line only, so a reader sees a prefix of the raw and believes
-// it is the whole thing. That is exactly how a real `BIT_ERO` answer looked like
-// a clean `BIT_ZERO` during the 2026-11-07 parity sweep — the extractor was
-// right and the *log* was truncated by the reader. Escaping `\n`/`\r`/`\t` and
-// other control bytes keeps the record on one line and honest.
-//
-// Bytes >= 0x80 are passed through: UTF-8 output is legitimate and escaping it
-// would make every non-English model log unreadable.
-std::string EscapeForLog(std::string_view in)
-{
-    std::string out;
-    out.reserve(in.size() + 16);
-    for (unsigned char c : in) {
-        switch (c) {
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            case '\0': out += "\\0"; break;
-            default:
-                if (c < 0x20 || c == 0x7f) {
-                    out += absl::StrFormat("\\x%02x", c);
-                } else {
-                    out += static_cast<char>(c);
-                }
-        }
-    }
-    return out;
-}
+// Dedup Ф5: fence stripper, reasoning cut, echo cut and the log escaper are the
+// shared lsxcommon::selfcheck bodies.
+using lsxcommon::selfcheck::CutPromptEcho;
+using lsxcommon::selfcheck::EscapeForLog;
+using lsxcommon::selfcheck::StripBeforeFinalAnswer;
 
 bool IsWordChar(char c)
 {
@@ -97,7 +54,7 @@ std::string ExtractToken(std::string_view text)
 
 std::string ExtractDetAnswer(DetKind kind, std::string_view raw)
 {
-    const std::string text = Preprocess(raw);
+    const std::string text = StripBeforeFinalAnswer(raw);
     switch (kind) {
         case DetKind::kToken: return ExtractToken(text);
     }
@@ -239,27 +196,6 @@ bool LoadDetGoldenFile(const std::string &path, DetGolden &out,
 }
 
 namespace {
-
-// A fragile reasoning model can fail to emit a turn-end token and echo the
-// prompt after its answer. When the golden carries the prompt body, cut the
-// decoded text at the body's prefix (after the reasoning close) so the echo
-// does not bleed into the extracted answer.
-std::string CutPromptEcho(std::string_view text, std::string_view body)
-{
-    if (body.empty()) return std::string(text);
-    std::string s(text);
-    std::size_t after = std::string::npos;
-    if (const std::size_t c = s.rfind("</think>"); c != std::string::npos)
-        after = c + 8;
-    if (const std::size_t c = s.rfind("[COT_END]");
-        c != std::string::npos && (after == std::string::npos || c + 9 > after))
-        after = c + 9;
-    if (after != std::string::npos) s = s.substr(after);
-    const std::size_t n = std::min<std::size_t>(32, body.size());
-    const std::size_t pos = s.find(std::string_view(body).substr(0, n));
-    if (pos != std::string::npos) s = s.substr(0, pos);
-    return s;
-}
 
 DetCaseResult RunDetCase(IModel &model, const DetGoldenCase &c,
                          const DetDecodeFn &decode, int stress_runs_override)

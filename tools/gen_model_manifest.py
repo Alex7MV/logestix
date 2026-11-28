@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 STAGES = ("convert", "load", "model", "kernels", "selfcheck",
-          "fsi", "code", "det", "perf")
+          "fsi", "code", "det", "mcp", "perf")
 
 # stage -> (label, timeout seconds or 0 for none, sets SKIP_RETURN_CODE 4)
 #
@@ -50,6 +50,7 @@ STAGE_DEFAULTS = {
     "fsi": ("inference", 0, True),
     "code": ("inference", 0, True),
     "det": ("inference", 0, True),
+    "mcp": ("inference", 0, True),
     "perf": ("perf", 3000, True),
 }
 
@@ -66,12 +67,36 @@ STAGE_DEFAULTS = {
 # docs/OPEN_TASKS.md §G1), so the operator rule remains "one GPU run at a time".
 STAGE_LOCKS = {stage: "gpu" for stage in
                ("convert", "load", "model", "kernels", "selfcheck",
-                "fsi", "code", "det", "perf")}
+                "fsi", "code", "det", "mcp", "perf")}
 
 # Stages whose tests build a synthetic checkpoint/tree and therefore need the
 # geometry override. deviates are expressed in the manifest's target_overrides.
 SYNTHETIC_ENV = "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
 SYNTHETIC_STAGES = ("convert", "load", "model")
+
+# Stages that are allowed to be absent without a debt reason. `perf` is one
+# because a baseline is seeded only when a model is measured; `mcp` is one
+# because the gate shipped as a PILOT on the two bootstrap artifacts
+# (microsoft/phi-4/nvfp4, Qwen/Qwen3.5-9B/nvfp4) rather than on all 47 rows.
+# Keeping it in this list is a claim about ROLLOUT, not about importance: the
+# rule this list relaxes is "an empty stage is a gap unless declared", and the
+# honest statement for the other 45 rows today is "not rolled out yet", not a
+# fabricated debt entry per row. When the gate reaches a row, the stage appears
+# and test_model_suite_guard starts enforcing its target and its golden.
+OPTIONAL_STAGES = ("perf", "mcp")
+
+# The gate kinds tests/test_parity_gate.cpp compiles. A parity target whose
+# name does not end in one of these spells a gate the driver has no branch for.
+PARITY_KINDS = ("fsi", "code", "det", "mcp")
+
+
+def kind_of(target_name):
+    """`test_x_det_selfcheck` -> `det`; anything else -> the empty string."""
+    for kind in PARITY_KINDS:
+        if target_name.endswith("_" + kind + "_selfcheck"):
+            return kind
+    return ""
+
 
 PERF_CASE_FMT = "perf baseline: {}"
 PERF_BINARY = "test_perf_baseline"
@@ -347,7 +372,8 @@ def validate(manifests, root: Path, partial: bool = False,
         # rule 2: every stage is covered or its absence is declared
         for stage in STAGES:
             names = m.stages.get(stage, [])
-            if not names and stage not in m.golden_debt and stage != "perf":
+            if (not names and stage not in m.golden_debt
+                    and stage not in OPTIONAL_STAGES):
                 add(m, f"stages.{stage}",
                     f"gap without debt: stage '{stage}' is empty and no "
                     f"golden_debt.{stage} reason is declared")
@@ -449,7 +475,37 @@ def validate(manifests, root: Path, partial: bool = False,
                         f"test_selfcheck_driver.cpp missing")
                 continue
             if t.form == "parity":
-                # One shared driver TU serves every model's FSI/CODE/DET gate.
+                # One shared driver TU serves every model's FSI/CODE/DET/MCP gate.
+                # The kind is a compile-time constant in that driver, so a typo
+                # here is a build error in every model's target rather than a
+                # manifest error — check it where the manifest is validated.
+                if kind_of(t.name) not in PARITY_KINDS:
+                    add(m, f"stages.{t.stage}",
+                        f"target {t.name}: unknown parity kind "
+                        f"{kind_of(t.name)!r} (must be one of "
+                        f"{', '.join(PARITY_KINDS)})")
+                # `kind` in target_overrides used to be declared 143 times and
+                # read by nothing — the written-never-read rot the index audit
+                # condemned, inside the registry that issues the audit. It is
+                # load-bearing now: it must agree with the target's name and with
+                # the stage that claims the target, so a row cannot declare
+                # `"kind": "det"` for a `_mcp_selfcheck` target and have the
+                # disagreement surface only as a confusing gate failure.
+                declared_kind = m.target_overrides.get(t.name, {}).get("kind")
+                if declared_kind is not None:
+                    named = kind_of(t.name)
+                    if declared_kind != named:
+                        add(m, f"target_overrides.{t.name}",
+                            f"kind {declared_kind!r} disagrees with the target "
+                            f"name (which says {named or 'no kind'!r})")
+                # And the STAGE the row claims it under: `stages.mcp` naming a
+                # `_det_selfcheck` target would run the DET gate, pass, and
+                # report MCP coverage — the "green cell that measures something
+                # else" failure this registry exists to make impossible.
+                if kind_of(t.name) and kind_of(t.name) != t.stage:
+                    add(m, f"stages.{t.stage}",
+                        f"target {t.name} is a '{kind_of(t.name)}' gate but is "
+                        f"claimed by the '{t.stage}' stage")
                 if not (root / "tests" / "test_parity_gate.cpp").is_file():
                     add(m, f"stages.{t.stage}",
                         f"no source for target {t.name}: test_parity_gate.cpp "
@@ -598,6 +654,7 @@ _NON_MODEL_TESTS = frozenset({
     "test_blackwell_tc_mma", "test_code_naming_guard", "test_code_selfcheck", "test_converter_helpers", "test_tool_format_json", "test_config_json",
     "test_core", "test_ctest_labels_guard", "test_cuda_event_wait", "test_cuda_toolkit_guard",
     "test_det_selfcheck", "test_diagnostics", "test_expert_store", "test_expert_store_guard",
+    "test_mcp_selfcheck",
     "test_expert_store_stage", "test_fabric_client", "test_fabric_wire", "test_fast_load",
     "test_fast_math_guard_cross_tu", "test_fast_math_guard_other_tu", "test_fsi_selfcheck", "test_generation_cli",
     "test_generation_stream", "test_geometry_guard", "test_gpu_perf", "test_gpu_power",
@@ -900,7 +957,7 @@ def emit_model_section(m, baseline) -> str:
     """The catalogue block for one model. Kept separate so the line budget is
     measured on the same text that gets written (see check_doc_budget)."""
     gates = []
-    for stage in ("selfcheck", "fsi", "code", "det"):
+    for stage in ("selfcheck", "fsi", "code", "det", "mcp"):
         names = m.stages.get(stage, [])
         gates.append(
             f"{stage}: "
@@ -1145,6 +1202,27 @@ def self_test(root: Path):
         d["selfcheck_max_gen"] = 100000
 
     add("probe_budget_huge", probe_budget_huge, "outside 2..4096")
+
+    # A parity gate's declared kind must agree with its target name and with the
+    # stage that claims it. Both rules exist because `kind` was declared 143
+    # times and read by nothing, so a row could claim MCP coverage while running
+    # the DET gate and every guard would stay green.
+    def kind_mismatch(d):
+        d["target_overrides"]["test_flint_moe_det_selfcheck"]["kind"] = "mcp"
+
+    add("parity_kind_mismatch", kind_mismatch, "disagrees with the target name")
+
+    def kind_not_a_gate(d):
+        d["target_overrides"]["test_flint_moe_det_selfcheck"]["kind"] = "parity"
+
+    add("parity_kind_not_a_gate", kind_not_a_gate,
+        "disagrees with the target name")
+
+    def stage_mismatch(d):
+        d["stages"]["mcp"] = ["test_flint_moe_det_selfcheck"]
+
+    add("parity_stage_mismatch", stage_mismatch,
+        "is a 'det' gate but is claimed by the 'mcp' stage")
 
     # The unmutated base must validate: that is the control, and it is what keeps
     # this mode honest (a validator that rejected everything would still report

@@ -6,6 +6,7 @@
 // cover the FULL model lifecycle (Model Ingestion Protocol):
 //
 //     convert -> load -> model -> kernels -> selfcheck -> fsi -> code -> det
+//     (-> mcp, a pilot stage on two rows; see kRequired below)
 //
 // This guard enforces the structural side of that directive:
 //   1. Every model suite declares every lifecycle stage in its registry row
@@ -90,7 +91,8 @@ struct StageSpec
 // schema error, so this list only has to name them.
 constexpr const char *kStageOrder[] = {"convert", "load",    "model",
                                        "kernels", "selfcheck", "fsi",
-                                       "code",    "det",     "perf"};
+                                       "code",    "det",     "mcp",
+                                       "perf"};
 
 struct SuiteSpec
 {
@@ -240,7 +242,7 @@ std::vector<std::string> CheckSelfcheckSkip(const std::string &cmake_text)
         {
             const std::string stage = st.stage;
             if (stage != "selfcheck" && stage != "fsi" &&
-                stage != "code" && stage != "det") continue;
+                stage != "code" && stage != "det" && stage != "mcp") continue;
             for (const auto *t : st.targets)
                 if (!HasSkipReturnCode4(cmake_text, t))
                     v.push_back(std::string("selfcheck target without "
@@ -448,7 +450,7 @@ TEST_CASE("suite guard: every model suite covers the full lifecycle",
     REQUIRE(v.empty());
 }
 
-TEST_CASE("suite guard: selfcheck, fsi, code and det targets declare "
+TEST_CASE("suite guard: selfcheck, fsi, code, det and mcp targets declare "
           "SKIP_RETURN_CODE 4",
           "[suite][guard]")
 {
@@ -899,6 +901,13 @@ TEST_CASE("suite guard: every suite row declares the full stage set",
     static const std::vector<const char *> kRequired = {
         "convert", "load", "model", "kernels",
         "selfcheck", "fsi", "code", "det", "perf"};
+    // `mcp` is deliberately NOT here. It shipped as a pilot on the two
+    // bootstrap artifacts (phi-4, qwen3.5-9b), so requiring it of all 47 rows
+    // would report 45 correct suites as broken. That is not the same as leaving
+    // it unenforced: the golden-coverage test below gates the stage for every
+    // row that DECLARES it, and kRequired still covers the nine stages every
+    // row must carry. A row that declares `mcp` and then drops its target fails
+    // "every model suite covers the full lifecycle" like any other stage.
     // DeepSeek-V4-Flash has no converter in the repo by design (it ingests a
     // pre-converted logestix layout), so "convert" is exempt for that row only.
     static const std::set<std::string> kConvertExempt = {"deepseek-v4-flash"};
@@ -946,7 +955,8 @@ TEST_CASE("suite guard: every suite row declares the full stage set",
 TEST_CASE("suite guard: every parity golden is present or declared as debt",
           "[guard]")
 {
-    static const std::vector<const char *> kGoldenStages = {"fsi", "code", "det"};
+    static const std::vector<const char *> kGoldenStages = {"fsi", "code", "det",
+                                                            "mcp"};
     // Declared debt, as "<model>:<stage>". Every entry is a real gap; keeping the
     // list here rather than inferring it means the test output names what is
     // missing instead of merely counting what is present.
@@ -1043,7 +1053,7 @@ TEST_CASE("suite guard: a golden with no captured raw declares a template source
     const fs::path root(LSX_SOURCE_DIR);
     std::vector<std::string> mislabelled;
 
-    for (const char *stage : {"fsi", "code", "det"})
+    for (const char *stage : {"fsi", "code", "det", "mcp"})
     {
         const fs::path dir = root / "tests" / "fixtures" / stage;
         if (!fs::exists(dir)) continue;

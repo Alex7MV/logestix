@@ -390,6 +390,12 @@ server.
   the source safetensors, committed golden, separate
   `test_<family>_fsi_selfcheck` target, suite-guard `fsi` row):
   **REQUIRED SUB-SKILL** `fsi-selfcheck`.
+- **MCP payload gate — optional, and only if the row is being rolled out to it.**
+  `test_<family>_mcp_selfcheck` + `tests/fixtures/mcp/<model_type>.json` +
+  `"mcp"` in the manifest's `stages`. It is NOT a lifecycle requirement yet
+  (pilot on `phi-4` and `qwen3.5-9b`); a new row that wants it also removes
+  nothing from the required set, because `mcp` is not in it. Sub-skill
+  `mcp-selfcheck`.
 - Add the perf baseline — **three** things, not two: an entry in
   `tests/perf/perf_baselines.json`, a `TEST_CASE("perf baseline: <model_type>")`
   in `tests/test_perf_baseline.cpp`, **and** an

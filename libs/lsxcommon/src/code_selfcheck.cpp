@@ -17,7 +17,10 @@
 namespace lsxcommon {
 namespace code {
 namespace {
-// Dedup Ф5: fence stripper is the shared lsxcommon::selfcheck body.
+// Dedup Ф5: fence stripper, JSON extractor and the log escaper are the shared
+// lsxcommon::selfcheck bodies.
+using lsxcommon::selfcheck::EscapeForLog;
+using lsxcommon::selfcheck::ExtractMinifiedJson;
 using lsxcommon::selfcheck::Unfence;
 
 std::string Normalize(std::string_view s)
@@ -40,52 +43,6 @@ std::string Preprocess(std::string_view raw)
     const std::size_t close = text.rfind("</think>");
     if (close != std::string::npos) text = text.substr(close + 8);
     return text;
-}
-
-// Balanced {..} extraction with string-literal awareness, then minify by
-// removing whitespace outside strings.
-std::string ExtractJson(std::string_view text, std::string_view anchor)
-{
-    const std::size_t start = text.find('{');
-    if (start == std::string_view::npos) return {};
-    int depth = 0;
-    bool in_str = false;
-    bool esc = false;
-    std::size_t end = std::string_view::npos;
-    for (std::size_t i = start; i < text.size(); ++i) {
-        const char c = text[i];
-        if (in_str) {
-            if (esc) esc = false;
-            else if (c == '\\') esc = true;
-            else if (c == '"') in_str = false;
-            continue;
-        }
-        if (c == '"') { in_str = true; continue; }
-        if (c == '{') { ++depth; continue; }
-        if (c == '}') {
-            --depth;
-            if (depth == 0) { end = i + 1; break; }
-        }
-    }
-    if (end == std::string_view::npos) return {};
-    const std::string_view sub = text.substr(start, end - start);
-    std::string out;
-    out.reserve(sub.size());
-    in_str = false;
-    esc = false;
-    for (char c : sub) {
-        if (in_str) {
-            out.push_back(c);
-            if (esc) esc = false;
-            else if (c == '\\') esc = true;
-            else if (c == '"') in_str = false;
-            continue;
-        }
-        if (c == '"') { in_str = true; out.push_back(c); }
-        else if (!std::isspace(static_cast<unsigned char>(c))) out.push_back(c);
-    }
-    if (!anchor.empty() && out.find(anchor) == std::string::npos) return {};
-    return out;
 }
 
 // Find `anchor` directly followed (spaces allowed) by '='. An assignment kind
@@ -177,7 +134,7 @@ std::string ExtractCodeAnswer(CodeKind kind, std::string_view anchor,
 {
     const std::string text = Preprocess(raw);
     switch (kind) {
-        case CodeKind::kJson: return ExtractJson(text, anchor);
+        case CodeKind::kJson: return ExtractMinifiedJson(text, anchor);
         case CodeKind::kAssignment: return ExtractAssignment(text, anchor);
         case CodeKind::kRegex: return ExtractRegex(text, anchor);
     }
@@ -392,10 +349,15 @@ CodeResult RunCodeSelfCheck(IModel &model, const CodeGolden &golden,
     }
     res.all_passed = !res.cases.empty();
     for (const CodeCaseResult &c : res.cases) {
+        // The verdict is ONE log record, so the raw is escaped: a bare newline
+        // in a model answer truncates the line for every line-oriented reader
+        // (`grep 'raw=.*'` returns the first line only), which is how a real
+        // `BIT_ERO` once read as a clean `BIT_ZERO` in DET. DET got the fix
+        // first; this gate had the same exposure and no report of it yet.
         lsxcommon::log::info(absl::StrFormat(
             "[code] %s expected='%s' extracted='%s' passed=%s raw='%s'",
             c.id.c_str(), c.expected.c_str(), c.extracted.c_str(),
-            c.passed ? "true" : "false", c.raw.c_str()));
+            c.passed ? "true" : "false", EscapeForLog(c.raw).c_str()));
         if (!c.passed) res.all_passed = false;
     }
     return res;

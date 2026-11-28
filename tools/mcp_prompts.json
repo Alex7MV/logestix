@@ -1,0 +1,30 @@
+{
+  "format": "logestix-mcp-prompts",
+  "version": 1,
+  "prompts": [
+    {
+      "id": "MCP-TEST-01",
+      "title": "TOOL-CALL-INITIALIZATION",
+      "kind": "tool_call",
+      "anchor": "tools/call",
+      "expected": "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"fetch_secure_ledger\",\"arguments\":{\"node_id\":\"NX-5090\"}},\"id\":1}",
+      "body": "[CONTEXT]: MCP-Validation-Core-01 // Protocol Schema Compliance\nAn upstream MCP server registers a tool named \"fetch_secure_ledger\" requiring a single string parameter \"node_id\".\nTask: Construct the strict JSON-RPC 2.0 call object execution block to invoke this tool with the argument value \"NX-5090\".\nOutput Specification: Output ONLY the unspaced, minified JSON string pattern. Do not emit markdown frames or chat echo.\nExpected Template: {\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"fetch_secure_ledger\",\"arguments\":{\"node_id\":\"NX-5090\"}},\"id\":1}"
+    },
+    {
+      "id": "MCP-TEST-02",
+      "title": "RESOURCE-READ-PROTOCOL",
+      "kind": "resource_read",
+      "anchor": "resources/read",
+      "expected": "{\"jsonrpc\":\"2.0\",\"method\":\"resources/read\",\"params\":{\"uri\":\"schema://fsi/basel_three.json\"},\"id\":2}",
+      "body": "[CONTEXT]: MCP-Validation-Core-02 // Context Resource Retrieval\nAn agent triggers a hard-coded MCP resource lookup to read a secure compliance schema file bounded by a strict URI pointer.\nTarget Resource: \"schema://fsi/basel_three.json\"\nTask: Formulate the explicit MCP protocol resource read request package layout string.\nOutput Specification: Output strictly the minified JSON string metadata layout payload without spaces.\nExpected Template: {\"jsonrpc\":\"2.0\",\"method\":\"resources/read\",\"params\":{\"uri\":\"schema://fsi/basel_three.json\"},\"id\":2}"
+    },
+    {
+      "id": "MCP-TEST-03",
+      "title": "PROTOCOL-ERROR-HANDLING",
+      "kind": "error_response",
+      "anchor": "Invalid params",
+      "expected": "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Invalid params\"},\"id\":99}",
+      "body": "[CONTEXT]: MCP-Validation-Core-03 // Protocol Exception Guard\nAn internal MCP execution loop encounters a strict \"Invalid params\" exception scenario during data routing (Standard Protocol Error Code: -32602).\nTask: Emit the hard-coded standard JSON-RPC 2.0 error response structure payload mapped to session id 99.\nOutput Specification: Output strictly the compressed syntax layout payload string without conversational padding.\nExpected Template: {\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"Invalid params\"},\"id\":99}"
+    }
+  ]
+}

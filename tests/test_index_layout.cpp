@@ -109,8 +109,16 @@ TEST_CASE("no index reader still reads a per-model format tag",
     std::vector<std::string> offenders;
     for (const auto &p : Sources((fs::path(LSX_SOURCE_DIR) / "libs").c_str())) {
         const auto name = p.filename().string();
-        if (name == "code_selfcheck.cpp" || name == "fsi_selfcheck.cpp" ||
-            name == "det_selfcheck.cpp")
+        // The exemption is the CLASS, not a list of three names: every
+        // `<kind>_selfcheck.cpp` reads a GOLDEN, a separate artifact class with
+        // its own `format` tag and its own reader. Spelling the three names out
+        // meant the fourth gate (mcp) tripped this guard on the day it landed —
+        // a guard that has to be edited in the same commit as every new member
+        // of a family is a guard that will eventually be edited wrongly.
+        static const std::string kGoldenReader = "_selfcheck.cpp";
+        if (name.size() > kGoldenReader.size() &&
+            name.compare(name.size() - kGoldenReader.size(),
+                         kGoldenReader.size(), kGoldenReader) == 0)
             continue;   // golden readers
         if (ReadFile(p).find("[\"format\"]") != std::string::npos)
             offenders.push_back(fs::relative(p, LSX_SOURCE_DIR).string());

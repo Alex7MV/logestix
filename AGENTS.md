@@ -51,6 +51,7 @@ not on `ldconfig` or `LD_LIBRARY_PATH`, so `libnccl.so.2` resolves to the system
 | how do I make it faster | skill **`perf-tuning-a-model`** |
 | labels, presets, test router | skill **`test-lifecycle`** |
 | FSI / CODE / DET checkpoint gates | skills **`fsi-selfcheck`**, **`code-selfcheck`**, **`det-selfcheck`** |
+| MCP / JSON-RPC 2.0 payload gate | skill **`mcp-selfcheck`** |
 | host C++ style, logging, git | skill **`coding-conventions`** |
 | containers/strings in host C++ | skill **`absl-in-cuda-cpp`** |
 | NVFP4 / Blackwell kernel rules | skill **`nvfp4-blackwell-conventions`** |
@@ -91,6 +92,14 @@ row at the canonical 2048-token protocol. A gate that SKIPs is **not** a pass;
 a gate whose golden was never captured is declared debt in the manifest, and
 `test_model_suite_guard` fails an undeclared gap.
 
+**MCP is a pilot, not a lifecycle requirement yet.** `mcp::RunMcpSelfCheck`
+(`--mcp-selfcheck`, `LSX_MCP_GOLDEN_DIR`) asks for the three JSON-RPC 2.0
+payloads an agent harness emits and compares JSON DOCUMENTS, not bytes — its
+golden is protocol-defined, so key order is free and only the fields are gated.
+It is wired on `phi-4` and `qwen3.5-9b` only: the stage is in
+`OPTIONAL_STAGES` and out of `kRequired`, so the other 45 rows are neither
+reported as broken nor claimed as covered. Skill **`mcp-selfcheck`**.
+
 Shared kernel layers exist so families do not copy each other: `lsx_nvfp4`
 (the only NVFP4 path), `lsx_gemv` (**the only GEMM path** — cuBLAS is not linked),
 `lsxcommon::attn` / `dense` / `moe`, `lsx_device_math.h`, `lsx_reduce.cuh`,
@@ -120,7 +129,7 @@ family's suite is complete and self-contained.
   `kOff` does it because the NVFP4 tensor-core path overflows on its
   activations, and says so in its manifest/report.
 - **One GPU workload at a time.** Every target whose label implies device work
-  (`convert|load|model|kernels|selfcheck|fsi|code|det|perf|inference`) declares
+  (`convert|load|model|kernels|selfcheck|fsi|code|det|mcp|perf|inference`) declares
   `RESOURCE_LOCK "gpu"`, and `test_ctest_labels_guard` fails a target that does
   not; the single host-only exception carries a reason in that guard. `fast`
   targets stay unlocked so the 140-target fast sweep still parallelises.

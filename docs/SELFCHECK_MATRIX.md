@@ -56,7 +56,7 @@ source of truth for which target covers which model and stage:
 ctest target). A row here can go stale; the registry cannot drift silently,
 because it fails when a registered target is missing.
 
-## What the four gates mean
+## What the five gates mean
 
 | gate | oracle | cases |
 |---|---|---|
@@ -64,6 +64,11 @@ because it fails when a registered target is missing.
 | **FSI** | generated answer vs a golden captured from the *source* safetensors (`tools/fsi_capture.py`) | 3 prompts |
 | **CODE** | same, compiler-syntactic strictness (`tools/code_capture.py`), exact match, no algebraic canonicalisation | 3 prompts |
 | **DET** | same, plus R>=3 byte-identical `gen_tokens` runs (`tools/det_capture.py`) | 3 prompts |
+| **MCP** | JSON-RPC 2.0 payloads the harness emits (`tools/mcp_prompts.json`), compared as **documents** (key order free), plus a recorded byte-exactness flag | 3 prompts |
+
+MCP is a **pilot**: it is wired on the two rows below and on no others, so it
+does not appear as a column in the per-model table — an empty cell there would
+read as a failure or as coverage, and it is neither.
 
 `SKIP` (ctest exit code 4) is **not** a pass: it means the converted tree or the
 golden is absent. A golden that was never captured looks exactly like a passing
@@ -377,6 +382,19 @@ one in a ctest summary, which is why the debt rows are called out below.
   (perf and r3), TTFT 488 ms, 231 W** — the parent's shape (16.43 perf), which
   is what an identical geometry with re-trained weights should produce
   (`docs/model-reports/2026-11-22-DeepSeek-V4.1-Flash-1017.md`).
+
+### 1a. MCP payload verdicts (pilot — two rows, measured 2026-11-28)
+
+| model (artifact) | MCP-TEST-01 | MCP-TEST-02 | MCP-TEST-03 | byte-exact vs template |
+|---|---|---|---|---|
+| phi-4 (`microsoft/phi-4/nvfp4`) | PASS | PASS | PASS | yes — the payload is fenced in a ```json block and otherwise identical |
+| qwen3.5-9b (`Qwen/Qwen3.5-9B/nvfp4`) | PASS | PASS | PASS | yes — emitted bare, no fence |
+
+Both models reproduce the committed template exactly, which is why the
+byte-exactness flag is `yes` on both even though they disagree on fencing: the
+flag compares the extracted payload, not the surrounding stream. A re-keyed
+golden still passes with the flag `no`, and a one-token protocol error fails and
+names the field (`error.code: -32601 != -32602`).
 
 ## 2. Converted tree present, **no committed golden** — declared debt (FSI/CODE/DET SKIP or measured red)
 

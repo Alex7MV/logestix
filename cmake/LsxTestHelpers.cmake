@@ -130,6 +130,43 @@ function(lsx_add_test)
     endif()
 endfunction()
 
+# lsx_add_parity_gate(NAME <target> MODEL <model_type> KIND <fsi|code|det|mcp>)
+#
+# Build wiring for one real-model parity gate: the shared driver
+# tests/test_parity_gate.cpp compiled with the (model, kind) constants, and the
+# ABSOLUTE golden directory — never a relative fallback, because ctest runs from
+# the build tree and a relative path silently turns every gate into a SKIP
+# (docs/OPEN_TASKS.md G7).
+#
+# Only the executable lives here: add_test and its properties are emitted into
+# the build tree from the manifest (cmake/LsxModelManifest.cmake), so the label,
+# timeout, skip code and GPU lock cannot drift from models/*.json.
+#
+# The fsi/code/det gates that predate this helper are still written out block by
+# block in tests/CMakeLists.txt. That is a consolidation for a dedup phase, not
+# a correctness issue: converting 141 blocks in the same commit that adds a gate
+# would bury the new gate in a mechanical diff.
+function(lsx_add_parity_gate)
+    cmake_parse_arguments(P "" "NAME;MODEL;KIND" "" ${ARGN})
+    if(NOT P_NAME OR NOT P_MODEL OR NOT P_KIND)
+        message(FATAL_ERROR
+            "lsx_add_parity_gate: NAME, MODEL and KIND are required")
+    endif()
+    if(NOT P_KIND MATCHES "^(fsi|code|det|mcp)$")
+        message(FATAL_ERROR
+            "lsx_add_parity_gate: KIND must be fsi, code, det or mcp "
+            "(got '${P_KIND}')")
+    endif()
+    add_executable(${P_NAME} test_parity_gate.cpp)
+    target_include_directories(${P_NAME} PRIVATE
+        "${LSX_MANIFEST_GENERATED_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(${P_NAME} PRIVATE lsxcommon Catch2::Catch2WithMain)
+    target_compile_definitions(${P_NAME} PRIVATE
+        "LSX_GATE_MODEL=\"${P_MODEL}\"" "LSX_GATE_KIND=\"${P_KIND}\""
+        "LSX_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/${P_KIND}\"")
+    lsx_copy_arrow_dlls(${P_NAME})
+endfunction()
+
 # lsx_add_cuda_test(NAME <name>
 #                   [OBJECT <objlib>]        # default: <name>_cu
 #                   [SOURCES <src>...]       # default: <name>.cu

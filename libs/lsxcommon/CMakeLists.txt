@@ -103,6 +103,7 @@ add_library(lsxcommon STATIC
     src/fsi_selfcheck.cpp
     src/code_selfcheck.cpp
     src/det_selfcheck.cpp
+    src/mcp_selfcheck.cpp
     src/path_registry.cpp
     src/hardware_target.cpp
     src/index_layout.cpp

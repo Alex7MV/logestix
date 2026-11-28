@@ -112,6 +112,9 @@ int RunCliCodeSelfCheck(const GenerationCliArgs &args);
 // runs, and compares the extracted canonical token to the golden.
 // LSX_DET_STRESS_RUNS overrides R (floored at 3).
 int RunCliDetSelfCheck(const GenerationCliArgs &args);
+// MCPSelfCheck: JSON-RPC 2.0 payload parity, LSX_MCP_GOLDEN_DIR,
+// <model_type>.json, always FastMathMode::kOff.
+int RunCliMcpSelfCheck(const GenerationCliArgs &args);
 // Speed-measurement lifecycle (lsxbenchmark --bench): Create -> Load ->
 // frame/encode -> Infer -> print -> Unload. Runs at args.fast_math_mode
 // (kAuto = maximum-speed auto policy; kOff = bit-exact measurement).

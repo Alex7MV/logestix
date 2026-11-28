@@ -1,4 +1,4 @@
-// The parity gates — FSI, CODE and DET — as ONE driver.
+// The parity gates — FSI, CODE, DET and MCP — as ONE driver.
 //
 // Each model ran three near-identical files (28 lines of body, differing only in
 // `kModelType`, a vault path and a SKIP string). Copying them shipped three
@@ -15,10 +15,12 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include <lsxcommon/code_selfcheck.h>
 #include <lsxcommon/det_selfcheck.h>
 #include <lsxcommon/fsi_selfcheck.h>
+#include <lsxcommon/mcp_selfcheck.h>
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
 
@@ -29,7 +31,7 @@
 #error "LSX_GATE_MODEL must be defined (the model_type of one manifest row)"
 #endif
 #ifndef LSX_GATE_KIND
-#error "LSX_GATE_KIND must be defined (fsi, code or det)"
+#error "LSX_GATE_KIND must be defined (fsi, code, det or mcp)"
 #endif
 #include <lsxcommon/path_registry.h>
 // The golden directory MUST come from CMake, and a missing define is a BUILD
@@ -52,8 +54,9 @@ namespace {
 
 constexpr std::string_view kModel = LSX_GATE_MODEL;
 constexpr std::string_view kKind = LSX_GATE_KIND;
-static_assert(kKind == "fsi" || kKind == "code" || kKind == "det",
-              "LSX_GATE_KIND must be fsi, code or det");
+static_assert(kKind == "fsi" || kKind == "code" || kKind == "det" ||
+                  kKind == "mcp",
+              "LSX_GATE_KIND must be fsi, code, det or mcp");
 
 std::filesystem::path GoldenDir()
 {
@@ -61,8 +64,9 @@ std::filesystem::path GoldenDir()
     // (see the fsi/code/det skills) and a caller setting it expects that spelling.
     if (const char *env = std::getenv(
             kKind == "fsi" ? "LSX_FSI_GOLDEN_DIR"
-                           : kKind == "code" ? "LSX_CODE_GOLDEN_DIR"
-                                             : "LSX_DET_GOLDEN_DIR"))
+            : kKind == "code" ? "LSX_CODE_GOLDEN_DIR"
+            : kKind == "det" ? "LSX_DET_GOLDEN_DIR"
+                             : "LSX_MCP_GOLDEN_DIR"))
         return std::filesystem::path(env);
     return std::filesystem::path(LSX_GOLDEN_DIR);
 }
@@ -106,7 +110,15 @@ std::string ExplainCases(const Cases &cases)
         std::string tail = c.raw;
         if (tail.size() > 400) tail = "..." + tail.substr(tail.size() - 400);
         why += "\n  " + c.id + " expected='" + c.expected + "' extracted='" +
-               c.extracted + "' error='" + c.error + "'\n    raw=" + tail;
+               c.extracted + "' error='" + c.error + "'";
+        // MCP alone reports a per-field difference; naming it is the difference
+        // between "the model wrote the wrong error code" and "the model writes
+        // JSON differently", which are not the same finding.
+        if constexpr (std::is_same_v<typename Cases::value_type,
+                                     lsxcommon::mcp::McpCaseResult>)
+            why += std::string(" exact=") + (c.exact ? "true" : "false") +
+                   " diff='" + c.diff + "'";
+        why += "\n    raw=" + tail;
     }
     return why;
 }
@@ -153,13 +165,23 @@ TEST_CASE("parity gate: golden answers match", "[parity][real-model]")
         INFO(ExplainCases(result.cases));
         REQUIRE(result.all_passed);
     }
-    else
+    else if constexpr (std::string_view(LSX_GATE_KIND) == "det")
     {
         lsxcommon::det::DetGolden golden;
         std::string err;
         REQUIRE(lsxcommon::det::LoadDetGoldenFile(golden_path.string(), golden, &err));
         REQUIRE(golden.model_type == kModel);
         const auto result = lsxcommon::det::RunDetSelfCheck(*model, golden);
+        INFO(ExplainCases(result.cases));
+        REQUIRE(result.all_passed);
+    }
+    else
+    {
+        lsxcommon::mcp::McpGolden golden;
+        std::string err;
+        REQUIRE(lsxcommon::mcp::LoadMcpGoldenFile(golden_path.string(), golden, &err));
+        REQUIRE(golden.model_type == kModel);
+        const auto result = lsxcommon::mcp::RunMcpSelfCheck(*model, golden);
         INFO(ExplainCases(result.cases));
         REQUIRE(result.all_passed);
     }
