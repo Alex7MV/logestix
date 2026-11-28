@@ -111,7 +111,8 @@ TEST_CASE("WriteExpertArrow creates the layer directory and round-trips",
     REQUIRE(lsxcommon::WriteExpertArrow(path, expert).ok());
     REQUIRE(fs::exists(path));
 
-    auto batch = lsxcommon::ReadRecordBatchFromFile(path, 9);
+    auto batch = lsxcommon::ReadRecordBatchFromFile(
+        path, lsxcommon::ExpertSchema::kNumFields);
     REQUIRE(batch.ok());
     auto back = lsxcommon::ExpertSchema::UnpackBatch(*batch, 16);
     REQUIRE(back.ok());

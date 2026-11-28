@@ -637,6 +637,11 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
         return n;
     };
 
+    // Set when a projection took the verbatim F8_E4M3 passthrough below: the
+    // record then holds E4M3 bytes with E8M0 tile scales, not NVFP4 nibbles, and
+    // must say so (D1) — the verifier reads this back out of the `dtype` column.
+    bool fp8_verbatim = false;
+
     auto process = [&](const std::vector<uint8_t> &src,
                         const std::string &dtype,
                         const std::vector<int64_t> &shape,
@@ -688,6 +693,7 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
             packed       = src;
             scales       = src_scale;
             global_scale = 1.0f;
+            fp8_verbatim = true;
             return true;
         }
 
@@ -712,6 +718,7 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
                   pe.w3_packed, pe.w3_scales, pe.w3_global_scale))
         return arrow::Status::ExecutionError("GPU quantize failed for w3");
 
+    pe.dtype = fp8_verbatim ? "F8_E4M3" : "NVFP4";
     return pe;
 }
 

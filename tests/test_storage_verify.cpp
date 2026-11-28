@@ -101,6 +101,76 @@ void WritePinnedArrow(const fs::path &path,
     REQUIRE(out->Close().ok());
 }
 
+// Writes an ExpertSchema-shaped Arrow file: the nine weight/scale columns, plus
+// a `dtype` column when `dtype` is non-empty. An empty `dtype` reproduces the
+// pre-9c 9-column file, which declares no codec at all.
+void WriteExpertArrow(const fs::path &path, const std::string &dtype)
+{
+    auto make_binary = [] {
+        arrow::LargeBinaryBuilder b;
+        REQUIRE(b.Append("wb", 2).ok());
+        std::shared_ptr<arrow::Array> a;
+        REQUIRE(b.Finish(&a).ok());
+        return a;
+    };
+    auto make_scales = [] {
+        arrow::ListBuilder lb(arrow::default_memory_pool(),
+                              std::make_shared<arrow::UInt8Builder>());
+        REQUIRE(lb.Append().ok());
+        auto *inner = static_cast<arrow::UInt8Builder *>(lb.value_builder());
+        REQUIRE(inner->Append(0x81u).ok());
+        std::shared_ptr<arrow::Array> a;
+        REQUIRE(lb.Finish(&a).ok());
+        return a;
+    };
+    auto make_gs = [] {
+        arrow::FloatBuilder b;
+        REQUIRE(b.Append(1.0f).ok());
+        std::shared_ptr<arrow::Array> a;
+        REQUIRE(b.Finish(&a).ok());
+        return a;
+    };
+
+    std::vector<std::shared_ptr<arrow::Field>> fields = {
+        arrow::field("w1_weight", arrow::large_binary()),
+        arrow::field("w2_weight", arrow::large_binary()),
+        arrow::field("w3_weight", arrow::large_binary()),
+        arrow::field("w1_scale", arrow::list(arrow::uint8())),
+        arrow::field("w2_scale", arrow::list(arrow::uint8())),
+        arrow::field("w3_scale", arrow::list(arrow::uint8())),
+        arrow::field("w1_global_scale", arrow::float32()),
+        arrow::field("w2_global_scale", arrow::float32()),
+        arrow::field("w3_global_scale", arrow::float32()),
+    };
+    std::vector<std::shared_ptr<arrow::Array>> cols = {
+        make_binary(), make_binary(), make_binary(),
+        make_scales(), make_scales(), make_scales(),
+        make_gs(),     make_gs(),     make_gs(),
+    };
+    if (!dtype.empty()) {
+        arrow::StringBuilder sb;
+        REQUIRE(sb.Append(dtype).ok());
+        std::shared_ptr<arrow::Array> a;
+        REQUIRE(sb.Finish(&a).ok());
+        fields.push_back(arrow::field("dtype", arrow::utf8()));
+        cols.push_back(a);
+    }
+
+    auto schema = arrow::schema(fields);
+    auto batch = arrow::RecordBatch::Make(schema, 1, cols);
+
+    fs::create_directories(path.parent_path());
+    auto out_res = arrow::io::FileOutputStream::Open(path.string());
+    REQUIRE(out_res.ok());
+    auto out = *out_res;
+    auto writer_res = arrow::ipc::MakeFileWriter(out.get(), schema);
+    REQUIRE(writer_res.ok());
+    auto writer = *writer_res;
+    REQUIRE(writer->WriteRecordBatch(*batch).ok());
+    REQUIRE(writer->Close().ok());
+    REQUIRE(out->Close().ok());
+}
+
 // A minimal valid artifact: one bf16 plane, one f32 plane, tokenizer arrows.
 ArtifactSpec BaseSpec(const fs::path &dir)
 {
@@ -515,5 +585,115 @@ TEST_CASE("a chat template that drifted from its recorded digest is caught",
         INFO(p);
         if (p.find("chat template") != std::string::npos) named = true;
     }
+    CHECK(named);
+}
+
+// ── 9c: an expert plane DECLARES its codec ────────────────────────────────
+//
+// The 9-column ExpertSchema carries no dtype, so the verifier had to assume
+// NVFP4 from the schema shape alone. That is wrong in two live cases: a bf16 or
+// int8 profile (Branches 2/3) makes the bytes bf16/i8 while the mask says nvfp4
+// — which then refuses the artifact on Ampere for a codec it does not contain —
+// and Inkling's mixed NVFP4+MXFP8 trees already ship E4M3 experts under a mask
+// the verifier cannot distinguish from NVFP4.
+//
+// The rule is the one D1 states for every other plane: a plane names its codec,
+// and a plane that does not is a conversion defect, not something to infer.
+
+TEST_CASE("an expert plane's dtype decides its codec, not the schema shape",
+          "[storage_verify][expert]") {
+    TempDir d;
+    WriteExpertArrow(d.path() / "experts" / "layer_0" / "exp_0.arrow", "BF16");
+    const auto scan = ScanArtifactTree(d.path());
+    std::string joined;
+    for (const auto &p : scan.problems) joined += "\n  " + p;
+    CAPTURE(joined);
+    REQUIRE(scan.ok);
+    CHECK((scan.mask & kBF16) != 0);
+    CHECK((scan.mask & kNvFp4) == 0);
+    // The ROLE follows the schema shape, not the route that derived the codec:
+    // an expert plane is "expert.routed" whatever it is encoded in, because the
+    // emitter copies this string into artifact.fb and a reader looks for it.
+    REQUIRE(scan.planes.size() == 1);
+    CHECK(scan.planes[0].role == "expert.routed");
+}
+
+TEST_CASE("a bf16 expert artifact satisfies a declared bf16 mask",
+          "[storage_verify][expert]") {
+    TempDir d;
+    WriteExpertArrow(d.path() / "experts" / "layer_0" / "exp_0.arrow", "BF16");
+    auto spec = BaseSpec(d.path());
+    spec.planes.push_back(
+        {"expert.routed", kBF16, "experts/layer_0/exp_0.arrow", 16});
+    std::string err;
+    // EmitArtifact re-verifies what it wrote, so a verifier that still assumes
+    // NVFP4 fails here rather than publishing a mask nothing else agrees with.
+    REQUIRE(EmitArtifact(spec, d.path(), &err) != 0);
+    INFO(err);
+    const auto r = VerifyArtifact(d.path(), false);
+    std::string joined;
+    for (const auto &p : r.problems) joined += "\n  " + p;
+    CAPTURE(joined);
+    CHECK(r.ok);
+    CHECK(r.actual_mask == (kBF16 | kF32));
+}
+
+TEST_CASE("an expert tree with two codecs declares both bits",
+          "[storage_verify][expert]") {
+    TempDir d;
+    WriteExpertArrow(d.path() / "experts" / "layer_0" / "exp_0.arrow", "NVFP4");
+    WriteExpertArrow(d.path() / "experts" / "layer_1" / "exp_0.arrow", "F8_E4M3");
+    const auto scan = ScanArtifactTree(d.path());
+    std::string joined;
+    for (const auto &p : scan.problems) joined += "\n  " + p;
+    CAPTURE(joined);
+    REQUIRE(scan.ok);
+    // D5: the mask is a union — one tree, two codecs, both bits.
+    CHECK((scan.mask & kNvFp4) != 0);
+    CHECK((scan.mask & kMxFp8) != 0);
+    CHECK((scan.mask & (kBF16 | kF32)) == 0);
+    // And the per-file mask is not the tree mask: layer 0 is 4-bit, layer 1 is
+    // 8-bit, so a reader that asks "which codec is this plane" gets one answer.
+    REQUIRE(scan.planes.size() == 2);
+    for (const auto &plane : scan.planes) {
+        INFO(plane.path);
+        CHECK(plane.role == "expert.routed");
+        CHECK((plane.codec_bit & (plane.codec_bit - 1)) == 0);  // exactly one bit
+    }
+}
+
+TEST_CASE("a 9-column expert file is refused: it declares no codec",
+          "[storage_verify][expert]") {
+    TempDir d;
+    WriteExpertArrow(d.path() / "experts" / "layer_0" / "exp_0.arrow",
+                     /*dtype=*/"");
+    const auto scan = ScanArtifactTree(d.path());
+    REQUIRE_FALSE(scan.ok);
+    bool named = false;
+    for (const auto &p : scan.problems) {
+        INFO(p);
+        if (p.find("dtype") != std::string::npos) named = true;
+    }
+    CHECK(named);
+
+    // And the same refusal on the verify path, which is what `lsxforge
+    // --verify` runs. The emitter itself does not read tensors (by design), so
+    // it publishes the declaration; the verifier is the gate that refuses.
+    TempDir e;
+    WriteExpertArrow(e.path() / "experts" / "layer_0" / "exp_0.arrow",
+                     /*dtype=*/"");
+    auto spec = BaseSpec(e.path());
+    spec.planes.push_back(
+        {"expert.routed", kNvFp4, "experts/layer_0/exp_0.arrow", 16});
+    REQUIRE(EmitArtifact(spec, e.path(), nullptr) != 0);
+    const auto r = VerifyArtifact(e.path(), false);
+    REQUIRE_FALSE(r.ok);
+    named = false;
+    std::string joined;
+    for (const auto &p : r.problems) {
+        joined += "\n  " + p;
+        if (p.find("dtype") != std::string::npos) named = true;
+    }
+    CAPTURE(joined);
     CHECK(named);
 }

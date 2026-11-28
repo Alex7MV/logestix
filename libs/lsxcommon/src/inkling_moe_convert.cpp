@@ -837,6 +837,11 @@ arrow::Status ConvertInklingModel(const std::string &input_dir,
                 pe.w1_global_scale = 1.0f;
                 pe.w3_global_scale = 1.0f;
                 pe.w2_global_scale = 1.0f;
+                // The passthrough keeps E4M3 BYTES, so the record must declare
+                // mxfp8: without this the verifier assumed NVFP4 from the
+                // nine-column shape and the artifact's mask named a codec its
+                // bytes do not carry (Task 9c / D1).
+                pe.dtype = "F8_E4M3";
             }
             pe.w1_shape = {I, H};
             pe.w2_shape = {H, I};

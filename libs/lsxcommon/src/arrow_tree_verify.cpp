@@ -42,7 +42,16 @@ bool FieldsAre(const std::shared_ptr<arrow::Schema> &schema,
 
 TreeFileKind Classify(const std::shared_ptr<arrow::Schema> &schema)
 {
+    // An expert plane (routed or shared): the nine packed/scale columns plus the
+    // `dtype` that declares its codec (design §1.3 D1, Task 9c). The nine-column
+    // form is still accepted HERE because this verifier's job is Arrow-container
+    // integrity, not codec identity — `lsxstorage::VerifyArtifact` is the gate
+    // that refuses a plane with no declared codec, and it sees the same file.
     if (FieldsAre(schema, {"w1_weight", "w2_weight", "w3_weight",
+                           "w1_scale", "w2_scale", "w3_scale",
+                           "w1_global_scale", "w2_global_scale",
+                           "w3_global_scale", "dtype"}) ||
+        FieldsAre(schema, {"w1_weight", "w2_weight", "w3_weight",
                            "w1_scale", "w2_scale", "w3_scale",
                            "w1_global_scale", "w2_global_scale",
                            "w3_global_scale"}))

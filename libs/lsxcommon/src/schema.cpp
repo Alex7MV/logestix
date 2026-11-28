@@ -72,6 +72,9 @@ std::shared_ptr<arrow::Schema> ExpertSchema::Make()
         arrow::field("w1_global_scale", arrow::float32()),
         arrow::field("w2_global_scale", arrow::float32()),
         arrow::field("w3_global_scale", arrow::float32()),
+        // D1 codec declaration, one value per record. Last on purpose: the
+        // nine indices above are a wire contract for the .cu staging paths.
+        arrow::field("dtype", arrow::utf8()),
     });
 }
 
@@ -114,8 +117,14 @@ ExpertSchema::MakeBatch(const PackedExpert &expert, arrow::MemoryPool *pool)
     ARROW_ASSIGN_OR_RAISE(auto gs2, make_gs(expert.w2_global_scale));
     ARROW_ASSIGN_OR_RAISE(auto gs3, make_gs(expert.w3_global_scale));
 
+    // D1: the record declares its own codec, so the verifier never has to
+    // infer one from the schema shape.
+    arrow::StringBuilder dtype_builder(mp);
+    ARROW_RETURN_NOT_OK(dtype_builder.Append(expert.dtype));
+    ARROW_ASSIGN_OR_RAISE(auto dtype_arr, dtype_builder.Finish());
+
     auto batch = arrow::RecordBatch::Make(schema, 1,
-        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs1, gs2, gs3});
+        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs1, gs2, gs3, dtype_arr});
     diag::ValidateBatchBuffers(*batch, "ExpertSchema::MakeBatch result");
     return batch;
 }
@@ -125,7 +134,10 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch,
                           int32_t scale_block)
 {
     if (!batch || batch->num_columns() != kNumFields)
-        return arrow::Status::Invalid("Expected 9-column expert RecordBatch");
+        return arrow::Status::Invalid(
+            "Expected a ", kNumFields,
+            "-column expert RecordBatch (nine packed/scale columns plus the "
+            "dtype the codec is declared in)");
     if (batch->num_rows() != 1)
         return arrow::Status::Invalid(
             "ExpertSchema expects exactly one row, got ", batch->num_rows());
@@ -200,6 +212,15 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch,
     ARROW_RETURN_NOT_OK(read_gs(kIdxW2GlobalScale, pe.w2_global_scale));
     ARROW_RETURN_NOT_OK(read_gs(kIdxW3GlobalScale, pe.w3_global_scale));
 
+    {
+        auto dtype_arr = std::dynamic_pointer_cast<arrow::StringArray>(
+            batch->column(kIdxDtype));
+        if (!dtype_arr || dtype_arr->length() != 1)
+            return arrow::Status::Invalid(
+                "expert dtype column is not a one-row string array");
+        pe.dtype = dtype_arr->GetString(0);
+    }
+
     // The routed-expert BLOCK SIZE is model-dependent (per-16 E4M3 for the
     // fresh-NVFP4 families, per-32/per-128 E8M0 for DeepSeek passthrough), so
     // only the encoding-independent invariants are enforced here: every
@@ -273,8 +294,14 @@ ExpertSchema::MakeBatchView(const PackedExpert &expert, arrow::MemoryPool *pool)
     ARROW_ASSIGN_OR_RAISE(auto gs2, make_gs(expert.w2_global_scale));
     ARROW_ASSIGN_OR_RAISE(auto gs3, make_gs(expert.w3_global_scale));
 
+    // D1: the record declares its own codec, so the verifier never has to
+    // infer one from the schema shape.
+    arrow::StringBuilder dtype_builder(mp);
+    ARROW_RETURN_NOT_OK(dtype_builder.Append(expert.dtype));
+    ARROW_ASSIGN_OR_RAISE(auto dtype_arr, dtype_builder.Finish());
+
     auto batch = arrow::RecordBatch::Make(schema, 1,
-        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs1, gs2, gs3});
+        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs1, gs2, gs3, dtype_arr});
     diag::ValidateBatchBuffers(*batch, "ExpertSchema::MakeBatchView result");
     return batch;
 }
@@ -296,6 +323,9 @@ std::shared_ptr<arrow::Schema> SharedExpertSchema::Make()
         arrow::field("w1_global_scale", arrow::float32()),
         arrow::field("w2_global_scale", arrow::float32()),
         arrow::field("w3_global_scale", arrow::float32()),
+        // D1 codec declaration, one value per record. Last on purpose: the
+        // nine indices above are a wire contract for the .cu staging paths.
+        arrow::field("dtype", arrow::utf8()),
     });
 }
 
@@ -375,9 +405,27 @@ SharedExpertSchema::MakeBatch(const std::vector<PackedExpert> &layers,
     ARROW_ASSIGN_OR_RAISE(auto gs2_arr, gs2_builder.Finish());
     ARROW_ASSIGN_OR_RAISE(auto gs3_arr, gs3_builder.Finish());
 
+    // One `dtype` per row: a shared-expert file may mix encodings across
+    // layers (Inkling keeps 8-bit layers verbatim), so the declaration is
+    // per-record and the verifier takes the union (D5).
+    auto dtype_builder = std::make_shared<arrow::StringBuilder>(mp);
+    ARROW_RETURN_NOT_OK(dtype_builder->Reserve(n));
+    {
+        // Reserve the value bytes as well: `Reserve(n)` sizes the offset buffer
+        // only, so without this the first dtype append grows (and copies) the
+        // values buffer — the reallocation the budget test forbids.
+        int64_t dtype_bytes = 0;
+        for (const auto &e : layers)
+            dtype_bytes += static_cast<int64_t>(e.dtype.size());
+        ARROW_RETURN_NOT_OK(dtype_builder->ReserveData(dtype_bytes));
+    }
+    for (const auto &e : layers)
+        ARROW_RETURN_NOT_OK(dtype_builder->Append(e.dtype));
+    ARROW_ASSIGN_OR_RAISE(auto dtype_arr, dtype_builder->Finish());
+
     auto batch = arrow::RecordBatch::Make(schema, n,
         {w1_arr, w2_arr, w3_arr, s1_arr, s2_arr, s3_arr,
-         gs1_arr, gs2_arr, gs3_arr});
+         gs1_arr, gs2_arr, gs3_arr, dtype_arr});
     diag::ValidateBatchBuffers(*batch, "SharedExpertSchema::MakeBatch result");
     return batch;
 }
@@ -386,7 +434,10 @@ arrow::Result<std::vector<PackedExpert>>
 SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
 {
     if (!batch || batch->num_columns() != kNumFields)
-        return arrow::Status::Invalid("Expected 9-column shared-expert RecordBatch");
+        return arrow::Status::Invalid(
+            "Expected a ", kNumFields,
+            "-column shared-expert RecordBatch (nine packed/scale columns plus "
+            "the per-row dtype)");
 
     diag::ValidateBatchBuffers(*batch, "SharedExpertSchema::UnpackBatch input");
 
@@ -403,9 +454,13 @@ SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch
     auto gs1 = std::dynamic_pointer_cast<arrow::FloatArray>(batch->column(kIdxW1GlobalScale));
     auto gs2 = std::dynamic_pointer_cast<arrow::FloatArray>(batch->column(kIdxW2GlobalScale));
     auto gs3 = std::dynamic_pointer_cast<arrow::FloatArray>(batch->column(kIdxW3GlobalScale));
+    auto dtype = std::dynamic_pointer_cast<arrow::StringArray>(batch->column(kIdxDtype));
 
-    if (!w1 || !w2 || !w3 || !s1 || !s2 || !s3 || !gs1 || !gs2 || !gs3)
-        return arrow::Status::Invalid("Shared-expert batch column type mismatch");
+    if (!w1 || !w2 || !w3 || !s1 || !s2 || !s3 || !gs1 || !gs2 || !gs3 ||
+        !dtype)
+        return arrow::Status::Invalid(
+            "Shared-expert batch column type mismatch (nine packed/scale "
+            "columns plus a per-row dtype string)");
 
     // The scale columns are list<uint8>; casting the values/offsets lazily
     // (as the old lambda did) dereferenced null on a foreign schema.
@@ -449,6 +504,7 @@ SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch
         e.w1_global_scale = gs1->Value(i);
         e.w2_global_scale = gs2->Value(i);
         e.w3_global_scale = gs3->Value(i);
+        e.dtype = dtype->GetString(i);
     }
 
     return layers;

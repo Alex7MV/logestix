@@ -93,7 +93,8 @@ uint64_t CodecForDtype(const std::string &dtype)
 enum class SchemaShape {
     kPinned,     // name, shape, dtype, data              -> codec from dtype
     kDenseNvfp4, // name, shape, dtype, packed, scales, global_scale -> NVFP4
-    kExpert,     // w1_weight .. w3_global_scale (9 cols) -> NVFP4 nibbles
+    kExpert,     // w1_weight .. w3_global_scale + dtype  -> codec from dtype
+    kExpertUndeclared, // the same nine columns with NO dtype: a defect (D1)
     kVocab,      // token_id, token_bytes, is_special     -> no codec
     kMerges,     // merge_left .. merge_token_id          -> no codec
     kUnknown,
@@ -105,6 +106,7 @@ const char *SchemaShapeName(SchemaShape s)
     case SchemaShape::kPinned: return "pinned";
     case SchemaShape::kDenseNvfp4: return "dense-nvfp4";
     case SchemaShape::kExpert: return "expert";
+    case SchemaShape::kExpertUndeclared: return "expert-undeclared";
     case SchemaShape::kVocab: return "vocab";
     case SchemaShape::kMerges: return "merges";
     case SchemaShape::kUnknown: return "unknown";
@@ -132,10 +134,18 @@ SchemaShape ClassifyShape(const std::shared_ptr<arrow::Schema> &schema)
         return SchemaShape::kDenseNvfp4;
     if (ColumnsAre(schema, {"name", "shape", "dtype", "data"}))
         return SchemaShape::kPinned;
+    // A routed/shared expert plane: the nine packed/scale columns PLUS the
+    // `dtype` the record's codec is declared in. The nine-column form is NOT an
+    // expert plane of this contract: it says what the bytes are shaped like and
+    // nothing about how they are encoded, which is the ambiguity D1 retires.
+    if (ColumnsAre(schema, {"w1_weight", "w2_weight", "w3_weight", "w1_scale",
+                            "w2_scale", "w3_scale", "w1_global_scale",
+                            "w2_global_scale", "w3_global_scale", "dtype"}))
+        return SchemaShape::kExpert;
     if (ColumnsAre(schema, {"w1_weight", "w2_weight", "w3_weight", "w1_scale",
                             "w2_scale", "w3_scale", "w1_global_scale",
                             "w2_global_scale", "w3_global_scale"}))
-        return SchemaShape::kExpert;
+        return SchemaShape::kExpertUndeclared;
     if (ColumnsAre(schema, {"token_id", "token_bytes", "is_special"}))
         return SchemaShape::kVocab;
     if (ColumnsAre(schema, {"merge_left", "merge_right", "merge_rank",
@@ -151,6 +161,42 @@ struct FileFacts {
     std::vector<std::string> dtypes;
     int num_rows = 0;
 };
+
+// The codec an expert plane declares, from the `dtype` column of its records.
+// Every row of one file is one plane of one encoding, and D5 makes the answer a
+// union rather than a sum, so a file that (wrongly) mixes two dtypes still
+// yields a well-defined mask — but the mixture is reported, because a single
+// file describing two encodings is a converter defect, not a codec.
+//
+// Returns 0 and records a problem when no codec can be established.
+uint64_t ExpertCodecFromDtypes(const std::string &rel, const FileFacts &facts,
+                              VerifyReport *report)
+{
+    uint64_t mask = 0;
+    for (const auto &dtype : facts.dtypes) {
+        if (dtype == "U8") {
+            report->problems.push_back(
+                "expert plane " + rel + " declares dtype U8; rule D1 requires "
+                "the codec to be named (NVFP4/F8_E4M3/I8/BF16/F32)");
+            return 0;
+        }
+        const uint64_t bit = CodecForDtype(dtype);
+        if (bit == 0) {
+            report->problems.push_back(
+                "expert plane " + rel + " declares an unknown dtype '" + dtype +
+                "'; rule D1 requires NVFP4/F8_E4M3/I8/BF16/F32");
+            return 0;
+        }
+        mask |= bit;
+    }
+    if (mask == 0) {
+        report->problems.push_back(
+            "expert plane " + rel + " has an empty dtype column: its codec "
+            "cannot be established (rule D1)");
+        return 0;
+    }
+    return mask;
+}
 
 // Reads the small columns only. These files are Arrow IPC record batches whose
 // tensor payloads live in the `data`/`packed`/`scales` columns; we never touch
@@ -271,8 +317,21 @@ VerifyReport VerifyArtifact(const fs::path &artifact_dir, bool deep)
         case SchemaShape::kDenseNvfp4:
             report.actual_mask |= kNvFp4;
             continue;
-        case SchemaShape::kExpert:
-            report.actual_mask |= kNvFp4;
+        case SchemaShape::kExpert: {
+            // The plane declares its own codec; there is nothing to infer.
+            // A "U8" spelling is the retired NVFP4 nibble form and stays a
+            // failure, exactly as it is on the pinned path (D1).
+            const uint64_t bit = ExpertCodecFromDtypes(rel, facts, &report);
+            if (bit == 0) continue;   // a problem was recorded
+            report.actual_mask |= bit;
+            continue;
+        }
+        case SchemaShape::kExpertUndeclared:
+            report.problems.push_back(
+                "plane " + rel + " is a nine-column expert file with no dtype "
+                "column: its codec cannot be established. Rule D1 requires every "
+                "expert record to declare NVFP4/F8_E4M3/I8/BF16 in a trailing "
+                "`dtype` field (ExpertSchema::kIdxDtype)");
             continue;
         case SchemaShape::kVocab:
         case SchemaShape::kMerges:
@@ -462,8 +521,24 @@ ScanReport ScanArtifactTree(const fs::path &tree_root)
             continue;
         }
         if (facts.shape == SchemaShape::kExpert) {
+            // Role follows the SHAPE (an expert plane is expert.routed in every
+            // encoding); the codec follows the declared dtype.
             per_file_role[rel] = "expert.routed";
-            per_file_mask[rel] = kNvFp4;
+            VerifyReport scratch;   // problems are copied into `out` below
+            const uint64_t bit = ExpertCodecFromDtypes(rel, facts, &scratch);
+            for (const auto &problem : scratch.problems)
+                out.problems.push_back(problem);
+            if (bit == 0) continue;
+            per_file_mask[rel] = bit;
+            continue;
+        }
+        if (facts.shape == SchemaShape::kExpertUndeclared) {
+            per_file_role[rel] = "expert.routed";
+            out.problems.push_back(
+                "converter wrote " + rel + " as a nine-column expert file with "
+                "no dtype column; rule D1 requires every expert record to "
+                "declare its codec (NVFP4/F8_E4M3/I8/BF16) in a trailing "
+                "`dtype` field");
             continue;
         }
         if (facts.shape == SchemaShape::kVocab || facts.shape == SchemaShape::kMerges) {

@@ -126,6 +126,18 @@ struct PackedExpert {
     float w1_global_scale = 1.0f;
     float w2_global_scale = 1.0f;
     float w3_global_scale = 1.0f;
+    // How the three payloads are ENCODED, in the D1 spelling the verifier reads
+    // back from the `dtype` column: "NVFP4" (the default — every nvfp4 profile
+    // writes it), "F8_E4M3" (a verbatim MXFP8 passthrough: Inkling's 8-bit
+    // expert layers), "BF16"/"I8" (the bf16 / int8-w8a16 profiles).
+    //
+    // It is a per-RECORD field, not a per-schema one, because one schema serves
+    // every profile: the schema shape says "this is a routed expert", this says
+    // "its weights are 4-bit E2M1" or "8-bit E4M3". Before this field existed
+    // the verifier had to assume NVFP4 from the shape alone, so an 8-bit or
+    // bf16 expert plane either inflated the artifact's codec mask (refusing it
+    // on Ampere for a codec it never contained) or made the tree unverifiable.
+    std::string dtype = "NVFP4";
 };
 
 struct TensorRecord {
@@ -166,7 +178,10 @@ public:
 
 class ExpertSchema {
 public:
-    static constexpr int kNumFields = 9;
+    // Nine packed/scale columns plus the codec declaration. The dtype column is
+    // LAST so every existing column index — and the .cu staging-ring offsets
+    // derived from them — stays valid.
+    static constexpr int kNumFields = 10;
 
     static constexpr int kIdxW1Weight      = 0;
     static constexpr int kIdxW2Weight      = 1;
@@ -177,6 +192,9 @@ public:
     static constexpr int kIdxW1GlobalScale = 6;
     static constexpr int kIdxW2GlobalScale = 7;
     static constexpr int kIdxW3GlobalScale = 8;
+    // D1: NVFP4 | F8_E4M3 | I8 | BF16. Never "U8" (the retired ambiguous
+    // spelling of NVFP4 nibbles).
+    static constexpr int kIdxDtype         = 9;
 
     static std::shared_ptr<arrow::Schema> Make();
 
@@ -216,12 +234,12 @@ public:
     UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
 };
 
-// Shared expert weights per layer, NVFP4-packed (same 9-column layout as
-// ExpertSchema). One record per layer → single pinned/shared_experts.arrow
-// file covering every layer.
+// Shared expert weights per layer, same 10-column layout as ExpertSchema (one
+// `dtype` per row, so a per-layer mix — Inkling — stays expressible). One record
+// per layer → single pinned/shared_experts.arrow file covering every layer.
 class SharedExpertSchema {
 public:
-    static constexpr int kNumFields = 9;
+    static constexpr int kNumFields = 10;
 
     static constexpr int kIdxW1Weight      = 0;
     static constexpr int kIdxW2Weight      = 1;
@@ -232,6 +250,7 @@ public:
     static constexpr int kIdxW1GlobalScale = 6;
     static constexpr int kIdxW2GlobalScale = 7;
     static constexpr int kIdxW3GlobalScale = 8;
+    static constexpr int kIdxDtype         = 9;
 
     static std::shared_ptr<arrow::Schema> Make();
 
