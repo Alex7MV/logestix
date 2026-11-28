@@ -23,16 +23,19 @@
 #include <string_view>
 #include <vector>
 
+#include "lsxcommon/codec_profile.h"
 #include "lsxstorage/artifact_writer.h"
 
 namespace lsxforge {
 
-enum class CodecProfile {
-    kDefault,     // the family's historical layout (nvfp4); "" on the CLI
-    kBf16,
-    kNvFp4,
-    kInt8W8A16,
-};
+// The enum, its spellings and its parser are lsxcommon's
+// (libs/lsxcommon/include/lsxcommon/codec_profile.h): a CONVERTER has to branch
+// on them, and libs/ cannot include apps/. Forge keeps what it owns — the
+// declared-plane table, the CLI, and ResolveCodecProfile below — and re-exports
+// the vocabulary so the app's own code reads unchanged.
+using lsxcommon::CodecProfile;
+using lsxcommon::CodecProfileName;
+using lsxcommon::ParseCodecProfile;
 
 // Which conversion pipeline a profile is being applied to. Pipelines differ in
 // the subtrees they write (experts, shared, ple), not in their codec rules.
@@ -41,11 +44,6 @@ enum class PipelineKind {
     kMoe,     // qwen/ornith/glm/nemotron/... expert families
 };
 
-// Parses the flag value. Accepts exactly the canonical names; "" is the default
-// profile and is NOT a name (a CLI user who types nothing gets kDefault from
-// their own code, not from here).
-bool ParseCodecProfile(std::string_view name, CodecProfile *out);
-
 // The profile an EMITTER should build for a given parse result.
 //
 // kDefault exists only to say "the flag was absent". A conversion must always
@@ -53,9 +51,6 @@ bool ParseCodecProfile(std::string_view name, CodecProfile *out);
 // produced the nvfp4 layout, so kDefault resolves to kNvFp4 — there is one
 // profile language and no code path that publishes a tree with no declaration.
 CodecProfile ResolveCodecProfile(CodecProfile p);
-
-// Canonical name for logs and for artifact.fb's profile/profile_arg fields.
-const char *CodecProfileName(CodecProfile p);
 
 // The planes this profile intends to write for `layers` layers. Empty when the
 // profile is not implemented for that pipeline yet, which is how an

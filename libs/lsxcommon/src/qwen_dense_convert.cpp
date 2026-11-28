@@ -423,9 +423,17 @@ arrow::Status WriteQwenModelIndex(const std::string &output_root, const QwenTopo
 
 // ── Converter ──────────────────────────────────────────────────────────────
 
-arrow::Status ConvertQwenModel(const std::string &input_path, const std::string &output_root)
+arrow::Status ConvertQwenModel(const std::string &input_path, const std::string &output_root,
+                              lsxcommon::CodecProfile profile)
 {
     namespace fs = std::filesystem;
+
+    // ONE branch for the weight encoding (design §2.6); see the phi twin.
+    const bool quantize = lsxcommon::ProfileUsesNvfp4Weights(profile);
+    lsxcommon::log::info(absl::StrFormat(
+        "qwen conversion: codec profile '%s' (%s weights)",
+        lsxcommon::CodecProfileName(profile),
+        quantize ? "NVFP4-packed" : "passthrough"));
 
     auto model = lsxcommon::scan_directory(input_path);
     if (model.shards.empty())
@@ -603,7 +611,7 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
             if (data.empty())
                 return arrow::Status::IOError("failed to read tensor data: ", t.name);
 
-            bool nvfp4 = qwen_tensor_is_nvfp4(p.kind);
+            bool nvfp4 = quantize && qwen_tensor_is_nvfp4(p.kind);
 
             if (p.kind == TensorKind::Embed || p.kind == TensorKind::LmHead) {
                 if (nvfp4) {

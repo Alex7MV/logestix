@@ -65,6 +65,23 @@
           "date": "2026-11-28"
         }
       }
+    },
+    "bf16": {
+      "status": "built",
+      "artifact": {
+        "sha256": "8c9ea3064aa449aac9c7c0c8a0c3e2ea5a474e43af89f85e2a1c8c0b9998ff46",
+        "bytes": 4896,
+        "tree_bytes": 17929546209,
+        "planes": 35,
+        "store": "Qwen/Qwen3.5-9B/bf16"
+      },
+      "codecs": [
+        "f32",
+        "bf16"
+      ],
+      "codec_mask": 3,
+      "target": "nvidia:sm_120",
+      "gates": {}
     }
   },
   "lifecycle_tu": [

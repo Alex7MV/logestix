@@ -3,6 +3,8 @@
 #include <arrow/api.h>
 #include <optional>
 #include <string>
+
+#include "lsxcommon/codec_profile.h"
 #include <vector>
 
 #include "lsxcommon/phi_dense_constants.h"
@@ -50,9 +52,17 @@ arrow::Status WritePhiModelIndex(
 
 // Converts a phi model directory (safetensors shards + config.json) into the
 // logestix-phi arrow layout under output_root.
+//
+// `profile` selects the WEIGHT ENCODING (design §2.6). kDefault/kNvFp4 pack
+// NVFP4 nibbles with a residual plane; kBf16 writes the weights as the BF16
+// planes they arrived as. The phi-4 checkpoint is already BF16, so the bf16
+// profile is a pass-through rather than a quantizer — but it is a real branch:
+// the nvfp4 path must not run, or the artifact carries planes that no Ampere
+// device can execute and the codec gate refuses it.
 arrow::Status ConvertPhiModel(
     const std::string &input_path,
-    const std::string &output_root);
+    const std::string &output_root,
+    lsxcommon::CodecProfile profile = lsxcommon::CodecProfile::kDefault);
 
 // Recomputes the conversion-time VRAM profile from the SOURCE safetensors
 // inventory and rewrites the "vram" block of the model.index.json under

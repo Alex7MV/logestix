@@ -105,7 +105,7 @@ started` = no commit, no code.
 | 12 | arch-`a` object libs only for 12x | **done** | HEAD | `lsx_arch_has_12x()` + `lsx_tc_gemm_stub.cpp`; Ampere configure has 0 × `compute_120a` |
 | 13 | toolchain-agnostic toolkit guard | **done** | HEAD | floor 12060; `__has_include`; device case asks the capability table; a no-fp4 twin compiles the same TU |
 | 14 | Ampere presets + degradation audit | **done** | HEAD | `linux-release-sm86` (86) + `jetson-orin-release` (86;87) + `cmake/toolchains/jetson-orin.cmake`; `test_arch_support_guard` |
-| 15 | `bf16` profile for the slice | **not started** | — | `grep CodecProfile libs/lsxcommon/src` is empty |
+| 15 | `bf16` profile for the slice | **done** | HEAD | `lxcommon/codec_profile.h`; real `phi-4/bf16` + `Qwen3.5-9B/bf16` artifacts, mask 2 and 3 |
 | 16 | 3090/Jetson acceptance + docs | **not started** | — | `docs/NVIDIA_DOCS_AMPERE.md` has been **removed** from the tree — see the note in Task 16 |
 | 17 | INT8 weight quantizer | **not started** | — | — |
 | 18 | `int8-w8a16` converter side | **not started** | — | — |
@@ -2372,8 +2372,142 @@ TEST_CASE("cuda_toolkit_guard: present devices are in the supported set") {
 
 ### Task 15: `bf16` codec profile for the 2-model slice
 
-> **NOT STARTED (2026-11-28) — and unimplementable as written until one thing
-> moves.** `grep -rn "CodecProfile" libs/lsxcommon/src` is empty: the two dense
+> **DONE, on real weights.** Both slice models were converted with
+> `--codec-profile bf16` into the artifact store, verified, and recorded in their
+> manifests:
+>
+> | model | store path | mask | planes | bytes | verifies |
+> |---|---|---|---|---|---|
+> | phi-4 | `microsoft/phi-4/bf16` | **2** (`bf16`) | 43 | 29.3 GB | declared 2 = actual 2, 0 problems |
+> | Qwen3.5-9B | `Qwen/Qwen3.5-9B/bf16` | **3** (`f32,bf16`) | 35 | 17.9 GB | declared 3 = actual 3, 0 problems |
+>
+> `lsxfabric --explain-artifact` lists both candidates per model and picks
+> `nvfp4` on this `sm_120` host; `test_bootstrap_artifacts`'s new
+> `[select]` case drives the same store through `sm_86` and `sm_87` and gets
+> `bf16` — the first real demonstration of invariant I4.
+>
+> **Refinement 1 (as planned): the enum moved down.** `CodecProfile`, its
+> spellings and its parser now live in
+> `libs/lsxcommon/include/lsxcommon/codec_profile.h` (POD + `<string_view>`), and
+> `apps/lsxforge/src/codec_profiles.h` re-exports them with `using`-declarations —
+> a wrapper function per name made every call ambiguous, which the forge test
+> caught immediately. Forge keeps what it owns: `ResolveCodecProfile`, the
+> declared-plane table, the CLI.
+>
+> **Refinement 2 (as planned): the branch is one predicate.**
+> `ProfileUsesNvfp4Weights(profile)` is the whole of it; the converters ask it
+> once (`const bool quantize = ...`) and fold it into the existing
+> `*_tensor_is_nvfp4(kind)` decision, so a bf16 conversion writes the BF16 planes
+> the checkpoint already held — no quantizer, no new schema, no second code path
+> per tensor.
+>
+> **Refinement 3 (as planned, and it paid): the mask came out right the first
+> time.** No `pinned/*_nvfp4.arrow` file exists in either bf16 tree, the scan
+> reports `bf16`/`f32` only, and forge's cross-check passed at the end of the
+> conversion instead of refusing it after 20 minutes.
+>
+> **A cost this exposed, recorded rather than hidden:** the emitter SHA-256s every
+> plane twice (once in `ScanArtifactTree`, once in `EmitArtifact`) with the scalar
+> implementation, so a 29 GB bf16 tree takes ~12 minutes of pure hashing after the
+> conversion is done. Not a correctness problem and not in this task's scope; it
+> is the reason the two bf16 conversions dominate the wall clock, and it belongs in
+> the throughput backlog (`perf-tuning-a-model`), not in a docs footnote.
+>
+> **Registry rows:** both manifests gained a `bf16` profile with its artifact
+> digest, byte counts, codecs and mask; `docs/MODELS.md` regenerates with both
+> profiles on one store line. `target` is recorded as `nvidia:sm_120` (advisory
+> provenance: the box that ran the conversion) — the artifact itself is
+> target-independent by `used_codecs`, and the gate never reads that field.
+>
+> ---
+>
+> #### DEFECT FOUND BY RUNNING IT: a bf16 artifact gates but does not load
+>
+> `lsxbenchmark --model <store>/microsoft/phi-4/bf16 --selfcheck` gets through the
+> gate and then fails on every layer:
+>
+> ```
+> [load] phi-4 profile=bf16 codecs=bf16 target=nvidia:sm_120     <- admitted
+> [phi_load] layer weights incomplete; layer marked not loaded   <- x32
+> ```
+>
+> `PhiDenseLoader::LoadLayer` is **NVFP4-only**: it resolves each projection
+> through `FindNvfp4Suffix(nv, …)` and sets `lw.loaded = attn_ok && mlp_ok` from
+> `d_packed`/`d_scales`, which a bf16 tree does not have (its weights are the
+> `raw` BF16 planes). All 21 dense loaders in the tree hold `LsxNvfp4Weight` and
+> nothing else. The qwen loader is the same shape.
+>
+> **So the plan was right about storage and silent about runtime.** "The source is
+> already BF16, so this is a pass-through plane, not a quantizer" is true of the
+> CONVERTER and false of the ENGINE: no loader can execute bf16-resident weights,
+> even though `gemv::RunLxGemmVec` already takes `LxDtype::kBF16` — the kernel
+> path exists, the plumbing to it does not.
+>
+> Consequence for Branch 2: **`bf16` SelfCheck cannot go green on a 3090 today**,
+> and the reason is not the missing hardware. ⇒ **new Task 15a** below.
+
+### Task 15a: a bf16 weight path in the dense loaders (Branch-2 blocker)
+
+**Why.** Task 15 produces an artifact that the gate admits and the loader cannot
+read; Branch 2's acceptance is "loads, gates, SelfCheck correct", so the profile
+is half-built until the runtime half exists. This is not a converter defect and
+must not be papered over by weakening the gate.
+
+**Files:**
+- Modify: `libs/lsxcommon/include/lsxcommon/phi_dense_load.h` and
+  `qwen_inference_load.h` — the layer-weight structs gain a dense-weight variant
+  (device pointer + shape + `LxDtype`) beside `LsxNvfp4Weight`
+- Modify: `libs/lsxcommon/src/phi_dense_load.cpp`, `qwen_inference_load.cpp` —
+  when the `nv` batch has no record for a projection, resolve the same suffix in
+  `raw`; `lw.loaded` is satisfied by EITHER encoding
+- Modify: `libs/lsxcommon/src/phi_dense_inference.cu`,
+  `qwen_dense_inference_pipeline.cu` — per projection: NVFP4 → the existing
+  `RunLxNvfp4Gemm`; bf16 → `gemv::RunLxGemmVec(..., LxDtype::kBF16, ...)`. Both
+  are fixed-geometry and device-property-free, so R3 holds within the group
+- Test: `tests/test_phi_dense_loader.cpp`, `tests/test_qwen_dense_loader.cpp`
+  (a bf16-profile fixture loads and its layer count is complete), plus a
+  numerical case that a bf16 GEMV equals the dequantized-NVFP4 reference within
+  the declared tolerance
+
+**Interfaces:**
+- Consumes: Task 15 (`Convert*Model(..., CodecProfile)`), `gemv::RunLxGemmVec`.
+- Produces: no new codec, no new schema, no new kernel — the storage and the
+  kernel both exist; this is the dispatch that connects them.
+
+- [ ] **Step 1: Write the failing test.** Convert the synthetic fixture with
+  `kBf16` (in `tmp/in`, out `tmp/out`), load it, and assert the layer count is
+  complete and a forward pass produces finite logits:
+
+```cpp
+TEST_CASE("a bf16-profile tree loads and runs", "[phi][load][profile]") {
+    // ... convert with CodecProfile::kBf16 into out/ ...
+    PhiDenseLoader loader;
+    REQUIRE(loader.Load(out.string(), stream));
+    REQUIRE(loader.layers().size() == 2);
+    for (const auto &l : loader.layers()) CHECK(l.loaded);
+    // and one decode step does not return a CUDA error
+}
+```
+
+- [ ] **Step 2: Run it and confirm failure** — every layer reports
+  `weights incomplete`, which is the defect above.
+
+- [ ] **Step 3: Implement** the dual-encoding dispatch in the two families.
+  Keep the NVFP4 path byte-identical: a tree that has nvfp4 planes must load and
+  run exactly as before, and the existing gates are the proof.
+
+- [ ] **Step 4: Run and confirm pass**, then the two families' own suites:
+  `ctest -R "phi_dense|qwen_dense" -j1`, then the bf16 artifact end-to-end:
+  `lsxbenchmark --model <store>/microsoft/phi-4/bf16 --selfcheck`.
+
+- [ ] **Step 5: Commit** — `feat: a bf16 weight path in the phi and qwen dense loaders`
+
+**Scope note:** the other 19 loaders need the same treatment before a bf16 profile
+of those families is loadable, but the plan's Branch-2 slice is these two, and the
+shape of the change is identical — do the slice, then generalise per family when
+a family converts.
+>
+> **Original note, for the record — and it was right about the blocker:** `grep -rn "CodecProfile" libs/lsxcommon/src` is empty: the two dense
 > converters quantize unconditionally, and the enum they would branch on lives in
 > **`apps/lsxforge/src/codec_profiles.h`**, which `libs/` cannot include.
 >
@@ -2510,9 +2644,16 @@ the reason printed.
 
 - [ ] **Step 6: Commit** — `docs: record the Ampere bf16 slice acceptance on sm_86 and sm_87`
 
-**Branch 2 exit criteria:** both toolchains build; `bf16` artifacts verified; 3090
-SelfCheck green; the NVFP4 refusal demonstrated on 3090; Jetson build + guard green;
-the model report committed with measured throughput.
+**Branch 2 exit criteria — state 2026-11-28:**
+
+| criterion | state |
+|---|---|
+| both toolchains build | **x86 sm_86: BUILT on this host** — preset `linux-release-sm86`, **2472/2472 targets, 0 failures**, 5 apps + 639 test binaries; the app's fatbin holds **only sm_86** (0 × sm_87, 0 × sm_12x) and runs here through PTX JIT, which is what proves it is a 3090 binary and not a relabelled one. **Jetson: not run** — no aarch64 machine in this session |
+| `bf16` artifacts verified | **met** — `microsoft/phi-4/bf16` (mask 2, 43 planes) and `Qwen/Qwen3.5-9B/bf16` (mask 3, 35 planes), both `problems=0` |
+| 3090 SelfCheck green | **not met** — no 3090 attached, AND `bf16` has no loader path yet (**Task 15a**): a bf16 artifact gates but every layer loads empty |
+| NVFP4 refusal demonstrated on 3090 | **not met** on hardware; **met as a pure function** — `CheckCodecs` refuses both artifacts' masks on `sm_86`/`sm_87` naming `nvfp4`, and `test_bootstrap_artifacts` drives the selection through both Ampere targets |
+| Jetson build + guard green | **not met** — no board |
+| model report with measured throughput | **not met** — throughput on Ampere needs the hardware |
 
 ---
 

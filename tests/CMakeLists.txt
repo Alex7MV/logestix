@@ -1600,6 +1600,21 @@ set_tests_properties(test_cuda_toolkit_guard PROPERTIES LABELS fast)
 # LSX_CUDA_ARCH is accepted by the REAL validator. A prose-only policy is
 # re-forgotten; this is the pin. It also reads CMakePresets.json and
 # cmake/toolchains/, so it needs no test-only plumbing.
+# ── The bf16 codec profile in the converters (plan Task 15) ───────────────
+# A profile is a real branch, not a flag the CLI reads and then ignores: the
+# nvfp4 code path must not run at all, or the artifact cannot gate onto Ampere.
+lsx_add_test(NAME test_codec_profile_convert LABEL convert
+    LINK lsxcommon lsxstorage
+    INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"
+    DEFINE "TOKENIZER_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\"")
+# The bf16 cases are host-only (pass-through), but the complement case runs the
+# nvfp4 path to prove kDefault did not become bf16 — and that packs weights on
+# the GPU. So the target takes the lock, which is also what `convert` implies.
+# Convert targets carry a TIMEOUT (a converter that hangs must not hold the GPU
+# lock for the whole sweep); 300 s is generous for four 2-layer fixtures.
+set_tests_properties(test_codec_profile_convert
+    PROPERTIES RESOURCE_LOCK "gpu" TIMEOUT 300)
+
 lsx_add_test(NAME test_arch_support_guard LABEL fast LINK lsxcommon
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
            "LSX_CMAKE_COMMAND=\"${CMAKE_COMMAND}\""

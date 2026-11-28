@@ -21,37 +21,7 @@ constexpr uint64_t kF32 = 1ull << 0;
 constexpr uint64_t kBF16 = 1ull << 1;
 constexpr uint64_t kNvFp4 = 1ull << 5;
 
-struct ProfileNameRow {
-    CodecProfile profile;
-    const char *name;
-};
-
-constexpr ProfileNameRow kNames[] = {
-    {CodecProfile::kNvFp4, "nvfp4"},
-    {CodecProfile::kBf16, "bf16"},
-    {CodecProfile::kInt8W8A16, "int8-w8a16"},
-};
-
 } // namespace
-
-bool ParseCodecProfile(std::string_view name, CodecProfile *out)
-{
-    if (out == nullptr || name.empty()) return false;
-    for (const auto &row : kNames) {
-        if (name == row.name) {
-            *out = row.profile;
-            return true;
-        }
-    }
-    return false;
-}
-
-const char *CodecProfileName(CodecProfile p)
-{
-    for (const auto &row : kNames)
-        if (row.profile == p) return row.name;
-    return "nvfp4";  // kDefault: the historical layout
-}
 
 CodecProfile ResolveCodecProfile(CodecProfile p)
 {

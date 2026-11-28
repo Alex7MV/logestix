@@ -28,6 +28,7 @@
 
 #include "lsxcommon/hardware_target.h"
 #include "lsxstorage/artifact.h"
+#include "lsxstorage/resolve.h"
 #include "lsxstorage/roots.h"
 
 #include <filesystem>
@@ -235,5 +236,91 @@ TEST_CASE("a bootstrap artifact survives a re-digest of every byte it ships",
         // for that checkpoint and not a formality.
         CHECK_FALSE(fs::exists(dir / "mtp"));
         CHECK_FALSE(fs::exists(dir / "deferred"));
+    }
+}
+
+// ── Invariant I4 on real data: one model, two profiles, picked by target ───
+//
+// This is the case the whole "the store supports N profiles per model" design
+// existed for, and the first time it can be asked against artifacts that really
+// exist: phi-4 and Qwen3.5-9B each ship `nvfp4` and `bf16`, and the SAME store
+// must answer `nvfp4` on a Blackwell target and `bf16` on an Ampere one.
+//
+// The Ampere side is simulated with SetActiveTargetForTesting, which is the
+// sanctioned mechanism (hardware_target.h: no env var, no CLI flag, nothing a
+// production binary can set). `lsxfabric --explain-artifact` shows the same
+// decision for the real device; this case shows the one the operator cannot
+// demonstrate on a 5090.
+
+TEST_CASE("one model, two profiles: the target decides which artifact loads",
+          "[bootstrap][profile][select]") {
+    RequireStoreAndArtifacts();
+    const auto root = *ArtifactRoot();
+    struct Slice {
+        const char *rel_nvfp4;
+        const char *org;
+        const char *model_dir;
+        const char *model_type;
+    };
+    // Hardcoded pairs on purpose (like kBootstraps): "these two trees" is the
+    // claim; a list derived from the store would pass vacuously the day it empties.
+    constexpr Slice kSlices[] = {
+        {"microsoft/phi-4/nvfp4", "microsoft", "phi-4", "phi-4"},
+        {"Qwen/Qwen3.5-9B/nvfp4", "Qwen", "Qwen3.5-9B", "qwen3.5-9b"},
+    };
+
+    for (const auto &s : kSlices) {
+        INFO("model: " << s.model_type);
+        // Both profiles are present and both verify; a bf16 sibling that failed
+        // its own check would make the selection below meaningless.
+        const fs::path nv_dir = root / s.rel_nvfp4;
+        const fs::path bf_dir = root / s.org / s.model_dir / "bf16";
+        REQUIRE(IsArtifactDir(nv_dir));
+        if (!IsArtifactDir(bf_dir))
+            SKIP("bf16 sibling not converted yet for " + std::string(s.model_type));
+        CHECK(VerifyArtifact(bf_dir, /*deep=*/false).ok);
+
+        // The bf16 sibling must carry NO nvfp4 bit: that is what makes it
+        // admissible on Ampere at all.
+        const auto bf = ReadArtifact(bf_dir);
+        REQUIRE(bf.status == ReadStatus::kOk);
+        CHECK(bf.info.profile == "bf16");
+        CHECK((bf.info.used_codecs & Mask(PlaneCodec::kNvFp4)) == 0);
+        CHECK((bf.info.used_codecs & Mask(PlaneCodec::kBF16)) != 0);
+
+        // The nvfp4 sibling is the one an Ampere target must refuse.
+        const auto nv = ReadArtifact(nv_dir);
+        REQUIRE(nv.status == ReadStatus::kOk);
+        CHECK((nv.info.used_codecs & Mask(PlaneCodec::kNvFp4)) != 0);
+
+        // ── Blackwell: nvfp4 wins (compressed-native before bf16) ──────────
+        const auto blackwell = TargetFromComputeCapability(12, 0);
+        const auto on_blackwell =
+            SelectProfile(s.org, s.model_dir, SupportedCodecs(blackwell),
+                          lsxcommon::hw::CodecProfilePreference());
+        REQUIRE(on_blackwell.has_value());
+        INFO("chosen on sm_120: " << on_blackwell->profile);
+        CHECK(on_blackwell->profile == "nvfp4");
+
+        // ── Ampere: the same store, the OTHER profile ─────────────────────
+        for (const auto mm : {std::pair{8, 6}, std::pair{8, 7}}) {
+            const auto ampere = TargetFromComputeCapability(mm.first, mm.second);
+            INFO("target: " << ampere.Id());
+            // The nvfp4 sibling is refused on the mask the artifact really carries.
+            const auto refused = CheckCodecs(nv.info.used_codecs, ampere);
+            CHECK_FALSE(refused.allowed);
+            CHECK((refused.missing & Mask(PlaneCodec::kNvFp4)) != 0);
+            // And the bf16 sibling is admitted, which is the whole point.
+            CHECK(CheckCodecs(bf.info.used_codecs, ampere).allowed);
+
+            // Selection returns bf16 for this target, from the same directory.
+            const auto on_ampere = SelectProfile(
+                s.org, s.model_dir, SupportedCodecs(ampere),
+                lsxcommon::hw::CodecProfilePreference());
+            REQUIRE(on_ampere.has_value());
+            INFO("chosen on " << ampere.Id() << ": " << on_ampere->profile);
+            CHECK(on_ampere->profile == "bf16");
+            CHECK(on_ampere->dir == bf_dir);
+        }
     }
 }

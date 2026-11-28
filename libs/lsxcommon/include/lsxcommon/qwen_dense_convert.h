@@ -3,6 +3,8 @@
 #include <arrow/api.h>
 #include <optional>
 #include <string>
+
+#include "lsxcommon/codec_profile.h"
 #include <vector>
 
 #include "lsxcommon/vram_estimate.h"
@@ -79,9 +81,15 @@ arrow::Status WriteQwenModelIndex(
 
 // Converts a Qwen3.5 model directory (safetensors shards + config.json) into
 // the logestix-qwen arrow layout under output_root.
+// `profile` selects the weight encoding (design §2.6): kDefault/kNvFp4 pack
+// NVFP4 nibbles; kBf16 writes the BF16 planes the checkpoint already holds. The
+// Qwen3.5-9B source is BF16, so the bf16 profile is a pass-through — and a real
+// branch, because an nvfp4 plane in the artifact would make it unloadable on the
+// Ampere targets this profile exists for.
 arrow::Status ConvertQwenModel(
     const std::string &input_path,
-    const std::string &output_root);
+    const std::string &output_root,
+    lsxcommon::CodecProfile profile = lsxcommon::CodecProfile::kDefault);
 
 // Recomputes the conversion-time VRAM profile from the SOURCE safetensors
 // inventory and rewrites the "vram" block of the model.index.json under

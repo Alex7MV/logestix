@@ -64,6 +64,22 @@
           "date": "2026-11-28"
         }
       }
+    },
+    "bf16": {
+      "status": "built",
+      "artifact": {
+        "sha256": "bfd5851f9ba34718727db0a62b581872c9602be5c14d0e15771bcf39b094d58a",
+        "bytes": 5864,
+        "tree_bytes": 29326892564,
+        "planes": 43,
+        "store": "microsoft/phi-4/bf16"
+      },
+      "codecs": [
+        "bf16"
+      ],
+      "codec_mask": 2,
+      "target": "nvidia:sm_120",
+      "gates": {}
     }
   },
   "lifecycle_tu": [

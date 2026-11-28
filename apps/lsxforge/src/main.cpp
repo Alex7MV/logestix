@@ -981,7 +981,8 @@ int main(int argc, char* argv[]) {
 
     case lsxforge::Pipeline::kPhi: {
         lsxcommon::log::info("phi-4 pipeline (logestix-phi layout)");
-        auto st = lsxcommon::phi::ConvertPhiModel(input_path, output_path);
+        auto st = lsxcommon::phi::ConvertPhiModel(input_path, output_path,
+                                                  codec_profile);
         if (!st.ok()) {
             lsxcommon::log::error(
                 absl::StrFormat("phi conversion failed: %s", st.ToString()));
@@ -1474,7 +1475,8 @@ int main(int argc, char* argv[]) {
 
     case lsxforge::Pipeline::kQwenDense: {
         lsxcommon::log::info("Qwen3.5 pipeline (logestix-qwen layout)");
-        auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
+        auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path,
+                                                    codec_profile);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Qwen conversion failed: %s", st.ToString()));
             return finish(1);
