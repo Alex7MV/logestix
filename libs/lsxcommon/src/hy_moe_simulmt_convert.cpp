@@ -27,7 +27,6 @@ hy::HyConvertSpec SimulMTConvertSpec()
     };
     spec.model_type = kType;
     spec.model_name = kModelName;
-    spec.format_tag = kFormatTag;
     spec.allow_audio_ballast = true;
     return spec;
 }

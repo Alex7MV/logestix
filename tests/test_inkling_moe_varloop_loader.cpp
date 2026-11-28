@@ -60,8 +60,8 @@ TEST_CASE("varloop loader topology carries the capability and its ceiling",
     const fs::path dir = ConvertVarloopFixture("topology");
 
     InklingLoopTopology top;
-    const auto st = lsxcommon::inkling::LoadInklingLoopTopology(
-        dir.string(), top, lsxcommon::inkling::VarloopConvertSpec().format_tag);
+    const auto st =
+        lsxcommon::inkling::LoadInklingLoopTopology(dir.string(), top);
     INFO(top.error_msg);
     REQUIRE(st.ok());
 
@@ -92,25 +92,24 @@ TEST_CASE("varloop loader topology carries the capability and its ceiling",
     fs::remove_all(dir);
 }
 
-TEST_CASE("the fixed-pass engine refuses a varloop tree by format",
+TEST_CASE("a fixed-pass row refuses a varloop tree by its capability flag",
           "[inkling][varloop][loader]")
 {
-    // Format before anything else: a Mini engine pointed at this tree must fail
-    // loudly instead of loading an artifact whose pass count it cannot express.
+    // A Mini engine pointed at a varloop tree must fail loudly instead of
+    // loading an artifact whose pass count it cannot express. Since the per-model
+    // format tag retired (design §2.4.3), what separates the two rows is the
+    // checkpoint's own `varloop` flag — a CAPABILITY, not a size, so the row that
+    // owns the pass policy checks it outside the synthetic-geometry escape
+    // (inkling_moe_varloop_model.cpp). The loader parses both trees happily; it
+    // is not the layer that can tell them apart.
     REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
     const fs::path dir = ConvertVarloopFixture("format");
 
     InklingLoopTopology top;
     const auto st = lsxcommon::inkling::LoadInklingLoopTopology(dir.string(), top);
-    CHECK_FALSE(st.ok());
-    CHECK(st.ToString().find("logestix-inkling-2-mini") != std::string::npos);
-
-    // ...and the varloop tag is not accepted by a fixed-pass expectation
-    // either: the check names the format it wanted.
-    InklingLoopTopology wrong;
-    const auto st2 = lsxcommon::inkling::LoadInklingLoopTopology(
-        dir.string(), wrong, "logestix-inkling-2-mini");
-    CHECK_FALSE(st2.ok());
+    INFO(top.error_msg);
+    REQUIRE(st.ok());
+    CHECK(top.varloop);   // the flag the fixed-pass row refuses on
 
     fs::remove_all(dir);
 }
@@ -154,9 +153,7 @@ TEST_CASE("varloop pinned weights and expert planes load unchanged",
     const fs::path dir = ConvertVarloopFixture("pinned");
 
     InklingLoopTopology top;
-    REQUIRE(LoadInklingLoopTopology(dir.string(), top,
-                                    VarloopConvertSpec().format_tag)
-                .ok());
+    REQUIRE(LoadInklingLoopTopology(dir.string(), top).ok());
 
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);

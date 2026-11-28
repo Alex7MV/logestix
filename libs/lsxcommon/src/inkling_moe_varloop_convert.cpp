@@ -9,7 +9,6 @@ InklingLoopConvertSpec VarloopConvertSpec()
     using namespace lsxcommon::inkling::varloop::frozen;
     InklingLoopConvertSpec spec;
     spec.model_name = kModelCard;
-    spec.format_tag = kFormatTag;
     spec.varloop = kVarLoop;
     spec.max_passes = kLoopPassesMax;
     spec.frozen.hidden = kHidden;

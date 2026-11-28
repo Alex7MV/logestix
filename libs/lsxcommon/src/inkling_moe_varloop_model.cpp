@@ -154,8 +154,7 @@ bool InklingMoeVarloopModel::Load()
 
     // The format tag is this row's: the sibling's tree must be refused here, not
     // driven with a pass knob that does not exist for its weights.
-    auto st = inkling::LoadInklingLoopTopology(cfg_.model_path, top_,
-                                               frozen::kFormatTag);
+    auto st = inkling::LoadInklingLoopTopology(cfg_.model_path, top_);
     if (!st.ok()) {
         log::error(absl::StrFormat("[varloop] topology load failed: %s",
                                    st.ToString()));

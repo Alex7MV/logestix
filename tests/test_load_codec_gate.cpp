@@ -231,3 +231,69 @@ TEST_CASE("a quantized mask that is not hardware-native anywhere is refused on "
     CHECK(m2.CodecGateAllows(read.info, ActiveTarget(), nullptr));
     ResetActiveTargetForTesting();
 }
+
+// ── Identity: the artifact must be the model the caller NAMED ──────────────
+//
+// Successor to the per-model `format` tag. Ten family loaders compared that tag
+// against their own passport, and for siblings with the same tower (hy-memory vs
+// hy-simulmt) it was the ONLY thing telling their trees apart — the geometry is
+// identical, so once the tag retired the parent's loader accepted the sibling's
+// weights and answered as it while calling itself the parent. The comparison now
+// lives in one place and reads artifact.fb's model_type, which the contract made
+// the single source of truth for what an artifact is.
+TEST_CASE("an artifact of another model is refused by name", "[load_gate]") {
+    TempDir d;
+    // The parent's tree, offered to a caller that pinned the sibling.
+    REQUIRE(MakeArtifact(d.path(), "nvfp4", kNvFp4 | kBF16 | kF32,
+                         "hy-memory-30b-a3b", "hy"));
+    const auto read = lsx::storage::ReadArtifact(d.path());
+    REQUIRE(read.status == lsx::storage::ReadStatus::kOk);
+
+    std::string why;
+    CHECK_FALSE(lsxcommon::ModelBase::IdentityAllows("hy-simulmt-30b-a3b",
+                                                     read.info, &why));
+    // The message has to name both sides: "refused" without "you asked for X,
+    // this is Y" sends the operator to the codec table instead of the path.
+    INFO(why);
+    CHECK(why.find("hy-simulmt-30b-a3b") != std::string::npos);
+    CHECK(why.find("hy-memory-30b-a3b") != std::string::npos);
+
+    // The same model, and the spelling the vault shows: both accepted, because a
+    // pin of "Hy-Memory-30B-A3B" means the artifact whose id is the lower-cased
+    // form — refusing it would make the check a spelling test rather than an
+    // identity test.
+    CHECK(lsxcommon::ModelBase::IdentityAllows("hy-memory-30b-a3b", read.info,
+                                               nullptr));
+    CHECK(lsxcommon::ModelBase::IdentityAllows("Hy-Memory-30B-A3B", read.info,
+                                               nullptr));
+
+    // An empty declaration is the autodetect path: the type came FROM this
+    // artifact, so there is nothing to disagree with.
+    CHECK(lsxcommon::ModelBase::IdentityAllows("", read.info, nullptr));
+}
+
+TEST_CASE("a mis-pinned model_type is refused on a target that could run it",
+          "[load_gate]") {
+    // Blackwell on purpose: the codec mask is native here, so the ONLY reason
+    // left to refuse is the identity. Run on sm_86 and this case would pass
+    // while proving nothing about the check it names.
+    TempDir d;
+    REQUIRE(MakeArtifact(d.path(), "nvfp4", kNvFp4, "phi-4", "phi"));
+
+    SetActiveTargetForTesting(TargetFromComputeCapability(12, 0));
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = d.path().string();
+    cfg.model_type = "qwen3.5-9b";
+    ProbeModel m(cfg);
+    CHECK_FALSE(m.Load());
+    // The gate refused, so nothing was rebound and no artifact was published.
+    CHECK(m.cfg_.model_path == d.path().string());
+    CHECK(m.artifact() == nullptr);
+
+    // Control: the same tree under its own name passes this gate.
+    const auto read = lsx::storage::ReadArtifact(d.path());
+    REQUIRE(read.status == lsx::storage::ReadStatus::kOk);
+    CHECK(lsxcommon::ModelBase::IdentityAllows("phi-4", read.info, nullptr));
+    CHECK(m.CodecGateAllows(read.info, ActiveTarget(), nullptr));
+    ResetActiveTargetForTesting();
+}

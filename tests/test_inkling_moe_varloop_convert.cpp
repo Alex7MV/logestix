@@ -66,7 +66,6 @@ TEST_CASE("varloop convert spec carries this model's own passport numbers",
     const InklingLoopConvertSpec spec = VarloopConvertSpec();
     CHECK(spec.varloop);
     CHECK(spec.max_passes == 5);
-    CHECK(spec.format_tag == "logestix-inkling-2-varloop");
     // `model` is the CARD name: gpu::detect_model_type lower-cases it into the
     // factory key, so it must normalize to exactly the manifest's model_type.
     CHECK(spec.model_name == "TML-d24-varloop-research");
@@ -160,9 +159,15 @@ TEST_CASE("varloop synthetic convert emits logestix-inkling-2-varloop",
     simdjson::padded_string pad(json);
     auto doc = parser.iterate(pad);
 
-    std::string_view fmt;
-    REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
+    // `layout` is an INTEGER generation, not a per-model tag: the assertion used
+    // to read doc["format"].get_string(...) and compare it against
+    // std::to_string(kIndexLayout), which cannot pass under either schema — the
+    // index stopped writing `format` (design §2.4.3) and a string read of an
+    // integer never succeeds. Half-migrated by the layout change and never run,
+    // because this suite is label `convert`, which the fast sweep does not cover.
+    int64_t layout = 0;
+    REQUIRE(doc["layout"].get_int64().get(layout) == simdjson::SUCCESS);
+    REQUIRE(layout == lsxcommon::kIndexLayout);
 
     std::string_view card;
     REQUIRE(doc["model"].get_string().get(card) == simdjson::SUCCESS);

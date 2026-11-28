@@ -341,7 +341,10 @@ TEST_CASE("ConvertGlm5NextModel: synthetic tiny checkpoint — layout + index")
         std::stringstream ss;
         ss << f.rdbuf();
         const std::string idx = ss.str();
-        REQUIRE(idx.find("logestix-glm5next") != std::string::npos);
+        // A LAYOUT generation, not a per-model `format` tag (design §2.4.3).
+        REQUIRE(idx.find("\"layout\": 2") != std::string::npos);
+        // The retired field must not come back.
+        REQUIRE(idx.find("\"format\"") == std::string::npos);
         REQUIRE(idx.find("\"hidden_size\": 64") != std::string::npos);
         REQUIRE(idx.find("\"num_experts\": 2") != std::string::npos);
         REQUIRE(idx.find("\"kda_layers\"") != std::string::npos);

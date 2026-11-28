@@ -101,9 +101,10 @@ TEST_CASE("kimi-k3 synthetic convert emits logestix-kimi-k3-nvfp4",
     simdjson::padded_string pad(json);
     auto doc = parser.iterate(pad);
 
-    std::string_view fmt;
-    REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
+    // See above: an integer generation, not a per-model string tag.
+    int64_t layout = 0;
+    REQUIRE(doc["layout"].get_int64().get(layout) == simdjson::SUCCESS);
+    REQUIRE(layout == lsxcommon::kIndexLayout);
 
     int64_t layers = 0;
     REQUIRE(doc["num_layers"].get_int64().get(layers) == simdjson::SUCCESS);

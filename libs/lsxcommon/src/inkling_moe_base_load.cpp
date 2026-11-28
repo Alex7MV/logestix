@@ -66,8 +66,7 @@ arrow::Status LoadTopology(const std::string &model_path, Topology &out)
         out.layout = layout_v;
     if (!lsxcommon::IndexLayoutSupported(out.layout)) {
         out.error_msg = lsxcommon::IndexLayoutError(out.layout);
-        return arrow::Status::Invalid("inkling loader: expected format ",
-                                      frozen::kFormatTag, ", got ", std::to_string(out.layout));
+        return arrow::Status::Invalid(out.error_msg);
     }
     std::string_view s;
     if (root["source_model_type"].get_string().get(s) == simdjson::SUCCESS)

@@ -100,9 +100,13 @@ TEST_CASE("kimi-k3.1-pro synthetic convert emits the DSA format tag and table",
     simdjson::padded_string pad(json);
     auto doc = parser.iterate(pad);
 
-    std::string_view fmt, model, model_type;
-    REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
+    // `layout` is an integer generation, not a per-model tag: a string read of it
+    // cannot succeed, and the index stopped writing `format` (design §2.4.3), so
+    // this assertion could never pass.
+    int64_t layout = 0;
+    REQUIRE(doc["layout"].get_int64().get(layout) == simdjson::SUCCESS);
+    REQUIRE(layout == lsxcommon::kIndexLayout);
+    std::string_view model, model_type;
     // `model` is the human-readable card name (Kimi-K3 writes "Kimi-K3");
     // `model_type` is the registry id the loader gates on.
     REQUIRE(doc["model"].get_string().get(model) == simdjson::SUCCESS);

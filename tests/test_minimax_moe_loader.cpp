@@ -166,19 +166,55 @@ TEST_CASE("MiniMax routed-expert store is the neutral mmap store",
     experts.Free();
 }
 
-TEST_CASE("MiniMax loader rejects a foreign index format", "[minimax][loader]")
+TEST_CASE("MiniMax loader refuses another model's index schema",
+          "[minimax][loader]")
 {
+    // Two distinct refusals, and it matters that BOTH survive: the layout gate
+    // and the topology parse. They used to be indistinguishable because both
+    // travelled through one `error_msg` field that the retired format carrier
+    // cleared on its way past, so a missing-field index was refused with the
+    // wrong message and a layout refusal was mangled into "unsupported index
+    // format '<sentence>'".
     const Converted c = BuildConverted();
     const fs::path idx = c.root / "model.index.json";
-    {
-        std::ofstream f(idx);
-        f << "{\"layout\":2,\"num_layers\":4,"
-             "\"num_experts\":8,\"layer_types\":[\"dense_attention\","
-             "\"sparse_attention\",\"sparse_attention\",\"sparse_attention\"],"
-             "\"mlp_layer_types\":[\"dense\",\"sparse\",\"sparse\",\"sparse\"]}";
+
+    SECTION("an index of this model but a missing generation") {
+        std::string json;
+        {
+            std::ifstream f(idx);
+            json.assign(std::istreambuf_iterator<char>(f),
+                        std::istreambuf_iterator<char>());
+        }
+        const std::string from = "\"layout\": 2";
+        REQUIRE(json.find(from) != std::string::npos);
+        json.replace(json.find(from), from.size(), "\"layout\": 1");
+        {
+            std::ofstream f(idx);
+            f << json;
+        }
+        MinimaxPinnedWeights pw;
+        std::string error;
+        CHECK_FALSE(LoadMinimaxDenseWeights(c.root.string(), pw, nullptr, error));
+        CHECK(error.find("layout 1") != std::string::npos);
+        CHECK(error.find("reads layout 2") != std::string::npos);
     }
-    MinimaxPinnedWeights pw;
-    std::string error;
-    CHECK_FALSE(LoadMinimaxDenseWeights(c.root.string(), pw, nullptr, error));
-    CHECK(error.find("unsupported index format") != std::string::npos);
+
+    SECTION("this generation but not this model's fields") {
+        // `num_layers` says 4 and only two layer-kind arrays are supplied, so
+        // the dispatch map is incomplete. The topology refuses with its OWN
+        // message, which is the assertion that catches the half-migrated
+        // carrier: the old code cleared `error_msg` before anything read it, so
+        // this index was accepted and the weights were loaded against a
+        // half-parsed layer map.
+        {
+            std::ofstream f(idx);
+            f << "{\"layout\":2,\"num_layers\":4,\"num_experts\":8,"
+                 "\"layer_types\":[\"dense_attention\",\"sparse_attention\"],"
+                 "\"mlp_layer_types\":[\"dense\",\"sparse\"]}";
+        }
+        MinimaxPinnedWeights pw;
+        std::string error;
+        CHECK_FALSE(LoadMinimaxDenseWeights(c.root.string(), pw, nullptr, error));
+        CHECK(error.find("dispatch") != std::string::npos);
+    }
 }

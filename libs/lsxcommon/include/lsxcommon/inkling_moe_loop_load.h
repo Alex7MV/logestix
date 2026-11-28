@@ -307,15 +307,13 @@ struct InklingLoopPinnedWeights {
 };
 
 // ── API ────────────────────────────────────────────────────────────────────
-// Reads <model_path>/logestix/model.index.json. The FORMAT TAG is the first
-// gate and it is the caller's: two artifacts can share this architecture and
-// differ in what the rest of the index means (a fixed pass count vs a trained
-// range), so a loader that hard-codes one tag can silently drive the other.
-arrow::Status LoadInklingLoopTopology(const std::string &model_path,
-                                      InklingLoopTopology &out,
-                                      std::string_view expected_format);
-
-// The fixed-pass row's entry point (the family passport's tag).
+// Reads <model_path>/model.index.json. The first gate is the schema GENERATION
+// (`layout`, design §2.4.3), which the index declares itself; the distinction
+// between the fixed-pass and varloop rows is the checkpoint's own `varloop`
+// flag, checked by the row that owns the pass policy — not by a per-model tag
+// handed down from the caller. There was an `expected_format` parameter here
+// for exactly that tag comparison; it survived as a string interpolated into an
+// error message, saying "expected format <tag>" about a layout check.
 arrow::Status LoadInklingLoopTopology(const std::string &model_path,
                                       InklingLoopTopology &out);
 

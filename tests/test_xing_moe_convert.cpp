@@ -175,7 +175,13 @@ TEST_CASE("Xing synthetic convert emits logestix-xing-nvfp4", "[xing][convert]")
     std::ifstream f(log_root / "model.index.json");
     const std::string json((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());
-    REQUIRE(json.find("\"logestix-xing-nvfp4\"") != std::string::npos);
+    // The index declares a LAYOUT generation, not a per-model `format` tag
+    // (design §2.4.3). Asserting the tag's text here was a mechanical leftover:
+    // it kept "passing" review while the converter had already stopped writing
+    // it, and this suite is label `convert`, which the fast sweep does not run.
+    REQUIRE(json.find("\"layout\": 2") != std::string::npos);
+    // The retired field must not come back.
+    REQUIRE(json.find("\"format\"") == std::string::npos);
     REQUIRE(json.find("\"dense_layers\": [0,1]") != std::string::npos);
     REQUIRE(json.find("\"moe_layers\": [2]") != std::string::npos);
     REQUIRE(json.find("\"mtp_layers\": [40]") != std::string::npos);

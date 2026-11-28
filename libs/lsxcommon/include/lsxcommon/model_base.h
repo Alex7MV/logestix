@@ -61,6 +61,20 @@ public:
     bool CodecGateAllows(const lsx::storage::ArtifactInfo &info,
                          const hw::HardwareTarget &target, std::string *why) const;
 
+    // Invariant: the artifact must be the model the caller NAMED. `declared` is
+    // the caller's cfg_.model_type; empty means the type was autodetected from
+    // this artifact, so there is nothing to disagree with and the check passes.
+    //
+    // This is the successor to a per-model `format` tag in model.index.json: ten
+    // loaders compared that tag against their own passport, and it was the only
+    // thing telling two siblings with the SAME tower apart (hy-memory vs
+    // hy-simulmt). The tag is gone, so the comparison moved here — once, for
+    // every family, against artifact.fb's own model_type, which is the single
+    // source of truth for what an artifact is (design §2.4.3).
+    static bool IdentityAllows(const std::string &declared,
+                               const lsx::storage::ArtifactInfo &info,
+                               std::string *why);
+
     ArrowTokenizerDb &Tokenizer() override { return *tok_db_; }
 
     std::shared_mutex &ResidencyMutex() override { return residency_mutex_; }

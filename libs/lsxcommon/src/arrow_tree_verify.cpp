@@ -496,14 +496,40 @@ TreeVerifyStats VerifyArrowTree(const std::filesystem::path &converted_root,
 }
 
 std::vector<std::filesystem::path>
-FindConvertedTrees(const std::filesystem::path &vault_root)
+FindConvertedTrees(const std::filesystem::path &artifact_root)
 {
     std::vector<std::filesystem::path> trees;
-    if (!std::filesystem::exists(vault_root)) return trees;
-    for (const auto &e : std::filesystem::directory_iterator(vault_root)) {
-        if (!e.is_directory()) continue;
-        if (std::filesystem::exists(e.path()))
-            trees.push_back(e.path());
+    if (!std::filesystem::exists(artifact_root)) return trees;
+
+    // An artifact is detected by `artifact.fb`, never by a directory name
+    // (design §2.4.2). This used to be "<vault>/<model>/logestix for every model
+    // that has a converted tree", which reported EVERY subdirectory as a tree:
+    // correct for the flat pre-split vault, and after the store became
+    // org-nested it reported each org ("microsoft", "Qwen") as a model tree with
+    // no .arrow files in it. The store is <root>/<org>/<model>/<profile>, so the
+    // walk is two levels deep and the predicate is the artifact itself.
+    const auto is_artifact = [](const std::filesystem::path &dir) {
+        std::error_code ec;
+        return std::filesystem::is_regular_file(dir / "artifact.fb", ec);
+    };
+    std::error_code org_ec;
+    for (const auto &org : std::filesystem::directory_iterator(artifact_root, org_ec)) {
+        if (org_ec) break;
+        if (!org.is_directory()) continue;
+        std::error_code model_ec;
+        for (const auto &model :
+             std::filesystem::directory_iterator(org.path(), model_ec)) {
+            if (model_ec) break;
+            if (!model.is_directory()) continue;
+            std::error_code profile_ec;
+            for (const auto &profile :
+                 std::filesystem::directory_iterator(model.path(), profile_ec)) {
+                if (profile_ec) break;
+                if (!profile.is_directory()) continue;
+                if (is_artifact(profile.path()))
+                    trees.push_back(profile.path());
+            }
+        }
     }
     std::sort(trees.begin(), trees.end());
     return trees;

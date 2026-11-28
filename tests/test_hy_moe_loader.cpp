@@ -129,10 +129,12 @@ TEST_CASE("Hy loader uploads the pinned graph", "[hy][loader]")
     CHECK(pw.resident_bytes == 0);
 }
 
-TEST_CASE("Hy loader rejects a foreign index format", "[hy][loader]")
+TEST_CASE("Hy loader rejects an index generation it cannot read", "[hy][loader]")
 {
     Converted c = BuildConverted();
-    // Corrupt the format tag: the loader must refuse rather than decode.
+    // Downgrade the layout: the loader must refuse rather than decode a schema
+    // it does not know. (The per-model `format` tag this used to corrupt is
+    // gone — design §2.4.3 — so the generation is what is checkable here.)
     const fs::path idx = c.root / "model.index.json";
     std::string json;
     {
@@ -151,7 +153,8 @@ TEST_CASE("Hy loader rejects a foreign index format", "[hy][loader]")
     HyPinnedWeights pw;
     std::string error;
     CHECK_FALSE(LoadHyDenseWeights(c.root.string(), pw, nullptr, error));
-    CHECK(error.find("unsupported index format") != std::string::npos);
+    CHECK(error.find("layout 1") != std::string::npos);
+    CHECK(error.find("reads layout 2") != std::string::npos);
 }
 
 TEST_CASE("Hy KV geometry is pos-major and size-neutral", "[hy][loader]")

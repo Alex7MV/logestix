@@ -20,11 +20,18 @@ namespace av = lsxcommon::arrow_check;
 
 namespace {
 
+// The ARTIFACT store, not the checkpoint store: an audit of converted Arrow
+// payloads has nothing to read in a Hugging Face download. There is no default
+// on purpose — the artifact root is a configuration the operator sets, and
+// inventing one here is how this test came to scan the org directories of the
+// source store and report 23 "trees" with no .arrow files.
 std::string RootDir()
 {
     if (const char *env = std::getenv("LSX_ARROW_AUDIT_ROOT"))
         return env;
-    return "/mnt/fast_storage/lsx_model";
+    if (const char *env = std::getenv("LSX_ARTIFACT_ROOT"))
+        return env;
+    return {};
 }
 
 int64_t BudgetBytes()
@@ -70,12 +77,16 @@ TEST_CASE("Every converted model tree has a valid Arrow IPC layout",
           "[arrow][tree][real-model]")
 {
     const fs::path root = RootDir();
+    if (root.empty())
+        SKIP("neither LSX_ARROW_AUDIT_ROOT nor LSX_ARTIFACT_ROOT is set — this "
+             "audits converted artifacts, which live in the artifact store");
     if (!fs::exists(root))
         SKIP("Arrow audit root not present: " << root.string());
 
     const auto trees = av::FindConvertedTrees(root);
     if (trees.empty())
-        SKIP("no converted logestix/ tree under " << root.string());
+        SKIP("no artifact (a directory holding artifact.fb) under "
+             << root.string());
 
     av::TreeVerifyOptions opts;
     opts.full = FullMode();

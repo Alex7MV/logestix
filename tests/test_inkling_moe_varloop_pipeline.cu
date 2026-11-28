@@ -73,9 +73,7 @@ struct Harness {
         if (std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") == nullptr)
             return false;
         dir = ConvertFixture(tag);
-        if (!LoadInklingLoopTopology(dir.string(), pw.top,
-                                     VarloopConvertSpec().format_tag)
-                 .ok())
+        if (!LoadInklingLoopTopology(dir.string(), pw.top).ok())
             return false;
         if (cudaStreamCreate(&stream) != cudaSuccess) return false;
         if (!LoadInklingLoopPinnedWeights(dir.string(), pw, stream)) return false;

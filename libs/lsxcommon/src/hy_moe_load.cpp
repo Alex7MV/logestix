@@ -222,8 +222,7 @@ KvCacheGeometry HyKvGeometry(const HyTopology &top, int64_t capacity)
 }
 
 bool LoadHyDenseWeights(const std::string &model_path,
-                        const HyPassportGeometry &expect,
-                        const char *format_tag, HyPinnedWeights &pw,
+                        const HyPassportGeometry &expect, HyPinnedWeights &pw,
                         cudaStream_t stream, std::string &error)
 {
     pw.Free();
@@ -238,14 +237,16 @@ bool LoadHyDenseWeights(const std::string &model_path,
         return false;
     }
 
-    // Index format + geometry. LoadHyTopology stashes the format string in
-    // error_msg; clear it once consumed.
+    // Index layout + geometry. A topology that could not be parsed, or whose
+    // index declares a schema generation this build does not read, leaves
+    // error_msg set (design §2.4.3: the index names a layout, not a per-model
+    // format tag). This field used to carry that tag and the check here compared
+    // it against the passport's; reading it as a tag now would mangle a real
+    // layout refusal into "unsupported index format '<sentence>'" and, worse,
+    // CLEAR every other topology failure on the way past.
     pw.top = LoadHyTopology(model_path);
-    const std::string fmt = pw.top.error_msg;
-    pw.top.error_msg.clear();
-    if (!fmt.empty() && fmt != format_tag) {
-        error = absl::StrCat("unsupported index format '", fmt,
-                             "' — convert via lsxforge --hy/--hy_simulmt");
+    if (!pw.top.error_msg.empty()) {
+        error = pw.top.error_msg;
         return false;
     }
     if (pw.top.num_layers <= 0) {
@@ -696,8 +697,8 @@ namespace {
 bool LoadHyDenseWeights(const std::string &model_path, HyPinnedWeights &pw,
                         cudaStream_t stream, std::string &error)
 {
-    return LoadHyDenseWeights(model_path, HyMemoryPassportGeometry(),
-                              frozen::kFormatTag, pw, stream, error);
+    return LoadHyDenseWeights(model_path, HyMemoryPassportGeometry(), pw, stream,
+                              error);
 }
 
 } // namespace lsxcommon::hy

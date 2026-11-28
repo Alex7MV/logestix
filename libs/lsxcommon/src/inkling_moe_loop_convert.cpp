@@ -57,7 +57,6 @@ InklingLoopConvertSpec MiniConvertSpec()
     using namespace lsxcommon::inkling::loop::frozen;
     InklingLoopConvertSpec spec;
     spec.model_name = "Inkling-2-Mini";
-    spec.format_tag = kFormatTag;
     spec.varloop = false;
     spec.max_passes = kLoopPasses;
     spec.frozen.hidden = kHidden;

@@ -75,8 +75,7 @@ TEST_CASE("Hy-SimulMT loader uploads the pinned graph with its passport",
 
     hy::HyPinnedWeights pw;
     std::string error;
-    REQUIRE(hy::LoadHyDenseWeights(c.root.string(), Geometry(),
-                                   hy_simulmt::frozen::kFormatTag, pw, nullptr,
+    REQUIRE(hy::LoadHyDenseWeights(c.root.string(), Geometry(), pw, nullptr,
                                    error));
     CHECK(error.empty());
     CHECK(pw.resident_bytes > 0);
@@ -110,20 +109,16 @@ TEST_CASE("Hy-SimulMT loader uploads the pinned graph with its passport",
     CHECK(pw.resident_bytes == 0);
 }
 
-TEST_CASE("Hy-SimulMT loader rejects the parent's format (and vice versa)",
+TEST_CASE("the Hy loaders refuse an index generation they cannot read",
           "[hy][simulmt][loader]")
 {
+    // What a LOADER can own after the `format` tag retired (design §2.4.3): it
+    // parses a tree, so it owns the schema GENERATION check. It cannot own the
+    // parent-vs-sibling identity check any more — both trees are layout 2 and
+    // have the same tower, so no geometry or generation test separates them.
+    // That refusal moved to ModelBase::IdentityAllows, against artifact.fb's
+    // model_type; test_load_codec_gate.cpp pins it.
     Converted c = BuildConverted();
-
-    // The parent's default overload must reject the SimulMT tag.
-    {
-        hy::HyPinnedWeights pw;
-        std::string error;
-        CHECK_FALSE(hy::LoadHyDenseWeights(c.root.string(), pw, nullptr, error));
-        CHECK(error.find("unsupported index format") != std::string::npos);
-    }
-
-    // A foreign tag is refused with this model's passport too.
     const fs::path idx = c.root / "model.index.json";
     std::string json;
     {
@@ -139,12 +134,26 @@ TEST_CASE("Hy-SimulMT loader rejects the parent's format (and vice versa)",
         std::ofstream f(idx);
         f << json;
     }
-    hy::HyPinnedWeights pw;
-    std::string error;
-    CHECK_FALSE(hy::LoadHyDenseWeights(c.root.string(), Geometry(),
-                                       hy_simulmt::frozen::kFormatTag, pw,
-                                       nullptr, error));
-    CHECK(error.find("unsupported index format") != std::string::npos);
+
+    // Both overloads: the sibling's passport and the parent's default.
+    {
+        hy::HyPinnedWeights pw;
+        std::string error;
+        CHECK_FALSE(hy::LoadHyDenseWeights(c.root.string(), Geometry(), pw,
+                                           nullptr, error));
+        // The message is the SHARED refusal, naming both generations and the
+        // fix. It used to read "unsupported index format '<the same sentence>'"
+        // because the layout error travelled through the retired format carrier.
+        CHECK(error.find("layout 1") != std::string::npos);
+        CHECK(error.find("reads layout 2") != std::string::npos);
+        CHECK(error.find("reconvert") != std::string::npos);
+    }
+    {
+        hy::HyPinnedWeights pw;
+        std::string error;
+        CHECK_FALSE(hy::LoadHyDenseWeights(c.root.string(), pw, nullptr, error));
+        CHECK(error.find("layout 1") != std::string::npos);
+    }
 }
 
 TEST_CASE("Hy-SimulMT KV geometry is the parent's pos-major layout",

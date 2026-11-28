@@ -140,8 +140,13 @@ TEST_CASE("gigachat4-708b converter writes its own identity",
           std::string::npos);
     CHECK(json.find("\"model\": \"GigaChat4-708B-A41B\"") !=
           std::string::npos);
-    CHECK(json.find("\"layout\": 2") ==
-          std::string::npos);
+    // The retired per-model tag must not come back into any index: the two
+    // GigaChat4 trees used to be told apart by `format`: this one is the 708B's,
+    // and an index carrying a `format` key at all is a converter that was not
+    // migrated. (This assertion used to read `find("\"layout\": 2") == npos` —
+    // a mechanical rewrite of the old negative tag check that contradicted the
+    // positive one three lines above it and could never pass.)
+    CHECK(json.find("\"format\"") == std::string::npos);
     CHECK(json.find("\"attn_scale\": 0.130861") != std::string::npos);
     // The synthetic fixture is tiny, so the geometry inside the index is the
     // fixture's — the spec only fixes identity and the layer map check.

@@ -129,12 +129,16 @@ struct InklingLoopFrozenGeometry {
 };
 
 // One model row's conversion contract: the card name (`model` in the index is
-// what `gpu::detect_model_type` resolves into a factory key), the format tag,
-// the geometry to gate on, and — for a varloop tree — the trained pass ceiling
-// that the checkpoint's config does not carry.
+// what `gpu::detect_model_type` resolves into a factory key), the geometry to
+// gate on, and — for a varloop tree — the trained pass ceiling that the
+// checkpoint's config does not carry.
+//
+// There was a `format_tag` here. It was assigned by both specs and read by
+// nothing once the index started declaring `layout` (design §2.4.3) — the exact
+// "written, never read" rot that retired the 18 per-model tags in the first
+// place, reproduced inside the C++ struct that used to feed them.
 struct InklingLoopConvertSpec {
     std::string model_name;
-    std::string format_tag;
     InklingLoopFrozenGeometry frozen;
     // `is_varloop` in the checkpoint must equal this. A mismatch is an error in
     // BOTH directions: the fixed-pass weights were trained at exactly

@@ -121,7 +121,9 @@ struct HyConvertSpec {
     HyPassportGeometry geometry;
     std::string model_type = "hy-memory-30b-a3b";
     std::string model_name = "Hy-Memory-30B-A3B";
-    std::string format_tag = "logestix-hy-nvfp4";
+    // No `format_tag`: the index declares `layout` now (design §2.4.3), and a
+    // field every writer set and no reader consumed is how the per-model tags
+    // rotted to 11-of-18 dead in the first place.
     // Hy-SimulMT carries a speech encoder (`audio_tower.*`) beside the text
     // backbone. When set, those tensors are stripped AND counted.
     bool allow_audio_ballast = false;

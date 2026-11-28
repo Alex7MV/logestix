@@ -139,7 +139,8 @@ TEST_CASE("flint loader uploads the pinned graph", "[flint][loader]")
 TEST_CASE("flint loader rejects a foreign index format", "[flint][loader]")
 {
     Converted c = BuildConverted();
-    // Corrupt the format tag: the loader must refuse rather than decode.
+    // Downgrade the layout: the loader must refuse rather than decode a schema
+    // it does not know.
     const fs::path idx = c.root / "model.index.json";
     std::string json;
     {
@@ -158,7 +159,12 @@ TEST_CASE("flint loader rejects a foreign index format", "[flint][loader]")
     FlintPinnedWeights pw;
     std::string error;
     CHECK_FALSE(LoadFlintDenseWeights(c.root.string(), pw, nullptr, error));
-    CHECK(error.find("unsupported index format") != std::string::npos);
+    // The shared layout refusal, naming both generations. It used to read
+    // "unsupported index format '<the same sentence>'": the layout error was
+    // squirted through the retired per-model format carrier, which also cleared
+    // every OTHER topology error before anything could read it.
+    CHECK(error.find("layout 1") != std::string::npos);
+    CHECK(error.find("reads layout 2") != std::string::npos);
 }
 
 TEST_CASE("flint KV geometry is pos-major and size-neutral", "[flint][loader]")

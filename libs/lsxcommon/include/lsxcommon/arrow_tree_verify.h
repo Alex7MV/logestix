@@ -62,9 +62,12 @@ struct TreeVerifyStats {
 TreeVerifyStats VerifyArrowTree(const std::filesystem::path &converted_root,
                                 const TreeVerifyOptions &opts = {});
 
-// Returns <vault>/<model>/logestix for every model that has a converted tree.
+// Every artifact under an ARTIFACT root: one path per
+// <root>/<org>/<model>/<profile> directory that holds an artifact.fb, sorted.
+// Detection is by artifact.fb, never by a directory name — the pre-split
+// "<vault>/<model>/logestix" spelling is not loadable any more.
 std::vector<std::filesystem::path>
-FindConvertedTrees(const std::filesystem::path &vault_root);
+FindConvertedTrees(const std::filesystem::path &artifact_root);
 
 } // namespace arrow_check
 } // namespace lsxcommon

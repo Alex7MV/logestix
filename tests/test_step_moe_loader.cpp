@@ -10,6 +10,9 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 
 using namespace lsxcommon::step;
 namespace fs = std::filesystem;
@@ -35,8 +38,12 @@ TEST_CASE("Step-5 topology parses the converted index", "[step-moe-loader]")
 {
     fs::path out = ConvertFixture("topo");
     auto top = LoadStepTopology(out.string());
-    CHECK(top.error_msg == frozen::kFormatTag);
-    top.error_msg.clear();
+    // A successfully parsed index of this generation reports NO error. This used
+    // to assert `error_msg == frozen::kFormatTag`: the loader smuggled the
+    // per-model tag through the error field and cleared it at the consumer. The
+    // tag is retired (design §2.4.3), and leaving the assertion behind is what
+    // made the half-migrated consumer invisible.
+    CHECK(top.error_msg.empty());
     const auto &c = step_test::TestCfg();
     CHECK(top.num_layers == c.layers);
     CHECK(top.hidden_size == c.hidden);
@@ -109,6 +116,37 @@ TEST_CASE("Step-5 loader uploads the dense graph and opens the expert store",
     pw.Free();
     CHECK(pw.layers.empty());
     CHECK(pw.expert_cache.d_base == nullptr);
+    std::error_code ec;
+    fs::remove_all(out, ec);
+}
+
+TEST_CASE("Step-5 loader refuses an index generation it cannot read",
+          "[step-moe-loader]")
+{
+    // The generation check is the loader's own; without this case a consumer
+    // that ignored `error_msg` (which is exactly what the retired format carrier
+    // did) would still look green here.
+    fs::path out = ConvertFixture("layout");
+    const fs::path idx = out / "model.index.json";
+    std::string json;
+    {
+        std::ifstream f(idx);
+        json.assign(std::istreambuf_iterator<char>(f),
+                    std::istreambuf_iterator<char>());
+    }
+    const std::string from = "\"layout\": 2";
+    REQUIRE(json.find(from) != std::string::npos);
+    json.replace(json.find(from), from.size(), "\"layout\": 1");
+    {
+        std::ofstream f(idx);
+        f << json;
+    }
+
+    StepPinnedWeights pw;
+    std::string error;
+    CHECK_FALSE(LoadStepDenseWeights(out.string(), pw, nullptr, error));
+    CHECK(error.find("layout 1") != std::string::npos);
+    CHECK(error.find("reads layout 2") != std::string::npos);
     std::error_code ec;
     fs::remove_all(out, ec);
 }

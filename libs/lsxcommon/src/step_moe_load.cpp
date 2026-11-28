@@ -355,11 +355,15 @@ bool LoadStepDenseWeights(const std::string &model_path, StepPinnedWeights &pw,
     pw.Free();
     error.clear();
     pw.top = LoadStepTopology(model_path);
-    const std::string fmt = pw.top.error_msg;
-    pw.top.error_msg.clear();
-    if (!fmt.empty() && fmt != frozen::kFormatTag) {
-        error = absl::StrCat("unsupported index format '", fmt,
-                             "' — convert via lsxforge --step");
+    // A topology that could not be parsed, or whose index declares a schema
+    // generation this build does not read, leaves error_msg set (design §2.4.3:
+    // the index names a layout, not a per-model format tag). This field used to
+    // carry that tag and the check here compared it against the passport's;
+    // reading it as a tag now would mangle a real layout refusal into
+    // "unsupported index format '<sentence>'" and, worse, CLEAR every other
+    // topology failure on the way past.
+    if (!pw.top.error_msg.empty()) {
+        error = pw.top.error_msg;
         return false;
     }
     if (pw.top.num_layers <= 0) {

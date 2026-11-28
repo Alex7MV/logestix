@@ -52,13 +52,6 @@ bool get_b(simdjson::ondemand::object &o, const char *k, bool &out)
 arrow::Status LoadInklingLoopTopology(const std::string &model_path,
                                       InklingLoopTopology &out)
 {
-    return LoadInklingLoopTopology(model_path, out, frozen::kFormatTag);
-}
-
-arrow::Status LoadInklingLoopTopology(const std::string &model_path,
-                                      InklingLoopTopology &out,
-                                      std::string_view expected_format)
-{
     out = InklingLoopTopology{};
     const fs::path idx = fs::path(model_path) / "model.index.json";
     std::ifstream f(idx);
@@ -81,9 +74,12 @@ arrow::Status LoadInklingLoopTopology(const std::string &model_path,
     if (root["layout"].get_int64().get(layout_v) == simdjson::SUCCESS)
         out.layout = layout_v;
     if (!lsxcommon::IndexLayoutSupported(out.layout)) {
+        // One refusal text for every loader in the tree, naming both numbers and
+        // the fix. The old text interpolated the caller's format tag here, so it
+        // read "expected format logestix-inkling-2-mini, got 1" — describing a
+        // gate that no longer compares tags.
         out.error_msg = lsxcommon::IndexLayoutError(out.layout);
-        return arrow::Status::Invalid("inkling loop loader: expected format ",
-                                      expected_format, ", got ", std::to_string(out.layout));
+        return arrow::Status::Invalid(out.error_msg);
     }
     std::string_view s;
     if (root["source_model_type"].get_string().get(s) == simdjson::SUCCESS)

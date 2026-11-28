@@ -18,6 +18,7 @@
 //   * aborting before the first step produces zero tokens and no error;
 //   * the streaming callback sees exactly the generated tokens, in order.
 #include <catch2/catch_test_macros.hpp>
+#include <lsxcommon/index_layout.h>
 #include <lsxcommon/inkling_moe_convert.h>
 #include "inkling_moe_constants.h"
 
@@ -87,10 +88,15 @@ bool CachedFixtureIsCurrent(const fs::path &out)
     simdjson::dom::parser parser;
     simdjson::dom::element doc;
     if (parser.parse(text).get(doc) != simdjson::SUCCESS) return false;
-    std::string_view format;
-    if (doc["format"].get_string().get(format) != simdjson::SUCCESS)
+    // "Is this tree this family's?" was answered by a per-model format tag.
+    // That tag is retired (design §2.4.3): the index now declares its schema
+    // GENERATION, and the model identity lives in artifact.fb's model_type,
+    // checked once in ModelBase::IdentityAllows. What a fixture at this level can
+    // still assert is the generation it was written in.
+    int64_t layout = 0;
+    if (doc["layout"].get_int64().get(layout) != simdjson::SUCCESS)
         return false;
-    return format == lsxcommon::inkling::frozen::kFormatTag;
+    return layout == lsxcommon::kIndexLayout;
 }
 
 fs::path EnsureSyntheticModel()

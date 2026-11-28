@@ -90,10 +90,17 @@ void FreeHyPinnedWeights(HyPinnedWeights &pw);
 // does not fit the free VRAM — this family never silently streams).
 //
 // The passport variant lets a sibling (Hy-SimulMT) reuse this loader with ITS
-// frozen geometry and format tag instead of borrowing Hy-Memory's namespace.
+// frozen geometry instead of borrowing Hy-Memory's namespace.
+//
+// There is no `format_tag` parameter any more. It existed to compare a per-model
+// tag that the index used to carry, and that comparison was the ONLY thing that
+// told the parent's tree from the sibling's — which is why removing the tag
+// (design §2.4.3) silently made `LoadHyDenseWeights` accept a Hy-SimulMT tree.
+// The two trees have the same tower, so no geometry check can separate them
+// either. The identity check belongs where the identity is recorded:
+// `artifact.fb` `model_type`, enforced once in ModelBase::BeginLoad.
 bool LoadHyDenseWeights(const std::string &model_path,
-                        const HyPassportGeometry &expect,
-                        const char *format_tag, HyPinnedWeights &pw,
+                        const HyPassportGeometry &expect, HyPinnedWeights &pw,
                         cudaStream_t stream, std::string &error);
 
 // Hy-Memory's frozen passport (the default for the parent model).

@@ -90,9 +90,15 @@ TEST_CASE("inkling synthetic convert emits logestix-inkling-2-small",
     simdjson::padded_string pad(json);
     auto doc = parser.iterate(pad);
 
-    std::string_view fmt;
-    REQUIRE(doc["format"].get_string().get(fmt) == simdjson::SUCCESS);
-    REQUIRE(fmt == std::to_string(lsxcommon::kIndexLayout));
+    // `layout` is an INTEGER generation, not a per-model tag: the assertion used
+    // to read doc["format"].get_string(...) and compare it against
+    // std::to_string(kIndexLayout), which cannot pass under either schema — the
+    // index stopped writing `format` (design §2.4.3) and a string read of an
+    // integer never succeeds. Half-migrated by the layout change and never run,
+    // because this suite is label `convert`, which the fast sweep does not cover.
+    int64_t layout = 0;
+    REQUIRE(doc["layout"].get_int64().get(layout) == simdjson::SUCCESS);
+    REQUIRE(layout == lsxcommon::kIndexLayout);
 
     // `model` is what path auto-detection resolves: `gpu::detect_model_type`
     // reads this key from `<vault>/logestix/model.index.json`, normalizes it

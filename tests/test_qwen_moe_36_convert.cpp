@@ -156,7 +156,10 @@ TEST_CASE("ConvertQwen35MoeModel output stays bos-free (byte-identity guard)",
 
     REQUIRE(ConvertQwen35MoeModel(in.string(), out.string()).ok());
     CHECK(ReadIndex(out).find("bos_token_id") == std::string::npos);
-    CHECK(ReadIndex(out).find("\"logestix-qwen35moe\"") != std::string::npos);
+    // A LAYOUT generation, not a per-model `format` tag (design §2.4.3).
+    CHECK(ReadIndex(out).find("\"layout\": 2") != std::string::npos);
+    // The retired field must not come back.
+    CHECK(ReadIndex(out).find("\"format\"") == std::string::npos);
 
     std::error_code ec;
     fs::remove_all(in, ec);

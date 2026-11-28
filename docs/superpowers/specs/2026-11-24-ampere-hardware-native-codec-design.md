@@ -17,6 +17,24 @@ Revision note (2026-11-27c, **deletion verified complete**): the last leftover t
 `.arrow` files in the vault (§1.1.1). No control tree exists for any model, so the
 contract rests entirely on our own fixtures plus the bootstrap conversions; the
 last open question about keeping a reference tree is closed (§8).
+Revision note (2026-11-28b, **the `format` retirement was incomplete in three
+places the fast sweep cannot see**). Both `convert` (48 targets) and the model
+stage (37) sit outside label `fast`, so "179/182 fast green" never covered them.
+Running them found: (1) five loaders (step, flint, minimax, hy, beam) still READ
+the per-model tag out of `top.error_msg`, which Task 9c had stopped writing —
+mangling a real layout refusal into "unsupported index format '<a sentence>'"
+and clearing every other topology failure on the way past; (2) the identity check
+itself was LOST rather than migrated, and for siblings with the same tower
+(hy-memory vs hy-simulmt) it was the only thing telling their trees apart. The
+successor is `ModelBase::IdentityAllows`, comparing the caller's declared
+`cfg_.model_type` against `artifact.fb`'s `model_type` — once for every family,
+instead of ten hand-written tag comparisons in loaders. An EMPTY declaration is
+the autodetect path and passes by construction, because the type then came from
+the artifact being loaded. (3) sixteen test assertions still demanded the retired
+tag, several in forms that cannot pass under either schema (a `get_string` read
+of the integer `layout`), one of them a mechanical rewrite that became its own
+negation. Rule for anyone closing this out: a retirement is done when the label
+sweeps that own the field are green, not when the `fast` suite is.
 Revision note (2026-11-28, **Task 9a on real weights — three defects the fixtures
 could not see**). The bootstrap conversion of phi-4 and Qwen3.5-9B exercised the
 emitter against real checkpoints for the first time, and §1.5's "the artifact is

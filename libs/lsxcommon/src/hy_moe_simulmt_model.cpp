@@ -140,9 +140,8 @@ bool HySimulMTModel::Load()
         return AbortLoad();
     }
     std::string error;
-    if (!hy::LoadHyDenseWeights(cfg_.model_path, SimulMTGeometry(),
-                                hy_simulmt::frozen::kFormatTag, pw_, stream(),
-                                error)) {
+    if (!hy::LoadHyDenseWeights(cfg_.model_path, SimulMTGeometry(), pw_,
+                                stream(), error)) {
         lsxcommon::log::error(
             absl::StrCat("[hy-simulmt-model] pinned weight load failed: ", error));
         return AbortLoad();

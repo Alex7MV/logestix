@@ -45,18 +45,27 @@ TEST_CASE("mimo loader resolves the logestix-mimo-nvfp4 layout",
     fs::remove_all(out.parent_path());
 }
 
-TEST_CASE("mimo loader rejects a foreign format tag", "[mimo][loader]")
+TEST_CASE("mimo loader refuses an index generation it cannot read",
+          "[mimo][loader]")
 {
+    // This used to corrupt a per-model `format` tag and expect a "format"
+    // refusal. The tag is retired (design §2.4.3) and the loader now gates the
+    // schema GENERATION, so the corruption is a downgrade of `layout` — the same
+    // edit the other loaders' tests make, and the only one that still exercises
+    // the gate.
     const fs::path out = BuildConverted();
     const fs::path idx = out / "model.index.json";
     auto text = mimotest::ReadFileText(idx);
-    const auto pos = text.find("logestix-mimo-nvfp4");
+    const std::string from = "\"layout\": 2";
+    const auto pos = text.find(from);
     REQUIRE(pos != std::string::npos);
-    text.replace(pos, std::strlen("logestix-mimo-nvfp4"), "logestix-other");
+    text.replace(pos, from.size(), "\"layout\": 1");
     std::ofstream(idx) << text;
     auto layout = lsxcommon::mimo::LoadMiMoLayout(out.string());
     CHECK_FALSE(layout.ok());
-    CHECK(layout.status().ToString().find("format") != std::string::npos);
+    // The shared refusal names both generations, so an operator knows the tree
+    // is a schema this build does not read rather than a corrupt file.
+    CHECK(layout.status().ToString().find("layout 1") != std::string::npos);
     fs::remove_all(out.parent_path());
 }
 

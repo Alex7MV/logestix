@@ -113,6 +113,41 @@ bool ModelBase::CodecGateAllows(const lsx::storage::ArtifactInfo &info,
     return decision.allowed;
 }
 
+namespace {
+
+// The spelling `gpu::detect_model_type` produces from the index's "model" field
+// ("Phi-4" -> "phi-4", "Qwen3.5-9B" -> "qwen3.5-9b"). Used ONLY to compare two
+// spellings of the same identity, never to invent one: a caller that pins
+// "Phi-4" means the artifact whose model_type is "phi-4".
+std::string NormalizeModelType(std::string s)
+{
+    for (char &c : s) {
+        if (c == ' ') c = '-';
+        else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return s;
+}
+
+} // namespace
+
+bool ModelBase::IdentityAllows(const std::string &declared,
+                               const lsx::storage::ArtifactInfo &info,
+                               std::string *why)
+{
+    // A CALLER-declared type only. On the autodetect path cfg_.model_type is
+    // empty by construction, and the type came from this very artifact — a
+    // disagreement there would be a detection bug, not a load to refuse.
+    if (declared.empty()) return true;
+    if (NormalizeModelType(declared) == NormalizeModelType(info.model_type))
+        return true;
+    if (why != nullptr) {
+        *why = "'" + declared + "' was requested but artifact.fb says '" +
+               info.model_type + "' (family '" + info.family +
+               "'); convert the model you mean, or point at its own artifact";
+    }
+    return false;
+}
+
 bool ModelBase::LayerUsesCodec(int layer, hw::PlaneCodec codec) const
 {
     if (!artifact_) return false;
@@ -157,6 +192,18 @@ bool ModelBase::BeginLoad(const std::string &model_path)
             "[load] %s has no usable artifact.fb (%s): %s",
             resolved.dir.string(), lsx::storage::ReadStatusName(read.status),
             read.detail));
+        return false;
+    }
+
+    // ── (2b) IDENTITY: the artifact must be the model the caller NAMED ──────
+    // Before the codec gate, because "you asked for a different model" is a
+    // better answer than "this device cannot run those codecs". See
+    // IdentityAllows for why this lives here and not in 40 family loaders.
+    if (std::string identity_why;
+        !IdentityAllows(cfg_.model_type, read.info, &identity_why)) {
+        log::error(absl::StrFormat("[load] %s (%s): %s",
+                                   resolved.dir.string(),
+                                   read.info.profile.c_str(), identity_why));
         return false;
     }
 
