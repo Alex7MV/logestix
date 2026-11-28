@@ -77,20 +77,40 @@ as reproducibility levels with their "not guaranteed" cells written down in
   AMD's AOCC clang is supported as an alternative host compiler)
 - Ninja build system (required on Ubuntu; optional on Windows)
 - Git
-- **NVIDIA CUDA Toolkit 13.5 — required, not optional.** The build enables
-  CUDA unconditionally (`project(... LANGUAGES C CXX CUDA)` +
+- **NVIDIA CUDA Toolkit — required, not optional.** The build enables CUDA
+  unconditionally (`project(... LANGUAGES C CXX CUDA)` +
   `find_package(CUDAToolkit REQUIRED)`); there is no CPU-only build. The
-  enforced floor is 13.2 (`test_cuda_toolkit_guard`); 13.5 is the verified
-  toolkit. A 13.x driver older than the toolkit is supported through CUDA
-  minor-version compatibility (e.g. toolkit 13.5 on a 13.4 driver).
-- **NVIDIA Blackwell GPU — required for all device work.** Compute capability
-  12.0/12.1 only (`sm_120`/`sm_121`, e.g. RTX 5090). Pre-Blackwell
-  architectures (Hopper, Ada, Ampere) are deliberately unsupported and
-  rejected at configure time. Device codegen comes from `LSX_CUDA_ARCH`
-  (default `120;121`); `-DLSX_CUDA_ARCH="120f;121f"` selects the
-  family-specific targets — measured neutral for this repo's weight-streaming
-  NVFP4 decode paths, kept as a one-variable experiment for compute-bound
-  cases.
+  enforced floor is **12.6** (`test_cuda_toolkit_guard`), which is JetPack
+  6.2.1 on Orin; **13.5** is the verified toolkit on x86 and **12.6** on
+  JetPack. A driver older than the toolkit in the same major is supported
+  through CUDA minor-version compatibility (e.g. toolkit 13.5 on a 13.4
+  driver). The `cuda_fp4.h` cases (e2m1 conversion) are gated on
+  `__has_include(<cuda_fp4.h>)` — the header arrives in 12.8, so they SKIP with
+  the reason on 12.6 rather than failing the build.
+- **NVIDIA GPU — required for all device work.** Two supported target families:
+
+  | family | compute capability | examples | codecs the hardware executes |
+  |---|---|---|---|
+  | Blackwell consumer | `sm_120`, `sm_121` | RTX 5090, RTX 5060 Ti | all seven (incl. NVFP4, MXFP8) |
+  | Ampere GA10x | `sm_86`, `sm_87` | RTX 3090 (24 GB), Jetson Orin NX/Nano (16/8 GB unified) | `f32`, `bf16`, `f16`, `i8` — **no FP8, no FP4** |
+
+  Pre-Blackwell *datacenter* and other architectures (Hopper `sm_90`, Ada
+  `sm_89`, `sm_80`) are deliberately unsupported and rejected at configure
+  time. On Ampere an artifact whose profile uses NVFP4/FP8 is **refused at
+  load**, naming the missing codecs and the profiles that would work — the
+  engine never emulates a codec in software.
+
+  Device codegen comes from `LSX_CUDA_ARCH` (default `120;121`):
+  `-DLSX_CUDA_ARCH=86` for a 3090 tree, `86;87` for a fatbin covering both
+  Ampere dies, `120f;121f` for the Blackwell family-specific targets (measured
+  neutral for this repo's weight-streaming NVFP4 decode paths, kept as a
+  one-variable experiment for compute-bound cases). Which object libraries a
+  configure builds follows the list: the `kind::mxf4nvf4` tensor-core objects
+  exist only when a 12x arch is targeted.
+
+  Ready-made presets: `linux-release-sm86` (RTX 3090) and
+  `jetson-orin-release` (JetPack 6.2.1, aarch64, toolchain in
+  `cmake/toolchains/jetson-orin.cmake`).
 
 ## Clone with submodules
 

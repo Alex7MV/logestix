@@ -104,7 +104,7 @@ started` = no commit, no code.
 | 11 | `LSX_CUDA_ARCH` accepts Ampere | **done** | `HEAD~0` | validator moved to `cmake/LsxArch.cmake`; both SASS proven in the fatbin |
 | 12 | arch-`a` object libs only for 12x | **done** | HEAD | `lsx_arch_has_12x()` + `lsx_tc_gemm_stub.cpp`; Ampere configure has 0 × `compute_120a` |
 | 13 | toolchain-agnostic toolkit guard | **done** | HEAD | floor 12060; `__has_include`; device case asks the capability table; a no-fp4 twin compiles the same TU |
-| 14 | Ampere presets + degradation audit | **not started** | — | `CMakePresets.json:10-75` has no `86`; no `cmake/toolchains/` |
+| 14 | Ampere presets + degradation audit | **done** | HEAD | `linux-release-sm86` (86) + `jetson-orin-release` (86;87) + `cmake/toolchains/jetson-orin.cmake`; `test_arch_support_guard` |
 | 15 | `bf16` profile for the slice | **not started** | — | `grep CodecProfile libs/lsxcommon/src` is empty |
 | 16 | 3090/Jetson acceptance + docs | **not started** | — | `docs/NVIDIA_DOCS_AMPERE.md` has been **removed** from the tree — see the note in Task 16 |
 | 17 | INT8 weight quantizer | **not started** | — | — |
@@ -2262,7 +2262,67 @@ TEST_CASE("cuda_toolkit_guard: present devices are in the supported set") {
 
 ### Task 14: Ampere build presets + the runtime degradation audit
 
-> **NOT STARTED (2026-11-28).** `CMakePresets.json` has six configure presets
+> **DONE.** Two configure presets, their build/test ladders, a Jetson toolchain
+> file, and a guard that pins both the policy and the presets. Plus the two doc
+> amendments Task 16 was carrying, because they are the same statements in prose.
+>
+> | preset | arch | what it is for |
+> |---|---|---|
+> | `linux-release-sm86` | `86` | the RTX 3090 host — Release, no znver4, no LTO, `BUILD_TESTING=ON`, compile commands exported |
+> | `jetson-orin-release` | `86;87` | JetPack 6.2.1 aarch64 via `cmake/toolchains/jetson-orin.cmake`; `jobs: 4` because 190 test binaries at `-j` is an OOM on a 16 GB board |
+>
+> Each gets the full five-preset test ladder (`-fast`, `-inference`, `-convert`,
+> `-perf`), so a label sweep on a 3090 reads like a sweep anywhere else.
+>
+> **The toolchain file refuses quietly, not loudly, and that is a finding.** It
+> first ended in `message(FATAL_ERROR)` when `/usr/local/cuda-12.6/bin/nvcc` was
+> absent — correct on a machine that has JetPack, and wrong in general: a
+> toolchain file is re-included in EVERY nested configure, and a CUDA configure
+> runs one for the compiler-ABI probe (`try_compile`) with a **fresh, empty
+> cache**, so the `-D` value is invisible there. The probe aborted and the
+> operator saw `CMAKE_C_COMPILER not set, after EnableLanguage` instead of the
+> real reason. It now warns (naming the JetPack path and the override) and leaves
+> the refusal to `find_package(CUDAToolkit REQUIRED)`, which runs in the real
+> configure with the real cache. Measured both ways on 2026-11-28.
+>
+> **The degradation audit:** the three `prop.major` probes
+> (`lsx_tc_gemm.cu:908, :1086, :1148`) already return
+> `cudaErrorNotSupported`/`false` off-12x, and every caller tolerates it (the
+> dispatcher falls through to the scalar path). With Task 12 the object lib that
+> holds them is not even built for an Ampere-only configure, so on that tree they
+> are not defence in depth — they are unreachable, and the STUB answers for them.
+> Recording that in the header comment would be the plan's step 3; the stub's own
+> header is the better place and already says it.
+>
+> **Doc amendments (were Task 16's):**
+>
+> - `docs/numeric-contract.md` §1.1 item **4**, amended: a *target capability* may
+>   select a kernel **family**; within a family no device property may select
+>   numerics. With the operational pair table — `sm_120↔sm_121` one group,
+>   `sm_86↔sm_87` one group, `sm_86↔sm_120` **not** one unless both run the same
+>   profile. The R3 row in §1, the C-exact definition in §2, the §4 verification
+>   obligation, the §7 open decision and the §8 non-goal were all re-scoped to
+>   match, because a scope change that touches one of five sentences is a
+>   contradiction, not an amendment.
+> - `README.md` Prerequisites: one table of the two supported target families with
+>   the codecs each executes, the 12.6 floor, the `__has_include` note, and the two
+>   new presets. The old sentence ("pre-Blackwell … deliberately unsupported")
+>   still listed Ampere as rejected.
+>
+> **Evidence:** `ctest --preset linux-debug` **191/191**;
+> `test_arch_support_guard` 7 cases / 53 assertions, including two doc cases that
+> fail if either document drifts back; a real `LSX_CUDA_ARCH=86` configure **with
+> `BUILD_TESTING=ON`** builds `lsxfabric`, whose fatbin holds **86 × sm_86 and 0 ×
+> sm_87** cubins, and it runs; the Jetson preset's toolchain configures cleanly
+> with `86;87` and warns about the absent 12.6 toolkit.
+>
+> **A configure crash this task exposed:** the `inference` label group named
+> `test_blackwell_tc_mma`, which Task 12 makes conditional — `set_tests_properties`
+> on an absent test is a **configure error**, so an Ampere-only configure died at
+> `tests/CMakeLists.txt:4870` the first time it got that far. Its label and GPU
+> lock are now declared where the target is created, inside the same 12x branch.
+>
+> **Original note, for the record:** `CMakePresets.json` has six configure presets
 > (`windows-debug`, `windows-release`, `linux-debug`, `linux-release`,
 > `linux-release-znver4`, `linux-release-znver4-aocc`) and none sets
 > `LSX_CUDA_ARCH`. `cmake/toolchains/` does not exist.

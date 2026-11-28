@@ -1595,6 +1595,16 @@ set_tests_properties(test_cuda_toolkit_guard PROPERTIES LABELS fast)
 # machine. The arithmetic lives in tests/test_cuda_toolkit_rules.h and is checked
 # here on any host, together with the structural half — no bare
 # `#include <cuda_fp4.h>`, no major-equality clause, no hand-derived CC set.
+# ── Arch policy as a pinned fact (plan Task 14) ───────────────────────────
+# Ampere is a target (`SupportedCodecs(sm_86|sm_87)` non-empty) and every preset's
+# LSX_CUDA_ARCH is accepted by the REAL validator. A prose-only policy is
+# re-forgotten; this is the pin. It also reads CMakePresets.json and
+# cmake/toolchains/, so it needs no test-only plumbing.
+lsx_add_test(NAME test_arch_support_guard LABEL fast LINK lsxcommon
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+           "LSX_CMAKE_COMMAND=\"${CMAKE_COMMAND}\""
+    INCLUDE "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
+
 lsx_add_test(NAME test_cuda_toolkit_rules LABEL fast
     INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
@@ -4862,10 +4872,19 @@ set_tests_properties(
     test_lsx_nvfp4_dispatch
     test_lsx_gemv
     test_perf_knobs_apply
-    test_blackwell_tc_mma
     test_lsx_kernels
     test_blackwell_micro_gemm
     PROPERTIES LABELS inference RESOURCE_LOCK "gpu")
+
+# test_blackwell_tc_mma exists only when a 12x arch is targeted (Task 12), so it
+# cannot live in the group above: set_tests_properties on an absent test is a
+# CONFIGURE ERROR, which is how an Ampere-only configure failed the first time
+# this group was reached. Its label and GPU lock are declared where it is
+# created instead.
+if(LSX_ARCH_HAS_12X)
+    set_tests_properties(test_blackwell_tc_mma
+        PROPERTIES LABELS inference RESOURCE_LOCK "gpu")
+endif()
 
 set_tests_properties(
     test_blackwell_perf_glm

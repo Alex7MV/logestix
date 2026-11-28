@@ -12,7 +12,7 @@ re-litigated per task.
 
 | Level | Guarantee | Not guaranteed |
 |---|---|---|
-| **R3 — golden** | Same build + same input + fixed PRNG seed ⇒ bit-identical `final_logits` across ≥3 runs **and across the supported GPU-model set** (e.g. RTX 5090 and RTX 5060 Ti), and the generated token sequence equals the model's expected golden sequence. | Cross-toolchain bit-identity; bit-identity on hardware outside the supported set. |
+| **R3 — golden** | Same build + same input + fixed PRNG seed ⇒ bit-identical `final_logits` across ≥3 runs **and across the supported GPU-model set of one `HardwareTarget` group** (e.g. RTX 5090 and RTX 5060 Ti, both `nvidia:sm_120`), and the generated token sequence equals the model's expected golden sequence. | Cross-toolchain bit-identity; bit-identity on hardware outside the supported set; bit-identity **across target groups** (see §1.1 item 4). |
 | **R2 — deterministic** | Same build + any supported GPU model + same input ⇒ bit-identical output across runs. No golden-token requirement. | Equality with the R3 reference; cross-toolchain. |
 | **R1 — tolerance** | Output deterministic per run; numeric deviation from the R3 reference bounded by a declared tolerance and quality-validated on an eval set. | Bit-identity; cheap regression detection. |
 
@@ -20,20 +20,45 @@ R3 is the FSI default. R2/R1 are opt-in and must never be a silent default.
 
 ### 1.1 R3 GPU-model independence — mandatory engineering requirements
 
-R3 spans GPU models in the supported set (different SM counts, clocks, board
-SKUs), so the numeric result must not depend on device properties. Mandatory for
-any C-exact kernel:
+R3 spans GPU models **within one supported target group** (different SM counts,
+clocks, board SKUs — e.g. a 5090 and a 5060 Ti, both `nvidia:sm_120`), so the
+numeric result must not depend on device properties. Mandatory for any C-exact
+kernel:
 
 1. **No heuristic/library algorithm selection.** cuBLAS/cuBLASLt heuristics may
    pick a different algorithm per device (SM count, clocks, workspace). C-exact
    paths must use our own kernels with fixed geometry, or a pinned deterministic
-   algorithm verified bit-identical across every model in the supported set.
+   algorithm verified bit-identical across every model of the target group.
 2. **Device-independent reduction trees.** Reduction/split-K geometry must not
    depend on `#SMs` / `multiProcessorCount` / clocks / occupancy APIs.
 3. **No atomics in the reduce path** (or a fixed serialization order).
-4. **No device-conditional numeric path.** TC-vs-scalar, arch-specific kernels,
-   or capability probes must not select differently across the supported models
-   (a probe may gate *perf*, never *numerics*).
+4. **No device-conditional numeric path *within a target group*.** TC-vs-scalar,
+   arch-specific kernels, or capability probes must not select differently across
+   the models of ONE `HardwareTarget` group (a probe may gate *perf*, never
+   *numerics*).
+
+   **Amended 2026-11-28 (codec contract, design §4).** A *target capability* —
+   the hardware codec set, `SupportedCodecs(HardwareTarget)` — may select a kernel
+   *family*, and therefore the arithmetic a model runs on. That is not a licence
+   for device-property dependence; it is the recognition that two devices in
+   different target groups are not asked to produce the same bits:
+
+   | pair | R3 relationship |
+   |---|---|
+   | `sm_120` ↔ `sm_121` (5090, 5060 Ti) | **one group** — R3 holds across it, unchanged by this amendment |
+   | `sm_86` ↔ `sm_87` (3090, Orin NX/Nano) | **one group** — R3 holds across it |
+   | `sm_86` ↔ `sm_120` | **not an R3 relationship** — unless both run the same codec profile. Both executing the `bf16` profile (f16/bf16 `mma.m16n8k16` with f32 accumulate, reduction geometry fixed by problem shape) IS one group; an NVFP4 artifact on one and a bf16 sibling on the other is not |
+   | `cpu:*` ↔ any GPU | not an R3 relationship (no CPU inference kernels exist) |
+
+   The rule the table encodes: **a target capability may select a kernel family;
+   within a family, no device property may select numerics.** Everything else in
+   §1.1 is unchanged — within a group, items 1, 2, 3 and 5 still bind exactly as
+   written.
+
+   Consequence for the gates: a codec profile's goldens are captured **on that
+   profile** (design §4), so an artifact's FSI/CODE/DET goldens belong to
+   `(model_type, profile)`. A profile that no golden was captured for is
+   *declared debt* (`docs/OPEN_TASKS.md`, item `K`), never an implicit pass.
 5. **Deterministic launch shapes.** Grid/block sizes fixed by problem shape, not
    by device properties.
 
@@ -45,7 +70,7 @@ Two implementation classes, named in code and in every kernel's header:
 
 - **C-exact** — every kernel preserves the R3 token output, and its logits are
   **bit-reproducible for the declared reference path** (identical across ≥3 runs
-  and across the supported GPU-model set) — not necessarily bit-equal to the
+  and across the models of one target group) — not necessarily bit-equal to the
   optional `kOff` scalar path. Allowed: bf16/fp16 activations, weight-only
   quantization, fused kernels with a strictly fixed and invariant accumulation
   order, exact-verify speculative decoding, CUDA graphs / PDL / multi-stream that
@@ -91,8 +116,10 @@ atomics in the reduce path, unseeded stochastic ops.
 - **C-exact**: the existing SelfCheck harness — golden token sequence and
   bit-identical `final_logits` across ≥3 cycles (per model, `SKIP_RETURN_CODE 4`
   without vault). Any C-exact kernel change must keep it green. **Cross-model:**
-  the harness must run on every GPU model in the supported set, with a recorded
-  cross-model diff; a kernel is C-exact only if it holds across the whole set.
+  the harness must run on every GPU model of the target group it claims, with a
+  recorded cross-model diff; a kernel is C-exact only if it holds across that
+  whole group. A claim over a SECOND group (e.g. `{sm_86, sm_87}`) is a separate
+  obligation, discharged with that group's own goldens — see §1.1 item 4.
   Exception: for speculative decoding, `final_logits` bit-identity is enforced
   only for the accepted (actually generated) tokens.
 - **C-fast**: (a) device-parity vs the C-exact path within the declared
@@ -169,15 +196,19 @@ responsible tensor — decided by the margin rule above.
 
 ## 7. Open operator decisions
 
-- Confirm the R3 supported GPU-model set. Current: {RTX 5090, RTX 5060 Ti} (both
-  sm_120). Adding a model requires cross-model selfcheck evidence and a §1.1
-  audit before the claim extends to it.
+- Confirm the R3 supported GPU-model sets. Current groups: `nvidia:sm_120`
+  {RTX 5090, RTX 5060 Ti} — measured; `nvidia:sm_86` {RTX 3090} and
+  `nvidia:sm_87` {Orin NX 16 GB, Orin Nano 8 GB} — **open**: the artifact exists
+  for neither, so the cross-model claim for that group is not yet discharged
+  (Branch 2, plan Task 16). Adding a model to a group requires cross-model
+  selfcheck evidence and a §1.1 audit before the claim extends to it.
 - Is a C-fast mode ever exposed to FSI customers, or is C-exact the only
   shippable class?
 - Approve building the quality harness (precondition for any C-fast promotion).
 
 ## 8. Non-goals
 
-- Bit-identity on hardware **outside** the supported GPU-model set.
+- Bit-identity on hardware **outside** the supported GPU-model sets, and
+  bit-identity **between** two groups whose hardware executes different codecs.
 - Batch-invariance (single-stream engine; no batch composition to be invariant
   to).

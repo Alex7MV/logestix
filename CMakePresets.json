@@ -49,6 +49,32 @@
       }
     },
     {
+      "name": "linux-release-sm86",
+      "displayName": "Ubuntu 26.04 (Ninja) - Release, RTX 3090 (Ampere sm_86)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release-sm86",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "LSX_CUDA_ARCH": "86",
+        "LSX_ARCH_ZNVER4": "OFF",
+        "LSX_LTO": "OFF"
+      }
+    },
+    {
+      "name": "jetson-orin-release",
+      "displayName": "Jetson Orin (JetPack 6.2.1, CUDA 12.6, aarch64) - Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/jetson-orin-release",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/jetson-orin.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "LSX_CUDA_ARCH": "86;87"
+      }
+    },
+    {
       "name": "linux-release-znver4",
       "displayName": "Ubuntu 26.04 (Ninja) - Release, EPYC 9V74 (Zen 4, 160t)",
       "generator": "Ninja",
@@ -97,6 +123,15 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-release-sm86",
+      "configurePreset": "linux-release-sm86"
+    },
+    {
+      "name": "jetson-orin-release",
+      "configurePreset": "jetson-orin-release",
+      "jobs": 4
     },
     {
       "name": "linux-release-znver4",
@@ -308,6 +343,126 @@
       "filter": {
         "include": {
           "label": "^fast$"
+        }
+      }
+    },
+    {
+      "name": "linux-release-sm86",
+      "configurePreset": "linux-release-sm86",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^fast$"
+        }
+      }
+    },
+    {
+      "name": "linux-release-sm86-fast",
+      "configurePreset": "linux-release-sm86",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^fast$"
+        }
+      }
+    },
+    {
+      "name": "linux-release-sm86-inference",
+      "configurePreset": "linux-release-sm86",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^inference$"
+        }
+      }
+    },
+    {
+      "name": "linux-release-sm86-convert",
+      "configurePreset": "linux-release-sm86",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^convert$"
+        }
+      }
+    },
+    {
+      "name": "linux-release-sm86-perf",
+      "configurePreset": "linux-release-sm86",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^perf$"
+        }
+      }
+    },
+    {
+      "name": "jetson-orin-release",
+      "configurePreset": "jetson-orin-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^fast$"
+        }
+      }
+    },
+    {
+      "name": "jetson-orin-release-fast",
+      "configurePreset": "jetson-orin-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^fast$"
+        }
+      }
+    },
+    {
+      "name": "jetson-orin-release-inference",
+      "configurePreset": "jetson-orin-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^inference$"
+        }
+      }
+    },
+    {
+      "name": "jetson-orin-release-convert",
+      "configurePreset": "jetson-orin-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^convert$"
+        }
+      }
+    },
+    {
+      "name": "jetson-orin-release-perf",
+      "configurePreset": "jetson-orin-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "^perf$"
         }
       }
     },
