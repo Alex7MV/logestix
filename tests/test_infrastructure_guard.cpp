@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -17,6 +19,12 @@ namespace fs = std::filesystem;
 
 #ifndef LSX_SOURCE_DIR
 #define LSX_SOURCE_DIR "."
+#endif
+
+// Injected by tests/CMakeLists.txt: the cmake that configured this build, so the
+// probe uses the same binary (and the same version) the validator lives in.
+#ifndef LSX_CMAKE_COMMAND
+#define LSX_CMAKE_COMMAND "cmake"
 #endif
 
 namespace {
@@ -498,9 +506,15 @@ std::vector<int> FindFamilySuffixInArch(const std::string &text)
             if (arg.size() >= 2 && arg.front() == '"' && arg.back() == '"')
                 arg = arg.substr(1, arg.size() - 2);
             // Any family spelling (120f / 121f / 120f-real) reaching this
-            // property is the silent-downgrade bug.
+            // property is the silent-downgrade bug. So is a suffixed Ampere
+            // arch: sm_86f/sm_87a do not exist, and if one reached this property
+            // CMake 4.x would mangle it exactly as it mangles `120f`. Plain
+            // `86`/`87` are legitimate in CUDA_ARCHITECTURES (CMake knows them),
+            // so only the SUFFIXED form is flagged — the rule is about the
+            // suffix, not about the arch family.
             if (arg == "OFF") { begin = m.suffix().first; continue; }
-            static const std::regex fam(R"((^|[^0-9])(12[01][af]?f)([^0-9]|$))");
+            static const std::regex fam(
+                R"((^|[^0-9])(12[01][af]?f|8[67][af])([^0-9]|$))");
             if (std::regex_search(arg, fam)) hits.push_back(line_no);
             begin = m.suffix().first;
         }
@@ -514,10 +528,16 @@ std::vector<int> FindFamilySuffixInArch(const std::string &text)
 // exactly that while the rest of the tree moved to `f`). Two spellings are
 // legitimate and stay literal: `compute_12xa` (architecture-specific, required
 // by tcgen05 in lsx_tc_gemm.cu) and `compute_12xf` (the family form itself).
+//
+// Ampere is in the pattern for the same reason the family suffix is: the moment
+// 86/87 became supported values, `--generate-code=arch=compute_86` became a way
+// to opt one target out of LSX_CUDA_ARCH without anyone noticing. The scanner
+// matched only `compute_(12[0-9])` while Ampere was unsupported, which was true
+// then and is a hole now.
 std::vector<int> FindNonFamilyGencodeLiterals(const std::string &text)
 {
     static const std::regex lit(
-        R"(--generate-code=arch=compute_(12[0-9])([af]?),code=)");
+        R"(--generate-code=arch=compute_(12[0-9]|8[67])([af]?),code=)");
     std::vector<int> hits;
     int line_no = 0;
     for (const auto &line : Lines(StripHashComments(text))) {
@@ -532,6 +552,51 @@ std::vector<int> FindNonFamilyGencodeLiterals(const std::string &text)
         }
     }
     return hits;
+}
+
+// ── The arch validator, exercised for real ────────────────────────────────
+//
+// Everything above in this file INSPECTS CMake text. That is the right tool for
+// "nobody spelled a literal gencode flag", and the wrong tool for "does the
+// validator accept 86". A scanner cannot answer the second question: it passed
+// for two years while `^12[01][af]?$` still rejected every Ampere arch, because
+// finding the string "12[01]" is not evaluating it.
+//
+// So this runs the function itself, through `cmake -P`, and reports its exit
+// code plus combined stdout/stderr. The probe script includes the SAME module
+// the build includes — one copy of the pattern, so this test cannot go green
+// against a stale duplicate (which is exactly how a hand-copied regex drifts).
+struct ArchProbe {
+    int rc = -1;
+    std::string out;      // stdout + stderr, as the operator would see it
+};
+
+ArchProbe ProbeArch(const std::string &arch)
+{
+    ArchProbe r;
+    const fs::path script =
+        fs::path(LSX_SOURCE_DIR) / "tests" / "cmake" / "probe_arch.cmake";
+    const fs::path module = fs::path(LSX_SOURCE_DIR) / "cmake" / "LsxArch.cmake";
+    const std::string cmd = std::string("\"") + LSX_CMAKE_COMMAND + "\" -D PROBE_ARCH=\"" +
+                            arch + "\" -D LsxArch=\"" + module.string() +
+                            "\" -P \"" + script.string() + "\" 2>&1";
+#if defined(_WIN32)
+    FILE *pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE *pipe = popen(cmd.c_str(), "r");
+#endif
+    if (pipe == nullptr) return r;
+    char buf[512];
+    while (std::fgets(buf, sizeof(buf), pipe) != nullptr) r.out += buf;
+#if defined(_WIN32)
+    r.rc = _pclose(pipe);
+#else
+    const int status = pclose(pipe);
+    // WEXITSTATUS without <sys/wait.h>: a plain shell exit code is what cmake
+    // reports, and the low byte carries it.
+    r.rc = (status >> 8) & 0xff;
+#endif
+    return r;
 }
 
 TEST_CASE("infra guard: family arch suffix scanner", "[guard][infra]")
@@ -598,4 +663,117 @@ TEST_CASE("infra guard: gencode-literal scanner", "[guard][infra]")
               "--generate-code=arch=compute_120f,code=[compute_120f,sm_120f]")
               .empty());
     CHECK(FindNonFamilyGencodeLiterals("${LSX_CUDA_GENCODE_FLAGS}").empty());
+}
+
+// ── Task 11: Ampere is a build target ──────────────────────────────────────
+//
+// `LSX_CUDA_ARCH=86;87` must configure AND emit both real SASS images. The
+// assertions name the flags the function actually produces
+// (`--generate-code=arch=compute_86,code=[compute_86,sm_86]`): what has to be
+// true is that each arch is requested as a virtual arch AND that its SASS is
+// named, because a PTX-only entry still "works" through JIT — far slower than
+// the SASS it silently replaced, which is the failure mode this whole mechanism
+// exists to prevent.
+
+TEST_CASE("infra guard: the arch validator accepts 86;87 and emits both SASS",
+          "[guard][infra][arch]")
+{
+    const ArchProbe r = ProbeArch("86;87");
+    INFO(r.out);
+    INFO("exit=" << r.rc);
+    REQUIRE(r.rc == 0);
+    CHECK(r.out.find("arch=compute_86") != std::string::npos);
+    CHECK(r.out.find("arch=compute_87") != std::string::npos);
+    // The real image, per arch — not just the virtual one.
+    CHECK(r.out.find("sm_86") != std::string::npos);
+    CHECK(r.out.find("sm_87") != std::string::npos);
+}
+
+TEST_CASE("infra guard: the Blackwell default still expands unchanged",
+          "[guard][infra][arch]")
+{
+    // Regression in both directions: widening the pattern must not alter what
+    // the shipped default emits. Same shape as before Task 11.
+    const ArchProbe r = ProbeArch("120;121");
+    INFO(r.out);
+    REQUIRE(r.rc == 0);
+    CHECK(r.out.find("arch=compute_120") != std::string::npos);
+    CHECK(r.out.find("sm_120") != std::string::npos);
+    CHECK(r.out.find("arch=compute_121") != std::string::npos);
+    CHECK(r.out.find("sm_121") != std::string::npos);
+    // Family spellings are still accepted on 12x (the tcgen05 experiment).
+    const ArchProbe fam = ProbeArch("120f;121f");
+    INFO(fam.out);
+    CHECK(fam.rc == 0);
+    CHECK(fam.out.find("sm_120f") != std::string::npos);
+}
+
+TEST_CASE("infra guard: a forbidden arch is still refused, and says why",
+          "[guard][infra][arch]")
+{
+    // Hopper, Ada and Ampere's datacenter sibling stay out (AGENTS.md); so do
+    // architectures no shipped toolkit can emit. Each must fail with a reason an
+    // operator can act on, not a bare "not supported".
+    for (const char *arch : {"90", "89", "80", "75", "100"}) {
+        INFO("arch=" << arch);
+        const ArchProbe r = ProbeArch(arch);
+        INFO(r.out);
+        CHECK(r.rc != 0);
+        CHECK(r.out.find("supported") != std::string::npos);
+        // And it names what IS supported, including the Ampere rows.
+        CHECK(r.out.find("86") != std::string::npos);
+        CHECK(r.out.find("87") != std::string::npos);
+    }
+}
+
+TEST_CASE("infra guard: an Ampere arch refuses the 12x-only suffixes",
+          "[guard][infra][arch]")
+{
+    // There is no sm_86a and no sm_86f: GA10x has no family-specific target and
+    // no tcgen05. Accepting the suffix here would hand nvcc an arch it rejects
+    // with a message about the toolkit rather than about the spelling.
+    for (const char *arch : {"86a", "86f", "87a", "87f"}) {
+        INFO("arch=" << arch);
+        const ArchProbe r = ProbeArch(arch);
+        INFO(r.out);
+        CHECK(r.rc != 0);
+        CHECK(r.out.find("suffix") != std::string::npos);
+    }
+    // A mixed list fails on the offending entry, not silently on the list.
+    const ArchProbe mixed = ProbeArch("87;86f");
+    INFO(mixed.out);
+    CHECK(mixed.rc != 0);
+}
+
+TEST_CASE("infra guard: a gencode literal that names an Ampere arch is caught",
+          "[guard][infra][arch]")
+{
+    // The scanner used to match only `compute_(12[0-9])`, so a target that
+    // spelled `--generate-code=arch=compute_86` by hand bypassed LSX_CUDA_ARCH
+    // entirely — the same bypass the 12x scanner was written for, newly
+    // reachable the moment 86 became a supported value.
+    CHECK(FindNonFamilyGencodeLiterals(
+              "--generate-code=arch=compute_86,code=sm_86")
+              .size() == 1);
+    CHECK(FindNonFamilyGencodeLiterals(
+              "--generate-code=arch=compute_87,code=[compute_87,sm_87]")
+              .size() == 1);
+    // A family suffix on an Ampere arch is refused by the validator, so the
+    // scanner does not need to special-case it — but it must not flag the
+    // sanctioned 12x spellings either.
+    CHECK(FindNonFamilyGencodeLiterals(
+              "--generate-code=arch=compute_121a,code=sm_121a")
+              .empty());
+}
+
+TEST_CASE("infra guard: a family suffix on an Ampere arch is flagged in "
+          "CUDA_ARCHITECTURES",
+          "[guard][infra][arch]")
+{
+    // `86f` does not exist, but if it ever reached CUDA_ARCHITECTURES CMake 4.x
+    // would mangle it the way it mangles `120f`. Flag the suffix, not the plain
+    // arch: `CUDA_ARCHITECTURES 86` is a legitimate CMake spelling.
+    CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES 86f").size() == 1);
+    CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES \"86f;87f\"").size() == 1);
+    CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES \"86;87\"").empty());
 }

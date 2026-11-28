@@ -9,48 +9,26 @@ project(logestix
 find_package(CUDAToolkit REQUIRED)
 
 # ── CUDA codegen ─────────────────────────────────────────────────────────────
-# Blackwell-only: CC 12.0 / 12.1. One source of truth for every target that
-# emits device code (library OBJECT libs, apps, tests, helpers); pre-Blackwell
-# arches are deliberately unsupported (AGENTS.md). Override the cache entry only
-# for a local experiment, never in a shipped preset.
+# Target architectures, one source of truth: `cmake/LsxArch.cmake` holds the
+# accepted set and the expansion into nvcc's own spelling, and every device
+# target (library OBJECT libs, apps, tests, helpers) consumes the result below.
 #
-# One source of truth for device codegen, expanded into nvcc's own spelling.
+# Accepted: 120/121 (Blackwell consumer) and 86/87 (Ampere GA10x — RTX 3090 and
+# Jetson Orin). Blackwell-only code paths stay behind their own `prop.major == 12`
+# probes, so an 86;87 build is a real build of the same tree rather than a
+# degraded one; `120f`/`121f` remain one-variable experiments. Hopper (90), Ada
+# (89) and the Ampere datacenter sibling (80) are refused (AGENTS.md).
 #
-# Why not simply `set_target_properties(... CUDA_ARCHITECTURES ${LSX_CUDA_ARCH})`:
-# 30 test targets used to spell `--generate-code=arch=compute_120,code=sm_120` by
-# hand, bypassing this variable entirely, so the arch was in 31 places. Expanding
-# here keeps it in one, and the expansion is also the only way to express CUDA's
-# family-specific targets (`120f`/`121f`): CMake 4.x does not know the suffix and,
-# measured on 4.2.3, silently replaces the whole list with `compute_75` — a binary
-# that still runs through PTX JIT and is slower than the plain sm_120 it replaced,
-# warning about nothing. `test_infrastructure_guard` rejects the suffix in
-# CUDA_ARCHITECTURES and any literal --generate-code outside this function.
-#
-# The default is the PLAIN spelling because the family-specific targets were
-# measured to be neutral here (2026-11-05, see
+# The default is the PLAIN Blackwell spelling because the family-specific targets
+# were measured to be neutral here (2026-11-05, see
 # docs/superpowers/specs/2026-11-05-cuda-13.5-adoption-design.md): every NVFP4
 # decode path in this repository is weight-streaming bound, so a cheaper E2M1
 # instruction buys nothing. `-DLSX_CUDA_ARCH=120f;121f` is a one-variable
 # experiment for a compute-bound case (a long prefill, say).
 set(LSX_CUDA_ARCH "120;121" CACHE STRING
-    "CUDA architectures (Blackwell CC 12.0/12.1; `120f;121f` for family-specific)")
+    "CUDA target architectures: 120/121 (Blackwell), 86/87 (Ampere); 120f/121f for Blackwell family-specific")
 
-function(lsx_cuda_gencode_flags out_var)
-    set(flags "")
-    foreach(arch IN LISTS LSX_CUDA_ARCH)
-        if(NOT arch MATCHES "^12[01][af]?$")
-            message(FATAL_ERROR
-                "LSX_CUDA_ARCH entry '${arch}' is not a Blackwell consumer "
-                "target (expected 120, 121, 120f or 121f): pre-Blackwell "
-                "arches are deliberately unsupported (AGENTS.md).")
-        endif()
-        # Same shape CMake emits for `<N>-real`: PTX for the virtual arch plus
-        # the SASS for the real one.
-        list(APPEND flags
-            "--generate-code=arch=compute_${arch},code=[compute_${arch},sm_${arch}]")
-    endforeach()
-    set(${out_var} "${flags}" PARENT_SCOPE)
-endfunction()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LsxArch.cmake")
 lsx_cuda_gencode_flags(LSX_CUDA_GENCODE_FLAGS)
 
 # ── Toolkit consistency guard (docs/open-tasks/2026-09-30-..., item G1) ──────────

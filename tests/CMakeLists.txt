@@ -4592,7 +4592,11 @@ lsx_copy_arrow_dlls(test_qwen_moe_exp_eos_selfcheck)
 # Guard: infrastructure centralization (dependency paths, shared helpers,
 # CUDA arch). Host-only static scan, see spec 2026-11-03.
 lsx_add_test(NAME test_infrastructure_guard
-    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+    DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+           # The cmake that configured this tree: the arch-validator probe runs
+           # the real cmake/LsxArch.cmake through it, so the test and the build
+           # cannot disagree about which pattern is in force.
+           "LSX_CMAKE_COMMAND=\"${CMAKE_COMMAND}\"")
 # Guard: model independence — unique frozen passports, no cross-model
 # geometry borrowing (host-only, no lsxcommon deps).
 lsx_add_test(NAME test_model_independence_guard

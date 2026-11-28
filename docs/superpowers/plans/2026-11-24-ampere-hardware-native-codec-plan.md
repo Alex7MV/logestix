@@ -101,7 +101,7 @@ started` = no commit, no code.
 | 9a | bootstrap conversion | **done, not as written** | `7575c87e` | 3 `nvfp4` artifacts, no `bf16`; slice never grew → **9f** |
 | 9b | per-layer codec map leaves the index | **done** | `a7873320` + `132b683c` | `layer_codec[]` is now per-layer, derived by the scan |
 | 10 | `MemoryModel` in the governor | **done** | `8effeaf4` | probed `prop.integrated`; one pool on unified |
-| 11 | `LSX_CUDA_ARCH` accepts Ampere | **not started** | — | `CMakeLists.txt:38-53` |
+| 11 | `LSX_CUDA_ARCH` accepts Ampere | **done** | `HEAD~0` | validator moved to `cmake/LsxArch.cmake`; both SASS proven in the fatbin |
 | 12 | arch-`a` object libs only for 12x | **not started** | — | `libs/lsxcommon/CMakeLists.txt:651-671`, `tests/CMakeLists.txt:1440-1460` |
 | 13 | toolchain-agnostic toolkit guard | **not started** | — | `test_cuda_toolkit_guard.cu:5,50-51,95-97` |
 | 14 | Ampere presets + degradation audit | **not started** | — | `CMakePresets.json:10-75` has no `86`; no `cmake/toolchains/` |
@@ -1966,7 +1966,49 @@ live 3090 acceptance. **No new GEMM** (operator option c).
 
 ### Task 11: `LSX_CUDA_ARCH` accepts Ampere and emits both SASS
 
-> **NOT STARTED (2026-11-28).** The validator is `CMakeLists.txt:38-53`: one regex
+> **DONE.** `-DLSX_CUDA_ARCH=86;87` configures the whole tree and every device
+> target emits BOTH SASS images. Verified three ways, because "the validator
+> accepts it" is not "the binary can run on a 3090":
+>
+> 1. **The validator itself**, through `cmake -P tests/cmake/probe_arch.cmake`
+>    (a new `fast` guard case): `86;87` → `--generate-code=arch=compute_86,
+>    code=[compute_86,sm_86]` **and** the 87 twin; `120;121` and `120f;121f`
+>    unchanged; `90/89/80/75/100` refused naming what IS supported; `86a/86f/
+>    87a/87f` refused with a suffix-specific reason.
+> 2. **A real configure** of this repository with `-DLSX_CUDA_ARCH=86;87`
+>    (FetchContent sources reused, `BUILD_TESTING=OFF`): exit 0, and the
+>    generated `build.ninja` carries both gencode entries.
+> 3. **A real object built from it** — `lsx_dense_inference.cu.o` from the 86;87
+>    tree: `cuobjdump --list-elf` reports `…sm_86.cubin` and `…sm_87.cubin`.
+>
+> **As built, differs from the text below:**
+>
+> - The pattern, the suffix rule and the expansion moved into **one module,
+>   `cmake/LsxArch.cmake`**; the root `CMakeLists.txt` keeps the cache default
+>   (`120;121`, unchanged) and calls into it. Reason: the guard test must run the
+>   REAL validator, and a text scan of the pattern cannot — it passed for two
+>   years while `^12[01][af]?$` rejected every Ampere arch, because "contains
+>   12[01]" is not "accepts 86". This is the single-file rule Task 14 asks for,
+>   done here because the test needs it.
+> - `lsx_arch_problem(arch out_var)` is split out of the FATAL so the probe and
+>   the build share the RULE while reporting it differently.
+> - `lsx_cuda_gencode_flags()` gained an optional `ARCH_LIST` so a probe can ask
+>   about an arch it does not want to build.
+> - An empty `LSX_CUDA_ARCH` is now its own error rather than a silent no-op.
+> - The guard's two scanners widened: `FindNonFamilyGencodeLiterals` matches
+>   `compute_(12[0-9]|8[67])` (a hand-spelled `compute_86` was the new bypass the
+>   moment 86 became supported), and `FindFamilySuffixInArch` flags a suffixed
+>   Ampere arch (`86f`) while leaving plain `CUDA_ARCHITECTURES 86` legitimate —
+>   the rule is about the suffix CMake 4.x mangles, not about the family.
+>
+> **What this task does NOT fix, deliberately:** `lsxcommon_tc_cu` still emits
+> `sm_120a`/`sm_121a` unconditionally, so an 86;87 build compiles that object lib
+> for an arch it does not target. It LINKS and is unreachable (its symbols sit
+> behind `prop.major == 12` probes), and CUDA 13.5 accepts `compute_120a`, so the
+> configure and build above are real. On a pre-12.0 toolkit it would fail there —
+> which is exactly **Task 12**, now the next thing Branch 2 needs.
+>
+> **Original note, for the record:** The validator is `CMakeLists.txt:38-53`: one regex
 > `^12[01][af]?$`, a FATAL naming Blackwell only, and
 > `--generate-code=arch=compute_${arch},code=[compute_${arch},sm_${arch}]` per
 > entry. A `86;87` configure fails today with the Blackwell-only message.
@@ -1990,10 +2032,12 @@ live 3090 acceptance. **No new GEMM** (operator option c).
 > - Suggested regex: `^(12[01][af]?|8[67])$`, FATAL text
 >   *"supported: 120/121 (Blackwell consumer), 86 (GA102), 87 (GA10B)"*.
 
-**Files:**
-- Modify: `CMakeLists.txt:35-54`
-- Modify: `tests/test_infrastructure_guard.cpp` (its expectations mention `12[01]`)
-- Test: `tests/test_infrastructure_guard.cpp` (extend, label `fast`)
+**Files (as built):**
+- Create: `cmake/LsxArch.cmake` — accepted set, suffix rule, gencode expansion
+- Modify: `CMakeLists.txt` — keep the `120;121` default, `include()` the module
+- Modify: `tests/test_infrastructure_guard.cpp` — both scanners widened
+- Create: `tests/cmake/probe_arch.cmake` — the `cmake -P` entry point the guard runs
+- Test: `tests/test_infrastructure_guard.cpp` (6 new `[arch]` cases, label `fast`)
 
 - [ ] **Step 1: Failing test** — a CMake-level test that configures a scratch binary
   dir with `-DLSX_CUDA_ARCH=86;87` and asserts configure succeeds and the emitted
