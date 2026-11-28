@@ -20,6 +20,12 @@ PROMPTS = os.path.join(HERE, "fsi_prompts.json")
 # `device`: "cuda" / "cpu" / None (auto: cuda when the full checkpoint fits in
 # free VRAM, else cpu). `dtype`: torch dtype name or None (checkpoint default).
 OVERRIDES = {
+    # gemma-4-12B-it (`gemma4_unified` wrapper): the whole 24 GB BF16 tree fits
+    # the 32 GB card, so the oracle loads the checkpoint itself rather than a
+    # text-tower subset. AutoModelForCausalLM has no mapping for
+    # Gemma4UnifiedForConditionalGeneration, hence the dedicated loader.
+    "gemma-4-12b-it": {"loader": "gemma4_unified", "device_map": "auto"},
+
     # Muse-Glimmer-30B: the 59.5 GB BF16 multimodal tree does not fit the 32 GB
     # card; tools/muse_golden_oracle.py loads ONLY the text tower (language_model
     # + lm_head, skipping the 809 vision tensors) onto the 750 GB host CPU.
@@ -739,6 +745,14 @@ def capture(model, model_type, out, max_new_tokens, device_map=None,
         import dory_oracle
         lm = dory_oracle.load(model, opts.get("device_map"))
         print("device:", next(lm.parameters()).device)
+    elif opts.get("loader") == "gemma4_unified":
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import gemma4_unified_oracle
+        lm = gemma4_unified_oracle.load(model, opts.get("device_map"))
+        # No capture-side framing facts: the family template and the tokenizer
+        # are byte-identical to the 31B's, so the golden is the plain render.
+        opts.update(gemma4_unified_oracle.capture_opts())
+        print("device:", next(lm.parameters()).device, file=sys.stderr)
     elif opts.get("loader") == "muse_text":
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import muse_golden_oracle

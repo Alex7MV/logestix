@@ -64,6 +64,16 @@ const PerfModel kGemmaDense = {
     "Write a detailed long essay about the history of computing, from "
     "Babbage to modern GPUs.",
     2048};
+// Gemma-4-12B-it (dense, `gemma4_unified` wrapper): the same 2048-token essay
+// protocol as its siblings. Decode t/s is read-bound for a dense family, so the
+// number is a direct function of resident bytes and the number of layers, and
+// comparing it against the 31B's 47.6 t/s is only meaningful at the same
+// max_gen/prompt pair.
+const PerfModel kGemma12B = {
+    "gemma-4-12b-it",
+    "Write a detailed long essay about the history of computing, from "
+    "Babbage to modern GPUs.",
+    2048};
 const PerfModel kGlmFlash = {
     "glm-5.3-flash", "The capital of France is", 2048};
 // glm-5.2 and qwen3.5-9b are registered but not present in the local vault:
@@ -598,6 +608,11 @@ TEST_CASE("perf baseline: gemma-4-26b-a4b-it", "[perf]")
 TEST_CASE("perf baseline: gemma-4-31b-it", "[perf]")
 {
     RunPerfModel(kGemmaDense);
+}
+
+TEST_CASE("perf baseline: gemma-4-12b-it", "[perf]")
+{
+    RunPerfModel(kGemma12B);
 }
 
 TEST_CASE("perf baseline: glm-5.3-flash", "[perf]")

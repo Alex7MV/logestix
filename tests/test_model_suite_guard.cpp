@@ -770,6 +770,12 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // BYTE-IDENTICAL to the 26B's, so the shared gemma codec target proves
         // the render+parse round-trip for both.
         {"gemma-4-31b-it", {"test_gemma_tool_framing"}},
+        // The 12B (gemma4_unified) ships the SAME chat_template.jinja as the
+        // 31B (byte-identical, sha256-verified at stage 0) and a tokenizer.json
+        // with the same added_tokens, so the shared gemma codec target proves
+        // its render+parse round-trip too. The runtime glue is shared, not
+        // copied: gemma_dense_model.cpp inherits it for both classes.
+        {"gemma-4-12b-it", {"test_gemma_tool_framing"}},
         {"kimi-k2.7-code", {"test_kimi_tool_framing"}},
         {"ornith-1.5-35b-a3b", {"test_qwen_tool_framing"}},
         {"phi-4", {"test_phi_tool_framing"}},

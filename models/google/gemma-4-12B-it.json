@@ -1,0 +1,138 @@
+{
+  "model_type": "gemma-4-12b-it",
+  "display_name": "gemma-4-12b-it",
+  "family": "gemma",
+  "variant": "12b",
+  "model_class": "Gemma4_12BDenseModel",
+  "model_header": "gemma_dense_12b_model.h",
+  "passport": "libs/lsxcommon/include/lsxcommon/gemma_dense_12b_constants.h",
+  "namespace": "lsxcommon::gemma_dense_12b::frozen",
+  "format_tag": "",
+  "forge_flag": "--gemma4dense",
+  "tokenizer_kind": 11,
+  "vault": {
+    "org": "google",
+    "dir": "gemma-4-12B-it",
+    "env": "LSX_TEST_GEMMA_4_12B_IT_ROOT"
+  },
+  "preferred_profile": "nvfp4",
+  "profiles": {
+    "nvfp4": {
+      "status": "built",
+      "artifact": {
+        "sha256": "304a2760d4bc77c21da1bbca501875ffd553dceba4ccda769d598556d175499e",
+        "bytes": 7024,
+        "tree_bytes": 12876647783,
+        "planes": 52,
+        "store": "google/gemma-4-12B-it/nvfp4"
+      },
+      "codecs": [
+        "bf16",
+        "nvfp4"
+      ],
+      "codec_mask": 34,
+      "target": "nvidia:sm_120",
+      "gates": {
+        "selfcheck": {
+          "result": "pass",
+          "cycles": 3,
+          "top1_token": 818,
+          "text": "The capital of France is **Paris**.",
+          "logits_hash": "31d7a1672d89ccdc",
+          "date": "2026-11-28"
+        },
+        "fsi": {
+          "result": "fail",
+          "cases": "2/3",
+          "failed": "FSI-TEST-02",
+          "cause": "source-model near-tie: the SOURCE itself prefers '1' (21.61) over 'Rate' (21.05) at the fork, a 0.556-logit margin, so the answer is a coin flip that the engine's ~8-bit body error can move. Not a kernel defect (host relL2 0.0926 -> 0.0049 with the residual plane).",
+          "date": "2026-11-28"
+        },
+        "code": {
+          "result": "pass",
+          "cases": "3/3",
+          "date": "2026-11-28"
+        },
+        "det": {
+          "result": "pass",
+          "cases": "3/3",
+          "deterministic": true,
+          "date": "2026-11-28"
+        }
+      }
+    }
+  },
+  "lifecycle_tu": [
+    "gemma_dense_12b_model.cpp",
+    "gemma_dense_model.cpp",
+    "gemma_dense_inference.cu"
+  ],
+  "stages": {
+    "convert": [
+      "test_gemma_dense_convert"
+    ],
+    "load": [
+      "test_gemma_dense_loader"
+    ],
+    "model": [
+      "test_gemma_dense_12b_model"
+    ],
+    "kernels": [
+      "test_gemma_dense_kernels"
+    ],
+    "selfcheck": [
+      "test_gemma_dense_12b_selfcheck"
+    ],
+    "fsi": [
+      "test_gemma_dense_12b_fsi_selfcheck"
+    ],
+    "code": [
+      "test_gemma_dense_12b_code_selfcheck"
+    ],
+    "det": [
+      "test_gemma_dense_12b_det_selfcheck"
+    ],
+    "perf": [
+      "test_perf_baseline_gemma_4_12b_it"
+    ]
+  },
+  "perf": {
+    "target": "test_perf_baseline_gemma_4_12b_it",
+    "timeout": 1200
+  },
+  "target_overrides": {
+    "test_gemma_dense_convert": {
+      "env": []
+    },
+    "test_gemma_dense_loader": {
+      "skip": false
+    },
+    "test_gemma_dense_kernels": {
+      "skip": false
+    },
+    "test_gemma_dense_12b_fsi_selfcheck": {
+      "form": "parity",
+      "kind": "fsi"
+    },
+    "test_gemma_dense_12b_code_selfcheck": {
+      "form": "parity",
+      "kind": "code"
+    },
+    "test_gemma_dense_12b_det_selfcheck": {
+      "form": "parity",
+      "kind": "det"
+    },
+    "test_gemma_dense_12b_selfcheck": {
+      "form": "selfcheck"
+    }
+  },
+  "tool_roundtrip": true,
+  "auto_path_determinism": false,
+  "golden_debt": {},
+  "report": "docs/model-reports/2026-11-28-Gemma-4-12B-IT.md",
+  "notes": "Dense sibling of gemma-4-31b-it in the `gemma4_unified` wrapper: 48 layers, 3840 wide; vision_embedder + audio stripped.",
+  "cooperative_cancel": true,
+  "selfcheck_max_gen": 2,
+  "selfcheck_bit_exact": false,
+  "selfcheck_frame_prompt": false
+}
