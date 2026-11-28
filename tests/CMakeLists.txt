@@ -1612,8 +1612,14 @@ lsx_add_test(NAME test_dense_bf16_load LABEL inference
     INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}"
     DEFINE "TOKENIZER_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\""
     TIMEOUT 600)
+# The fixtures are tiny synthetic geometry, so the frozen passports have to be
+# relaxed for the CONVERSION step — a runtime ENV, never a compile define
+# (tests/test_gigachat4_fixture.h). Without it the dory case fails as
+# "hidden_size is 64 in the checkpoint, the passport pins 2560", which is the
+# passport doing its job rather than a broken test.
 set_tests_properties(test_dense_bf16_load
-    PROPERTIES RESOURCE_LOCK "gpu" SKIP_RETURN_CODE 4)
+    PROPERTIES RESOURCE_LOCK "gpu" SKIP_RETURN_CODE 4
+               ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 lsx_add_test(NAME test_codec_profile_convert LABEL convert
     LINK lsxcommon lsxstorage
@@ -1625,7 +1631,8 @@ lsx_add_test(NAME test_codec_profile_convert LABEL convert
 # Convert targets carry a TIMEOUT (a converter that hangs must not hold the GPU
 # lock for the whole sweep); 300 s is generous for four 2-layer fixtures.
 set_tests_properties(test_codec_profile_convert
-    PROPERTIES RESOURCE_LOCK "gpu" TIMEOUT 300)
+    PROPERTIES RESOURCE_LOCK "gpu" TIMEOUT 300
+               ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 lsx_add_test(NAME test_arch_support_guard LABEL fast LINK lsxcommon
     DEFINE "LSX_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
