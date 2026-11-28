@@ -99,8 +99,8 @@ started` = no commit, no code.
 | 8 | `--codec-profile` + emitter wired | **residue** | `1b8f324b` | emitter skipped for the default profile → **8a** |
 | 9 | admission gate in `BeginLoad` | **residue** | `b4c05cb1` | 5 stages; profile choice not target-aware → **9e** |
 | 9a | bootstrap conversion | **done, not as written** | `7575c87e` | 3 `nvfp4` artifacts, no `bf16`; slice never grew → **9f** |
-| 9b | per-layer codec map leaves the index | **partial** | `a7873320` | `layer_codec[]` + `LayerUsesCodec` exist; index keys still written/read → **9d** |
-| 10 | `MemoryModel` in the governor | **not started** | — | `resource_governor.h:12-20,181` |
+| 9b | per-layer codec map leaves the index | **done** | `a7873320` + `132b683c` | `layer_codec[]` is now per-layer, derived by the scan |
+| 10 | `MemoryModel` in the governor | **done** | `8effeaf4` | probed `prop.integrated`; one pool on unified |
 | 11 | `LSX_CUDA_ARCH` accepts Ampere | **not started** | — | `CMakeLists.txt:38-53` |
 | 12 | arch-`a` object libs only for 12x | **not started** | — | `libs/lsxcommon/CMakeLists.txt:651-671`, `tests/CMakeLists.txt:1440-1460` |
 | 13 | toolchain-agnostic toolkit guard | **not started** | — | `test_cuda_toolkit_guard.cu:5,50-51,95-97` |
@@ -113,11 +113,11 @@ started` = no commit, no code.
 | 20 | W8A16 prefill GEMM | **not started** | — | — |
 | 21 | per-profile goldens | **not started** | — | — |
 | 22 | 3090 + Orin acceptance | **not started** | — | — |
-| 8a | flagless conversion publishes an artifact | **new, not started** | — | defect F6 |
-| 8b | eight converters stop writing `mtp/` | **new, not started** | — | defect F10; blocks every MoE conversion |
-| 9c | expert plane declares its codec | **new, not started** | — | defect F3; blocks 15/18 |
-| 9d | rule 5 enforced; index-codec readers gone | **new, not started** | — | defect F4 |
-| 9e | target-aware profile selection + `--explain-artifact` | **new, not started** | — | defect F5, open task `V` |
+| 8a | flagless conversion publishes an artifact | **done** | `04fecd45` | `ResolveCodecProfile`; emitter runs on every conversion |
+| 8b | eight converters stop writing `mtp/` | **done** | `04fecd45` | all 8; drops are counted in the index |
+| 9c | expert plane declares its codec | **done** | `85307f87` | `ExpertSchema` gains a trailing `dtype` (10 cols) |
+| 9d | rule 5 enforced; index-codec readers gone | **done** | `132b683c` | `--verify` refuses the 5 keys; 0 readers left |
+| 9e | target-aware profile selection + `--explain-artifact` | **done** | `dc19aed9` | `SelectProfile`; `lsxfabric --explain-artifact` |
 | 9f | grow the artifact store + registry/store guard | **new, not started** | — | defect F1/F7/F8 |
 
 ## Global Constraints
@@ -1050,6 +1050,12 @@ TEST_CASE("a conversion that cannot fit on disk is refused before it writes") {
 
 ### Task 8a: The flagless conversion must still publish an artifact
 
+> **DONE (`04fecd45`).** `ResolveCodecProfile()` collapses `kDefault` into
+> `kNvFp4`, the emitter runs unconditionally, and an explicit `--codec-profile`
+> still decides the destination (store profile dir vs `--output`). Measured: a
+> flagless dory conversion wrote `artifact.fb` (mask 34, 147 planes) and
+> `--verify` reported declared=34 actual=34, problems=0.
+
 **Why this is a defect, not a preference.** `artifact.fb` is mandatory at load
 (`Global Constraints`, §0.2), yet `lsxforge --phi --input <src>` — the shape in
 every pre-contract runbook, the shape `ABSL_FLAG(output, "converted_model")`
@@ -1106,6 +1112,13 @@ TEST_CASE("the declared planes of the default profile are nvfp4's") {
 - [ ] **Step 5: Commit** — `fix: a flagless conversion publishes an nvfp4 artifact instead of a tree nothing can load`
 
 ### Task 8b: The eight converters that still write `mtp/` must stop
+
+> **DONE (`04fecd45`).** All eight (alice, gigachat ×2, mimo, ornith, qwen_moe,
+> qwen_moe_exp, xing, plus gigachat-708b's test). The dropped tensors are
+> COUNTED (`dropped_mtp_tensors` / a log field), because a silent drop is data
+> loss nobody can audit. `grep -rn mtp_dir libs/` is empty. Alice's fixture
+> gained `WriteAliceConfigJson(mtp_layers)` / `WriteAliceShard(with_mtp)` — its
+> MTP path had no test at all, so the fix would otherwise be unverified.
 
 **Why this blocks the artifact path for MoE families.** `VerifyArtifact` and
 `ScanArtifactTree` accept content only under `pinned|experts|router|shared|ple`
@@ -1513,6 +1526,13 @@ TEST_CASE("a mixed-layer artifact is still gated as a whole") {
 
 ### Task 9c: An expert plane declares its codec — the verifier may not assume NVFP4
 
+> **DONE (`85307f87`).** `PackedExpert::dtype` (default `NVFP4`) is written as a
+> trailing `dtype` field of `ExpertSchema`/`SharedExpertSchema` (10 columns; the
+> nine indices are a wire contract for the .cu staging offsets, so the column was
+> appended, not prepended). `PackExpertNVFP4` sets `F8_E4M3` on the verbatim MXFP8
+> passthrough, both inkling converters say so for their 8-bit layers, and the
+> verifier reads the codec from that column — refusing the 9-column form outright.
+
 **Why this blocks Branches 2 and 3.** `VerifyArtifact` and `ScanArtifactTree` take
 a file's codec from its Arrow **schema shape** (`lsxstorage/src/verify.cpp`), and
 `SchemaShape::kExpert` — the 9-column `ExpertSchema`
@@ -1597,6 +1617,16 @@ TEST_CASE("a 9-column expert file is refused: it declares no codec") {
 
 ### Task 9d: Rule 5 is enforced, and the last index-codec readers go
 
+> **DONE (`132b683c`), together with 9b's other half.** `--verify` parses
+> `model.index.json` (mmap + simdjson keys, not a text scan) and fails on any of
+> the five fields; the two inkling topology parsers stopped reading them and the
+> models project `artifact.fb::layer_codec` through
+> `lsxcommon/layer_codec_map.h`; the five writers (inkling ×2, gemma ×2, muse)
+> stopped emitting them; and `ScanArtifactTree` now derives a **per-layer** map
+> (forge used to record the tree mask repeated N times, which is a lie for a mixed
+> tree). Found on real data: gemma-4-12B-it's index still carried three of the
+> five keys — re-converted, verifies clean.
+
 **Why.** Task 9b's whole point was that `model.index.json` must carry **no** codec
 key (spec §2.4.3 rule 5), so `artifact.fb` cannot be contradicted. Today nothing
 enforces it: `--verify` treats `model.index.json` as a sidecar and never opens it,
@@ -1652,6 +1682,15 @@ TEST_CASE("an artifact whose model.index.json still declares codecs is rejected"
 - [ ] **Step 5: Commit** — `refactor: the codec map lives only in artifact.fb, and --verify enforces it`
 
 ### Task 9e: Target-aware profile selection + `--explain-artifact`
+
+> **DONE (`dc19aed9`).** `lsx::storage::SelectProfile(org, model_dir, supported,
+> preference)` keeps the capability as a mask and the rank as a name list;
+> `Resolve(path, supported, preference)` prefers a compatible profile for a MODEL
+> and never re-ranks an explicit profile; `BeginLoad` supplies
+> `SupportedCodecs(ActiveTarget())` and `hw::CodecProfilePreference()`
+> (int8-w8a16, nvfp4, mxfp8, bf16 — the one place spec §8.2 says to correct from
+> measurement); `lsxfabric --explain-artifact` prints the target mask, every
+> candidate's verdict and rank, and the choice, without loading a model.
 
 **Why.** Invariant I4 says `lsxfabric` **selects** the best compatible artifact. The
 storage half ships; the selection half does not, and the code is actively
@@ -1827,7 +1866,17 @@ TEST_CASE("the perf row of a built profile is not older than its artifact") {
 
 ### Task 10: `MemoryModel` (unified memory) in the governor
 
-> **NOT STARTED (2026-11-28).** `grep -n "MemoryModel\|unified_shared_bytes"
+> **DONE (`8effeaf4`).** `MemoryModel{kDiscrete,kUnified}` is probed from
+> `prop.integrated` through `HardwareQueries::unified_shared`; on unified memory
+> `GrantableVramLocked()` returns the shared pool and all lease kinds charge ONE
+> counter (a `BudgetFor()` view shared by Acquire/Resize/Release, so a lease is
+> never returned to a counter it was not taken from). Two overloads of
+> `ExpertCacheReserveBytes`: `(budget)` is the spec's min(8 GiB, 25%);
+> `(HardwareProfile)` is what the three expert-cache call sites use and returns
+> the calibrated constant EXACTLY for kDiscrete — min() applied to a 5090's free
+> reading would move every baseline.
+>
+> **What the original note said, for the record.** `grep -n "MemoryModel\|unified_shared_bytes"
 > libs/lsxcommon/{include/lsxcommon/resource_governor.h,src/resource_governor.cpp}`
 > is empty. **Anchors as of today:** `HardwareProfile` is
 > `resource_governor.h:12-20`; `HardwareQueries` (the injectable probes) is

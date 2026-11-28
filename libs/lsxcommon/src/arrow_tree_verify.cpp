@@ -47,6 +47,9 @@ TreeFileKind Classify(const std::shared_ptr<arrow::Schema> &schema)
     // form is still accepted HERE because this verifier's job is Arrow-container
     // integrity, not codec identity — `lsxstorage::VerifyArtifact` is the gate
     // that refuses a plane with no declared codec, and it sees the same file.
+    // When the column IS present this verifier uses it: the expert scale-count
+    // check reads elements-per-byte from the declaration instead of from
+    // model.index.json, which was the last reader of the five keys rule 5 retires.
     if (FieldsAre(schema, {"w1_weight", "w2_weight", "w3_weight",
                            "w1_scale", "w2_scale", "w3_scale",
                            "w1_global_scale", "w2_global_scale",
@@ -67,91 +70,6 @@ TreeFileKind Classify(const std::shared_ptr<arrow::Schema> &schema)
                            "merge_token_id"}))
         return TreeFileKind::kMerges;
     return TreeFileKind::kUnknown;
-}
-
-// Per-layer expert codec of one tree, from `<root>/model.index.json`
-// (`expert_nvfp4` / `expert_fp8`, which every converter writes). 2 = NVFP4
-// nibbles, 1 = MXFP8 bytes, 0 = unknown (the check then accepts either exact
-// convention). A missing/unreadable index is not a problem here — the pinned
-// plane and the expert planes are validated on their own — so this cannot turn
-// an unrelated index defect into an expert-plane failure.
-struct ExpertCodecMap {
-    std::vector<int32_t> elements_per_byte;   // per physical layer
-
-    int32_t ForLayer(int64_t layer) const
-    {
-        if (layer < 0 ||
-            layer >= static_cast<int64_t>(elements_per_byte.size()))
-            return 0;
-        return elements_per_byte[static_cast<size_t>(layer)];
-    }
-};
-
-ExpertCodecMap LoadExpertCodec(const std::filesystem::path &root)
-{
-    ExpertCodecMap out;
-    const auto index = root / "model.index.json";
-    std::error_code ec;
-    if (!std::filesystem::exists(index, ec) || ec) return out;
-    // mmap, like every other Arrow/JSON read in the tree (R-A1): a converted
-    // tree can be hundreds of GB and this runs on the host path.
-    auto file = arrow::io::MemoryMappedFile::Open(index.string(),
-                                                 arrow::io::FileMode::READ);
-    if (!file.ok()) return out;
-    auto size = (*file)->GetSize();
-    if (!size.ok() || *size <= 0 || *size > (int64_t{4} << 20)) return out;
-    auto buf = arrow::AllocateBuffer(*size);
-    if (!buf.ok()) return out;
-    if (!(*file)->Read(*size, (*buf)->mutable_data()).ok()) return out;
-    simdjson::dom::parser parser;
-    simdjson::dom::element doc;
-    const auto view = std::string_view(
-        reinterpret_cast<const char *>((*buf)->data()),
-        static_cast<size_t>(*size));
-    if (parser.parse(view).get(doc) != simdjson::SUCCESS) return out;
-    simdjson::dom::array fp8, nvfp4;
-    if (doc["expert_fp8"].get_array().get(fp8) != simdjson::SUCCESS) return out;
-    const bool have_nvfp4 =
-        doc["expert_nvfp4"].get_array().get(nvfp4) == simdjson::SUCCESS;
-    std::vector<bool> is_fp8;
-    for (auto v : fp8) {
-        bool b = false;
-        if (v.get_bool().get(b) != simdjson::SUCCESS) return out;
-        is_fp8.push_back(b);
-    }
-    std::vector<bool> is_nvfp4;
-    if (have_nvfp4)
-        for (auto v : nvfp4) {
-            bool b = false;
-            if (v.get_bool().get(b) != simdjson::SUCCESS) return out;
-            is_nvfp4.push_back(b);
-        }
-    out.elements_per_byte.assign(is_fp8.size(), 0);
-    for (size_t l = 0; l < is_fp8.size(); ++l) {
-        const bool nv = have_nvfp4 && l < is_nvfp4.size() && is_nvfp4[l];
-        if (is_fp8[l]) out.elements_per_byte[l] = 1;
-        else if (nv) out.elements_per_byte[l] = 2;
-    }
-    return out;
-}
-
-// `experts/layer_<n>/exp_<e>.arrow` -> n; -1 when the path is not an expert
-// file (shared_experts.arrow, for instance, uses a different contract).
-int64_t ExpertLayerFromPath(const std::string &rel)
-{
-    const std::string marker = "experts/layer_";
-    const auto at = rel.find(marker);
-    if (at == std::string::npos) return -1;
-    auto pos = at + marker.size();
-    int64_t layer = 0;
-    bool any = false;
-    while (pos < rel.size() && rel[pos] >= '0' && rel[pos] <= '9') {
-        layer = layer * 10 + (rel[pos] - '0');
-        ++pos;
-        any = true;
-    }
-    if (!any || pos >= rel.size() || rel[pos] != '/') return -1;
-    return layer;
 }
 
 void Problem(TreeVerifyStats &st, const std::string &msg)
@@ -187,6 +105,31 @@ arrow::Status ValidateScaleColumn(const arrow::RecordBatch &batch, int col,
         ARROW_RETURN_NOT_OK(
             CheckListSlice(*offs, i, u8->length(), what, std::to_string(i)));
     return arrow::Status::OK();
+}
+
+// Elements per stored byte, from the plane's own `dtype` column: 2 for NVFP4
+// nibbles, 1 for an E4M3/I8 passthrough. 0 means "no declaration" — the scale
+// check then accepts either convention rather than refusing a tree it cannot
+// classify (the permissive reading is still exact: a scale plane matching
+// neither packing is rejected, which is the defect class this check exists for).
+int32_t ExpertElementsPerByteFromBatch(const arrow::RecordBatch &batch)
+{
+    const auto idx = batch.schema()->GetFieldIndex("dtype");
+    if (idx < 0) return 0;
+    auto col = std::dynamic_pointer_cast<arrow::StringArray>(batch.column(idx));
+    if (!col || col->length() == 0) return 0;
+    int32_t out = 0;
+    for (int64_t i = 0; i < col->length(); ++i) {
+        const auto dtype = col->GetString(i);
+        int32_t here = 0;
+        if (dtype == "NVFP4") here = 2;
+        else if (dtype == "F8_E4M3" || dtype == "I8") here = 1;
+        else if (dtype == "BF16" || dtype == "F32") here = 0;  // unquantized
+        else return 0;   // unknown declaration: let the check decide
+        if (i == 0) out = here;
+        else if (here != out) return 0;   // mixed file: accept either
+    }
+    return out;
 }
 
 arrow::Status ValidateKind(TreeFileKind kind, const arrow::RecordBatch &batch,
@@ -373,7 +316,6 @@ bool IsDeepByDefault(const std::filesystem::path &rel)
 void ValidateTree(const std::filesystem::path &root, TreeVerifyStats &st, bool full,
                   int64_t budget_bytes)
 {
-    const ExpertCodecMap codec = LoadExpertCodec(root);
     std::vector<std::filesystem::path> files;
     for (const auto &e : fs::recursive_directory_iterator(root)) {
         if (e.is_regular_file() && e.path().extension() == ".arrow")
@@ -477,9 +419,14 @@ void ValidateTree(const std::filesystem::path &root, TreeVerifyStats &st, bool f
             Problem(st, rel + ": read failed: " + batch.status().ToString());
             continue;
         }
-        int32_t elements_per_byte = 0;
-        if (effective == TreeFileKind::kExpert)
-            elements_per_byte = codec.ForLayer(ExpertLayerFromPath(rel));
+        // The expert plane DECLARES its codec (Task 9c), so the scale-count
+        // convention comes from the file being checked. It used to come from
+        // model.index.json — a second source of truth for the same fact, and the
+        // last reader of the five keys rule 5 retires.
+        const int32_t elements_per_byte =
+            effective == TreeFileKind::kExpert
+                ? ExpertElementsPerByteFromBatch(**batch)
+                : 0;
         const auto vst = ValidateKind(effective, **batch, &st.block_hist,
                                       elements_per_byte);
         if (!vst.ok())

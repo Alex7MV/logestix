@@ -99,13 +99,14 @@ covers LINK/INCLUDE/DEFINE/LABEL/TIMEOUT/SKIP/ENV and the DLL copy; add a
 property to the helper only when a target genuinely needs one, e.g.
 `RESOURCE_LOCK`).
 
-### V. Codec profiles: the store supports N per model, nothing can produce the second one (2026-11-28)
+### V. Codec profiles: the store supports N per model, no CONVERTER can produce the second one (2026-11-28; selection half closed 2026-11-28)
 
 The hardware-native codec contract (branch `feat/lsxstorage-hardware-codec-contract`)
 ships the STORAGE half of invariant I4 — `<ARTIFACT_ROOT>/<org>/<model>/<profile>/`,
 one artifact per profile, `artifact.fb` per artifact — and the load gate names the
-other profiles of a model when it refuses the current one. Two halves are open,
-both found by the bootstrap conversion of real weights (plan Task 9a step 4):
+other profiles of a model when it refuses the current one. The selection half is
+closed (below); ONE half remains open, found by the bootstrap conversion of real
+weights (plan Task 9a step 4):
 
 - **No converter knows what a codec profile is.** `--codec-profile` is read only
   in `apps/lsxforge/src/main.cpp` (`DeclaredPlanes` + the cross-check that the
@@ -119,17 +120,17 @@ both found by the bootstrap conversion of real weights (plan Task 9a step 4):
   **Fix shape:** give the converters a profile parameter at the quantization
   call site (phi/qwen dense first — the two bootstrap models), not a per-family
   copy of the profile table.
-- **`Resolve()` picks a profile by directory iteration order.** With one profile
-  per model this is invisible; with two it is filesystem-order dependent, and it
-  does not consult `SupportedCodecs(ActiveTarget())`. The gate then refuses the
-  arbitrarily-chosen one and prints the usable list, which is a good error but
-  not a selection — `I4` says lsxfabric SELECTS. The selection also needs a
-  precedence among compatible profiles (the operator ruling is NVFP4 first on the
-  5090, i.e. compressed-native before bf16), which does not exist anywhere yet.
-  **Fix shape:** `lsx::storage::SelectProfile(org, model_dir, supported_mask,
-  preference)` — storage stays codec-agnostic by taking the mask, `lsxcommon`
-  supplies the preference — used only when the caller named a MODEL rather than
-  an explicit profile path (an explicit path is a choice and must stay one).
+- **CLOSED 2026-11-28 (branch `build/ampere-aot-sm86-sm87`): `Resolve()` now
+  SELECTS instead of guessing.** `lsx::storage::SelectProfile(org, model_dir,
+  supported_mask, preference)` keeps the storage layer codec-agnostic by taking
+  the capability as a mask and the precedence as an ordered name list;
+  `lsxcommon` supplies both (`SupportedCodecs(ActiveTarget())` and
+  `hw::CodecProfilePreference()` = int8-w8a16, nvfp4, mxfp8, bf16 — the single
+  place spec §8.2 corrects once Branch 3 has measured). `Resolve(path, supported,
+  preference)` applies it to a MODEL and never re-ranks an explicit profile path.
+  `lsxfabric --explain-artifact` prints the target mask, every candidate's mask,
+  rank and verdict, then the choice, without loading a model. Tests:
+  `test_storage_select_profile` (6 cases) and `test_explain_artifact` (3).
 
 Measured on the two bootstrap artifacts (both single-profile, both green): phi-4
 `microsoft/phi-4/nvfp4` mask 34 (bf16|nvfp4), Qwen3.5-9B `Qwen/Qwen3.5-9B/nvfp4`
