@@ -28,7 +28,10 @@ target_link_libraries(test_core PRIVATE lsxcommon arrow_shared arrow_cuda_shared
 # guard and the STATIC_REQUIREs in test_core.cpp.
 target_compile_definitions(test_core PRIVATE
     LSX_CCCL_VERSION_MIN=${LSX_CCCL_BAND_MIN}
-    LSX_CCCL_VERSION_MAX=${LSX_CCCL_BAND_MAX})
+    LSX_CCCL_VERSION_MAX=${LSX_CCCL_BAND_MAX}
+    # The version guard reads project(VERSION ...) and scans libs/ + apps/ for a
+    # hardcoded version literal, so it needs the tree, not just the headers.
+    "LSX_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
 
 # Copy arrow.dll and arrow_cuda.dll into the test executable directory
 lsx_copy_arrow_dlls(test_core)

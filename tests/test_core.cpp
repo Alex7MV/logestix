@@ -4,6 +4,16 @@
 #include <spdlog/version.h>
 #include <absl/base/config.h>
 #include <lsxcommon/common.h>
+#include <lsxcommon/version.h>
+
+// The version guard below reads the tree (`project(VERSION ...)` and the
+// sources), the same way the other shape guards do.
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
 
 // Apache Arrow Core Data Layers
 #include <arrow/api.h>
@@ -456,4 +466,110 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
 TEST_CASE("lsxcommon common module version and GPU info", "[dependencies][lsxcommon]") {
     lsxcommon::version();
     lsxcommon::log_gpu_info();
+}
+
+// ── The reported version is GENERATED, and both halves are checked ──────────
+//
+// `version()` used to print a hand-written "logestix v0.1.0" while
+// `libs/lsxcommon/include/lsxcommon/version.h.in` was being configured from
+// `project(VERSION ...)` and included by nobody. So the project shipped tags
+// v1.0.0 / v1.0.1 and still announced itself as 0.1.0, and no test could see it
+// because both the header and the literal were plausible on their own.
+//
+// Two assertions, because the failure has two halves:
+//   * the generated header and `project(VERSION ...)` agree — a bump that edits
+//     one side only is the mistake this release made;
+//   * no source file spells a version literal again — that is how the drift
+//     started, and a literal compiles fine.
+TEST_CASE("the reported version comes from project(VERSION), not a literal",
+          "[dependencies][lsxcommon][version]") {
+    namespace fs = std::filesystem;
+
+    const std::string generated = lsxcommon::version_string();
+
+    // Semver shape: three numeric components, nothing else. A stale or empty
+    // configure_file result fails here rather than printing nonsense.
+    int components = 0;
+    bool component_empty = true;
+    for (const char c : generated) {
+        if (c >= '0' && c <= '9') {
+            component_empty = false;
+        } else if (c == '.') {
+            REQUIRE_FALSE(component_empty);
+            component_empty = true;
+            ++components;
+        } else {
+            FAIL("version string has a non-semver character: " << generated);
+        }
+    }
+    CHECK_FALSE(component_empty);
+    CHECK(components == 2);
+
+    // The macros the header exposes and the string must be one value.
+    CHECK(generated == std::to_string(LSXCOMMON_VERSION_MAJOR) + "." +
+                            std::to_string(LSXCOMMON_VERSION_MINOR) + "." +
+                            std::to_string(LSXCOMMON_VERSION_PATCH));
+
+    // Half one: the root CMakeLists must declare the same version. Read as text
+    // because the value is a configure-time constant, not a runtime one.
+    const fs::path root{LSX_SOURCE_DIR};
+    const fs::path cmake = root / "CMakeLists.txt";
+    INFO("reading " << cmake.string());
+    REQUIRE(fs::is_regular_file(cmake));
+
+    std::ifstream in(cmake);
+    REQUIRE(in.good());
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    const std::string text = buffer.str();
+
+    // `project(logestix\n    VERSION <x.y.z>` — take the token after VERSION
+    // inside the project() call, not the first "VERSION" in the file (the
+    // include of CMakePresets-era helpers comes first).
+    const std::size_t project_at = text.find("project(");
+    REQUIRE(project_at != std::string::npos);
+    const std::size_t version_at = text.find("VERSION", project_at);
+    REQUIRE(version_at != std::string::npos);
+    std::size_t value_at = version_at + std::strlen("VERSION");
+    while (value_at < text.size() &&
+           (text[value_at] == ' ' || text[value_at] == '\t'))
+        ++value_at;
+    const std::size_t value_end = text.find_first_of(" \t\r\n)", value_at);
+    REQUIRE(value_end != std::string::npos);
+    const std::string declared = text.substr(value_at, value_end - value_at);
+
+    INFO("CMakeLists declares " << declared << ", the built header says "
+                                 << generated);
+    CHECK(declared == generated);
+
+    // Half two: no hardcoded version literal in the sources. Matched as
+    // "logestix v<digit>" so a comment or an unrelated 1.2.3 in a test is not
+    // a violation, while the exact historical spelling is.
+    std::vector<fs::path> offenders;
+    for (const char *dir : {"libs", "apps"}) {
+        const fs::path base = root / dir;
+        if (!fs::is_directory(base))
+            continue;
+        for (const auto &entry :
+             fs::recursive_directory_iterator(base)) {
+            if (!entry.is_regular_file())
+                continue;
+            const auto ext = entry.path().extension().string();
+            if (ext != ".cpp" && ext != ".cu" && ext != ".h" &&
+                ext != ".cuh")
+                continue;
+            std::ifstream f(entry.path());
+            std::stringstream sb;
+            sb << f.rdbuf();
+            const std::string src = sb.str();
+            const std::size_t at = src.find("logestix v");
+            if (at != std::string::npos && at + 10 < src.size() &&
+                src[at + 10] >= '0' && src[at + 10] <= '9')
+                offenders.push_back(entry.path().lexically_relative(root));
+        }
+    }
+    for (const auto &o : offenders)
+        FAIL_CHECK("a hardcoded version literal: " << o.string()
+                    << " — use LSXCOMMON_VERSION_STRING");
+    CHECK(offenders.empty());
 }

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 
 project(logestix
-    VERSION 0.1.0
+    VERSION 1.0.2
     DESCRIPTION "Logestix — multi-app monorepo: fabric, forge, taskmosaic, c"
     LANGUAGES C CXX CUDA
 )
