@@ -102,7 +102,7 @@ started` = no commit, no code.
 | 9b | per-layer codec map leaves the index | **done** | `a7873320` + `132b683c` | `layer_codec[]` is now per-layer, derived by the scan |
 | 10 | `MemoryModel` in the governor | **done** | `8effeaf4` | probed `prop.integrated`; one pool on unified |
 | 11 | `LSX_CUDA_ARCH` accepts Ampere | **done** | `HEAD~0` | validator moved to `cmake/LsxArch.cmake`; both SASS proven in the fatbin |
-| 12 | arch-`a` object libs only for 12x | **not started** | — | `libs/lsxcommon/CMakeLists.txt:651-671`, `tests/CMakeLists.txt:1440-1460` |
+| 12 | arch-`a` object libs only for 12x | **done** | HEAD | `lsx_arch_has_12x()` + `lsx_tc_gemm_stub.cpp`; Ampere configure has 0 × `compute_120a` |
 | 13 | toolchain-agnostic toolkit guard | **not started** | — | `test_cuda_toolkit_guard.cu:5,50-51,95-97` |
 | 14 | Ampere presets + degradation audit | **not started** | — | `CMakePresets.json:10-75` has no `86`; no `cmake/toolchains/` |
 | 15 | `bf16` profile for the slice | **not started** | — | `grep CodecProfile libs/lsxcommon/src` is empty |
@@ -2071,7 +2071,58 @@ TEST_CASE("a forbidden arch still fails configure with a named reason") {
 
 ### Task 12: arch-`a` object libs are emitted only for 12x
 
-> **NOT STARTED (2026-11-28).** Both object libs hard-code the `a` targets:
+> **DONE.** An Ampere-only configure creates no arch-'a' object lib at all: 0
+> occurrences of `compute_120a`/`compute_121a` in `build.ninja`, 0 targets named
+> `lsxcommon_tc_cu`, and `lsxcommon_tc_stub` in its place.
+>
+> **The plan's premise was wrong in one place, and that is the interesting part.**
+> It said "the `lsx_tc` symbols must not be referenced outside `prop.major == 12`
+> probes — verify by `nm`". They ARE referenced: `lsx_inference_nvfp4.cu:965`
+> calls `RunLsxTcNvfp4Gemm` behind the `g_lsx_tc_fast_math` PERF TOGGLE, and the
+> `prop.major` check lives *inside* the callee. Fourteen `lsxcommon::lsx_tc::*`
+> symbols are referenced from nine files (the NVFP4 dispatcher, the Kimi batched
+> chain, the MoE pipeline, attention, GLM flash, perf knobs, ModelBase's weight
+> epoch). Dropping the object lib is therefore a LINK ERROR, and `#ifdef`-ing
+> forty references would put an arch condition inside numerics-adjacent code.
+>
+> So the off-12x build links **`lsxcommon_tc_stub.cpp`**: 15 entry points, every
+> device one returning `cudaErrorNotSupported` — precisely what the real kernels
+> already return off-12x — with the host-side plumbing (split-K knob, weight
+> epoch, `LsxTcBatchSplitK`) kept real, because callers use it outside any device
+> call. No device code in the TU (`cuobjdump` reports none), no software
+> emulation of a GEMM (invariant I1).
+>
+> Which object lib a configure builds is a *value*, not a duplicated branch:
+> `lsx_tc_object_lib()` (cmake/LsxArch.cmake) returns the name, the branches set
+> `${LSX_TC_OBJECT_LIB}`, and the `lsxcommon` link list uses it.
+>
+> **Evidence:**
+>
+> | check | result |
+> |---|---|
+> | `lsx_arch_has_12x()` probed through `cmake -P` on the real module | FALSE for `86`, `87`, `86;87`, `87;86`; TRUE for `120`, `121`, `120f`, `121a`, `86;87;120`; the object-lib name flips with it |
+> | structural guard over every CMake file | every 12x-only gencode literal sits inside `if(LSX_ARCH_HAS_12X)` / `if(lsx_arch_has_12x(...))`; the scanner self-checks a positive and a negative case first |
+> | Ampere-only configure of this repo (`-DLSX_CUDA_ARCH=86;87`) | exit 0, **0** × `compute_…a`, `lsxcommon_tc_cu` absent, `lsxcommon_tc_stub` present |
+> | stub translation unit | compiles clean (`-Wall -Wextra`), 15 symbols, `cuobjdump`: "does not contain device code" |
+> | link closure (`nm` over every object) | 14 distinct `lsxcommon::lsx_tc::*` references in the tree; the stub defines all 14 (0 missing). The real object defines 24 in the namespace and covers the same 14, so the reference set is complete |
+> | default 120;121 tree | unchanged: `lsxcommon_tc_cu` present, 0 × `lsxcommon_tc_stub`; `ctest --preset linux-debug` 188/188 |
+>
+> **A full Ampere-only build was also run** (dependencies symlinked into the
+> scratch tree's `_deps/` so the include layout matches a normal checkout):
+> `ninja lsxcommon` → `liblsxcommon.a` (0 failures), `ninja lsxfabric` → the
+> executable LINKS against the stub, `cuobjdump --list-elf` on it reports **only
+> `sm_86` and `sm_87` cubins, 0 × sm_120/sm_121**, and the binary runs
+> (`--explain-artifact phi-4` prints the same choice the 5090 build prints).
+>
+> One trap worth recording: mounting dependency sources from another build tree
+> via `FETCHCONTENT_SOURCE_DIR_*` silently drops `arrow-src/cpp/src` from the
+> include path — `_lsx_arrow_includes` (CMakeLists.txt:627-634) resolves
+> `${FETCHCONTENT_BASE_DIR}/arrow-src/cpp/src`, which does not exist in that
+> arrangement. A twin configured with the DEFAULT arch fails identically, so it is
+> arch-independent and pre-existing, not a Task 12 defect; symlinking the sources
+> into `_deps/` avoids it.
+>
+> **Original note, for the record:** Both object libs hard-code the `a` targets:
 > `libs/lsxcommon/CMakeLists.txt:651-671` (`lsxcommon_tc_cu`,
 > `--generate-code=arch=compute_120a,code=sm_120a;--generate-code=arch=compute_121a,code=sm_121a`)
 > and the test-side twin at `tests/CMakeLists.txt:1440-1460`. Neither is

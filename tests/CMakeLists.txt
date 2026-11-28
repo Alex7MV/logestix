@@ -1439,32 +1439,41 @@ lsx_copy_arrow_dlls(test_qwen_dense_loader)
 # ── Blackwell tensor-core probe tests: kind::mxf4nvf4 assembles ONLY on the
 #    arch-'a' targets (sm_120a/sm_121a), so this OBJECT lib carries its own
 #    --generate-code set (PTX ISA 8.7+, CUDA 13.3 ships 9.3).
-add_library(test_blackwell_tc_cu OBJECT
-    test_blackwell_tc_mma.cu
-)
-set_target_properties(test_blackwell_tc_cu PROPERTIES
-    CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES OFF
-)
-target_compile_options(test_blackwell_tc_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
-    --generate-code=arch=compute_120a,code=sm_120a;
-    --generate-code=arch=compute_121a,code=sm_121a;
-    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
-target_include_directories(test_blackwell_tc_cu PRIVATE
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-)
-target_link_libraries(test_blackwell_tc_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
+#
+#    And therefore it exists only when a 12x arch is targeted (Task 12): an
+#    Ampere-only build has no device that can run it, no kernel image it could
+#    legally assemble, and — on JetPack 6.2.1 — no toolkit that knows the target.
+#    The test target disappears with it rather than SKIPping: a probe for a
+#    Blackwell-only instruction is not "skipped" on a build that does not contain
+#    Blackwell, it is absent, and `test_ctest_labels_guard` sees the same tree.
+if(LSX_ARCH_HAS_12X)
+    add_library(test_blackwell_tc_cu OBJECT
+        test_blackwell_tc_mma.cu
+    )
+    set_target_properties(test_blackwell_tc_cu PROPERTIES
+        CUDA_SEPARABLE_COMPILATION OFF
+        CUDA_ARCHITECTURES OFF
+    )
+    target_compile_options(test_blackwell_tc_cu PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+        --generate-code=arch=compute_120a,code=sm_120a;
+        --generate-code=arch=compute_121a,code=sm_121a;
+        $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+    target_include_directories(test_blackwell_tc_cu PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    )
+    target_link_libraries(test_blackwell_tc_cu PRIVATE Catch2::Catch2WithMain lsx_dep_includes)
 
-foreach(qt test_blackwell_tc_mma)
-    add_executable(${qt})
-    set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
-    target_link_libraries(${qt} PRIVATE test_blackwell_tc_cu lsxcommon Catch2::Catch2WithMain)
-    lsx_copy_arrow_dlls(${qt})
-    add_test(NAME ${qt} COMMAND ${qt})
-    set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
-endforeach()
+    foreach(qt test_blackwell_tc_mma)
+        add_executable(${qt})
+        set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
+        target_link_libraries(${qt} PRIVATE test_blackwell_tc_cu lsxcommon Catch2::Catch2WithMain)
+        lsx_copy_arrow_dlls(${qt})
+        add_test(NAME ${qt} COMMAND ${qt})
+        set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
+    endforeach()
+endif()
 
 # Shared lsx_kernels_* equivalence harness (Phase A). Generic kernels: plain
 # 120/121 code, no arch-'a' PTX required.

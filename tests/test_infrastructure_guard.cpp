@@ -777,3 +777,149 @@ TEST_CASE("infra guard: a family suffix on an Ampere arch is flagged in "
     CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES \"86f;87f\"").size() == 1);
     CHECK(FindFamilySuffixInArch("CUDA_ARCHITECTURES \"86;87\"").empty());
 }
+
+// ── Task 12: the arch-'a' object libs exist only when a 12x arch is targeted ─
+//
+// `lsxcommon_tc_cu` compiles src/lsx_tc_gemm.cu with `--generate-code=
+// arch=compute_120a`, because the `kind::mxf4nvf4` PTX does not assemble on a
+// plain 120/121 target — and certainly not on sm_86. So an Ampere-only build must
+// not create it at all: on CUDA 13.5 it merely wastes a compile (nvcc still knows
+// compute_120a), and on a pre-12.0 toolkit — JetPack 6.2.1 on the Orin, which is
+// half of what this branch is for — it fails the build outright.
+//
+// Two questions, and the first one is the one that can rot silently:
+
+struct Has12xProbe {
+    int rc = -1;
+    bool has12x = false;
+    std::string tc_lib;
+    std::string out;
+};
+
+Has12xProbe ProbeHas12x(const std::string &arches)
+{
+    Has12xProbe r;
+    const fs::path script =
+        fs::path(LSX_SOURCE_DIR) / "tests" / "cmake" / "probe_arch.cmake";
+    const fs::path module = fs::path(LSX_SOURCE_DIR) / "cmake" / "LsxArch.cmake";
+    const std::string cmd = std::string("\"") + LSX_CMAKE_COMMAND +
+                            "\" -D PROBE_HAS12X=\"" + arches + "\" -D LsxArch=\"" +
+                            module.string() + "\" -P \"" + script.string() +
+                            "\" 2>&1";
+#if defined(_WIN32)
+    FILE *pipe = _popen(cmd.c_str(), "r");
+#else
+    FILE *pipe = popen(cmd.c_str(), "r");
+#endif
+    if (pipe == nullptr) return r;
+    char buf[512];
+    while (std::fgets(buf, sizeof(buf), pipe) != nullptr) r.out += buf;
+#if defined(_WIN32)
+    r.rc = _pclose(pipe);
+#else
+    r.rc = (pclose(pipe) >> 8) & 0xff;
+#endif
+    r.has12x = r.out.find("HAS12X=TRUE") != std::string::npos;
+    const auto at = r.out.find("TC_LIB=");
+    if (at != std::string::npos) {
+        auto end = r.out.find('\n', at);
+        r.tc_lib = r.out.substr(at + 7, end == std::string::npos ? std::string::npos
+                                                                : end - at - 7);
+        while (!r.tc_lib.empty() &&
+               (r.tc_lib.back() == '\r' || r.tc_lib.back() == ' ' ||
+                r.tc_lib.back() == ';'))
+            r.tc_lib.pop_back();
+    }
+    return r;
+}
+
+TEST_CASE("infra guard: an Ampere-only arch list targets no 12x arch",
+          "[guard][infra][arch]")
+{
+    // The predicate the object-lib branches read. FALSE for Ampere-only, TRUE
+    // the moment any 12x entry is present — including the family spelling.
+    for (const char *arch : {"86", "87", "86;87", "87;86"}) {
+        INFO("arch=" << arch);
+        const auto r = ProbeHas12x(arch);
+        INFO(r.out);
+        REQUIRE(r.rc == 0);
+        CHECK_FALSE(r.has12x);
+        // ... and it names the STUB, not the arch-'a' object lib.
+        CHECK(r.tc_lib == "lsxcommon_tc_stub");
+    }
+    for (const char *arch : {"120", "121", "120;121", "86;87;120", "120f",
+                             "121a", "86;120f"}) {
+        INFO("arch=" << arch);
+        const auto r = ProbeHas12x(arch);
+        INFO(r.out);
+        REQUIRE(r.rc == 0);
+        CHECK(r.has12x);
+        CHECK(r.tc_lib == "lsxcommon_tc_cu");
+    }
+}
+
+TEST_CASE("infra guard: the arch-'a' object libs are inside the 12x branch",
+          "[guard][infra][arch]")
+{
+    // The structural half. The predicate above can only be trusted if the
+    // targets that need it are actually guarded by it, so this walks the CMake
+    // text and requires every 12x-only gencode literal to sit inside an
+    // `if(lsx_arch_has_12x())` block. A scanner IS the right tool here: "is this
+    // statement guarded" is a property of the text, unlike "does this regex
+    // accept 86", which is a property of an evaluation.
+    const auto unguarded = [](const std::string &text) {
+        std::vector<int> bad;
+        int depth = 0;
+        int guard_depth = -1;   // >0 while inside an if(lsx_arch_has_12x()) block
+        int line_no = 0;
+        for (const auto &raw : Lines(text)) {
+            ++line_no;
+            const std::string line = StripHashComments(raw);
+            // Two accepted forms of the same guard: the predicate called
+            // directly, or the configure-time variable the root file resolves
+            // from it. Both are real guards; anything else is not.
+            const bool opens_guard =
+                line.find("if(lsx_arch_has_12x(") != std::string::npos ||
+                line.find("if (lsx_arch_has_12x(") != std::string::npos ||
+                line.find("if(LSX_ARCH_HAS_12X)") != std::string::npos ||
+                line.find("if (LSX_ARCH_HAS_12X)") != std::string::npos;
+            if (opens_guard) guard_depth = depth;
+            if (guard_depth >= 0 && line.find("endif(") != std::string::npos &&
+                depth == guard_depth) {
+                guard_depth = -1;
+            }
+            if (line.find("if(") != std::string::npos ||
+                line.find("foreach(") != std::string::npos ||
+                line.find("function(") != std::string::npos)
+                ++depth;
+            if (line.find("endif(") != std::string::npos ||
+                line.find("endforeach(") != std::string::npos ||
+                line.find("endfunction(") != std::string::npos)
+                --depth;
+            // A 12x-only codegen spelling outside the guard is the defect.
+            if (line.find("compute_120a") != std::string::npos ||
+                line.find("compute_121a") != std::string::npos) {
+                if (guard_depth < 0) bad.push_back(line_no);
+            }
+        }
+        return bad;
+    };
+
+    // Self-check the scanner first: a positive and a negative case, so a broken
+    // walker cannot report "clean" for everything.
+    CHECK(unguarded("--generate-code=arch=compute_120a,code=sm_120a").size() == 1);
+    CHECK(unguarded(
+              "if(lsx_arch_has_12x())\n"
+              "  --generate-code=arch=compute_120a,code=sm_120a\n"
+              "endif()\n")
+              .empty());
+
+    const fs::path root(LSX_SOURCE_DIR);
+    std::vector<std::string> hits;
+    for (const auto &p : CmakeFiles(root))
+        for (int line : unguarded(ReadFile(p)))
+            hits.push_back(Rel(root, p) + ":" + std::to_string(line));
+    INFO("12x gencode outside if(lsx_arch_has_12x()) ("
+         << hits.size() << "):\n" << JoinHits(hits));
+    REQUIRE(hits.empty());
+}

@@ -31,6 +31,11 @@ set(LSX_CUDA_ARCH "120;121" CACHE STRING
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LsxArch.cmake")
 lsx_cuda_gencode_flags(LSX_CUDA_GENCODE_FLAGS)
 
+# Does this configure target any 12x (Blackwell) arch? The arch-'a' object
+# libraries hang off this (their PTX does not assemble for sm_86 at all), so it is
+# resolved once here rather than re-derived per directory.
+lsx_arch_has_12x(LSX_ARCH_HAS_12X)
+
 # ── Toolkit consistency guard (docs/open-tasks/2026-09-30-..., item G1) ──────────
 # Upgrading CUDA leaves an existing build/ pinned to the previous toolkit: the
 # cached `CUDAToolkit_*` entries stay valid, so a new CUDAToolkit_ROOT is not

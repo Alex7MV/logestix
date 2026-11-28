@@ -644,33 +644,66 @@ target_link_libraries(lsxcommon_mistral_cu
     lsx_dep_includes
 )
 
-# Tensor-core NVFP4 fast path (audit Phase 3, F-01): kind::mxf4nvf4 PTX
-# assembles ONLY on the arch-'a' targets, so this object lib carries its own
-# --generate-code set (sm_120a / sm_121a). Plain sm_120/121 SASS for the
-# scalar path is unaffected.
-add_library(lsxcommon_tc_cu OBJECT
-    src/lsx_tc_gemm.cu
-)
-set_target_properties(lsxcommon_tc_cu PROPERTIES
-    CUDA_ARCHITECTURES OFF
-    CUDA_STANDARD 20
-    CUDA_STANDARD_REQUIRED ON
-)
-target_compile_options(lsxcommon_tc_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
-    -lineinfo;
-    --generate-code=arch=compute_120a,code=sm_120a;
-    --generate-code=arch=compute_121a,code=sm_121a>
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
-)
-target_include_directories(lsxcommon_tc_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
-target_compile_definitions(lsxcommon_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
-target_link_libraries(lsxcommon_tc_cu
-    "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_DRIVER_LIBRARY}"
-    absl::strings
-)
+# Tensor-core NVFP4 fast path (audit Phase 3, F-01): the `kind::mxf4nvf4`
+# block-scaled MMA assembles ONLY on the architecture-specific targets, so this
+# object lib carries its own --generate-code set (sm_120a / sm_121a) and exists
+# **only when a 12x arch is targeted** (lsx_arch_has_12x(), cmake/LsxArch.cmake).
+#
+# In an Ampere-only build it cannot be built at all: no spelling of sm_86 accepts
+# that PTX. Asking nvcc for compute_120a there is a wasted compile on a 13.5
+# toolkit and a hard failure on CUDA 12.6 — the Orin half of this branch — and
+# the object could never be launched on the device the build is for. The entry
+# points still have to link (nine files call them, some behind a perf toggle
+# rather than a device probe), so `lsxcommon_tc_stub` answers NotSupported, which
+# is exactly what the real kernels return off-12x. See its header comment.
+#
+# The link list below uses ${LSX_TC_OBJECT_LIB}, set inside each branch, so the
+# name and the target cannot drift apart. LSX_ARCH_HAS_12X is resolved once in the
+# root CMakeLists (lsx_arch_has_12x()) and is the same predicate the guard test
+# evaluates through `cmake -P`.
+if(LSX_ARCH_HAS_12X)
+    set(LSX_TC_OBJECT_LIB lsxcommon_tc_cu)
+    add_library(lsxcommon_tc_cu OBJECT
+        src/lsx_tc_gemm.cu
+    )
+    set_target_properties(lsxcommon_tc_cu PROPERTIES
+        CUDA_ARCHITECTURES OFF
+        CUDA_STANDARD 20
+        CUDA_STANDARD_REQUIRED ON
+    )
+    target_compile_options(lsxcommon_tc_cu PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+        -lineinfo;
+        --generate-code=arch=compute_120a,code=sm_120a;
+        --generate-code=arch=compute_121a,code=sm_121a>
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+    )
+    target_include_directories(lsxcommon_tc_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+    target_compile_definitions(lsxcommon_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+    target_link_libraries(lsxcommon_tc_cu
+        "${CUDA_CUDART_LIBRARY}"
+        "${CUDA_DRIVER_LIBRARY}"
+        absl::strings
+    )
+else()
+    set(LSX_TC_OBJECT_LIB lsxcommon_tc_stub)
+    # Host-only: every entry point reports the device path missing, so this TU
+    # needs no device code and compiles for any arch list.
+    add_library(lsxcommon_tc_stub OBJECT
+        src/lsx_tc_gemm_stub.cpp
+    )
+    set_target_properties(lsxcommon_tc_stub PROPERTIES
+        CUDA_ARCHITECTURES OFF
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+    )
+    target_include_directories(lsxcommon_tc_stub PRIVATE ${LSXCOMMON_CU_INCLUDES})
+    target_compile_definitions(lsxcommon_tc_stub PRIVATE ${LSXCOMMON_CU_DEFS})
+    target_link_libraries(lsxcommon_tc_stub
+        "${CUDA_CUDART_LIBRARY}"
+    )
+endif()
 
 add_library(lsxcommon_kimi_cu OBJECT
     src/kimi_moe_inference.cu
@@ -929,7 +962,7 @@ target_compile_options(lsxcommon_cuda_reqs INTERFACE
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cuda_reqs)
 
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
-    lsxcommon_qwen_cu lsxcommon_moe_cu lsxcommon_tc_cu
+    lsxcommon_qwen_cu lsxcommon_moe_cu ${LSX_TC_OBJECT_LIB}
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
     lsxcommon_deepseek_v41_cu
     lsxcommon_deepseek_pro_cu

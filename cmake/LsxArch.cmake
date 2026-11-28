@@ -52,6 +52,54 @@ function(lsx_arch_problem arch out_var)
     set(${out_var} "${_why}" PARENT_SCOPE)
 endfunction()
 
+# lsx_arch_has_12x(<out_var>)
+#
+# TRUE iff LSX_CUDA_ARCH targets at least one Blackwell consumer arch (12x).
+#
+# This is the switch the arch-'a' object libraries hang off, and the reason is
+# hard, not cosmetic: `src/lsx_tc_gemm.cu` uses the `kind::mxf4nvf4` block-scaled
+# MMA, whose PTX assembles ONLY for the architecture-specific targets
+# (compute_120a/compute_121a). It cannot be compiled for sm_86 at any spelling, so
+# in an Ampere-only build the object lib must not be created at all — otherwise
+# nvcc is asked for an arch the configure does not target (a wasted compile on a
+# 13.5 toolkit, a hard failure on CUDA 12.6, which is the Orin half of this
+# branch) and the resulting object could never be launched anyway.
+#
+# One predicate, read by the build AND by the guard test through `cmake -P`, so
+# the two cannot disagree about which configures get the kernels.
+function(lsx_arch_has_12x out_var)
+    set(_arches ${LSX_CUDA_ARCH})
+    set(_has FALSE)
+    foreach(arch IN LISTS _arches)
+        if(arch MATCHES "^12[01]")
+            set(_has TRUE)
+        endif()
+    endforeach()
+    set(${out_var} ${_has} PARENT_SCOPE)
+endfunction()
+
+# lsx_tc_object_lib(<out_var>)
+#
+# The object library that provides the `lsxcommon::lsx_tc::*` entry points in THIS
+# configure: the real arch-'a' kernels when a 12x arch is targeted, otherwise the
+# stub that reports `cudaErrorNotSupported` for every device call.
+#
+# The stub exists because the entry points are part of a PUBLIC header used from
+# nine host/device files (the NVFP4 dispatcher, the Kimi and MoE batched chains,
+# the perf knobs, ModelBase's weight epoch). Compiling those out with #ifdefs
+# would put an arch condition in nine numerics-adjacent files and make the built
+# code depend on the arch list; one translation unit that answers "not supported"
+# is the same contract the real kernels already give on a non-12x device — they
+# check `prop.major` and return exactly that.
+function(lsx_tc_object_lib out_var)
+    lsx_arch_has_12x(_has12x)
+    if(_has12x)
+        set(${out_var} "lsxcommon_tc_cu" PARENT_SCOPE)
+    else()
+        set(${out_var} "lsxcommon_tc_stub" PARENT_SCOPE)
+    endif()
+endfunction()
+
 # lsx_cuda_gencode_flags(<out_var> [ARCH_LIST <arch>...])
 #
 # Expands LSX_CUDA_ARCH (or ARCH_LIST) into nvcc's own --generate-code spelling,
